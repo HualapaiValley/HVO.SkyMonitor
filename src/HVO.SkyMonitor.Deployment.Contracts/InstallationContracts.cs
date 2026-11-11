@@ -297,7 +297,8 @@ public sealed record StateSnapshotManifest(
     Guid OperationId,
     DateTimeOffset CreatedUtc,
     ImageInstallationIdentity Image,
-    IReadOnlyList<StateSnapshotDatabase> Databases);
+    IReadOnlyList<StateSnapshotDatabase> Databases,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<StateSnapshotFile>? ProtectedFiles = null);
 
 /// <summary>
 /// One store in a <see cref="StateSnapshotManifest"/>. A store absent when the snapshot was taken is recorded as
@@ -312,6 +313,9 @@ public sealed record StateSnapshotDatabase(
     long UserVersion,
     string? SchemaSha256,
     IReadOnlyList<StateSnapshotTableCount> Tables);
+
+/// <summary>One opaque protected-state file, paired with the SQLite snapshot; absence is explicit.</summary>
+public sealed record StateSnapshotFile(string RelativePath, bool Present, string? SnapshotFile, long Length, string? Sha256);
 
 public sealed record StateSnapshotTableCount(string Name, long Rows);
 

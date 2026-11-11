@@ -210,9 +210,15 @@ public sealed class ProtectedDeploymentLocationStore(
                 ? await ReadMarkerAsync(markerPath, cancellationToken).ConfigureAwait(false)
                 : null;
             ValidateMarker(marker, history);
+            var ledgerRequirementAdded = false;
             if (history is not null && fullScrub)
             {
                 var ledger = GetIntegrity(history);
+                if (ledger is not null && history.RetainedIntegrityNonce is null)
+                {
+                    history = history with { RetainedIntegrityNonce = ledger.Nonce };
+                    ledgerRequirementAdded = true;
+                }
                 integrityScrub = BeginIntegrityScrub(ledger, history, strictRetainedValidation, cancellationToken);
                 using var existingProofs = CreateRetainedIndex(path, history);
                 ValidateRetainedEvidence(history, existingProofs, strictRetainedValidation, cancellationToken, integrityScrub);
@@ -262,6 +268,11 @@ public sealed class ProtectedDeploymentLocationStore(
             {
                 integrityScrub?.Dispose();
                 var ledger = GetIntegrity(snapshot.History);
+                if (ledger is not null && snapshot.History.RetainedIntegrityNonce is null)
+                {
+                    snapshot = snapshot with { History = snapshot.History with { RetainedIntegrityNonce = ledger.Nonce } };
+                    ledgerRequirementAdded = true;
+                }
                 // Registration drains earlier managed publications. Recheck before
                 // creating first identity so one cannot appear after the first probe.
                 if (history is null && HasLocationBearingEvidence(cancellationToken))
@@ -274,7 +285,7 @@ public sealed class ProtectedDeploymentLocationStore(
             if (configurationStillCurrent is not null && !configurationStillCurrent())
                 throw new InstallationVerificationPendingException(requiresScrub: true);
             operation = history is null ? "initialize" : snapshot.Appended ? "change" : "load";
-            if (history is null || !ReferenceEquals(snapshot.History, history))
+            if (ledgerRequirementAdded || history is null || !ReferenceEquals(snapshot.History, history))
             {
                 await WriteAsync(path, snapshot.History, cancellationToken).ConfigureAwait(false);
             }
@@ -732,7 +743,8 @@ public sealed class ProtectedDeploymentLocationStore(
                 },
             Staged: null,
             CentrallyActivatedCanonicalSha256: null,
-            Candidate: null);
+            Candidate: null,
+            RetainedIntegrityNonce: history?.RetainedIntegrityNonce);
         ValidateHistory(updated);
         return new ReconciledLocation(updated, snapshot, Appended: true);
     }
@@ -947,8 +959,8 @@ public sealed class ProtectedDeploymentLocationStore(
         RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
         var path = Path.GetFullPath(Path.Combine(directory, "deployment-location.v1.protected"));
         // The manual record is a separate protected file rather than a field of the history document:
-        // the history schema stays byte-compatible so an installer rollback to a baseline image can
-        // still open it, and the baseline simply ignores this sidecar.
+        // the baseline ignores this sidecar. Ledger adoption seals the history itself;
+        // rollback across that reader boundary restores the paired pre-upgrade files.
         var manualPath = Path.GetFullPath(Path.Combine(directory, "manual-deployment-location.v1.protected"));
         var rootPrefix = string.Concat(Path.TrimEndingDirectorySeparator(root), Path.DirectorySeparatorChar);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -967,6 +979,8 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             throw new InvalidDataException("Protected deployment-location history has an unsupported schema.");
         }
+        if (history.RetainedIntegrityNonce is { } nonce && (nonce.Length != 32 || nonce.Any(static c => !char.IsAsciiHexDigit(c))))
+            throw new InvalidDataException("Protected retained integrity binding is invalid.");
         if (!string.Equals(history.ConfigurationSeed.LocationId, history.LocationId, StringComparison.Ordinal)
             || history.ConfigurationSeed.Coordinates is null
             || history.ConfigurationSeed != NormalizeSeed(history.ConfigurationSeed)
@@ -1158,13 +1172,19 @@ public sealed class ProtectedDeploymentLocationStore(
 
     private RetainedIntegrityLedger? GetIntegrity(DeploymentLocationHistory history)
     {
-        if (_integrity is not null) return _integrity;
+        if (_integrity is not null)
+        {
+            if (history.RetainedIntegrityNonce is null || string.Equals(history.RetainedIntegrityNonce, _integrity.Nonce, StringComparison.Ordinal))
+                return _integrity;
+            DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
+            return null;
+        }
         _bootstrapHistory = history;
         try
         {
             _integrity = new RetainedIntegrityLedger(_options.RawIngressRoot, _protector,
                 key => ReadIntegrityEntry(key, Volatile.Read(ref _history) ?? _bootstrapHistory),
-                () => DeploymentLocationLog.RetainedIntegrityUnqualified(_logger), _timeProvider);
+                () => DeploymentLocationLog.RetainedIntegrityUnqualified(_logger), _timeProvider, history.RetainedIntegrityNonce);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException or FormatException)
         {
@@ -1764,7 +1784,8 @@ public sealed class ProtectedDeploymentLocationStore(
         [property: JsonRequired] DeploymentLocationSnapshot? Candidate = null,
         [property: JsonRequired] DeploymentLocationSeed ConfigurationSeed = null!,
         [property: JsonRequired] IReadOnlyDictionary<long, DateTimeOffset> ActivatedAtUtc = null!,
-        [property: JsonRequired] Dictionary<long, DeploymentLocationSourceKind> SourceKinds = null!);
+        [property: JsonRequired] Dictionary<long, DeploymentLocationSourceKind> SourceKinds = null!,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RetainedIntegrityNonce = null);
 
     private sealed record DeploymentLocationMarker(int SchemaVersion, string LocationId, long Version);
 

@@ -46,7 +46,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private sealed record Checkpoint(string Epoch, string Nonce, string Binding, long Generation, string Chain, long Count, bool Qualified);
 
     internal RetainedIntegrityLedger(string root, IDeploymentLocationProtector protector,
-        Func<string, Entry?> readCurrent, Action unqualifiedWarning, TimeProvider timeProvider)
+        Func<string, Entry?> readCurrent, Action unqualifiedWarning, TimeProvider timeProvider, string? requiredNonce = null)
     {
         _root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
         _directory = Path.Combine(_root, ".location");
@@ -77,10 +77,24 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         try
         {
             ValidateLayout();
+            var databasePath = Path.Combine(_directory, DatabaseName);
+            if (requiredNonce is not null && (!File.Exists(databasePath) || new FileInfo(databasePath).Length == 0))
+                throw new InvalidDataException("Protected history requires its original retained integrity ledger.");
             _database.Open();
             OpenSchema();
-            ReadMetadata();
+            var metadataExists = ReadMetadata();
+            if (requiredNonce is not null && (!metadataExists || !string.Equals(requiredNonce, _nonce, StringComparison.Ordinal)))
+                throw new InvalidDataException("Protected history requires its original retained integrity ledger.");
             ReadIntents();
+            if (!metadataExists)
+            {
+                // Bind fresh authority only after its nonce is durable. A crash during
+                // adoption can then resume a full scrub, never manufacture another ledger.
+                using var transaction = _database.BeginTransaction();
+                WriteMetadata(transaction);
+                transaction.Commit();
+                RawIngressFileStore.SyncDirectory(_directory);
+            }
             if (!Roots.TryAdd(_root, this))
                 throw new InvalidOperationException("The retained root already has an integrity owner in this process.");
         }
@@ -88,6 +102,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         // The old process's checkpoint is deliberately untrusted, even on a clean restart.
     }
 
+    internal string Nonce => _nonce;
     internal bool RequiresScrub => !Volatile.Read(ref _qualified);
     internal static string FileKey(string root, string path) => "F|" + Path.GetRelativePath(root, path);
     internal static string JournalKey(string capture) => "J|" + capture;

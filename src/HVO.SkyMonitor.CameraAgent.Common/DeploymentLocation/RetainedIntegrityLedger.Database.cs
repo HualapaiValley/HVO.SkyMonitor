@@ -42,7 +42,7 @@ internal sealed partial class RetainedIntegrityLedger
             """);
     }
 
-    private void ReadMetadata()
+    private bool ReadMetadata()
     {
         using var command = _database.CreateCommand();
         command.CommandText = "SELECT payload FROM metadata WHERE id=1 AND length(payload)<=16384;";
@@ -50,7 +50,7 @@ internal sealed partial class RetainedIntegrityLedger
         {
             if (File.Exists(_checkpoint) || Scalar("SELECT COUNT(*) FROM entries;") != 0)
                 throw new InvalidDataException("Retained integrity metadata is missing.");
-            return;
+            return false;
         }
         var metadata = JsonSerializer.Deserialize<Metadata>(_protector.Unprotect(bytes))
             ?? throw new InvalidDataException("Retained integrity metadata is invalid.");
@@ -62,6 +62,7 @@ internal sealed partial class RetainedIntegrityLedger
         _count = metadata.Count;
         _established = metadata.Established;
         _pendingCommitment = Convert.FromHexString(metadata.Pending);
+        return true;
     }
 
     private void WriteMetadata(SqliteTransaction transaction)

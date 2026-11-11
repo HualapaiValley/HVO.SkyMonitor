@@ -8,8 +8,8 @@ using Microsoft.Data.Sqlite;
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
-/// Snapshots, verifies and restores an instance's small SQLite databases for an image lifecycle operation that
-/// declares a state migration. Only the stores in <see cref="CameraAgentStateLayout.SqliteStores"/> are read; bulk
+/// Snapshots, verifies and restores SQLite stores and paired protected location state for a migrating image.
+/// The optional retained-integrity store is included with the declared application stores; bulk
 /// frames, archives and derived products are never copied.
 /// </summary>
 /// <remarks>
@@ -19,7 +19,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// renamed over the store before the directory is synced. Every step can be repeated after a crash: creation writes
 /// a new snapshot directory each attempt, and restoring the same verified snapshot twice leaves the same bytes.
 /// </remarks>
-internal static class CameraAgentStateSnapshot
+internal static partial class CameraAgentStateSnapshot
 {
     public const int SchemaVersion = 1;
     private const string ManifestFileName = "manifest.json";
@@ -47,7 +47,7 @@ internal static class CameraAgentStateSnapshot
                 if (File.Exists(file)) total = checked(total + new FileInfo(file).Length);
             }
         }
-        return total;
+        return checked(total + ProtectedStateBytes(stateRoot));
     }
 
     /// <summary>
@@ -75,6 +75,9 @@ internal static class CameraAgentStateSnapshot
         {
             SafeFileSystem.CreateOwnerDirectory(directory);
         }
+        // Record explicit absence as well, so a legacy rollback can remove only
+        // the new metadata store the candidate created, without touching evidence.
+        stores = stores.Append(RetainedIntegrityStore).Distinct(StringComparer.Ordinal).ToArray();
         var databases = new List<StateSnapshotDatabase>();
         for (var index = 0; index < stores.Count; index++)
         {
@@ -103,7 +106,8 @@ internal static class CameraAgentStateSnapshot
             StepCompleted($"snapshot:{relative}");
         }
         var manifest = new StateSnapshotManifest(
-            SchemaVersion, snapshotId, instanceId, operationId, DateTimeOffset.UtcNow, activeImage, databases);
+            SchemaVersion, snapshotId, instanceId, operationId, DateTimeOffset.UtcNow, activeImage, databases,
+            await SnapshotProtectedFilesAsync(paths, root, cancellationToken).ConfigureAwait(false));
         var manifestPath = Path.Combine(root, ManifestFileName);
         await SafeFileSystem.WriteJsonAtomicAsync(
             manifestPath, manifest, DeploymentJsonContext.Default.StateSnapshotManifest, cancellationToken).ConfigureAwait(false);
@@ -210,6 +214,7 @@ internal static class CameraAgentStateSnapshot
             if (VerifyFile(file, database.RelativePath) != new StoreFacts(database.UserVersion, database.SchemaSha256!, database.Tables))
                 throw InstallerException.Formatted($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
+        await VerifyProtectedFilesAsync(paths, root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
         return manifest;
     }
 
@@ -327,6 +332,7 @@ internal static class CameraAgentStateSnapshot
             touchedDirectories.Add(directory);
             StepCompleted($"restore-removed:{location}");
         }
+        await RestoreProtectedFilesAsync(paths, root, manifest.ProtectedFiles, uid, gid, cancellationToken).ConfigureAwait(false);
         foreach (var directory in touchedDirectories)
         {
             SafeFileSystem.FlushDirectoryChain(directory, paths.ProductRoot);
@@ -449,7 +455,7 @@ internal static class CameraAgentStateSnapshot
         ArgumentNullException.ThrowIfNull(snapshot);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"Warning: restoring the CameraAgent databases from the snapshot taken at {snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ} (snapshot {snapshot.SnapshotId:D}). Every database change made after that point is lost, including captures, settings and accounts recorded since then. Files written since then stay on disk. When it starts, CameraAgent records again the raw frames it can verify and may process and upload them again; other products written since then are no longer indexed.");
+            $"Warning: restoring the CameraAgent databases from the snapshot taken at {snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ} (snapshot {snapshot.SnapshotId:D}). Every database change made after that point is lost, including captures, settings and accounts recorded since then. Capture and product files written since then stay on disk. Paired protected location and integrity metadata returns to the snapshot; inconsistent retained evidence keeps protected verification unqualified until authorized recovery. When it starts, CameraAgent records again the raw frames it can verify and may process and upload them again; other products written since then are no longer indexed.");
     }
 
     /// <summary>The <c>--json</c> form of <see cref="Warning"/>, as the one line written to standard error.</summary>

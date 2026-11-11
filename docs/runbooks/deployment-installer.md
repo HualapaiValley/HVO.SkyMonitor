@@ -2807,6 +2807,18 @@ procedure; never delete the ledger/evidence to force adoption. An older agent
 cannot maintain this ledger when it writes after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
+Protected history seals the original integrity-ledger nonce. Removing both ledger
+files does not turn an established installation into a legacy installation.
+Initial adoption syncs nonce metadata before publishing the seal; incomplete
+adoption requires full verification. The sealed-history reader boundary is
+declared by the image. Migrating snapshots pair the integrity database with
+protected history, manual state, identity marker and integrity checkpoint, so
+rollback restores the old reader's pre-upgrade files. All parts are verified
+before restore; capture/product files are preserved. Interrupted restores remain
+pending and can resume. Old database-only snapshots cannot reconstruct sealed
+state and are refused before mutation when integrity state is present; restore a
+complete paired backup. Use an updated installer for paired-state rollback.
+
 The separate optional parse index has bounded batches/memory and no fixed
 proof-count cap. Fully checked prefixes survive canceled full scans; auxiliary
 JSON cannot become a frame-manifest proof. Missing/corrupt proofs are cache

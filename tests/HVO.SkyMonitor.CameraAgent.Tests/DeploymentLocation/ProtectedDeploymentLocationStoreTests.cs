@@ -38,7 +38,8 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         "candidate",
         "configurationSeed",
         "activatedAtUtc",
-        "sourceKinds"
+        "sourceKinds",
+        "retainedIntegrityNonce"
     ];
 
     [TestInitialize]

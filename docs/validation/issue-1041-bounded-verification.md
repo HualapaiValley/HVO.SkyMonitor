@@ -2,8 +2,10 @@
 
 > Superseded completeness verdict: independent Sol/Opus HIGH reviews at
 > `c4069b8c` found unresolved linear I/O and startup/optional-cache regressions.
-> Owner status is IMPLEMENTATION REQUIRED. See the
-> [correction design and pending integrity-policy decision](issue-1041-run2-design.md).
+> The original owner completeness verdict is withdrawn. Roy subsequently approved
+> the writer-maintained ledger and next-full-scrub out-of-band tamper boundary.
+> See the [approved correction design](issue-1041-run2-design.md) and
+> [current implementation/evidence report](issue-1041-run2-ledger.md).
 > The measurements below remain historical observations, not proof the incident
 > loop or capture-count-independent verification is solved.
 

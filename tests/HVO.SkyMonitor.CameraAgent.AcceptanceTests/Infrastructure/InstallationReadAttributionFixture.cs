@@ -251,9 +251,15 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     internal async Task QualifyLegacyScaleAsync()
     {
         // SeedScale asserted an empty ledger before importing this synthetic legacy corpus.
-        // Discard only that empty fixture ledger, never any retained evidence or live state.
+        // Reconstruct the signed legacy history shape before discarding only that
+        // asserted-empty fixture ledger. This is corpus construction, not recovery.
         ((IDisposable)Locations).Dispose();
         var state = Path.Combine(IngressRoot, ".location");
+        var historyPath = Path.Combine(state, "deployment-location.v1.protected");
+        var protector = Host.Services.GetRequiredService<IDeploymentLocationProtector>();
+        var legacyHistory = System.Text.Json.Nodes.JsonNode.Parse(protector.Unprotect(await File.ReadAllBytesAsync(historyPath).ConfigureAwait(false)))!.AsObject();
+        Assert.IsTrue(legacyHistory.Remove("retainedIntegrityNonce"));
+        await File.WriteAllBytesAsync(historyPath, protector.Protect(JsonSerializer.SerializeToUtf8Bytes(legacyHistory))).ConfigureAwait(false);
         foreach (var name in new[] { RetainedIntegrityLedger.DatabaseName, RetainedIntegrityLedger.CheckpointName })
             File.Delete(Path.Combine(state, name));
         await Host.RestartAsync().ConfigureAwait(false);
