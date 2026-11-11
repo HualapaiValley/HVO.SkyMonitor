@@ -249,6 +249,91 @@ public sealed class InstallerLifecycleRecoveryIntegrationTests
     }
 
     [TestMethod]
+    [DataRow(CameraAgentControlKind.Restart, "boundary")]
+    [DataRow(CameraAgentControlKind.Restart, "deadline")]
+    [DataRow(CameraAgentControlKind.Restart, "refused")]
+    [DataRow(CameraAgentControlKind.Drain, "boundary")]
+    public async Task PersistentJournalWriteFailureBeforePublicationLeavesTheRequestRecoverable(CameraAgentControlKind kind, string field)
+    {
+        var fixture = new Fixture(false);
+        await using var owned = fixture.ConfigureAwait(false);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        var path = Path.Combine(fixture.Root.FullName, "installer.json");
+        var journal = new InstallerControlJournal(path);
+        await journal.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", journal.WorkerId, fixture.Handler);
+        await client.ExchangeAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var queued = await fixture.Controls.SubmitAsync(new CameraAgentControlRequest(Guid.NewGuid(), kind, "owner", "maintenance",
+            fixture.Capture.Snapshot.Version, DateTimeOffset.UtcNow), CancellationToken.None).ConfigureAwait(false);
+        if (field == "refused")
+        {
+            // CameraAgent itself refuses the stop: the capture window closes after Restarting is published, before the stop call.
+            fixture.WindowOpening = fixture.WindowClock.GetUtcNow().AddMinutes(10);
+            var closed = false;
+            fixture.BeforeExchange = receipt =>
+            {
+                if (receipt?.Phase == CameraAgentControlPhase.Restarting && !closed)
+                {
+                    closed = true;
+                    fixture.WindowClock.Advance(TimeSpan.FromMinutes(9));
+                }
+                return Task.CompletedTask;
+            };
+        }
+        bool Carries(CameraAgentControlReceipt receipt) => field switch
+        {
+            "boundary" => receipt.PausedVersion is not null,
+            "deadline" => receipt.VerificationDeadlineUtc is not null,
+            _ => receipt.RestartRefused
+        };
+        // From the first write carrying the field, the journal stays unwritable for the rest of this installer run.
+        var failedWrites = new List<CameraAgentControlReceipt>();
+        Task FailingJournal(CameraAgentControlReceipt next)
+        {
+            if (failedWrites.Count == 0 && !Carries(next)) return journal.SaveAsync(next);
+            failedWrites.Add(next);
+            throw new IOException("Injected persistent journal write failure.");
+        }
+        await Assert.ThrowsAsync<IOException>(() => new InstallerControlVerifier(client, FailingJournal, TimeProvider.System)
+            .ExecuteAsync(queued, CancellationToken.None)).ConfigureAwait(false);
+        Assert.IsNotEmpty(failedWrites);
+        Assert.IsTrue(Carries(failedWrites[0]));
+        fixture.BeforeExchange = null;
+
+        // CameraAgent holds nothing the journal lacks, so the restarted worker can settle it.
+        var restarted = new InstallerControlJournal(path);
+        await restarted.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        var durable = restarted.Receipts.Single();
+        var stranded = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.IsFalse(Carries(durable));
+        Assert.IsFalse(Carries(stranded), "The unjournaled field must not reach CameraAgent.");
+        Assert.IsFalse(stranded.IsTerminal);
+        var messages = new List<string>();
+        await new InstallerControlWorker(client, restarted, _ => Task.FromResult<IDisposable>(new TestDeploymentLease()), TimeProvider.System, messages.Add)
+            .RunAsync(true, CancellationToken.None).ConfigureAwait(false);
+
+        var terminal = restarted.Receipts.Single();
+        Assert.AreEqual("lifecycle.installer-interrupted", terminal.Events[^1].Code);
+        Assert.IsEmpty(restarted.Refused, "Settlement must not be quarantined: " + string.Join(" | ", messages));
+        Assert.IsEmpty(restarted.Unpublished);
+        var projected = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.AreEqual(CameraAgentControlPhase.Failed, projected.Phase);
+        Assert.AreEqual("lifecycle.installer-interrupted", projected.Events[^1].Code);
+        Assert.IsFalse(fixture.Controls.AdmissionHeld);
+        Assert.IsFalse(fixture.Controls.StopPending);
+        Assert.AreEqual(0, fixture.RestartCalls);
+        // A pre-stop Restart restores its owned pause. A refusal that was never journaled stays ambiguous, so that Restart, like
+        // a standalone Drain, stays paused for an explicit owner resume.
+        var restored = kind == CameraAgentControlKind.Restart && field != "refused";
+        Assert.AreEqual(restored, terminal.ResumeConfirmed);
+        Assert.AreEqual(restored ? CaptureAdmissionState.Running : CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+        if (!restored)
+            await fixture.Capture.ResumeAsync("explicit-resume-after-journal-fault", fixture.Capture.Snapshot.Version, "owner", "checked receipt",
+                CancellationToken.None).ConfigureAwait(false);
+        using var admitted = await fixture.Capture.EnterAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task CancelledClaimRaceIsAcknowledgedWithoutPinningRefusedJournalEvidence()
     {
         var fixture = new Fixture(false);

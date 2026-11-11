@@ -193,6 +193,61 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
+    [DataRow(CameraAgentControlKind.Restart, "boundary", true)]
+    [DataRow(CameraAgentControlKind.Restart, "deadline", true)]
+    [DataRow(CameraAgentControlKind.Restart, "refused", true)]
+    [DataRow(CameraAgentControlKind.Restart, "boundary", false)]
+    [DataRow(CameraAgentControlKind.Drain, "boundary", true)]
+    [DataRow(CameraAgentControlKind.Drain, "boundary", false)]
+    public async Task JournalWriteFailure_NeverPublishesTheUnjournaledFieldAndIsReportedAsAJournalFailure(
+        CameraAgentControlKind kind, string field, bool persistent)
+    {
+        using var fixture = new Fixture(kind);
+        if (field == "refused") fixture.Client.Failure = "restart-refused";
+        bool Carries(CameraAgentControlReceipt receipt) => field switch
+        {
+            "boundary" => receipt.PausedVersion is not null,
+            "deadline" => receipt.VerificationDeadlineUtc is not null,
+            _ => receipt.RestartRefused
+        };
+        // The first write carrying the field fails. A persistent fault fails every later write too; a transient one does not.
+        var failedWrites = new List<CameraAgentControlReceipt>();
+        fixture.FailJournalWrite = next =>
+        {
+            if (failedWrites.Count > 0 ? !persistent : !Carries(next)) return false;
+            failedWrites.Add(next);
+            return true;
+        };
+
+        if (persistent)
+        {
+            // No terminal receipt can be journaled either, so the installer stops; a later worker settles from the journal.
+            await Assert.ThrowsAsync<IOException>(() => fixture.RunAsync());
+            Assert.IsNotEmpty(failedWrites);
+            Assert.IsTrue(Carries(failedWrites[0]), "The first failed write carried the field.");
+            // Not even the failure path's owned-pause restore may publish the field the journal lacks.
+            Assert.IsEmpty(fixture.PublicationViolations, string.Join(" | ", fixture.PublicationViolations));
+            var durable = await fixture.ReloadAsync();
+            Assert.IsFalse(durable.IsTerminal);
+            Assert.IsFalse(Carries(durable));
+            Assert.DoesNotContain("resume", fixture.Client.Effects);
+            Assert.AreEqual("Paused", fixture.Client.CaptureState);
+            return;
+        }
+
+        var terminal = await fixture.RunAsync(); // RunAsync also fails on any publication the journal did not hold.
+        Assert.HasCount(1, failedWrites);
+        Assert.IsTrue(Carries(failedWrites[0]), "The failed write carried the field.");
+        Assert.AreEqual(CameraAgentControlPhase.Failed, terminal.Phase);
+        Assert.AreEqual("lifecycle.failed-check-capture", terminal.Events[^1].Code, "A journal write failure is not a drain failure.");
+        // A Restart restores its owned pause from journaled evidence; a standalone Drain stays paused.
+        Assert.AreEqual(kind == CameraAgentControlKind.Restart, terminal.ResumeConfirmed);
+        Assert.AreEqual(kind == CameraAgentControlKind.Restart ? "Running" : "Paused", fixture.Client.CaptureState);
+        Assert.DoesNotContain("restart", fixture.Client.Effects);
+        await fixture.ReloadAndAssertAsync(terminal);
+    }
+
+    [TestMethod]
     public async Task NeverReturns_WritesTerminalFailureInInstallerJournalWithNoCameraAgentReceiptDelivery()
     {
         using var fixture = new Fixture();
@@ -490,12 +545,17 @@ public sealed class InstallerControlVerifierTests
             $"notIssued={receipt.RestartNotIssued} resumeRequested={receipt.ResumeRequested} resumeConfirmed={receipt.ResumeConfirmed} " +
             $"verified={receipt.VerifiedProcessId} cancelled={receipt.Cancellation is not null}]";
 
+        // Returns true for a journal write that must fail, as a full disk or read-only filesystem would.
+        internal Func<CameraAgentControlReceipt, bool>? FailJournalWrite { get; set; }
+
         internal async Task<CameraAgentControlReceipt> RunAsync(InstallerControlBudgets? budgets = null, TimeProvider? clock = null,
             CancellationToken cancellationToken = default)
         {
             var journal = new InstallerControlJournal(JournalPath);
             await journal.SaveAsync(_queued);
-            var receipt = await new InstallerControlVerifier(Client, journal.SaveAsync, clock ?? TimeProvider.System, budgets ?? Budgets)
+            Task Persist(CameraAgentControlReceipt next) =>
+                FailJournalWrite?.Invoke(next) == true ? throw new IOException("Injected journal write failure.") : journal.SaveAsync(next);
+            var receipt = await new InstallerControlVerifier(Client, Persist, clock ?? TimeProvider.System, budgets ?? Budgets)
                 .ExecuteAsync(_queued, cancellationToken).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
             Assert.IsEmpty(PublicationViolations, "Journal each receipt before an exchange publishes it: " + string.Join(" | ", PublicationViolations));
             return receipt;

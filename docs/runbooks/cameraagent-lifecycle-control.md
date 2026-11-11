@@ -86,9 +86,10 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
 
    On either side of the pause, check capture state before resuming:
    - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: an
-     exchange with CameraAgent timed out or failed. When the drain itself had
-     finished, this was the post-drain boundary read, so the installer does not
-     report the drain as Succeeded.
+     exchange with CameraAgent timed out or failed, or the installer could not
+     write its journal. After a proven drain this is the post-drain boundary
+     read or the journal write that records the drained boundary; neither is
+     reported as Succeeded or as a drain failure.
    - **Cancelled** `lifecycle.cancelled-check-capture`: the installer process was
      stopped during the operation. This is not an owner cancellation.
    - **Failed** `lifecycle.installer-interrupted` or
@@ -96,8 +97,11 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
      no installer journal was settled; see the recovery sections below.
 
    The installer journals the drained boundary before publishing it to
-   CameraAgent, so an installer interrupted at that point settles as
-   `lifecycle.installer-interrupted` instead of having its receipt refused.
+   CameraAgent, and adopts it only once that write succeeds, so CameraAgent
+   never holds evidence the journal lacks. An installer interrupted there, or
+   one that stops because its journal stays unwritable, is settled by a
+   restarted worker as `lifecycle.installer-interrupted` once the journal is
+   writable, instead of having its receipt refused.
    A cancellation recorded after the post-drain boundary is too late to change
    the outcome: the receipt stays `lifecycle.drained-paused`, and Recent control
    receipts shows the late cancellation beside it. Pause itself remains the
@@ -146,7 +150,8 @@ recovery authority. The conditional resume checks this ordering in the same SQLi
 write transaction as the state change, so a pause accepted after the installer's
 snapshot is preserved too. Ordinary pause/resume versions and no-op semantics are
 unchanged. A definite refusal of the restart mechanism
-also permits this recovery; an ambiguous restart acknowledgement does not. An
+also permits this recovery; an ambiguous restart acknowledgement does not, and
+neither does a refusal the installer could not write to its journal. An
 originally paused host stays paused. If the recovery resume is unconfirmed,
 publication restores paused admission and records `restart.resume-unconfirmed`.
 A failed Restarting publication before the stop call records a separate durable
