@@ -562,7 +562,11 @@ internal sealed class AnnotationCaptureProcessingStep(
             };
     }
 
-    private async ValueTask<IReadOnlyList<string>?> CreateEnvironmentLinesAsync(
+    /// <summary>
+    /// Expands the environment token into one line per selected kind, in kind order, or returns null while a configured
+    /// kind's capture association is still pending.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<string>?> CreateEnvironmentLinesAsync(
         ReconstructionDescriptor? descriptor,
         CancellationToken cancellationToken)
     {
@@ -582,21 +586,37 @@ internal sealed class AnnotationCaptureProcessingStep(
         {
             throughUtc = fromUtc.AddMilliseconds(1);
         }
-        var associations = await environmentalAssociations.ReadCompletedAsync(
-            descriptor.Capture.CaptureId,
-            descriptor.Capture.CaptureSequence,
-            fromUtc,
-            throughUtc,
-            descriptor.Capture.RigId,
-            Options.EnvironmentalKinds,
-            cancellationToken).ConfigureAwait(false);
-        if (associations is null)
+        // Only kinds with a configured source have capture associations. A selected kind outside the configured policy
+        // keeps its MISSING line instead of failing every capture; selection does not enable a sensor. Refs #1784
+        var selectedKinds = Options.EnvironmentalKinds.Distinct().Order().ToArray();
+        var policyKinds = EnvironmentalAssociationService.SelectConfiguredPolicyKinds(
+            hostOptions.Value.EnvironmentalAcquisition, selectedKinds);
+        IReadOnlyList<LocalEnvironmentalCaptureAssociation> associations = [];
+        if (policyKinds.Length > 0)
         {
-            return null;
+            var completed = await environmentalAssociations.ReadCompletedAsync(
+                descriptor.Capture.CaptureId,
+                descriptor.Capture.CaptureSequence,
+                fromUtc,
+                throughUtc,
+                descriptor.Capture.RigId,
+                policyKinds,
+                cancellationToken).ConfigureAwait(false);
+            if (completed is null)
+            {
+                return null;
+            }
+            associations = completed;
         }
-        var lines = new List<string>(associations.Count);
-        foreach (var association in associations)
+        var lines = new List<string>(selectedKinds.Length);
+        foreach (var kind in selectedKinds)
         {
+            var association = associations.SingleOrDefault(candidate => candidate.Kind == kind);
+            if (association is null)
+            {
+                lines.Add(FormatMissingEnvironmentLine(kind));
+                continue;
+            }
             LocalEnvironmentalObservationRecord? selected = null;
             if (association.SelectedRecordId is { } recordId)
             {
@@ -619,6 +639,9 @@ internal sealed class AnnotationCaptureProcessingStep(
             Options.TopRightTokens.Contains(AnnotationMetadataTokens.Environment, StringComparer.Ordinal) ||
             Options.BottomLeftTokens.Contains(AnnotationMetadataTokens.Environment, StringComparer.Ordinal) ||
             Options.BottomRightTokens.Contains(AnnotationMetadataTokens.Environment, StringComparer.Ordinal);
+
+    private static string FormatMissingEnvironmentLine(EnvironmentalObservationKind kind)
+        => $"{kind.ToString().ToUpperInvariant()} {LocalEnvironmentalAssociationStatus.Missing.ToString().ToUpperInvariant()}";
 
     private static string FormatEnvironmentLine(
         LocalEnvironmentalCaptureAssociation association,
