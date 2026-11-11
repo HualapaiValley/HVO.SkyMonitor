@@ -1,8 +1,9 @@
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>
-/// The refusals of a re-run whose camera configuration the installer cannot adopt (#1779): a configuration it cannot
-/// explain, or newer defaults the running image does not run. Each is composed from fixed prose and formatted fields
+/// The refusals of a re-run whose answers or camera configuration the installer cannot adopt (Refs #1779): answers that
+/// differ from the installed instance's, a configuration it cannot explain, or newer defaults the running image does not
+/// run. Each is composed from fixed prose and formatted fields
 /// (<c>DiagnosticFormatting.md</c>), so the top-level writer prints it whole, naming the file or record and the remedy,
 /// instead of cutting it at its 256-character limit. Every refusal here has changed nothing.
 /// </summary>
@@ -13,6 +14,36 @@ internal static class CameraConfigurationRefusals
     /// escaped as JSON text, which would print an arrow as its escape. The plan names the change exactly.
     /// </summary>
     private static string Plain(string change) => change.Replace("→", "to", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The re-run's answers differ from those the instance was installed with: every differing option, each with its
+    /// installed and requested value, however many there are.
+    /// </summary>
+    public static InstallerException DifferentAnswers(
+        Guid instanceId, IReadOnlyList<(string Option, string Installed, string Requested)> differences)
+    {
+        ArgumentNullException.ThrowIfNull(differences);
+        var changed = differences.Select(static difference =>
+            difference.Option + " (" + CameraAgentStateDiagnostics.Reason(difference.Installed) + ", not " +
+            CameraAgentStateDiagnostics.Reason(difference.Requested) + ")");
+        return InstallerException.RefusedFormatted(
+            $"Instance {instanceId:D} is installed with a different {string.Join(", ", changed)}. A re-run may change only --cpus and --memory; give the answers it was installed with.");
+    }
+
+    /// <summary>
+    /// A record describes the instance's rig profile or schedule otherwise than its camera configuration does: each
+    /// differing field, with the recorded value and the configuration's.
+    /// </summary>
+    public static InstallerException RigOrScheduleDisagrees(
+        Guid instanceId, string recordPath, string configurationPath, IReadOnlyList<(string Field, string Recorded, string Configured)> differences)
+    {
+        ArgumentNullException.ThrowIfNull(differences);
+        var changed = differences.Select(static difference =>
+            difference.Field + " " + CameraAgentStateDiagnostics.Reason(difference.Recorded) + ", not " +
+            CameraAgentStateDiagnostics.Reason(difference.Configured));
+        return InstallerException.RefusedFormatted(
+            $"Instance {instanceId:D} cannot be re-run: {CameraAgentStateDiagnostics.Reason(recordPath)} describes its rig profile and schedule otherwise than its camera configuration, {CameraAgentStateDiagnostics.Reason(configurationPath)}, does: {string.Join(", ", changed)}. A re-run does not rewrite a configuration it cannot explain. Restore the instance's records from a backup, or re-run it with the installer that last installed or re-ran it.");
+    }
 
     /// <summary>The recorded configuration identity is not one any configuration-default generation writes.</summary>
     public static InstallerException UnknownIdentity(

@@ -14,8 +14,8 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// <para>
 /// The <c>F3_*</c> tests are ported from the 2026-11-10 acceptance audit's reproducer (F3, finding B), which asserted the
 /// defect; their defect assertions are inverted here and their controls kept. Instead of seeding roots with older
-/// installer code in other worktrees, a pre-#1722 completed install is made by this installer under configuration-default
-/// generation 1 alone, the generation every installer before #1722 wrote, which
+/// installer code in other worktrees, a completed install from before the cloud steps (Refs #1722) is made by this
+/// installer under configuration-default generation 1 alone, the generation every installer before them wrote, which
 /// <see cref="CameraConfigurationDefaultsTests"/> pins to the audit's retained <c>camera-module.json</c>.
 /// </para>
 /// </summary>
@@ -168,7 +168,7 @@ public sealed partial class InstallerFlowTests
     }
 
     /// <summary>
-    /// The finding's full scenario: installed before #1722, upgraded with <c>cameraagent upgrade</c>, which keeps the
+    /// The finding's full scenario: installed before the cloud steps (Refs #1722), upgraded with <c>cameraagent upgrade</c>, which keeps the
     /// configuration, then re-run naming the image the instance now runs, with new limits. The re-run adopts only when the
     /// upgraded image declares the cloud defaults; otherwise it refuses and changes nothing.
     /// </summary>
@@ -372,7 +372,7 @@ public sealed partial class InstallerFlowTests
         }
     }
 
-    /// <summary>Control: each installer re-runs its own install with nothing to change, the pre-#1722 one included.</summary>
+    /// <summary>Control: each installer re-runs its own install with nothing to change, the one before the cloud steps (Refs #1722) included.</summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(true)]
@@ -402,7 +402,7 @@ public sealed partial class InstallerFlowTests
 
     /// <summary>
     /// The downgrade design point: an installer that does not know the generation an instance is on, here one that knows
-    /// only the pre-#1722 generation re-running an instance a newer installer adopted, refuses and changes nothing.
+    /// only the generation before the cloud steps (Refs #1722) re-running an instance a newer installer adopted, refuses and changes nothing.
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -518,7 +518,7 @@ public sealed partial class InstallerFlowTests
     }
 
     /// <summary>
-    /// A jump over more than one generation adopts each in order and names each, from the frozen pre-#1722 output.
+    /// A jump over more than one generation adopts each in order and names each, from the frozen output from before the cloud steps (Refs #1722).
     /// Omitted and explicit lighting both go through adoption unchanged.
     /// </summary>
     [TestMethod]
@@ -657,7 +657,7 @@ public sealed partial class InstallerFlowTests
     /// The unexplained class: a recorded identity no known generation writes, a hand-edited or unreadable camera-module.json,
     /// and records that disagree in a way no interrupted re-run leaves behind. Each is refused before any write or
     /// compose-up, exit 3, naming the file or record and the remedy, with <c>errorCode</c> <c>refused</c> under
-    /// <c>--json</c>; the plan is refused too. Before #1779 a hand-edited file was silently rewritten (exit 0).
+    /// <c>--json</c>; the plan is refused too. Before this change (Refs #1779) a hand-edited file was silently rewritten (exit 0).
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -745,7 +745,7 @@ public sealed partial class InstallerFlowTests
 
     /// <summary>
     /// The remedy the hand-edit refusal names works: with the edited file moved aside, the re-run writes the configuration
-    /// the records describe, or adopts the new defaults for a pre-#1722 instance.
+    /// the records describe, or adopts the new defaults for an instance installed before the cloud steps (Refs #1722).
     /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
@@ -880,7 +880,7 @@ public sealed partial class InstallerFlowTests
         };
 
     /// <summary>
-    /// A completed install made as every installer before #1722 made it: under configuration-default generation 1 alone.
+    /// A completed install made as every installer before the cloud steps (Refs #1722) made it: under configuration-default generation 1 alone.
     /// </summary>
     private static async Task<InstallationResult> InstallBefore1722Async(
         InstallRequest request, InstallerProcessRunner runner, IOwnerBootstrapClient owner)

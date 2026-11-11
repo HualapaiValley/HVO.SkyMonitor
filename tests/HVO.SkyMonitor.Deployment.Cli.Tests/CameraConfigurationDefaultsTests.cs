@@ -34,7 +34,7 @@ public sealed class CameraConfigurationDefaultsTests
     /// </summary>
     internal static readonly (string Id, string Sha256)[] FrozenGenerations =
     [
-        // The value IlluminationModeTests froze before #1722 re-froze it, i.e. what every earlier installer wrote.
+        // The value IlluminationModeTests froze before the cloud steps (Refs #1722) re-froze it, i.e. what every earlier installer wrote.
         ("installer-defaults-1", "6ec0a9605d346d76f5869accda8a5ac50b32d3cfda8942dbb05b0a36085e7f41"),
         ("installer-defaults-2", "3694bb506f528030cb2b61e6a8c6ba01f8057357afb186d6b876eecf055a2141")
     ];
@@ -97,7 +97,7 @@ public sealed class CameraConfigurationDefaultsTests
         var cloud = CameraConfigurationDefaults.Shipped.Single(static generation => generation.Id == "installer-defaults-2");
 
         Assert.AreEqual("pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation)", cloud.Change);
-        Assert.IsTrue(cloud.RequiresImageSupport, "the cloud steps need an image that includes #1777");
+        Assert.IsTrue(cloud.RequiresImageSupport, "the cloud steps need an image that includes the change of Refs #1777");
         Assert.IsNull(CameraConfigurationDefaults.Shipped[0].Change);
         Assert.IsFalse(CameraConfigurationDefaults.Shipped[0].RequiresImageSupport);
     }

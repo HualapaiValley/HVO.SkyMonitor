@@ -172,7 +172,7 @@ internal static class CameraConfiguration
     internal const int LatestGeneration = 2;
 
     /// <summary>
-    /// The processing pipeline of <paramref name="generation"/>. Generation 2 (#1722) adds the cloud assessment and its
+    /// The processing pipeline of <paramref name="generation"/>. Generation 2 (Refs #1722) adds the cloud assessment and its
     /// presentation layer, which the overlay manifest and the presentation materializer then depend on.
     /// </summary>
     private static List<CaptureProcessingStepConfig> CreateProcessingSteps(int generation)

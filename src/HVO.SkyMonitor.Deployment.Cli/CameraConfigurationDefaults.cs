@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>
 /// One generation of the installer's camera configuration defaults: what the installer writes into
 /// <c>camera-module.json</c> for a set of answers (<see cref="Generate"/>). <see cref="Change"/> says, for an operator, what
-/// it changed from the generation before it; a re-run that adopts it lists that in its plan (#1779).
+/// it changed from the generation before it; a re-run that adopts it lists that in its plan (Refs #1779).
 /// <see cref="RequiresImageSupport"/> marks a change the CameraAgent image must support before an instance adopts it,
 /// which the image declares with <see cref="CameraConfigurationDefaults.ImageLabel"/>.
 /// </summary>
@@ -20,7 +20,7 @@ internal sealed record CameraConfigurationGeneration(
 }
 
 /// <summary>
-/// The ordered registry of the installer's configuration-default generations (#1779). An installation's records hold
+/// The ordered registry of the installer's configuration-default generations (Refs #1779). An installation's records hold
 /// the canonical identity of its <c>camera-module.json</c>, not the generation that wrote it, so a re-run recognises the
 /// generation by generating the installed answers under each generation it knows and comparing identities
 /// (<see cref="Recognize"/>). A completed instance written by an older generation then adopts the current one, and the
@@ -55,8 +55,8 @@ internal static class CameraConfigurationDefaults
     [
         // What every release up to and including v0.9.1-dev.11 installed: the eleven-step pipeline.
         new(1, null, false, static (request, identity) => CameraConfiguration.Generate(request, identity, 1)),
-        // #1722. Turning the cloud node on for an instance needs an image that records a missing rain environment
-        // instead of failing the step (#1777), so the running image must declare this generation first.
+        // Refs #1722. Turning the cloud node on for an instance needs an image that records a missing rain environment
+        // instead of failing the step (Refs #1777), so the running image must declare this generation first.
         new(2, "pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation)", true,
             static (request, identity) => CameraConfiguration.Generate(request, identity, 2))
     ];

@@ -14,7 +14,7 @@ internal sealed partial class CameraAgentInstaller
     /// <summary>
     /// Runs at each step an interruption can fall between, named <c>configuration-written</c>, <c>rerun-files-written</c>,
     /// <c>limits-verified</c>, <c>limits-manifest-written</c> or <c>limits-result-written</c>; the last four mark the same
-    /// points of a re-run that adopts new configuration defaults (#1779). Interruption-injection tests cancel or fail the
+    /// points of a re-run that adopts new configuration defaults (Refs #1779). Interruption-injection tests cancel or fail the
     /// run there; production leaves it empty.
     /// </summary>
     internal static Action<string> StepCompleted { get; set; } = static _ => { };

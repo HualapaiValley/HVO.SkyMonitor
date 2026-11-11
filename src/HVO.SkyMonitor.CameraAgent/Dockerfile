@@ -147,8 +147,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # keeps it equal to the schema each store records when this image creates it. The created
 # label is the release's created time, which only a release build passes (scripts/release:assets).
 # The configuration-defaults label is the newest installer configuration-default generation this
-# image runs (#1779). A re-run of an existing install adopts a generation that needs the image's
-# support, such as installer-defaults-2's cloud steps (which need #1777), only on an image that
+# image runs (Refs #1779). A re-run of an existing install adopts a generation that needs the image's
+# support, such as installer-defaults-2's cloud steps (which need Refs #1777), only on an image that
 # declares it; CameraConfigurationDefaultsTests keeps it in step with the installer's registry.
 ARG HVO_VERSION
 ARG HVO_SOURCE_REVISION

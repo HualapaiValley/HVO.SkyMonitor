@@ -47,26 +47,28 @@ internal sealed partial class CameraAgentInstaller
             : request.ContainerResources();
 
     /// <summary>
-    /// Why a re-run does not describe the completed instance its records describe, or <see langword="null"/> when it
-    /// does. Only the container limits may differ: they change with a re-run. The image is compared once it is resolved.
-    /// The lighting is compared when the instance's configuration was <paramref name="recognized"/>, which is where the
-    /// installed lighting is recorded (#1779, 1706-B1): omitted and explicit <c>LegacyScalarSolar</c> are different
-    /// answers, as at install.
+    /// How a re-run does not describe the completed instance its records describe: each differing option with its
+    /// installed and requested value, none when it does. Only the container limits may differ: they change with a re-run.
+    /// The image is compared once it is resolved. The lighting is compared when the instance's configuration was
+    /// <paramref name="recognized"/>, which is where the installed lighting is recorded (Refs #1779, 1706-B1): omitted and
+    /// explicit <c>LegacyScalarSolar</c> are different answers, as at install.
     /// </summary>
-    internal static string? InstalledDifference(
+    internal static IReadOnlyList<(string Option, string Installed, string Requested)> InstalledDifferences(
         InstallRequest request,
         InstallationPaths paths,
         InstanceManifest manifest,
         RecognizedConfiguration? recognized = null)
     {
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(manifest);
-        var differences = new List<string>();
+        var differences = new List<(string Option, string Installed, string Requested)>();
         void Compare<T>(string option, T installed, T requested)
         {
             if (!EqualityComparer<T>.Default.Equals(installed, requested))
             {
-                differences.Add(string.Create(CultureInfo.InvariantCulture, $"{option} ({installed}, not {requested})"));
+                differences.Add((option, Convert.ToString(installed, CultureInfo.InvariantCulture) ?? string.Empty,
+                    Convert.ToString(requested, CultureInfo.InvariantCulture) ?? string.Empty));
             }
         }
         Compare("--friendly-name", manifest.FriendlyName, request.FriendlyName);
@@ -83,9 +85,38 @@ internal sealed partial class CameraAgentInstaller
         {
             Compare("--illumination-mode", Lighting(recognized.IlluminationMode), Lighting(request.IlluminationMode));
         }
-        return differences.Count == 0
-            ? null
-            : $"Instance {manifest.InstanceId:D} is installed with a different {string.Join(", ", differences)}. A re-run may change only --cpus and --memory; give the answers it was installed with.";
+        return differences;
+    }
+
+    /// <summary>
+    /// Each rig profile and schedule field a record holds that is not the configuration's, with both values. Every
+    /// configuration-default generation describes the rig profile and schedule alike, so a difference was not written by an
+    /// installer (Refs #1779).
+    /// </summary>
+    private static List<(string Field, string Recorded, string Configured)> RigOrScheduleDifferences(
+        string rigProfileSha256,
+        string scheduleSha256,
+        string rigProfileName,
+        string rigProfileVersion,
+        string scheduleSchemaVersion,
+        string scheduleState,
+        GeneratedConfiguration configuration)
+    {
+        var differences = new List<(string Field, string Recorded, string Configured)>();
+        void Compare(string field, string recorded, string configured)
+        {
+            if (!string.Equals(recorded, configured, StringComparison.Ordinal))
+            {
+                differences.Add((field, recorded, configured));
+            }
+        }
+        Compare("rigProfileSha256", rigProfileSha256, configuration.RigProfileSha256);
+        Compare("rigProfileName", rigProfileName, configuration.RigProfileName);
+        Compare("rigProfileVersion", rigProfileVersion, configuration.RigProfileVersion);
+        Compare("scheduleSha256", scheduleSha256, configuration.ScheduleSha256);
+        Compare("scheduleSchemaVersion", scheduleSchemaVersion, configuration.ScheduleSchemaVersion);
+        Compare("scheduleState", scheduleState, configuration.ScheduleState);
+        return differences;
     }
 
     private static string Lighting(string? mode) => mode ?? "omitted";
@@ -137,6 +168,18 @@ internal sealed partial class CameraAgentInstaller
 
     private sealed record ConfigurationFile(string? Text, string? Sha256);
 
+    /// <summary>
+    /// Whether <paramref name="sha256"/> is what an adoption of a generation newer than the <paramref name="recognized"/> one
+    /// writes for the installed answers and lighting: a file an interrupted adoption left before its commit, by this
+    /// installer or an earlier one whose newest generation was older (Refs #1779).
+    /// </summary>
+    private static bool WrittenByAnInterruptedAdoption(
+        InstallRequest installed, InstanceManifest manifest, RecognizedConfiguration recognized, string sha256)
+        => CameraConfigurationDefaults.Recognize(
+                installed, manifest.ApplicationIdentity, sha256, manifest.RigProfileSha256, manifest.ScheduleSha256) is { } written &&
+           written.IlluminationMode == recognized.IlluminationMode &&
+           written.Generation.Number > recognized.Generation.Number;
+
     private static string DifferentImage(InstanceManifest manifest, ImageInstallationIdentity requested)
         => $"Instance {manifest.InstanceId:D} runs image {manifest.Image.ImageId}, not the requested {requested.ImageId}. A re-run keeps the image; change it with '{InstallerProgram.Current} cameraagent upgrade --instance-id {manifest.InstanceId:D}', or re-run naming the image it runs.";
 
@@ -171,11 +214,11 @@ internal sealed partial class CameraAgentInstaller
     {
         /// <summary>
         /// The configuration-default generation the instance is left on: the installer's current one when the re-run
-        /// adopts newer defaults (#1779), otherwise the one that wrote its configuration.
+        /// adopts newer defaults (Refs #1779), otherwise the one that wrote its configuration.
         /// </summary>
         public CameraConfigurationGeneration Generation => Adopted.Count == 0 ? RetainedGeneration : Adopted[^1];
 
-        /// <summary>The re-run adopts the installer's newer configuration defaults (#1779).</summary>
+        /// <summary>The re-run adopts the installer's newer configuration defaults (Refs #1779).</summary>
         public bool Adopts => Adopted.Count > 0;
 
         /// <summary>
@@ -232,15 +275,16 @@ internal sealed partial class CameraAgentInstaller
             throw InstallerException.Refused("A preserved uninstalled instance must be restored with cameraagent reinstall.");
         }
         // The configuration is held to the installed answers under each configuration-default generation this installer
-        // knows, which also says what lighting was installed (#1779). Every difference is classified before anything is
+        // knows, which also says what lighting was installed (Refs #1779). Every difference is classified before anything is
         // read from Docker or written: answers that differ are refused and named; defaults that moved are adopted below;
         // anything else the installer cannot explain is refused, naming the file or record.
         var installed = InstalledAnswers(request, manifest);
         var recognized = CameraConfigurationDefaults.Recognize(
             installed, manifest.ApplicationIdentity, manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256);
-        if (InstalledDifference(request, paths, manifest, recognized) is { } difference)
+        var differences = InstalledDifferences(request, paths, manifest, recognized);
+        if (differences.Count > 0)
         {
-            throw InstallerException.Refused(difference);
+            throw CameraConfigurationRefusals.DifferentAnswers(manifest.InstanceId, differences);
         }
         var configurationPath = Path.Combine(paths.ConfigRoot, "camera-module.json");
         if (recognized is null)
@@ -249,13 +293,30 @@ internal sealed partial class CameraAgentInstaller
                 manifest.InstanceId, paths.ManifestPath, configurationPath, manifest.ConfigurationSha256,
                 string.Join(", ", CameraConfigurationDefaults.Known.Select(static generation => generation.Id)));
         }
+        // The configuration's identity matched, so the records must describe its rig profile and schedule as it does; a
+        // name, version, schema or state that differs was changed in a record, and is not one an installer explains.
+        foreach (var (recordPath, disagreements) in new[]
+                 {
+                     (paths.ManifestPath, RigOrScheduleDifferences(
+                         manifest.RigProfileSha256, manifest.ScheduleSha256, manifest.RigProfileName, manifest.RigProfileVersion,
+                         manifest.ScheduleSchemaVersion, manifest.ScheduleState, recognized.Configuration)),
+                     (paths.ResultPath, RigOrScheduleDifferences(
+                         result.RigProfileSha256, result.ScheduleSha256, result.RigProfileName, result.RigProfileVersion,
+                         result.ScheduleSchemaVersion, result.ScheduleState, recognized.Configuration))
+                 })
+        {
+            if (disagreements.Count > 0)
+            {
+                throw CameraConfigurationRefusals.RigOrScheduleDisagrees(manifest.InstanceId, recordPath, configurationPath, disagreements);
+            }
+        }
         var adopted = CameraConfigurationDefaults.AdoptedAfter(recognized.Generation);
         var configuration = adopted.Count == 0
             ? recognized.Configuration
             : adopted[^1].Generate(installed with { IlluminationMode = recognized.IlluminationMode }, manifest.ApplicationIdentity);
-        if (configuration.RigProfileSha256 != manifest.RigProfileSha256 || configuration.ScheduleSha256 != manifest.ScheduleSha256 ||
-            configuration.RigProfileName != manifest.RigProfileName || configuration.RigProfileVersion != manifest.RigProfileVersion ||
-            configuration.ScheduleSchemaVersion != manifest.ScheduleSchemaVersion || configuration.ScheduleState != manifest.ScheduleState)
+        if (adopted.Count > 0 && RigOrScheduleDifferences(
+                manifest.RigProfileSha256, manifest.ScheduleSha256, manifest.RigProfileName, manifest.RigProfileVersion,
+                manifest.ScheduleSchemaVersion, manifest.ScheduleState, configuration).Count > 0)
         {
             // A configuration-default generation never moves the rig profile or schedule: their identities bind calibration
             // and capture history, so a change to them is not adopted by a re-run.
@@ -278,19 +339,23 @@ internal sealed partial class CameraAgentInstaller
             }
             resultConfigurationStale = true;
         }
-        // The file is what the container reads. It may hold the recorded configuration, possibly reformatted, or the one an
-        // interrupted adoption wrote before its commit; a missing file is written as the records describe. Anything else
-        // was edited, and an edit is never overwritten.
+        // The file is what the container reads. It may hold the recorded configuration, possibly reformatted; one an
+        // interrupted adoption wrote before its commit, of any generation newer than the recorded one with the installed
+        // lighting, since an earlier installer may have been adopting a generation older than this installer's newest; or,
+        // with the result one generation behind, the one an interrupted restore wrote back. A missing file is written as the
+        // records describe. Anything else was edited, and an edit is never overwritten.
         var file = ReadConfigurationFile(configurationPath);
         if (file is not null &&
             (file.Sha256 is null ||
              (file.Sha256 != manifest.ConfigurationSha256 && file.Sha256 != configuration.Sha256 &&
-              !(resultConfigurationStale && file.Sha256 == result.ConfigurationSha256))))
+              !(resultConfigurationStale && file.Sha256 == result.ConfigurationSha256) &&
+              !WrittenByAnInterruptedAdoption(installed, manifest, recognized, file.Sha256))))
         {
             throw file.Sha256 is null
                 ? CameraConfigurationRefusals.UnreadableConfiguration(manifest.InstanceId, configurationPath)
                 : CameraConfigurationRefusals.EditedConfiguration(manifest.InstanceId, configurationPath, file.Sha256, manifest.ConfigurationSha256);
         }
+
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
         var catalog = CatalogInstaller.ValidateExisting(request.CatalogBundle!, paths.CatalogRoot);
         if (catalog.CatalogId != manifest.Catalog.CatalogId || catalog.PackageVersion != manifest.Catalog.PackageVersion)
@@ -309,7 +374,7 @@ internal sealed partial class CameraAgentInstaller
             throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
         EnsureImageSupportsCatalog(image, catalog.CatalogId);
         // A re-run keeps the image, so newer defaults are adopted only by an instance whose running image already runs
-        // them; otherwise nothing changes, and the operator upgrades the image first (#1779, #1777).
+        // them; otherwise nothing changes, and the operator upgrades the image first (Refs #1779, Refs #1777).
         var requiredImageGeneration = CameraConfigurationDefaults.RequiredImageGeneration(adopted);
         if (requiredImageGeneration > 0)
         {
@@ -508,7 +573,7 @@ internal sealed partial class CameraAgentInstaller
         // An instance whose files and container are what its records describe is verified where it stands before
         // anything changes, a limits change included. An adoption of newer defaults is verified on the configuration it
         // adopts instead: its container may still run one a failed restore could not take back, which Docker cannot show
-        // and only the recreate settles (#1779).
+        // and only the recreate settles (Refs #1779).
         if (!instance.FilesDiffer && !instance.ContainerDiffers && !instance.Adopts)
         {
             await VerifyAsync(request, instance, instance.Compose, owner, docker, uid, gid, cancellationToken).ConfigureAwait(false);
@@ -777,7 +842,7 @@ internal sealed partial class CameraAgentInstaller
     /// What a re-run of a completed installation changes: with the same answers nothing, otherwise the container's limits,
     /// which rewrite the Compose model, recreate the container and update the manifest and the install record; the
     /// installer's newer configuration defaults, which rewrite camera-module.json, recreate the container and update the
-    /// manifest and the result, each named (#1779); and whatever no longer matches the records, which the re-run puts back.
+    /// manifest and the result, each named (Refs #1779); and whatever no longer matches the records, which the re-run puts back.
     /// </summary>
     private static DeploymentPlan ReRunPlan(CompletedInstance instance, DeploymentPlanAction? recordAction = null)
     {

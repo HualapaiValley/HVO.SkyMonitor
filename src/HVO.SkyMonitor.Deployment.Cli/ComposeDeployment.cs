@@ -265,9 +265,9 @@ services:
     /// <summary>
     /// The files <see cref="Write"/> would write, computed without touching the disk: what a plan, and the check that
     /// an installed instance's files are still those its records describe, read instead of rendering into a
-    /// temporary directory (#1315). The camera configuration is that of configuration-default generation
+    /// temporary directory (Refs #1315). The camera configuration is that of configuration-default generation
     /// <paramref name="defaults"/>, by default the installer's current one; a re-run renders an instance's files with the
-    /// generation that wrote them, or the one it adopts (#1779).
+    /// generation that wrote them, or the one it adopts (Refs #1779).
     /// </summary>
     public static ComposeRendering Render(
         InstallRequest request,

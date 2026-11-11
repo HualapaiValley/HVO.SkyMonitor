@@ -11,7 +11,7 @@ Every file is the `camera-module.json` its generation writes for the same answer
 
 | File | Generation | Pipeline | Source |
 | --- | --- | --- | --- |
-| `installer-defaults-1.camera-module.json` | `installer-defaults-1` | 11 steps | Written by the installer at `35da16df` (the first parent of the #1722 merge), whose configuration every release up to `v0.9.1-dev.11` also wrote. Captured by the 2026-11-10 closed-issue acceptance audit (F3, finding B) as the retained configuration of a completed install. |
-| `installer-defaults-2.camera-module.json` | `installer-defaults-2` | 13 steps | Written by the installer at `d0244860` (after #1722) for the same answers, captured by the same audit. Adds `CloudAssessment` and `CloudPresentation`. |
+| `installer-defaults-1.camera-module.json` | `installer-defaults-1` | 11 steps | Written by the installer at `35da16df` (the first parent of the merge of Refs #1722), whose configuration every release up to `v0.9.1-dev.11` also wrote. Captured by the 2026-11-10 closed-issue acceptance audit (F3, finding B) as the retained configuration of a completed install. |
+| `installer-defaults-2.camera-module.json` | `installer-defaults-2` | 13 steps | Written by the installer at `d0244860` (after the merge of Refs #1722) for the same answers, captured by the same audit. Adds `CloudAssessment` and `CloudPresentation`. |
 
 `CameraConfigurationDefaultsTests` regenerates each generation and requires it to equal its file.
