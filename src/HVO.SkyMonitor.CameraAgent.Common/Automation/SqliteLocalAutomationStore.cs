@@ -840,9 +840,9 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now, detail = $detail
                 WHERE definition_id = $id AND outcome = 'Queued';
                 """, cancellationToken, ("$now", now), ("$id", definition.DefinitionId),
-                ("$detail", definition.Enabled
-                    ? "The definition was edited before this prepared occurrence started."
-                    : "The definition was disabled before this prepared occurrence started.")).ConfigureAwait(false);
+                ("$detail", !existing.Definition.Enabled || !definition.Enabled
+                    ? "The definition was disabled before this prepared occurrence started."
+                    : "The definition was edited before this prepared occurrence started.")).ConfigureAwait(false);
         }
         await ExecuteAsync(
             connection,
@@ -1250,7 +1250,10 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         var runs = await ReadRunsAsync(
             connection, transaction, LocalAutomationContract.MaximumProjectedRuns, cancellationToken)
             .ConfigureAwait(false);
-        var activeRuns = await ReadRunsAsync(connection, transaction, LocalAutomationContract.MaximumDefinitions,
+        // Each live definition permits one running and at most 32 queued occurrences. Include the
+        // whole bounded set so pending controls cannot disappear behind newer terminal history.
+        var activeRuns = await ReadRunsAsync(connection, transaction,
+            LocalAutomationContract.MaximumDefinitions * (MaximumQueuedOccurrencesPerDefinition + 1),
             cancellationToken, activeOnly: true).ConfigureAwait(false);
         var storeVersion = await ScalarLongAsync(
             connection, transaction,
@@ -1416,7 +1419,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
                    occurrence_json, attempt, occurrence_id, preparation_json
             FROM automation_runs
-            WHERE ($activeOnly = 0 OR outcome = 'Running')
+            WHERE ($activeOnly = 0 OR outcome IN ('Queued', 'Running'))
             ORDER BY sequence DESC
             LIMIT $limit;
             """;

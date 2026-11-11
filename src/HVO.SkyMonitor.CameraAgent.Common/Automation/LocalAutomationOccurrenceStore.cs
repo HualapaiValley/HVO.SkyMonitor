@@ -56,10 +56,13 @@ public interface ILocalAutomationOccurrenceStore
         LocalAutomationRunnerEntry currentEntry, bool offSweepAdmission, CancellationToken cancellationToken)
         => TryClaimQueuedAsync(currentEntry, cancellationToken);
 
-    /// <summary>Atomically withdraws an exact queued script attempt; Running requires worker drain.</summary>
-    ValueTask<LocalAutomationCommandResult> StopQueuedScriptAsync(
+    /// <summary>
+    /// Atomically withdraws an exact queued script attempt; Running requires worker drain.
+    /// Returns null when unsupported so existing running-stop controls remain available.
+    /// </summary>
+    ValueTask<LocalAutomationCommandResult?> StopQueuedScriptAsync(
         LocalAutomationScriptStopRequest request, CancellationToken cancellationToken)
-        => throw new NotSupportedException("This automation store does not support queued script withdrawal.");
+        => ValueTask.FromResult<LocalAutomationCommandResult?>(null);
 
     /// <summary>
     /// Idempotently queues one run-now occurrence of an enabled periodic definition whose registered task

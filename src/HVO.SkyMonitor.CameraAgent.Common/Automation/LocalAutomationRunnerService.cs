@@ -162,9 +162,9 @@ public sealed partial class LocalAutomationRunnerService(
             await ExecuteOrDispatchAsync(prepared, queued.RunKey, reservation, cancellationToken).ConfigureAwait(false);
             return;
         }
-        // A stale queue/admission snapshot is retried next sweep; do not consume it or run automatic
-        // work with a reservation chosen for a different execution kind.
-        if (queuedDefinition is not null) return;
+        // Preserve automatic scheduling when a pending head cannot be claimed (for example after
+        // a backward clock adjustment). Only defer it when admission was for a different kind.
+        if (queuedDefinition is not null && registry.RunsOffSweep(entry.Definition) != offSweep) return;
         if (entry.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
         {
             if (windowPlanner is null || store is not ILocalAutomationOccurrenceStore windowStore)

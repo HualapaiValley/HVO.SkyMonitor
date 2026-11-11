@@ -13,6 +13,63 @@ public sealed class LocalAutomationQueuedWithdrawalTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
+    public async Task FutureQueuedHeadDoesNotSuppressDueAutomaticPeriodicWork(bool script)
+    {
+        using var fixture = new ScriptControlsFixture();
+        var executed = Record(fixture);
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        var save = script ? ScriptControlsFixture.Save() : ScriptControlsFixture.Save("built-in") with
+        { TaskKind = LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition };
+        await fixture.Store.SaveAsync(save, default).ConfigureAwait(false);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(2));
+        var pending = (await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).State.Runs.Single();
+        // A backward clock adjustment can leave already authorized work ahead of wall time.
+        fixture.Clock.Advance(TimeSpan.FromMinutes(-1));
+        await Sweep(fixture).ConfigureAwait(false);
+        Assert.HasCount(1, executed);
+        Assert.AreNotEqual(pending.RunKey, executed[0].RunKey);
+        Assert.AreEqual(fixture.Clock.GetUtcNow(), executed[0].ScheduledForUtc);
+        var state = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(pending, state.Runs.Single(run => run.RunKey == pending.RunKey));
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, state.Runs.Single(run => run.RunKey != pending.RunKey).Outcome);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ReenablingLegacyPausedRowsReportsDisableWithdrawal(bool reenable)
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var original = (await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).State.Runs.Single();
+        var disabled = await fixture.Store.SaveAsync(ScriptControlsFixture.Save() with
+        { Enabled = false, ExpectedVersion = 1, IdempotencyKey = "disable" }, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, disabled.Status);
+        // Seed exactly the pre-upgrade pause outcome without changing the retained occurrence.
+        using (var connection = new SqliteConnection("Data Source=" + fixture.DatabasePath))
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE automation_runs SET outcome = 'Queued', completed_unix_ms = NULL, detail = $detail WHERE run_key = $key;";
+            command.Parameters.AddWithValue("$detail", original.Detail);
+            command.Parameters.AddWithValue("$key", original.RunKey);
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        fixture.Runner.Dispose();
+        fixture.Store.Dispose();
+        using var reopened = fixture.NewStore();
+        await reopened.InitializeAsync(default).ConfigureAwait(false);
+        var result = await reopened.SaveAsync(ScriptControlsFixture.Save() with
+        { Enabled = reenable, Name = "Updated", ExpectedVersion = 2, IdempotencyKey = "legacy-mutation" }, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, result.Status);
+        AssertWithdrawal(original, result.State.Runs.Single(), "disabled");
+        if (reenable) Assert.IsNull(await reopened.TryClaimQueuedAsync((await reopened.GetRunnerViewAsync(default).ConfigureAwait(false)).Single(), default).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
     public async Task R7_DisableOrRemovalWithdrawsBeforeReenableAndReopen(bool remove)
     {
         using var fixture = new ScriptControlsFixture();

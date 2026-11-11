@@ -4,6 +4,7 @@ using Moq;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 
@@ -12,6 +13,99 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 [DoNotParallelize]
 public sealed class LocalAutomationScriptCommandsTests
 {
+    [TestMethod]
+    public async Task OccurrenceStoreWithoutQueuedStopSupportStillStopsAndReplaysRunningWork()
+    {
+        using var fixture = new ScriptControlsFixture();
+        var entered = ScriptControlsFixture.Signal();
+        fixture.Stub.Execute = async (_, token) =>
+        {
+            entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            return new(LocalAutomationRunOutcome.Succeeded, "unreachable");
+        };
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var original = (await fixture.Commands.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).State.Runs.Single();
+        var commands = new LocalAutomationScriptCommands(new LegacyOccurrenceStore(fixture.Store), fixture.Worker);
+        var request = new LocalAutomationScriptStopRequest("script", original.RunKey, 1, "owner");
+        var pending = await commands.StopAsync(request, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Conflict, pending.Status, "An unsupported queued stop must be truthful and leave the run pending.");
+        Assert.AreEqual(original, pending.State.Runs.Single());
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var result = await commands.StopAsync(request, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, result.Status);
+        Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, result.State.Runs.Single().Outcome);
+        Assert.AreEqual(LocalAutomationCommandStatus.Unchanged, (await commands.StopAsync(request, default).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task RunningStopAcknowledgesExactRetainedAttemptAfterHistoryOverflowAndDurableDrain()
+    {
+        using var fixture = new ScriptControlsFixture();
+        var entered = ScriptControlsFixture.Signal();
+        var draining = ScriptControlsFixture.Signal();
+        var release = ScriptControlsFixture.Signal();
+        fixture.Stub.Execute = async (_, token) =>
+        {
+            entered.TrySetResult();
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+            draining.TrySetResult();
+            await release.Task.ConfigureAwait(false);
+            throw new LocalAutomationDrainedCancellationException(new(LocalAutomationRunOutcome.Interrupted,
+                "script.cancelled; exit=137; stdoutBytes=2; stderrBytes=3"), fixture.Clock.GetUtcNow(), token);
+        };
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var original = (await fixture.Commands.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).State.Runs.Single();
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            await fixture.AddNewerBuiltInHistoryAsync().ConfigureAwait(false);
+            var before = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+            Assert.HasCount(LocalAutomationContract.MaximumProjectedRuns, before.Runs);
+            Assert.IsFalse(before.Runs.Any(run => run.RunKey == original.RunKey));
+            Assert.AreEqual(original.RunKey, before.ActiveRuns.Single().RunKey);
+            var request = new LocalAutomationScriptStopRequest("script", original.RunKey, 1, "owner");
+            var stop = fixture.Commands.StopAsync(request, default).AsTask();
+            await draining.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.IsFalse(stop.IsCompleted, "History overflow cannot shorten process/result drain.");
+            Assert.IsNull(fixture.Worker.TryReserve());
+            fixture.Clock.Advance(TimeSpan.FromSeconds(7));
+            release.TrySetResult();
+            var stopped = await stop.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, stopped.Status);
+            Assert.IsTrue(fixture.Worker.WhenIdleAsync().IsCompleted);
+            Assert.IsEmpty(stopped.State.ActiveRuns);
+            Assert.IsFalse(stopped.State.Runs.Any(run => run.RunKey == original.RunKey), "The regression must settle outside the recent page.");
+            CollectionAssert.AreEqual(before.Runs.ToArray(), stopped.State.Runs.ToArray());
+            using (var connection = new SqliteConnection("Data Source=" + fixture.DatabasePath))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var command = connection.CreateCommand();
+                command.CommandText = "SELECT outcome, completed_unix_ms, detail, revision_sha256 FROM automation_runs WHERE run_key = $key;";
+                command.Parameters.AddWithValue("$key", original.RunKey);
+                using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+                Assert.AreEqual("Interrupted", reader.GetString(0));
+                Assert.AreEqual(fixture.Clock.GetUtcNow().ToUnixTimeMilliseconds(), reader.GetInt64(1));
+                Assert.AreEqual("script.cancelled; exit=137; stdoutBytes=2; stderrBytes=3", reader.GetString(2));
+                Assert.AreEqual(original.RevisionSha256, reader.GetString(3));
+            }
+            Assert.AreEqual(LocalAutomationCommandStatus.Unchanged, (await fixture.Commands.StopAsync(request, default).ConfigureAwait(false)).Status);
+            fixture.Runner.Dispose();
+            fixture.Store.Dispose();
+            using var reopened = fixture.NewStore();
+            await reopened.InitializeAsync(default).ConfigureAwait(false);
+            var replay = await new LocalAutomationScriptCommands(reopened, fixture.Worker).StopAsync(request, default).ConfigureAwait(false);
+            Assert.AreEqual(LocalAutomationCommandStatus.Unchanged, replay.Status);
+        }
+        finally { release.TrySetResult(); }
+    }
+
     [TestMethod]
     public async Task QueuedStopPreservesOtherQueuedRunningAndTerminalRowsAndAllSchedules()
     {
@@ -35,7 +129,7 @@ public sealed class LocalAutomationScriptCommandsTests
         foreach (var run in before.Runs.Where(run => run.DefinitionId != "script"))
             Assert.AreEqual(run, stopped.State.Runs.Single(item => item.RunKey == run.RunKey));
         CollectionAssert.AreEqual(entries.ToArray(), (await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false)).ToArray());
-        CollectionAssert.AreEqual(before.ActiveRuns.ToArray(), stopped.State.ActiveRuns.ToArray());
+        CollectionAssert.AreEqual(before.ActiveRuns.Where(run => run.RunKey != target.RunKey).ToArray(), stopped.State.ActiveRuns.ToArray());
         foreach (var definition in before.Definitions)
             Assert.AreEqual(definition.NextRunUtc, stopped.State.Definitions.Single(item => item.Definition.DefinitionId == definition.Definition.DefinitionId).NextRunUtc);
     }
@@ -477,5 +571,28 @@ public sealed class LocalAutomationScriptCommandsTests
         Assert.AreEqual(LocalAutomationCommandStatus.Conflict,
             (await fixture.Commands.StopAsync(new("script", active.RunKey, 1, "owner"), default).ConfigureAwait(false)).Status,
             "A foreign/absent worker must not acknowledge or cancel another run.");
+    }
+    // Decorator with the original occurrence-store surface; it deliberately inherits the new
+    // optional queued-stop default while preserving the existing running-stop authority.
+    private sealed class LegacyOccurrenceStore(SqliteLocalAutomationStore inner) : ILocalAutomationStore, ILocalAutomationOccurrenceStore
+    {
+        public ValueTask InitializeAsync(CancellationToken token) => inner.InitializeAsync(token);
+        public ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken token) => inner.GetStateAsync(token);
+        public ValueTask<LocalAutomationCommandResult> SaveAsync(LocalAutomationSaveRequest request, CancellationToken token) => inner.SaveAsync(request, token);
+        public ValueTask<LocalAutomationCommandResult> RemoveAsync(LocalAutomationRemoveRequest request, CancellationToken token) => inner.RemoveAsync(request, token);
+        public ValueTask<IReadOnlyList<LocalAutomationRunnerEntry>> GetRunnerViewAsync(CancellationToken token) => inner.GetRunnerViewAsync(token);
+        public ValueTask<bool> TryBeginRunAsync(LocalAutomationRunnerEntry entry, string key, DateTimeOffset scheduled, long? sequence, CancellationToken token)
+            => inner.TryBeginRunAsync(entry, key, scheduled, sequence, token);
+        public ValueTask CompleteRunAsync(string key, LocalAutomationRunOutcome outcome, string detail, CancellationToken token)
+            => inner.CompleteRunAsync(key, outcome, detail, token);
+        public ValueTask RecordTerminalRunAsync(LocalAutomationRunnerEntry entry, string key, DateTimeOffset scheduled, LocalAutomationRunOutcome outcome,
+            string detail, long? sequence, CancellationToken token) => inner.RecordTerminalRunAsync(entry, key, scheduled, outcome, detail, sequence, token);
+        public ValueTask SetCaptureBaselineAsync(string id, long sequence, CancellationToken token) => inner.SetCaptureBaselineAsync(id, sequence, token);
+        public ValueTask<IReadOnlySet<string>> GetRecordedOccurrenceIdentitiesAsync(LocalAutomationRunnerEntry entry, CancellationToken token)
+            => inner.GetRecordedOccurrenceIdentitiesAsync(entry, token);
+        public ValueTask<bool> TryBeginOccurrenceAsync(LocalAutomationOccurrence occurrence, CancellationToken token) => inner.TryBeginOccurrenceAsync(occurrence, token);
+        public ValueTask<LocalAutomationCommandResult> BackfillAsync(LocalAutomationBackfillRequest request, CancellationToken token) => inner.BackfillAsync(request, token);
+        public ValueTask<LocalAutomationCommandResult> RetryAsync(LocalAutomationRetryRequest request, CancellationToken token) => inner.RetryAsync(request, token);
+        public ValueTask<LocalAutomationRun?> TryClaimQueuedAsync(LocalAutomationRunnerEntry entry, CancellationToken token) => inner.TryClaimQueuedAsync(entry, token);
     }
 }

@@ -66,7 +66,7 @@ public sealed partial class SqliteLocalAutomationStore
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, false, cancellationToken).ConfigureAwait(false);
-            using var transaction = BeginImmediate(connection);
+            using var transaction = BeginRead(connection);
             var run = await ReadPreparedRunAsync(connection, transaction, definitionId, null, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return run?.Occurrence?.Definition;
@@ -74,7 +74,7 @@ public sealed partial class SqliteLocalAutomationStore
         finally { _gate.Release(); }
     }
 
-    public async ValueTask<LocalAutomationCommandResult> StopQueuedScriptAsync(
+    public async ValueTask<LocalAutomationCommandResult?> StopQueuedScriptAsync(
         LocalAutomationScriptStopRequest request, CancellationToken cancellationToken)
     {
         using var operation = RetainOperationAuthority();

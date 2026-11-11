@@ -15,6 +15,87 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class AutomationScriptControlsTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task PageDefinitionConfirmationExplainsPendingWithdrawal(bool disable)
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        var saved = await fixture.Service.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        await fixture.Service.RunScriptNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
+        using var context = Context(fixture.Service);
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-definition-script");
+        if (disable)
+            await cut.Find("#" + AutomationsPage.ToggleTriggerId(saved.Value!.State.Definitions.Single())).ClickAsync(new()).ConfigureAwait(false);
+        else
+        {
+            await cut.Find("#automation-edit-script").ClickAsync(new()).ConfigureAwait(false);
+            await cut.Find("#automation-name").ChangeAsync(new ChangeEventArgs { Value = "Edited" }).ConfigureAwait(false);
+            await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+            await cut.Find("#automation-save").ClickAsync(new()).ConfigureAwait(false);
+        }
+        cut.WaitForElement("#automation-confirm");
+        Assert.Contains("Queued attempts will be withdrawn", cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual(1, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).QueuedRunCount,
+            "Review text must appear before any pending attempt is withdrawn.");
+        await cut.Find("#automation-confirm").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll("#automation-confirm")));
+        var terminal = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Skipped, terminal.Outcome);
+        Assert.Contains(disable ? "disabled" : "edited", terminal.Detail, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task PageOffersQueuedStopOnCardAndHistoryIncludingOverflow(bool useHistory, bool overflow)
+    {
+        using var fixture = new ScriptControlsFixture();
+        var executions = 0;
+        fixture.Stub.Execute = (_, _) =>
+        {
+            executions++;
+            return ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Succeeded, "done"));
+        };
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Service.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var queued = await fixture.Service.RunScriptNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
+        var original = queued.Value!.State.Runs.Single();
+        if (overflow)
+        {
+            await fixture.AddNewerBuiltInHistoryAsync().ConfigureAwait(false);
+            Assert.IsFalse((await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Any(run => run.RunKey == original.RunKey));
+        }
+        fixture.Stub.Available = false; // Retained-run Stop does not require today's adapter.
+        using var context = Context(fixture.Service);
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-definition-script");
+        Assert.IsTrue(cut.Find("#automation-definition-script [data-script-action=run-now]").HasAttribute("disabled"));
+        if (useHistory) await cut.FindAll(".automation-tabs button")[2].ClickAsync(new()).ConfigureAwait(false);
+        var container = useHistory ? "#automation-runs" : "#automation-definition-script";
+        var stop = cut.Find(container + " [data-script-action=stop]");
+        Assert.IsFalse(stop.HasAttribute("disabled"));
+        await stop.ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains("Withdraw this queued run", cut.Find(container).TextContent, StringComparison.Ordinal);
+        await cut.Find(container + " [data-script-action=cancel]").ClickAsync(new()).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Conflict,
+            (await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow("still-pending"), default).ConfigureAwait(false)).Status);
+        await cut.Find(container + " [data-script-action=stop]").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find(container + " [data-script-action=confirm]").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsEmpty(cut.FindAll(container + " [data-script-action=stop]")));
+        var settled = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(0, settled.QueuedRunCount);
+        Assert.IsEmpty(settled.ActiveRuns);
+        Assert.AreEqual(LocalAutomationCommandStatus.Unchanged,
+            (await fixture.Commands.StopAsync(new("script", original.RunKey, 1, "owner"), default).ConfigureAwait(false)).Status);
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(0, executions);
+    }
+
+    [TestMethod]
     public async Task WizardReviewsSafeRegistrationPolicyThenSavesTheSelectedImmutableTarget()
     {
         using var fixture = new ScriptControlsFixture();

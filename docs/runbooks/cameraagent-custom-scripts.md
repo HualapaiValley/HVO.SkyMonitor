@@ -98,8 +98,10 @@ It does not disable the schedule, affect built-in tasks, or undo prior effects.
 Disabling or editing a definition withdraws all its queued attempts as `Skipped` in
 the same durable transition. Re-enabling never revives them. Removal retains the
 same queued-withdrawal policy. Stop racing a claim waits through worker registration
-and drain, or reports the already terminal outcome if completion won. Active runs are projected separately from the
-recent-history page so newer terminal runs cannot hide the stop control.
+and drain, or reports the already terminal outcome if completion won. Queued and running
+attempts are projected separately from recent history so newer terminal rows cannot hide
+their Stop controls on the definition card or in run history. Stop acknowledgement checks
+the exact retained attempt after drain, including when it is older than recent history.
 
 Fixed safe errors explain unavailable registrations, stale versions, pending runs
 and missing/nonlocal runs. Neither UI nor HTTP accepts script uploads, executable

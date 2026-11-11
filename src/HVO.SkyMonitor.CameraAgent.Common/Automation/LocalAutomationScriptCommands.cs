@@ -39,9 +39,10 @@ public sealed class LocalAutomationScriptCommands(ILocalAutomationStore store,
     {
         ArgumentNullException.ThrowIfNull(request);
         LocalAutomationOperatorState state;
-        if (store is ILocalAutomationOccurrenceStore occurrences)
+        var occurrences = store as ILocalAutomationOccurrenceStore;
+        if (occurrences is not null &&
+            await occurrences.StopQueuedScriptAsync(request, cancellationToken).ConfigureAwait(false) is { } withdrawal)
         {
-            var withdrawal = await occurrences.StopQueuedScriptAsync(request, cancellationToken).ConfigureAwait(false);
             if (withdrawal.Status != LocalAutomationCommandStatus.Conflict || withdrawal.ReasonCode != StopUnavailableReason)
                 return withdrawal;
             state = withdrawal.State;
@@ -63,6 +64,15 @@ public sealed class LocalAutomationScriptCommands(ILocalAutomationStore store,
         // The worker also waits through the committed-claim/dispatch handoff, outside the store gate.
         var stopped = run.Outcome == LocalAutomationRunOutcome.Running &&
             await worker.StopScriptRunAsync(run.RunKey, cancellationToken).ConfigureAwait(false);
+        // Completion retains the original journal sequence, so an older settled attempt can leave
+        // both active and recent projections. Verify its exact retained key/revision after drain.
+        if (occurrences is not null &&
+            await occurrences.StopQueuedScriptAsync(request, cancellationToken).ConfigureAwait(false) is { } verified)
+        {
+            return verified.Status == LocalAutomationCommandStatus.Unchanged
+                ? verified with { Status = stopped ? LocalAutomationCommandStatus.Applied : LocalAutomationCommandStatus.Unchanged }
+                : new(LocalAutomationCommandStatus.Conflict, StopUnavailableReason, null, verified.State);
+        }
         var settled = await store.GetStateAsync(cancellationToken).ConfigureAwait(false);
         var terminal = settled.ActiveRuns.Concat(settled.Runs).FirstOrDefault(item => item.RunKey == run.RunKey);
         if (terminal is null || terminal.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)

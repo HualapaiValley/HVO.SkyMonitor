@@ -47,6 +47,35 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
     }
 
     [TestMethod]
+    public async Task ActiveProjectionIncludesFullQueuedCapacityAndAnotherDefinitionsRunningAttempt()
+    {
+        await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        await SaveAsync("running", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        var entries = await _store.GetRunnerViewAsync(default).ConfigureAwait(false);
+        var hourly = entries.Single(entry => entry.Definition.DefinitionId == "hourly");
+        var runningEntry = entries.Single(entry => entry.Definition.DefinitionId == "running");
+        var windows = _planner.ResolveWindows(new DateOnly(2026, 10, 12), hourly.Definition.SourceWindow!)
+            .Concat(_planner.ResolveWindows(new DateOnly(2026, 10, 13), hourly.Definition.SourceWindow!))
+            .Take(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition).ToArray();
+        MoveTo(windows[^1].EarliestFinalUtc);
+        var running = LocalAutomationWindowPlanner.CreateOccurrence(runningEntry, windows[0]);
+        Assert.IsTrue(await _store.TryBeginOccurrenceAsync(running, default).ConfigureAwait(false));
+        for (var index = 0; index < windows.Length; index++)
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await _store.BackfillAsync(new("hourly", windows[index].ReportingPeriod.ReportDate,
+                windows[index].StartUtc, 1, "capacity-" + index, "owner", "backfill"), default).ConfigureAwait(false)).Status);
+        for (var index = 0; index <= LocalAutomationContract.MaximumProjectedRuns; index++)
+            await _store.RecordTerminalRunAsync(hourly, "newer-terminal-" + index, _time.GetUtcNow(), LocalAutomationRunOutcome.Skipped,
+                "history overflow control", null, default).ConfigureAwait(false);
+        var state = await _store.GetStateAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(1, state.RunningRunCount);
+        Assert.AreEqual(windows.Length, state.QueuedRunCount);
+        Assert.IsTrue(state.Runs.All(run => run.Outcome == LocalAutomationRunOutcome.Skipped));
+        Assert.HasCount(windows.Length + 1, state.ActiveRuns);
+        Assert.AreEqual(running.RunKey, state.ActiveRuns.Single(run => run.Outcome == LocalAutomationRunOutcome.Running).RunKey);
+        Assert.AreEqual(windows.Length, state.ActiveRuns.Count(run => run.Outcome == LocalAutomationRunOutcome.Queued));
+    }
+
+    [TestMethod]
     [DataRow("disabled")]
     [DataRow("edited")]
     [DataRow("removed")]
