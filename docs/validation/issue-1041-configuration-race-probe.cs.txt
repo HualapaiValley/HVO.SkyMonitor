@@ -61,6 +61,13 @@ catch(InstallationVerificationPendingException){rejected=true;}
 hook.SetValue(store,null);
 if(!edited||!rejected||store.Active!=location)throw new InvalidOperationException("Stale configuration escaped or changed immutable location.");
 _ = await loader.LoadAsync(CancellationToken.None);
+// Ordinary availability cannot qualify the interrupted scrub. This standalone
+// probe has no host lifetime to run the coalesced refresh, so request it explicitly.
+var pending=false;
+try{_ = await loader.LoadInstallationSnapshotAsync(CancellationToken.None);}
+catch(InstallationVerificationPendingException){pending=true;}
+if(!pending)throw new InvalidOperationException("Interrupted scrub unexpectedly qualified an ordinary load.");
+_ = await loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None);
 var verified=await loader.LoadInstallationSnapshotAsync(CancellationToken.None);
 using var current=JsonDocument.Parse(File.ReadAllBytes(configPath));
 if(verified.Configuration.AgentId!="race-current-agent"||verified.Configuration.AgentId==first.AgentId||
