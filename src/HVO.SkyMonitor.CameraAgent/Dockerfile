@@ -138,7 +138,7 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # the composed OpenNGC catalog, and still resolves the manifest 2 HYG catalogs. An
 # image that omits the manifest label is held to manifest 2 only.
 #
-# The minimum-compatible-revision boundary identifies the sealed-history reader (#1041),
+# The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
 # and includes the earlier nightly schema-3 reader (#1713). Paired protected state
 # is snapshotted with the databases before adoption so an older-reader rollback
 # receives its pre-upgrade history.
@@ -154,7 +154,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="b3e8a77737672ae48b7c178c53dbad9790687d2a" \
+      io.hvo.skymonitor.minimum-compatible-revision="87f7342ed1dcf37477ee88b14edd39e7cc84d06a" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="15" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \

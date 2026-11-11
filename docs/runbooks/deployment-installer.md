@@ -2831,6 +2831,20 @@ procedure; never delete the ledger/evidence to force adoption. An agent that
 predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
+The row-MAC reader boundary is
+`87f7342ed1dcf37477ee88b14edd39e7cc84d06a`, declared by the image's
+`minimum-compatible-revision`. Updated agents and installers read both legacy
+Data Protection row proofs and new MAC proofs. The per-ledger random MAC secret
+is protected in metadata; nonce/key/digest/kind/generation and the authenticated
+set commitment remain bound. A full background scrub rewrites legacy rows in
+batches. An interrupted rewrite never qualifies. Offline paired restore must
+use the matching updated installer: carried file proofs are authenticated and
+re-signed under the target snapshot's secret, or as legacy protected proofs for
+a legacy target. Older installers are unsupported for this private-state
+migration/restore boundary, even though qualified HTTP verification remains wire
+compatible with an older client. The old image receives its own paired saved
+state on rollback; an old reader must not start on a new-format ledger.
+
 Protected history seals the original integrity-ledger nonce. Removing both ledger
 files does not turn an established installation into a legacy installation.
 Initial adoption syncs nonce metadata before publishing the seal; incomplete
