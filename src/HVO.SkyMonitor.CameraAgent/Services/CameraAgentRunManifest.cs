@@ -15,6 +15,18 @@ internal static class CameraAgentRunManifest
     internal const string UnrecordedOutputReason = "The execution's original produced-output evidence was not recorded completely.";
     internal const string UnrecordedInputReason = "The execution's original frozen-input evidence was not recorded completely.";
     internal const string CorruptReason = "The retained run evidence is corrupt and cannot be downloaded.";
+    internal const string TemporarilyUnavailableReason = "The run manifest is temporarily unavailable. Refresh the run to try again.";
+
+    // Allowances for the encoded members that are not variable strings: names, punctuation, numbers, identifiers,
+    // timestamps and durations at their widest. Each is above the widest actual encoding, which the tests measure.
+    internal const int EncodedHeaderBytes = 1024;
+    internal const int EncodedNodeBytes = 512;
+    internal const int EncodedRowBytes = 384;
+    internal const int EncodedSourceArtifactIdBytes = 39;
+    // An ASCII letter or digit is never escaped and encodes as one byte. Any other UTF-16 unit encodes as at most a
+    // six-byte \uXXXX escape.
+    private const int EncodedBytesPerEscapedCharacter = 6;
+
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -22,32 +34,111 @@ internal static class CameraAgentRunManifest
 
     internal static (byte[]? Payload, string? Reason) Create(ProcessingGraphExecutionDetail detail)
     {
-        if (detail.FrozenNodeCount is { } expected && expected != detail.Nodes.Count) return (null, MissingReason);
+        if (Validate(detail) is { } reason) return (null, reason);
+        // The bounded store snapshot caps the input. Also cap the encoded result, including JSON escaping.
+        var payload = Encode(detail);
+        return payload.Length > ProcessingRunManifestBounds.MaximumBytes
+            ? (null, ProcessingRunManifestBounds.UnavailableReason) : (payload, null);
+    }
+
+    /// <summary>
+    /// Why the run page cannot offer this execution's manifest, from the evidence read beside its detail, or null
+    /// when the download will produce it.
+    /// </summary>
+    internal static string? UnavailableReason(ProcessingGraphExecutionDetailWithRunManifest read) => read.RunManifestFailure switch
+    {
+        ProcessingRunManifestEvidenceFailure.ExceedsBounds => ProcessingRunManifestBounds.UnavailableReason,
+        ProcessingRunManifestEvidenceFailure.Corrupt => CorruptReason,
+        ProcessingRunManifestEvidenceFailure.Unavailable => TemporarilyUnavailableReason,
+        _ => read.RunManifest is { } manifest ? UnavailableReason(manifest) : MissingReason
+    };
+
+    /// <summary>
+    /// The reason <see cref="Create"/> gives for the same detail, without building the payload. The checks are
+    /// <see cref="Create"/>'s own. The payload is encoded only to measure it, and only when its upper bound says it
+    /// could exceed the byte limit; every smaller manifest is known to fit from its counts and strings. The byte
+    /// limit decides the download, so a manifest that close to it is measured rather than guessed.
+    /// </summary>
+    internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail)
+        => UnavailableReason(detail, static measured => Create(measured).Reason);
+
+    /// <inheritdoc cref="UnavailableReason(ProcessingGraphExecutionDetail)"/>
+    internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail, Func<ProcessingGraphExecutionDetail, string?> measure)
+        => Validate(detail) ?? (MaximumEncodedBytes(detail) <= ProcessingRunManifestBounds.MaximumBytes ? null : measure(detail));
+
+    /// <summary>
+    /// An upper bound on the encoded manifest's length, from element counts and the characters of its strings. It
+    /// never understates: every member that is not a variable string is covered by a fixed allowance, and every
+    /// character of a variable string that could be escaped is counted as escaped. A member added to the manifest
+    /// must keep it so.
+    /// </summary>
+    internal static long MaximumEncodedBytes(ProcessingGraphExecutionDetail detail)
+    {
+        static long Text(string? value)
+        {
+            var bytes = 0L;
+            foreach (var character in value ?? string.Empty)
+                bytes += char.IsAsciiLetterOrDigit(character) ? 1 : EncodedBytesPerEscapedCharacter;
+            return bytes;
+        }
+        var execution = detail.Execution;
+        var bytes = EncodedHeaderBytes + Text(execution.ExecutionClass.ToString()) + Text(execution.Status.ToString()) +
+            Text(execution.GraphRevisionId) + Text(execution.GraphDefinitionIdentitySha256) +
+            Text(execution.SharedPlanIdentitySha256) + Text(execution.LocalPlanIdentitySha256);
+        foreach (var node in detail.Nodes)
+        {
+            bytes += EncodedNodeBytes + Text(node.NodeId) + Text(node.PlanSha256) + Text(node.Status) +
+                Text(node.NormalizationPlanIdentitySha256);
+            foreach (var input in node.Inputs)
+                bytes += EncodedRowBytes + Text(input.Kind.ToString()) + Text(input.DescriptorSha256) +
+                    Text(input.PayloadSha256) + Text(input.OutputIdentitySha256);
+            foreach (var master in node.CalibrationInputs)
+                bytes += EncodedRowBytes + Text(CalibrationMasterKind) + Text(master.PayloadSha256) + Text(master.Kind);
+            foreach (var attempt in node.Attempts)
+                bytes += EncodedRowBytes + Text(attempt.Status) + Text(attempt.Outcome?.ToString()) +
+                    Text(attempt.ExecutionRoute.ToString());
+            foreach (var output in node.Outputs)
+                bytes += EncodedRowBytes + Text(output.OutputIdentitySha256) + Text(output.Role.ToString()) +
+                    Text(output.PayloadSha256) + (long)EncodedSourceArtifactIdBytes * output.SourceArtifactIds.Count;
+        }
+        return bytes;
+    }
+
+    private static string? Validate(ProcessingGraphExecutionDetail detail)
+    {
+        if (detail.FrozenNodeCount is { } expected && expected != detail.Nodes.Count) return MissingReason;
         if (detail.Nodes.Count > ProcessingRunManifestBounds.MaximumNodes || detail.Nodes.Any(static node =>
             node.Inputs.Count + node.CalibrationInputs.Count > ProcessingRunManifestBounds.MaximumRows ||
             node.Outputs.Count > ProcessingRunManifestBounds.MaximumRows ||
             node.Attempts.Count > ProcessingRunManifestBounds.MaximumRows) ||
             detail.Nodes.Sum(static node => (long)node.Inputs.Count + node.CalibrationInputs.Count + node.Outputs.Count + node.Attempts.Count) > ProcessingRunManifestBounds.MaximumRows * 4L)
-            return (null, ProcessingRunManifestBounds.UnavailableReason);
+            return ProcessingRunManifestBounds.UnavailableReason;
         if (detail.Nodes.Any(static node => !HasRetainedArtifactBindings(node)))
-            return (null, ArtifactEvidenceUnavailableReason);
+            return ArtifactEvidenceUnavailableReason;
         if (detail.Nodes.Any(static node => node.InputEvidenceIncomplete))
-            return (null, UnrecordedInputReason);
+            return UnrecordedInputReason;
         if (detail.Nodes.Any(static node => node.CommittedOutputCount is null))
-            return (null, UnrecordedOutputReason);
+            return UnrecordedOutputReason;
         if (detail.Nodes.Any(static node => node.NodeId.Length is 0 or > 128 ||
             node.NodeId != node.NodeId.Trim() || node.NodeId.Any(static value => char.IsControl(value) || value is '/' or '\\')))
-            return (null, IdentifierUnavailableReason);
+            return IdentifierUnavailableReason;
         if (detail.Nodes.Any(static node => node.Outputs.Any(static output =>
             !IsSha256(output.PayloadSha256) || output.SourceArtifactIds.Count > 512) ||
             node.Inputs.Any(static input => !IsSha256(input.PayloadSha256)) ||
             node.CalibrationInputs.Any(static input => !IsSha256(input.PayloadSha256))))
-            return (null, IncompleteReason);
+            return IncompleteReason;
         var execution = detail.Execution;
         if (!IsSha256(execution.GraphRevisionId) || !IsSha256(execution.GraphDefinitionIdentitySha256) ||
             !IsSha256(execution.SharedPlanIdentitySha256) || !IsSha256(execution.LocalPlanIdentitySha256) ||
             detail.Nodes.Any(static node => !IsSha256(node.PlanSha256)))
-            return (null, IncompleteReason);
+            return IncompleteReason;
+        return null;
+    }
+
+    /// <summary>The manifest's bytes for a detail that passed <see cref="Validate"/>, whatever their length.</summary>
+    internal static byte[] Encode(ProcessingGraphExecutionDetail detail)
+    {
+        var execution = detail.Execution;
         // Free-text reasons, trigger references, lease owners, configurations and diagnostic objects
         // are deliberately excluded. Status strings originate in checked durable enum columns.
         var manifest = new
@@ -100,10 +191,7 @@ internal static class CameraAgentRunManifest
                 })
             })
         };
-        // The bounded store snapshot caps the input. Also cap the encoded result, including JSON escaping.
-        var payload = JsonSerializer.SerializeToUtf8Bytes(manifest, Json);
-        return payload.Length > ProcessingRunManifestBounds.MaximumBytes
-            ? (null, ProcessingRunManifestBounds.UnavailableReason) : (payload, null);
+        return JsonSerializer.SerializeToUtf8Bytes(manifest, Json);
     }
 
     private static IEnumerable<ManifestInput> CreateInputs(ProcessingGraphExecutionNodeState node)
@@ -116,8 +204,10 @@ internal static class CameraAgentRunManifest
                 input.ArtifactId, input.DescriptorSha256, input.PayloadSha256, input.OutputIdentitySha256, null);
         var ordinal = node.Inputs.Count == 0 ? 0 : node.Inputs.Max(static input => input.Ordinal) + 1;
         foreach (var master in node.CalibrationInputs)
-            yield return new(ordinal++, null, "CalibrationMaster", null, master.ArtifactId, null, master.PayloadSha256, null, master.Kind);
+            yield return new(ordinal++, null, CalibrationMasterKind, null, master.ArtifactId, null, master.PayloadSha256, null, master.Kind);
     }
+
+    private const string CalibrationMasterKind = "CalibrationMaster";
 
     private sealed record ManifestInput(int Ordinal, int? WindowPosition, string Kind, Guid? CaptureId,
         Guid ArtifactId, string? DescriptorSha256, string? PayloadSha256, string? OutputIdentitySha256, string? CalibrationKind);
