@@ -147,6 +147,41 @@ public sealed class EnvironmentalAssociationServiceTests
     }
 
     [TestMethod]
+    public async Task MultipleDurablePoliciesForConfiguredRainKindStillThrow()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var service = CreateService(store, [EnvironmentalObservationKind.RainState]);
+        var captureId = Guid.Parse("23000000-0000-0000-0000-000000000001");
+        var original = AssertSingle(await service.AssociateAsync(captureId, 9,
+            Epoch.AddSeconds(1), Epoch.AddSeconds(2), "rig-1", [EnvironmentalObservationKind.RainState],
+            CancellationToken.None).ConfigureAwait(false));
+        await store.SaveAssociationAsync(_root!, original with
+        {
+            PolicyIdentitySha256 = new string('B', 64),
+            AssociationIdentitySha256 = new string('C', 64)
+        }, CancellationToken.None).ConfigureAwait(false);
+
+        var exception = await Assert.ThrowsExactlyAsync<EnvironmentalObservationIdentityConflictException>(async () =>
+            await service.ReadCompletedAsync(captureId, 9, Epoch.AddSeconds(1), Epoch.AddSeconds(2), "rig-1",
+                [EnvironmentalObservationKind.RainState], CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual("Multiple durable environmental association policies satisfy the requested subset.", exception.Message);
+    }
+
+    [TestMethod]
+    public async Task RequestOutsideConfiguredKindPolicyStillThrows()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var service = CreateService(store, [EnvironmentalObservationKind.AirTemperature]);
+        var exception = await Assert.ThrowsExactlyAsync<EnvironmentalObservationIdentityConflictException>(async () =>
+            await service.ReadCompletedAsync(Guid.Parse("24000000-0000-0000-0000-000000000001"), 10,
+                Epoch.AddSeconds(1), Epoch.AddSeconds(2), "rig-1", [EnvironmentalObservationKind.RainState],
+                CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+
+        Assert.AreEqual("The requested environmental kinds are not part of the configured association policy.", exception.Message);
+    }
+
+    [TestMethod]
     public void AssociationLanePolicyUsesOnlyEnabledConfiguredDistinctSortedKinds()
     {
         var sources = new[]
