@@ -17,6 +17,14 @@ public sealed class EnvironmentalAssociationService(
     private static readonly string[] SourcePriority = ["Measured", "Imported", "Manual", "Derived", "Simulated"];
     private static readonly string[] QualityPriority = ["Good", "Suspect", "Unknown"];
 
+    internal async ValueTask EnsureCaptureAcquisitionReadyAsync(Guid captureId, Guid? acquisitionAttemptId,
+        CancellationToken cancellationToken)
+    {
+        var availability = await associations.ReadCaptureAvailabilityAsync(
+            options.Value.RawIngressRoot, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false);
+        if (availability.Pending) throw new EnvironmentalCaptureAcquisitionPendingException("Capture acquisition is still pending.");
+    }
+
     public async ValueTask<IReadOnlyList<LocalEnvironmentalCaptureAssociation>> AssociateAsync(
         Guid captureId,
         long captureSequence,
@@ -59,8 +67,9 @@ public sealed class EnvironmentalAssociationService(
         var additions = new List<LocalEnvironmentalCaptureAssociation>(expectedKinds.Length - persisted.Length);
         foreach (var kind in expectedKinds.Where(kind => !existingKinds.Contains(kind)))
         {
-            var candidates = await observations.ReadLocalCandidatesAsync(
-                root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<LocalEnvironmentalObservationRecord> candidates = captureAvailability.EvidenceMissing ? []
+                : await observations.ReadLocalCandidatesAsync(
+                    root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
             if (captureUnavailable.Count > 0 || options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
             {
                 var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);

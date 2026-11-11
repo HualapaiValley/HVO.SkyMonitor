@@ -109,7 +109,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
                     EnvironmentalAcquisitionTrigger.Periodic, clock.Now).ConfigureAwait(false)).Disposition);
                 if (restart && associateAfterPoll)
                 {
-                    await store.RetainLocalAsync(root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
+                    await store.RetainLocalAsync(root, clock.Now.AddDays(-31), 100, CancellationToken.None).ConfigureAwait(false);
                     Assert.AreEqual(2L, (await store.GetLocalSnapshotAsync(root, CancellationToken.None).ConfigureAwait(false)).StoredCount);
                 }
                 var late = (await association.AssociateAsync(captureId, 1, Epoch, Epoch.AddSeconds(20), null,

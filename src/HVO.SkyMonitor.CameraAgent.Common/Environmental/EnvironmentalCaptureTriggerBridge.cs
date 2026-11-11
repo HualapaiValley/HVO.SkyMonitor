@@ -32,6 +32,7 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         // Include other configured sources that may be ahead of this request at the global acquisition gate.
         var lease = TimeSpan.FromMilliseconds((long)configured.SourceTimeoutMilliseconds *
             (configured.QueueCapacity + 2) * configuredSources.Count) + TimeSpan.FromMinutes(1);
+        if (lease > TimeSpan.FromDays(configured.RetentionDays)) lease = TimeSpan.FromDays(configured.RetentionDays);
         foreach (var source in selected)
         {
             var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new { Id = id, SourceId = source.Id, source.Kind });

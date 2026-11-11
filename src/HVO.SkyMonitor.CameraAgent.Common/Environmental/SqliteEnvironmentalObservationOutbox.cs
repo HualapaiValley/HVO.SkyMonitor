@@ -1001,8 +1001,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             throw new ArgumentException("The environmental capture identity is invalid.");
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
-        if (acquisitionAttemptId is { } acquisitionId)
-            await BindCaptureAcquisitionAsync(root, acquisitionId, captureId, cancellationToken).ConfigureAwait(false);
+        if (acquisitionAttemptId is { } acquisitionId &&
+            !await TryBindCaptureAcquisitionAsync(root, acquisitionId, captureId, cancellationToken).ConfigureAwait(false))
+            return new([], [], false) { EvidenceMissing = true };
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         var sources = new List<string>();
@@ -1036,7 +1037,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                         unavailable.Add(source);
                 }
             }
-            if (sources.Count == 0) throw new InvalidDataException("Capture acquisition evidence is missing.");
+            if (sources.Count == 0) return new([], [], false) { EvidenceMissing = true };
         }
         else
         {
@@ -1058,6 +1059,12 @@ public sealed class SqliteEnvironmentalObservationOutbox(
 
     public async ValueTask BindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)
     {
+        if (!await TryBindCaptureAcquisitionAsync(root, acquisitionId, captureId, cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("Capture acquisition evidence is missing.");
+    }
+
+    private async ValueTask<bool> TryBindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)
+    {
         if (acquisitionId == Guid.Empty || captureId == Guid.Empty) throw new ArgumentException("Capture acquisition identities are invalid.");
         root = NormalizeRoot(root);
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
@@ -1074,7 +1081,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using (var reader = await check.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            if (reader.GetInt64(0) == 0) throw new InvalidDataException("Capture acquisition evidence is missing.");
+            if (reader.GetInt64(0) == 0) return false;
             if (reader.GetInt64(1) != 0) throw new EnvironmentalObservationIdentityConflictException("Capture acquisition is already bound to another capture.");
         }
         using var update = connection.CreateCommand();
@@ -1087,6 +1094,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         update.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>Settles interrupted capture operations during hosted initialization, before acquisition workers start.</summary>
@@ -2521,22 +2529,12 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using (var attempts = connection.CreateCommand())
         {
             attempts.Transaction = transaction;
-            // Bound capture history follows raw-capture retention. Unattributed attempts are ordinary diagnostics.
-            attempts.CommandText = rawIngressAttached
-                ? """
-                    DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
-                        SELECT attempt_id FROM environmental_acquisition_attempts AS attempt
-                        WHERE completed_unix_ms < $cutoff AND NOT EXISTS (
-                            SELECT 1 FROM raw_ingress.raw_captures AS capture
-                            WHERE capture.capture_id = replace(attempt.capture_id, '-', ''))
-                        ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
-                    """
-                : """
-                    DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
-                        SELECT attempt_id FROM environmental_acquisition_attempts
-                        WHERE completed_unix_ms < $cutoff AND capture_id IS NULL
-                        ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
-                    """;
+            attempts.CommandText = """
+                DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
+                    SELECT attempt_id FROM environmental_acquisition_attempts
+                    WHERE completed_unix_ms < $cutoff
+                    ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
+                """;
             attempts.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
             attempts.Parameters.AddWithValue("$limit", maximumResults);
             await attempts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -2546,22 +2544,11 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             commands.Transaction = transaction;
             commands.CommandText = """
                 DELETE FROM environmental_on_demand_commands WHERE idempotency_key IN (
-                    SELECT idempotency_key FROM environmental_on_demand_commands AS command
+                    SELECT idempotency_key FROM environmental_on_demand_commands
                     WHERE (status = 'completed' OR (status = 'running' AND lease_expires_unix_ms < $now))
                         AND updated_unix_ms < $cutoff
-                """ + (rawIngressAttached
-                ? """
-                        AND (idempotency_key < '__capture-before:' OR idempotency_key >= '__capture-before;' OR
-                            (actor_id != 'capture-before' AND NOT EXISTS (
-                                SELECT 1 FROM raw_ingress.raw_captures AS capture WHERE capture.capture_id = command.actor_id)) OR
-                            (actor_id = 'capture-before' AND NOT EXISTS (
-                                SELECT 1 FROM raw_ingress.raw_captures AS capture WHERE
-                                    replace(json_extract(CAST(capture.manifest_json AS TEXT), '$.descriptor.cycleEvidence.acquisitionAttemptId'), '-', '')
-                                        = substr(command.idempotency_key, 18, 32))))
-                """
-                : """
-                        AND (idempotency_key < '__capture-before:' OR idempotency_key >= '__capture-before;')
-                """) + "ORDER BY updated_unix_ms, idempotency_key LIMIT $limit);";
+                    ORDER BY updated_unix_ms, idempotency_key LIMIT $limit);
+                """;
             commands.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
             commands.Parameters.AddWithValue("$now", nowUtc.ToUnixTimeMilliseconds());
             commands.Parameters.AddWithValue("$limit", maximumResults);

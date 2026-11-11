@@ -103,7 +103,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     private async ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceWithBudgetAsync(
         string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
         int? acquisitionBudgetMilliseconds, long? captureSequence, Guid? captureId, CancellationToken cancellationToken,
-        bool joinBusy = false)
+        bool joinBusy = false, Func<EnvironmentalAcquisitionReceipt, Task>? settleFirstReceipt = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var acquisitionBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -148,7 +148,11 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         if (coalesced)
         {
             if (joined is not null)
-                return (await joined.WaitAsync(cancellationToken).ConfigureAwait(false)) with { Trigger = trigger };
+            {
+                var joinedReceipt = (await AwaitCaptureDependencyAsync(joined, cancellationToken).ConfigureAwait(false)) with { Trigger = trigger };
+                if (settleFirstReceipt is not null) await settleFirstReceipt(joinedReceipt).ConfigureAwait(false);
+                return joinedReceipt;
+            }
             var receipt = Receipt(
                 sourceId, trigger, acquisitionBudgetMilliseconds.HasValue ? EnvironmentalAcquisitionDisposition.TimedOut : EnvironmentalAcquisitionDisposition.Coalesced,
                 acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started);
@@ -173,7 +177,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             LogReceipt(source.Descriptor, first);
             await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
-            if (acquisitionBudgetMilliseconds.HasValue)
+            if (settleFirstReceipt is not null) await settleFirstReceipt(first).ConfigureAwait(false);
+            if (acquisitionBudgetMilliseconds.HasValue || joinBusy)
             {
                 PendingAcquisition? deferred;
                 lock (_pendingGate)
@@ -260,16 +265,25 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             ?? throw new InvalidOperationException("Capture acquisition requires durable command storage.");
         await Task.WhenAll(acquisition.Claims.Select(async claim =>
         {
+            var settlementAttempted = false;
+            Exception? settlementError = null;
+            async Task SettleFirstAsync(EnvironmentalAcquisitionReceipt first)
+            {
+                settlementAttempted = true;
+                try { await CompleteCaptureReceiptAsync(commands, claim, first).ConfigureAwait(false); }
+                catch (Exception exception) { settlementError = exception; }
+            }
             EnvironmentalAcquisitionReceipt receipt;
             try
             {
                 if (claim.InFlight is { } dependency)
                 {
                     _telemetry?.RecordTrigger(EnvironmentalAcquisitionTrigger.BeforeCapture);
-                    receipt = (await dependency.WaitAsync(cancellationToken).ConfigureAwait(false)) with { Trigger = EnvironmentalAcquisitionTrigger.BeforeCapture };
+                    receipt = (await AwaitCaptureDependencyAsync(dependency, cancellationToken).ConfigureAwait(false)) with { Trigger = EnvironmentalAcquisitionTrigger.BeforeCapture };
                 }
                 else receipt = await AcquireSourceWithBudgetAsync(claim.Source.Id, EnvironmentalAcquisitionTrigger.BeforeCapture,
-                    observedAtUtc, budgetMilliseconds, null, null, cancellationToken, joinBusy: true).ConfigureAwait(false);
+                    observedAtUtc, budgetMilliseconds, null, null, cancellationToken, joinBusy: true,
+                    settleFirstReceipt: SettleFirstAsync).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception)
@@ -278,8 +292,42 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 receipt = new(claim.Source.Id, EnvironmentalAcquisitionTrigger.BeforeCapture,
                     EnvironmentalAcquisitionDisposition.Missing, "capture-dependency-unavailable", null, now, now);
             }
-            await commands.CompleteOnDemandAsync(_root, claim.Key, claim.LeaseToken, receipt, cancellationToken).ConfigureAwait(false);
+            if (!settlementAttempted) await SettleFirstAsync(receipt).ConfigureAwait(false);
+            if (settlementError is not null) throw new IOException("Capture acquisition receipt could not be settled.", settlementError);
         })).ConfigureAwait(false);
+    }
+
+    private static async Task<EnvironmentalAcquisitionReceipt> AwaitCaptureDependencyAsync(
+        Task<EnvironmentalAcquisitionReceipt> dependency, CancellationToken cancellationToken)
+    {
+        try { return await dependency.WaitAsync(cancellationToken).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && dependency.IsCompletedSuccessfully)
+        {
+            return await dependency.ConfigureAwait(false);
+        }
+    }
+
+    private async Task CompleteCaptureReceiptAsync(IEnvironmentalOnDemandCommandStore commands,
+        EnvironmentalCaptureSourceClaim claim, EnvironmentalAcquisitionReceipt receipt)
+    {
+        // A known result is settled during bounded shutdown grace, before unrelated source work can drain.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await commands.CompleteOnDemandAsync(_root, claim.Key, claim.LeaseToken, receipt, deadline.Token).ConfigureAwait(false);
+                return;
+            }
+            catch (IOException) when (attempt < 2)
+            {
+                await Task.Delay(50, deadline.Token).ConfigureAwait(false);
+            }
+            catch (SqliteException exception) when (attempt < 2 && exception.SqliteErrorCode is 5 or 6 or 10)
+            {
+                await Task.Delay(50, deadline.Token).ConfigureAwait(false);
+            }
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

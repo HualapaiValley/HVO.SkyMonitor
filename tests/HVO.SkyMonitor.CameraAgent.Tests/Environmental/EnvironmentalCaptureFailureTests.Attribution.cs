@@ -9,6 +9,7 @@ using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
@@ -70,8 +71,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
             fixture.Clock.Now = Epoch.AddSeconds(40);
             Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, (await fixture.Coordinator.AcquireSourceAsync("sqm",
                 EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).ConfigureAwait(false)).Disposition);
-            // Retention must preserve both bound receipts and the raw-publication / binding restart window.
-            await fixture.Store.RetainLocalAsync(fixture.Root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
+            // Recent receipts survive retention in both the bound and raw-publication / binding restart window.
+            await fixture.Store.RetainLocalAsync(fixture.Root, fixture.Clock.Now.AddDays(-31), 100, CancellationToken.None).ConfigureAwait(false);
             await fixture.StopAsync().ConfigureAwait(false);
             if (restart) fixture.Reopen();
             var later = await fixture.AssociateAsync(descriptorB.Capture.CaptureId, descriptorB.Capture.CaptureSequence,
@@ -203,9 +204,12 @@ public sealed partial class EnvironmentalCaptureFailureTests
         private ServiceProvider provider = null!;
         private EnvironmentalAcquisitionTelemetry telemetry = null!;
         private IOptions<CameraAgentHostOptions> options = null!;
+        internal IOptions<CameraAgentHostOptions> HostOptions => options;
         private bool stopped;
+        private int completionAttempts;
+        internal int CompletionAttempts => Volatile.Read(ref completionAttempts);
 
-        internal static async Task<AttributionFixture> CreateAsync(int budget, int queueCapacity = 64)
+        internal static async Task<AttributionFixture> CreateAsync(int budget, int queueCapacity = 64, int completionFailures = 0)
         {
             var fixture = new AttributionFixture();
             fixture.Store = new(fixture.Clock);
@@ -235,8 +239,25 @@ public sealed partial class EnvironmentalCaptureFailureTests
                 }
             });
             fixture.provider = new ServiceCollection().AddSingleton<IEnvironmentalDevice>(fixture.Device).BuildServiceProvider();
+            IEnvironmentalAcquisitionStateStore acquisitionState = fixture.Store;
+            if (completionFailures > 0)
+            {
+                var state = new Mock<IEnvironmentalAcquisitionStateStore>();
+                state.Setup(value => value.RecordAttemptAsync(It.IsAny<string>(), It.IsAny<EnvironmentalSourceDescriptor>(),
+                    It.IsAny<EnvironmentalAcquisitionReceipt>(), It.IsAny<long?>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
+                    .Returns((string root, EnvironmentalSourceDescriptor descriptor, EnvironmentalAcquisitionReceipt receipt,
+                        long? sequence, Guid? capture, CancellationToken token) =>
+                        fixture.Store.RecordAttemptAsync(root, descriptor, receipt, sequence, capture, token));
+                state.As<IEnvironmentalOnDemandCommandStore>().Setup(value => value.CompleteOnDemandAsync(It.IsAny<string>(),
+                    It.IsAny<string>(), It.IsAny<string>(), It.IsAny<EnvironmentalAcquisitionReceipt>(), It.IsAny<CancellationToken>()))
+                    .Returns((string root, string key, string lease, EnvironmentalAcquisitionReceipt receipt, CancellationToken token) =>
+                        Interlocked.Increment(ref fixture.completionAttempts) <= completionFailures
+                            ? ValueTask.FromException(new IOException("scripted transient completion failure"))
+                            : fixture.Store.CompleteOnDemandAsync(root, key, lease, receipt, token));
+                acquisitionState = state.Object;
+            }
             fixture.Coordinator = new(new(fixture.provider, EnvironmentalAdapterPipelineTests.Registrations()),
-                new Publisher(fixture.Store, fixture.Root), new LocationStore(), fixture.options, fixture.Clock, fixture.Store);
+                new Publisher(fixture.Store, fixture.Root), new LocationStore(), fixture.options, fixture.Clock, acquisitionState);
             await fixture.Coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).ConfigureAwait(false);
             await fixture.Store.UpdateSourceScheduleAsync(fixture.Root, source.ToDescriptor(), Epoch.AddDays(1), CancellationToken.None).ConfigureAwait(false);
             fixture.telemetry = new();

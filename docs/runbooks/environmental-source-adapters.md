@@ -258,21 +258,25 @@ raw capture. It is omitted for legacy captures, preserving their serialized form
 No attempt is attributed to a capture by its timestamp or by the latest source row.
 
 A busy request follows the exact in-flight read: success leaves that capture
-available, while failure/missing/timeout fences its older readings. With a zero
-before-capture budget, work remains on the bounded hosted queue and may finish
-after exposure starts. Pending work retries the association lane without storing
-a final Missing association. Queue refusal records an explicit unavailable result.
-Host cancellation leaves durable pending work; startup marks interrupted capture
-operations unavailable. Independent on-demand operations retain their own leases.
-Capture receipts follow raw-capture retention independently of the 10,000-entry
-operator command allowance; neither pool consumes the other's admission capacity.
+available, while failure/missing/timeout fences its older readings. With any
+before-capture budget, queued work may finish after exposure starts; a positive
+budget bounds the caller's wait and the eventual device read, not queue admission.
+Pending work defers the association lane without consuming failure attempts or
+repeating after-capture reads. Queue refusal records an explicit unavailable result.
+Known capture results settle before unrelated coalesced work drains, including
+during bounded shutdown grace. Transient completion writes retry up to three times
+within 15 seconds. Unsettled work remains pending only until its receipt lease
+expires, then becomes unavailable; startup also marks interrupted work unavailable.
+Independent on-demand operations retain their own leases and admission allowance.
 
-Completed receipts remain attached to their capture across later polls and restart.
-Association binds the retained token to the immutable raw capture ID; attempts and
-operations needed by retained raw captures survive cleanup. Ordinary unattributed
-attempt diagnostics expire without scanning environmental fact JSON. Legacy
-explicit capture IDs remain readable; unattributed legacy history is never guessed
-into a new capture. Completed associations remain immutable. The SQM interval/gap
+Capture receipts and all acquisition-attempt diagnostics expire according to
+`RetentionDays`, independently of retained raw-capture rows. Capture leases never
+exceed that retention period. Expiry uses receipt/attempt timestamps without
+parsing raw manifests. An unassociated capture whose receipt has expired or is
+missing reports unavailable evidence, even if other associations still pin old
+facts. Completed associations remain immutable. Association binds retained tokens
+to raw capture IDs; explicit legacy capture IDs remain readable and anonymous
+legacy history is never guessed into a capture. The SQM interval/gap
 policy and a strict total deadline under SQLite contention remain in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a

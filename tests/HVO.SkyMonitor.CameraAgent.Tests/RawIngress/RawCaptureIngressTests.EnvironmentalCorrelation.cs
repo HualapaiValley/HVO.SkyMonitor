@@ -1,5 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 
@@ -32,7 +35,10 @@ public sealed partial class RawCaptureIngressTests
         finally { Directory.Delete(root, true); }
     }
 
-    internal static async Task<RawCaptureReceipt> PersistEnvironmentalCaptureAsync(string root, Guid? acquisitionId, DateTimeOffset start)
+    internal static CameraModuleConfig EnvironmentalConfiguration() => CreateConfiguration();
+
+    internal static async Task<RawCaptureReceipt> PersistEnvironmentalCaptureAsync(string root, Guid? acquisitionId, DateTimeOffset start,
+        EnvironmentalAcquisitionOptions? acquisition = null)
     {
         var config = CreateConfiguration();
         var source = CreateEnrichedSubmission(start, [1, 2, 3, 4]);
@@ -51,7 +57,13 @@ public sealed partial class RawCaptureIngressTests
                 IngressHandoffStartedUtc = end
             }
         };
-        using var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System), timeProvider: new FixedTimeProvider(end.AddSeconds(1)));
+        var clock = new FixedTimeProvider(end.AddSeconds(1));
+        var state = new RawIngressState(clock);
+        using var ingress = acquisition is null ? CreateIngress(root, state, timeProvider: clock)
+            : new RawCaptureIngress(Options.Create(new CameraAgentHostOptions
+            { RawIngressRoot = root, RawIngressReserveBytes = 0, EnvironmentalAcquisition = acquisition }),
+                new FixedCapacityProvider(long.MaxValue), state, clock, new RawIngressTelemetry(state),
+                NullLogger<RawCaptureIngress>.Instance, new NullRawIngressFaultInjector());
         return (await ingress.AcceptAsync(config, submission, CancellationToken.None).ConfigureAwait(false))!;
     }
 }

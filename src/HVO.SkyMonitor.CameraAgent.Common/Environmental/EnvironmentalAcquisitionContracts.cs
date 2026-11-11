@@ -73,7 +73,10 @@ public sealed record EnvironmentalCaptureAcquisition(Guid Id, IReadOnlyList<Envi
 }
 
 public sealed record EnvironmentalCaptureAvailability(
-    IReadOnlyList<string> Sources, IReadOnlyList<string> UnavailableSources, bool Pending);
+    IReadOnlyList<string> Sources, IReadOnlyList<string> UnavailableSources, bool Pending)
+{
+    public bool EvidenceMissing { get; init; }
+}
 
 public sealed class EnvironmentalCaptureAcquisitionPendingException : Exception
 {
