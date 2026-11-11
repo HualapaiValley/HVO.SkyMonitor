@@ -283,9 +283,14 @@ can drain even when no observations are produced. Schema 3 upgrades transactiona
 to schema 4 by adding retention indexes after validating the prior schema; fact
 and receipt payloads remain unchanged. The image declares writes 4 / reads 3–4.
 The earlier strict schema-3 reader cannot open schema 4; downgrade uses the paired
-SQLite checkpoint already required by the image's state boundary, recorded as a
-three-object snapshot-rollback exception. Frozen previous-release SQL images stay
-unchanged.
+SQLite checkpoint selected before candidate startup by the installer-recognized
+minimum-compatible-revision boundary. That boundary advances from
+`ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c` to
+`419f45b0fd61ae2caba2654b71ff1853080ab693` for this transition; the numeric
+`state-contracts` label alone does not select a checkpoint. The three-object
+snapshot-rollback exception records the actual schema-3 image labels from
+`5f5d253dd38308b8e62be9a1e32194dd675d0b60`. Frozen previous-release SQL images
+stay unchanged.
 
 An unassociated capture whose entire receipt set has expired or is missing reports
 unavailable evidence, even if other associations still pin old facts. Completed
