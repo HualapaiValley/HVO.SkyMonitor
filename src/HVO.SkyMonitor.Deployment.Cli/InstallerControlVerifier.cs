@@ -62,6 +62,9 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                 .ConfigureAwait(false);
             if (!Drained(drained)) throw new InstallerException("The lifecycle boundary is not drained.");
             receipt = receipt with { PausedVersion = drained.CaptureVersion, DrainedCaptureSequence = drained.CaptureSequence };
+            // Journal every field before an exchange publishes it. CameraAgent accepts only successors that keep the pause
+            // version, so an installer interrupted after an unjournaled publication could never settle that projection.
+            await persist(receipt).ConfigureAwait(false);
             if (receipt.Request.Kind == CameraAgentControlKind.Drain)
             {
                 // A claimed cancellation is observed at the same post-drain boundary as a Restart's. A standalone Drain never
@@ -81,6 +84,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             var verificationStarted = timeProvider.GetTimestamp();
             var verificationDeadline = timeProvider.GetUtcNow() + _budgets.Verify;
             receipt = receipt with { VerificationDeadlineUtc = verificationDeadline };
+            await persist(receipt).ConfigureAwait(false); // CameraAgent pins the deadline once published.
             // Claim cancellation before committing to the potentially ambiguous restart effect.
             ThrowIfCancelled(await ReadAsync(receipt, cancellationToken).ConfigureAwait(false));
             cancellationToken.ThrowIfCancellationRequested();
@@ -101,8 +105,10 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             }
             catch (InstallerControlRefusalException)
             {
-                return await FinishExecutionAsync(receipt with { RestartRefused = true }, CameraAgentControlPhase.Failed,
-                    "restart.refused").ConfigureAwait(false);
+                // The definite refusal authorizes the owned-pause restore; journal it before the restore publishes it.
+                receipt = receipt with { RestartRefused = true };
+                await persist(receipt).ConfigureAwait(false);
+                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.refused").ConfigureAwait(false);
             }
             catch (HttpRequestException)
             {

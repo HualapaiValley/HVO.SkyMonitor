@@ -53,9 +53,11 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    its pause, all four accepted queue families must finish: raw ingress, capture
    lanes, processing and artifact delivery (outbox) must each report zero pending
    and zero leased work, from fresh observations, within the two-minute monotonic
-   bound of step 2. A standalone Drain never resumes capture, so every outcome
-   below leaves capture paused until an explicit, authorized resume, and none
-   purges accepted work:
+   bound of step 2. A standalone Drain never resumes capture and never purges
+   accepted work. It ends with one of these terminal codes.
+
+   Once its pause has been issued, capture stays paused until an explicit,
+   authorized resume:
    - **Succeeded** `lifecycle.drained-paused`: every family reached zero and no
      cancellation was recorded by the post-drain boundary.
    - **Failed** `drain.timeout`: the two-minute bound elapsed before every family
@@ -70,12 +72,34 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
      same post-drain boundary where a Restart checks it before restarting. The
      receipt records who cancelled, when and why. Cancellation does not restore
      the prior running state.
-   - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: the
-     drain finished but the installer could not read that post-drain boundary,
-     so it does not report the drain as Succeeded.
 
-   A cancellation recorded after that boundary is too late to change the
-   outcome: the receipt stays `lifecycle.drained-paused`, and Recent control
+   Before any pause, capture is left as it was:
+   - **Cancelled** `lifecycle.unclaimed-cancelled`: the owner cancelled the
+     request before the installer claimed it. If the installer's claim raced that
+     cancellation, its own journal records `lifecycle.claim-refused` for the same
+     request, and Recent control receipts keeps the CameraAgent record.
+   - **Failed** `lifecycle.capture-conflict`: capture was not initialized, its
+     capture-control version no longer matched the request, or it was neither
+     Running nor Paused.
+   - **Failed** `lifecycle.installer-busy`: another installer deployment
+     operation held the deployment lock when the worker would have claimed it.
+
+   On either side of the pause, check capture state before resuming:
+   - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: an
+     exchange with CameraAgent timed out or failed. When the drain itself had
+     finished, this was the post-drain boundary read, so the installer does not
+     report the drain as Succeeded.
+   - **Cancelled** `lifecycle.cancelled-check-capture`: the installer process was
+     stopped during the operation. This is not an owner cancellation.
+   - **Failed** `lifecycle.installer-interrupted` or
+     `lifecycle.projection-orphaned`: an interrupted worker or a projection with
+     no installer journal was settled; see the recovery sections below.
+
+   The installer journals the drained boundary before publishing it to
+   CameraAgent, so an installer interrupted at that point settles as
+   `lifecycle.installer-interrupted` instead of having its receipt refused.
+   A cancellation recorded after the post-drain boundary is too late to change
+   the outcome: the receipt stays `lifecycle.drained-paused`, and Recent control
    receipts shows the late cancellation beside it. Pause itself remains the
    existing admission-only operation: it does not wait for every accepted
    processing/delivery queue to empty.

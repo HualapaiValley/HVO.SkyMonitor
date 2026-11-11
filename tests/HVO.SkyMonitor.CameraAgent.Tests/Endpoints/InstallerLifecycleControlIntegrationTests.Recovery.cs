@@ -184,6 +184,71 @@ public sealed class InstallerLifecycleRecoveryIntegrationTests
     }
 
     [TestMethod]
+    [DataRow(CameraAgentControlKind.Drain)]
+    [DataRow(CameraAgentControlKind.Restart)]
+    public async Task InstallerCrashRightAfterPublishingTheDrainedBoundarySettlesWithoutQuarantine(CameraAgentControlKind kind)
+    {
+        var fixture = new Fixture(false);
+        await using var owned = fixture.ConfigureAwait(false);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        var path = Path.Combine(fixture.Root.FullName, "installer.json");
+        var journal = new InstallerControlJournal(path);
+        await journal.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", journal.WorkerId, fixture.Handler);
+        await client.ExchangeAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var queued = await fixture.Controls.SubmitAsync(new CameraAgentControlRequest(Guid.NewGuid(), kind, "owner", "maintenance",
+            fixture.Capture.Snapshot.Version, DateTimeOffset.UtcNow), CancellationToken.None).ConfigureAwait(false);
+        // The last pre-stop publication: the drained boundary for a Drain, the verification deadline for a Restart. CameraAgent
+        // accepts it; the installer then dies before writing anything else.
+        var published = false;
+        fixture.BeforeExchange = receipt =>
+        {
+            if (receipt is { Phase: CameraAgentControlPhase.Draining } && (kind == CameraAgentControlKind.Drain
+                    ? receipt.PausedVersion is not null : receipt.VerificationDeadlineUtc is not null))
+                published = true;
+            return Task.CompletedTask;
+        };
+        Task CrashAfterPublication(CameraAgentControlReceipt receipt) =>
+            published ? throw new IOException("Simulated installer crash.") : journal.SaveAsync(receipt);
+        var crash = await Assert.ThrowsAsync<IOException>(() => new InstallerControlVerifier(client, CrashAfterPublication, TimeProvider.System)
+            .ExecuteAsync(queued, CancellationToken.None)).ConfigureAwait(false);
+        Assert.AreEqual("Simulated installer crash.", crash.Message);
+        Assert.IsTrue(published);
+        var stranded = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.AreEqual(CameraAgentControlPhase.Draining, stranded.Phase);
+        Assert.IsNotNull(stranded.PausedVersion);
+        Assert.IsTrue(fixture.Controls.AdmissionHeld);
+
+        // A restarted installer worker settles from its durable journal; CameraAgent must accept that terminal receipt.
+        fixture.BeforeExchange = null;
+        var restarted = new InstallerControlJournal(path);
+        await restarted.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        var durableAtCrash = restarted.Receipts.Single();
+        var messages = new List<string>();
+        await new InstallerControlWorker(client, restarted, _ => Task.FromResult<IDisposable>(new TestDeploymentLease()), TimeProvider.System, messages.Add)
+            .RunAsync(true, CancellationToken.None).ConfigureAwait(false);
+
+        var terminal = restarted.Receipts.Single();
+        Assert.AreEqual("lifecycle.installer-interrupted", terminal.Events[^1].Code);
+        Assert.IsEmpty(restarted.Refused, "Settlement must not be quarantined: " + string.Join(" | ", messages));
+        Assert.IsEmpty(restarted.Unpublished);
+        Assert.AreEqual(stranded.PausedVersion, durableAtCrash.PausedVersion, "The journal must already hold what CameraAgent retained.");
+        Assert.AreEqual(stranded.VerificationDeadlineUtc, durableAtCrash.VerificationDeadlineUtc);
+        var projected = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.AreEqual(CameraAgentControlPhase.Failed, projected.Phase);
+        Assert.AreEqual("lifecycle.installer-interrupted", projected.Events[^1].Code);
+        Assert.IsFalse(fixture.Controls.AdmissionHeld);
+        Assert.AreEqual(0, fixture.RestartCalls);
+        // A standalone Drain stays paused; a pre-stop Restart restores its owned pause.
+        Assert.AreEqual(kind == CameraAgentControlKind.Restart, terminal.ResumeConfirmed);
+        Assert.AreEqual(kind == CameraAgentControlKind.Restart ? CaptureAdmissionState.Running : CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+        if (kind == CameraAgentControlKind.Drain)
+            await fixture.Capture.ResumeAsync("explicit-resume-after-recovery", fixture.Capture.Snapshot.Version, "owner", "checked receipt",
+                CancellationToken.None).ConfigureAwait(false);
+        using var admitted = await fixture.Capture.EnterAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task CancelledClaimRaceIsAcknowledgedWithoutPinningRefusedJournalEvidence()
     {
         var fixture = new Fixture(false);

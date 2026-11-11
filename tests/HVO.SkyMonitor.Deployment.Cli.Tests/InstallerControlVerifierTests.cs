@@ -160,6 +160,39 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
+    [DataRow(CameraAgentControlKind.Drain)]
+    [DataRow(CameraAgentControlKind.Restart)]
+    public async Task DrainedBoundaryAndVerificationDeadline_AreJournaledBeforeAnyExchangePublishesThem(CameraAgentControlKind kind)
+    {
+        using var fixture = new Fixture(kind);
+        // What the journal held at the moment each crash-sensitive field first reached CameraAgent.
+        var boundary = new List<(CameraAgentControlReceipt Published, CameraAgentControlReceipt Journal)>();
+        var deadline = new List<(CameraAgentControlReceipt Published, CameraAgentControlReceipt Journal)>();
+        fixture.Client.OnExchange = published =>
+        {
+            if (published is null) return;
+            if (boundary.Count == 0 && published.PausedVersion is not null) boundary.Add((published, fixture.ReadDurable()));
+            if (deadline.Count == 0 && published.VerificationDeadlineUtc is not null) deadline.Add((published, fixture.ReadDurable()));
+        };
+        var receipt = await fixture.RunAsync();
+
+        Assert.AreEqual(CameraAgentControlPhase.Succeeded, receipt.Phase);
+        Assert.HasCount(1, boundary, "The drained boundary must be published to CameraAgent.");
+        Assert.AreEqual(CameraAgentControlPhase.Draining, boundary[0].Published.Phase, "The drained boundary is first published by the post-drain read.");
+        Assert.AreEqual(8L, boundary[0].Journal.PausedVersion, "PausedVersion must be journaled before CameraAgent can retain it.");
+        Assert.AreEqual(boundary[0].Published.PausedVersion, boundary[0].Journal.PausedVersion);
+        Assert.AreEqual(boundary[0].Published.DrainedCaptureSequence, boundary[0].Journal.DrainedCaptureSequence);
+        if (kind == CameraAgentControlKind.Restart)
+        {
+            Assert.HasCount(1, deadline, "A Restart publishes its verification deadline before the stop call.");
+            Assert.AreEqual(CameraAgentControlPhase.Draining, deadline[0].Published.Phase, "The deadline is first published by the pre-stop cancellation read.");
+            Assert.IsNotNull(deadline[0].Journal.VerificationDeadlineUtc, "The verification deadline must be journaled before CameraAgent can retain it.");
+            Assert.AreEqual(deadline[0].Published.VerificationDeadlineUtc, deadline[0].Journal.VerificationDeadlineUtc);
+        }
+        else Assert.IsEmpty(deadline, "A standalone Drain has no verification deadline.");
+    }
+
+    [TestMethod]
     public async Task NeverReturns_WritesTerminalFailureInInstallerJournalWithNoCameraAgentReceiptDelivery()
     {
         using var fixture = new Fixture();
@@ -424,6 +457,10 @@ public sealed class InstallerControlVerifierTests
         internal FakeClient Client { get; } = new();
         private readonly CameraAgentControlReceipt _queued;
 
+        // Every exchange publication that did not match the journal at that moment. CameraAgent accepts only a successor
+        // that keeps each published field, so a crash after an unjournaled publication strands the projection.
+        internal List<string> PublicationViolations { get; } = [];
+
         internal Fixture(CameraAgentControlKind kind = CameraAgentControlKind.Restart)
         {
             _queued = Queued(kind);
@@ -432,15 +469,36 @@ public sealed class InstallerControlVerifierTests
                 var durable = JsonSerializer.Deserialize(File.ReadAllText(JournalPath), DeploymentJsonContext.Default.InstallerControlJournalState)!;
                 Assert.AreEqual(phase, durable.Receipts.Single().Phase, "The durable boundary must precede the effect.");
             };
+            Client.BeforePublish = published =>
+            {
+                var durable = ReadDurable();
+                if (!SameEvidence(durable, published))
+                    PublicationViolations.Add($"{published.Phase}/{published.Events[^1].Code} published {Describe(published)} while the journal held {Describe(durable)}");
+            };
         }
+
+        internal CameraAgentControlReceipt ReadDurable() =>
+            JsonSerializer.Deserialize(File.ReadAllText(JournalPath), DeploymentJsonContext.Default.InstallerControlJournalState)!.Receipts.Single();
+
+        private static bool SameEvidence(CameraAgentControlReceipt durable, CameraAgentControlReceipt published) =>
+            durable with { Events = Array.Empty<CameraAgentControlEvent>() } == published with { Events = Array.Empty<CameraAgentControlEvent>() } &&
+            durable.Events.SequenceEqual(published.Events);
+
+        private static string Describe(CameraAgentControlReceipt receipt) =>
+            $"[phase={receipt.Phase} events={receipt.Events.Count} paused={receipt.PausedVersion} sequence={receipt.DrainedCaptureSequence} " +
+            $"deadline={receipt.VerificationDeadlineUtc:O} restartRequested={receipt.RestartRequested} refused={receipt.RestartRefused} " +
+            $"notIssued={receipt.RestartNotIssued} resumeRequested={receipt.ResumeRequested} resumeConfirmed={receipt.ResumeConfirmed} " +
+            $"verified={receipt.VerifiedProcessId} cancelled={receipt.Cancellation is not null}]";
 
         internal async Task<CameraAgentControlReceipt> RunAsync(InstallerControlBudgets? budgets = null, TimeProvider? clock = null,
             CancellationToken cancellationToken = default)
         {
             var journal = new InstallerControlJournal(JournalPath);
             await journal.SaveAsync(_queued);
-            return await new InstallerControlVerifier(Client, journal.SaveAsync, clock ?? TimeProvider.System, budgets ?? Budgets)
+            var receipt = await new InstallerControlVerifier(Client, journal.SaveAsync, clock ?? TimeProvider.System, budgets ?? Budgets)
                 .ExecuteAsync(_queued, cancellationToken).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+            Assert.IsEmpty(PublicationViolations, "Journal each receipt before an exchange publishes it: " + string.Join(" | ", PublicationViolations));
+            return receipt;
         }
 
         internal async Task<CameraAgentControlReceipt> ReloadAsync()
@@ -481,6 +539,7 @@ public sealed class InstallerControlVerifierTests
         internal Action? AfterDrain;
         internal Action<CameraAgentControlPhase>? BeforeEffect;
         internal Action<CameraAgentControlReceipt?>? OnExchange;
+        internal Action<CameraAgentControlReceipt>? BeforePublish;
         internal readonly List<CameraAgentControlPhase?> Exchanged = [];
         // Mirrors CameraAgentControlStore: a recorded cancellation is retained on the projection the exchange returns.
         internal CameraAgentControlCancellation? Cancellation;
@@ -498,6 +557,7 @@ public sealed class InstallerControlVerifierTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Exchanged.Add(receipt?.Phase);
+            if (receipt is not null) BeforePublish?.Invoke(receipt);
             OnExchange?.Invoke(receipt);
             if (receipt?.Phase == CameraAgentControlPhase.Restarting && FailRestartingPublication is { } timeout && !_publicationFailed)
             {
