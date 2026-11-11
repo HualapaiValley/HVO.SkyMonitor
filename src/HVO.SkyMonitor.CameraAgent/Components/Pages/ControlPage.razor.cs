@@ -21,8 +21,6 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     private const string TransferReasonPrefix = "transferred from revision ";
     private const string CaptureTriggerId = "control-capture";
     private const string RestartTriggerId = "control-restart";
-    private const string DrainUnavailableReason =
-        "The authenticated installer lifecycle worker is not registered or its heartbeat expired. Pause and resume remain available.";
     private const string UpgradeUnavailableReason =
         "Upgrade, rollback and reinstall run through the installer: hvo-sky-install cameraagent upgrade, rollback or reinstall.";
     private const string PurgeUnavailableReason =
@@ -35,6 +33,22 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     private Task _lifecycleRefresh = Task.CompletedTask;
     private bool CanDrain => _lifecycle?.StopPending != true && _lifecycle?.Available == true && _view is not null &&
         CaptureState is "Running" or "Paused" && !_lifecycle.Receipts.Any(item => !item.IsTerminal);
+
+    private string? DrainUnavailableReason => _lifecycle?.StopPending == true
+        ? "A restart stop is still pending in this process. Wait for CameraAgent to restart."
+        : _lifecycle?.Receipts.Any(item => !item.IsTerminal) == true
+        ? "An installer lifecycle request is active. Wait for its terminal receipt before requesting another drain."
+        : _lifecycle is null
+        ? "Installer lifecycle availability could not be read. Refresh to try again."
+        : !_lifecycle.Available
+        ? "The authenticated installer lifecycle worker is not registered or its heartbeat expired. Pause and resume remain available."
+        : _view is null
+        ? "The capture state could not be read. Refresh to try again."
+        : CaptureState is not ("Running" or "Paused")
+        ? "Capture must be Running or Paused before requesting a drain."
+        : _submitting
+        ? "A control request is being submitted. Wait for it to finish."
+        : null;
     private PendingControl? _pending;
     private StatusMessage? _message;
     private string _reasonInput = string.Empty;
