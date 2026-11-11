@@ -52,7 +52,8 @@ hyg44_is_supported_package_version() {
 }
 
 # Writes the schema-3 database for one verified decompressed source. The SQL is the whole transformation
-# recipe for preprocessing version 4; any change to it is a new preprocessing version, never a new revision.
+# recipe for preprocessing version 4. A change that changes output bytes requires a new preprocessing version;
+# a serializer-setting pin that reproduces the approved bytes does not.
 hyg44_build_database() {
     local csv="$1"
     local database="$2"

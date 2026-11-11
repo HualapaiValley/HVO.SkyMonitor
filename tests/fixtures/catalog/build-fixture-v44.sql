@@ -1,5 +1,6 @@
 .bail on
 PRAGMA page_size = 4096;
+PRAGMA secure_delete = ON;
 PRAGMA journal_mode = DELETE;
 PRAGMA synchronous = OFF;
 PRAGMA user_version = 3;
