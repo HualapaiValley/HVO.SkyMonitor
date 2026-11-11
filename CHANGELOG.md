@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. #1781
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713

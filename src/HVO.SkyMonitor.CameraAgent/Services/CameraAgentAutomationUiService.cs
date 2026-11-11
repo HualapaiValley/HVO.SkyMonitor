@@ -77,10 +77,12 @@ internal sealed class CameraAgentAutomationUiService(
             if ((LocalAutomationDefinitionValidator.Validate(definition) ?? registry.Validate(definition)) is { } invalid)
             {
                 return OperatorUiResult<CameraAgentAutomationWindowPreview>.Failure(OperatorUiResultKind.Invalid,
-                    invalid.FieldPath == "definition.sourceWindow.selection"
+                    invalid.FieldPath == SourceSelectionFieldPath
                         ? DescribeSourceSelectionMismatch(definition)
-                        : DescribeFailure(new(LocalAutomationCommandStatus.Invalid, invalid.ReasonCode,
-                            invalid.FieldPath, LocalAutomationOperatorState.Empty)));
+                        : invalid is { ReasonCode: LocalAutomationContract.UnregisteredCombinationReasonCode, FieldPath: SourcePeriodFieldPath }
+                            ? DescribeSourcePeriodMismatch(definition)
+                            : DescribeFailure(new(LocalAutomationCommandStatus.Invalid, invalid.ReasonCode,
+                                invalid.FieldPath, LocalAutomationOperatorState.Empty)));
             }
             // A prospective future window, never a write, claim, backfill or coverage assertion.
             var plan = windowPlanner.Resolve(new(definition, 1,
@@ -110,6 +112,30 @@ internal sealed class CameraAgentAutomationUiService(
         return accepted.Length == 0
             ? "No source selection is currently accepted by this task target. Choose a current producer target."
             : $"The source selection does not match this task target. Choose {string.Join(" or ", accepted)} for this producer.";
+    }
+
+    private const string SourceSelectionFieldPath = "definition.sourceWindow.selection";
+    private const string SourcePeriodFieldPath = "definition.sourceWindow.kind";
+
+    /// <summary>The source-period names the wizard offers, so a rejection names a period exactly as it was chosen.</summary>
+    internal static string SourceWindowLabel(LocalAutomationSourceWindowKind kind)
+        => kind == LocalAutomationSourceWindowKind.SunriseDay ? "Sunrise to next sunrise" : "Completed site-local hour";
+
+    /// <summary>
+    /// A task target that takes only some source periods names the selected period and the periods it takes. A period
+    /// is taken when the registry accepts the definition with it, or then rejects only the source selection, which is
+    /// a separate choice with its own message.
+    /// </summary>
+    private string DescribeSourcePeriodMismatch(LocalAutomationDefinition definition)
+    {
+        var selected = SourceWindowLabel(definition.SourceWindow!.Kind);
+        var accepted = Enum.GetValues<LocalAutomationSourceWindowKind>()
+            .Where(kind => kind != definition.SourceWindow.Kind && registry.Validate(definition with
+            { SourceWindow = definition.SourceWindow with { Kind = kind } }) is null or { FieldPath: SourceSelectionFieldPath })
+            .Select(SourceWindowLabel).ToArray();
+        return accepted.Length == 0
+            ? $"The source period \"{selected}\" is not accepted by this task target, and it accepts no other source period. Choose a current producer target."
+            : $"The source period \"{selected}\" is not accepted by this task target. Choose \"{string.Join("\" or \"", accepted)}\" for this producer.";
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

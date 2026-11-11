@@ -933,7 +933,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     }
 
     private static string SourceWindowLabel(LocalAutomationSourceWindowKind kind)
-        => kind == LocalAutomationSourceWindowKind.SunriseDay ? "Sunrise to next sunrise" : "Completed site-local hour";
+        => CameraAgentAutomationUiService.SourceWindowLabel(kind);
 
     private static string SelectionLabel(LocalAutomationSourceSelection selection)
         => selection == LocalAutomationSourceSelection.DarkNightActualSources ? "Dark-night actual sources" : "All actual sources";

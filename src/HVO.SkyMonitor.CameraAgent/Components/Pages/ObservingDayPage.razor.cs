@@ -211,12 +211,14 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     };
 
     /// <summary>
-    /// Why a recorded final evaluation has no product, from its retained disposition only. A final composes the
-    /// products of its segment windows, so it records no frame counts of its own; a final without sources means no
-    /// segment window admitted a frame.
+    /// Why a recorded final evaluation has no product, from its retained disposition only. A keogram or star-trail
+    /// final composes the products of its segment windows, so it records no frame counts of its own; a final without
+    /// sources means no segment window admitted a frame. A daily summary has no segment windows: it admits retained
+    /// previews of the whole period directly, so its wording names those instead.
     /// </summary>
     internal static string Outcome(NightlyProductWindowStatus status) => status.Disposition switch
     {
+        NightlyProductWindowDisposition.NoSources when status.Kind == NightlyProductKind.DailySummary => "no retained preview was admitted",
         NightlyProductWindowDisposition.NoSources => "no segment window admitted a frame",
         NightlyProductWindowDisposition.Rejected => $"rejected ({status.ReasonCode ?? "no reason recorded"})",
         _ => "no current product is recorded"

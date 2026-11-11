@@ -50,6 +50,11 @@ public sealed partial class NightlyProductDetailPage : ComponentBase, IAsyncDisp
 
     private string PageTitleText => Detail is { } detail ? $"{Title(detail)} {detail.Summary.ObservingDate:yyyy-MM-dd}" : "Nightly product";
 
+    // A recorded count, zero included, is shown as recorded. Only an absent count reads as unavailable.
+    internal static string EventCountText(HVO.SkyMonitor.Processing.DailySummaryV1 summary) => summary.EventCount is { } events
+        ? events.ToString("N0", CultureInfo.InvariantCulture)
+        : "Unavailable; no event count was supplied";
+
     internal static string SummaryProductLabel(string kind) => kind switch
     {
         NightlyProductContract.StarTrailTarget => "Star trail",
