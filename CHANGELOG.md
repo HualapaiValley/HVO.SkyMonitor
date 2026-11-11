@@ -14,6 +14,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Cancelling a System control drain after the installer worker has claimed it now ends the receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded, keeping who cancelled and why; capture stays paused until explicitly resumed. The lifecycle runbook now records every standalone-drain outcome, including `drain.timeout` at the two-minute bound. #1775
 
+- System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
