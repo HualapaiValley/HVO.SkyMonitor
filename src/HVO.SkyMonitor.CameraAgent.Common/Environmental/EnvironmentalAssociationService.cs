@@ -148,6 +148,23 @@ public sealed class EnvironmentalAssociationService(
             : null;
     }
 
+    /// <summary>
+    /// The distinct, ordered subset of <paramref name="kinds"/> that <see cref="ReadCompletedAsync"/> accepts under the
+    /// configured association policy. A kind with no configured source has no association to read; presentation callers
+    /// keep it as missing instead of requesting it, which would be rejected as outside the policy. With no configured
+    /// source the policy does not constrain the request. Refs #1784
+    /// </summary>
+    internal static EnvironmentalObservationKind[] SelectConfiguredPolicyKinds(
+        EnvironmentalAcquisitionOptions acquisition,
+        IEnumerable<EnvironmentalObservationKind> kinds)
+    {
+        ArgumentNullException.ThrowIfNull(acquisition);
+        ArgumentNullException.ThrowIfNull(kinds);
+        var requested = kinds.Distinct().Order().ToArray();
+        var configured = acquisition.Sources.Select(static source => source.Kind).ToHashSet();
+        return configured.Count == 0 ? requested : requested.Where(configured.Contains).ToArray();
+    }
+
     private string PolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> kinds)
         => options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count == 0 ? CreatePolicyIdentity(kinds)
             : CaptureContractJson.ComputeCanonicalJsonSha256(new
