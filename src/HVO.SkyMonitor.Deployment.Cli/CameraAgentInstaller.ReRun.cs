@@ -69,47 +69,55 @@ internal sealed partial class CameraAgentInstaller
     /// <summary>
     /// Each camera-configuration metadata field of the record at <paramref name="path"/> that the strict readers cannot
     /// accept, with what is wrong with it; none when every one is well formed, or when the record cannot be read as a JSON
-    /// object at all, which is not a configuration fault (Refs #1779).
+    /// object at all, which is not a configuration fault (Refs #1779). The record is read as a document, which keeps a
+    /// property that appears more than once, so a duplicated field is reported rather than failing the read.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A record that cannot be read here is diagnosed as it always was, by the strict reader's own failure.")]
     internal static IReadOnlyList<(string Field, string Problem)> MalformedConfigurationMetadata(string path)
     {
-        System.Text.Json.Nodes.JsonObject? record;
         try
         {
             using var stream = SafeFileSystem.OpenOwnerFileRead(path);
-            record = System.Text.Json.Nodes.JsonNode.Parse(stream) as System.Text.Json.Nodes.JsonObject;
+            using var document = System.Text.Json.JsonDocument.Parse(stream);
+            if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                return [];
+            }
+            var malformed = new List<(string Field, string Problem)>();
+            foreach (var field in ConfigurationIdentityFields.Concat(ConfigurationDescriptionFields))
+            {
+                var identity = ConfigurationIdentityFields.Contains(field, StringComparer.Ordinal);
+                var values = document.RootElement.EnumerateObject()
+                    .Where(property => property.NameEquals(field))
+                    .Select(static property => property.Value)
+                    .ToArray();
+                if (values.Length > 1)
+                {
+                    malformed.Add((field, "duplicated"));
+                }
+                else if (values.Length == 0 || values[0].ValueKind == System.Text.Json.JsonValueKind.Null)
+                {
+                    malformed.Add((field, "missing"));
+                }
+                else if (values[0].ValueKind != System.Text.Json.JsonValueKind.String)
+                {
+                    malformed.Add((field, "not text"));
+                }
+                else if (identity && !IsSha256(values[0].GetString()))
+                {
+                    malformed.Add((field, "not a lowercase SHA-256"));
+                }
+                else if (!identity && values[0].GetString()!.Length == 0)
+                {
+                    malformed.Add((field, "empty"));
+                }
+            }
+            return malformed;
         }
         catch (Exception exception) when (exception is not OutOfMemoryException)
         {
             return [];
         }
-        if (record is null)
-        {
-            return [];
-        }
-        var malformed = new List<(string Field, string Problem)>();
-        foreach (var field in ConfigurationIdentityFields.Concat(ConfigurationDescriptionFields))
-        {
-            var identity = ConfigurationIdentityFields.Contains(field, StringComparer.Ordinal);
-            if (!record.TryGetPropertyValue(field, out var node) || node is null)
-            {
-                malformed.Add((field, "missing"));
-            }
-            else if (node.GetValueKind() != System.Text.Json.JsonValueKind.String)
-            {
-                malformed.Add((field, "not text"));
-            }
-            else if (identity && !IsSha256(node.GetValue<string>()))
-            {
-                malformed.Add((field, "not a lowercase SHA-256"));
-            }
-            else if (!identity && node.GetValue<string>().Length == 0)
-            {
-                malformed.Add((field, "empty"));
-            }
-        }
-        return malformed;
     }
 
     /// <summary>
@@ -761,8 +769,10 @@ internal sealed partial class CameraAgentInstaller
             {
                 throw;
             }
+            // The target limits are named only for a limits change; an instance recorded without limits that is given none
+            // keeps none, which an adoption alone must still describe without failing (Refs #1779).
             throw CameraConfigurationRefusals.ChangeFailed(
-                instance.LimitsChange, instance.Adopts, CameraAgentContainerResources.Describe(instance.Target!),
+                instance.LimitsChange, instance.Adopts, DescribeLimits(instance.Target),
                 CameraConfigurationDefaults.Describe(instance.Adopted), exception);
         }
 

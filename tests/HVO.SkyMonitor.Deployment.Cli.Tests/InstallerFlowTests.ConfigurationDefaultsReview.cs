@@ -10,7 +10,8 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// diagnostic limit (M2); and a record whose rig profile or schedule description no longer matches its configuration,
 /// which failed with exit 1 instead of a refusal (M3). At <c>40d7bf81</c>: malformed configuration metadata in a completed
 /// instance's records, which failed with exit 1 (M4); and adoption failures whose cause and remedy were cut at the same
-/// limit (M-new).
+/// limit (M-new). At <c>adb401ba</c>: duplicated configuration metadata, which still failed with exit 1 (S1); and an
+/// adoption failure of an instance recorded without limits, whose cause was lost to an unexpected error (S2).
 /// </summary>
 public sealed partial class InstallerFlowTests
 {
@@ -390,6 +391,147 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual((int)InstallerExitCode.Done, carriedOn.ExitCode, carriedOn.Error);
             Assert.AreEqual(CameraConfiguration.Generate(request, (await files.ManifestAsync()).ApplicationIdentity).Sha256,
                 (await files.ManifestAsync()).ConfigurationSha256);
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// S1. A completed instance's manifest or result that names <c>configurationSha256</c> twice, the first time not as
+    /// text, is malformed configuration metadata: refused with exit 3, naming the record, the field and the remedy,
+    /// <c>errorCode</c> <c>refused</c> under <c>--json</c>, nothing changed, by the plan and the run alike. Before the review
+    /// the duplicate escaped the metadata scan and ended in exit 1.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("manifest", "plan")]
+    [DataRow("manifest", "run")]
+    [DataRow("manifest", "json")]
+    [DataRow("result", "plan")]
+    [DataRow("result", "run")]
+    [DataRow("result", "json")]
+    public async Task DuplicatedConfigurationMetadata_IsRefusedNamingTheRecordAndChangesNothing(string record, string mode)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(mode);
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.NewGuid());
+        var runner = DefaultsDaemon(request, root, CloudDefaults);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var files = InstalledFiles.Of(await InstallBefore1722Async(request, runner, owner), root);
+            var path = record == "manifest" ? files.Manifest : files.Result;
+            var text = await File.ReadAllTextAsync(path);
+            var property = System.Text.RegularExpressions.Regex.Matches(
+                text, "\"configurationSha256\"\\s*:\\s*\"[0-9a-f]{64}\"", System.Text.RegularExpressions.RegexOptions.None,
+                TimeSpan.FromSeconds(5));
+            Assert.HasCount(1, property);
+            // Every other member stays as it was; the valid identity is kept, after a first one that is not text.
+            await File.WriteAllTextAsync(path, text.Replace(
+                property[0].Value, "\"configurationSha256\":42," + property[0].Value, StringComparison.Ordinal));
+            var configuration = await File.ReadAllTextAsync(files.Configuration);
+
+            var attempt = await RunInstallProgramAsync(mode switch
+            {
+                "plan" => request with { DryRun = true },
+                "json" => request with { Json = true },
+                _ => request with { Cpus = 3m, Memory = "6g" }
+            }, runner, owner);
+
+            Assert.AreEqual((int)InstallerExitCode.Refused, attempt.ExitCode, attempt.Output + attempt.Error);
+            StringAssert.Contains(attempt.Message, path, StringComparison.Ordinal);
+            StringAssert.Contains(attempt.Message, "configurationSha256 (duplicated)", StringComparison.Ordinal);
+            StringAssert.Contains(attempt.Message, "Restore the instance's records from a backup", StringComparison.Ordinal);
+            attempt.AssertChangedNothing($"duplicated {record} configuration metadata changed something");
+            if (mode == "json")
+            {
+                Assert.AreEqual("refused", attempt.ErrorCode);
+            }
+            else
+            {
+                StringAssert.StartsWith(attempt.Error, "Installation refused: ", StringComparison.Ordinal);
+                StringAssert.EndsWith(attempt.Error, "Nothing was changed.", StringComparison.Ordinal);
+            }
+            Assert.AreEqual(configuration, await File.ReadAllTextAsync(files.Configuration));
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// S2. An instance an earlier installer recorded without limits, re-run with none, keeps none; when its adoption fails
+    /// before the commit, the failure names the real cause and what was restored (or, when the restore fails too, the
+    /// remedy), exit 1, and a re-run carries on. Before the review it failed with an unexpected null-argument error
+    /// instead, after the restore had succeeded.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task AdoptionFailureOfAnInstanceRecordedWithoutLimits_NamesTheRealCause(bool restoreAlsoFails)
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.NewGuid());
+        // One fixed rendered model, so the manifest edited to look like an earlier installer's still validates, as the
+        // existing control for instances recorded without limits does.
+        var runner = new InstallerProcessRunner(request.ImageReference, root, request.InstanceId!.Value)
+        {
+            Labels = DefaultsImageLabels(CloudDefaults)
+        };
+        var owner = new AdoptionOwnerClient();
+        try
+        {
+            var files = InstalledFiles.Of(await InstallBefore1722Async(request, runner, owner), root);
+            var manifestNode = JsonNode.Parse(await File.ReadAllTextAsync(files.Manifest))!.AsObject();
+            Assert.IsTrue(manifestNode.Remove("resources"));
+            await File.WriteAllTextAsync(files.Manifest, manifestNode.ToJsonString());
+            // The earlier installer's own re-run puts back the original limit lines the records now describe.
+            using (CameraConfigurationDefaults.Use([CameraConfigurationDefaults.Shipped[0]]))
+            {
+                _ = await InstallResourceRequestAsync(request, runner, owner);
+            }
+            Assert.IsNull((await files.ManifestAsync()).Resources);
+            var before = await RecordsAsync(files);
+            owner.FailOnVerification = owner.VerificationAttempts + 1;
+            if (restoreAlsoFails)
+            {
+                runner.FailComposeUpNumber = runner.ComposeUpCount + 2;
+            }
+
+            var failed = await RunInstallProgramAsync(request, runner, owner);
+
+            Assert.AreEqual((int)InstallerExitCode.Failed, failed.ExitCode, failed.Output + failed.Error);
+            StringAssert.StartsWith(failed.Error, "Installation failed: ", StringComparison.Ordinal);
+            var message = failed.Error["Installation failed: ".Length..];
+            Assert.IsFalse(message.Contains("Unexpected", StringComparison.Ordinal), message);
+            if (restoreAlsoFails)
+            {
+                StringAssert.StartsWith(message,
+                    $"Adopting the installer's new configuration defaults ({PlainCloudChange}) failed, and restoring the recorded configuration also failed: ",
+                    StringComparison.Ordinal);
+                StringAssert.Contains(message, "cannot recreate the container", StringComparison.Ordinal);
+                StringAssert.EndsWith(message, "Re-run the same install to carry on.", StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.AreEqual(
+                    $"Adopting the installer's new configuration defaults ({PlainCloudChange}) failed, so the recorded configuration was restored: injected verification failure",
+                    message);
+                CollectionAssert.AreEqual(before, await RecordsAsync(files), "the restore put every record back");
+                Assert.AreEqual(before[0], runner.LastComposeUpConfiguration, "the container was put back on the recorded configuration");
+            }
+
+            var carriedOn = await RunInstallProgramAsync(request, runner, owner);
+
+            Assert.AreEqual((int)InstallerExitCode.Done, carriedOn.ExitCode, carriedOn.Error);
+            var manifest = await files.ManifestAsync();
+            Assert.IsNull(manifest.Resources, "an instance recorded without limits keeps none");
+            Assert.AreEqual(CameraConfiguration.Generate(request, manifest.ApplicationIdentity).Sha256, manifest.ConfigurationSha256);
         }
         finally
         {
