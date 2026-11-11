@@ -54,6 +54,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
+
 - CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
 - Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
 - CameraAgent can generate immutable daily summaries of sunrise-to-sunrise captures, with representative previews, sampled coverage, exclusions and product lineage in Products, Calendar and Observing Day. Opening an existing nightly catalog upgrades schema 2 to 3 in place; installer upgrades checkpoint it for paired rollback. #1713

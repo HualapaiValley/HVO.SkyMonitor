@@ -58,6 +58,8 @@ if [[ $# -ne 0 || -z "$output_argument" || ( -n "$source_file" && "$fetch" == tr
 fi
 
 hyg_require_commands gzip mv realpath sha256sum sqlite3 sync wc
+# Name the tool before anything is fetched or built, and before the version gate can reject it (Refs #1774).
+hyg_print_sqlite_identity
 hyg_check_sqlite_version
 if [[ "$fetch" == true ]]; then
     hyg_require_commands curl

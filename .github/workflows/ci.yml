@@ -40,6 +40,7 @@ jobs:
       logichost: ${{ steps.classify.outputs.logichost }}
       combined: ${{ steps.classify.outputs.combined }}
       delivery: ${{ steps.classify.outputs.delivery }}
+      catalog_recipe: ${{ steps.classify.outputs.catalog_recipe }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -72,6 +73,10 @@ jobs:
           ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null
           tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
           ./scripts/ci:artifact-provenance hyg-v42-contracts catalog-contracts "$RUNNER_TEMP/hyg-v42-contract-provenance"
+      # Refs #1774. The regression is given the compressed input the step above fetched and verified, so it downloads
+      # nothing. It runs before the upload: contracts from a recipe that fails it are never published.
+      - name: Reproduce the approved HYG 4.2 bytes offline
+        run: ./scripts/catalog/test-hyg-v42-reproducibility.sh "$RUNNER_TEMP/hyg-v42-contracts/build/hyg_v42.csv.gz"
       - name: Upload exact production catalog contracts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -81,6 +86,35 @@ jobs:
             ${{ runner.temp }}/hyg-v42-contract-provenance/ci-artifact-provenance.json
           if-no-files-found: error
           retention-days: 1
+
+  # Refs #1774. These regressions build the approved HYG 4.4 and OpenNGC catalogs four times over, so they run beside
+  # Catalog Contracts rather than inside it. Every job that waits for the contracts artifact would otherwise wait for
+  # them as well, and an upstream fetch failure here would skip those jobs instead of failing on its own.
+  catalog-reproducibility:
+    name: Catalog Reproducibility
+    needs: changes
+    if: needs.changes.outputs.mode == 'full' && needs.changes.outputs.catalog_recipe == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The two offline steps come first, so an upstream outage in the fetch below cannot hide their result.
+      - name: Test the SQLite identity line
+        run: ./scripts/catalog/test-sqlite-identity.sh
+      - name: Rebuild the catalog test fixtures with secure_delete forced OFF and ON
+        run: ./scripts/catalog/test-fixture-reproducibility.sh
+      - name: Fetch and verify the pinned HYG 4.4 and OpenNGC inputs
+        run: ./scripts/catalog/fetch-hyg-v44-openngc-inputs.sh "$RUNNER_TEMP/hyg-v44-openngc-inputs"
+      - name: Test that a mismatched input fails the fetch
+        run: ./scripts/catalog/test-fetch-hyg-v44-openngc-inputs.sh "$RUNNER_TEMP/hyg-v44-openngc-inputs"
+      - name: Reproduce the approved HYG 4.4 and OpenNGC bytes offline
+        run: |
+          ./scripts/catalog/test-hyg-v44-reproducibility.sh \
+            "$RUNNER_TEMP/hyg-v44-openngc-inputs/hyg_v44.csv.gz" \
+            "$RUNNER_TEMP/hyg-v44-openngc-inputs/OpenNGC"
 
   quality:
     name: Quality
@@ -1107,7 +1141,7 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [changes, quality, catalog-contracts, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]
+    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]
     steps:
       - name: Block merge while review is in progress
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == true
@@ -1132,10 +1166,12 @@ jobs:
             combined=${{ needs.changes.outputs.combined }}
             delivery=${{ needs.changes.outputs.delivery }}
             deployment=${{ needs.changes.outputs.deployment }}
+            catalog_recipe=${{ needs.changes.outputs.catalog_recipe }}
           RESULTS: >-
             changes=${{ needs.changes.result }}
             quality=${{ needs.quality.result }}
             catalog-contracts=${{ needs.catalog-contracts.result }}
+            catalog-reproducibility=${{ needs.catalog-reproducibility.result }}
             deployment-contracts=${{ needs.deployment-contracts.result }}
             build=${{ needs.build.result }}
             architecture=${{ needs.architecture.result }}
