@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Annotated previews with metadata corners, and frame-facts layers, now show a selected environmental reading that has no configured source as MISSING instead of failing on every capture, for example the default corner readings on an NWS-only or sky-quality-meter-only CameraAgent. Refs #1784
