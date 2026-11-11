@@ -12,8 +12,6 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
     /// created, also when the provider's own disposal fails.
     /// </summary>
     [TestMethod]
-    // SqliteConnection pools are process-wide: a sibling's ClearAllPools would empty the control below.
-    [DoNotParallelize]
     [DataRow(false)]
     [DataRow(true)]
     public async Task HarnessDispose_ReleasesPooledSqliteHandlesAndRemovesItsOnlyDirectory(bool providerDisposalFails)
@@ -50,6 +48,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                 await connection.OpenAsync(CancellationToken.None).ConfigureAwait(false);
             }
 
+            // The class is serialised, so no other test can clear the process-wide pools under this control.
             if (OperatingSystem.IsLinux())
             {
                 Assert.IsNotEmpty(

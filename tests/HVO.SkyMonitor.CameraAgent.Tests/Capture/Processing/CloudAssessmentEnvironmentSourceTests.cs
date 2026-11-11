@@ -25,6 +25,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+// Harness.Dispose clears every SQLite connection pool in the process, which would dispose idle connections owned
+// by tests running beside it. Nothing may run beside this class (ConnectionPoolClearContractTests). Refs #1785
+[DoNotParallelize]
 public sealed partial class CloudAssessmentEnvironmentSourceTests
 {
     public TestContext TestContext { get; set; } = null!;
