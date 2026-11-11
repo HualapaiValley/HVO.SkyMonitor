@@ -16,6 +16,50 @@ internal static partial class CameraAgentStateSnapshot
     private sealed record OverlaySeal(string Contract, string Snapshot, string FilesRoot, string Nonce, StateSnapshotDatabase Database);
     private sealed record LedgerFacts(Metadata Metadata, string FilesRoot);
     private sealed record LedgerRow(string Key, byte[] Digest, int Kind, long Generation, byte[] Auth);
+    private sealed record PendingRow(IntentProof Proof, byte[] Auth);
+
+    private static ServiceProvider IntegrityProtectionServices(InstallationPaths paths)
+    {
+        var keys = Path.Combine(paths.StateRoot, "raw", ".location", "keys");
+        SafeFileSystem.EnsureSafeExistingAncestors(keys);
+        if (!Directory.Exists(keys) || !Directory.EnumerateFiles(keys, "*.xml").Any())
+            throw new InvalidDataException("Retained integrity keys are unavailable.");
+        foreach (var key in Directory.EnumerateFiles(keys, "*.xml")) EnsureRegularStore(key, RetainedIntegrityStore);
+        var services = new ServiceCollection();
+        services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keys))
+            .SetApplicationName("HVO.SkyMonitor.CameraAgent.DeploymentLocation").DisableAutomaticKeyGeneration();
+        return services.BuildServiceProvider();
+    }
+
+    private static async Task VerifyIntegrityRestoreInventoryAsync(InstallationPaths paths, string root,
+        StateSnapshotManifest manifest, CancellationToken cancellationToken)
+    {
+        var target = manifest.Databases.SingleOrDefault(static database => database.RelativePath == RetainedIntegrityStore);
+        var currentExists = File.Exists(StorePath(paths.StateRoot, RetainedIntegrityStore));
+        if (target is { Present: true } && !currentExists)
+            throw new InstallerException("The established retained integrity ledger is missing; restore refuses to adopt an older ledger silently.");
+        if (target is { Present: true } || !currentExists) return;
+        // Only explicit, verified absence paired with genuine pre-ledger authority
+        // permits removing the ledger created by a failed first candidate.
+        if (target is not { Present: false } || manifest.ProtectedFiles is null ||
+            manifest.ProtectedFiles.Single(static file => file.RelativePath == ProtectedLocations[^1]).Present)
+            throw new InstallerException("This snapshot does not record paired pre-ledger state; restore a complete paired backup.");
+        var history = manifest.ProtectedFiles.Single(static file => file.RelativePath == ProtectedLocations[0]);
+        if (!history.Present) return;
+        try
+        {
+            using var provider = IntegrityProtectionServices(paths);
+            var protector = provider.GetRequiredService<IDataProtectionProvider>().CreateProtector("CameraAgent", "DeploymentLocation", "v1");
+            using var document = JsonDocument.Parse(protector.Unprotect(await File.ReadAllBytesAsync(
+                ProtectedSnapshotPath(root, history), cancellationToken).ConfigureAwait(false)));
+            if (document.RootElement.TryGetProperty("retainedIntegrityNonce", out _))
+                throw new InvalidDataException("Sealed history requires its original ledger.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException or JsonException or InvalidDataException)
+        {
+            throw new InstallerException("The snapshot does not contain verifiable pre-ledger history.", exception);
+        }
+    }
 
     private static FileStream? AcquireIntegrityRestoreOwnership(InstallationPaths paths)
     {
@@ -41,46 +85,36 @@ internal static partial class CameraAgentStateSnapshot
         var currentPath = StorePath(paths.StateRoot, RetainedIntegrityStore);
         if (target is not { Present: true })
         {
-            if (File.Exists(currentPath))
-                throw new InstallerException("A pre-ledger database snapshot cannot preserve current retained-file proofs; restore a complete paired backup.");
+            await VerifyIntegrityRestoreInventoryAsync(paths, root, manifest, cancellationToken).ConfigureAwait(false);
             return null;
         }
-        if (!File.Exists(currentPath) && !File.Exists(Path.Combine(root, OverlaySealName))) return null;
+        if (!File.Exists(currentPath))
+            throw new InstallerException("The established retained integrity ledger disappeared before restoration.");
         try
         {
-            var keys = Path.Combine(paths.StateRoot, "raw", ".location", "keys");
-            SafeFileSystem.EnsureSafeExistingAncestors(keys);
-            if (!Directory.Exists(keys) || !Directory.EnumerateFiles(keys, "*.xml").Any())
-                throw new InvalidDataException("Retained integrity keys are unavailable.");
-            foreach (var key in Directory.EnumerateFiles(keys, "*.xml")) EnsureRegularStore(key, RetainedIntegrityStore);
-            var services = new ServiceCollection();
-            services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keys))
-                .SetApplicationName("HVO.SkyMonitor.CameraAgent.DeploymentLocation").DisableAutomaticKeyGeneration();
-            using var provider = services.BuildServiceProvider();
+            using var provider = IntegrityProtectionServices(paths);
             var protector = provider.GetRequiredService<IDataProtectionProvider>()
                 .CreateProtector("CameraAgent", "DeploymentLocation", "v1");
             var sealProtector = protector.CreateProtector("RetainedRestore", "v1");
             using var old = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(root, target));
             var targetFacts = AuthenticateLedger(old.Connection, protector, cancellationToken);
-            using var current = File.Exists(currentPath) ? CameraAgentStatePreflight.ReadOnlyDatabase.Open(currentPath) : null;
-            var currentFacts = current is null ? null : AuthenticateLedger(current.Connection, protector, cancellationToken);
-            if (currentFacts is not null && currentFacts.Metadata.Nonce != targetFacts.Metadata.Nonce)
+            using var current = CameraAgentStatePreflight.ReadOnlyDatabase.Open(currentPath);
+            var currentFacts = AuthenticateLedger(current.Connection, protector, cancellationToken);
+            if (currentFacts.Metadata.Nonce != targetFacts.Metadata.Nonce)
                 throw new InvalidDataException("Retained integrity snapshots belong to different authorities.");
             StateSnapshotDatabase? cached;
             try
             {
-                cached = await ReadOverlayAsync(root, snapshot, targetFacts.Metadata.Nonce, currentFacts?.FilesRoot,
+                cached = await ReadOverlayAsync(root, snapshot, targetFacts.Metadata.Nonce, currentFacts.FilesRoot,
                     sealProtector, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (currentFacts is not null && exception is (IOException or CryptographicException or JsonException or InvalidDataException))
+            catch (Exception exception) when (exception is IOException or CryptographicException or JsonException or InvalidDataException)
             {
                 // Derived overlay state can be rebuilt from both authenticated sources.
                 // Without the current authority, a broken overlay remains a hard refusal.
                 cached = null;
             }
             if (cached is not null) return cached;
-            if (current is null || currentFacts is null)
-                throw new InvalidDataException("Interrupted retained integrity restoration has no authenticated overlay.");
             var temporary = Path.Combine(root, ".retained-files-overlay.tmp");
             if (File.Exists(temporary)) { EnsureRegularStore(temporary, RetainedIntegrityStore); File.Delete(temporary); }
             if (await CopySyncedAsync(SnapshotFile(root, target), temporary, cancellationToken).ConfigureAwait(false) != target.Sha256)
@@ -93,7 +127,7 @@ internal static partial class CameraAgentStateSnapshot
                 using (var remove = copy.CreateCommand())
                 {
                     remove.Transaction = transaction;
-                    remove.CommandText = "DELETE FROM entries WHERE key LIKE 'F|%'; DELETE FROM scan_entries;";
+                    remove.CommandText = "DELETE FROM entries WHERE key LIKE 'F|%'; DELETE FROM pending WHERE key LIKE 'F|%'; DELETE FROM scan_entries;";
                     _ = await remove.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
                 var carried = WalkLedger(current.Connection, protector, currentFacts.Metadata, cancellationToken, row =>
@@ -109,17 +143,34 @@ internal static partial class CameraAgentStateSnapshot
                     insert.Parameters.AddWithValue("$auth", row.Auth);
                     _ = insert.ExecuteNonQuery();
                 });
+                var pendingCarried = WalkPending(current.Connection, protector, currentFacts.Metadata, cancellationToken, row =>
+                {
+                    if (!row.Proof.Key.StartsWith("F|", StringComparison.Ordinal)) return;
+                    using var insert = copy.CreateCommand();
+                    insert.Transaction = transaction;
+                    insert.CommandText = "INSERT INTO pending(key,tree,generation,planned,source,denied,auth) VALUES($key,$tree,$generation,$planned,$source,$denied,$auth);";
+                    insert.Parameters.AddWithValue("$key", row.Proof.Key);
+                    insert.Parameters.AddWithValue("$tree", row.Proof.Tree);
+                    insert.Parameters.AddWithValue("$generation", row.Proof.Generation);
+                    insert.Parameters.AddWithValue("$planned", (object?)row.Proof.Planned ?? DBNull.Value);
+                    insert.Parameters.AddWithValue("$source", (object?)row.Proof.Source ?? DBNull.Value);
+                    insert.Parameters.AddWithValue("$denied", row.Proof.Denied);
+                    insert.Parameters.AddWithValue("$auth", row.Auth);
+                    _ = insert.ExecuteNonQuery();
+                });
                 if (Convert.ToHexString(carried.Chain) != currentFacts.Metadata.Chain || carried.Count != currentFacts.Metadata.Count ||
-                    Convert.ToHexString(carried.Files) != currentFacts.FilesRoot)
+                    Convert.ToHexString(pendingCarried.Chain) != currentFacts.Metadata.Pending ||
+                    FileStateRoot(carried.Files, pendingCarried.Files) != currentFacts.FilesRoot)
                     throw new InvalidDataException("Retained integrity source changed while staging its restore.");
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 var generation = checked(Math.Max(currentFacts.Metadata.Generation, targetFacts.Metadata.Generation) + 1);
                 var inherited = targetFacts.Metadata with { Generation = generation };
                 var (chain, count, _) = WalkLedger(copy, protector, inherited, cancellationToken);
+                var (pendingChain, _) = WalkPending(copy, protector, inherited, cancellationToken);
                 using var metadata = copy.CreateCommand();
                 metadata.CommandText = "UPDATE metadata SET payload=$payload WHERE id=1;";
                 metadata.Parameters.AddWithValue("$payload", protector.Protect(JsonSerializer.SerializeToUtf8Bytes(
-                    inherited with { Chain = Convert.ToHexString(chain), Count = count })));
+                    inherited with { Chain = Convert.ToHexString(chain), Count = count, Pending = Convert.ToHexString(pendingChain) })));
                 _ = await metadata.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 _ = AuthenticateLedger(copy, protector, cancellationToken);
             }
@@ -131,7 +182,7 @@ internal static partial class CameraAgentStateSnapshot
             var result = new StateSnapshotDatabase(RetainedIntegrityStore, true, OverlayName, new FileInfo(overlay).Length,
                 await SafeFileSystem.ComputeSha256Async(overlay, cancellationToken).ConfigureAwait(false),
                 facts.UserVersion, facts.SchemaSha256, facts.Tables);
-            var seal = new OverlaySeal("retained-files-overlay-v1", snapshot.ManifestSha256, currentFacts.FilesRoot,
+            var seal = new OverlaySeal("retained-files-overlay-v2", snapshot.ManifestSha256, currentFacts.FilesRoot,
                 targetFacts.Metadata.Nonce, result);
             var sealPath = Path.Combine(root, OverlaySealName);
             var sealTemporary = sealPath + ".tmp";
@@ -159,7 +210,7 @@ internal static partial class CameraAgentStateSnapshot
         EnsureRegularStore(path, RetainedIntegrityStore);
         if (new FileInfo(path).Length > 65_536) throw new InvalidDataException("Retained overlay seal is invalid.");
         var seal = JsonSerializer.Deserialize<OverlaySeal>(protector.Unprotect(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)));
-        if (seal is null || seal.Contract != "retained-files-overlay-v1" || seal.Snapshot != snapshot.ManifestSha256 ||
+        if (seal is null || seal.Contract != "retained-files-overlay-v2" || seal.Snapshot != snapshot.ManifestSha256 ||
             seal.Nonce != nonce || seal.Database.RelativePath != RetainedIntegrityStore || seal.Database.SnapshotFile != OverlayName)
             throw new InvalidDataException("Retained overlay seal is invalid.");
         if (filesRoot is not null && filesRoot != seal.FilesRoot) return null;
@@ -188,16 +239,45 @@ internal static partial class CameraAgentStateSnapshot
         var meta = command.ExecuteScalar() is byte[] payload
             ? JsonSerializer.Deserialize<Metadata>(protector.Unprotect(payload)) : null;
         if (meta is null || meta.Nonce is not { Length: 32 } || meta.Chain is not { Length: 128 } ||
-            !meta.Established || meta.Generation < 0 || meta.Count < 0 || meta.Pending != new string('0', 128))
-            throw new InvalidDataException("Retained integrity authority is unavailable or unsettled.");
-        using var pending = connection.CreateCommand();
-        pending.CommandText = "SELECT COUNT(*) FROM pending;";
-        if (Convert.ToInt64(pending.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0)
-            throw new InvalidDataException("Retained integrity has unsettled writes.");
+            !meta.Established || meta.Generation < 0 || meta.Count < 0 || meta.Pending is not { Length: 128 })
+            throw new InvalidDataException("Retained integrity authority is unavailable.");
         var (chain, count, files) = WalkLedger(connection, protector, meta, token);
-        if (Convert.ToHexString(chain) != meta.Chain || count != meta.Count)
+        var pending = WalkPending(connection, protector, meta, token);
+        if (Convert.ToHexString(chain) != meta.Chain || count != meta.Count || Convert.ToHexString(pending.Chain) != meta.Pending)
             throw new InvalidDataException("Retained integrity commitment is invalid.");
-        return new LedgerFacts(meta, Convert.ToHexString(files));
+        return new LedgerFacts(meta, FileStateRoot(files, pending.Files));
+    }
+
+    private static string FileStateRoot(byte[] entries, byte[] pending)
+        => Convert.ToHexString(SHA512.HashData([.. entries, .. pending]));
+
+    private static (byte[] Chain, byte[] Files) WalkPending(SqliteConnection connection, IDataProtector protector,
+        Metadata metadata, CancellationToken token, Action<PendingRow>? visit = null)
+    {
+        var chain = new byte[64];
+        var files = new byte[64];
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT length(key),length(auth),key,tree,generation,planned,source,denied,auth FROM pending;";
+        using var rows = command.ExecuteReader();
+        while (rows.Read())
+        {
+            token.ThrowIfCancellationRequested();
+            if (rows.GetInt64(0) > 4096 || rows.GetInt64(1) > 16384)
+                throw new InvalidDataException("Retained integrity pending entry is invalid.");
+            var proof = new IntentProof(metadata.Nonce, rows.GetString(2), rows.GetBoolean(3), rows.GetInt64(4),
+                rows.IsDBNull(5) ? null : rows.GetString(5), rows.IsDBNull(6) ? null : rows.GetString(6), rows.GetBoolean(7));
+            if (!(proof.Key.StartsWith("F|", StringComparison.Ordinal) || proof.Key.StartsWith("J|", StringComparison.Ordinal)) ||
+                proof.Generation < 0 || proof.Generation > metadata.Generation || proof.Planned is { Length: not 64 } || proof.Source is { Length: > 4096 })
+                throw new InvalidDataException("Retained integrity pending entry is invalid.");
+            var auth = (byte[])rows.GetValue(8);
+            if (JsonSerializer.Deserialize<IntentProof>(protector.Unprotect(auth)) != proof)
+                throw new InvalidDataException("Retained integrity pending authentication failed.");
+            var leaf = SHA512.HashData(JsonSerializer.SerializeToUtf8Bytes(proof));
+            Accumulate(chain, leaf);
+            if (proof.Key.StartsWith("F|", StringComparison.Ordinal)) Accumulate(files, leaf);
+            visit?.Invoke(new PendingRow(proof, auth));
+        }
+        return (chain, files);
     }
 
     private static string NormalizeSchema(string sql)

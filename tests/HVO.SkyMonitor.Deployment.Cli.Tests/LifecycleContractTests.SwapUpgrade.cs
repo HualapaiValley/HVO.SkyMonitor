@@ -128,6 +128,46 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart()
+    {
+        using var fixture = await MigratingFixtureAsync();
+        SeedStores(fixture.Paths);
+        var before = ReadStoreFacts(fixture.Paths);
+        var bulk = SeedBulk(fixture.Paths);
+        var ledger = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
+        var restartedOriginal = false;
+        fixture.Runner.OnComposeUp = image =>
+        {
+            if (image == CandidateImageId)
+            {
+                MigrateAsCandidate(fixture.Paths);
+                Directory.CreateDirectory(Path.GetDirectoryName(ledger)!);
+                using var connection = new SqliteConnection($"Data Source={ledger};Pooling=False");
+                connection.Open();
+                using var create = connection.CreateCommand();
+                create.CommandText = "CREATE TABLE candidate_only(value INTEGER);";
+                _ = create.ExecuteNonQuery();
+                File.WriteAllText(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, SnapshotProtectedLocations[^1]), "candidate checkpoint");
+                return;
+            }
+            restartedOriginal = true;
+            Assert.IsFalse(File.Exists(ledger));
+            Assert.IsFalse(File.Exists(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, SnapshotProtectedLocations[^1])));
+            CollectionAssert.AreEqual(before, ReadStoreFacts(fixture.Paths));
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
+        Assert.IsTrue(restartedOriginal);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.IsNotNull(journal.StateSnapshotRestoredUtc);
+        AssertBulkUntouched(bulk);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
     public async Task UpgradeAsync_FailedMigratingCandidate_RestoresTheSnapshotBeforeThePreviousImageStartsAndWarns(bool json)

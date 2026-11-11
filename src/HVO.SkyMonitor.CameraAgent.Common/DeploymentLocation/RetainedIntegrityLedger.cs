@@ -16,6 +16,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     internal const string CheckpointName = "retained-integrity.v1.protected";
     private static readonly ConcurrentDictionary<string, RetainedIntegrityLedger> Roots = new(StringComparer.Ordinal);
     private static readonly AsyncLocal<Mutation?> Current = new();
+    internal static Action? BeforeNestedMutationForTest { get; set; }
+    internal static Action? RegistrationBlockedForTest { get; set; }
     private readonly string _root;
     private readonly string _directory;
     private readonly string _checkpoint;
@@ -269,8 +271,10 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     internal static IDisposable BeginTrees(params string[] paths) => Begin(paths.Select(path => (path, true, (string?)null, (string?)null)));
     internal static IDisposable BeginTreeMove(string source, string destination)
         => Begin([(source, true, null, null), (destination, true, null, Path.GetFullPath(source))]);
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned composite owns the registration lease and mutation; it disposes both in reverse order, including on a disposal failure.")]
     internal static IDisposable BeginJournal(string databasePath, string? capture = null, byte[]? manifest = null)
     {
+        if (Current.Value is { Active: true }) BeforeNestedMutationForTest?.Invoke();
         var root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(databasePath)))!;
         var registration = RegistrationLease.Enter();
         try
@@ -278,8 +282,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
             if (!Roots.TryGetValue(root, out var owner)) return registration;
             var scope = owner.Enter([new Intent(capture is null ? "J|" : JournalKey(capture), capture is null, 0,
                 manifest is null ? null : Convert.ToHexString(SHA256.HashData(manifest)))]);
-            registration.Dispose();
-            return scope;
+            return new Multiple([registration, scope]);
         }
         catch { registration.Dispose(); throw; }
     }
@@ -287,6 +290,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
 
     private static Multiple Begin(IEnumerable<(string Path, bool Tree, string? Planned, string? Source)> plans)
     {
+        if (Current.Value is { Active: true }) BeforeNestedMutationForTest?.Invoke();
         var registration = RegistrationLease.Enter();
         var grouped = new Dictionary<RetainedIntegrityLedger, List<Intent>>();
         try
@@ -315,17 +319,18 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         }
         catch { registration.Dispose(); throw; }
         if (grouped.Count == 0) return new Multiple([registration]);
-        var scopes = new List<IDisposable>();
+        // Retain the ambient registration lease until every root scope completes.
+        // Releasing it while holding a root barrier lets another writer own the
+        // global gate while waiting for that root, deadlocking a nested write.
+        var scopes = new List<IDisposable> { registration };
         try
         {
             foreach (var (owner, intents) in grouped.OrderBy(pair => pair.Key._root, StringComparer.Ordinal)) scopes.Add(owner.Enter(intents));
-            registration.Dispose();
             return new Multiple(scopes);
         }
         catch
         {
-            foreach (var scope in scopes.AsEnumerable().Reverse()) scope.Dispose();
-            registration.Dispose();
+            new Multiple(scopes).Dispose();
             throw;
         }
     }
@@ -333,10 +338,10 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private IDisposable Enter(IEnumerable<Intent> intents)
     {
         var current = Current.Value;
-        if (current is not null && current.Owner == this && current.Active)
+        if (current?.Find(this) is { } existing)
         {
-            current.Add(intents);
-            return new Nested(current);
+            existing.Add(intents);
+            return new Nested(existing);
         }
         _barrier.Wait();
         var mutation = new Mutation(this, current);
@@ -363,6 +368,8 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         private int _depth = 1;
         internal RetainedIntegrityLedger Owner => owner;
         internal bool Active => _depth > 0;
+        internal Mutation? Find(RetainedIntegrityLedger candidate)
+            => Active && Owner == candidate ? this : parent?.Find(candidate);
         internal void Add(IEnumerable<Intent> intents)
         {
             var plans = intents.ToArray();
@@ -579,7 +586,11 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
                 Interlocked.Increment(ref current._depth);
                 return current;
             }
-            Gate.Wait();
+            if (!Gate.Wait(0))
+            {
+                RegistrationBlockedForTest?.Invoke();
+                Gate.Wait();
+            }
             var lease = new RegistrationLease();
             Ambient.Value = lease;
             return lease;
@@ -601,7 +612,18 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     }
     private sealed class Multiple(List<IDisposable> scopes) : IDisposable
     {
-        public void Dispose() { foreach (var scope in scopes.AsEnumerable().Reverse()) scope.Dispose(); }
+        private int _disposed;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            ReleaseAt(scopes.Count - 1);
+        }
+        private void ReleaseAt(int index)
+        {
+            if (index < 0) return;
+            try { scopes[index].Dispose(); }
+            finally { ReleaseAt(index - 1); }
+        }
     }
     private sealed class Empty : IDisposable
     {

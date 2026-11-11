@@ -104,7 +104,7 @@ public sealed partial class InstallationVerificationReadTests
         altered["descriptor"]!["location"]!["version"] = 999;
         await File.WriteAllTextAsync(manifestPath, altered.ToJsonString()).ConfigureAwait(false);
         _ = await fixture.ReadAsync(client).ConfigureAwait(false);
-        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadAsync(CancellationToken.None)).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None)).ConfigureAwait(false);
         _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
         await File.WriteAllBytesAsync(manifestPath, originalManifest).ConfigureAwait(false);
         _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
@@ -119,7 +119,7 @@ public sealed partial class InstallationVerificationReadTests
             command.Parameters.AddWithValue("$manifest", System.Text.Encoding.UTF8.GetBytes(altered.ToJsonString()));
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             _ = await fixture.ReadAsync(client).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadAsync(CancellationToken.None)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None)).ConfigureAwait(false);
             _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
             command.Parameters["$manifest"].Value = originalJournalManifest;
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);

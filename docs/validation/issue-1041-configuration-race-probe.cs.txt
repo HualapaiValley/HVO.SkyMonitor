@@ -56,7 +56,7 @@ var hook=typeof(ProtectedDeploymentLocationStore).GetProperty("BeforeRetainedMan
 var edited=false;
 hook.SetValue(store,(Action)(()=>{if(!edited){edited=true;File.WriteAllText(configPath,next.ToJsonString());}}));
 var rejected=false;
-try{_ = await loader.LoadAsync(CancellationToken.None);}
+try{_ = await loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None);}
 catch(InstallationVerificationPendingException){rejected=true;}
 hook.SetValue(store,null);
 if(!edited||!rejected||store.Active!=location)throw new InvalidOperationException("Stale configuration escaped or changed immutable location.");

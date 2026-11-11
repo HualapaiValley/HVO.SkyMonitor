@@ -8,6 +8,9 @@ public interface ICameraAgentConfigurationLoader
 {
     Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken);
 
+    Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+        => LoadAsync(cancellationToken);
+
     // Strict retained-evidence checks belong to the protected read, not startup/recovery admission.
     Task<CameraModuleConfig> LoadForInstallationVerificationAsync(CancellationToken cancellationToken)
         => LoadAsync(cancellationToken);

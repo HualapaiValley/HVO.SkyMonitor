@@ -91,6 +91,38 @@ public sealed partial class InstallationVerificationReadTests
             }
             Assert.IsTrue(warm.All(read => read.Identity.GetRawText() == first.Identity.GetRawText()));
             Assert.AreEqual(inputsBefore, await fixture.HashRetainedInputsAsync().ConfigureAwait(false));
+            var ordinaryReads = new List<object>();
+#if !HVO_BASELINE
+            using (var owner = await fixture.Host.CreateOwnerClientAsync().ConfigureAwait(false))
+            {
+                for (var sample = 0; sample < 3; sample++)
+                {
+                    foreach (var continuity in new[] { false, true })
+                    {
+                        using var trace = StartTrace(continuity ? "ordinary-continuity" : "ordinary-configuration")!;
+                        var allocated = GC.GetTotalAllocatedBytes(true);
+                        var started = Stopwatch.GetTimestamp();
+                        if (continuity)
+                        {
+                            using var response = await owner.GetAsync(new Uri("/api/internal/deployment/continuity", UriKind.Relative)).ConfigureAwait(false);
+                            Assert.AreEqual(System.Net.HttpStatusCode.OK, response.StatusCode);
+                        }
+                        else _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+                        var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+                        var observed = stages.ForTrace(trace.TraceId);
+                        var scans = observed.Count(stage => stage.Name.StartsWith("deployment-location.validate-retained", StringComparison.Ordinal));
+                        Assert.AreEqual(0, scans, "Ordinary reads must not trigger another retained scrub.");
+                        ordinaryReads.Add(new
+                        {
+                            Kind = continuity ? "continuity-http" : "configuration-load",
+                            ElapsedMs = elapsed,
+                            AllocatedBytes = GC.GetTotalAllocatedBytes(true) - allocated,
+                            RetainedScanSpans = scans
+                        });
+                    }
+                }
+            }
+#endif
             var publication = new List<object>();
             var statePath = Path.Combine(fixture.IngressRoot, "benchmark-owner-state.json");
             for (var sample = 0; sample < 5; sample++)
@@ -144,6 +176,7 @@ public sealed partial class InstallationVerificationReadTests
                 FirstUncapped = SafeMeasurement(first),
                 Warm = warm.Select(SafeMeasurement).ToArray(),
                 Evicted = evicted,
+                OrdinaryReads = ordinaryReads,
                 ManagedPublication = publication,
                 RestartQualification = restartQualification,
                 PersistedProofs = ProofCount(fixture)

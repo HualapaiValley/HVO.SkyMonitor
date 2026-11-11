@@ -2,7 +2,7 @@ import pathlib,os,subprocess,json,shutil,tempfile,hashlib
 repo=pathlib.Path.cwd()
 if not os.environ.get('TMPDIR'): raise SystemExit('Set TMPDIR to a short private disposable directory first.')
 scratch=pathlib.Path(tempfile.mkdtemp(prefix='probe-',dir=os.environ['TMPDIR']))
-evidence=repo/'TestResults/issue-1041-run2/configuration-race-probe'/scratch.name
+evidence=repo/pathlib.Path(os.environ.get('HVO_ISSUE1041_EVIDENCE_ROOT','TestResults/issue-1041-run2'))/'configuration-race-probe'/scratch.name
 evidence.mkdir(parents=True)
 source=pathlib.Path(__file__).with_name('issue-1041-configuration-race-probe.cs.txt')
 env=os.environ.copy();env['DOCKER_HOST']='unix:///tmp/hvo-no-docker.sock';env.pop('DOCKER_CONTEXT',None)

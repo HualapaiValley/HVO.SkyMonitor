@@ -21,7 +21,8 @@ public sealed class FileCameraAgentConfigurationLoader(
     ILogger<FileCameraAgentConfigurationLoader> logger,
     IDeploymentLocationStore? deploymentLocationStore = null,
     ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null,
-    IHostApplicationLifetime? hostLifetime = null) : ICameraAgentConfigurationLoader
+    IHostApplicationLifetime? hostLifetime = null,
+    TimeProvider? timeProvider = null) : ICameraAgentConfigurationLoader
 {
     // Opt-in attribution only: no listener means no activities or measurement state.
     internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
@@ -47,6 +48,7 @@ public sealed class FileCameraAgentConfigurationLoader(
     private readonly CameraAgentHostOptions _options = options.Value;
     private readonly ILogger<FileCameraAgentConfigurationLoader> _logger = logger;
     private readonly IDeploymentLocationStore? _deploymentLocationStore = deploymentLocationStore;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     private readonly object _refreshSync = new();
     private Task? _refresh;
@@ -54,6 +56,9 @@ public sealed class FileCameraAgentConfigurationLoader(
 
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
         => (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken).ConfigureAwait(false)).Configuration;
+
+    public async Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+        => (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken, fullScrub: true).ConfigureAwait(false)).Configuration;
 
     public async Task<CameraModuleConfig> LoadForInstallationVerificationAsync(CancellationToken cancellationToken)
         => (await LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false)).Configuration;
@@ -73,18 +78,19 @@ public sealed class FileCameraAgentConfigurationLoader(
     {
         lock (_refreshSync)
         {
-            if (_refresh is { IsCompleted: false } || DateTimeOffset.UtcNow < _nextRefreshUtc) return;
-            _nextRefreshUtc = DateTimeOffset.UtcNow.AddSeconds(30);
+            if (_refresh is { IsCompleted: false } || _timeProvider.GetUtcNow() < _nextRefreshUtc) return;
+            _nextRefreshUtc = _timeProvider.GetUtcNow().AddSeconds(30);
             _refresh = Task.Run(async () =>
             {
-                try { _ = await LoadAsync(stoppingToken).ConfigureAwait(false); }
+                try { _ = await LoadForRetainedIntegrityScrubAsync(stoppingToken).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
                 catch (Exception) { DeploymentLocationLog.RetainedIntegrityUnqualified(_logger); }
             }, CancellationToken.None);
         }
     }
 
-    private async Task<InstallationConfigurationSnapshot> LoadCoreAsync(bool strictRetainedValidation, CancellationToken cancellationToken)
+    private async Task<InstallationConfigurationSnapshot> LoadCoreAsync(bool strictRetainedValidation, CancellationToken cancellationToken,
+        bool fullScrub = false)
     {
         using var activity = ActivitySource.StartActivity("configuration.load");
         var path = Path.GetFullPath(_options.ConfigFilePath);
@@ -173,9 +179,12 @@ public sealed class FileCameraAgentConfigurationLoader(
         var validatedSchedule = ValidateConfigCore(config);
         if (_deploymentLocationStore is not null)
         {
-            location = await _deploymentLocationStore.LoadCurrentAsync(locationSeed, strictRetainedValidation,
-                () => File.Exists(path) && System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(snapshotDigest),
-                cancellationToken).ConfigureAwait(false);
+            bool ConfigurationStillCurrent() => File.Exists(path) &&
+                System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(snapshotDigest);
+            location = fullScrub
+                ? await _deploymentLocationStore.ScrubCurrentAsync(locationSeed, ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false)
+                : await _deploymentLocationStore.LoadCurrentAsync(locationSeed, strictRetainedValidation,
+                    ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false);
             config = config with { DeploymentLocation = location };
             if (config.Schedule is not null)
             {

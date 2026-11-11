@@ -1,5 +1,12 @@
 # #1041 correction: writer-maintained retained integrity
 
+> The owner completeness verdict at `da8fbbf7` was withdrawn after Opus found
+> blocking concurrency, first-upgrade recovery and recurring-load costs, and Sol
+> reported a deleted-ledger restore bypass before its provider disconnected.
+> The [next correction report](issue-1041-run3-high-corrections.md) records the
+> new behavior, validation and remaining review requirements. Measurements below
+> remain observations of the named run-2 product, not passes for later code.
+
 Refs #1041. This report supersedes the withdrawn completeness verdict at
 `c4069b8c`. Roy approved Option A on Nov 10, 2026 at 14:04 PST / 22:04 UTC
 (widget t356s2122, relayed by Kepler): out-of-band tampering moves from the next

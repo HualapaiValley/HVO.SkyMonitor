@@ -215,9 +215,7 @@ internal static partial class CameraAgentStateSnapshot
                 throw InstallerException.Formatted($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
         await VerifyProtectedFilesAsync(paths, root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
-        if (File.Exists(StorePath(paths.StateRoot, RetainedIntegrityStore)) &&
-            !manifest.Databases.Any(static database => database.RelativePath == RetainedIntegrityStore && database.Present))
-            throw new InstallerException("A pre-ledger database snapshot cannot preserve current retained-file proofs; restore a complete paired backup.");
+        await VerifyIntegrityRestoreInventoryAsync(paths, root, manifest, cancellationToken).ConfigureAwait(false);
         return manifest;
     }
 

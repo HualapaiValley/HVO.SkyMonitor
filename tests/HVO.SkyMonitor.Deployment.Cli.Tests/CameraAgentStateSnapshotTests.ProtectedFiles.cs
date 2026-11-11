@@ -15,32 +15,25 @@ public sealed partial class CameraAgentStateSnapshotTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task PairedProtectedStateAndLedgerRestoreExactlyWithoutTouchingRetainedEvidence()
+    public async Task DeletedEstablishedLedgerRefusesBeforeRestoringProtectedFilesOrRetainedEvidence()
     {
         using var root = new SnapshotRoot();
         await WritePairedAsync(root, "original");
         var ledger = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
         CreateDatabase(ledger, 3);
-        var originalRows = Rows(ledger);
         var retained = await WriteRetainedSentinelAsync(root);
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
         await WritePairedAsync(root, "candidate");
         File.Delete(ledger);
-        for (var attempt = 0; attempt < 2; attempt++)
-        {
-            // This tests opaque backup restoration after loss of the current store.
-            // The real agent interaction test covers authenticated file-proof carry.
-            File.Delete(ledger);
-            await RestorePairedAsync(root, snapshot, CancellationToken.None);
-            foreach (var relative in PairedPaths) Assert.AreEqual("original", await File.ReadAllTextAsync(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, relative)));
-            CollectionAssert.AreEqual(originalRows, Rows(ledger));
-            Assert.AreEqual("retained", await File.ReadAllTextAsync(retained));
-        }
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => RestorePairedAsync(root, snapshot, CancellationToken.None));
+        foreach (var relative in PairedPaths) Assert.AreEqual("candidate", await File.ReadAllTextAsync(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, relative)));
+        Assert.IsFalse(File.Exists(ledger));
+        Assert.AreEqual("retained", await File.ReadAllTextAsync(retained));
     }
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task PreLedgerSnapshotRefusesToDiscardCurrentProofsOrCaptureEvidence()
+    public async Task ExplicitPreLedgerAbsenceRemovesCandidateStateAndPreservesRetainedEvidence()
     {
         using var root = new SnapshotRoot();
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(root.Paths, root.InstanceId, Guid.NewGuid(), Image, CameraAgentStateLayout.SqliteStores, CancellationToken.None);
@@ -48,9 +41,9 @@ public sealed partial class CameraAgentStateSnapshotTests
         var ledger = CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
         CreateDatabase(ledger, 1);
         var retained = await WriteRetainedSentinelAsync(root);
-        await Assert.ThrowsExactlyAsync<InstallerException>(() => RestorePairedAsync(root, snapshot, CancellationToken.None));
-        Assert.IsTrue(File.Exists(ledger));
-        Assert.IsTrue(PairedPaths.All(relative => File.Exists(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, relative))));
+        await RestorePairedAsync(root, snapshot, CancellationToken.None);
+        Assert.IsFalse(File.Exists(ledger));
+        Assert.IsFalse(PairedPaths.Any(relative => File.Exists(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, relative))));
         Assert.AreEqual("retained", await File.ReadAllTextAsync(retained));
     }
 

@@ -2781,8 +2781,11 @@ generation; it is never immutable installer identity.
 
 **Out-of-band tampering is detected at the next full scrub**, an explicit policy
 approved by Roy for #1041. Full scrubs authenticate the expected ledger and
-validate all current retained JSON/journal metadata at startup, after dirty state,
-and every 24 hours. Protected reads independently expire qualification after
+validate all current retained JSON/journal metadata at startup, after dirty state
+or relevant configuration/location changes, and every 24 hours through an explicit
+maintenance load. Unchanged normal configuration loads, including five-minute
+rig-profile synchronization and deployment continuity polls, use the qualified
+checkpoint and do not start another scrub. Protected reads independently expire qualification after
 24 hours. Changes to managed evidence are checked at publication; arbitrary
 external edits can precede a successful protected read until the scrub detects
 them. Schema, corruption and location-provenance checks remain in the full scrub.
@@ -2824,11 +2827,19 @@ state and are refused before mutation when integrity state is present; restore a
 complete paired backup. Use an updated installer for paired-state rollback.
 Database rollback preserves authenticated current capture/product file proofs
 while restoring the snapshot's authenticated journal expectations; retained files
-are not discarded to make a prior ledger fit. Both complete commitments must
-validate and belong to the same authority. An unsettled/mismatched source refuses;
-the restarted agent still performs a full scrub. A pre-ledger database snapshot
-cannot preserve current file proofs and is refused before mutation when ledger
-state exists; use a complete paired backup for that older downgrade. Derived
+are not discarded to make a prior ledger fit. Both complete entry and pending-intent commitments must
+validate and belong to the same authority. Authenticated current file intents and
+snapshot journal intents survive restore without becoming completed proofs; the
+next full scrub checks their actual bytes/schema before trust. Mismatched or
+unverifiable source state refuses;
+the restarted agent still performs a full scrub. A paired snapshot that explicitly records ledger/checkpoint absence and authenticated
+unsealed history can recover a failed first upgrade: restore removes only the
+candidate-created ledger, restores the old protected files, and preserves retained
+captures/products. A later new runtime must fully validate and adopt that legacy
+state before qualifying. Historical database-only snapshots without this paired
+absence evidence still require a complete paired backup. An established target
+ledger cannot be restored if its current source disappeared, even when a derived
+overlay exists; deleting the ledger never authorizes silent adoption. Derived
 restore overlays are protected and bound to the selected snapshot and current
 file set, so interrupted restores can resume without trusting partial state.
 

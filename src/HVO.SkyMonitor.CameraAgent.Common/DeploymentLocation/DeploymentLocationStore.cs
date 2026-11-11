@@ -73,6 +73,10 @@ public interface IDeploymentLocationStore
         Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
         => verification ? VerifyInstallationAsync(seed, cancellationToken) : InitializeAsync(seed, cancellationToken);
 
+    ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => InitializeAsync(seed, cancellationToken);
+
     ValueTask StageAsync(
         DeploymentLocationSnapshot deployment,
         CancellationToken cancellationToken)
@@ -153,9 +157,23 @@ public sealed class ProtectedDeploymentLocationStore(
     public ValueTask<DeploymentLocationSnapshot> FullVerifyAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
         => InitializeCoreAsync(seed, strictRetainedValidation: true, fullScrub: true, null, cancellationToken);
 
-    public ValueTask<DeploymentLocationSnapshot> LoadCurrentAsync(DeploymentLocationSeed seed, bool verification,
+    public async ValueTask<DeploymentLocationSnapshot> LoadCurrentAsync(DeploymentLocationSeed seed, bool verification,
         Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
-        => InitializeCoreAsync(seed, strictRetainedValidation: verification, fullScrub: !verification, configurationStillCurrent, cancellationToken);
+    {
+        try
+        {
+            return await InitializeCoreAsync(seed, strictRetainedValidation: verification, fullScrub: false,
+                configurationStillCurrent, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InstallationVerificationPendingException exception) when (!verification && exception.RequiresScrub)
+        {
+            return await ScrubCurrentAsync(seed, configurationStillCurrent, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => InitializeCoreAsync(seed, strictRetainedValidation: false, fullScrub: true, configurationStillCurrent, cancellationToken);
 
     private async ValueTask<DeploymentLocationSnapshot> InitializeCoreAsync(
         DeploymentLocationSeed seed, bool strictRetainedValidation, bool fullScrub, Func<bool>? configurationStillCurrent, CancellationToken cancellationToken)
@@ -299,12 +317,12 @@ public sealed class ProtectedDeploymentLocationStore(
                 await WriteManualAsync(manualPath, manual, cancellationToken).ConfigureAwait(false);
                 DeploymentLocationLog.ManualOverrideSuperseded(_logger, configurationSeed.LocationId);
             }
-            cancellationToken.ThrowIfCancellationRequested();
             // Written before the history so any reader that observes the new history also observes the
             // manual state it was reconciled against.
             Volatile.Write(ref _configurationSeed, configurationSeed);
             Volatile.Write(ref _manual, manual);
             Volatile.Write(ref _history, snapshot.History);
+            cancellationToken.ThrowIfCancellationRequested();
             try { integrityScrub?.Publish(); }
             catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException or FormatException)
             {

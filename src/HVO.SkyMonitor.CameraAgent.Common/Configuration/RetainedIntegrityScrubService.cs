@@ -14,7 +14,7 @@ internal sealed partial class RetainedIntegrityScrubService(
         using var timer = new PeriodicTimer(TimeSpan.FromHours(24), timeProvider);
         while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false))
         {
-            try { _ = await loader.LoadAsync(stoppingToken).ConfigureAwait(false); }
+            try { _ = await loader.LoadForRetainedIntegrityScrubAsync(stoppingToken).ConfigureAwait(false); }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception) { ScrubFailed(logger); }
         }

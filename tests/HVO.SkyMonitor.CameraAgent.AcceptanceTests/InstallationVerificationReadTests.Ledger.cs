@@ -9,6 +9,33 @@ public sealed partial class InstallationVerificationReadTests
 {
     [TestMethod]
     [TestCategory("Integration")]
+    public async Task OrdinaryConfigurationAndContinuityReadsDoNotScrubOrInvalidateTheEndpoint()
+    {
+        await using var fixture = await InstallationReadAttributionFixture.CreateAsync(null, solar: false, completeOwner: true).ConfigureAwait(false);
+        _ = await fixture.SeedAsync(2, 2).ConfigureAwait(false);
+        var store = (ProtectedDeploymentLocationStore)fixture.Locations;
+        // Fixture bulk construction is followed by one explicit full qualification.
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
+        using var client = fixture.CreateClient();
+        using var ownerClient = await fixture.Host.CreateOwnerClientAsync().ConfigureAwait(false);
+        var before = await fixture.ReadAsync(client).ConfigureAwait(false);
+        store.BeforeRetainedManifestValidationForTest = () => Assert.Fail("Ordinary load/continuity must not scan retained history.");
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+            using var continuity = await ownerClient.GetAsync(new Uri("/api/internal/deployment/continuity", UriKind.Relative)).ConfigureAwait(false);
+            Assert.AreEqual(HttpStatusCode.OK, continuity.StatusCode);
+            var after = await fixture.ReadAsync(client).ConfigureAwait(false);
+            Assert.AreEqual(before.GetRawText(), after.GetRawText());
+        }
+        var inspected = 0;
+        store.BeforeRetainedManifestValidationForTest = () => inspected++;
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsGreaterThan(0, inspected, "Explicit maintenance must still perform a full scrub.");
+    }
+
+    [TestMethod]
+    [TestCategory("Integration")]
     [SuppressMessage("Reliability", "CA2025:Do not pass IDisposable instances into unawaited tasks", Justification = "Every task is awaited and the blocked scrub is released in finally before fixture disposal.")]
     public async Task DirtyEndpointRefusesPromptlyAndCoalescedScrubSurvivesCallerCancellation()
     {

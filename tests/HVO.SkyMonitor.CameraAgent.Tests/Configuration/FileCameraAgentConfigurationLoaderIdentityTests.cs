@@ -3,6 +3,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Hosting;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 
@@ -10,6 +12,66 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Configuration;
 [TestCategory("Unit")]
 public sealed class FileCameraAgentConfigurationLoaderIdentityTests
 {
+    [TestMethod]
+    public async Task BackgroundScrubCooldownUsesTheInjectedClockAndExplicitScrubPath()
+    {
+        var clock = new RefreshClock();
+        var store = new PendingLocationStore();
+        var loader = new FileCameraAgentConfigurationLoader(Options.Create(new CameraAgentHostOptions
+        {
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
+            AgentId = "synthetic",
+            Observatory = new ObservatoryLocation(35, -114, 1_500, "UTC"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        }), NullLogger<FileCameraAgentConfigurationLoader>.Instance, store,
+            hostLifetime: new RefreshLifetime(), timeProvider: clock);
+        async Task RequestAndDrainAsync()
+        {
+            await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+                _ = await loader.LoadInstallationSnapshotAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+            var refresh = (Task)typeof(FileCameraAgentConfigurationLoader).GetField("_refresh",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(loader)!;
+            await refresh.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+        await RequestAndDrainAsync().ConfigureAwait(false);
+        Assert.AreEqual(1, store.Scrubs);
+        clock.UtcNow = clock.UtcNow.AddSeconds(29);
+        await RequestAndDrainAsync().ConfigureAwait(false);
+        Assert.AreEqual(1, store.Scrubs);
+        clock.UtcNow = clock.UtcNow.AddSeconds(1);
+        await RequestAndDrainAsync().ConfigureAwait(false);
+        Assert.AreEqual(2, store.Scrubs);
+    }
+
+    private sealed class RefreshClock : TimeProvider
+    {
+        internal DateTimeOffset UtcNow { get; set; } = DateTimeOffset.UnixEpoch.AddYears(56);
+        public override DateTimeOffset GetUtcNow() => UtcNow;
+    }
+
+    private sealed class RefreshLifetime : IHostApplicationLifetime
+    {
+        public CancellationToken ApplicationStarted => CancellationToken.None;
+        public CancellationToken ApplicationStopping => CancellationToken.None;
+        public CancellationToken ApplicationStopped => CancellationToken.None;
+        public void StopApplication() { }
+    }
+
+    private sealed class PendingLocationStore : IDeploymentLocationStore
+    {
+        internal int Scrubs { get; private set; }
+        public DeploymentLocationSnapshot? Active => null;
+        public ValueTask<DeploymentLocationSnapshot> InitializeAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
+        {
+            Scrubs++;
+            return ValueTask.FromException<DeploymentLocationSnapshot>(new IOException("Synthetic scrub failure."));
+        }
+        public ValueTask<DeploymentLocationSnapshot> VerifyInstallationAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
+            => ValueTask.FromException<DeploymentLocationSnapshot>(new InstallationVerificationPendingException(requiresScrub: true));
+        public DeploymentLocationSnapshot Resolve(CaptureLocationProvenance provenance, DateTimeOffset? effectiveUtc = null)
+            => throw new NotSupportedException();
+    }
+
     [TestMethod]
     public async Task CentralIntegrationDerivesSampleAgentIdFromPersistentDeviceIdentity()
     {

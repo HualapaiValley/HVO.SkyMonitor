@@ -51,7 +51,7 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Successful construction transfers host ownership to the wrapper; failures dispose it in catch.")]
-    internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar)
+    internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar, bool completeOwner = false)
     {
         if (scratchRoot is not null) ValidateEvidenceRoot(scratchRoot);
         string? ingressRoot = null;
@@ -93,7 +93,7 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
                 }
                 await File.WriteAllTextAsync(path, config.ToJsonString(EvidenceJson)).ConfigureAwait(false);
             }
-        }, requireOwnerPasswordReplacement: string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_OWNER_CONFIGURATION")), scratchRoot: scratchRoot).ConfigureAwait(false);
+        }, requireOwnerPasswordReplacement: !completeOwner && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_OWNER_CONFIGURATION")), scratchRoot: scratchRoot).ConfigureAwait(false);
         // Hosted services are intentionally absent; resolve the endpoint's loader explicitly.
         try
         {
@@ -352,6 +352,9 @@ internal sealed class DelayedInstallationLoader(FileCameraAgentConfigurationLoad
             : await ((Task<CameraModuleConfig>)verification.Invoke(inner, [cancellationToken])!).ConfigureAwait(false);
     }
 #if !HVO_BASELINE
+    public Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+        => inner.LoadForRetainedIntegrityScrubAsync(cancellationToken);
+
     public async Task<InstallationConfigurationSnapshot> LoadInstallationSnapshotAsync(CancellationToken cancellationToken)
     {
         await WaitBeforeReadAsync(cancellationToken).ConfigureAwait(false);
