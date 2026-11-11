@@ -244,11 +244,12 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | Check | Enforced behavior |
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
-| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode. |
+| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact, followed by the offline HYG 4.2 reproducibility regression on the input that build fetched and verified (see [Catalog Reproducibility](#catalog-reproducibility)). Skipped in classified reduced mode. |
+| **Catalog Reproducibility** | Full-mode hosted rebuild of the three catalog test fixtures and of the approved HYG 4.4 and OpenNGC catalogs from their pinned, verified inputs, under both SQLite `secure_delete` connection defaults. Runs when the classifier's `catalog_recipe` output selects it; otherwise its planned `skipped` result is required. |
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 15849 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Unit Tests** | 15977 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
 | **Integration Tests** | 1271 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
@@ -264,8 +265,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 
 Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 23, preventing missing or overwritten evidence.
 
-Change Classification, Catalog Contracts, Quality, Coverage Policy, and Required
-CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
+Change Classification, Catalog Contracts, Catalog Reproducibility, Quality,
+Coverage Policy, and Required CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
 Tests, Integration Tests, Architecture & Publish, both migration checks, every
 component lane, Coverage, and Coverage Badges remain on the labeled self-hosted
 runners and also require `hvo-qualification`. Two x64 runners stay without that
@@ -298,6 +299,84 @@ output selects it. On a PR that output is `true` when the change touches `script
 `scripts/ci:classify`). Deleting one of those paths selects it too. Pushes, missing commits, empty ranges, failed or
 malformed diffs, missing or non-regular tree entries, missing outputs and classifier-step failures all run it: only a
 successful, explicit `false` skips it. It takes a few seconds.
+
+## Catalog Reproducibility
+
+Two full-qualification jobs hold the approved catalog bytes to their recipes (Refs #1701, Refs #1773, Refs #1774). Neither
+regression runs in the `development/v1` profile.
+
+**Catalog Contracts** runs for every full-mode head. After it has built the HYG 4.2 contracts it runs
+`scripts/catalog/test-hyg-v42-reproducibility.sh` on `build/hyg_v42.csv.gz`, the compressed input that build fetched
+and verified, so the regression downloads nothing. It builds HYG 4.2 four more times, twice with the incoming SQLite
+`secure_delete` connection default forced OFF and twice with it forced ON, and requires the approved database hash and
+byte-identical bundle files each time. It runs before the contracts are uploaded.
+
+**Catalog Reproducibility** is a separate job, so that the jobs waiting for the contracts artifact do not wait for it
+and a failure in it is reported on its own. Its steps run in this order:
+
+1. `scripts/catalog/test-sqlite-identity.sh`, the offline test of the identity line described below.
+2. `scripts/catalog/test-fixture-reproducibility.sh`, which runs every `tests/fixtures/catalog/build-fixture*.sh`
+   recipe with `secure_delete` forced OFF and then ON. Each recipe must pass its own `sha256sum --check` and rebuild the
+   committed database byte for byte. The recipes run in a scratch copy of the fixture directory; the checkout is not
+   written.
+3. `scripts/catalog/fetch-hyg-v44-openngc-inputs.sh`, the only step that uses the network. It fetches the HYG 4.4
+   compressed input from its pinned URL and OpenNGC at its pinned commit, and publishes them only after verifying them:
+   the HYG input, `NGC.csv` and `addendum.csv` by length and SHA-256, and the outline directory by its exact set of 379
+   regular files and the SHA-256 of each against the committed listing, which is itself checked by length and SHA-256.
+   A mismatch fails the step and leaves no input directory behind.
+4. `scripts/catalog/test-fetch-hyg-v44-openngc-inputs.sh`, which replays those verified bytes, damaged one way at a
+   time, through stand-ins for `curl` and `git`, and requires the fetch to refuse each one and publish nothing.
+5. `scripts/catalog/test-hyg-v44-reproducibility.sh` on the fetched inputs: four clean HYG 4.4 and OpenNGC builds, two
+   per connection default, each passing the pinned validators and comparing byte for byte with the first.
+
+The two offline steps come first, so an upstream outage cannot hide a fixture result.
+
+The job runs when the plan is full mode and the classifier's `catalog_recipe` output is `true`. On a pull request that
+output is `true` when the change adds, modifies, deletes or renames a path under `scripts/catalog/` or
+`tests/fixtures/catalog/`, at any depth. Nothing else selects it on a pull request: not the `scripts/catalog:*` entry
+points, not the catalog adapter's sources, and not the job's own wiring in `ci.yml`, `scripts/ci:classify` or
+`scripts/ci:require`. Pushes to `main` and `release/**`, manual dispatches and the release workflow's qualification
+call always select it, and so do missing commits, empty ranges, failed or malformed diffs and missing or non-regular
+tree entries. A reduced-mode plan never runs it, including one that names the allowlisted
+`tests/fixtures/catalog/SOURCE.md`. `Required CI` requires the job to be `success` exactly when a full-mode plan
+selects it and `skipped` otherwise, and rejects a non-pull-request plan that does not select it.
+
+### SQLite identity line
+
+Every catalog builder (`build-hyg-v42.sh`, `build-hyg-v44.sh` and `build-hyg-v44-openngc.sh`) prints one line before
+it fetches, verifies or builds anything, and before its version gate can reject the tool. The line comes from
+`hyg_print_sqlite_identity` in `scripts/catalog/catalog-common.sh`:
+
+```text
+catalog sqlite3: path=/usr/bin/sqlite3 version="3.45.1 2024-01-30 16:01:20 e876e51a…alt1 (64-bit)" sha256=<64 hex digits> secure_delete=1
+```
+
+It names the resolved `sqlite3` executable, its `--version` line, the SHA-256 of that executable, and the
+`PRAGMA secure_delete` value a new connection starts with. When `PATH` reaches the executable through a symbolic link,
+as it does for the isolated CLI from `install-sqlite-3.45.1.sh`, the line also carries `via=` with the `PATH` entry. A
+`sqlite3` that cannot be identified fails the build.
+
+Because the builders print it, every job that builds a catalog records the tool in its log without wiring of its own:
+Catalog Contracts, the ARM64 advisory's catalog job, and the release and pre-release asset builds, which reach
+`build-hyg-v42.sh` through `scripts/release:assets`. Both callers send the builder's output to stderr, so the line
+survives the `>/dev/null` on the Catalog Contracts build step. A runner-image change that replaces the CLI therefore
+shows as a different line rather than having to be inferred.
+
+Two limits apply when reading the line:
+
+- The SHA-256 covers the `sqlite3` executable only. Ubuntu's CLI loads `libsqlite3.so.0`, so a change confined to
+  that library shows in the version line's source ID and in the `secure_delete` value, not in the hash.
+- The reproducibility regressions run the builders through a wrapper that forces the connection default. Their
+  builder lines name the wrapper and the forced value. The HYG 4.4 and fixture regressions print the wrapped tool's
+  own line first; for HYG 4.2 the Catalog Contracts build step has already printed it.
+
+### Runtime
+
+Measured on `hvo-dev-02` on 2026-11-11 with Ubuntu's `sqlite3` 3.45.1, while other work was running on the host:
+the HYG 4.2 regression added to Catalog Contracts took 9 seconds, and the Catalog Reproducibility steps took under
+4 minutes together, nearly all of it the HYG 4.4 and OpenNGC regression. Catalog Contracts keeps its 10-minute
+timeout. Catalog Reproducibility has a 20-minute timeout. Neither job has run on a hosted runner yet; record its
+duration from the first full-qualification run and adjust only if that run needs it.
 
 ## Secret Scan
 
@@ -726,7 +805,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=15849`, `Integration=1271`, `Manual=304`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=15977`, `Integration=1271`, `Manual=304`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -946,7 +1025,7 @@ variables and suppresses the resolved output because future configuration may
 contain secrets. It does not set up .NET, restore/format the solution, build
 catalog artifacts, or run the package audit for paths excluded from
 application/package behavior. It
-intentionally skips Catalog Contracts, Build, Unit Tests, Integration Tests,
+intentionally skips Catalog Contracts, Catalog Reproducibility, Build, Unit Tests, Integration Tests,
 Architecture & Publish, Coverage Policy, both migration checks, every component
 lane, and Coverage. Reduced mode is the only plan in which the never-component-scoped
 gates do not run, because no executable contract is affected. Documentation-only reduced pull requests also skip
@@ -1147,6 +1226,11 @@ including reduced. The table records only what varies.
 The complete matrix additionally runs Unit Tests, Integration Tests, and the
 aggregate Coverage rollup, which every component plan skips in favour of its
 lanes.
+
+[Catalog Reproducibility](#catalog-reproducibility) is selected independently of
+those columns: a change under `scripts/catalog/**` or `tests/fixtures/catalog/**`
+runs it, as does every row that fails closed and every push or manual dispatch.
+No other row does.
 
 Inspect the exact plan for any two commits without pushing:
 

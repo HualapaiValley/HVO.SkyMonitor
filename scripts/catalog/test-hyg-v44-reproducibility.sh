@@ -14,6 +14,8 @@ readonly SCRIPT_DIR
 # shellcheck source=scripts/catalog/hyg-v44-openngc-common.sh
 source "$SCRIPT_DIR/hyg-v44-openngc-common.sh"
 hyg_require_commands cmp realpath sqlite3
+# The wrapped tool's own line, before the wrapper below shadows it on PATH (Refs #1774).
+hyg_print_sqlite_identity
 hyg_check_sqlite_version
 
 source_file="$(realpath "$1")"

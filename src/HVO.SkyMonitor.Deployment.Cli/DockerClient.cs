@@ -481,6 +481,22 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             false);
     }
 
+    /// <summary>
+    /// The value of the label <paramref name="name"/> the image Docker holds as <paramref name="reference"/> carries, or
+    /// <see langword="null"/> when it carries none. Only reads; an image Docker cannot inspect is a failure.
+    /// </summary>
+    public async Task<string?> ReadImageLabelAsync(string reference, string name, CancellationToken cancellationToken)
+    {
+        var inspected = await TryInspectImageAsync(reference, cancellationToken).ConfigureAwait(false)
+            ?? throw new InstallerException($"Docker could not inspect the CameraAgent image '{reference}'.");
+        using var document = JsonDocument.Parse(inspected.StandardOutput);
+        return document.RootElement.ValueKind == JsonValueKind.Array && document.RootElement.GetArrayLength() == 1 &&
+               document.RootElement[0].TryGetProperty("Config", out var config) &&
+               config.ValueKind == JsonValueKind.Object && config.TryGetProperty("Labels", out var labels)
+            ? CameraAgentImageLabels.Label(labels, name)
+            : null;
+    }
+
     private async Task<ProcessResult?> TryInspectImageAsync(string reference, CancellationToken cancellationToken)
     {
         var result = await RunDockerRawAsync(["image", "inspect", reference], cancellationToken).ConfigureAwait(false);
