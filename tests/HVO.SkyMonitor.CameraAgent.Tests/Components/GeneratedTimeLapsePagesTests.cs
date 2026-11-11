@@ -127,6 +127,45 @@ public sealed class GeneratedTimeLapsePagesTests
     }
 
     [TestMethod]
+    [DataRow(24, 0, false, null, "Queued", true)]
+    [DataRow(24, 0, true, null, "Generating hourly segments (0 of 24 finished)", false)]
+    [DataRow(24, 7, false, null, "Generating hourly segments (7 of 24 finished)", false)]
+    [DataRow(24, 24, false, null, "Hourly segments finished; daily video queued", false)]
+    [DataRow(24, 24, false, "timelapse.explicit-retry", "Retrying (queued)", false)]
+    public void LibraryQueuedDailyJobSaysWhetherItsHourlySegmentsHaveStarted(int hours, int finished, bool working, string? reason,
+        string label, bool notStarted)
+    {
+        using var context = new BunitContext();
+        var window = NightlyDayFixture.Daily(NightlyProductKind.Keogram).SourceWindow!;
+        var service = new TestNightlyProductUiService
+        {
+            VideoLibrary = new([new(Guid.NewGuid(), window.ReportingPeriod.ReportDate, window, CameraAgentTimeLapseState.Queued,
+                null, reason, null, false)
+            { HourlyJobs = hours, HourlyJobsFinished = finished, HourlyJobWorking = working }], null, null)
+        };
+        context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(service);
+
+        var cut = context.Render<TimeLapseLibraryView>(parameters => parameters
+            .Add(page => page.Type, "time-lapse").Add(page => page.Status, "running"));
+
+        var item = cut.Find("li");
+        Assert.AreEqual("running", item.GetAttribute("data-video-state"));
+        StringAssert.Contains(item.TextContent, "· Running · " + label, StringComparison.Ordinal);
+        // A job whose segments are under way, or done, is never described as not started.
+        Assert.AreEqual(notStarted, item.TextContent.Contains("Not started", StringComparison.Ordinal));
+        Assert.IsFalse(item.TextContent.Contains("Produced", StringComparison.Ordinal));
+
+        // With generation disabled the row keeps saying so; segment progress never makes it look as if it is executing.
+        service.VideoLibrary = new([service.VideoLibrary!.Entries.Single() with { GenerationEnabled = false }], null, null);
+        var disabled = context.Render<TimeLapseLibraryView>(parameters => parameters
+            .Add(page => page.Type, "time-lapse").Add(page => page.Status, "stalled")).Find("li");
+        Assert.AreEqual("stalled", disabled.GetAttribute("data-video-state"));
+        StringAssert.Contains(disabled.TextContent, "Generation disabled; recorded job state: Queued", StringComparison.Ordinal);
+        Assert.IsFalse(disabled.TextContent.Contains("Generating hourly segments", StringComparison.Ordinal));
+        Assert.IsFalse(disabled.TextContent.Contains("Not started", StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public void LibraryClearsPreviousSearchBoundaryWhileTheNextPageIsLoading()
     {
         using var context = new BunitContext();

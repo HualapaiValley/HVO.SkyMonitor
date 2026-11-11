@@ -13,7 +13,8 @@ header p:not(.eyebrow) { margin: .25rem 0 0; color: var(--hvo-muted); font-size:
 .timeline-track__empty { position: absolute; inset: 0; display: flex; align-items: center; padding-left: .5rem; color: var(--hvo-muted); font-size: .62rem; }
 .timeline-bar { position: absolute; top: 0; bottom: 0; border-radius: .2rem; }
 .timeline-bar--schedule { background: #58a6ff; }
-.timeline-bar--captures { background: #3fb950; }
+/* A visibility floor, not a duration: one retained exposure is under a pixel of a day-long track. */
+.timeline-bar--captures { min-width: 2px; background: #3fb950; }
 /* Hit-test only the painted circle. The day candidate list supplies equivalent 44px controls. */
 .timeline-marker { position: absolute; z-index: 2; top: 50%; width: 1.1rem; height: 1.1rem; margin-left: -.55rem; transform: translateY(-50%); border: 2px solid #d29922; border-radius: 50%; background: #35280b; }
 .timeline-marker span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }

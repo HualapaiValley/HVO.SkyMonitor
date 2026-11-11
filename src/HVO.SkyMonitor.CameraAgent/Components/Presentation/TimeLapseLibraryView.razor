@@ -27,7 +27,7 @@
                         }
                         <small> · Source window: @ObservingDayPage.LocalSpan(entry.Window.StartUtc, entry.Window.EndUtc, entry.Window.ReportingPeriod.Site.TimeZoneId) (@entry.Window.ReportingPeriod.Site.TimeZoneId)</small>
                         @if (entry.StartedUtc is { } started) { <small> · Started @started.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", System.Globalization.CultureInfo.InvariantCulture)</small> }
-                        else if (entry.State == HVO.SkyMonitor.CameraAgent.Common.NightlyProducts.NightlyProductLibraryState.Running)
+                        else if (entry.State == HVO.SkyMonitor.CameraAgent.Common.NightlyProducts.NightlyProductLibraryState.Running && !entry.HourlyGenerationStarted)
                         { <small> · @(entry.JobState == HVO.SkyMonitor.CameraAgent.Common.TimeLapses.CameraAgentTimeLapseState.Queued ? "Not started" : "Start time unavailable for this retained job")</small> }
                     </li>
                 }

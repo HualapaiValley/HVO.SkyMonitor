@@ -493,6 +493,12 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             ? $"{FormatReceiptTime(start)} to {FormatReceiptTime(end)}"
             : null;
 
+    // The cancelling actor reads as the Actor column does and the time as the Time column does: a fixed label and
+    // site time, never the recorded account identifier or a raw UTC timestamp.
+    private string? CancellationText(SystemControlCancellation? cancellation) => cancellation is null
+        ? null
+        : $" Cancelled by {ActorText(cancellation.Actor)} at {FormatReceiptTime(cancellation.Utc)}: {cancellation.Reason}.";
+
     internal static string ActorText(SystemControlActor actor) => actor switch
     {
         SystemControlActor.Installer => "Installer",
