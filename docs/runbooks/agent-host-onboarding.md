@@ -48,6 +48,17 @@ Do this before any agent session starts. None of it requires the agent.
   Mailpit containers through Testcontainers. A machine without a working Docker
   daemon can run the unit selection but not the integration one, and must say so
   rather than reporting a partial run as a pass.
+- **Linux x64 script qualification.** Other architectures, including ARM64, fail
+  closed as unqualified; do not enable script support there. The CameraAgent sandbox Integration cases also
+  require Bubblewrap 0.8 or newer, **static** BusyBox (`busybox-static`, not the
+  dynamic package), util-linux `prlimit`, `gcc` for the bounded native fixtures,
+  and a running non-root systemd user manager. Cgroup v2 must expose delegated
+  memory, CPU and process controllers and a mount protected by `nsdelegate`.
+  Run `./scripts/ci:script-sandbox --verify` before the lane. Missing enforcement
+  fails Linux Integration setup; it is not a skipped qualification pass. See
+  [the execution contract](cameraagent-custom-scripts.md). Provisioning a
+  disposable CI runner is separate from enabling scripts or changing a runtime
+  host; do not provision an operator machine without its authorization.
 - **Architecture check.** An ARM64 machine cannot run the amd64 SQL Server image
   under emulation reliably. Record that limitation up front; that lane comes
   from protected CI on such a host, and a failure there is not evidence about

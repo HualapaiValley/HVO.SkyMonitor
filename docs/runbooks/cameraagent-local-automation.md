@@ -55,7 +55,9 @@ A definition names a registered task, its source policy and trigger, plus its id
 | `definitionId`, `name`, `enabled` | Identity and enablement. |
 
 There is deliberately no field that can hold a command line, a script, a path, an
-executable, or a URL, and no task kind that would interpret one. The default
+executable, or a URL, and no target is interpreted as one. The separately owner-authorized `CustomScript`
+adapter selects an immutable registered invocation in a restricted sandbox; see
+[its execution and qualification contract](cameraagent-custom-scripts.md). The default
 registered task kind is `EnvironmentalOnDemandAcquisition`, whose targets are the
 configured environmental sources that declare the `OnDemand` trigger. A save that
 names a target the registry does not publish is rejected with
