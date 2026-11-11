@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -32,8 +33,9 @@ internal static class RunManifestTestAssertions
 
     /// <summary>
     /// The run page decides whether to offer the download from one read of the detail and its manifest evidence,
-    /// without the manifest read or its payload. Every state a test puts the download in is held against that
-    /// decision here: the same reason, and the same evidence the manifest read returns.
+    /// without the manifest read, its payload or any serialization. Every state a test puts the download in is held
+    /// against that decision here: the same reason, the same evidence the manifest read returns, a computed length
+    /// equal to the payload's, and no read of what only a written payload needs.
     /// </summary>
     private static async Task RunPageAgreesAsync(IProcessingGraphOperations operations, Guid executionId, string? unavailableReason)
     {
@@ -70,8 +72,16 @@ internal static class RunManifestTestAssertions
                 // Everything the payload carries.
                 var payload = CameraAgentRunManifest.Encode(manifest);
                 CollectionAssert.AreEqual(payload, CameraAgentRunManifest.Encode(read.RunManifest));
-                // The length the page decides the byte limit from is this payload's, without building it.
+                // The length the page decides the byte limit from is this payload's, computed and not serialized.
                 Assert.AreEqual(payload.LongLength, CameraAgentRunManifest.EncodedLength(read.RunManifest));
+                var (counted, lineage) = WithCountedLineage(read.RunManifest);
+                Assert.AreEqual(unavailableReason, CameraAgentRunManifest.UnavailableReason(counted));
+                Assert.IsTrue(lineage.All(static ids => ids.Reads <= 1),
+                    "Deciding availability read an output's lineage more than once; once validates it, and only writing the payload needs it again.");
+                var validated = lineage.Sum(static ids => ids.Reads);
+                Assert.AreEqual(payload.LongLength, CameraAgentRunManifest.EncodedLength(counted));
+                Assert.AreEqual(validated, lineage.Sum(static ids => ids.Reads),
+                    "Computing the payload's length read an output's lineage; only writing the payload needs it.");
                 break;
             case ProcessingRunManifestEvidenceFailure.ExceedsBounds:
                 Assert.IsNull(read.RunManifest);
@@ -93,4 +103,53 @@ internal static class RunManifestTestAssertions
         => detail.Nodes.Select(static node =>
             $"{node.NodeId}|{node.ArtifactBindingsRetained}|{node.InputEvidenceIncomplete}|{node.CommittedOutputCount}|" +
             $"{node.Inputs.Count}|{node.CalibrationInputs.Count}|{node.Attempts.Count}|{node.Outputs.Count}").ToArray();
+
+    /// <summary>
+    /// The same manifest with each output's lineage behind a list that counts how often its identifiers are read.
+    /// Deciding availability reads them once, to check that each names a retained input. Whatever writes the
+    /// payload, the serializer included, has to read them again, while the payload's length needs only how many
+    /// there are. A second read is therefore a payload being written.
+    /// </summary>
+    internal static (ProcessingGraphExecutionDetail Detail, IReadOnlyList<ReadCountingIds> Lineage) WithCountedLineage(
+        ProcessingGraphExecutionDetail detail)
+    {
+        var lineage = new List<ReadCountingIds>();
+        var nodes = detail.Nodes.Select(node => node with
+        {
+            Outputs = node.Outputs.Select(output =>
+            {
+                var counted = new ReadCountingIds(output.SourceArtifactIds);
+                lineage.Add(counted);
+                return output with { SourceArtifactIds = counted };
+            }).ToArray()
+        }).ToArray();
+        return (detail with { Nodes = nodes }, lineage);
+    }
+
+    /// <summary>Lineage identifiers that count each enumeration and each indexed read; their number is free.</summary>
+    internal sealed class ReadCountingIds(IReadOnlyList<Guid> ids) : IReadOnlyList<Guid>
+    {
+        internal int Reads { get; private set; }
+
+        public int Count => ids.Count;
+
+        public Guid this[int index]
+        {
+            get
+            {
+                Reads++;
+                return ids[index];
+            }
+        }
+
+        public IEnumerator<Guid> GetEnumerator()
+        {
+            Reads++;
+            return ids.GetEnumerator();
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        internal void Reset() => Reads = 0;
+    }
 }

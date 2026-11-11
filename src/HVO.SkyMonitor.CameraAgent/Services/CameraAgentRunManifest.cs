@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -17,20 +18,28 @@ internal static class CameraAgentRunManifest
     internal const string CorruptReason = "The retained run evidence is corrupt and cannot be downloaded.";
     internal const string TemporarilyUnavailableReason = "The run manifest is temporarily unavailable. Refresh the run to try again.";
 
-    // Allowances for the encoded members that are not variable strings: names, punctuation, numbers, identifiers,
-    // timestamps and durations at their widest. Each is above the widest actual encoding, which the tests measure.
-    internal const int EncodedHeaderBytes = 1024;
-    internal const int EncodedNodeBytes = 512;
-    internal const int EncodedRowBytes = 384;
-    internal const int EncodedSourceArtifactIdBytes = 39;
-    // An ASCII letter or digit is never escaped and encodes as one byte. Any other UTF-16 unit encodes as at most a
-    // six-byte \uXXXX escape.
-    private const int EncodedBytesPerEscapedCharacter = 6;
+    // What the serializer writes for a null and for an identifier in quotes.
+    private const int NullLength = 4;
+    private const int GuidLength = 38;
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
     };
+
+    // The fixed bytes of each manifest object, for EncodedLength. The names are the members of Encode's projection
+    // as the serializer writes them.
+    private static readonly int ExecutionFrame = Frame("schemaVersion", "executionId", "executionClass", "status", "captureId",
+        "primaryArtifactId", "graphRevisionId", "graphDefinitionIdentitySha256", "sharedPlanIdentitySha256", "localPlanIdentitySha256",
+        "acceptedUtc", "startedUtc", "completedUtc", "cancellationRequested", "attemptCount", "nodes");
+    private static readonly int NodeFrame = Frame("nodeId", "required", "planSha256", "status", "startedUtc", "completedUtc",
+        "attemptCount", "normalizationPlanIdentitySha256", "inputs", "attempts", "outputs");
+    private static readonly int InputFrame = Frame("ordinal", "windowPosition", "kind", "captureId", "artifactId", "descriptorSha256",
+        "payloadSha256", "outputIdentitySha256", "calibrationKind");
+    private static readonly int AttemptFrame = Frame("attemptNumber", "startedUtc", "completedUtc", "status", "outcome", "duration",
+        "executionRoute");
+    private static readonly int OutputFrame = Frame("ordinal", "outputIdentitySha256", "artifactId", "role", "payloadSha256",
+        "sourceArtifactIds", "published");
 
     internal static (byte[]? Payload, string? Reason) Create(ProcessingGraphExecutionDetail detail)
     {
@@ -54,56 +63,13 @@ internal static class CameraAgentRunManifest
     };
 
     /// <summary>
-    /// The reason <see cref="Create"/> gives for the same detail, without building the payload at any size. The
-    /// checks are <see cref="Create"/>'s own. A manifest whose upper bound is within the byte limit is known to fit
-    /// from its counts and strings. Any other is decided by its exact encoded length, which is counted and never
-    /// held.
+    /// The reason <see cref="Create"/> gives for the same detail, without building the payload and without
+    /// serializing anything. The checks are <see cref="Create"/>'s own, and the byte limit is decided from the
+    /// payload's length, which is computed.
     /// </summary>
     internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail)
-        => UnavailableReason(detail, EncodedLength);
-
-    /// <inheritdoc cref="UnavailableReason(ProcessingGraphExecutionDetail)"/>
-    internal static string? UnavailableReason(ProcessingGraphExecutionDetail detail, Func<ProcessingGraphExecutionDetail, long> encodedLength)
-        => Validate(detail) ?? (MaximumEncodedBytes(detail) <= ProcessingRunManifestBounds.MaximumBytes ||
-            encodedLength(detail) <= ProcessingRunManifestBounds.MaximumBytes ? null : ProcessingRunManifestBounds.UnavailableReason);
-
-    /// <summary>
-    /// An upper bound on the encoded manifest's length, from element counts and the characters of its strings. It
-    /// never understates: every member that is not a variable string is covered by a fixed allowance, and every
-    /// character of a variable string that could be escaped is counted as escaped. A member added to the manifest
-    /// must keep it so.
-    /// </summary>
-    internal static long MaximumEncodedBytes(ProcessingGraphExecutionDetail detail)
-    {
-        static long Text(string? value)
-        {
-            var bytes = 0L;
-            foreach (var character in value ?? string.Empty)
-                bytes += char.IsAsciiLetterOrDigit(character) ? 1 : EncodedBytesPerEscapedCharacter;
-            return bytes;
-        }
-        var execution = detail.Execution;
-        var bytes = EncodedHeaderBytes + Text(execution.ExecutionClass.ToString()) + Text(execution.Status.ToString()) +
-            Text(execution.GraphRevisionId) + Text(execution.GraphDefinitionIdentitySha256) +
-            Text(execution.SharedPlanIdentitySha256) + Text(execution.LocalPlanIdentitySha256);
-        foreach (var node in detail.Nodes)
-        {
-            bytes += EncodedNodeBytes + Text(node.NodeId) + Text(node.PlanSha256) + Text(node.Status) +
-                Text(node.NormalizationPlanIdentitySha256);
-            foreach (var input in node.Inputs)
-                bytes += EncodedRowBytes + Text(input.Kind.ToString()) + Text(input.DescriptorSha256) +
-                    Text(input.PayloadSha256) + Text(input.OutputIdentitySha256);
-            foreach (var master in node.CalibrationInputs)
-                bytes += EncodedRowBytes + Text(CalibrationMasterKind) + Text(master.PayloadSha256) + Text(master.Kind);
-            foreach (var attempt in node.Attempts)
-                bytes += EncodedRowBytes + Text(attempt.Status) + Text(attempt.Outcome?.ToString()) +
-                    Text(attempt.ExecutionRoute.ToString());
-            foreach (var output in node.Outputs)
-                bytes += EncodedRowBytes + Text(output.OutputIdentitySha256) + Text(output.Role.ToString()) +
-                    Text(output.PayloadSha256) + (long)EncodedSourceArtifactIdBytes * output.SourceArtifactIds.Count;
-        }
-        return bytes;
-    }
+        => Validate(detail) ?? (EncodedLength(detail) <= ProcessingRunManifestBounds.MaximumBytes
+            ? null : ProcessingRunManifestBounds.UnavailableReason);
 
     private static string? Validate(ProcessingGraphExecutionDetail detail)
     {
@@ -138,26 +104,11 @@ internal static class CameraAgentRunManifest
 
     /// <summary>The manifest's bytes for a detail that passed <see cref="Validate"/>, whatever their length.</summary>
     internal static byte[] Encode(ProcessingGraphExecutionDetail detail)
-        => JsonSerializer.SerializeToUtf8Bytes(Manifest(detail), Json);
-
-    /// <summary>
-    /// The length of <see cref="Encode"/>'s result, without building it. The same manifest goes through the same
-    /// serializer, which writes it in pieces to a sink that keeps only their total.
-    /// </summary>
-    internal static long EncodedLength(ProcessingGraphExecutionDetail detail)
-    {
-        using var counted = new LengthStream();
-        JsonSerializer.Serialize(counted, Manifest(detail), Json);
-        return counted.Length;
-    }
-
-    // Serialized by its runtime type, so the payload and its counted length come from one definition.
-    private static object Manifest(ProcessingGraphExecutionDetail detail)
     {
         var execution = detail.Execution;
         // Free-text reasons, trigger references, lease owners, configurations and diagnostic objects
         // are deliberately excluded. Status strings originate in checked durable enum columns.
-        return new
+        var manifest = new
         {
             schemaVersion = SchemaVersion,
             execution.ExecutionId,
@@ -207,6 +158,7 @@ internal static class CameraAgentRunManifest
                 })
             })
         };
+        return JsonSerializer.SerializeToUtf8Bytes(manifest, Json);
     }
 
     private static IEnumerable<ManifestInput> CreateInputs(ProcessingGraphExecutionNodeState node)
@@ -227,6 +179,152 @@ internal static class CameraAgentRunManifest
     private sealed record ManifestInput(int Ordinal, int? WindowPosition, string Kind, Guid? CaptureId,
         Guid ArtifactId, string? DescriptorSha256, string? PayloadSha256, string? OutputIdentitySha256, string? CalibrationKind);
 
+    /// <summary>
+    /// The length of <see cref="Encode"/>'s result, computed from the detail. Nothing is serialized: every member's
+    /// encoded length follows from its value and the serializer's rules for it. This mirrors <see cref="Encode"/>
+    /// and <see cref="CreateInputs"/> member for member, in their order. A member added there needs its length here;
+    /// the tests that hold the two equal to the byte fail until it has one.
+    /// </summary>
+    internal static long EncodedLength(ProcessingGraphExecutionDetail detail)
+    {
+        var execution = detail.Execution;
+        long length = ExecutionFrame
+            + Text(SchemaVersion)
+            + GuidLength // executionId
+            + Name(execution.ExecutionClass)
+            + Name(execution.Status)
+            + GuidLength // captureId
+            + GuidLength // primaryArtifactId
+            + Text(execution.GraphRevisionId)
+            + Text(execution.GraphDefinitionIdentitySha256)
+            + Text(execution.SharedPlanIdentitySha256)
+            + Text(execution.LocalPlanIdentitySha256)
+            + Instant(execution.AcceptedUtc)
+            + Instant(execution.StartedUtc)
+            + Instant(execution.CompletedUtc)
+            + Flag(execution.CancellationRequested)
+            + Number(execution.AttemptCount)
+            + ArrayFrame(detail.Nodes.Count);
+        foreach (var node in detail.Nodes)
+        {
+            length += NodeFrame
+                + Text(node.NodeId)
+                + Flag(node.Required)
+                + Text(node.PlanSha256)
+                + Text(node.Status)
+                + Instant(node.StartedUtc)
+                + Instant(node.CompletedUtc)
+                + Number(node.AttemptCount)
+                + Text(node.NormalizationPlanIdentitySha256)
+                + ArrayFrame(node.Inputs.Count + node.CalibrationInputs.Count)
+                + ArrayFrame(node.Attempts.Count)
+                + ArrayFrame(node.Outputs.Count);
+            foreach (var input in node.Inputs)
+                length += InputFrame
+                    + Number(input.Ordinal)
+                    + (input.Kind is ProcessingGraphExecutionInputKind.AuxiliaryRawCapture or ProcessingGraphExecutionInputKind.AuxiliaryProcessingOutput
+                        ? NullLength : Number(input.WindowPosition))
+                    + Text(Enum.GetName(input.Kind) ?? input.Kind.ToString()) // the kind's ToString, unboxed when it has a name
+                    + GuidLength // captureId
+                    + GuidLength // artifactId
+                    + Text(input.DescriptorSha256)
+                    + Text(input.PayloadSha256)
+                    + Text(input.OutputIdentitySha256)
+                    + NullLength; // calibrationKind
+            var ordinal = node.Inputs.Count == 0 ? 0 : node.Inputs.Max(static input => input.Ordinal) + 1;
+            foreach (var master in node.CalibrationInputs)
+                length += InputFrame
+                    + Number(ordinal++)
+                    + NullLength // windowPosition
+                    + Text(CalibrationMasterKind)
+                    + NullLength // captureId
+                    + GuidLength // artifactId
+                    + NullLength // descriptorSha256
+                    + Text(master.PayloadSha256)
+                    + NullLength // outputIdentitySha256
+                    + Text(master.Kind);
+            foreach (var attempt in node.Attempts)
+                length += AttemptFrame
+                    + Number(attempt.AttemptNumber)
+                    + Instant(attempt.StartedUtc)
+                    + Instant(attempt.CompletedUtc)
+                    + Text(attempt.Status)
+                    + (attempt.Outcome is { } outcome ? Name(outcome) : NullLength)
+                    + Duration(attempt.Duration)
+                    + Name(attempt.ExecutionRoute);
+            foreach (var output in node.Outputs)
+                length += OutputFrame
+                    + Number(output.Ordinal)
+                    + Text(output.OutputIdentitySha256)
+                    + GuidLength // artifactId
+                    + Name(output.Role)
+                    + Text(output.PayloadSha256)
+                    // The identifiers are all one length, so their number is all that is needed of them.
+                    + ArrayFrame(output.SourceArtifactIds.Count) + (long)GuidLength * output.SourceArtifactIds.Count
+                    + Flag(output.Published);
+        }
+        return length;
+    }
+
+    // An object's braces, its member names in quotes with their colons, and the commas between its members.
+    private static int Frame(params string[] names) => 2 + names.Sum(static name => name.Length + 3) + names.Length - 1;
+
+    // An array's brackets and the commas between its elements.
+    private static long ArrayFrame(int count) => count == 0 ? 2 : count + 1L;
+
+    private static int Flag(bool value) => value ? 4 : 5;
+
+    private static int Number(int value)
+    {
+        var length = value < 0 ? 2 : 1;
+        for (var rest = Math.Abs((long)value) / 10; rest != 0; rest /= 10) length++;
+        return length;
+    }
+
+    // In quotes: "yyyy-MM-ddTHH:mm:ss", the fraction of a second without its trailing zeros and omitted when it is
+    // zero, and the offset as "+hh:mm".
+    private static int Instant(DateTimeOffset? value)
+    {
+        if (value is not { } instant) return NullLength;
+        var length = 2 + 19 + 6;
+        var fraction = instant.Ticks % TimeSpan.TicksPerSecond;
+        if (fraction == 0) return length;
+        length += 8;
+        for (; fraction % 10 == 0; fraction /= 10) length--;
+        return length;
+    }
+
+    // In quotes, the constant format the serializer writes a duration in.
+    private static int Duration(TimeSpan? value)
+    {
+        if (value is not { } duration) return NullLength;
+        Span<char> text = stackalloc char[32];
+        return duration.TryFormat(text, out var written, "c", CultureInfo.InvariantCulture)
+            ? written + 2 : throw new InvalidOperationException("A duration did not format.");
+    }
+
+    // The string enum converter writes a named value as its name in quotes and any other value as its number.
+    private static long Name<TEnum>(TEnum value) where TEnum : struct, Enum
+        => Enum.GetName(value) is { } name ? Text(name) : value.ToString().Length;
+
+    private static long Text(string? value) => value is null ? NullLength : 2 + Escaped(value);
+
+    // The serializer's default encoder: an ASCII character is written as it is unless JSON or HTML could misread it;
+    // the backslash and five controls take a two-byte escape; every other UTF-16 unit, a surrogate included, takes
+    // a six-byte \uXXXX escape.
+    private static long Escaped(string value)
+    {
+        long bytes = 0;
+        foreach (var character in value)
+            bytes += character switch
+            {
+                '\b' or '\t' or '\n' or '\f' or '\r' or '\\' => 2,
+                < ' ' or '"' or '&' or '\'' or '+' or '<' or '>' or '`' or >= '\u007f' => 6,
+                _ => 1
+            };
+        return bytes;
+    }
+
     private static bool HasRetainedArtifactBindings(ProcessingGraphExecutionNodeState node)
     {
         if (!node.ArtifactBindingsRetained) return false;
@@ -237,21 +335,4 @@ internal static class CameraAgentRunManifest
     }
 
     private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(char.IsAsciiHexDigit);
-
-    /// <summary>A write-only sink that keeps the number of bytes written and none of the bytes.</summary>
-    private sealed class LengthStream : Stream
-    {
-        private long length;
-        public override bool CanRead => false;
-        public override bool CanSeek => false;
-        public override bool CanWrite => true;
-        public override long Length => length;
-        public override long Position { get => length; set => throw new NotSupportedException(); }
-        public override void Flush() { }
-        public override void Write(byte[] buffer, int offset, int count) => length += count;
-        public override void Write(ReadOnlySpan<byte> buffer) => length += buffer.Length;
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-    }
 }
