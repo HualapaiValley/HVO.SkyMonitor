@@ -11,7 +11,9 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// which failed with exit 1 instead of a refusal (M3). At <c>40d7bf81</c>: malformed configuration metadata in a completed
 /// instance's records, which failed with exit 1 (M4); and adoption failures whose cause and remedy were cut at the same
 /// limit (M-new). At <c>adb401ba</c>: duplicated configuration metadata, which still failed with exit 1 (S1); and an
-/// adoption failure of an instance recorded without limits, whose cause was lost to an unexpected error (S2).
+/// adoption failure of an instance recorded without limits, whose cause was lost to an unexpected error (S2). At
+/// <c>12eb2146</c>: duplicated configuration metadata whose values are all text, which the typed reader accepted and the
+/// re-run adopted through (S1b).
 /// </summary>
 public sealed partial class InstallerFlowTests
 {
@@ -532,6 +534,83 @@ public sealed partial class InstallerFlowTests
             var manifest = await files.ManifestAsync();
             Assert.IsNull(manifest.Resources, "an instance recorded without limits keeps none");
             Assert.AreEqual(CameraConfiguration.Generate(request, manifest.ApplicationIdentity).Sha256, manifest.ConfigurationSha256);
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// S1b. A completed instance's manifest or result that names <c>configurationSha256</c> twice, both times as a valid
+    /// lowercase SHA-256, whether the two agree or not, reads as valid to the typed reader, which keeps the last. No
+    /// installer writes it, so it is refused like any other malformed configuration metadata: exit 3, naming the record,
+    /// the field and the remedy, <c>errorCode</c> <c>refused</c> under <c>--json</c>, and nothing changes, by the plan and
+    /// the run alike. Before the review every one exited 0, and each run adopted and recreated the container.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("manifest", "identical", "plan")]
+    [DataRow("manifest", "identical", "run")]
+    [DataRow("manifest", "identical", "json")]
+    [DataRow("manifest", "conflicting", "plan")]
+    [DataRow("manifest", "conflicting", "run")]
+    [DataRow("manifest", "conflicting", "json")]
+    [DataRow("result", "identical", "plan")]
+    [DataRow("result", "identical", "run")]
+    [DataRow("result", "identical", "json")]
+    [DataRow("result", "conflicting", "plan")]
+    [DataRow("result", "conflicting", "run")]
+    [DataRow("result", "conflicting", "json")]
+    public async Task DuplicatedTextConfigurationMetadata_IsRefusedNamingTheRecordAndChangesNothing(
+        string record, string duplicate, string mode)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(duplicate);
+        ArgumentNullException.ThrowIfNull(mode);
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.NewGuid());
+        var runner = DefaultsDaemon(request, root, CloudDefaults);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var files = InstalledFiles.Of(await InstallBefore1722Async(request, runner, owner), root);
+            var path = record == "manifest" ? files.Manifest : files.Result;
+            var text = await File.ReadAllTextAsync(path);
+            var property = System.Text.RegularExpressions.Regex.Matches(
+                text, "\"configurationSha256\"\\s*:\\s*\"[0-9a-f]{64}\"", System.Text.RegularExpressions.RegexOptions.None,
+                TimeSpan.FromSeconds(5));
+            Assert.HasCount(1, property);
+            // Both values are text and valid SHA-256s; the typed reader keeps the last, the installed identity.
+            var first = duplicate == "identical"
+                ? property[0].Value
+                : "\"configurationSha256\":\"" + new string('e', 64) + "\"";
+            await File.WriteAllTextAsync(path, text.Replace(property[0].Value, first + "," + property[0].Value, StringComparison.Ordinal));
+            var configuration = await File.ReadAllTextAsync(files.Configuration);
+
+            var attempt = await RunInstallProgramAsync(mode switch
+            {
+                "plan" => request with { DryRun = true },
+                "json" => request with { Json = true },
+                _ => request
+            }, runner, owner);
+
+            Assert.AreEqual((int)InstallerExitCode.Refused, attempt.ExitCode, attempt.Output + attempt.Error);
+            StringAssert.Contains(attempt.Message, path, StringComparison.Ordinal);
+            StringAssert.Contains(attempt.Message, files.Configuration, StringComparison.Ordinal);
+            StringAssert.Contains(attempt.Message, "configurationSha256 (duplicated)", StringComparison.Ordinal);
+            StringAssert.Contains(attempt.Message, "Restore the instance's records from a backup", StringComparison.Ordinal);
+            attempt.AssertChangedNothing($"{duplicate} duplicated {record} configuration metadata changed something");
+            Assert.AreEqual(configuration, await File.ReadAllTextAsync(files.Configuration), "camera-module.json was rewritten");
+            if (mode == "json")
+            {
+                Assert.AreEqual("refused", attempt.ErrorCode);
+            }
+            else
+            {
+                StringAssert.StartsWith(attempt.Error, "Installation refused: ", StringComparison.Ordinal);
+                StringAssert.EndsWith(attempt.Error, "Nothing was changed.", StringComparison.Ordinal);
+            }
         }
         finally
         {

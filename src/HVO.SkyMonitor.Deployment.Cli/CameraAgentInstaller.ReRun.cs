@@ -39,13 +39,15 @@ internal sealed partial class CameraAgentInstaller
 
         // A completed instance's record whose camera-configuration metadata the strict reader cannot accept is a
         // configuration the installer cannot explain: refused, naming the record, each field and the remedy, before
-        // anything changes (Refs #1779). Any other fault of a record, and every record of an unfinished install, fails as
-        // it always has.
+        // anything changes (Refs #1779). So is one the strict reader accepts only by keeping the last of a field named
+        // more than once, which no installer writes. Any other fault of a record, and every record of an unfinished
+        // install, fails as it always has.
         async Task<T> ReadRecordAsync<T>(string path, Func<Task<T>> read)
         {
+            T record;
             try
             {
-                return await read().ConfigureAwait(false);
+                record = await read().ConfigureAwait(false);
             }
             catch (InstallerException exception) when (completed && !exception.IsRefusal)
             {
@@ -57,6 +59,12 @@ internal sealed partial class CameraAgentInstaller
                 throw CameraConfigurationRefusals.MalformedConfigurationMetadata(
                     state.InstanceId, path, Path.Combine(paths.ConfigRoot, "camera-module.json"), malformed, exception);
             }
+            if (completed && record is not null && MalformedConfigurationMetadata(path) is { Count: > 0 } accepted)
+            {
+                throw CameraConfigurationRefusals.MalformedConfigurationMetadata(
+                    state.InstanceId, path, Path.Combine(paths.ConfigRoot, "camera-module.json"), accepted);
+            }
+            return record;
         }
     }
 

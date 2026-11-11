@@ -53,7 +53,7 @@ internal static class CameraConfigurationRefusals
     /// </summary>
     public static InstallerException MalformedConfigurationMetadata(
         Guid instanceId, string recordPath, string configurationPath, IReadOnlyList<(string Field, string Problem)> malformed,
-        Exception innerException)
+        Exception? innerException = null)
     {
         ArgumentNullException.ThrowIfNull(malformed);
         var changed = malformed.Select(static entry => entry.Field + " (" + entry.Problem + ")");
