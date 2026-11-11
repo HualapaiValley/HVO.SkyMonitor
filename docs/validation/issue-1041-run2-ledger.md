@@ -5,8 +5,9 @@ Refs #1041. This report supersedes the withdrawn completeness verdict at
 (widget t356s2122, relayed by Kepler): out-of-band tampering moves from the next
 protected read to the next full scrub. No other guarantee is relaxed.
 
-Status: implementation/evidence in progress. Required HIGH re-reviews belong to
-Kepler; this report is not a Sol/Opus approval or permission to create a PR.
+Status: implementation/local evidence complete for the approved software scope.
+Required HIGH re-reviews belong to Kepler; this report is not a Sol/Opus approval
+or permission to create a PR.
 
 ## Sources and scope
 
@@ -19,7 +20,7 @@ attribution sources; their old 35,049 ms/small-fixture results are not current
 measurements. The prior full-byte cache did not solve the linear-I/O problem.
 The design was pushed before product edits in `1b1bbf1f`, linked from
 [issuecomment-6779992529](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779992529).
-The issue body and all 31 comments were refreshed on Nov 11 at 03:34 UTC, including
+The issue body and all 36 comments were refreshed on Nov 11 at 06:22 UTC, including
 the original 13 comments, the withdrawn run-1 verdict and run-2 approval. Roy's
 Nov 10 implementation authorization and later Option A approval supersede the
 older attribution-only queue scope. The incident figures are the supplied signed
@@ -155,12 +156,11 @@ remain compatible with the protected HTTP success contract, but paired-state
 rollback requires the updated installer. This compatibility change is explicit;
 no identity, authentication or integrity check is bypassed.
 
-Focused evidence so far: **70/70** CLI cases and **121/121** adoption/staging cases.
+Focused adoption evidence: **70/70** CLI cases and **121/121** adoption/staging cases.
 The first adoption run had one incorrect crash-hook setup (120 passed/1 failed):
 the hook fired before history existed; it now interrupts after history
-publication. The actual pre-seal-image upgrade/rollback campaign and immutable
-candidate gates remain pending. The `18ef8881` measurement/gate tables below are
-historical until repeated on the sealed-history candidate.
+publication. The actual pre-seal-image upgrade/rollback campaign passes on the immutable
+candidate. The scale tables below are renewed on `0db46e64`; `18ef8881` measurements remain historical evidence.
 
 ### Preserving post-snapshot files during database rollback
 
@@ -194,7 +194,7 @@ Focused correction evidence: **128/128** protected-store/staging cases and
 **70/70** CLI cases pass warning-clean. Real-store cases exercise current file
 preservation, tampered proofs, cancellation before and after ledger installation,
 incomplete-overlay recovery, new-file cache invalidation and live-owner refusal.
-The immutable-candidate campaign and broader gates remain pending.
+Both immutable-candidate actual-image campaigns pass: the dedicated pre-seal upgrade/rollback and the complete current-image installer campaign. Canonical gate totals are recorded below.
 
 ## Managed-writer inventory
 
@@ -273,28 +273,28 @@ corrections are owner evidence; they are not independent CLEAN verdicts.
 | R1: current costs and 100k+ bounded endpoint | Fixed checkpoint plus fresh current identity, no retained scan; exact product/capture counts | Real endpoint scale, warm and fixture-only evicted at 100,001/300,000 sidecars | PASS; all three cohorts, zero retained scans/parses |
 | R2: tamper/schema/corruption and retained provenance | Approved scrub boundary; managed validation; authenticated expected set; strict qualification | OutOfBandBoundary, LedgerTamper, WarmIndexRejectsInvalid, startup/quarantine tests | PASS at tested candidate |
 | R3: authoritative identity/readiness and concurrent edits | Exact config snapshot/freshness callback; history/manual/owner state fresh; no fast-path authority changes | QualifiedProtectedRead, StaleBackgroundConfiguration, actual delayed/config/manual/authenticated endpoint edits | PASS at tested candidate |
-| R4: installer budget/auth/comparisons/pre-mutation | Existing #1042 shared 120s finite policy and transport protections; only explicit pending-scrub responses retry within that budget | Existing owner client/resume tests; upgrade/rollback/backup mismatch/timeout/cancel/plan cases; full disposable installer campaign | PASS; CLI reused only with identical source closure |
+| R4: installer budget/auth/comparisons/pre-mutation | Existing #1042 shared 120s finite policy and transport protections; only explicit pending-scrub responses retry within that budget | Existing owner client/resume tests; upgrade/rollback/backup mismatch/timeout/cancel/plan cases; full disposable installer campaign | PASS; full CLI selection rerun with the corrected candidate-only fixture expectations |
 | R5: cancellation/failure/progress | Independent coalesced scrub; canceled full scan saves individually valid proofs only | DirtyEndpoint, MidScanCancellation, optional-index fault tests | PASS at tested candidate |
 | R6: invalidation/concurrency/writers | Exact expected-entry updates, dirty refusal, changed-generation merge and finite waits | ManagedPublishCopyMoveRetention, NativeStagePublicationCompletionDeletionAndReconciliationRemainQualifiedAcrossRestart, concurrent scrub/writer, daily deadline, raw journal integration | PASS at tested candidate |
 | R7: crash/restore/rollback | New epoch always unqualified; pending declared results verified; no reset | Actual SIGKILL before/after/torn write; paired restore/rollback and incomplete-restore tests; full disposable campaign | PASS at tested candidate |
 | R8: compatibility/adoption | Wire fields/auth unchanged; currently running agent always answers | Matrix below; existing endpoint/CLI contracts | PASS; current-source contracts and matrix |
-| R9: HIGH/Tier C validation | Classifier-selected affected gates, canonical coverage and four CI guards | Exact range/classifier and command/TRX ledger | Pending |
+| R9: HIGH/Tier C validation | Classifier-selected affected gates, canonical coverage and four CI guards | Exact range/classifier and command/TRX ledger below | PASS |
 
 ## Compatibility
 
 | Installer | Running agent | Behavior |
 | --- | --- | --- |
-| Old | New | Same success wire contract and comparisons; qualified reads benefit; 503 requires later retry after scrub |
+| Old | New | Same success wire contract and comparisons; qualified reads benefit; 503 requires later retry after scrub; paired-state rollback requires the updated installer |
 | New | Old | Same finite client deadline/comparisons; old full-scan endpoint can still exceed 120 seconds |
-| New | New | Bounded qualified reads; explicit pending responses retry within the original aggregate 120s budget; no identity or mutation until requalified |
+| New | New | Bounded qualified reads; explicit pending responses share the original 120s budget; no identity or mutation until requalified; database rollback requires a compatible ledger, with complete paired backup for pre-ledger targets |
 
 Pre-mutation verification always executes on the currently running agent. A
 server-only fix cannot unblock pre-upgrade verification of an already-slow old
 runtime. The fresh empty instance is an adoption window, not a correctness
 assumption. There is no timeout increase, unbounded retry, identity bypass or reset.
 `--plan` still returns before the protected pre-mutation read and remains dry-run.
-An old agent writing a corpus after rollback cannot maintain a ledger it does not
-understand: a subsequent new agent detects that drift and refuses qualification.
+An agent that predates the ledger cannot maintain it when writing after rollback:
+a subsequent new agent detects that drift and refuses qualification.
 Development policy permits such upgrade incompatibility; it is disclosed rather
 than silently trusting old-writer changes.
 
@@ -317,10 +317,16 @@ must requalify in a fresh store epoch and reuse all existing artifact proofs;
 only the newly published auxiliary state is parsed. The extra restart phase
 is candidate-only and follows every timed endpoint/publication sample.
 
-The measured product/test candidate is
-`18ef888157ae6632bdf38b4a7e2215b16d2a3d91`. The final handoff commit adds only
-documentation/evidence. Product, tests, scripts, workflow and pinned toolchain
-trees are compared with that immutable tested candidate. Each reused selection
+The measured product candidate is
+`0db46e64a1ef30aef4bc38655f0a4459e3999efc`. The final handoff commit adds
+documentation/evidence and three test-expectation corrections: the candidate-side
+reader-floor value, explicit snapshot inventory/restore boundaries, and the
+manual-history sealed field contract. Both
+actual consumers rebuild warning-clean in Debug/Release and rerun their full
+canonical selections with frozen test-source fingerprints. Frozen previous-release
+image labels, SQL images and prior values are unchanged. Product, scripts, workflow
+and pinned toolchain trees remain byte-identical to that immutable candidate;
+final test blobs are matched to the executed fingerprints. Each reused selection
 retains its actual tested SHA and a byte-identical transitive source-closure
 proof; no previous failed run is credited as a pass. Historical run-1/reviewer
 numbers are not represented as current results.
@@ -345,13 +351,13 @@ Median endpoint latency, milliseconds:
 
 | Sidecars | Captures / journal rows | Products per capture | Baseline warm → ledger warm | Baseline evicted → ledger evicted |
 | ---: | ---: | ---: | ---: | ---: |
-| 100,001 | 100,001 | 1 | 3,203.62 → **35.17** | 6,146.69 → **42.87** |
-| 300,000 | 300,000 | 1 | 9,337.26 → **28.86** | 18,922.44 → **25.22** |
-| 300,000 | 100,000 | 3 | 6,824.69 → **37.47** | 15,257.04 → **22.66** |
+| 100,001 | 100,001 | 1 | 3,203.62 → **35.80** | 6,146.69 → **56.86** |
+| 300,000 | 300,000 | 1 | 9,337.26 → **20.86** | 18,922.44 → **22.09** |
+| 300,000 | 100,000 | 3 | 6,824.69 → **28.08** | 15,257.04 → **21.39** |
 
 All qualified candidate samples perform **zero retained-scan spans and zero
-artifact parses**. The largest warm sample is 40.91 ms; the largest evicted
-sample is 53.18 ms. The implementation's fixed checkpoint path and the
+artifact parses**. The largest warm sample is 37.75 ms; the largest evicted
+sample is 872.81 ms. The implementation's fixed checkpoint path and the
 no-traversal/concurrent-read test establish the bounded work; three samples do
 not establish a universal latency distribution. Timing variation between cohorts
 is not evidence that larger histories make the endpoint faster.
@@ -368,9 +374,9 @@ Median allocation and logical I/O per warm GET:
 
 | Sidecars / captures | Baseline allocation → ledger (MiB) | Baseline logical reads → ledger (bytes) | Baseline → ledger maximum sampled process peak (MiB) |
 | ---: | ---: | ---: | ---: |
-| 100,001 / 100,001 | 2,576.58 → 7.92 | 655,420,480 → 39,116 | 297.41 → 330.58 |
-| 300,000 / 300,000 | 7,714.58 → 7.53 | 1,966,306,187 → 39,844 | 391.37 → 437.62 |
-| 300,000 / 100,000 | 5,463.77 → 7.54 | 1,155,545,431 → 41,232 | 424.26 → 512.46 |
+| 100,001 / 100,001 | 2,576.58 → 7.92 | 655,420,480 → 39,049 | 297.41 → 323.93 |
+| 300,000 / 300,000 | 7,714.58 → 7.53 | 1,966,306,187 → 40,107 | 391.37 → 452.99 |
+| 300,000 / 100,000 | 5,463.77 → 7.53 | 1,155,545,431 → 41,120 | 424.26 → 526.58 |
 
 The peak column includes warm and evicted timed samples and process history up
 to those samples, including corpus construction; it is not peak heap or a
@@ -387,12 +393,9 @@ Full qualification and durable restart, seconds (separate linear work):
 
 | Sidecars / captures | Initial qualification | Restart with retained ledger/proofs | Persisted parse proofs after auxiliary publication/restart |
 | ---: | ---: | ---: | ---: |
-| 100,001 / 100,001 | 32.92 | 26.38 | 100,002 |
-| 300,000 / 300,000 | 97.08 | 78.76 | 300,001 |
-| 300,000 / 100,000 | 83.62 | 60.96 | 300,001 |
-
-Qualification/restart rows are not cold-start benchmarks: fixture validation and
-checksum checks may warm retained pages before those phases.
+| 100,001 / 100,001 | 33.04 | 26.28 | 100,002 |
+| 300,000 / 300,000 | 97.82 | 79.46 | 300,001 |
+| 300,000 / 100,000 | 84.20 | 63.07 | 300,001 |
 
 Restart does not clear the ledger or reuse process readiness. Each new store
 fully verifies current retained bytes and expected state, reuses every old
@@ -400,7 +403,7 @@ artifact proof and parses exactly **one** new auxiliary-JSON value. Proof totals
 include that value. This demonstrates no 262,144-proof overflow cliff. Initial experimental qualification
 imports a legacy synthetic corpus by discarding only the previously asserted
 empty fixture ledger; this is not a recovery procedure for an installed agent.
-The renewed initial 300,000-capture qualification took **97.08 seconds**. An
+The renewed initial 300,000-capture qualification took **97.82 seconds**. An
 earlier `ce7210d3` run took **123.91 seconds**, already beyond the client budget;
 that historical observation is not substituted for the current table. The client still stops at 120 seconds; the coalesced
 host-owned scrub continues so a later resume can use completed qualification.
@@ -412,12 +415,12 @@ safely on that separate qualification phase.
 
 Five prepared/fsynced auxiliary publications per cohort also retain immediate
 qualified identity. Median durable publication latency is baseline
-4.84 / 5.43 / 6.01 ms versus ledger **11.27 / 12.49 / 12.57 ms**.
-Candidate median allocation is 0.177 / 0.196 / 0.197 MiB versus about 0.020 MiB.
+4.84 / 5.43 / 6.01 ms versus ledger **9.40 / 9.02 / 13.95 ms**.
+Candidate median allocation is 0.197 / 0.195 / 0.197 MiB versus about 0.020 MiB.
 The extra work is authenticated pending intent, FULL-synchronous changed-entry
 transactions and atomic/fsynced checkpoint publication. This is an explicit
 per-write durability cost, without a whole-corpus scan. The five-operation bursts
-measure 77.67 / 85.48 / 83.53 operations/second with the ledger versus
+measure 89.04 / 107.18 / 65.17 operations/second with the ledger versus
 217.76 / 211.88 / 170.96 for baseline; these short bursts are not sustained
 capture/pipeline throughput. Physical storage, a Pi, concurrent acquisition load
 and production adoption are not qualified by these synthetic Linux observations.
@@ -426,37 +429,123 @@ Raw logs, TRX, build artifacts and disposable fixtures stay ignored under
 `TestResults/issue-1041-run2`; committed artifacts contain sanitized observations,
 hashes and commands rather than endpoint payloads, credentials or private paths.
 
+## Scale reproduction and corpus construction
+
+The committed [real-endpoint harness](../../tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.IndexScale.cs)
+and [fixture](../../tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/Infrastructure/InstallationReadAttributionFixture.cs)
+construct deterministic capture/artifact IDs, serialize and validate current v2
+contracts, write production-shaped `frames/.../<role>` metadata files, and insert
+one raw row per capture into a real v15 journal in one disposable bulk transaction.
+No image payload is materialized. Raw/Preview/AnnotatedPreview fan-out accounts
+for the three-product cohort. The candidate's privileged fixture reconstructs a
+signed genuine-legacy history shape **only after asserting its ledger was empty**;
+this measures initial adoption of that synthetic corpus. It is not a product
+reset/recovery path. Subsequent restart retains the established ledger, nonce and
+parse index. Negative cleared-ledger tests separately prove established history
+cannot use that fixture shortcut.
+
+Build Release with the pinned SDK before applying CPU/heap constraints. Generate
+owner configuration using the supplied BCL helper and the built installer assembly;
+the helper calls `CameraConfiguration.Generate` without installing anything. Set
+`ISSUE_CONFIG_GENERATOR` to that helper's compiled DLL. With a fresh private short
+root and no live token, the candidate run used the following equivalent command:
+
+```bash
+umask 077
+export TMPDIR="$(mktemp -d /tmp/i41.XXXX)"
+mkdir -p "$TMPDIR/evidence"
+dotnet "$ISSUE_CONFIG_GENERATOR" \
+  src/HVO.SkyMonitor.Deployment.Cli/bin/Release/net10.0/HVO.SkyMonitor.Deployment.Cli.dll \
+  "$TMPDIR/owner-configuration.json"
+issue_cpu="$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+flock -o /tmp/hvo-heavy-gate.lock env \
+  DOCKER_HOST=unix:///tmp/hvo-no-docker.sock \
+  HVO_INSTALLATION_READ_OWNER_CONFIGURATION="$TMPDIR/owner-configuration.json" \
+  HVO_INSTALLATION_READ_EXPECT_INDEX=1 \
+  HVO_INSTALLATION_READ_EVIDENCE_DIR="$TMPDIR/evidence" \
+  HVO_ATTRIBUTION_REVISION="$(git rev-parse HEAD)" \
+  DOTNET_PROCESSOR_COUNT=1 DOTNET_GCHeapHardLimit=0x40000000 \
+  taskset -c "$issue_cpu" dotnet test \
+  tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests \
+  --no-build --no-restore --configuration Release \
+  --filter FullyQualifiedName~RealEndpointRetainedIndexScaleWithEvictedCache \
+  --logger 'trx;LogFileName=ledger-scale.trx' \
+  --results-directory "$TMPDIR/evidence"
+```
+
+Every build/test must use that short `TMPDIR`; take the heavy lock for builds and
+large runs. Compile the BCL helper with SDK 10.0.402 as a net10.0 console app. The
+baseline archive uses the pinned `0dc79eb5` product tree with this test harness;
+`HVO_BASELINE` selects only its test-only compatibility branches, and
+`HVO_INSTALLATION_READ_EXPECT_INDEX=0` disables candidate-only proof assertions.
+No baseline product source is edited. Keep raw fixture identities/paths private;
+committed results normalize identities to hashes. Compare all three ordered
+manifest-stream hashes and complete semantic identity fields, allowing only the
+different disposable storage roots' configuration hash.
+
 ## Local candidate gate
 
 Target profile: `development/v1` Preflight + Build and Unit. HIGH/Tier C issue
 acceptance additionally requires the local affected Integration, canonical
 coverage, lifecycle and scale evidence; no full-qualification workflow was
 dispatched. The selector is `scripts/ci:classify` on the original base
-`d122742c..18ef8881`, review correction `c4069b8c..18ef8881` and final native
-correction `ce7210d3..18ef8881`. Full-range classification is `mode=full`,
-`complete=false`, CameraAgent/combined/delivery plus exhaustive installer;
-shared/LogicHost/catalog/shards are not newly selected. Native-correction
-classification selects CameraAgent/combined. A successful classifier with
-`complete=false` remains authoritative.
+`d122742c..0db46e64`, review correction `c4069b8c..0db46e64` and sealed-history
+correction `18ef8881..0db46e64`, then again on the final exact range. Full-range
+classification is `mode=full`, `complete=true`, all components plus exhaustive
+installer and release scripts, because the ARM64 reader-floor parity change
+selects that scope. This chooses local evidence; the protected target profile
+remains development-v1 and no full workflow is dispatched.
 
-Canonical Unit: **15,780 passed / 3 existing not executed / 0 failed**, across
+Canonical Unit: **15,799 passed / 3 existing not executed / 0 failed**, across
 21 selections. The three exclusions are the unavailable HYG 4.4 cross-lineage
 catalog prerequisite, the Linux-inapplicable platform guard, and an unreachable
-provider ambiguous-delete state. No new skip was added. Fifteen Unit and two
+provider ambiguous-delete state. No new skip was added. Thirteen Unit and two
 Integration selections retain earlier results only with complete source-closure
-proofs from their actual tested SHA; affected CameraAgent/combined and
-Architecture/static checks rerun.
+proofs from their actual tested SHA. Both actual consumers of the changed
+previous-release expectation fixture rerun; the later manual-history correction
+also reruns CameraAgent. Other reused assemblies do not consume that fixture.
 
-Full Debug and Release solution builds pass with zero warnings/errors. Focused
-store **86/86**, endpoint/startup **6/6**, native staging **30/30**, and unchanged
-owner-client **40/40** pass. All four CI-control guards, full formatting, package,
-operations-doc, catalog/category audits and five deployment/filesystem contract
-guards pass. The complete fresh local installer campaign passes all five
-contract checkpoints with zero verification timeouts. Eight process runs,
-including three SIGKILLs, and the actual configuration-edit probe pass.
+Canonical Integration: **1,191/1,191 passed**, plus **7/7 Architecture
+Integration passed**. This matches all 1,198 discovered Integration cases;
+Acceptance **32/32** is included. No Integration failure or exclusion remains.
 
-Remaining canonical Integration, coverage/publish/migration totals are finalized
-from the normalized command/TRX ledger after their current run finishes.
+Full Debug and Release solution builds pass with zero warnings/errors. All
+three final test-source corrections rebuild their affected projects in both
+configurations, also with zero warnings/errors. Focused store **98/98**,
+endpoint/startup **6/6**, native staging **30/30**,
+owner-client **40/40**, lifecycle pre-mutation **15/15**, snapshot expectations
+**8/8** and manual location **27/27** pass. These focused counts overlap the
+canonical selections and are not added to their totals.
+
+Full formatting, package/operations-doc/catalog/category audits, all four
+CI-control guards (`ci:shell-syntax`, `test:ci-classification`,
+`test:coordination-guard`, `test:pr-review-tools`), five deployment/filesystem
+contract guards and selected release-script contracts pass. Final exact-range
+classification, the four guards, operations-doc audit, whitespace and source
+comparison are checked again after the handoff commit; the ignored final-head
+verification artifact binds that result to the pushed head.
+
+All selected canonical component coverage gates pass:
+
+| Component | Line | Branch | Gate |
+| --- | ---: | ---: | --- |
+| shared | 90.2437% | 74.8647% | PASS |
+| cameraagent | 90.5995% | 77.3981% | PASS |
+| logichost | 84.3606% | 67.6562% | PASS |
+| combined | 34.6233% | 20.3190% | PASS |
+| delivery | 91.5469% | 77.9899% | PASS |
+
+Shared, CameraAgent, LogicHost and delivery component publishes pass. Architecture
+Integration and explicit installer/replay-runner/processing-runner linux-x64 and
+linux-arm64 publishes pass. Both canonical migration checks, EF pending-model
+checks and coverage policy pass. No baseline or category requirement is weakened.
+
+Both actual-image campaigns pass with zero verification timeouts: the dedicated
+pre-seal `18ef8881` upgrade/paired rollback and complete current-image installer
+campaign (all five contract checkpoints). Eight actual process runs, including
+three SIGKILLs, and the actual mid-load configuration-edit probe pass. Heavy work
+holds the host lock; Docker-free work uses an invalid endpoint, while required
+Docker fixtures use only the local disposable daemon.
 
 ## Evidence interpretation and remaining limits
 
@@ -540,3 +629,37 @@ and combined selections, Architecture/static checks, both builds, focused and
 crash/edit probes, real-endpoint scale, guards, coverage/publish/migration and the
 installer campaign rerun on the current candidate. No unrelated expensive suite
 is rerun solely because the candidate SHA changed.
+
+
+The first full CLI selection on `0db46e64` recorded **3,186 passed / 4 failed /
+1 existing not executed**. Two failures came from the candidate-side declared
+reader floor still naming the earlier nightly-products boundary; frozen
+previous-release values were correct and unchanged. The other failures expected
+only the old database inventory and seven restore steps, omitting the new
+optional ledger inventory and protected-marker absence step. The corrected tests
+assert all four protected-file inventory entries/absence, the optional ledger,
+and the exact eight restore steps, retaining every power-loss replay and bulk
+preservation assertion. A first corrected build hit CA1861 for local expected
+arrays; static readonly arrays resolved that analyzer failure. Failed reports
+and source fingerprints remain in the command ledger; successful affected reruns
+pass and are recorded separately from the earlier campaigns.
+
+
+The next full CameraAgent Unit selection recorded **8,078 passed / 1 failed /
+1 existing not executed**. Its manual-location history-property assertion still
+expected the pre-seal ten-field document. That fixture now asserts the current
+sealed contract and preservation of the exact original nonce across manual
+activation/restart. Its name no longer promises unconditional pre-seal-reader
+compatibility; older-reader rollback is the separately proven paired restore.
+The complete failed report is retained. CameraAgent rebuilds warning-clean in
+both configurations; the complete manual class passes 27/27 and the full canonical
+Unit selection passes 8,079/8,080 with its one existing platform exclusion. The already-passing CLI selection uses its earlier two-file
+fingerprint, whose inputs remain byte-identical; the third changed input belongs
+only to CameraAgent.Tests.
+
+
+Owner completeness verdict: **RESOLVED for the approved implementation and local
+software-evidence scope**. Required behavior and evidence map above; remaining
+limits are explicit. The parent stays OPEN. Kepler must obtain independent Sol
+and Opus HIGH correction/completeness verdicts on the final candidate. No CLEAN
+review, PR readiness, production qualification or issue closure is claimed here.

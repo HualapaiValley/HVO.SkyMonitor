@@ -121,9 +121,23 @@ Scrubs run at startup before trusting the new process, after dirty/unknown state
 crash/rollback/restore, and every 24 hours while running. The periodic job and
 recovery job are cancelable on host shutdown. A periodic scrub's failure keeps
 verification unqualified; the recovery UI/startup tolerance is preserved. A
-fresh process may adopt a missing/incompatible ledger only by complete original
-contract/history verification, never by trusting cached metadata. Authenticated
-expected digests distinguish drift from registered managed updates.
+legacy history that has never sealed a ledger may adopt one only by complete
+original contract/history verification, never by trusting cached metadata.
+Established protected history seals the original ledger nonce: missing,
+mismatched or damaged required state refuses qualification and is never reset
+or treated as legacy adoption. A changed validator requires a new full scrub
+against authenticated expected digests, which distinguish drift from registered
+managed updates.
+
+Migrating rollback pairs the small protected history/marker/checkpoint files with
+SQLite state. It authenticates complete current and snapshot ledger commitments,
+preserves current retained-file expectations and restores snapshot journal
+expectations; it never creates proofs from unchecked file bytes. Interrupted
+restore overlays are bound to those authenticated sources and must be reverified.
+A pre-ledger database snapshot cannot preserve current file proofs and refuses
+before mutation when current ledger state exists; use a complete paired backup.
+The restarted agent always full-scrubs before trust. The current report records
+the actual pre-seal image upgrade/rollback and incomplete-restore evidence.
 
 Current configuration, owner readiness, rig/schedule/catalog comparisons and
 protected history remain fresh on every protected read. Background revalidation

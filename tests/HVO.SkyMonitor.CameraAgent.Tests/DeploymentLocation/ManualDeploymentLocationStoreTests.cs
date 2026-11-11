@@ -36,7 +36,8 @@ public sealed class ManualDeploymentLocationStoreTests
         "candidate",
         "configurationSeed",
         "activatedAtUtc",
-        "sourceKinds"
+        "sourceKinds",
+        "retainedIntegrityNonce"
     ];
 
     private string _root = null!;
@@ -104,12 +105,15 @@ public sealed class ManualDeploymentLocationStoreTests
     }
 
     [TestMethod]
-    public async Task ApplyManualAsync_LeavesTheProtectedHistoryDocumentSchemaRollbackCompatible()
+    public async Task ApplyManualAsync_PreservesTheSealedHistoryContractAcrossRestart()
     {
         var seed = CreateSeed(35.347, -113.878, 0, "America/Phoenix");
+        string retainedIntegrityNonce;
         using (var store = CreateStore())
         {
             _ = await store.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+            retainedIntegrityNonce = JsonNode.Parse(_protector.Unprotect(
+                await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false)))!["retainedIntegrityNonce"]!.GetValue<string>();
             _ = await store.ApplyManualAsync(
                 Request(-31.2733, 149.07, 1165, "Australia/Sydney", expectedVersion: 1),
                 CancellationToken.None).ConfigureAwait(false);
@@ -125,8 +129,10 @@ public sealed class ManualDeploymentLocationStoreTests
         CollectionAssert.AreEquivalent(
             ExpectedCanonicalHistoryProperties,
             canonical.Select(static pair => pair.Key).ToArray());
+        Assert.AreEqual(retainedIntegrityNonce, canonical["retainedIntegrityNonce"]!.GetValue<string>());
         Assert.AreEqual("Manual", canonical["sourceKinds"]!["2"]!.GetValue<string>());
-        // The seed a rolled-back baseline validates against must match its own latest snapshot.
+        // Manual activation keeps the current reader contract and seed. Crossing the sealed-history reader boundary
+        // on rollback restores paired protected state, as exercised by the actual older-image installer campaign.
         Assert.AreEqual(
             "Australia/Sydney",
             canonical["configurationSeed"]!["coordinates"]!["timeZoneId"]!.GetValue<string>());

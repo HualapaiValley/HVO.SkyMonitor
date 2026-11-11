@@ -2797,14 +2797,18 @@ finite 120-second budget and refuses mutation on failure. Older installers fail
 on pending state; retry their lifecycle command after revalidation completes. Do not
 increase the timeout or bypass identity comparisons. Full scrubs remain linear
 background/startup work and may temporarily refuse verification.
+On larger histories or slower storage, startup qualification can also exhaust
+the separate three-minute lifecycle health budget. The bounded protected-read
+path does not establish a universal successful startup time; preserve the
+failure evidence and let Kepler plan adoption/recovery without bypassing checks.
 
 Every restart, crash, restore or rollback requires a full scrub before a new
 process can trust the checkpoint. Pending declared writes are validated against
 their intended result. Incomplete restores, unexplained file/ledger drift and
 damaged authoritative state refuse verification. Restore paired retained state
 and ledger from a known-good backup or repair through an explicitly authorized
-procedure; never delete the ledger/evidence to force adoption. An older agent
-cannot maintain this ledger when it writes after rollback, so a later new agent
+procedure; never delete the ledger/evidence to force adoption. An agent that
+predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
 Protected history seals the original integrity-ledger nonce. Removing both ledger
