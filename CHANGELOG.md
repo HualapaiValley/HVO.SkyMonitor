@@ -15,6 +15,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781
 - A lone retained capture stays visible on the Observing Day timeline. Products Library shows a still product's recorded result when its run finished while the page was being read, and reports hourly segment progress for a queued daily time-lapse instead of "Not started". A cancelled lifecycle receipt names who cancelled by actor label and shows the time in site time. Refs #1781
 
+- HYG 4.2 catalog builds and catalog fixture recipes reproduce the approved checksums independently of SQLite's secure-deletion default, including the isolated SQLite 3.45.1 CLI. Refs #1773
+
 - The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
 
 - System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
