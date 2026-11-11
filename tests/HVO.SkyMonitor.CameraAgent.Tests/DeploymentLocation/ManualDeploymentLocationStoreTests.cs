@@ -368,6 +368,7 @@ public sealed class ManualDeploymentLocationStoreTests
         Assert.AreEqual(1L, proposing.Active!.Version);
         Assert.IsTrue(proposing.Manual.StagedAcknowledgementPending);
 
+        proposing.Dispose();
         _timeProvider.UtcNow = Now.AddSeconds(2);
         using var activated = CreateStore();
         var acknowledged = await activated.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);

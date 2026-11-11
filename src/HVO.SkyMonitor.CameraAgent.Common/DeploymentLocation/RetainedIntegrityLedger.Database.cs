@@ -26,12 +26,15 @@ internal sealed partial class RetainedIntegrityLedger
 
     private void OpenSchema()
     {
+        Sqlite.SqliteConnectionConfigurationGate.Run(() =>
+        {
+            Execute("PRAGMA busy_timeout=100;");
+            Execute("PRAGMA trusted_schema=OFF;");
+            Execute("PRAGMA journal_mode=DELETE;");
+            Execute("PRAGMA synchronous=FULL;");
+            Execute("PRAGMA cache_size=-4096;");
+        });
         Execute("""
-            PRAGMA busy_timeout=100;
-            PRAGMA trusted_schema=OFF;
-            PRAGMA journal_mode=DELETE;
-            PRAGMA synchronous=FULL;
-            PRAGMA cache_size=-4096;
             CREATE TABLE IF NOT EXISTS entries(key TEXT PRIMARY KEY,digest BLOB NOT NULL,kind INTEGER NOT NULL,generation INTEGER NOT NULL,auth BLOB NOT NULL) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS scan_entries(key TEXT PRIMARY KEY,digest BLOB NOT NULL,kind INTEGER NOT NULL,generation INTEGER NOT NULL,auth BLOB NOT NULL) WITHOUT ROWID;
             CREATE TABLE IF NOT EXISTS pending(key TEXT PRIMARY KEY,tree INTEGER NOT NULL,generation INTEGER NOT NULL,planned TEXT,source TEXT,denied INTEGER NOT NULL,auth BLOB NOT NULL) WITHOUT ROWID;

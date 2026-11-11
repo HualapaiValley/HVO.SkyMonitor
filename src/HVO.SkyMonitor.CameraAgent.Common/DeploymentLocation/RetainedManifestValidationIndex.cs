@@ -124,12 +124,20 @@ internal sealed class RetainedManifestValidationIndex : IDisposable
         }.ToString());
         _connection.Open();
         using var setup = _connection.CreateCommand();
+        Sqlite.SqliteConnectionConfigurationGate.Run(() =>
+        {
+            setup.CommandText = "PRAGMA busy_timeout=100;";
+            setup.ExecuteNonQuery();
+            setup.CommandText = "PRAGMA trusted_schema=OFF;";
+            setup.ExecuteNonQuery();
+            setup.CommandText = "PRAGMA journal_mode=DELETE;";
+            setup.ExecuteNonQuery();
+            setup.CommandText = "PRAGMA synchronous=FULL;";
+            setup.ExecuteNonQuery();
+            setup.CommandText = "PRAGMA cache_size=-4096;";
+            setup.ExecuteNonQuery();
+        });
         setup.CommandText = """
-            PRAGMA busy_timeout=100;
-            PRAGMA trusted_schema=OFF;
-            PRAGMA journal_mode=DELETE;
-            PRAGMA synchronous=FULL;
-            PRAGMA cache_size=-4096;
             CREATE TABLE IF NOT EXISTS proofs (
                 digest BLOB PRIMARY KEY NOT NULL,
                 proof BLOB NOT NULL,
