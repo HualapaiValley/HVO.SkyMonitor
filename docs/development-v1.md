@@ -44,7 +44,7 @@ The branch currently requires:
 - **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
 - **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, the complete Docker-disabled Unit selection, and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
 
-Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
+Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. A merge-queue group (`merge_group`) runs both checks on the group's temporary commit, together with the [queue's reviewed-head gate](#merge-queue). Pushes to `development/v1` run both checks.
 
 ### Workflow contract YAML parser
 
@@ -65,13 +65,14 @@ parser version. Tests cover the hosted fallback and refusal when neither parser
 is available. This availability check uses the published hosted-image build;
 no hosted CI run was dispatched for this correction.
 
-### Pending merge queue rollout (not yet live)
+### Merge queue
 
-The checked-in queue support is preparation, not evidence that the queue or its
-rules are enabled. Roy must approve the cutover separately, after this code is on
-`development/v1`. It requires **ALLGREEN** (every grouped PR passes required
-checks) and **MERGE** (merge commits). AGENTS.md and lifecycle documentation are
-reserved for the post-cutover documentation PR.
+`development/v1` merges through a GitHub merge queue. The `development/v1 merge
+queue` ruleset is active on the branch. It groups with **ALLGREEN** (every
+grouped PR passes required checks), merges with **MERGE** (merge commits), and
+requires `Development v1 / Preflight`, `Development v1 / Build and Unit` and
+`hvo/reviewed-head`. [AGENTS.md](../AGENTS.md) says who publishes that status and
+who enqueues.
 
 Both v1 checks are wired for `merge_group`, which tests the combined changes of
 the queued PR and entries ahead of it. Preflight has six minutes for queue events
@@ -81,8 +82,8 @@ minutes. This changes the timeout, not the qualification profile.
 The queue's temporary commit has no operator review status. The
 `merge-queue-reviewed-head.yml` job checks out the **fresh `development/v1` tip**
 and runs that trusted copy of `scripts/ci:queue-reviewed-head`. A missing checkout
-or script fails the job; it never falls back to the queued tree. The first queue
-run must therefore wait until the script has landed on the trusted branch.
+or script fails the job; it never falls back to the queued tree. The gate
+therefore always runs the script as it stands on the trusted branch.
 The gate walks first parents from the group SHA to the checked-out tip, requiring
 exactly two parents per entry (at most 100). Every second parent must equal an
 open PR's current head targeting this repository's `development/v1`; fork PRs are
@@ -99,9 +100,9 @@ not establish that a grouped parent excludes earlier queued entries. GitHub's
 explicitly includes changes ahead of a PR. We therefore do **not** treat event
 `base_sha` as a trust root. The supported topology assumes GitHub's MERGE mode
 forms a two-parent chain ending at the actual destination tip, and verifies that
-chain at runtime. Offline two- and three-entry fixtures cover this assumption;
-actual GitHub queue topology still needs cutover validation. A stale group must
-be rebuilt against the new destination tip.
+chain at runtime, on every live group. Offline two- and three-entry fixtures
+cover this assumption, and a group of any other shape fails closed. A stale group
+must be rebuilt against the new destination tip.
 
 **Remaining trust boundary:** the workflow file itself still comes from the
 queued commit. Trusted script checkout and the all-workflow unique-name contract
