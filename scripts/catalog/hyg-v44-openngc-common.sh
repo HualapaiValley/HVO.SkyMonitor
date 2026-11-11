@@ -174,8 +174,8 @@ hygngc_stage_openngc_source() {
 # Prints the first composition pass for a staged OpenNGC directory. It imports the verified inputs, derives the
 # build_ tables, writes the four deep_sky_ tables and the schema-4 metadata, and leaves the source_ and build_
 # tables in place for hygngc_validate_composition; hygngc_finish_database removes them. The SQL is the whole
-# transformation recipe for preprocessing version 5; any change to it is a new preprocessing version, never a new
-# revision.
+# transformation recipe for preprocessing version 5. A change that changes output bytes requires a new
+# preprocessing version; a serializer-setting pin that reproduces the approved bytes does not.
 hygngc_composition_sql() {
     local openngc="$1"
     local name

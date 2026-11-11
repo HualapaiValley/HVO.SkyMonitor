@@ -111,6 +111,7 @@ fi
 # an unknown job is still reported, but no scheduling gap is invented for it.
 dependencies='{
   "Catalog Contracts":["Change Classification"],
+  "Catalog Reproducibility":["Change Classification"],
   "Quality":["Change Classification"],
   "Deployment Contracts":["Change Classification","Catalog Contracts"],
   "Build":["Change Classification"],
@@ -127,13 +128,19 @@ dependencies='{
   "Delivery Component":["Change Classification","Catalog Contracts"],
   "Coverage":["Change Classification","Unit Tests","Integration Tests","Architecture & Publish"],
   "Coverage Badges":["Coverage"],
-  "Required CI":["Change Classification","Quality","Catalog Contracts","Deployment Contracts","Build","Architecture & Publish","Coverage Policy","CameraAgent Migrations","LogicHost Migrations","Unit Tests","Integration Tests","Coverage","Shared Libraries","CameraAgent Component","LogicHost Component","Combined Protocol & Integration","Delivery Component"]
+  "Required CI":["Change Classification","Quality","Catalog Contracts","Catalog Reproducibility","Deployment Contracts","Build","Architecture & Publish","Coverage Policy","CameraAgent Migrations","LogicHost Migrations","Unit Tests","Integration Tests","Coverage","Shared Libraries","CameraAgent Component","LogicHost Component","Combined Protocol & Integration","Delivery Component"]
 }'
+
+# Jobs added to the workflow after it already had runs worth reporting on (Refs #1774). A run that predates one does
+# not contain it, which is not missing data: its absence must not stop a dependent job's readiness from being
+# computed. A run that does contain it treats it like every other dependency.
+added_later='["Catalog Reproducibility"]'
 
 report="$(jq -n \
     --slurpfile run "$run_file" \
     --slurpfile jobPayload "$jobs_file" \
     --argjson plan "$plan_json" \
+    --argjson addedLater "$added_later" \
     --arg source "$(if [[ -n "$fixture" ]]; then printf fixture; else printf github-actions-read-only; fi)" \
     --argjson dependencies "$dependencies" '
   def epoch($value):
@@ -157,10 +164,12 @@ report="$(jq -n \
       . as $job |
       ($dependencies[$job.name] // null) as $needs |
       (if $needs == null then [] else
-         [$needs[] as $need | job_by_name($jobs; $need) |
-           select(. != null and terminal_job(.))]
-       end) as $readyDeps |
-      (if ($needs == null or ($readyDeps|length) != ($needs|length) or epoch($job.started_at) == null)
+         [$needs[] as $need |
+           select(($addedLater | index($need)) == null or job_by_name($jobs; $need) != null) | $need]
+       end) as $awaited |
+      ([$awaited[] as $need | job_by_name($jobs; $need) |
+         select(. != null and terminal_job(.))]) as $readyDeps |
+      (if ($needs == null or ($readyDeps|length) != ($awaited|length) or epoch($job.started_at) == null)
        then null
        else ([ $readyDeps[].completed_at | epoch(.) ] | max) as $ready |
          if $ready == null then null else ([epoch($job.started_at) - $ready, 0] | max) end

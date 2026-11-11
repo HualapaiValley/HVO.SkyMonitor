@@ -128,16 +128,34 @@ OpenNGC is checked out at
 `36cb178a0f69dba8bfc03a99c10512831edf1c6b` (`v20260501`). The composer verifies
 both CSV hashes and lengths and all 379 outlines against the committed listing.
 
-Run the opt-in regression with previously acquired inputs; it performs no network
+Full qualification runs the regression in the **Catalog Reproducibility** job of
+`ci.yml` (Refs #1774): on a pull request to `main` or `release/**` that changes
+anything under `scripts/catalog/` or `tests/fixtures/catalog/`, and on every push
+to those branches, manual dispatch and release qualification. The job acquires
+both inputs with `scripts/catalog/fetch-hyg-v44-openngc-inputs.sh`, which checks
+them against the pins above before the regression reads them, and it also
+rebuilds the three catalog test fixtures under both connection defaults with
+`scripts/catalog/test-fixture-reproducibility.sh`. The HYG 4.2 counterpart,
+`scripts/catalog/test-hyg-v42-reproducibility.sh`, runs in **Catalog Contracts**
+for every full-mode head, on the input that job has already fetched and
+verified. None of these runs in the `development/v1` profile. The
+[CI pipeline runbook](../runbooks/ci-pipeline.md#catalog-reproducibility) has
+the selection rule and the step order.
+
+To run it by hand, acquire the inputs the same way or supply ones acquired
+earlier. Only the fetch uses the network; the regression performs no network
 I/O, installation or deployment. Select the desired 3.45.1 CLI through `PATH`:
 
 ```bash
+scripts/catalog/fetch-hyg-v44-openngc-inputs.sh /absolute/path/inputs
 scripts/catalog/test-hyg-v44-reproducibility.sh \
-  /absolute/path/hyg_v44.csv.gz /absolute/path/OpenNGC
+  /absolute/path/inputs/hyg_v44.csv.gz /absolute/path/inputs/OpenNGC
 ```
 
-The test wraps every SQLite connection to force the incoming `secure_delete`
-default OFF or ON and verifies that setup actually took effect. For each default
+The test first prints the
+[SQLite identity line](../runbooks/ci-pipeline.md#sqlite-identity-line) for the
+CLI under test. It then wraps every SQLite connection to force the incoming
+`secure_delete` default OFF or ON and verifies that setup actually took effect. For each default
 it invokes the real HYG and OpenNGC builders twice in fresh output directories.
 Every build must pass the existing pinned validators, including integrity,
 schema, metadata, counts, transformations and unchanged-star checks. Every

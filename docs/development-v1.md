@@ -133,6 +133,13 @@ The operator-approved #1142 split keeps these checks off the short path:
 | Integration, full-suite aggregate/component coverage, architecture/publish and migrations | Existing full-matrix jobs; measurable canonical per-file floors run in Build and Unit |
 | Deployment qualification | Existing selected Deployment Contracts job |
 
+The catalog reproducibility regressions are full-qualification only as well
+(Refs #1774): Catalog Contracts rebuilds HYG 4.2 and Catalog Reproducibility
+rebuilds HYG 4.4, OpenNGC and the catalog test fixtures, each under both SQLite
+`secure_delete` defaults. Neither required v1 check runs them or reads the
+classifier's `catalog_recipe` output; see
+[Catalog Reproducibility](runbooks/ci-pipeline.md#catalog-reproducibility).
+
 The short run still builds the entire solution warning-clean and executes the
 complete positive Unit selection with an invalid Docker endpoint. It does not
 claim exhaustive category or full qualification evidence. Changes to shell or
