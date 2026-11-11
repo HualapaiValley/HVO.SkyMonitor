@@ -45,14 +45,15 @@ public static class EnvironmentalReadingSelection
     public static IReadOnlyList<LocalEnvironmentalObservationRecord> Select(
         IReadOnlyList<LocalEnvironmentalObservationRecord> candidates, EnvironmentalAcquisitionOptions options,
         IReadOnlyList<EnvironmentalSourceRuntimeState> states, EnvironmentalObservationKind kind,
-        DateTimeOffset from, DateTimeOffset through)
+        DateTimeOffset from, DateTimeOffset through, IReadOnlyList<string>? captureUnavailableSources = null)
     {
         ArgumentNullException.ThrowIfNull(candidates);
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(states);
-        var unavailable = UnavailableSources(options, states, through);
+        var unavailable = UnavailableSources(options, states, through)
+            .Concat(captureUnavailableSources ?? []).ToHashSet(StringComparer.Ordinal);
         var available = candidates.Where(candidate => !candidate.Fact.Source.IsLineageInput &&
-            !unavailable.Contains(Owner(candidate.Fact), StringComparer.Ordinal) &&
+            !unavailable.Contains(Owner(candidate.Fact)) &&
             // Older v3 IR inputs did not carry a readingRole. Their explicit acquisition owner still identifies them.
             (Owner(candidate.Fact) == candidate.Fact.Source.SourceId ||
                 options.Sources.Any(source => source.Id == Owner(candidate.Fact) && source.Kind == candidate.Fact.Value.Kind))).ToArray();

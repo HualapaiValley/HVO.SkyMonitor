@@ -85,6 +85,13 @@ public sealed record LocalEnvironmentalCaptureAssociation(
 
 public interface ILocalEnvironmentalAssociationStore
 {
+    /// <summary>Reads durable before-capture failures for this capture, including its exposure-start view of unassigned attempts.</summary>
+    ValueTask<IReadOnlyList<string>> ReadCaptureUnavailableSourcesAsync(
+        string root,
+        Guid captureId,
+        DateTimeOffset exposureFromUtc,
+        CancellationToken cancellationToken);
+
     ValueTask SaveAssociationAsync(
         string root,
         LocalEnvironmentalCaptureAssociation association,

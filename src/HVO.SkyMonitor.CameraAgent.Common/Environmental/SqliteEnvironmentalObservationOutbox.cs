@@ -994,6 +994,49 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return results;
     }
 
+    public async ValueTask<IReadOnlyList<string>> ReadCaptureUnavailableSourcesAsync(
+        string root,
+        Guid captureId,
+        DateTimeOffset exposureFromUtc,
+        CancellationToken cancellationToken)
+    {
+        if (captureId == Guid.Empty || exposureFromUtc == default || exposureFromUtc.Offset != TimeSpan.Zero)
+            throw new ArgumentException("The environmental capture failure request is invalid.");
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // The real before-capture bridge runs before raw ingress allocates a capture identity.
+        // Reconstruct that capture's fence from immutable attempts at exposure start; periodic
+        // recovery and later captures must not change the failed capture's evidence.
+        command.CommandText = """
+            SELECT DISTINCT source_id FROM environmental_acquisition_attempts
+            WHERE capture_id = $capture AND trigger = 'BeforeCapture'
+                AND outcome IN ('Failed','Missing','TimedOut')
+                AND reason != 'before-capture-source-busy'
+            UNION
+            SELECT runtime.source_id FROM environmental_source_runtime AS runtime
+            WHERE NOT EXISTS (
+                SELECT 1 FROM environmental_acquisition_attempts AS identified
+                WHERE identified.capture_id = $capture AND identified.source_id = runtime.source_id
+                    AND identified.trigger = 'BeforeCapture' AND identified.outcome != 'Coalesced'
+                    AND identified.reason != 'before-capture-source-busy')
+                AND (SELECT attempt.outcome FROM environmental_acquisition_attempts AS attempt
+                    WHERE attempt.source_id = runtime.source_id AND attempt.capture_id IS NULL
+                        AND attempt.trigger = 'BeforeCapture' AND attempt.outcome != 'Coalesced'
+                        AND attempt.reason != 'before-capture-source-busy'
+                        AND attempt.completed_unix_ms <= $from
+                    ORDER BY attempt.completed_unix_ms DESC, attempt.attempt_id DESC LIMIT 1)
+                    IN ('Failed','Missing','TimedOut');
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("D"));
+        command.Parameters.AddWithValue("$from", exposureFromUtc.ToUnixTimeMilliseconds());
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var results = new List<string>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) results.Add(reader.GetString(0));
+        return results;
+    }
+
     public async ValueTask<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>> ReadAttemptsAsync(
         string root,
         int maximumResults,
@@ -2377,12 +2420,21 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using (var attempts = connection.CreateCommand())
         {
             attempts.Transaction = transaction;
+            // Preserve the capture-time fence and its successful successors while older evidence
+            // could still be selected as fresh. This also covers evidence pinned by delivery or captures.
             attempts.CommandText = """
                 DELETE FROM environmental_acquisition_attempts
                 WHERE attempt_id IN (
-                    SELECT attempt_id FROM environmental_acquisition_attempts
-                    WHERE completed_unix_ms < $cutoff
-                    ORDER BY completed_unix_ms, attempt_id
+                    SELECT attempt.attempt_id FROM environmental_acquisition_attempts AS attempt
+                    WHERE attempt.completed_unix_ms < $cutoff
+                        AND NOT (attempt.trigger = 'BeforeCapture' AND EXISTS (
+                            SELECT 1 FROM environmental_observation_journal AS retained
+                            WHERE retained.recorded_unix_ms <= attempt.completed_unix_ms
+                                AND retained.stale_after_unix_ms >= attempt.completed_unix_ms
+                                AND COALESCE(
+                                    json_extract(CAST(retained.payload AS TEXT), '$.source.provenance.parameters.acquisitionSourceId'),
+                                    json_extract(CAST(retained.payload AS TEXT), '$.source.sourceId')) = attempt.source_id))
+                    ORDER BY attempt.completed_unix_ms, attempt.attempt_id
                     LIMIT $limit);
                 """;
             attempts.Parameters.AddWithValue("$cutoff", cutoffUnixMs);

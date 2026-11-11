@@ -51,15 +51,18 @@ public sealed class EnvironmentalAssociationService(
             return persisted.OrderBy(static association => association.Kind).ToArray();
         }
         var existingKinds = persisted.Select(static association => association.Kind).ToHashSet();
+        var captureUnavailable = await associations.ReadCaptureUnavailableSourcesAsync(
+            root, captureId, exposureFromUtc, cancellationToken).ConfigureAwait(false);
         var additions = new List<LocalEnvironmentalCaptureAssociation>(expectedKinds.Length - persisted.Length);
         foreach (var kind in expectedKinds.Where(kind => !existingKinds.Contains(kind)))
         {
             var candidates = await observations.ReadLocalCandidatesAsync(
                 root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
-            if (options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
+            if (captureUnavailable.Count > 0 || options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
             {
                 var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
-                candidates = EnvironmentalReadingSelection.Select(candidates, options.Value.EnvironmentalAcquisition, states, kind, exposureFromUtc, exposureThroughUtc);
+                candidates = EnvironmentalReadingSelection.Select(candidates, options.Value.EnvironmentalAcquisition, states, kind,
+                    exposureFromUtc, exposureThroughUtc, captureUnavailable);
             }
             var association = CreateAssociation(
                 captureId,

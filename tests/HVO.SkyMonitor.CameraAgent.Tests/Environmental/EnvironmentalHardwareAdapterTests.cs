@@ -125,6 +125,9 @@ public sealed class EnvironmentalHardwareAdapterTests
         Assert.IsFalse((await dry.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!.Value.BooleanValue);
         Assert.IsTrue((await rain.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!.Value.BooleanValue);
         Assert.AreEqual("wet-sensor-drying", (await drying.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Reason);
+        var rainingWhileDrying = new InfraredSkySource(dry.Descriptor,
+            Options("""{"rain":true,"drying":true}"""));
+        Assert.IsTrue((await rainingWhileDrying.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!.Value.BooleanValue);
     }
 
     [TestMethod]

@@ -71,6 +71,19 @@ public sealed class EnvironmentalAdapterContractsTests
         Assert.HasCount(1, EnvironmentalReadingSelection.Select([record], options, states, fact.Value.Kind, Epoch, Epoch.AddSeconds(1)));
     }
 
+    [TestMethod]
+    public void CaptureFenceExcludesOnlyItsAcquisitionOwner()
+    {
+        var failed = Fact("sqm", EnvironmentalObservationKind.SkyQuality, 21);
+        var independent = Fact("sqm-backup", EnvironmentalObservationKind.SkyQuality, 20);
+        var options = new EnvironmentalAcquisitionOptions
+        { Sources = [Configuration("sqm", failed.Value.Kind, "SkyQualityMeter"), Configuration("sqm-backup", failed.Value.Kind, "SkyQualityMeter")] };
+        var selected = EnvironmentalReadingSelection.Select([Record(failed), Record(independent)], options, [], failed.Value.Kind,
+            Epoch, Epoch.AddSeconds(1), ["sqm"]);
+        Assert.HasCount(1, selected);
+        Assert.AreEqual("sqm-backup", selected[0].Fact.Source.SourceId);
+    }
+
     internal static readonly DateTimeOffset Epoch = EnvironmentalHardwareAdapterTests.Epoch;
     internal const string Payload = """{"properties":{"timestamp":"2026-11-08T06:00:00Z","temperature":{"value":20,"unitCode":"wmoUnit:degC"},"relativeHumidity":{"value":40,"unitCode":"wmoUnit:percent"}}}""";
     internal static EnvironmentalSourceConfiguration Configuration(string id, EnvironmentalObservationKind kind, string type = "LocalWeatherStation")

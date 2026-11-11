@@ -28,9 +28,11 @@ public sealed class InfraredSkySource : EnvironmentalAdapterSource
         if (root.TryGetProperty("fault", out var fault) && fault.GetBoolean()) return Unavailable("device-sensor-fault");
         if (Descriptor.Kind == EnvironmentalObservationKind.RainState)
         {
-            if (root.TryGetProperty("drying", out var drying) && drying.GetBoolean()) return Unavailable("wet-sensor-drying");
+            var rain = root.GetProperty("rain").GetBoolean();
+            var isDrying = root.TryGetProperty("drying", out var drying) && drying.GetBoolean();
+            if (!rain && isDrying) return Unavailable("wet-sensor-drying");
             return Produced(Fact(sample, context, new(Descriptor.Kind, EnvironmentalObservationUnit.Boolean,
-                null, root.GetProperty("rain").GetBoolean(), EnvironmentalObservationQuality.Good)));
+                null, rain, EnvironmentalObservationQuality.Good)));
         }
         if (Descriptor.Kind == EnvironmentalObservationKind.SkyBrightness)
             return Produced(Fact(sample, context, new(Descriptor.Kind, EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond,

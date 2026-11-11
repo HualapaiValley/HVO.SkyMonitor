@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent keeps failed or timed-out capture-before environmental readings unavailable for that exposure after later polls or restart, reports active IR rain during sensor drying, and omits irrelevant station-distance placeholders for local devices. Refs #1778
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713

@@ -99,8 +99,20 @@ claiming the cloud fact; missing-lineage conflicts are retryable, and an unresol
 waiting projection does not block independent records. Sensor and image cloud-cover facts
 keep separate source identities. The bridge owns heater control and must assert
 `drying` throughout heater-driven drying/warm-up until a valid dry reading is
-qualified; the adapter never commands a heater or assumes it has finished. A drying wet sensor reports
-`wet-sensor-drying`; it never reports dry.
+qualified; the adapter never commands a heater or assumes it has finished. Active
+`rain: true` takes precedence over `drying: true` and reports RainState true.
+When rain is false and drying is true, the adapter reports unavailable
+`wet-sensor-drying`; it never reports dry during drying.
+
+Only IR facts include `modelVersion`, `clearDeltaCelsius` and
+`cloudyDeltaCelsius` in their source parameters. New station and SQM facts retain
+`protocol`, `deviceGroup`, `acquisitionSourceId` and `readingRole`. Removing the
+irrelevant fields changes their parameter digest and source-version digest;
+`environmental-adapter-v1` and the `environmental-adapter` / `adapter-v1` method
+label remain valid. LogicHost validates the parameter digest and bounded method
+identity without an adapter-version allowlist. IR parameters and source-version
+digests stay byte-identical. Retained station/SQM facts and queued deliveries
+keep their original parameters, identities and payloads; they are not rewritten.
 
 An input that is terminal, quarantined or discarded cannot leave its dependent
 v3 cloud delivery pending indefinitely. The derivative becomes terminal with
@@ -191,8 +203,10 @@ separate Imported and Measured facts with source and sample age.
 Optional `stationDistanceKilometers` and `stationElevationMeters` describe the
 explicitly pinned station; missing metadata is shown as unknown. The Environment
 page shows the source, age, distance and elevation on each imported reading,
-with a mixed-source label when groups differ. Frame Facts retain source and age
-and label mixed groups. No nearest-station selection or averaging is performed.
+with a mixed-source label when groups differ. Local devices keep their source
+identity without unknown distance/elevation placeholders. Imported stations
+without that metadata still show it as unknown. Frame Facts retain source and
+age and label mixed groups. No nearest-station selection or averaging is performed.
 Overlay lines reserve space for source class, `SRC` identity and `AGE`; compact
 units keep them within 64 characters. Long source identifiers are shortened only
 for display; retained identities stay complete. `?` marks non-Good quality.
@@ -235,6 +249,17 @@ sharing a prefix remain independent. Before-capture acquisition has its own time
 budget, distinct from host cancellation, and records timeout before association.
 Physical device freshness uses actual receipt time, while deterministic simulated
 readings retain the scheduled clock.
+
+Failed, missing or timed-out before-capture attempts fence that source for the
+capture's exposure even after a periodic poll recovers. Association uses durable
+attempt history: an explicit capture identity when available, otherwise the
+last settled before-capture attempt at exposure start (the bridge runs before
+raw ingress assigns the capture identity). Later attempts do not change that
+historical view. Retention preserves those attempts and their successful
+successors while retained older evidence could still be selected as fresh.
+Completed associations remain immutable. This does not change the SQM
+interval/gap policy or make SQLite settlement part of a strict total deadline;
+those decisions remain in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a
 bounded deferred queue drained by the same hosted acquisition service. Queue
