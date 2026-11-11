@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. #1780
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
