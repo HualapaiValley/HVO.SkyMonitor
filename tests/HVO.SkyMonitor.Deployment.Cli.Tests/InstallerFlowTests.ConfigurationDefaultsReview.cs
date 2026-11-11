@@ -5,10 +5,12 @@ using HVO.SkyMonitor.Deployment;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// Regressions from the formal review of Refs #1779 at <c>7fea55f9</c>: an adoption interrupted by an installer whose
+/// Regressions from the formal reviews of Refs #1779. At <c>7fea55f9</c>: an adoption interrupted by an installer whose
 /// newest generation was older than this installer's (M1); changed-answer refusals that lost options to the 256-character
 /// diagnostic limit (M2); and a record whose rig profile or schedule description no longer matches its configuration,
-/// which failed with exit 1 instead of a refusal (M3).
+/// which failed with exit 1 instead of a refusal (M3). At <c>40d7bf81</c>: malformed configuration metadata in a completed
+/// instance's records, which failed with exit 1 (M4); and adoption failures whose cause and remedy were cut at the same
+/// limit (M-new).
 /// </summary>
 public sealed partial class InstallerFlowTests
 {
@@ -247,6 +249,147 @@ public sealed partial class InstallerFlowTests
                 CameraConfigurationDefaults.Recognize(request, (await files.ManifestAsync()).ApplicationIdentity,
                     (await files.ManifestAsync()).ConfigurationSha256, (await files.ManifestAsync()).RigProfileSha256,
                     (await files.ManifestAsync()).ScheduleSha256)!.Generation.Id);
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// M4. Malformed or unreadable camera-configuration metadata in a completed instance's manifest or result is a
+    /// configuration the installer cannot explain: the plan and the run are refused with exit 3, naming the record, the
+    /// field and the remedy, <c>errorCode</c> <c>refused</c> under <c>--json</c>, and nothing changes. Before the review
+    /// the strict record reader's failure ended every one in exit 1.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("manifest", "configurationSha256", "text", "not a lowercase SHA-256")]
+    [DataRow("manifest", "configurationSha256", "uppercase", "not a lowercase SHA-256")]
+    [DataRow("manifest", "rigProfileName", "empty", "empty")]
+    [DataRow("manifest", "scheduleSha256", "number", "not text")]
+    [DataRow("result", "configurationSha256", "null", "missing")]
+    [DataRow("result", "scheduleState", "empty", "empty")]
+    [DataRow("result", "rigProfileSha256", "removed", "missing")]
+    public async Task MalformedConfigurationMetadata_IsRefusedNamingTheRecordAndChangesNothing(
+        string record, string field, string edit, string problem)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(edit);
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.NewGuid());
+        var runner = DefaultsDaemon(request, root, CloudDefaults);
+        var owner = new InstallerOwnerClient();
+        try
+        {
+            var files = InstalledFiles.Of(await InstallBefore1722Async(request, runner, owner), root);
+            var path = record == "manifest" ? files.Manifest : files.Result;
+            var node = JsonNode.Parse(await File.ReadAllTextAsync(path))!.AsObject();
+            switch (edit)
+            {
+                case "text": node[field] = "not-a-sha256"; break;
+                case "uppercase": node[field] = ((string)node[field]!).ToUpperInvariant(); break;
+                case "empty": node[field] = string.Empty; break;
+                case "number": node[field] = 42; break;
+                case "null": node[field] = null; break;
+                case "removed": Assert.IsTrue(node.Remove(field)); break;
+            }
+            await File.WriteAllTextAsync(path, node.ToJsonString());
+            var configuration = await File.ReadAllTextAsync(files.Configuration);
+
+            var attempts = new[]
+            {
+                await RunInstallProgramAsync(request with { DryRun = true }, runner, owner),
+                await RunInstallProgramAsync(request with { Cpus = 3m, Memory = "6g" }, runner, owner),
+                await RunInstallProgramAsync(request, runner, owner),
+                await RunInstallProgramAsync(request with { Json = true }, runner, owner)
+            };
+
+            foreach (var attempt in attempts)
+            {
+                Assert.AreEqual((int)InstallerExitCode.Refused, attempt.ExitCode, attempt.Output + attempt.Error);
+                StringAssert.Contains(attempt.Message, path, StringComparison.Ordinal);
+                StringAssert.Contains(attempt.Message, files.Configuration, StringComparison.Ordinal);
+                StringAssert.Contains(attempt.Message, $"{field} ({problem})", StringComparison.Ordinal);
+                StringAssert.Contains(attempt.Message, "Restore the instance's records from a backup", StringComparison.Ordinal);
+                attempt.AssertChangedNothing($"malformed {record} {field} changed something");
+            }
+            StringAssert.StartsWith(attempts[1].Error, "Installation refused: ", StringComparison.Ordinal);
+            StringAssert.EndsWith(attempts[1].Error, "Nothing was changed.", StringComparison.Ordinal);
+            Assert.AreEqual("refused", attempts[3].ErrorCode);
+            Assert.AreEqual(configuration, await File.ReadAllTextAsync(files.Configuration));
+        }
+        finally
+        {
+            DeleteResourceRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// M-new. The issue's main path, an adoption with new limits, failing before its commit: the failure, exit 1, names
+    /// what it changed, the cause and what was restored, whole, human and JSON; when the restore fails too, it names the
+    /// restore's cause and the remedy. Before the review the message was cut at 256 characters, losing the cause and the
+    /// remedy.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task AdoptionWithNewLimitsThatFails_NamesTheCauseAndTheRemedyWhole(bool restoreAlsoFails, bool json)
+    {
+        var bundle = RequireProductionCatalogBundle();
+        var (request, root) = ResourceRequest(bundle, Guid.NewGuid());
+        var runner = DefaultsDaemon(request, root, CloudDefaults);
+        var owner = new AdoptionOwnerClient();
+        try
+        {
+            var files = InstalledFiles.Of(await InstallBefore1722Async(request, runner, owner), root);
+            var before = await RecordsAsync(files);
+            owner.FailOnVerification = owner.VerificationAttempts + 1;
+            if (restoreAlsoFails)
+            {
+                runner.FailComposeUpNumber = runner.ComposeUpCount + 2;
+            }
+
+            var failed = await RunInstallProgramAsync(request with { Cpus = 3m, Memory = "6g", Json = json }, runner, owner);
+
+            Assert.AreEqual((int)InstallerExitCode.Failed, failed.ExitCode, failed.Output + failed.Error);
+            string message;
+            if (json)
+            {
+                Assert.AreEqual("installation-failed", failed.ErrorCode);
+                message = failed.Message;
+            }
+            else
+            {
+                StringAssert.StartsWith(failed.Error, "Installation failed: ", StringComparison.Ordinal);
+                message = failed.Error["Installation failed: ".Length..];
+            }
+            Assert.IsGreaterThan(256, message.Length, "the whole failure is longer than the diagnostic limit");
+            if (restoreAlsoFails)
+            {
+                StringAssert.StartsWith(message,
+                    $"Changing the container limits and adopting the installer's new configuration defaults ({PlainCloudChange}) failed, and restoring the recorded limits and configuration also failed: ",
+                    StringComparison.Ordinal);
+                StringAssert.Contains(message, "cannot recreate the container", StringComparison.Ordinal);
+                StringAssert.EndsWith(message, "Re-run the same install to carry on.", StringComparison.Ordinal);
+            }
+            else
+            {
+                Assert.AreEqual(
+                    $"Changing the container limits to 3 CPUs, 6 GiB of memory and 256 PIDs and adopting the installer's new configuration defaults ({PlainCloudChange}) failed, so the recorded limits and configuration were restored: injected verification failure",
+                    message);
+                CollectionAssert.AreEqual(before, await RecordsAsync(files));
+            }
+
+            // Re-running the same install carries on, as the failure says.
+            var carriedOn = await RunInstallProgramAsync(request with { Cpus = 3m, Memory = "6g" }, runner, owner);
+            Assert.AreEqual((int)InstallerExitCode.Done, carriedOn.ExitCode, carriedOn.Error);
+            Assert.AreEqual(CameraConfiguration.Generate(request, (await files.ManifestAsync()).ApplicationIdentity).Sha256,
+                (await files.ManifestAsync()).ConfigurationSha256);
         }
         finally
         {

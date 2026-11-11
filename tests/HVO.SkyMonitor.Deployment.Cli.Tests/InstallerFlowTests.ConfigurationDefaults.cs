@@ -22,6 +22,9 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class InstallerFlowTests
 {
     private const string CloudChange = "pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation)";
+
+    /// <summary>The cloud change as a refusal or failure message prints it: its fields are escaped as JSON text.</summary>
+    private const string PlainCloudChange = "pipeline: 11 to 13 steps (adds CloudAssessment, CloudPresentation)";
     private const string CloudDefaults = "installer-defaults-2";
     private const string NothingToChangeSummary = "Nothing to change: the instance is installed as the answers describe.";
     private static readonly string[] CloudSteps = ["CloudAssessment", "CloudPresentation"];
@@ -273,7 +276,7 @@ public sealed partial class InstallerFlowTests
             {
                 Assert.AreEqual((int)InstallerExitCode.Refused, attempt.ExitCode, attempt.Output);
                 StringAssert.StartsWith(attempt.Error, "Installation refused: ", StringComparison.Ordinal);
-                StringAssert.Contains(attempt.Error, "(pipeline: 11 to 13 steps (adds CloudAssessment, CloudPresentation))", StringComparison.Ordinal);
+                StringAssert.Contains(attempt.Error, $"({PlainCloudChange})", StringComparison.Ordinal);
                 StringAssert.Contains(attempt.Error, $"{CameraConfigurationDefaults.ImageLabel} {CloudDefaults} or later", StringComparison.Ordinal);
                 StringAssert.Contains(attempt.Error, "A re-run keeps the image", StringComparison.Ordinal);
                 StringAssert.EndsWith(attempt.Error, "Nothing was changed.", StringComparison.Ordinal);

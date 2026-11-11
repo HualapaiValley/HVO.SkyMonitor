@@ -530,6 +530,13 @@ without it the re-run, and its plan, are refused with exit `3`, rewriting nothin
 starting nothing: upgrade the instance with `cameraagent upgrade` to a release whose
 image carries the label, then re-run. A re-run never upgrades the image.
 
+The prerequisite gates only the re-run of a completed install. A fresh install and the
+`--resume` of an unfinished one write the installer's current defaults whatever the
+image declares, and `cameraagent rollback` keeps the configuration on disk, so rolling
+an adopted instance back to an image without the label leaves it on the cloud steps.
+Install and resume with an image that carries the label, and roll back only to one that
+does.
+
 **Failures and interruptions.** A failure before the manifest records the new identity,
 whether of the file, Compose, health, verification or an interruption, puts the
 previous configuration, limits and records back and exits `1`; re-run the same install

@@ -29,11 +29,87 @@ internal sealed partial class CameraAgentInstaller
         {
             return null;
         }
-        var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
+        var completed = state.Status == InstallationStatus.Completed;
+        var manifest = await ReadRecordAsync(
+            paths.ManifestPath, () => ReadManifestAsync(paths.ManifestPath, cancellationToken)).ConfigureAwait(false);
         var result = File.Exists(paths.ResultPath)
-            ? await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false)
+            ? await ReadRecordAsync(paths.ResultPath, () => ReadResultAsync(paths.ResultPath, cancellationToken)).ConfigureAwait(false)
             : null;
         return new RetainedInstallation(state, manifest, result);
+
+        // A completed instance's record whose camera-configuration metadata the strict reader cannot accept is a
+        // configuration the installer cannot explain: refused, naming the record, each field and the remedy, before
+        // anything changes (Refs #1779). Any other fault of a record, and every record of an unfinished install, fails as
+        // it always has.
+        async Task<T> ReadRecordAsync<T>(string path, Func<Task<T>> read)
+        {
+            try
+            {
+                return await read().ConfigureAwait(false);
+            }
+            catch (InstallerException exception) when (completed && !exception.IsRefusal)
+            {
+                var malformed = MalformedConfigurationMetadata(path);
+                if (malformed.Count == 0)
+                {
+                    throw;
+                }
+                throw CameraConfigurationRefusals.MalformedConfigurationMetadata(
+                    state.InstanceId, path, Path.Combine(paths.ConfigRoot, "camera-module.json"), malformed, exception);
+            }
+        }
+    }
+
+    /// <summary>The configuration identities a manifest and a result record, each a lowercase SHA-256.</summary>
+    private static readonly string[] ConfigurationIdentityFields = ["configurationSha256", "rigProfileSha256", "scheduleSha256"];
+
+    /// <summary>The rig profile and schedule description a manifest and a result record, each non-empty text.</summary>
+    private static readonly string[] ConfigurationDescriptionFields = ["rigProfileName", "rigProfileVersion", "scheduleSchemaVersion", "scheduleState"];
+
+    /// <summary>
+    /// Each camera-configuration metadata field of the record at <paramref name="path"/> that the strict readers cannot
+    /// accept, with what is wrong with it; none when every one is well formed, or when the record cannot be read as a JSON
+    /// object at all, which is not a configuration fault (Refs #1779).
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A record that cannot be read here is diagnosed as it always was, by the strict reader's own failure.")]
+    internal static IReadOnlyList<(string Field, string Problem)> MalformedConfigurationMetadata(string path)
+    {
+        System.Text.Json.Nodes.JsonObject? record;
+        try
+        {
+            using var stream = SafeFileSystem.OpenOwnerFileRead(path);
+            record = System.Text.Json.Nodes.JsonNode.Parse(stream) as System.Text.Json.Nodes.JsonObject;
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            return [];
+        }
+        if (record is null)
+        {
+            return [];
+        }
+        var malformed = new List<(string Field, string Problem)>();
+        foreach (var field in ConfigurationIdentityFields.Concat(ConfigurationDescriptionFields))
+        {
+            var identity = ConfigurationIdentityFields.Contains(field, StringComparer.Ordinal);
+            if (!record.TryGetPropertyValue(field, out var node) || node is null)
+            {
+                malformed.Add((field, "missing"));
+            }
+            else if (node.GetValueKind() != System.Text.Json.JsonValueKind.String)
+            {
+                malformed.Add((field, "not text"));
+            }
+            else if (identity && !IsSha256(node.GetValue<string>()))
+            {
+                malformed.Add((field, "not a lowercase SHA-256"));
+            }
+            else if (!identity && node.GetValue<string>().Length == 0)
+            {
+                malformed.Add((field, "empty"));
+            }
+        }
+        return malformed;
     }
 
     /// <summary>
@@ -677,17 +753,17 @@ internal sealed partial class CameraAgentInstaller
             }
             catch (Exception restoreException) when (restoreException is not OutOfMemoryException)
             {
-                throw new InstallerException(
-                    $"{ChangeDescription(instance, namingTarget: false)} failed, and restoring the recorded {RestoredDescription(instance)} also failed: {Redaction.SafeDiagnostic(restoreException.Message)} Re-run the same install to carry on.",
+                throw CameraConfigurationRefusals.RestoreFailed(
+                    instance.LimitsChange, instance.Adopts, CameraConfigurationDefaults.Describe(instance.Adopted), restoreException,
                     exception);
             }
             if (exception is OperationCanceledException)
             {
                 throw;
             }
-            throw new InstallerException(
-                $"{ChangeDescription(instance, namingTarget: true)} failed, so the recorded {RestoredDescription(instance)} {(instance.Adopts && !instance.LimitsChange ? "was" : "were")} restored: {Redaction.SafeDiagnostic(exception.Message)}",
-                exception);
+            throw CameraConfigurationRefusals.ChangeFailed(
+                instance.LimitsChange, instance.Adopts, CameraAgentContainerResources.Describe(instance.Target!),
+                CameraConfigurationDefaults.Describe(instance.Adopted), exception);
         }
 
         // Writes the files for limits and a configuration generation, starts the instance from them and verifies it there.
@@ -729,28 +805,6 @@ internal sealed partial class CameraAgentInstaller
             return (ComposeDeployment.ComputeSha256(rendered.StandardOutput), compose.ConfigurationSha256);
         }
     }
-
-    /// <summary>What a committing re-run changes, as its failure reports it.</summary>
-    private static string ChangeDescription(CompletedInstance instance, bool namingTarget)
-    {
-        var limits = namingTarget ? $"Changing the container limits to {CameraAgentContainerResources.Describe(instance.Target!)}" : "Changing the container limits";
-        var adoption = $"adopting the installer's new configuration defaults ({CameraConfigurationDefaults.Describe(instance.Adopted)})";
-        return (instance.LimitsChange, instance.Adopts) switch
-        {
-            (true, true) => $"{limits} and {adoption}",
-            (false, true) => char.ToUpperInvariant(adoption[0]) + adoption[1..],
-            _ => limits
-        };
-    }
-
-    /// <summary>What a failed committing re-run puts back.</summary>
-    private static string RestoredDescription(CompletedInstance instance)
-        => (instance.LimitsChange, instance.Adopts) switch
-        {
-            (true, true) => "limits and configuration",
-            (false, true) => "configuration",
-            _ => "limits"
-        };
 
     /// <summary>Waits for the instance to be healthy and verifies its container and its installation identity.</summary>
     private static async Task VerifyAsync(

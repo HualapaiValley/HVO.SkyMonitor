@@ -90,8 +90,8 @@ public sealed partial class InstallerFlowTests
                 var installerFailure = Assert.IsInstanceOfType<InstallerException>(failure);
                 Assert.IsFalse(installerFailure.IsRefusal, "a step that failed part way is a failure, which re-running continues");
                 StringAssert.Contains(failure.Message, withLimits
-                    ? $"and adopting the installer's new configuration defaults ({CloudChange}) failed, so the recorded limits and configuration were restored"
-                    : $"Adopting the installer's new configuration defaults ({CloudChange}) failed, so the recorded configuration was restored",
+                    ? $"and adopting the installer's new configuration defaults ({PlainCloudChange}) failed, so the recorded limits and configuration were restored"
+                    : $"Adopting the installer's new configuration defaults ({PlainCloudChange}) failed, so the recorded configuration was restored",
                     StringComparison.Ordinal);
             }
             // Every record, the configuration file included, is as it was; the container was put back on the recorded

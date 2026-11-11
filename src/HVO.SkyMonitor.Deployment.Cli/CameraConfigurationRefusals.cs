@@ -3,9 +3,11 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>
 /// The refusals of a re-run whose answers or camera configuration the installer cannot adopt (Refs #1779): answers that
 /// differ from the installed instance's, a configuration it cannot explain, or newer defaults the running image does not
-/// run. Each is composed from fixed prose and formatted fields
+/// run; and the failures of a re-run that changed the limits or adopted newer defaults, which name the cause and what was
+/// put back. Each is composed from fixed prose and formatted fields
 /// (<c>DiagnosticFormatting.md</c>), so the top-level writer prints it whole, naming the file or record and the remedy,
-/// instead of cutting it at its 256-character limit. Every refusal here has changed nothing.
+/// instead of cutting it at its 256-character limit. Every refusal here has changed nothing; a failure exits 1, and
+/// re-running the same install carries on.
 /// </summary>
 internal static class CameraConfigurationRefusals
 {
@@ -44,6 +46,57 @@ internal static class CameraConfigurationRefusals
         return InstallerException.RefusedFormatted(
             $"Instance {instanceId:D} cannot be re-run: {CameraAgentStateDiagnostics.Reason(recordPath)} describes its rig profile and schedule otherwise than its camera configuration, {CameraAgentStateDiagnostics.Reason(configurationPath)}, does: {string.Join(", ", changed)}. A re-run does not rewrite a configuration it cannot explain. Restore the instance's records from a backup, or re-run it with the installer that last installed or re-ran it.");
     }
+
+    /// <summary>
+    /// A completed instance's record holds camera-configuration metadata the installer cannot read: each field, with what
+    /// is wrong with it.
+    /// </summary>
+    public static InstallerException MalformedConfigurationMetadata(
+        Guid instanceId, string recordPath, string configurationPath, IReadOnlyList<(string Field, string Problem)> malformed,
+        Exception innerException)
+    {
+        ArgumentNullException.ThrowIfNull(malformed);
+        var changed = malformed.Select(static entry => entry.Field + " (" + entry.Problem + ")");
+        return InstallerException.RefusedFormatted(
+            $"Instance {instanceId:D} cannot be re-run: {CameraAgentStateDiagnostics.Reason(recordPath)} records the identity of its camera configuration, {CameraAgentStateDiagnostics.Reason(configurationPath)}, in a form this installer cannot read: {string.Join(", ", changed)}. A re-run does not rewrite a configuration it cannot explain. Restore the instance's records from a backup, or re-run it with the installer that last installed or re-ran it.",
+            innerException);
+    }
+
+    /// <summary>
+    /// A re-run that changed the container limits, adopted newer configuration defaults, or both, failed before its commit,
+    /// and the recorded limits and configuration were put back: what it changed, the cause, and what was restored.
+    /// </summary>
+    public static InstallerException ChangeFailed(bool limitsChange, bool adopts, string limits, string change, Exception cause)
+        => (limitsChange, adopts) switch
+        {
+            (true, true) => InstallerException.Formatted(
+                $"Changing the container limits to {CameraAgentStateDiagnostics.Reason(limits)} and adopting the installer's new configuration defaults ({CameraAgentStateDiagnostics.Reason(Plain(change))}) failed, so the recorded limits and configuration were restored: {CameraAgentStateDiagnostics.Failure(cause)}",
+                cause),
+            (false, true) => InstallerException.Formatted(
+                $"Adopting the installer's new configuration defaults ({CameraAgentStateDiagnostics.Reason(Plain(change))}) failed, so the recorded configuration was restored: {CameraAgentStateDiagnostics.Failure(cause)}",
+                cause),
+            _ => InstallerException.Formatted(
+                $"Changing the container limits to {CameraAgentStateDiagnostics.Reason(limits)} failed, so the recorded limits were restored: {CameraAgentStateDiagnostics.Failure(cause)}",
+                cause)
+        };
+
+    /// <summary>
+    /// A re-run that changed the container limits, adopted newer configuration defaults, or both, failed, and putting the
+    /// recorded ones back failed too: the restore's cause, and that re-running the same install carries on.
+    /// </summary>
+    public static InstallerException RestoreFailed(bool limitsChange, bool adopts, string change, Exception restoreCause, Exception cause)
+        => (limitsChange, adopts) switch
+        {
+            (true, true) => InstallerException.Formatted(
+                $"Changing the container limits and adopting the installer's new configuration defaults ({CameraAgentStateDiagnostics.Reason(Plain(change))}) failed, and restoring the recorded limits and configuration also failed: {CameraAgentStateDiagnostics.Failure(restoreCause)} Re-run the same install to carry on.",
+                cause),
+            (false, true) => InstallerException.Formatted(
+                $"Adopting the installer's new configuration defaults ({CameraAgentStateDiagnostics.Reason(Plain(change))}) failed, and restoring the recorded configuration also failed: {CameraAgentStateDiagnostics.Failure(restoreCause)} Re-run the same install to carry on.",
+                cause),
+            _ => InstallerException.Formatted(
+                $"Changing the container limits failed, and restoring the recorded limits also failed: {CameraAgentStateDiagnostics.Failure(restoreCause)} Re-run the same install to carry on.",
+                cause)
+        };
 
     /// <summary>The recorded configuration identity is not one any configuration-default generation writes.</summary>
     public static InstallerException UnknownIdentity(
