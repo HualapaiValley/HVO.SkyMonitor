@@ -21,6 +21,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
 
+- Re-running an existing CameraAgent install with a newer installer no longer stops with exit 1 when the installer's configuration defaults changed: the first re-run adopts the cloud assessment steps, lists `camera-module.json` (`pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation)`) and the container recreate in its plan, and needs a running image that declares `io.hvo.skymonitor.configuration-defaults` `installer-defaults-2`; otherwise, and for a changed `--illumination-mode` or a hand-edited `camera-module.json`, the re-run is refused with exit 3 and changes nothing. Refs #1779
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Annotated previews with metadata corners, and frame-facts layers, now show a selected environmental reading that has no configured source as MISSING instead of failing on every capture, for example the default corner readings on an NWS-only or sky-quality-meter-only CameraAgent. Refs #1784
@@ -56,6 +58,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
+
+- Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 
 - CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
 - Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
