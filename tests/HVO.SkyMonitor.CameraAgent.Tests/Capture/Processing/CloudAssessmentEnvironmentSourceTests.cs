@@ -15,6 +15,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -24,6 +25,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Integration")]
+// Harness.Dispose clears every SQLite connection pool in the process, which would dispose idle connections owned
+// by tests running beside it. Nothing may run beside this class (ConnectionPoolClearContractTests). Refs #1785
+[DoNotParallelize]
 public sealed partial class CloudAssessmentEnvironmentSourceTests
 {
     public TestContext TestContext { get; set; } = null!;
@@ -470,12 +474,9 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
             receipt);
     }
 
-    private static string CreateRoot()
-    {
-        var root = Path.Combine(Path.GetTempPath(), "ci1777-cloud", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(root);
-        return root;
-    }
+    // The only directory the harness creates, directly under the temp root: deleting it on dispose leaves no
+    // shared parent directory behind. Refs #1785
+    private static string CreateRoot() => Directory.CreateTempSubdirectory("ci1777-cloud-").FullName;
 
     private void Record(Observation observation)
     {
@@ -530,7 +531,7 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
 
         internal FailClosedHandler Network { get; }
 
-        internal static Harness Create(string profile)
+        internal static Harness Create(string profile, Action<IServiceCollection>? configure = null)
         {
             var root = CreateRoot();
             var logs = new RecordingLoggerProvider();
@@ -554,16 +555,26 @@ public sealed partial class CloudAssessmentEnvironmentSourceTests
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<IEnvironmentalAcquisitionStateStore>(),
                 serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot));
+            configure?.Invoke(services);
             var provider = services.BuildServiceProvider();
             return new Harness(root, provider, logs, network);
         }
 
         public void Dispose()
         {
-            Provider.Dispose();
-            if (Directory.Exists(Root))
+            try
             {
-                Directory.Delete(Root, recursive: true);
+                Provider.Dispose();
+            }
+            finally
+            {
+                // Idle pooled connections outlive the provider and keep their handles under the root until the
+                // pools are cleared. Clear them before deleting it, also when provider disposal fails. Refs #1785
+                SqliteConnection.ClearAllPools();
+                if (Directory.Exists(Root))
+                {
+                    Directory.Delete(Root, recursive: true);
+                }
             }
         }
     }
