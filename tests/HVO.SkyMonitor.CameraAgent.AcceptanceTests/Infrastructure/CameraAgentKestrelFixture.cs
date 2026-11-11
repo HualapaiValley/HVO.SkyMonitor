@@ -314,7 +314,11 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
                     PayloadChecksum.ComputeSha256(payload)));
             var manifest = new ArtifactManifestV2(
                 ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
+#if HVO_BASELINE
             await File.WriteAllBytesAsync(
+#else
+            await HVO.SkyMonitor.CameraAgent.Common.Storage.RetainedFileMutations.WriteAllBytesAsync(
+#endif
                 Path.ChangeExtension(path, ".json"),
                 CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
             await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);

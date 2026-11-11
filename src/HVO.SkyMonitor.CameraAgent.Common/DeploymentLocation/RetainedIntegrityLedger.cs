@@ -241,10 +241,13 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     }
 
     internal static IDisposable BeginPublication(string source, string destination)
+        => BeginPublication(source, destination, Tracked(destination) ? File.ReadAllBytes(source) : []);
+
+    internal static IDisposable BeginPublication(string source, string destination, ReadOnlyMemory<byte> bytes)
     {
         var plans = new List<(string Path, bool Tree, string? Planned, string? Source)>();
         if (Tracked(source)) plans.Add((source, false, null, null));
-        if (Tracked(destination)) plans.Add((destination, false, Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))), null));
+        if (Tracked(destination)) plans.Add((destination, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null));
         return plans.Count == 0 ? Empty.Instance : Begin(plans);
     }
     internal static IDisposable BeginWrite(string path, ReadOnlyMemory<byte> bytes)

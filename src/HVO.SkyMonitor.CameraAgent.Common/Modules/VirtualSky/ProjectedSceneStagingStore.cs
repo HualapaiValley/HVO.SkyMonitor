@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -225,6 +226,8 @@ internal sealed class ProjectedSceneStagingStore :
             if (files.Length >= _options.MaximumFileCount || files.Sum(static file => file.Length) + bytes.Length > _options.MaximumTotalBytes)
                 throw new IOException("Projected-scene staging capacity is exhausted.");
             var temporary = Path.Combine(_root, $".{stageKey}.{Guid.NewGuid():N}.tmp");
+            // Native rename/link publication bypasses the managed filesystem adapter.
+            using var integrity = RetainedIntegrityLedger.BeginWrite(path, bytes);
             if (OperatingSystem.IsLinux())
             {
                 await PublishLinuxAsync(Path.GetFileName(temporary), $"{stageKey}.json", bytes, cancellationToken)
@@ -338,6 +341,7 @@ internal sealed class ProjectedSceneStagingStore :
                     using var directory = OpenLinuxStageDirectory(create: false);
                     if (directory is not null)
                     {
+                        using var integrity = RetainedIntegrityLedger.BeginDelete(GetPath(stageKey));
                         _ = LinuxUnlink(directory, $"{stageKey}.json");
                         SyncLinuxDirectory(directory);
                     }
@@ -387,12 +391,14 @@ internal sealed class ProjectedSceneStagingStore :
                     SyncLinuxDirectory(directory);
                     return;
                 }
+                var activeBytes = await ReadBoundedHandleAsync(active, cancellationToken).ConfigureAwait(false);
+                using var integrity = RetainedIntegrityLedger.BeginPublication(
+                    Path.Combine(_root, activeName), Path.Combine(_root, completedName), activeBytes);
                 if (!TryRenameNoReplace(directory, activeName, completedName, out var exists))
                 {
                     if (!exists) throw new IOException("Projected-scene completion marker could not be published.");
                     using var completed = LinuxOpenAtFile(directory, completedName)
                         ?? throw new IOException("Projected-scene completion marker disappeared.");
-                    var activeBytes = await ReadBoundedHandleAsync(active, cancellationToken).ConfigureAwait(false);
                     var completedBytes = await ReadBoundedHandleAsync(completed, cancellationToken).ConfigureAwait(false);
                     if (!activeBytes.AsSpan().SequenceEqual(completedBytes))
                         throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
@@ -444,6 +450,7 @@ internal sealed class ProjectedSceneStagingStore :
                 using var directory = OpenLinuxStageDirectory(create: false);
                 if (directory is not null)
                 {
+                    using var integrity = RetainedIntegrityLedger.BeginDelete(Path.Combine(_root, name));
                     _ = LinuxUnlink(directory, name);
                     SyncLinuxDirectory(directory);
                 }
@@ -752,6 +759,7 @@ internal sealed class ProjectedSceneStagingStore :
             using var directory = OpenLinuxStageDirectory(create: false);
             if (directory is not null)
             {
+                using var integrity = RetainedIntegrityLedger.BeginDelete(Path.Combine(_root, name));
                 _ = LinuxUnlink(directory, name);
                 SyncLinuxDirectory(directory);
             }
