@@ -171,13 +171,13 @@ public sealed partial class ControlPageTests
         var result = new TaskCompletionSource<OperatorUiResult<CameraAgentControlReceipt>>(TaskCreationOptions.RunContinuationsAsynchronously);
         system.DrainHandler = (_, _, _, _) => new(result.Task);
         var cut = context.Render<ControlPage>();
-        cut.WaitForElement("#control-drain").Click();
-        cut.Find("#control-reason").Change("maintenance");
+        await cut.WaitForElement("#control-drain").ClickAsync(new Microsoft.AspNetCore.Components.Web.MouseEventArgs()).ConfigureAwait(false);
+        await cut.Find("#control-reason").ChangeAsync(new Microsoft.AspNetCore.Components.ChangeEventArgs { Value = "maintenance" }).ConfigureAwait(false);
         var submission = cut.Find("#control-dialog-confirm").ClickAsync(new Microsoft.AspNetCore.Components.Web.MouseEventArgs());
         cut.WaitForAssertion(() => AssertDrainUnavailable(cut, "A control request is being submitted. Wait for it to finish."));
 
         result.SetResult(OperatorUiResult<CameraAgentControlReceipt>.Failure(OperatorUiResultKind.Unavailable, "The installer could not accept the request."));
-        await submission;
+        await submission.ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
             AssertDrainAvailable(cut);
