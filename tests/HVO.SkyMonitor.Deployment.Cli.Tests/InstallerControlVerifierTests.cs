@@ -51,6 +51,115 @@ public sealed class InstallerControlVerifierTests
     }
 
     [TestMethod]
+    public async Task StandaloneDrain_BrowserCancellationAfterClaim_EndsCancelledNotSucceeded()
+    {
+        using var fixture = new Fixture(CameraAgentControlKind.Drain);
+        fixture.Client.AfterDrain = () => fixture.Client.RecordCancellation("owner-drain-cancel", "Cancel the claimed drain");
+        var receipt = await fixture.RunAsync();
+
+        Assert.AreEqual(CameraAgentControlPhase.Cancelled, receipt.Phase);
+        Assert.AreNotEqual(CameraAgentControlPhase.Succeeded, receipt.Phase);
+        Assert.AreNotEqual("lifecycle.drained-paused", receipt.Events[^1].Code);
+        Assert.AreEqual("drain.cancelled-paused", receipt.Events[^1].Code);
+        CollectionAssert.AreEqual(new[] { CameraAgentControlPhase.Queued, CameraAgentControlPhase.Draining, CameraAgentControlPhase.Cancelled },
+            receipt.Events.Select(item => item.Phase).ToArray());
+        Assert.AreEqual("owner-drain-cancel", receipt.Cancellation?.Actor);
+        Assert.AreEqual("Cancel the claimed drain", receipt.Cancellation?.Reason);
+        Assert.IsTrue(receipt.IsValid());
+        // A cancelled claimed Drain keeps the documented standalone-Drain outcome: paused, with no resume or restart.
+        Assert.AreEqual("Paused", fixture.Client.CaptureState);
+        CollectionAssert.AreEqual(DrainEffects, fixture.Client.Effects);
+        Assert.IsFalse(receipt.ResumeRequested);
+        Assert.IsFalse(receipt.ResumeConfirmed);
+        Assert.IsFalse(receipt.RestartRequested);
+        Assert.AreEqual(8L, receipt.PausedVersion);
+        Assert.IsTrue(fixture.Client.TerminalDelivered);
+        await fixture.ReloadAndAssertAsync(receipt);
+        var reloaded = await fixture.ReloadAsync();
+        Assert.AreEqual(receipt.Cancellation, reloaded.Cancellation);
+        Assert.AreEqual(receipt.PausedVersion, reloaded.PausedVersion);
+    }
+
+    [TestMethod]
+    [DataRow("claim-published")]
+    [DataRow("drain-in-progress")]
+    [DataRow("post-drain-boundary")]
+    public async Task StandaloneDrain_CancellationFromClaimToDrainEnd_IsObservedAtThePostDrainBoundary(string recordedAt)
+    {
+        using var fixture = new Fixture(CameraAgentControlKind.Drain);
+        switch (recordedAt)
+        {
+            case "claim-published":
+                fixture.Client.OnExchange = published =>
+                {
+                    if (published?.Phase == CameraAgentControlPhase.Draining && !fixture.Client.Effects.Contains("drain"))
+                        fixture.Client.RecordCancellation("owner", "Cancelled as the claim was published");
+                };
+                break;
+            case "drain-in-progress":
+                fixture.Client.AfterDrain = () => fixture.Client.RecordCancellation("owner", "Cancelled before the drain returned");
+                break;
+            default:
+                fixture.Client.OnExchange = published =>
+                {
+                    if (published?.Phase == CameraAgentControlPhase.Draining && fixture.Client.Effects.Contains("drain"))
+                        fixture.Client.RecordCancellation("owner", "Cancelled as the drain ended");
+                };
+                break;
+        }
+        var receipt = await fixture.RunAsync();
+
+        Assert.AreEqual(CameraAgentControlPhase.Cancelled, receipt.Phase);
+        Assert.AreEqual("drain.cancelled-paused", receipt.Events[^1].Code);
+        Assert.AreEqual("owner", receipt.Cancellation?.Actor);
+        Assert.AreEqual("Paused", fixture.Client.CaptureState);
+        CollectionAssert.AreEqual(DrainEffects, fixture.Client.Effects);
+        // Initial read, claim publication, the single post-drain boundary read, then terminal publication. The Restart path
+        // checks at its first post-drain read too; no extra read is needed before the Drain outcome is decided.
+        CollectionAssert.AreEqual(new CameraAgentControlPhase?[] { CameraAgentControlPhase.Queued, CameraAgentControlPhase.Draining,
+            CameraAgentControlPhase.Draining, CameraAgentControlPhase.Cancelled }, fixture.Client.Exchanged);
+        await fixture.ReloadAndAssertAsync(receipt);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task StandaloneDrain_AtTheDrainBound_EndsDrainTimeoutAndStaysPaused(bool cancelledDuringDrain)
+    {
+        using var fixture = new Fixture(CameraAgentControlKind.Drain);
+        fixture.Client.HungDrain = true;
+        if (cancelledDuringDrain) fixture.Client.AfterDrain = () => fixture.Client.RecordCancellation("owner", "Cancelled while draining");
+        var receipt = await fixture.RunAsync(Budgets with { Drain = TimeSpan.FromMilliseconds(30) });
+
+        // The bound wins over a cancellation recorded during the drain; neither outcome resumes a standalone Drain.
+        Assert.AreEqual(CameraAgentControlPhase.Failed, receipt.Phase);
+        Assert.AreEqual("drain.timeout", receipt.Events[^1].Code);
+        Assert.AreEqual("Paused", fixture.Client.CaptureState);
+        CollectionAssert.AreEqual(DrainEffects, fixture.Client.Effects);
+        Assert.IsFalse(receipt.ResumeRequested);
+        await fixture.ReloadAndAssertAsync(receipt);
+    }
+
+    [TestMethod]
+    [DataRow(false, "lifecycle.failed-check-capture")]
+    [DataRow(true, "lifecycle.timeout")]
+    public async Task StandaloneDrain_UnreadablePostDrainBoundary_FailsClosedAndStaysPaused(bool timeout, string code)
+    {
+        using var fixture = new Fixture(CameraAgentControlKind.Drain);
+        fixture.Client.FailPostDrainRead = timeout;
+        fixture.Client.AfterDrain = () => fixture.Client.RecordCancellation("owner", "Unobservable cancellation");
+        var receipt = await fixture.RunAsync();
+
+        // A completed drain whose cancellation state cannot be read is neither Succeeded nor relabelled as a drain timeout.
+        Assert.AreEqual(CameraAgentControlPhase.Failed, receipt.Phase);
+        Assert.AreEqual(code, receipt.Events[^1].Code);
+        Assert.AreEqual("Paused", fixture.Client.CaptureState);
+        CollectionAssert.AreEqual(DrainEffects, fixture.Client.Effects);
+        Assert.IsFalse(receipt.ResumeRequested);
+        await fixture.ReloadAndAssertAsync(receipt);
+    }
+
+    [TestMethod]
     public async Task NeverReturns_WritesTerminalFailureInInstallerJournalWithNoCameraAgentReceiptDelivery()
     {
         using var fixture = new Fixture();
@@ -334,11 +443,16 @@ public sealed class InstallerControlVerifierTests
                 .ExecuteAsync(_queued, cancellationToken).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
         }
 
-        internal async Task ReloadAndAssertAsync(CameraAgentControlReceipt expected)
+        internal async Task<CameraAgentControlReceipt> ReloadAsync()
         {
             var reloaded = new InstallerControlJournal(JournalPath);
             await reloaded.LoadAsync(CancellationToken.None);
-            var actual = reloaded.Receipts.Single();
+            return reloaded.Receipts.Single();
+        }
+
+        internal async Task ReloadAndAssertAsync(CameraAgentControlReceipt expected)
+        {
+            var actual = await ReloadAsync();
             Assert.AreEqual(expected.Phase, actual.Phase);
             Assert.AreEqual(expected.Request, actual.Request);
             Assert.AreEqual(expected.Events[^1], actual.Events[^1]);
@@ -361,24 +475,44 @@ public sealed class InstallerControlVerifierTests
         internal long Version = 7;
         internal bool Supervised = true, WindowSafe = true, NeverReturns, KeepProcessIdentity, LostAcknowledgement, HungDrain, CancelRequested, TerminalDelivered;
         internal string? Failure;
-        internal bool? FailRestartingPublication;
-        private bool _publicationFailed;
+        internal bool? FailRestartingPublication, FailPostDrainRead;
+        private bool _publicationFailed, _postDrainReadFailed;
         internal Action<CameraAgentControlReceipt>? BeforeResume;
         internal Action? AfterDrain;
         internal Action<CameraAgentControlPhase>? BeforeEffect;
+        internal Action<CameraAgentControlReceipt?>? OnExchange;
+        internal readonly List<CameraAgentControlPhase?> Exchanged = [];
+        // Mirrors CameraAgentControlStore: a recorded cancellation is retained on the projection the exchange returns.
+        internal CameraAgentControlCancellation? Cancellation;
         private readonly Guid _original = Guid.NewGuid();
         private readonly Guid _new = Guid.NewGuid();
         private bool _restarted;
 
+        internal void RecordCancellation(string actor, string reason)
+        {
+            Cancellation ??= new(actor, DateTimeOffset.UtcNow, reason);
+            CancelRequested = true;
+        }
+
         public Task<CameraAgentControlSnapshot> ExchangeAsync(CameraAgentControlReceipt? receipt, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Exchanged.Add(receipt?.Phase);
+            OnExchange?.Invoke(receipt);
             if (receipt?.Phase == CameraAgentControlPhase.Restarting && FailRestartingPublication is { } timeout && !_publicationFailed)
             {
                 _publicationFailed = true;
                 if (timeout) throw new TimeoutException("Injected restart publication timeout.");
                 throw new HttpRequestException("Injected restart publication failure.");
             }
+            if (receipt?.Phase == CameraAgentControlPhase.Draining && Effects.Contains("drain") && FailPostDrainRead is { } readTimeout &&
+                !_postDrainReadFailed)
+            {
+                _postDrainReadFailed = true;
+                if (readTimeout) throw new TimeoutException("Injected post-drain boundary read timeout.");
+                throw new HttpRequestException("Injected post-drain boundary read failure.");
+            }
+            if (receipt is not null && Cancellation is not null) receipt = receipt with { Cancellation = Cancellation };
             if (receipt?.Phase == CameraAgentControlPhase.Queued && Failure == "initial-claim-refused" ||
                 receipt?.Phase == CameraAgentControlPhase.Draining && Failure == "claim-refused")
                 throw new InstallerControlRefusalException(409);

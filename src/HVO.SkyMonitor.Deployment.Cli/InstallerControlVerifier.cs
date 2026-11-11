@@ -63,7 +63,15 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             if (!Drained(drained)) throw new InstallerException("The lifecycle boundary is not drained.");
             receipt = receipt with { PausedVersion = drained.CaptureVersion, DrainedCaptureSequence = drained.CaptureSequence };
             if (receipt.Request.Kind == CameraAgentControlKind.Drain)
-                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
+            {
+                // A claimed cancellation is observed at the same post-drain boundary as a Restart's. A standalone Drain never
+                // resumes, so capture stays paused either way; an unreadable boundary cannot be reported as an uncancelled drain.
+                stage = "drained";
+                var afterDrain = await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
+                return afterDrain.CancelRequested
+                    ? await FinishExecutionAsync(receipt, CameraAgentControlPhase.Cancelled, "drain.cancelled-paused").ConfigureAwait(false)
+                    : await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
+            }
 
             var beforeRestart = await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
             ThrowIfCancelled(beforeRestart);

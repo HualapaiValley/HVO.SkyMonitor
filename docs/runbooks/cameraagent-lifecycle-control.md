@@ -49,9 +49,36 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    The command does not purge, acknowledge or bypass accepted evidence. Explicit archived
    replay retains the existing installer checkpoint semantics: pinned queued
    replay is preserved and interrupted claims recover, rather than blocking drain.
-3. A standalone drain ends **Succeeded**, with capture paused until an explicit
-   resume. Pause itself remains the existing admission-only operation: it does
-   not wait for every accepted processing/delivery queue to empty.
+3. A standalone **Drain** has finish semantics, not checkpoint semantics. After
+   its pause, all four accepted queue families must finish: raw ingress, capture
+   lanes, processing and artifact delivery (outbox) must each report zero pending
+   and zero leased work, from fresh observations, within the two-minute monotonic
+   bound of step 2. A standalone Drain never resumes capture, so every outcome
+   below leaves capture paused until an explicit, authorized resume, and none
+   purges accepted work:
+   - **Succeeded** `lifecycle.drained-paused`: every family reached zero and no
+     cancellation was recorded by the post-drain boundary.
+   - **Failed** `drain.timeout`: the two-minute bound elapsed before every family
+     reached zero. The bound takes precedence over a cancellation recorded
+     during the drain.
+   - **Failed** `drain.failed-check-capture`: the drain call failed or returned
+     without proving the boundary, for example unobserved queues or remaining
+     work.
+   - **Cancelled** `drain.cancelled-paused`: an owner cancelled after the
+     installer claimed the request. Once claimed, a Drain still pauses and
+     drains. The installer reads the cancellation when the drain ends, at the
+     same post-drain boundary where a Restart checks it before restarting. The
+     receipt records who cancelled, when and why. Cancellation does not restore
+     the prior running state.
+   - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: the
+     drain finished but the installer could not read that post-drain boundary,
+     so it does not report the drain as Succeeded.
+
+   A cancellation recorded after that boundary is too late to change the
+   outcome: the receipt stays `lifecycle.drained-paused`, and Recent control
+   receipts shows the late cancellation beside it. Pause itself remains the
+   existing admission-only operation: it does not wait for every accepted
+   processing/delivery queue to empty.
 4. The registered **Scheduled CameraAgent Restart** task delegates the same
    sequence to the installer. Its reserved definition is `cameraagent-restart`,
    its target is `installed-cameraagent`, and its periodic interval is 3,600 to
@@ -122,7 +149,8 @@ settlement at a bounded boundary, with a required cancellation reason. It record
 Recent control receipts. An unclaimed Queued request is cancelled locally without
 waiting for a worker; a concurrent late installer claim is refused before any pause.
 An unclaimed request does not fence ordinary resume. Claimed requests require
-installer settlement. Cancellation cannot undo an already accepted delayed stop.
+installer settlement; for a claimed standalone Drain that boundary is the end
+of the drain (step 3 of the contract above). Cancellation cannot undo an already accepted delayed stop.
 Closing the confirmation dialog sends no request. Storage faults return Unavailable
 without faulting the Blazor circuit. If local cancellation succeeds but the separate
 SQLite automation-history write is busy or fails, the UI reports Unavailable while

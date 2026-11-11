@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Cancelling a System control drain after the installer worker has claimed it now ends the receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded, keeping who cancelled and why; capture stays paused until explicitly resumed. The lifecycle runbook now records every standalone-drain outcome, including `drain.timeout` at the two-minute bound. #1775
+
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
 
 - Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes, identifies the most recent candidate history shown, and shows a failed representative preview without substituting another image. Product cards stack on phones; timeline glyph targets avoid intercepting neighbouring markers and link to equivalent 44px candidate-list controls on the selected day and calendar, with keyboard focus. #1016
