@@ -215,7 +215,6 @@ internal static partial class CameraAgentStateSnapshot
                 throw InstallerException.Formatted($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
         await VerifyProtectedFilesAsync(paths, root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
-        await VerifyIntegrityRestoreInventoryAsync(paths, root, manifest, cancellationToken).ConfigureAwait(false);
         return manifest;
     }
 
@@ -234,6 +233,7 @@ internal static partial class CameraAgentStateSnapshot
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(currentLocations);
         var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        await VerifyIntegrityRestoreInventoryAsync(paths, SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId), manifest, cancellationToken).ConfigureAwait(false);
         var current = currentLocations.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         if (!current.All(CameraAgentStateInventory.IsValidStoreLocation))
             throw InstallerException.Formatted("The CameraAgent store inventory names a location a restore cannot use.");
@@ -268,6 +268,7 @@ internal static partial class CameraAgentStateSnapshot
         ArgumentNullException.ThrowIfNull(carry);
         ArgumentNullException.ThrowIfNull(plan);
         var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        await VerifyIntegrityRestoreInventoryAsync(paths, SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId), manifest, cancellationToken).ConfigureAwait(false);
         var targetLocations = manifest.Databases.Select(static database => database.RelativePath).Order(StringComparer.Ordinal).ToArray();
         if (plan.SnapshotId != snapshot.SnapshotId || !plan.TargetLocations.SequenceEqual(targetLocations, StringComparer.Ordinal) ||
             !plan.CurrentLocations.All(CameraAgentStateInventory.IsValidStoreLocation))

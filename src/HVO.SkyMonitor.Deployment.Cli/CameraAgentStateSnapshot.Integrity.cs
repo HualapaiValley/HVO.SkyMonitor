@@ -61,6 +61,30 @@ internal static partial class CameraAgentStateSnapshot
         }
     }
 
+    // Called only after a complete archive has been verified/extracted. The archive's
+    // retained files and keys are in this disposable staged tree; database-only
+    // rollback never calls this or materializes an absent current authority.
+    internal static async Task StageArchiveIntegrityAsync(InstallationPaths paths, Guid instanceId,
+        LifecycleStateSnapshot snapshot, string stagedInstanceRoot, CancellationToken cancellationToken)
+    {
+        var manifest = await VerifyAsync(paths, instanceId, snapshot, cancellationToken).ConfigureAwait(false);
+        var ledger = manifest.Databases.SingleOrDefault(static database => database.RelativePath == RetainedIntegrityStore && database.Present);
+        if (ledger is null) return;
+        var stagedPaths = paths with { StateRoot = Path.Combine(stagedInstanceRoot, "state") };
+        using var services = IntegrityProtectionServices(stagedPaths);
+        var protector = services.GetRequiredService<IDataProtectionProvider>().CreateProtector("CameraAgent", "DeploymentLocation", "v1");
+        var root = SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId);
+        using (var source = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(root, ledger)))
+            _ = AuthenticateLedger(source.Connection, protector, cancellationToken);
+        var destination = StorePath(stagedPaths.StateRoot, RetainedIntegrityStore);
+        SafeFileSystem.EnsureSafeExistingAncestors(destination);
+        if (File.Exists(destination)) throw new InstallerException("A complete archive must carry its ledger only through the verified database snapshot.");
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        await CopyPureAsync(root, ledger, destination, cancellationToken).ConfigureAwait(false);
+        File.SetUnixFileMode(destination, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(destination)!, stagedInstanceRoot);
+    }
+
     private static FileStream? AcquireIntegrityRestoreOwnership(InstallationPaths paths)
     {
         var directory = Path.Combine(paths.StateRoot, "raw", ".location");

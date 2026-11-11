@@ -164,6 +164,77 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux)]
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [DataRow("whole")]
+    [DataRow("tampered-retained")]
+    [DataRow("missing-keys")]
+    public async Task CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption(string fault)
+    {
+        var id = Guid.NewGuid();
+        var paths = InstallerPaths.Create(Path.Combine(_root, "archive-installer"), id, "synthetic");
+        foreach (var directory in new[] { paths.ProductRoot, paths.InstanceRoot, paths.StateRoot, paths.OperationsRoot })
+            InstallerFiles.CreateOwnerDirectory(directory);
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = Path.Combine(paths.StateRoot, "raw"),
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        _protector = new DataProtectionDeploymentLocationProtector(_options);
+        var seed = CreateSeed(35, -113, 0, "America/Phoenix");
+        using var original = CreateStore();
+        var active = await original.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        var (retained, _) = await WriteSummaryCaptureAsync(active, journal: true).ConfigureAwait(false);
+        original.Dispose();
+        var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
+            "sha256:" + new string('b', 64), "amd64", null);
+        var snapshot = await SnapshotApi.CreateAsync(paths, id, Guid.NewGuid(), image,
+            InstallerLayout.SqliteStores, CancellationToken.None).ConfigureAwait(false);
+        var staged = Path.Combine(paths.ProductRoot, "verified-archive-staging");
+        foreach (var file in Directory.EnumerateFiles(paths.StateRoot, "*", SearchOption.AllDirectories))
+        {
+            // The full archive carries the ledger through its database snapshot,
+            // while retained files and keys are extracted into the staged tree.
+            if (Path.GetFileName(file).StartsWith(RetainedIntegrityLedger.DatabaseName, StringComparison.Ordinal)) continue;
+            var target = Path.Combine(staged, "state", Path.GetRelativePath(paths.StateRoot, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target);
+        }
+        File.Delete(Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName));
+        _ = await SnapshotApi.VerifyAsync(paths, id, snapshot, CancellationToken.None).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<RealInstallerException>(async () =>
+            _ = await SnapshotApi.PlanRestoreAsync(paths, id, snapshot, [], CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        var stagedRaw = Path.Combine(staged, "state", "raw");
+        var stagedLedger = Path.Combine(stagedRaw, ".location", RetainedIntegrityLedger.DatabaseName);
+        if (fault == "missing-keys")
+        {
+            Directory.Delete(Path.Combine(stagedRaw, ".location", "keys"), recursive: true);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                SnapshotApi.StageArchiveIntegrityAsync(paths, id, snapshot, staged, CancellationToken.None)).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(stagedLedger));
+            return;
+        }
+        await SnapshotApi.StageArchiveIntegrityAsync(paths, id, snapshot, staged, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(File.Exists(stagedLedger));
+        if (fault == "tampered-retained")
+            await File.WriteAllTextAsync(Path.Combine(staged, "state", Path.GetRelativePath(paths.StateRoot, retained)), "{}").ConfigureAwait(false);
+        _options = Options.Create(new CameraAgentHostOptions
+        {
+            RawIngressRoot = stagedRaw,
+            CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+        });
+        _protector = new DataProtectionDeploymentLocationProtector(_options);
+        using var restored = CreateStore();
+        await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+            _ = await restored.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        if (fault == "tampered-retained")
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                _ = await restored.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        else
+            Assert.AreEqual(active, await restored.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
     [DataRow(false)]
     [DataRow(true)]
     public async Task FailedFirstUpgradeRestoresRecordedLegacyAbsenceAndForcesFullAdoption(bool pending)

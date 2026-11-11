@@ -2837,11 +2837,18 @@ unsealed history can recover a failed first upgrade: restore removes only the
 candidate-created ledger, restores the old protected files, and preserves retained
 captures/products. A later new runtime must fully validate and adopt that legacy
 state before qualifying. Historical database-only snapshots without this paired
-absence evidence still require a complete paired backup. An established target
-ledger cannot be restored if its current source disappeared, even when a derived
+absence evidence still require a complete paired backup. Database-only restore of an established target
+ledger refuses if its current source disappeared, even when a derived
 overlay exists; deleting the ledger never authorizes silent adoption. Derived
 restore overlays are protected and bound to the selected snapshot and current
 file set, so interrupted restores can resume without trusting partial state.
+
+Complete-backup restore verifies the archive and its database snapshot before
+replacing the instance. It authenticates the archived ledger with the extracted
+keys and stages it beside the archived retained files. Database-only restore still
+refuses a deleted established ledger. Archive restore leaves the instance
+uninstalled; reinstall/startup must finish a full scrub before protected
+verification succeeds. Missing keys or drift never qualify restored state.
 
 The separate optional parse index has bounded batches/memory and no fixed
 proof-count cap. Fully checked prefixes survive canceled full scans; auxiliary

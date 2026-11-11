@@ -42,6 +42,30 @@ adoption before a new runtime can qualify. Established ledger targets never use
 that fallback. A complete paired backup remains the recovery route when a
 snapshot lacks the necessary protected-state inventory.
 
+## Complete-archive interaction found by the native campaign
+
+The first current-image campaign exposed a second interaction of the deleted-ledger
+refusal: full-backup extraction excludes SQLite files because they are carried
+in its verified database snapshot. Snapshot-file verification must work before
+those files exist in the replacement instance. Pure `VerifyAsync` therefore checks
+the snapshot itself; database-only `PlanRestoreAsync` and `RestoreAsync` still
+check the current authority before any database replacement.
+
+Only the complete-archive staging path authenticates the snapshot ledger using
+the archive's extracted keys and copies it, checksum-verified and synced, into
+the disposable staged instance alongside the archive's retained files. The full
+archive has already been verified twice before its staged tree is swapped in.
+There is no missing-ledger adoption flag on database restore. Missing archive
+keys refuse, and no staging step grants runtime qualification. A restarted agent
+still performs a full scrub, and rejects retained bytes that differ from the
+archived ledger. Interrupted staging is discarded/re-extracted; interrupted
+swaps retain the durable staged ledger and resume through the usual restore plan.
+
+New real-protector cases cover valid staging, absent archive keys, changed retained
+bytes, and continued database-only refusal after deleting its current ledger.
+The native campaign is being rerun after its first failure; the failed attempt
+remains evidence and is not counted as a pass.
+
 ## Original requirement crosswalk
 
 | Requirement | Preserved behavior / interaction | Evidence for this candidate |
