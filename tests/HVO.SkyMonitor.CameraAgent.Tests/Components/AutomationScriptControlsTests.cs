@@ -139,6 +139,37 @@ public sealed class AutomationScriptControlsTests
     }
 
     [TestMethod]
+    public async Task QueuedScriptStopIsEnabledWithoutCurrentAdapterAndConfirmationWithdrawsDurably()
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Service.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var queued = await fixture.Service.RunScriptNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
+        var run = queued.Value!.State.Runs.Single();
+        fixture.Stub.Available = false;
+        using var context = Context(fixture.Service);
+        var changed = 0;
+        var cut = context.Render<AutomationScriptRunControls>(parameters => parameters
+            .Add(item => item.Run, run).Add(item => item.Available, false).Add(item => item.Changed, () => changed++));
+        Assert.IsFalse(cut.Find("[data-script-action=stop]").HasAttribute("disabled"));
+        await cut.Find("[data-script-action=stop]").ClickAsync(new()).ConfigureAwait(false);
+        Assert.Contains("Withdraw this queued run before execution", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain("process tree", cut.Markup, StringComparison.Ordinal);
+        Assert.AreEqual(LocalAutomationRunOutcome.Queued, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single().Outcome);
+        await cut.Find("[data-script-action=cancel]").ClickAsync(new()).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationRunOutcome.Queued, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single().Outcome);
+        await cut.Find("[data-script-action=stop]").ClickAsync(new()).ConfigureAwait(false);
+        await cut.Find("[data-script-action=confirm]").ClickAsync(new()).ConfigureAwait(false);
+        cut.WaitForElement("[role=status]");
+        Assert.AreEqual(1, changed);
+        var terminal = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Skipped, terminal.Outcome);
+        Assert.IsNull(terminal.StartedAtUtc);
+        Assert.IsNotNull(terminal.CompletedAtUtc);
+        Assert.AreEqual(run.Occurrence, terminal.Occurrence);
+    }
+
+    [TestMethod]
     public async Task HistoryDisplaysAndStopsAnActiveRunAfterDefinitionRemoval()
     {
         using var fixture = new ScriptControlsFixture();

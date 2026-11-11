@@ -29,7 +29,7 @@ public partial class AutomationScriptRunControls
 
     private void ReviewStop()
     {
-        if (_busy || Run is not { Outcome: LocalAutomationRunOutcome.Running, Occurrence: { } occurrence } ||
+        if (_busy || Run is not { Outcome: LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running, Occurrence: { } occurrence } ||
             occurrence.Definition.TaskKind != LocalAutomationTaskKind.CustomScript) return;
         _message = null;
         _stop = new(Run.DefinitionId, Run.RunKey, occurrence.DefinitionVersion, string.Empty);

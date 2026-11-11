@@ -832,6 +832,18 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             ("$id", request.DefinitionId)).ConfigureAwait(false);
         var version = Math.Max(currentVersion, revisionCeiling) + 1;
         var now = ToUnixMilliseconds(Now());
+        // This mutation withdraws pending authorization, not the immutable execution identity.
+        // Explicit retries may retain an older occurrence until a subsequent mutation withdraws them.
+        if (existing is not null)
+        {
+            await ExecuteAsync(connection, transaction, """
+                UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now, detail = $detail
+                WHERE definition_id = $id AND outcome = 'Queued';
+                """, cancellationToken, ("$now", now), ("$id", definition.DefinitionId),
+                ("$detail", definition.Enabled
+                    ? "The definition was edited before this prepared occurrence started."
+                    : "The definition was disabled before this prepared occurrence started.")).ConfigureAwait(false);
+        }
         await ExecuteAsync(
             connection,
             transaction,

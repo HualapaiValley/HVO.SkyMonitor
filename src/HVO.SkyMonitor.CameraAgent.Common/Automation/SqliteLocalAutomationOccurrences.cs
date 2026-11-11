@@ -49,8 +49,111 @@ public sealed partial class SqliteLocalAutomationStore
         }
     }
 
-    public async ValueTask<LocalAutomationRun?> TryClaimQueuedAsync(
+    public ValueTask<LocalAutomationRun?> TryClaimQueuedAsync(
         LocalAutomationRunnerEntry currentEntry, CancellationToken cancellationToken)
+        => TryClaimQueuedCoreAsync(currentEntry, null, cancellationToken);
+
+    public ValueTask<LocalAutomationRun?> TryClaimQueuedWithAdmissionAsync(
+        LocalAutomationRunnerEntry currentEntry, bool offSweepAdmission, CancellationToken cancellationToken)
+        => TryClaimQueuedCoreAsync(currentEntry, offSweepAdmission, cancellationToken);
+
+    public async ValueTask<LocalAutomationDefinition?> GetQueuedDefinitionAsync(
+        string definitionId, CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, false, cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var run = await ReadPreparedRunAsync(connection, transaction, definitionId, null, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return run?.Occurrence?.Definition;
+        }
+        finally { _gate.Release(); }
+    }
+
+    public async ValueTask<LocalAutomationCommandResult> StopQueuedScriptAsync(
+        LocalAutomationScriptStopRequest request, CancellationToken cancellationToken)
+    {
+        using var operation = RetainOperationAuthority();
+        ArgumentNullException.ThrowIfNull(request);
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+            await EnsureSchemaAsync(connection, false, cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var status = LocalAutomationCommandStatus.Invalid;
+            string? reason = LocalAutomationContract.InvalidCommandReasonCode;
+            if (LocalAutomationDefinitionValidator.IsIdentifier(request.DefinitionId, LocalAutomationContract.MaximumDefinitionIdLength) &&
+                LocalAutomationDefinitionValidator.IsText(request.RunKey, 128) && request.ExpectedDefinitionVersion > 0 &&
+                LocalAutomationDefinitionValidator.IsText(request.Actor, LocalAutomationContract.MaximumActorLength))
+            {
+                var run = await ReadPreparedRunAsync(connection, transaction, request.DefinitionId, request.RunKey, cancellationToken).ConfigureAwait(false);
+                if (run?.Occurrence is not { } occurrence || !occurrence.IsValid())
+                {
+                    status = LocalAutomationCommandStatus.NotFound;
+                    reason = LocalAutomationScriptCommands.RunNotFoundReason;
+                }
+                else if (occurrence.Definition.TaskKind != LocalAutomationTaskKind.CustomScript)
+                    reason = LocalAutomationScriptCommands.ScriptOnlyReason;
+                else if (occurrence.DefinitionVersion != request.ExpectedDefinitionVersion)
+                {
+                    status = LocalAutomationCommandStatus.Conflict;
+                    reason = LocalAutomationContract.ExpectedVersionConflictReasonCode;
+                }
+                else if (run.Outcome == LocalAutomationRunOutcome.Running)
+                {
+                    status = LocalAutomationCommandStatus.Conflict;
+                    reason = LocalAutomationScriptCommands.StopUnavailableReason;
+                }
+                else if (run.Outcome == LocalAutomationRunOutcome.Queued)
+                {
+                    await ExecuteAsync(connection, transaction, """
+                        UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now,
+                            detail = 'The owner stopped this prepared script occurrence before it started.'
+                        WHERE definition_id = $id AND run_key = $key AND outcome = 'Queued';
+                        """, cancellationToken, ("$now", ToUnixMilliseconds(Now())),
+                        ("$id", request.DefinitionId), ("$key", request.RunKey)).ConfigureAwait(false);
+                    status = LocalAutomationCommandStatus.Applied;
+                    reason = null;
+                }
+                else
+                {
+                    status = LocalAutomationCommandStatus.Unchanged;
+                    reason = null;
+                }
+            }
+            var result = await OccurrenceResultAsync(connection, transaction, status, reason, cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return result;
+        }
+        finally { _gate.Release(); }
+    }
+
+    private static async ValueTask<LocalAutomationRun?> ReadPreparedRunAsync(SqliteConnection connection,
+        SqliteTransaction transaction, string definitionId, string? runKey, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT sequence, definition_id, run_key, revision_sha256, trigger_kind, scheduled_for_unix_ms,
+                   started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
+                   occurrence_json, attempt, occurrence_id, preparation_json
+            FROM automation_runs WHERE definition_id = $id AND
+                (($key IS NULL AND outcome = 'Queued') OR run_key = $key) ORDER BY sequence LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$id", definitionId);
+        command.Parameters.AddWithValue("$key", (object?)runKey ?? DBNull.Value);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? await ReadRunAsync(reader, cancellationToken).ConfigureAwait(false) : null;
+    }
+
+    private async ValueTask<LocalAutomationRun?> TryClaimQueuedCoreAsync(
+        LocalAutomationRunnerEntry currentEntry, bool? offSweepAdmission, CancellationToken cancellationToken)
     {
         using var operation = RetainOperationAuthority();
         ArgumentNullException.ThrowIfNull(currentEntry);
@@ -88,6 +191,13 @@ public sealed partial class SqliteLocalAutomationStore
                     ? await ReadRunAsync(reader, cancellationToken).ConfigureAwait(false) : null;
             }
             if (run?.Occurrence is not { } occurrence || occurrence.ScheduledForUtc > Now())
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                return null;
+            }
+            // The queue head can change after admission was planned. Never claim a retained script
+            // without its worker slot, even when the current definition is an inline built-in.
+            if (offSweepAdmission is { } admitted && admitted != _registry.RunsOffSweep(occurrence.Definition))
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 return null;

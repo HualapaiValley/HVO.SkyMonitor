@@ -1,6 +1,9 @@
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Moq;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 
@@ -9,6 +12,180 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 [DoNotParallelize]
 public sealed class LocalAutomationScriptCommandsTests
 {
+    [TestMethod]
+    public async Task QueuedStopPreservesOtherQueuedRunningAndTerminalRowsAndAllSchedules()
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        foreach (var id in new[] { "script", "queued", "running", "terminal" })
+        {
+            await fixture.Store.SaveAsync(ScriptControlsFixture.Save(id: id), default).ConfigureAwait(false);
+            await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow("run-" + id) with { DefinitionId = id }, default).ConfigureAwait(false);
+        }
+        var entries = await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false);
+        var running = await fixture.Store.TryClaimQueuedAsync(entries.Single(entry => entry.Definition.DefinitionId == "running"), default).ConfigureAwait(false);
+        Assert.IsNotNull(running);
+        var terminal = await fixture.Store.TryClaimQueuedAsync(entries.Single(entry => entry.Definition.DefinitionId == "terminal"), default).ConfigureAwait(false);
+        Assert.IsNotNull(terminal);
+        await fixture.Store.CompleteRunAsync(terminal.RunKey, LocalAutomationRunOutcome.Succeeded, "done", default).ConfigureAwait(false);
+        var before = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+        var target = before.Runs.Single(run => run.DefinitionId == "script");
+        var stopped = await fixture.Commands.StopAsync(new("script", target.RunKey, 1, "owner"), default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, stopped.Status);
+        foreach (var run in before.Runs.Where(run => run.DefinitionId != "script"))
+            Assert.AreEqual(run, stopped.State.Runs.Single(item => item.RunKey == run.RunKey));
+        CollectionAssert.AreEqual(entries.ToArray(), (await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false)).ToArray());
+        CollectionAssert.AreEqual(before.ActiveRuns.ToArray(), stopped.State.ActiveRuns.ToArray());
+        foreach (var definition in before.Definitions)
+            Assert.AreEqual(definition.NextRunUtc, stopped.State.Definitions.Single(item => item.Definition.DefinitionId == definition.Definition.DefinitionId).NextRunUtc);
+    }
+
+    [TestMethod]
+    public async Task NaturalCompletionWinningStopReturnsTruthfulTerminalReplay()
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
+        var entry = (await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single();
+        var running = await fixture.Store.TryClaimQueuedAsync(entry, default).ConfigureAwait(false);
+        Assert.IsNotNull(running);
+        var stale = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+        await fixture.Store.CompleteRunAsync(running.RunKey, LocalAutomationRunOutcome.Succeeded, "natural result", default).ConfigureAwait(false);
+        var completed = await fixture.Store.GetStateAsync(default).ConfigureAwait(false);
+        var projection = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
+        projection.SetupSequence(store => store.GetStateAsync(It.IsAny<CancellationToken>())).ReturnsAsync(stale).ReturnsAsync(completed);
+        var commands = new LocalAutomationScriptCommands(projection.Object, fixture.Worker);
+        var result = await commands.StopAsync(new("script", running.RunKey, 1, "owner"), default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Unchanged, result.Status);
+        Assert.AreEqual(completed, result.State);
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, result.State.Runs.Single().Outcome);
+        Assert.AreEqual("natural result", result.State.Runs.Single().Detail);
+    }
+
+    [TestMethod]
+    public async Task QueuedStopValidatesExactIdentityAndOwnerAndPersistsWithoutAProcessResult()
+    {
+        using var fixture = new ScriptControlsFixture();
+        var executions = 0;
+        fixture.Stub.Execute = (_, _) =>
+        {
+            executions++;
+            return ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Succeeded, "done"));
+        };
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Service.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var queued = await fixture.Service.RunScriptNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
+        var original = queued.Value!.State.Runs.Single();
+        var before = (await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single();
+        var stop = new LocalAutomationScriptStopRequest("script", original.RunKey, 1, "owner");
+        fixture.Authorized = false;
+        Assert.AreEqual(OperatorUiResultKind.Unauthorized, (await fixture.Service.StopScriptAsync(stop, default).ConfigureAwait(false)).Kind);
+        fixture.Authorized = true;
+        Assert.AreEqual(LocalAutomationCommandStatus.NotFound, (await fixture.Commands.StopAsync(stop with { DefinitionId = "other" }, default).ConfigureAwait(false)).Status);
+        Assert.AreEqual(LocalAutomationCommandStatus.NotFound, (await fixture.Commands.StopAsync(stop with { RunKey = original.RunKey + ":retry2" }, default).ConfigureAwait(false)).Status);
+        Assert.AreEqual(LocalAutomationCommandStatus.Conflict, (await fixture.Commands.StopAsync(stop with { ExpectedDefinitionVersion = 2 }, default).ConfigureAwait(false)).Status);
+        Assert.AreEqual(LocalAutomationCommandStatus.Invalid, (await fixture.Commands.StopAsync(stop with { Actor = "" }, default).ConfigureAwait(false)).Status);
+        Assert.AreEqual(original, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single());
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => fixture.Commands.StopAsync(stop, cancelled.Token).AsTask()).ConfigureAwait(false);
+        var stopped = await fixture.Service.StopScriptAsync(stop, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, stopped.Value!.Status);
+        var terminal = stopped.Value.State.Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Skipped, terminal.Outcome);
+        Assert.AreEqual("The owner stopped this prepared script occurrence before it started.", terminal.Detail);
+        Assert.IsNull(terminal.StartedAtUtc);
+        Assert.IsNotNull(terminal.CompletedAtUtc);
+        Assert.AreEqual(original with { Outcome = terminal.Outcome, CompletedAtUtc = terminal.CompletedAtUtc, Detail = terminal.Detail }, terminal);
+        Assert.AreEqual(before, (await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single());
+        Assert.AreEqual(LocalAutomationCommandStatus.Unchanged, (await fixture.Commands.StopAsync(stop, default).ConfigureAwait(false)).Status);
+        Assert.AreEqual(LocalAutomationCommandStatus.Replayed, (await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow() with { Actor = "script-owner" }, default).ConfigureAwait(false)).Status);
+        await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(0, executions);
+        fixture.Runner.Dispose();
+        fixture.Store.Dispose();
+        using var reopened = fixture.NewStore();
+        await reopened.InitializeAsync(default).ConfigureAwait(false);
+        Assert.IsNull(await reopened.TryClaimQueuedAsync((await reopened.GetRunnerViewAsync(default).ConfigureAwait(false)).Single(), default).ConfigureAwait(false));
+        Assert.AreEqual(terminal, (await reopened.GetStateAsync(default).ConfigureAwait(false)).Runs.Single());
+    }
+
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(1)]
+    [DataRow(2)]
+    public async Task StopAtClaimBoundariesNeverLosesTheAttempt(int stage)
+    {
+        using var fixture = new ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        var run = (await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false)).State.Runs.Single();
+        var claimCommitted = ScriptControlsFixture.Signal();
+        var releaseDispatch = ScriptControlsFixture.Signal();
+        var entered = ScriptControlsFixture.Signal();
+        var executions = 0;
+        fixture.Stub.Execute = async (_, token) =>
+        {
+            executions++;
+            entered.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+            return new(LocalAutomationRunOutcome.Succeeded, "unreachable");
+        };
+        var forwarding = new Mock<ILocalAutomationStore>(MockBehavior.Strict);
+        var occurrences = forwarding.As<ILocalAutomationOccurrenceStore>();
+        forwarding.Setup(item => item.GetRunnerViewAsync(It.IsAny<CancellationToken>()))
+            .Returns((CancellationToken token) => fixture.Store.GetRunnerViewAsync(token));
+        forwarding.Setup(item => item.CompleteDrainedRunAsync(It.IsAny<string>(), It.IsAny<LocalAutomationRunOutcome>(), It.IsAny<string>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
+            .Returns((string key, LocalAutomationRunOutcome outcome, string detail, DateTimeOffset completed, CancellationToken token) => fixture.Store.CompleteDrainedRunAsync(key, outcome, detail, completed, token));
+        occurrences.Setup(item => item.GetQueuedDefinitionAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((string id, CancellationToken token) => fixture.Store.GetQueuedDefinitionAsync(id, token));
+        occurrences.Setup(item => item.TryClaimQueuedWithAdmissionAsync(It.IsAny<LocalAutomationRunnerEntry>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
+            .Returns(async (LocalAutomationRunnerEntry entry, bool admission, CancellationToken token) =>
+            {
+                var claimed = await fixture.Store.TryClaimQueuedWithAdmissionAsync(entry, admission, token).ConfigureAwait(false);
+                claimCommitted.TrySetResult();
+                if (stage == 1) await releaseDispatch.Task.ConfigureAwait(false);
+                return claimed;
+            });
+        using var runner = new LocalAutomationRunnerService(forwarding.Object, fixture.Registry, new StubCaptureSequenceSource(),
+            Options.Create(new CameraAgentHostOptions()), fixture.Clock, NullLogger<LocalAutomationRunnerService>.Instance, offSweepWorker: fixture.Worker);
+        var request = new LocalAutomationScriptStopRequest("script", run.RunKey, 1, "owner");
+        try
+        {
+            if (stage == 0)
+            {
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await fixture.Commands.StopAsync(request, default).ConfigureAwait(false)).Status);
+                // Use the real runner: a withdrawn row must not be claimed by the next sweep.
+                await fixture.Runner.SweepAsync(default).ConfigureAwait(false);
+                Assert.AreEqual(0, executions);
+            }
+            else
+            {
+                var sweep = runner.SweepAsync(default);
+                await claimCommitted.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                if (stage == 2) await entered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+                var stop = fixture.Commands.StopAsync(request, default).AsTask();
+                if (stage == 1)
+                {
+                    Assert.IsFalse(stop.IsCompleted, "Stop must wait through the committed-claim/registration gap.");
+                    Assert.AreEqual(LocalAutomationRunOutcome.Running, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).ActiveRuns.Single().Outcome);
+                    releaseDispatch.SetResult();
+                }
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await stop.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false)).Status);
+                await sweep.ConfigureAwait(false);
+                Assert.AreEqual(1, executions);
+            }
+            var terminal = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+            Assert.AreEqual(stage == 0 ? LocalAutomationRunOutcome.Skipped : LocalAutomationRunOutcome.Interrupted, terminal.Outcome);
+            Assert.AreEqual(run.Occurrence, terminal.Occurrence);
+            Assert.IsNotNull(terminal.CompletedAtUtc);
+            Assert.IsTrue(fixture.Worker.WhenIdleAsync().IsCompleted);
+            Assert.AreEqual(LocalAutomationCommandStatus.Unchanged, (await fixture.Commands.StopAsync(request, default).ConfigureAwait(false)).Status);
+        }
+        finally { releaseDispatch.TrySetResult(); }
+    }
+
     [TestMethod]
     public async Task RunNowRequiresOwnerBindsActorAndVersionReplaysAndPreservesSchedule()
     {
@@ -97,10 +274,13 @@ public sealed class LocalAutomationScriptCommandsTests
             (await fixture.Commands.StopAsync(new("script", "missing", 1, "owner"), default).ConfigureAwait(false)).Status);
         await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
         var queued = await fixture.Commands.RunNowAsync(ScriptControlsFixture.RunNow(), default).ConfigureAwait(false);
-        Assert.AreEqual(LocalAutomationCommandStatus.Conflict,
-            (await fixture.Commands.StopAsync(new("script", queued.State.Runs.Single().RunKey, 1, "owner"), default).ConfigureAwait(false)).Status,
-            "Stop is only admitted after execution acquires its slot.");
-        await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow("builtin-now") with { DefinitionId = "builtin" }, default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied,
+            (await fixture.Commands.StopAsync(new("script", queued.State.Runs.Single().RunKey, 1, "owner"), default).ConfigureAwait(false)).Status);
+        var builtinQueued = await fixture.Store.RunNowAsync(ScriptControlsFixture.RunNow("builtin-now") with { DefinitionId = "builtin" }, default).ConfigureAwait(false);
+        var pendingBuiltIn = builtinQueued.State.Runs.Single(run => run.DefinitionId == "builtin");
+        Assert.AreEqual(LocalAutomationScriptCommands.ScriptOnlyReason,
+            (await fixture.Commands.StopAsync(new("builtin", pendingBuiltIn.RunKey, 1, "owner"), default).ConfigureAwait(false)).ReasonCode);
+        Assert.AreEqual(pendingBuiltIn, (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single(run => run.RunKey == pendingBuiltIn.RunKey));
         var builtinEntry = (await fixture.Store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single(item => item.Definition.DefinitionId == "builtin");
         var builtinRun = await fixture.Store.TryClaimQueuedAsync(builtinEntry, default).ConfigureAwait(false);
         Assert.IsNotNull(builtinRun);

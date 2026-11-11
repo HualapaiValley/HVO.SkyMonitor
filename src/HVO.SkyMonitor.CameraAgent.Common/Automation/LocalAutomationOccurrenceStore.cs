@@ -46,6 +46,21 @@ public interface ILocalAutomationOccurrenceStore
     ValueTask<LocalAutomationRun?> TryClaimQueuedAsync(
         LocalAutomationRunnerEntry currentEntry, CancellationToken cancellationToken);
 
+    /// <summary>Reads the oldest pending execution kind without changing its durable state.</summary>
+    ValueTask<LocalAutomationDefinition?> GetQueuedDefinitionAsync(
+        string definitionId, CancellationToken cancellationToken)
+        => ValueTask.FromResult<LocalAutomationDefinition?>(null);
+
+    /// <summary>Claims only when admission matches the retained execution kind, rechecked atomically.</summary>
+    ValueTask<LocalAutomationRun?> TryClaimQueuedWithAdmissionAsync(
+        LocalAutomationRunnerEntry currentEntry, bool offSweepAdmission, CancellationToken cancellationToken)
+        => TryClaimQueuedAsync(currentEntry, cancellationToken);
+
+    /// <summary>Atomically withdraws an exact queued script attempt; Running requires worker drain.</summary>
+    ValueTask<LocalAutomationCommandResult> StopQueuedScriptAsync(
+        LocalAutomationScriptStopRequest request, CancellationToken cancellationToken)
+        => throw new NotSupportedException("This automation store does not support queued script withdrawal.");
+
     /// <summary>
     /// Idempotently queues one run-now occurrence of an enabled periodic definition whose registered task
     /// accepts it. At most one run-now per definition is queued or running at a time, and the periodic

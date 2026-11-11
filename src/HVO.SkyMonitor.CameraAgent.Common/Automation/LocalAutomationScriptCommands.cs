@@ -38,7 +38,15 @@ public sealed class LocalAutomationScriptCommands(ILocalAutomationStore store,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        var state = await store.GetStateAsync(cancellationToken).ConfigureAwait(false);
+        LocalAutomationOperatorState state;
+        if (store is ILocalAutomationOccurrenceStore occurrences)
+        {
+            var withdrawal = await occurrences.StopQueuedScriptAsync(request, cancellationToken).ConfigureAwait(false);
+            if (withdrawal.Status != LocalAutomationCommandStatus.Conflict || withdrawal.ReasonCode != StopUnavailableReason)
+                return withdrawal;
+            state = withdrawal.State;
+        }
+        else state = await store.GetStateAsync(cancellationToken).ConfigureAwait(false);
         if (!LocalAutomationDefinitionValidator.IsIdentifier(request.DefinitionId, LocalAutomationContract.MaximumDefinitionIdLength) ||
             !LocalAutomationDefinitionValidator.IsText(request.RunKey, 128) || request.ExpectedDefinitionVersion <= 0 ||
             !LocalAutomationDefinitionValidator.IsText(request.Actor, LocalAutomationContract.MaximumActorLength))
@@ -52,14 +60,13 @@ public sealed class LocalAutomationScriptCommands(ILocalAutomationStore store,
             return new(LocalAutomationCommandStatus.Conflict, LocalAutomationContract.ExpectedVersionConflictReasonCode, null, state);
         if (run.Outcome is not (LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))
             return new(LocalAutomationCommandStatus.Unchanged, null, null, state);
-        // A queued run has not acquired execution authority; never report it stopped or affect a
-        // different active task. Running stops are naturally idempotent by immutable run identity.
-        if (run.Outcome != LocalAutomationRunOutcome.Running ||
-            !await worker.StopScriptRunAsync(run.RunKey, cancellationToken).ConfigureAwait(false))
-            return new(LocalAutomationCommandStatus.Conflict, StopUnavailableReason, null, state);
+        // The worker also waits through the committed-claim/dispatch handoff, outside the store gate.
+        var stopped = run.Outcome == LocalAutomationRunOutcome.Running &&
+            await worker.StopScriptRunAsync(run.RunKey, cancellationToken).ConfigureAwait(false);
         var settled = await store.GetStateAsync(cancellationToken).ConfigureAwait(false);
-        if (settled.ActiveRuns.Concat(settled.Runs).Any(item => item.RunKey == run.RunKey && item.Outcome == LocalAutomationRunOutcome.Running))
+        var terminal = settled.ActiveRuns.Concat(settled.Runs).FirstOrDefault(item => item.RunKey == run.RunKey);
+        if (terminal is null || terminal.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running)
             return new(LocalAutomationCommandStatus.Conflict, StopUnavailableReason, null, settled);
-        return new(LocalAutomationCommandStatus.Applied, null, null, settled);
+        return new(stopped ? LocalAutomationCommandStatus.Applied : LocalAutomationCommandStatus.Unchanged, null, null, settled);
     }
 }
