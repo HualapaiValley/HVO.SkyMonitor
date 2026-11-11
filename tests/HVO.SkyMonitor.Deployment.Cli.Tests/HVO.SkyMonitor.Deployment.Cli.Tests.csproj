@@ -32,6 +32,9 @@
   <ItemGroup>
     <None Include="../fixtures/state-compatibility/environmental-schema3-image-labels.json" Link="Fixtures/environmental-schema3-image-labels.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/virtual-sky/installer-controlled-night.json" Link="Fixtures/installer-controlled-night.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\fixtures\installer-configuration-defaults\*.camera-module.json" Link="Fixtures\installer-configuration-defaults\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\fixtures\state-compatibility\previous-release\*" Link="Fixtures\previous-release\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

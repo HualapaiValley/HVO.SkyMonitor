@@ -16,11 +16,12 @@ result_input="${3:-}"
 declare -A plan=()
 declare -A result=()
 
-plan_keys=(mode complete shared cameraagent logichost combined delivery deployment)
+plan_keys=(mode complete shared cameraagent logichost combined delivery deployment catalog_recipe)
 result_keys=(
   changes
   quality
   catalog-contracts
+  catalog-reproducibility
   deployment-contracts
   build
   architecture
@@ -84,7 +85,7 @@ case "${plan[mode]}" in
   *) reject "unknown or missing CI classification mode '${plan[mode]}'" ;;
 esac
 
-for key in complete shared cameraagent logichost combined delivery deployment; do
+for key in complete shared cameraagent logichost combined delivery deployment catalog_recipe; do
   case "${plan[$key]}" in
     true | false) ;;
     *) reject "plan flag '$key' is not a boolean: '${plan[$key]}'" ;;
@@ -106,6 +107,7 @@ if [[ "$event_name" != "pull_request" ]]; then
   [[ "${plan[mode]}" == "full" ]] || reject "non-pull-request CI requires mode=full"
   [[ "${plan[complete]}" == "true" ]] || reject "non-pull-request CI requires complete=true"
   [[ "${plan[deployment]}" == "true" ]] || reject "non-pull-request CI requires deployment=true"
+  [[ "${plan[catalog_recipe]}" == "true" ]] || reject "non-pull-request CI requires catalog_recipe=true"
   [[ "$every_component" == "true" ]] || reject "non-pull-request CI requires every component lane"
 fi
 
@@ -162,10 +164,17 @@ component_lane() {
   fi
 }
 
+# The catalog reproducibility regressions build catalogs, so they follow their own selection only in full mode. A
+# reduced plan may still name a catalog-recipe path (tests/fixtures/catalog/SOURCE.md is allowlisted documentation)
+# and, like every other build in that mode, must not run them.
+catalog_reproducibility="false"
+[[ "$full_mode" != "true" || "${plan[catalog_recipe]}" != "true" ]] || catalog_reproducibility="true"
+
 declare -A expected=()
 expected[changes]="success"
 expected[quality]="success"
 expected[catalog-contracts]="$(expected_when "$full_mode")"
+expected[catalog-reproducibility]="$(expected_when "$catalog_reproducibility")"
 expected[build]="$(expected_when "$full_mode")"
 expected[architecture]="$(expected_when "$full_mode")"
 expected[coverage-policy]="$(expected_when "$full_mode")"
