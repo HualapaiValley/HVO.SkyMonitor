@@ -13,6 +13,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Fixed
 
 - CameraAgent withdraws queued automation attempts when their definition is disabled or edited, and lets owners stop a queued script run without changing its schedule. Explicit historical retries keep their retained execution identity. Refs #1782
+- Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
 
