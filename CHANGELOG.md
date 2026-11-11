@@ -14,6 +14,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Cancelling a claimed System control drain now ends its receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded when the cancellation is recorded before the drain completes; a drain that reaches its two-minute bound still ends `drain.timeout`. The receipt records who cancelled, when and why, and capture stays paused until explicitly resumed. A completed drain whose final state the installer cannot read or record now ends Failed instead of Succeeded, and when the installer is interrupted or cannot write its journal right after a drain or just before a restart, a restarted worker now settles the receipt instead of having it refused. Refs #1775
 
+- The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
+
 - System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
 
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
