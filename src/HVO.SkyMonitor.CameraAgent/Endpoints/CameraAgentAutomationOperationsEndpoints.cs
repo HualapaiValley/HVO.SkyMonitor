@@ -68,7 +68,35 @@ internal static class CameraAgentAutomationOperationsEndpoints
             .ProducesProblem(StatusCodes.Status409Conflict)
             .ProducesProblem(StatusCodes.Status503ServiceUnavailable);
 
+        group.MapPost("/definitions/{definitionId}/script-run-now", RunScriptNowAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance)
+            .WithName("RunCameraAgentScriptNow");
+        group.MapPost("/definitions/{definitionId}/script-stop", StopScriptAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance)
+            .WithName("StopCameraAgentScriptRun");
         return endpoints;
+    }
+
+    private static Task<IResult> RunScriptNowAsync(HttpContext context, string definitionId,
+        [FromBody] ScriptRunNowBody body, [FromServices] LocalAutomationScriptCommands commands,
+        ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    {
+        if (body.ExpectedVersion is not { } version)
+            return Task.FromResult(Results.Problem(statusCode: 400, title: "The expected definition version is required."));
+        return ExecuteAsync(context, loggerFactory, actor => commands.RunNowAsync(
+            new(definitionId, version, ReadIdempotencyKey(context), actor, body.Reason ?? LocalAutomationScriptCommands.DefaultRunNowReason), cancellationToken), cancellationToken);
+    }
+
+    private static Task<IResult> StopScriptAsync(HttpContext context, string definitionId,
+        [FromBody] ScriptStopBody body, [FromServices] LocalAutomationScriptCommands commands,
+        ILoggerFactory loggerFactory, CancellationToken cancellationToken)
+    {
+        if (body.ExpectedDefinitionVersion is not { } version || string.IsNullOrWhiteSpace(body.RunKey))
+            return Task.FromResult(Results.Problem(statusCode: 400, title: "The run identity and its definition version are required."));
+        return ExecuteAsync(context, loggerFactory, actor => commands.StopAsync(
+            new(definitionId, body.RunKey, version, actor), cancellationToken), cancellationToken);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -219,6 +247,14 @@ internal static class CameraAgentAutomationOperationsEndpoints
                 statusCode: StatusCodes.Status403Forbidden,
                 title: "The automation command is not authorized.");
         }
+        // Antiforgery middleware records validation; JSON handlers must enforce it before mutation.
+        // The credential-aware helper preserves the existing owner ReadWrite API-key policy.
+        if (!CameraAgentCredentialAccess.IsForgeryProtected(context))
+        {
+            return Results.Problem(
+                statusCode: StatusCodes.Status400BadRequest,
+                title: "The automation request is invalid.");
+        }
         try
         {
             var result = await command(actor).ConfigureAwait(false);
@@ -240,7 +276,7 @@ internal static class CameraAgentAutomationOperationsEndpoints
         catch (Exception exception)
         {
             loggerFactory.CreateLogger(typeof(CameraAgentAutomationOperationsEndpoints))
-                .LogWarning(exception, "CameraAgent local automation command failed.");
+                .LogWarning("CameraAgent local automation command failed ({FailureType}).", exception.GetType().Name);
             return Results.Problem(
                 statusCode: StatusCodes.Status503ServiceUnavailable,
                 title: "The automation command could not be completed.");
@@ -285,6 +321,12 @@ internal static class CameraAgentAutomationOperationsEndpoints
     private sealed record AutomationRemovalRequestBody(
         long? ExpectedVersion = null,
         string? Reason = null);
+
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    private sealed record ScriptRunNowBody(long? ExpectedVersion = null, string? Reason = null);
+
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    private sealed record ScriptStopBody(string? RunKey = null, long? ExpectedDefinitionVersion = null);
 
     private sealed class RequiredAntiforgeryMetadata : IAntiforgeryMetadata
     {

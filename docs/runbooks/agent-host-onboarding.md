@@ -8,16 +8,20 @@ protocol. This runbook is the operational checklist that sits under both: the
 concrete steps, in order, with the failures that actually happen when a step is
 skipped.
 
-The default **issue owner** is an authorized human or operator-directed agent
-responsible for the full assigned issue lifecycle. No coordinator, enrollment,
-`READY` signal, command receipt, or fleet heartbeat is required. Capacity is
-assessed per shared resource (host, Docker, storage, external service), not a
-global two-issue slot limit. The repository-wide finalization lock still
-serializes final synchronization, protected CI, and merge.
+The **coding owner** implements, validates, obtains independent local review,
+and hands the candidate and evidence to Kepler. Coding threads push only when
+instructed and never create PRs, mark ready, publish `hvo/reviewed-head`, or
+enqueue. Kepler owns the formal PR lifecycle and merge queue.
 
-**Coordinator** and **worker** below describe only optional legacy managed
-sessions explicitly enrolled by the operator. Their `JOIN`, targeted-command,
-slot, and heartbeat mechanics are not prerequisites for default issue ownership.
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
+
+Capacity is assessed per shared resource (host, Docker, storage, external service), not a
+global two-issue slot limit. The repository-wide finalization lock is a
+Kepler-operated fallback; the current merge queue is described in the PR
+lifecycle skill.
 
 ## 1. Pre-stage the machine
 
@@ -44,6 +48,17 @@ Do this before any agent session starts. None of it requires the agent.
   Mailpit containers through Testcontainers. A machine without a working Docker
   daemon can run the unit selection but not the integration one, and must say so
   rather than reporting a partial run as a pass.
+- **Linux x64 script qualification.** Other architectures, including ARM64, fail
+  closed as unqualified; do not enable script support there. The CameraAgent sandbox Integration cases also
+  require Bubblewrap 0.8 or newer, **static** BusyBox (`busybox-static`, not the
+  dynamic package), util-linux `prlimit`, `gcc` for the bounded native fixtures,
+  and a running non-root systemd user manager. Cgroup v2 must expose delegated
+  memory, CPU and process controllers and a mount protected by `nsdelegate`.
+  Run `./scripts/ci:script-sandbox --verify` before the lane. Missing enforcement
+  fails Linux Integration setup; it is not a skipped qualification pass. See
+  [the execution contract](cameraagent-custom-scripts.md). Provisioning a
+  disposable CI runner is separate from enabling scripts or changing a runtime
+  host; do not provision an operator machine without its authorization.
 - **Architecture check.** An ARM64 machine cannot run the amd64 SQL Server image
   under emulation reliably. Record that limitation up front; that lane comes
   from protected CI on such a host, and a failure there is not evidence about
@@ -117,8 +132,8 @@ understood:
 
 - **A per-call approval is not a rule.** Approving a blocked call lets that call
   through and changes nothing for the next one.
-- **A classifier denial is usually fleet-wide.** It is a rule about a class of
-  command, not a property of one session. When a worker reports a denial, assume
+- **A classifier denial can affect other sessions.** It is a rule about a class of
+  command, not a property of one session. When a session reports a denial, assume
   every session will hit it and escalate once, rather than routing the action to
   a second session to find out.
 
@@ -149,102 +164,25 @@ to decide without seeing the original prompt, and act on his answer yourself.
   and CI. Release explicitly with a resumable handoff on completion or transfer;
   remove `workflow:in-progress` when releasing, without overwriting a competing
   owner's state. A paused owner records whether the claim is retained or released.
-- **Own review and completion.** The PR owner requests independent human or
-  one-shot agent review bound to immutable base/head SHAs, with reviewer identity,
-  findings, and dispositions recorded in the PR ledger. Agent reviews record
-  requested capability and actual provider/model/effort; human reviews use N/A
-  for model/effort. Follow the PR lifecycle skill's validation, draft convergence,
-  bounded corrections, finalization lock, base-sync review or unchanged-base
-  proof, and green current-head required CI rules. Complete authorized merge,
-  verify issue closure, synchronize local `main`, and clean up merged branches/
-  worktrees without deleting unrelated work. If merge is reserved or unauthorized,
-  report that boundary and leave a handoff. Do not take another issue unless the
-  user authorized that scope.
+- **Local review and handoff.** Map the original issue requirements to behavior
+  and local evidence at the candidate SHA before independent review. Missing
+  scope or evidence returns to implementation. Follow the PR lifecycle skill
+  for LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN, explicit completeness
+  verdicts, and exact-range finding verification. Hand the candidate, mapping,
+  evidence, and local reports to Kepler; push only when instructed. Kepler
+  obtains formal review and operates readiness, the reviewed-head gate, and
+  queue admission. Do not take another issue without user authorization.
 - **Report directly.** Send milestones and blockers to the operator and retain
-  UTC evidence on the issue/PR, with interim notes during long gates and reviews.
-  Default ownership does not depend on a coordinator relay or fleet heartbeat.
+  UTC local evidence, with interim notes during long gates and reviews. Kepler
+  maintains the PR ledger.
 
-### Optional legacy managed-session enrollment
+## 4. Validation and Kepler finalization
 
-Only explicitly enrolled legacy managed sessions follow this subsection and
-section 4's coordinator setup. Existing resumed fleet tools retain all identity,
-enrollment, and targeted-command checks; do not bypass them to obtain a review.
-
-- **Mint the participant identity** as `<harness>:<provider>:<host>:<session-short-id>`.
-  Propose a short id from your own session's scratchpad directory name, which
-  on some harnesses is a session identifier and on others is not. Do not copy
-  one from another session, and never derive it from a live process, socket
-  path, or connection handle. Never put a credential or a complete token in it.
-  **The proposal is not the identity.** The `JOIN ACK` the coordinator returns
-  is authoritative, and the identity you sign comments with and answer targeted
-  commands under is the one in that `ACK`.
-
-  More than one derivation is live on this fleet and no single rule explains all
-  of them, so say which input you used. Two are measured: one participant's
-  suffix is the first eight hex of the SHA-256 of its API session identifier,
-  and another's is the plain first segment of its scratchpad directory name.
-  Neither reproduces the other, hashing the first participant's directory name
-  reproduces nothing, and suffix lengths are not even uniform across the fleet.
-  A session that mints a suffix, states no input, and skips the acknowledgement
-  can end up enrolled under an identity that targeted commands never reach.
-- **Send `JOIN REQUEST`** to the coordinator on the owning roadmap epic, which
-  is issue #513 at the time of writing. `AGENTS.md` correctly tells you to use
-  the active initiative's epic and cites #89 only as retained virtual-first
-  history, but it does not name the active one, so a new session cannot get
-  there from the policy alone. If #513 is closed when you read this, ask the
-  operator which epic is live rather than guessing from the issue list. The
-  coordinator's participant identity is not published anywhere and is not
-  derivable: you learn it from the `JOIN ACK` and from the footnote it signs its
-  own comments with. The session stays `UNREGISTERED/WAIT` until the coordinator
-  returns a participant-bound `JOIN ACK` and the session returns `JOINED ACK`.
-  Reading
-  `AGENTS.md` is not enrolment.
-- **Take a slot lease** if the role needs one. Slots are mutable epic comments
-  with a sequence number; read the last sequence before writing and acknowledge
-  the other slot's latest.
-- **Adopt the attribution footnote.** Every issue comment, pull request comment,
-  issue body and pull request body ends with a footnote naming the writing
-  session, because GitHub attributes all of it to the operator's account.
-
-## 4. Optional legacy coordinator setup
-
-- **Arm the heartbeat, and confirm the cadence with the operator.** Two
-  different intervals live in the protocol and they are easy to collapse into
-  one. Section 4 of `docs/planning/agent-execution.md` specifies a five-minute
-  operator-visible heartbeat, and separately gives fifteen minutes to the
-  cross-provider slot writer for its state line. The fifteen-minute figure is
-  scoped to that writer and is not a licence to relay to the operator every
-  fifteen minutes; `AGENTS.md` has the five-minute heartbeat relay every wake to
-  the operator, carrying the literal `still running, no change` when that is
-  what applies. This fleet has also run a fifteen-minute fallback tick, on the
-  operator's judgement that push messaging carries the events and the tick only
-  catches what push misses. Which
-  applies is the operator's call, so ask rather than infer, and say in your first
-  relay which one you armed.
-- **Prove the job exists on every tick**, because it has silently disappeared
-  mid-session before and a heartbeat that stopped looks exactly like a fleet
-  with nothing to report. List the harness's scheduled jobs as the first action
-  of each tick, before anything else; in Claude Code that is the `CronList`
-  tool. If the job is gone, recreate it and say so in that tick's relay.
-- **Verify the slot write path once.** A malformed write can leave a two-byte
-  body and destroy the sequence counter with no error. Read the slot back after
-  the first write.
-- **Keep any per-participant queue within operator-authorized scope.** Completion
-  does not authorize automatically assigning or taking another issue.
-
-## 5. Validation and finalization for every owner
-
-- **Never trust a filtered read for the lock.** The finalization lock is the
-  `workflow:finalizing` label on an open pull request. The label search endpoint
-  lags and returns empty seconds after a write, which is indistinguishable from
-  no holder. Read the pull request objects directly. A filtered enumeration is
-  trustworthy only when the returned count is strictly less than the requested
-  limit, and even then not immediately after a write. Hold the repository-wide
-  lock from final synchronization through any required base-sync review,
-  protected CI, and merge. If the target advances, return to draft and release
-  the lock before synchronizing and reviewing again under the lifecycle rules.
-- **Clear the label from a merged pull request.** A merged holder does not hold
-  the lock, but leaving the label on makes every later read ambiguous.
+The lifecycle skill owns Kepler's queue and fallback lock procedures. A branch
+being behind the target tip is not a synchronization trigger or a review
+finding. Actual conflicts still need resolution, local evidence, and review
+on the changed candidate. The stricter latest-base submission policy remains
+deferred. Coding threads stop at handoff.
 
 - **Confirm host quiet before any timed or gated run.** Read the load average and
   name any foreign process. A failure produced under contention is unattributable
@@ -266,7 +204,7 @@ enrollment, and targeted-command checks; do not bypass them to obtain a review.
   publish the blob hash of the file measured. A run against transcribed text is
   evidence about the transcription.
 
-## 6. The failure class this fleet keeps hitting
+## 5. A recurring validation failure class
 
 Nearly every defect found in a recent batch was one shape: **a channel
 structurally incapable of saying it does not know, so absence renders as a
@@ -279,7 +217,7 @@ token.
 Every one was caught by a second measurement disagreeing with the first. None
 was caught by looking harder at the first. Build the second measurement in.
 
-## 7. Bringing the session down
+## 6. Bringing the session down
 
 Leave the resumable handoff the execution protocol requires: what is done, what
 is running, the exact next action, and what would invalidate it. Release any

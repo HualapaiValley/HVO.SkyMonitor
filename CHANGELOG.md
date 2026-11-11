@@ -13,6 +13,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Fixed
 
 - Protected installation verification uses a writer-maintained integrity checkpoint instead of rescanning retained history. Full scrubs run at startup/recovery and daily; out-of-band tampering is detected by the next scrub. Dirty state refuses lifecycle verification; the installer retries explicit pending responses within its existing 120-second budget. Torn/quarantined sidecars remain available to recovery tools, and optional parse-cache failures do not prevent startup. Protected history seals ledger adoption; migrating rollback restores paired protected state and requires the updated installer. #1041
+- Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
 
@@ -46,6 +47,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
 - Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
 - CameraAgent can generate immutable daily summaries of sunrise-to-sunrise captures, with representative previews, sampled coverage, exclusions and product lineage in Products, Calendar and Observing Day. Opening an existing nightly catalog upgrades schema 2 to 3 in place; installer upgrades checkpoint it for paired rollback. #1713
 - Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386

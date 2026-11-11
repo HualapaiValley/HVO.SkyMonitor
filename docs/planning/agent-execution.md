@@ -50,7 +50,7 @@ and rejecting cases, and a named validation gate. Discovery can settle a missing
 contract without enabling a partial production feature. Keep atomic schema,
 transaction, security, and publication changes together. Do not split solely to
 increase the number of developers. Contract owners coordinate shared-file and
-migration changes without becoming a repository-wide coordinator.
+migration changes without taking over repository-wide task dispatch.
 
 ### SkyMonitor Recovery Ordering Gate
 
@@ -158,9 +158,11 @@ reason.
 
 ### Independent Issue Ownership
 
-The assigned person or agent owns implementation, validation, independent review,
-corrections, green CI, authorized merge, and cleanup. No coordinator enrollment
-or global implementation slot is required. Delegation does not transfer ownership.
+The assigned coding owner owns implementation, original-requirement evidence,
+validation, independent local review, corrections, and the candidate handoff.
+Kepler owns the formal PR lifecycle and merge queue. Coding threads push only
+when instructed and never create PRs, mark ready, publish `hvo/reviewed-head`,
+or enqueue. Delegation does not transfer implementation ownership.
 
 Before editing, inspect assignees, `workflow:in-progress`, claim comments, and
 linked PRs. Claim an approved unowned issue using an assignee where possible,
@@ -189,57 +191,13 @@ reserve contested contracts and heavy tests per host, daemon, or hardware.
 Complete the assigned lifecycle without routine prompts. Another issue requires
 explicit assignment or opt-in queue authorization.
 
-### Optional Managed-Fleet Coordination
+### Task Dispatch
 
-The enrollment, command, fleet-slot, and epic-control procedures in this
-subsection apply only to explicitly opted-in fleets, never ordinary owners or
-independent human/one-shot reviewers. Fleet limits are local to that fleet.
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
 
-- The active initiative's owning roadmap epic names one coordinator for the
-  execution session. Only that coordinator selects or claims the next issue;
-  implementing agents return completion/blocker state to it rather than
-  independently consuming the queue.
-- Give every coordinator and participant an immutable public identity in the
-  form `<harness>:<provider>:<host>:<session-short-id>`. The short session value
-  must distinguish concurrent sessions but must not contain a complete session
-  token, bearer credential, or other secret. Provider-only aliases such as
-  `Claude` are display labels and never authorize work.
-- Keep an append-only enrollment ledger in the owning epic. Each registration
-  records participant ID, display label, harness/version when known,
-  provider/model controls, host, worktree, capability/role, mutable slot ID,
-  join UTC, last-seen UTC, status, lease/generation, and the coordinator that
-  admitted it. The already-running coordinator may be identified by one
-  operator-authorized bootstrap entry; every later participant uses the join
-  handshake below.
-- A new session starts `UNREGISTERED/WAIT`. Its only permitted coordination
-  write is an append-only `JOIN REQUEST` containing its identity and requested
-  capability; an out-of-band harness message may carry the same request. The
-  coordinator replies with `JOIN ACK <ack-id>` binding protocol version, role,
-  slot, and lease but no implementation claim. The participant then replies
-  `JOINED ACK <ack-id>`. Only after all three records exist may the coordinator
-  send a separate work command. Loading `AGENTS.md`, finding an epic, or using
-  the same provider as an enrolled agent never counts as joining.
-- Before enrollment completes, the session may not claim queue work, consume an
-  authorization, edit a mutable control slot, create a coordination issue,
-  start a liveness writer, or launch a roadmap review or PR. An explicitly
-  operator-assigned unrelated repository task may proceed under the ordinary
-  repository and PR rules, but remains outside the roadmap pool and must not
-  mutate its active epic unless the operator or coordinator enrolls it.
-- Every actionable coordinator instruction has a unique command ID and exact
-  target participant ID. Only that active participant and lease generation may
-  consume it. `STARTED`, milestone, blocker, and `DONE` receipts echo the
-  command ID and participant ID. Re-reading or retrying the same command is
-  idempotent; a duplicate consumer, wrong participant, replaced lease, or
-  unregistered session performs no mutation and reports the protocol error.
-- Implementation slots are shared capacity, not entitlements for different
-  components or initiatives. Fill them from the highest-priority Current
-  initiative before selecting a lower roadmap horizon. A lower-horizon issue
-  may move ahead only when the active epic records it as a real blocking
-  dependency.
-- When an active epic defines parallel lanes, those lanes coordinate work only
-  within that initiative. An empty lane takes another non-overlapping ready
-  issue from the same initiative or remains empty; it does not automatically
-  advance to Next, Future, Research, or Deferred work.
 - A required compatibility check may block a merge, but an unrelated failure
   from another component does not make that component's backlog a dependency.
   First determine whether the active change caused the failure. Correct a real
@@ -247,232 +205,43 @@ independent human/one-shot reviewers. Fleet limits are local to that fleet.
   classification or leave the independently owned defect in its roadmap order.
 - Keep one implementing agent per issue branch. Use research, review, failure
   analysis, and evidence agents concurrently when their work does not overlap.
-- The roadmap coordinator may maintain at most two active implementation issues
-  globally by default, including issues waiting on CI or review. Raise that limit
-  only when machine and Docker capacity are known to support it.
-- Before creating a worktree, claim the issue in the owning roadmap epic with its
-  branch, worktree owner, and dependency base. Exclude every claimed or active
-  issue from subsequent selection and clear the claim after merge or explicit
-  release.
 - Concurrent issues require stable merged dependencies and separate branches
   and isolated git worktrees. Agents must never edit the same worktree.
 - Do not start a downstream issue from an unmerged contract or migration unless
   the issues explicitly define a stacked PR sequence.
 - Assign each expensive test, benchmark, or evidence run one owner. Other agents
   consume its recorded result instead of launching the same run.
-- Record Docker capacity once per host and daemon, including whether it is a
-  private daemon or the shared `devpi5` window. Update the record only when
-  ownership or capacity changes. A verified private daemon does not acquire the
-  shared Docker lock, but its issue still consumes one global implementation
-  slot.
 - Avoid running multiple Testcontainers or full-resolution performance suites
   concurrently against shared Docker resources unless their isolation and
   capacity have been verified.
-- While CI runs, use available agents for independent review, next-ready-issue
-  discovery, synopsis preparation, or non-overlapping work rather than polling
-  as the only activity.
 
-Use this bounded enrollment exchange before the coordinator offers work:
-
-```text
-JOIN REQUEST
-Participant ID: <harness>:<provider>:<host>:<session-short-id>
-Display label: <human-friendly harness/provider label>
-Harness/version: <name and version, or unknown>
-Provider/model controls: <actual values, or unknown>
-Host: <non-secret host label>
-Worktree: <absolute isolated path, or none>
-Requested role/capability: <bounded capability; no issue claim>
-Current operator-assigned issue/PR: <number, or none>
-```
-
-```text
-JOIN ACK <ack-id>
-Participant ID: <exact participant ID>
-Protocol: <version>
-Role/slot/lease: <assignment without an implementation claim>
-Coordinator: <coordinator participant ID>
-```
-
-```text
-JOINED ACK <ack-id>
-Participant ID: <exact participant ID>
-State: JOINED/WAIT
-```
-
-The coordinator records the exchange, then sends a separate `CMD-...` message
-if work is available. An agent with unrelated operator-assigned work declares
-that issue/PR in its join request; enrollment does not transfer or broaden that
-assignment.
-
-The coordinator should retain the registration and command fields in a compact
-machine-readable record as well as the human ledger. Harness adapters can pass
-those records to `scripts/coordination:guard` before consuming a command or
-rendering a liveness update. The minimum shapes are:
-
-```json
-{
-  "participants": [{
-    "id": "claude-code:anthropic:hvo-dev-03:793293ad",
-    "status": "ACTIVE",
-    "joinState": "JOINED",
-    "joinAckId": "JOINACK-001",
-    "lease": { "generation": 2, "expiresAt": null }
-  }]
-}
-```
-
-```json
-{
-  "commandId": "CMD-SYNC-004",
-  "targetParticipantId": "claude-code:anthropic:hvo-dev-03:793293ad",
-  "leaseGeneration": 2
-}
-```
-
-The guard is deliberately read-only: an authorized adapter posts the durable
-receipt or performs the guarded PATCH only after validation. A receipt with the
-same command and participant returns `ALREADY_CONSUMED`; it is not permission to
-repeat the work. A `C1.2` body additionally carries exactly one
-`OWNER <participant-id> LEASE <generation>` line so a stale or second writer
-cannot render an update.
+Existing tooling retains the record literals `JOIN REQUEST`, `JOIN ACK <ack-id>`,
+and `JOINED ACK <ack-id>` and the command field `targetParticipantId`.
+`scripts/coordination:guard` validates command records.
 
 ### Progress reporting
 
-Independent owners report milestones, blockers, long-running gates, and completion
-to their user and issue/PR ledger. Coordinator monitors and cross-provider epic
-slots below apply only to opted-in managed fleets, not ordinary ownership.
-For independent delegation, every reference below to reporting to a coordinator
-means reporting to the issue/PR owner; command IDs, leases, and fleet heartbeat
-machinery are not required. Human reviewers use their agreed availability window.
+Coding owners report milestones, blockers, long-running gates, and completion
+to their user and retain local evidence. Kepler maintains the PR ledger.
 
 Silence reads as a stall. Every agent reports progress while it works, not only
 when it finishes:
 
-- Implementing agents post a short progress comment at every milestone
+- Implementing agents report a short progress update at every milestone
   (inventory complete, first slice committed, a gate started or finished, reviews
-  launched, corrections pushed, PR marked ready) and at least every thirty
-  minutes of active work. Post on the owning issue until the draft PR exists,
-  then append to the PR's append-only review ledger. Each comment has a UTC
-  timestamp and states what finished, what is running now, the next step, and
-  any blocker. Long gates and reviews get an interim note rather than silence.
+  launched, corrections completed, candidate handed off) and at least every
+  thirty minutes of active work. Retain UTC local evidence and report to Kepler,
+  who appends formal PR progress to its ledger. Each entry states what finished,
+  what is running now, the next step, and any blocker. Long gates and reviews
+  get an interim note rather than silence.
 - Every delegated implementation, review, research, and evidence agent sends
-  the coordinator a structured `STARTED` message before substantive work, then
-  milestone, blocker, at-least-thirty-minute, and completion messages. Review
-  messages also identify the exact range and actual provider/model/effort. A
-  long review posts an interim note after thirty minutes. Each agent also posts
-  the same milestones on the owning issue or PR ledger. If its harness cannot,
-  the coordinator posts a clearly attributed proxy entry before relaying the
-  event to the main conversation.
-- The coordinator immediately relays delegated starts, milestones, blockers,
-  and completions to the main conversation, then arms exactly one persistent
-  status monitor on a five-minute cadence while delegated agents, review
-  acquisition, long gates, or CI runs are active. Use the harness's scheduled
-  task, background loop, transcript tail, session status, or equivalent
-  capability. Start the monitor when work becomes active, restart it whenever
-  the active agent or PR set changes, and stop it when nothing is active.
-  Harness UI activity or repository comments without a main-conversation relay
-  do not satisfy operator-visible reporting.
-- The monitor collects state; the coordinator owns delivery. Do not delegate
-  the delivery obligation to an observer that cannot inspect sibling work or
-  signal the coordinator. A timer or background shell loop whose output remains
-  buffered until someone manually polls it is only a collector and does not
-  satisfy the monitor requirement. When the harness lacks a native scheduled
-  wake, use one delegated observer that sends the coordinator a message every
-  five minutes, and keep the coordinator waiting on the mailbox or equivalent
-  event path between active work. If no signaling observer is available, poll
-  directly until one is available rather than claiming a buffered loop is a
-  working monitor.
-- Prove the signaling path after every start or active-set restart: require an
-  immediate baseline message and relay it to the main conversation. Treat a
-  late scheduled signal as a monitor failure, report the gap, repair or replace
-  the monitor, and have the coordinator poll directly until the replacement
-  proves its signaling path with a new immediate baseline.
-- On every wake, the monitor records, per issue or PR: the agent's last activity
-  timestamp and current step; the PR head SHA, draft state, and merge state; the
-  first line and timestamp of the latest ledger comment; and the state of shared
-  locks such as the Docker or finalization window. While review is pending,
-  include its provider, range, request age, acknowledgement deadline, start and
-  fallback state, and correction-rereview count. Use the best available harness
-  signal for the current step, such as the transcript's latest tool description.
-  Attach a one-line CI result watcher to each PR that emits only on success,
-  failure, or cancellation.
-- The coordinator relays a short note to the main conversation on every wake,
-  even when nothing changed. It uses the literal status `still running, no
-  change` when applicable, converts every reported time to MST (fixed UTC-7,
-  without daylight-saving adjustment), and labels it `MST`. When nothing
-  changed, use one compact line per active item that still names the current
-  step, next step, and blocker. Do not repeat a milestone already relayed
-  immediately unless its state changed.
-- For each item, the coordinator states what just finished, what is running now,
-  the next step, and any blocker. It reads milestone reports and summarizes
-  their substance, such as the root cause, accepted findings, or gate result,
-  rather than only repeating a label.
-- If an implementing agent goes more than thirty minutes without an issue or
-  ledger comment, the coordinator instructs it to post one before continuing
-  and reports that intervention in the next operator note.
-- A progress comment never replaces the handoff in section 11; a blocked agent
-  still leaves the full handoff, and every agent still provides its final
-  completion report.
-
-#### Cross-provider coordinator channel
-
-When two active coordinators cannot send direct harness messages, the owning
-roadmap epic may act as a bounded control plane. It does not replace the issue
-and PR ledgers.
-
-1. Create or nominate exactly two fixed mutable comments, one owned by each
-   enrolled participant. Record both comment IDs, participant identities, lease
-   generations, format version, cadence, and activation time once in an
-   append-only epic protocol comment. A participant writes only its leased slot.
-2. Update each slot every five minutes while either side has active work. Send
-   `no work available` or request `report status` when there is no richer
-   instruction; unchanged work still reports `still running, no change`. Each
-   record carries a monotonically increasing sequence and acknowledges the last
-   peer sequence observed so lost or duplicated delivery is visible.
-3. Use a compact delta record for routine liveness. The complete body should be
-   at most 500 UTF-8 bytes and must preserve: format version, sequence and
-   acknowledgement, authoritative UTC plus operator-facing fixed MST time,
-   current step, next step, blocker, shared-resource owner, any request, and the
-   next due time. Reference a durable comment ID instead of repeating a grant,
-   review report, or long rationale.
-4. Keep claims, authority grants, review findings, milestones, blockers, and
-   handoffs append-only on the owning issue, PR, or epic. Mutable slots contain
-   only the latest control state and may be overwritten. Relay material changes
-   immediately; do not repeat the same full milestone in the next heartbeat.
-5. Retain the exact slot IDs and last `updated_at` values. Poll only that
-   metadata first, fetch the body only after it changes, and fetch durable
-   comments newer than the last processed comment ID or timestamp. Reread an
-   epic body only after an intentional revision. Never rescan the full epic on a
-   routine wake. During a trial, total per active hour the metadata polls,
-   changed-body fetches, slot bytes read and written, estimated transcript
-   tokens, and coordinator service time; also count durable comments per issue.
-6. Treat a missed delivery window as a signaling gap, not proof that work
-   failed. Report the gap, withhold new shared-resource authority when state is
-   stale, poll directly, and ask the peer to repair or replace its monitor. Long
-   work must be detached from any harness primitive that suppresses scheduled
-   wakes and polled on each tick.
-7. Negotiate a format or transport change through the existing channel, require
-   an explicit acceptance or counterproposal, and keep the previous format as
-   fallback until the new one completes a bounded trial. Record payload size,
-   latency, missed wakes, repair time, ambiguity, resource/collision outcomes,
-   and coordinator effort in
-   [the coordination experiment log](coordination-experiments.md).
-8. Keep semantic status and liveness distinct. The current `C1.1` writer emits
-   semantic changes immediately and `still running, no change` at least every
-   fifteen minutes; the operator-visible five-minute heartbeat is unchanged.
-   A host-side `C1.2` liveness PATCH may be trialed only after an explicit epic
-   cutover ACK. It may update only a trailing `LIVE <UTC> / <MST>` line every
-   five minutes (plus or minus two minutes), and must never overwrite newer
-   semantic state.
-9. A mutable slot or liveness writer is bound to one participant ID plus lease
-   generation. Before every PATCH it re-reads the exact comment and compares
-   `updated_at` or a body hash with the value it observed, changes only its
-   owned field, then re-reads to verify. On conflict it retries once from the
-   fresh body and otherwise skips the tick. Repeating one tick produces the same
-   body. A second writer, expired lease, or mismatched owner exits without
-   writing. Keep `C1.1` until two-writer, lost-update, idempotency, and lease-
-   replacement tests pass and the epic explicitly acknowledges `C1.2`.
+  the issue/PR owner a structured `STARTED` message before substantive work,
+  then milestone, blocker, at-least-thirty-minute, and completion messages.
+  Review messages identify the exact range and actual provider/model/effort.
+  The owner retains these milestones with attribution in the local evidence
+  pack and relays the event to the user; Kepler maintains the PR ledger.
+- A progress comment never replaces the handoff in section 11; blocked work
+  still leaves the full handoff, and every agent provides its final report.
 
 ### Validation ladder
 
@@ -711,73 +480,41 @@ operating procedure; the independently loaded skill retains the non-negotiable
 review request, selection, timeout, correction-cap, finalization-lock, CI,
 merge, and cleanup contracts plus links back here.
 
-The PR owner requests and monitors independent review using the lifecycle skill.
-Human and one-shot agent routes record the immutable range, acceptance, evidence,
-findings, and dispositions directly on the PR without fleet enrollment. Human
-model/effort fields are N/A; agent values must reflect actual execution.
+Coding threads map every in-scope original-issue requirement to implemented
+behavior and local evidence at the candidate SHA before independent local
+review. Missing scope or evidence returns to implementation. Apply `AGENTS.md`
+and the skill's issue-completeness contract: LOW requires Sol CLEAN; HIGH
+requires Sol and Opus CLEAN on the same candidate, including explicit
+completeness verdicts and verified finding dispositions. Supplemental human
+or bot reviews never replace those reports.
 
-For the optional enrolled resumed-session route, use `scripts/pr:review-request`
-to derive immutable base/head SHAs, the exact
-mode-specific range, prior reviewed head, and carried-finding checklist from PR
-data. Initial range uses the computed merge base while retaining the current
-target tip for staleness checks; prior reports come from the paginated PR ledger,
-not a default-size comment field. The caller supplies the acceptance lens,
-profile/provider/model/effort, tests, and evidence pointers. Inspect the
-generated request before launch. Use
-`scripts/pr:dispatch-review` to validate the joined participant and targeted
-command, post the durable request, wait for the returned comment ID, resume the
-same enrolled Codex or Claude CLI session, and append actual launch metadata.
-Every live dispatcher first acquires a nonblocking host-local `flock` keyed to
-the enrolled participant/session and holds it through the process-terminal
-ledger write. A simultaneous invocation returns `DISPATCH_BUSY`; retry it only
-after the active dispatcher exits, when it must re-read durable state. Before
-process start the owner posts a durable launch reservation and revalidates the
-registry, current time, participant, command, and lease. A retry after STARTED
-is already consumed; a reservation without STARTED requires explicit recovery
-and never launches automatically. Because a participant identity binds one
-session to one host, moving a session to another host requires a new identity
-and join rather than reusing the identity across host-local locks. Create the
-CLI session with an identity-only
-bootstrap, complete the join exchange, then issue the separate review command;
-never treat a newly launched one-shot reviewer as pre-enrolled. Keep the
-dispatcher process alive until its resumed reviewer exits; `nohup` alone is not
-sufficient in harnesses that reap all descendants when the invoking command
-returns. Its dry-run must post and launch nothing. Hand-written dispatch is
-allowed only when the script cannot represent a route, and the ledger records
-that limitation.
+Before a correction review, retain the prior full report, complete
+carried-finding checklist, exact delta, affected interactions, relevant tests,
+and applicable instructions in the bounded evidence pack. Record actual
+provider/model/effort and immutable ranges. A budget or unavailable reviewer
+cannot supply CLEAN or waive required review; use the lifecycle skill's
+blocker and handoff procedure.
 
-Tier A/B gets one full initial exact-range review and only finding-driven
-correction rereviews. `standard` is the default for Tier A and ordinary Tier B;
-concurrency, durability, security, CI-control, or cross-boundary Tier B risk
-uses `deep`. Tier C/M remains deep. Before a correction launch, produce the
-bounded evidence pack defined by the PR lifecycle skill. Always retain the
-prior full report, complete carried-finding checklist, exact delta,
-changed-symbol call sites, relevant tests, and applicable instructions; limit
-unrelated preloaded context, not code reachable from the change. A token budget
-is a checkpoint: exhaustion reports `INCOMPLETE` and escalates, never `CLEAN`.
-Record tokens/time/diff/mode/profile/findings and compare three post-change
-rounds before proposing a model default change.
-
-After review convergence and lock acquisition, freshly fetch the target. If its
-SHA equals the target-base SHA already covered by review, record `base unchanged
-at <sha>; no merge and no base-sync review required`. If it advanced at all,
-merge it without rebasing and obtain a base-sync review: standard only when
-there was no conflict, shared file/contract, or material changed interaction;
-deep otherwise. The lock, final-CI bar, and merge guard are unchanged.
-
-The invariant sequence is:
+Coding threads hand the candidate, original-source mapping, gate results, and
+required local CLEAN reports to Kepler and stop. Push only when instructed.
+Kepler alone creates PRs, obtains formal review, marks ready, publishes
+`hvo/reviewed-head`, and enqueues. The sequence is:
 
 ```text
-local candidate evidence -> draft PR -> review convergence or waiver
-  -> final target-branch synchronization and base-sync review when it advanced
-  -> ready -> target-branch protected CI -> merge and cleanup
+implementation -> original-issue evidence -> required local CLEAN reviews
+  -> candidate handoff to Kepler
+Kepler draft -> required formal CLEAN reviews -> ready -> required head CI
+  -> current-head revalidation -> reviewed-head -> merge queue
+  -> queue integration CI/merge -> completion and cleanup
 ```
 
-Draft pushes intentionally do not run protected CI. Do not mark a PR ready while
-review work or target-branch synchronization remains outstanding. A successful
-protected run is valid only for the current reviewed head and current target
-base; head-changing corrections and later target-branch changes follow the
-skill's invalidation and recovery rules.
+Queue eligibility belongs to the CURRENT PR HEAD SHA. Being behind the target
+tip or its age alone does not require synchronization, re-testing, new review,
+or block submission/resubmission. Roy's stricter latest-base submission policy
+remains deferred. Real merge/product conflicts still require resolution,
+affected local evidence, and the required reviews on the changed candidate.
+Draft pushes do not advance protected CI. Kepler operates the queue and any
+explicit fallback using the lifecycle skill; coding threads never finalize.
 
 ## 10. Non-Green Recovery
 
@@ -792,14 +529,14 @@ If any build, test, runtime, review, or deployment check is not green:
 5. Add regression coverage when the failure represents a product defect.
 6. Rerun the focused failure and the full affected gate; do not rerun unrelated
    long suites locally when protected CI will cover them.
-7. For a code correction, return the PR to draft and release the finalization
-   lock before pushing. Review the CI-correction delta, then reacquire the lock
-   and repeat final target synchronization, obtaining the required base-sync review
-   if the target advanced or recording unchanged-base proof otherwise, before
-   marking the PR ready for new protected CI. If no repository content changed, rerun
-   the same SHA instead of creating a no-op commit under the bounded
-   infrastructure-only exception in the lifecycle skill.
-8. Keep the PR open and the issue active until green.
+7. For a code correction, Kepler keeps/returns the PR to draft and withdraws
+   queue advancement before authorizing a push. The coding owner implements,
+   tests, and obtains required local review on the new candidate, then hands
+   it back for Kepler's formal review and CI. Resolve actual integration
+   conflicts under the lifecycle skill; target-tip movement alone does not
+   require a base merge. With no repository content change, use the skill's
+   bounded same-SHA infrastructure rerun exception.
+8. Kepler keeps the PR open and the issue active until the required gates pass.
 
 Do not merge around a failure, weaken a test without evidence, skip hooks, hide
 warnings, or treat a canceled/timed-out check as success.
@@ -841,9 +578,10 @@ handoff in the issue or epic:
 The overall epic tracks current phase, completed PRs, active branch/PR, blockers,
 validation state, performance observations, and next exact action.
 
-After a successful merge, the issue owner confirms closure, updates the owning
-epic's progress, synchronizes `main`, safely cleans up their branch/worktree,
-records completion, and releases the issue claim. Taking another issue requires
+After a successful merge, Kepler confirms closure only for fully resolved
+issues, updates the owning epic, and coordinates synchronization and safe cleanup.
+The coding owner records completion and releases the issue claim; incomplete
+parent issues remain open. Taking another issue requires
 explicit assignment or opt-in queue authorization. A context or resource limit
 requires a resumable handoff, not silent abandonment of the assigned lifecycle.
 
@@ -868,5 +606,5 @@ section 4, posts the synopsis, and may record on the issue:
 READY: <issue number> - dependencies green, acceptance defined, no unresolved blocker.
 ```
 
-This is an owner-recorded readiness check, not a coordinator authorization token.
+This is an owner-recorded readiness check.
 Detailed acceptance criteria and formal dependencies remain authoritative.

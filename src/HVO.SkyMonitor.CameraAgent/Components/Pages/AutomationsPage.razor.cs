@@ -88,6 +88,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private LocalAutomationSourceSelection _selectionInput;
     private string _settleInput = "900";
     private bool _windowStep;
+    private bool _scriptStep;
     private CameraAgentAutomationWindowPreview? _windowPreview;
     private bool _enabledInput = true;
     private long _editingVersion;
@@ -171,11 +172,18 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         .FirstOrDefault(static descriptor => descriptor.Available && descriptor.Targets.Count > 0);
 
     private IReadOnlyList<LocalAutomationTaskDescriptor> EditorTasks => _automation?.Registry
+        .Where(static descriptor => descriptor.TaskKind != LocalAutomationTaskKind.CustomScript ||
+            descriptor.Available && descriptor.Targets.Count > 0 && descriptor.ScriptInvocations.Count > 0)
         .Where(static descriptor => descriptor.CompatibleTriggers.Any(static trigger =>
             trigger is LocalAutomationTriggerKind.Periodic or LocalAutomationTriggerKind.CaptureRelative or
                 LocalAutomationTriggerKind.SourceWindowClosed)).ToArray() ?? [];
 
     private bool WindowTask => _triggerKindInput == LocalAutomationTriggerKind.SourceWindowClosed;
+    private bool ScriptTask => _taskKindInput == LocalAutomationTaskKind.CustomScript;
+    private LocalAutomationScriptInvocation? SelectedScript => Descriptor(LocalAutomationTaskKind.CustomScript)?
+        .ScriptInvocations.FirstOrDefault(item => item.Target == _targetInput);
+    private IReadOnlyList<LocalAutomationRun> DisplayRuns => _automation is null ? [] : _automation.Runs
+        .Concat(_automation.ActiveRuns).DistinctBy(static run => run.RunKey).OrderByDescending(static run => run.Sequence).ToArray();
 
     private IReadOnlyList<LocalAutomationSourceWindowKind> SourceWindows
         => Descriptor(_taskKindInput)?.SupportedSourceWindows ?? [];
@@ -385,6 +393,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
 
     private void TaskChanged()
     {
+        _scriptStep = false;
         FormChanged();
         // A target or trigger of another task kind is never valid for this one, so both follow the task.
         var targets = Targets();
@@ -463,6 +472,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         {
             _sourceWindowInput = null;
             _windowStep = false;
+            _scriptStep = false;
             if (_intervalInput == "1")
             {
                 _intervalInput = _triggerKindInput == LocalAutomationTriggerKind.Periodic
@@ -484,6 +494,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _selectionInput = LocalAutomationSourceSelection.AllActualSources;
         _settleInput = "900";
         _windowStep = false;
+        _scriptStep = false;
         _windowPreview = null;
         _reasonInput = string.Empty;
         _enabledInput = true;
@@ -519,6 +530,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         _triggerKindInput = definition.Definition.TriggerKind;
         _sourceWindowInput = definition.Definition.SourceWindow;
         _windowStep = false;
+        _scriptStep = false;
         _windowPreview = null;
         if (_sourceWindowInput is { } policy)
         {
@@ -549,6 +561,24 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         if (_editTargetRemoved)
         {
             SetCommandMessage(RemovedEditMessage, error: true);
+            return;
+        }
+        if (ScriptTask && !_scriptStep)
+        {
+            if (Descriptor(LocalAutomationTaskKind.CustomScript) is not { Available: true, ScriptInvocations.Count: > 0 })
+            {
+                SetCommandMessage("This script registration is unavailable. Refresh and select an owner-registered invocation.", error: true);
+                return;
+            }
+            // A retired digest can be repaired only in the registration step. Never silently
+            // replace it, and validate the explicit selection before review or durable save.
+            if (SelectedScript is null)
+            {
+                _targetInput = string.Empty;
+                SetCommandMessage("The recorded invocation is no longer registered. Select its approved replacement before review.", error: true);
+            }
+            _scriptStep = true;
+            _focusTargetId = "automation-script-target";
             return;
         }
         if (!TryValidateForm())
@@ -608,6 +638,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private void BackToTask()
     {
         _windowStep = false;
+        _scriptStep = false;
         _windowPreview = null;
         _commandMessage = null;
         _focusTargetId = "automation-task";

@@ -26,6 +26,14 @@ internal interface ICameraAgentAutomationUiService
         LocalAutomationRemoveRequest request,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RunScriptNowAsync(LocalAutomationRunNowRequest request,
+        CancellationToken cancellationToken) => ValueTask.FromResult(OperatorUiResult<LocalAutomationCommandResult>.Failure(
+            OperatorUiResultKind.Unavailable, "Script run controls are unavailable."));
+
+    ValueTask<OperatorUiResult<LocalAutomationCommandResult>> StopScriptAsync(LocalAutomationScriptStopRequest request,
+        CancellationToken cancellationToken) => ValueTask.FromResult(OperatorUiResult<LocalAutomationCommandResult>.Failure(
+            OperatorUiResultKind.Unavailable, "Script run controls are unavailable."));
+
     ValueTask<OperatorUiResult<CameraAgentAutomationWindowPreview>> PreviewWindowAsync(
         LocalAutomationSaveRequest request,
         CancellationToken cancellationToken);
@@ -38,7 +46,7 @@ internal sealed class CameraAgentAutomationUiService(
     ILogger<CameraAgentAutomationUiService> logger,
     ILocalAutomationTaskRegistry registry,
     LocalAutomationWindowPlanner windowPlanner,
-    TimeProvider clock) : ICameraAgentAutomationUiService
+    TimeProvider clock, LocalAutomationScriptCommands? scriptCommands = null) : ICameraAgentAutomationUiService
 {
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Preview failures return fixed guidance without disclosing host configuration or paths.")]
@@ -150,6 +158,22 @@ internal sealed class CameraAgentAutomationUiService(
             actor => store.RemoveAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
     }
 
+    public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> RunScriptNowAsync(
+        LocalAutomationRunNowRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ExecuteAsync(actor => (scriptCommands ?? throw new InvalidOperationException())
+            .RunNowAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
+    }
+
+    public ValueTask<OperatorUiResult<LocalAutomationCommandResult>> StopScriptAsync(
+        LocalAutomationScriptStopRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return ExecuteAsync(actor => (scriptCommands ?? throw new InvalidOperationException())
+            .StopAsync(request with { Actor = actor }, cancellationToken), cancellationToken);
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The UI service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<LocalAutomationCommandResult>> ExecuteAsync(
@@ -210,6 +234,11 @@ internal sealed class CameraAgentAutomationUiService(
         }
         return result.ReasonCode switch
         {
+            LocalAutomationScriptCommands.ScriptOnlyReason => "This control accepts registered script tasks only.",
+            LocalAutomationScriptCommands.RunNotFoundReason => "That retained script run is no longer available. Refresh run history.",
+            LocalAutomationScriptCommands.StopUnavailableReason => "That script run is not currently executing here. Refresh before retrying.",
+            LocalAutomationContract.RunNowPendingReasonCode => "A run-now is already queued or running. Refresh run history before queuing another.",
+            LocalAutomationContract.RunNowUnavailableReasonCode => "This script registration or definition is unavailable. Refresh before retrying.",
             LocalAutomationContract.ExpectedVersionConflictReasonCode =>
                 "This automation changed since the page was read. Refresh before retrying.",
             LocalAutomationContract.IdempotencyKeyConflictReasonCode =>

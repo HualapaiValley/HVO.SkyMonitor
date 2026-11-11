@@ -69,6 +69,11 @@ public interface ILocalAutomationStore
         string detail,
         CancellationToken cancellationToken);
 
+    /// <summary>Settles an already-drained cancellation using its actual end time.</summary>
+    ValueTask CompleteDrainedRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        DateTimeOffset completedAtUtc, CancellationToken cancellationToken)
+        => CompleteRunAsync(runKey, outcome, detail, cancellationToken);
+
     /// <summary>Records one already-terminal run, such as a window missed while the host was stopped.</summary>
     ValueTask RecordTerminalRunAsync(
         LocalAutomationRunnerEntry entry,
@@ -561,12 +566,13 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         }
     }
 
-    public async ValueTask CompleteRunAsync(
-        string runKey,
-        LocalAutomationRunOutcome outcome,
-        string detail,
-        CancellationToken cancellationToken)
+    public ValueTask CompleteRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        CancellationToken cancellationToken) => CompleteDrainedRunAsync(runKey, outcome, detail, Now(), cancellationToken);
+
+    public async ValueTask CompleteDrainedRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        DateTimeOffset completedAtUtc, CancellationToken cancellationToken)
     {
+        if (completedAtUtc.Offset != TimeSpan.Zero) throw new ArgumentException("Completion must be UTC.", nameof(completedAtUtc));
         using var operation = RetainOperationAuthority(allowDrainingCompletion: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         ArgumentNullException.ThrowIfNull(detail);
@@ -592,7 +598,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 cancellationToken,
                 ("$outcome", outcome.ToString()),
                 ("$detail", Bound(detail)),
-                ("$now", ToUnixMilliseconds(Now())),
+                ("$now", ToUnixMilliseconds(completedAtUtc)),
                 ("$key", runKey),
                 ("$claimant", _claimant)).ConfigureAwait(false);
             if (settled == 0)
@@ -1232,6 +1238,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         var runs = await ReadRunsAsync(
             connection, transaction, LocalAutomationContract.MaximumProjectedRuns, cancellationToken)
             .ConfigureAwait(false);
+        var activeRuns = await ReadRunsAsync(connection, transaction, LocalAutomationContract.MaximumDefinitions,
+            cancellationToken, activeOnly: true).ConfigureAwait(false);
         var storeVersion = await ScalarLongAsync(
             connection, transaction,
             "SELECT COALESCE(MAX(sequence), 0) FROM automation_definition_revisions;", cancellationToken)
@@ -1297,6 +1305,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 .Take(LocalAutomationContract.MaximumProjectedCalendarEntries)],
             runs)
         {
+            ActiveRuns = activeRuns,
             RunningRunCount = checked((int)await ScalarLongAsync(connection, transaction,
                 "SELECT COUNT(*) FROM automation_runs WHERE outcome = 'Running';", cancellationToken).ConfigureAwait(false)),
             QueuedRunCount = checked((int)await ScalarLongAsync(connection, transaction,
@@ -1386,7 +1395,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         SqliteConnection connection,
         SqliteTransaction transaction,
         int maximumCount,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool activeOnly = false)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -1395,10 +1404,12 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
                    occurrence_json, attempt, occurrence_id, preparation_json
             FROM automation_runs
+            WHERE ($activeOnly = 0 OR outcome = 'Running')
             ORDER BY sequence DESC
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$limit", maximumCount);
+        command.Parameters.AddWithValue("$activeOnly", activeOnly ? 1 : 0);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var results = new List<LocalAutomationRun>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

@@ -24,7 +24,12 @@ transfer PR authority. Kepler alone creates PRs, controls draft/readiness and
 formal review, publishes the reviewed-head gate, and enqueues. Kepler also
 operates authorized direct/auto-merge fallbacks and the PR ledger. All PR-state
 commands later in this skill are Kepler-only; they are not coding instructions.
-Fleet enrollment changes neither this boundary nor the review requirements.
+Execution route changes neither this boundary nor the review requirements.
+
+Work is dispatched over SSH to T3 Code on the dev hosts `home-dev-01`,
+`home-dev-02`, `home-dev-03`, `hvo-dev-02`, `hvo-dev-03`, and `hvo-dev-04`.
+Each task runs in its own git worktree off `development/v1`, so the main
+checkout is never modified.
 
 ### Required Review Tiers
 
@@ -57,6 +62,14 @@ base-sync delta includes unrelated upstream changes. Record the profile beside
 classifier evidence. Risk-tier local validation and independent review still
 apply. This target-specific rule governs generic protected-CI references in this
 skill; it does not waive an explicitly required integration/qualification result.
+
+V1's Build and Unit check enforces the measurable canonical per-file floors
+using the same baseline and evaluator as the local coverage gate; Preflight
+rejects baseline weakening. Follow the [coverage scope and reproduction](../../../docs/runbooks/ci-pipeline.md#development-v1-per-file-coverage).
+Missing enforced-file data is a failure. Catalog-dependent ReleaseTool coverage,
+full-suite aggregate and additional/higher component floors remain local/full
+qualification. Preserve documented per-PR coverage exceptions, including #1739;
+do not turn them into permanent waivers or invent a new-file percentage gate.
 
 ```text
 coding implementation -> original-issue evidence at candidate SHA
@@ -214,9 +227,12 @@ PR/readiness/reviewed-head/queue writes belong exclusively to Kepler.
 
 ## Review Request Contract
 
+`scripts/pr:review-request` and `scripts/pr:dispatch-review` remain existing
+review-request tooling; their scripts and tests are retained for later review.
+
 Every required Sol/Opus review request must state the following information,
-adapted to its execution route. Independent one-shot reviews need no fleet
-enrollment. Human/bot reviews supplement, but never replace, required reviews.
+adapted to its execution route. Human/bot reviews supplement, but never replace,
+required reviews.
 For pre-PR local review, PR fields are `N/A` and requests, acknowledgements,
 and reports live in the local evidence pack. References below to posting on a
 PR apply only after an authorized PR exists.
@@ -226,7 +242,6 @@ Review mode: initial | correction | base-sync
 Review stage: pre-PR local | formal PR
 Issue and PR: (PR N/A before creation)
 Review request ID and reviewer identity:
-Dispatch command ID and target participant ID: (enrolled resumed-session route only)
 Acceptance criteria:
 Original issue body, discussion, governing sources and read/snapshot time:
 Approved scope, exclusions, and remaining parent requirements:
@@ -253,7 +268,7 @@ Required capability lens:
 Requested capability profile: fast | standard | deep
 Primary required Sol/Opus reviewer/provider:
 Fallback execution route: (same required reviewer family only)
-Execution route: independent one-shot agent | enrolled resumed-session agent | equivalent exact-range runner
+Execution route: independent one-shot agent | equivalent exact-range runner
 Requested Sol/Opus model and reasoning effort:
 Actual provider, model, and reasoning effort: (all required values verified)
 Supplemental human/bot identity: (optional; does not satisfy required reviews)
@@ -274,15 +289,15 @@ Start acknowledgement: within 15 minutes for required agents; identify the
 
 ### Independent Reports and Supplemental Human Review
 
-Required independent Sol/Opus executions can use a one-shot agent, an enrolled
-resumed session, or an equivalent exact-range runner with verified actual
-model/effort. The route does not change the named-reviewer requirement. Humans
-and provider-side bots can add evidence but cannot supply the required CLEAN.
+Required independent Sol/Opus executions can use a one-shot agent or an
+equivalent exact-range runner with verified actual model/effort. The route does
+not change the named-reviewer requirement. Humans and provider-side bots can add
+evidence but cannot supply the required CLEAN.
 
 The coding owner records requests and reports in the local evidence pack;
 Kepler records formal PR requests, acknowledgements, and attributed full reports.
-Use durable request IDs and actual reviewer identity, without inventing fleet
-IDs or native GitHub approvals. The report must retain the reviewer's actual
+Use durable request IDs and actual reviewer identity, without inventing native
+GitHub approvals. The report must retain the reviewer's actual
 result, evidence, immutable endpoints, and requirement-level completeness.
 
 For correction/base-sync rounds, link the prior request and full report and
@@ -292,93 +307,9 @@ checked; never infer it from reviewer prose or an empty summary. Required
 Sol/Opus reports must name the same candidate, even when the review range is a
 bounded delta. A reviewed old head cannot stand in for the new candidate.
 
-### Enrolled Resumed-Session Script Route
-
-For this route, generate the request with `scripts/pr:review-request` and inspect
-it before launch. Its existing field names supply the equivalent contract above;
-the dispatch command/participant binding identifies the request and reviewer.
-Do not change generated fields to imply unsupported script modes.
-The existing `scripts/pr:dispatch-review` supports enrolled
-resumed Codex or Claude CLI sessions only; it has no human or unenrolled one-shot
-mode. Enrollment and the dispatch-specific fields and guards below are required
-only when using this route, not for all reviewers or PR owners.
-
-Dispatch with `scripts/pr:dispatch-review`, which must receive the durable
-request comment ID, hold the host-local participant/session dispatch lock, post
-a durable launch reservation, revalidate the current participant lease, and
-only then resume the same previously joined CLI session and append STARTED
-metadata. A concurrent dispatcher for that participant returns `DISPATCH_BUSY`;
-retry it only after the active dispatcher records terminal state and releases
-the lock. Bootstrap the session without review work, complete
-`JOIN REQUEST` -> `JOIN ACK` -> `JOINED ACK`, and pass its full local resume ID
-only to the launcher; the public participant identity retains the non-secret
-short ID. The dispatcher must stay alive and wait for the resumed reviewer;
-some harnesses reap detached descendants as soon as the parent command returns
-even when `nohup` was used. A retry resumes from an already-posted request,
-returns `ALREADY_CONSUMED` after STARTED, and requires explicit recovery if it
-finds only a reservation; it never launches a second reviewer automatically.
-The participant identity binds the session to one host; migrating it to another
-host requires a new identity and join rather than reuse across host-local locks.
-Do not reconstruct ranges or causal ordering in an ad hoc shell pipeline when
-these scripts support the route.
-
-A correction or base-sync request also requires `--previous-command-id`, the
-dispatch command ID of the round whose reviewed head this round starts from.
-The tool recovers that head from the request it emitted for that round, found by
-its command ID or pinned with `--previous-request-comment`. It never reads a
-range out of a reviewer's report. For a round dispatched before the tool
-recorded a request, assert the head with `--previous-head`; the emitted request
-then records it as caller-asserted and unverified, and a reviewer must treat it
-as an input to check rather than as an attested range. If neither is available
-the tool fails and names what was missing, which is correct: a correction review
-whose left endpoint is a guess reviews the wrong commits and says nothing about
-it.
-
-Such a request also requires `--previous-report-comment`, the comment ID of the
-previous round's report. The dispatcher supplies it; the tool never searches for
-it. The head can be selected because the tool wrote the comment carrying it,
-while the report is the reviewer's own comment and carries no field the tool
-controls, so every rule for recognising one is a proxy that this repository's
-ledgers defeat. Replayed against merged pull requests, matching on verdict
-wording found no review at all on #806 and selected a base-sync note over the
-real report on #798, and matching on the command ID anywhere in the body selects
-dispatch ledgers, start acknowledgements, and later comments that merely cite
-the round. The tool checks that the named comment echoes the round it is being
-used for, as a whole command ID rather than as a substring, and refuses a
-comment that belongs to another one.
-
-It also refuses a named report that carries both `Exact review range:` and
-`Dispatch command ID and target participant ID:`. Those are the two fields the
-tool writes into every request it emits, so a comment carrying both is its own
-output rather than a reviewer's report, and the round's dispatch ledger entry
-quotes the request and therefore echoes the round by construction. The tool
-cannot recognise a report, but it can recognise what it wrote, which is the same
-premise the head half rests on used in the direction it actually holds.
-
-Every comment the caller names is fetched through
-`repos/{owner}/{repo}/issues/comments/{id}`, which is repository-wide rather
-than per-issue, so a comment on another pull request fetches cleanly through it.
-The tool reads `issue_url` alongside the body and refuses any comment that is
-not on the pull request under review. Without that check, the claim that the
-tool wrote the comment carrying the previous reviewed head was an assumption
-about authorship rather than something checked.
-
-`scripts/pr:dispatch-review` quotes the request into a fenced block opened with
-a fence longer than any fence in the request itself, and the reader closes only
-on one at least that long. Requests interpolate caller-supplied test and
-evidence files, which routinely carry pasted command output inside fenced
-blocks; a fixed three-backtick opener is closed by the first of those on
-read-back, and the request comes back truncated while still carrying enough
-fields to look complete.
-
-An empty `Prior findings and dispositions:` is not an attestation that the
-previous round was clean. When the tool could not extract a checklist it says
-so in that field and points at the full report in the evidence pack; verify
-findings against the report itself, not against the summary.
-
 ### Sandbox Requirements
 
-Agent reviews use a read-only sandbox regardless of enrollment or launch route.
+Agent reviews use a read-only sandbox regardless of launch route.
 If a CLI reports that its read-only sandbox cannot execute, mark the attempt
 `INCOMPLETE` and use another supported independent execution of the same
 required Sol/Opus reviewer. Supplemental human review cannot replace it.

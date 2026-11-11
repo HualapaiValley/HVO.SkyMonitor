@@ -9,6 +9,194 @@ output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
 Whole-repository ShellCheck remains in Quality; exhaustive category discovery
 remains in Build. Both are intentionally absent from the short workflow.
 
+## Development v1 Per-file Coverage
+
+**Development v1 / Build and Unit** enforces the canonical risk-file line and
+branch floors from `scripts/coverage/baseline.json`, using the same pinned
+ReportGenerator merge and `scripts/coverage/Program.cs` evaluator as the local
+canonical gate. The inputs differ: v1 includes ProcessingRunner.Tests and four
+supplemental Unit projects, with no Integration slots; it does not reproduce the
+canonical slot set. No threshold is copied into the workflow. Preflight also runs
+`scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
+a file floor, widen tolerance, or add an arbitrary v1 local-only path.
+
+The existing complete Docker-disabled Unit selection collects coverage once.
+`scripts/coverage:development-v1 --settings OUTPUT` copies
+`tests/coverage.runsettings`, derives its assembly Include filter from existing
+canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
+line/branch was hit; repeated hit counts add no evidence and make hot Unit loops
+more expensive. All other collector settings, including canonical test-assembly,
+TestSupport, migration, build-output and attribute exclusions remain intact.
+This avoids instrumenting host assemblies whose coverage is not measured by this
+profile. The generated settings are retained with the raw reports. The merge
+requires one GUID-directory report per Unit-bearing project's category inventory;
+it excludes TRX attachment copies and never searches outside the fresh run root.
+Every input is parsed and checked before ReportGenerator runs: that tool can log
+a malformed input, omit it and still exit zero. Raw records must occupy the
+canonical `coverage/packages/package/classes/class` tree, with one class/method
+line container and required method names. Merger-excluded `$` class names,
+misplaced records and duplicate containers fail rather than supply completeness.
+Class filenames must be plain paths beneath this checkout's `src/`, or genuine
+assembly-relative/project-root names; out-of-tree paths and `./`, `//`, `../` or
+backslash aliases fail. Unexpected executable sources outside the Release PDB
+inventory also fail. After merging, the wrapper requires a successful verbose
+parse receipt for every expected input and rejects logged read errors even if
+the tool exits zero. This catches loss of a redundant contributor too. Legitimate
+classless reports from projects with no included assemblies are accepted. Each report must match its
+TRX attachment and project, the included assemblies present in that project's
+Release output, and every executable source file in those assemblies' portable
+PDBs, plus every ordinary compiled class in each executable source. Portable
+PDBs must match their DLL debug identifiers, and excluded method source sections
+also exclude nested generated code. PDB checks independently require ordinary
+and unambiguous async/iterator statement spans, including continuation lines.
+
+All 27 floored files additionally have a reviewed line and branch inventory in
+`scripts/coverage/development-v1-lines.json`. It binds each source SHA-256, the
+pinned SDK/collector versions and canonical settings hash to the exact line set
+emitted by genuine complete Unit collection, plus each emitted line's branch
+denominator and condition IDs. Branch markers and count syntax must also be
+accepted by the pinned merger; whitespace markers or unparseable count suffixes
+fail before merging. Both class-level **and method-level** line sets
+and per-line branch structure must match in every contributing report. Removing
+a line, rewriting a measured branch line as `branch=false`, shrinking its branch
+total, deleting a condition or omitting its branch marker fails even when both
+representations, TRX copies and declared counts are changed consistently.
+Genuinely branchless lines and collector-omitted points remain valid according to the reviewed inventory. This
+covers generated/overlapping lines that PDB checks cannot require universally:
+genuine `ProcessingRecipeExecutor.cs:44` is absent from the pinned emitted set,
+while measured line52 is required. The final evaluator independently compares
+its actual per-file line set and summed branch total at each line against the same pin, after ReportGenerator
+normalization/grouping. Missing lines, added padding and branch loss/additions
+fail even if raw records passed validation. The pin defines the evaluated
+denominator; runtime input cannot enlarge or shrink it. Hit/covered values remain
+collector assertions, and no file floor or percentage changes.
+
+Method records contribute to the pinned ReportGenerator merge: it can restore a
+class-level line from a surviving method record. They are structurally validated
+before merging, and both representations must be complete independently. The
+shared evaluator measures the resulting merged class-level lines. Report-level
+`lines-valid` is also checked for consistency; it is not the independent source
+of completeness. Non-floored sources retain PDB source/ordinary-class checks.
+Root `branches-valid` can include branches not mapped to emitted lines in genuine
+Coverlet output, so it is not equated with their sum. Per-line branch denominators
+and condition identities come from the independent pin. Hit counts and covered
+branch values remain trusted collector assertions, not authenticated or
+reconstructed from IL; copied TRX attachment hashes bind identity only.
+
+A source, active floor, SDK, collector or settings change that invalidates the
+pinned inventory fails with a regeneration remedy. After reviewing a fresh,
+complete genuine Unit collection, explicitly regenerate and review the artifact:
+
+```bash
+./scripts/coverage:line-inventory "$evidence_root/unit" scripts/coverage/development-v1-lines.json
+git diff -- scripts/coverage/development-v1-lines.json
+```
+
+This is a maintenance command, never a CI step. CI must not regenerate its
+expected inventory from inputs it is about to validate. The generator rejects
+missing contributors and differing class/method or per-contributor line sets
+or branch structure, including explicit branch markers; review must establish
+genuine collection provenance and preserve all thresholds.
+Keep generated settings and original reports with that evidence. Unsupported
+collector exclusions/options and active `tools/` floors fail explicitly until the
+inventory model supports them; ReleaseTool's catalog-dependent skip is unchanged.
+All new checks remain in Build and Unit's coverage stage, with no Preflight work.
+
+An enforced file missing from
+the reports, present without executable line data, or declaring branches without
+their counts **fails**. Explicitly branchless lines remain valid. Both evaluator
+profiles reject missing/empty enforced-file data and missing declared branch
+counts. TRX/build-inventory binding runs during v1's pre-merge validation.
+Failure output names the path, observed line/branch percentages,
+floors, and the remedy: restore collection or add tests, then rerun the gate.
+For the default canonical profile, signed Int32 hit-count wrap from the pinned
+ReportGenerator merger is treated as covered. V1's SingleHit inputs reject
+negative counts. Malformed XML and missing/invalid fields fail in both profiles.
+
+The following scope limits leave every numeric floor unchanged:
+
+- Full-suite aggregate floors and additional/higher component file floors remain
+  local/full-qualification checks, calibrated to their exact coverage slot sets.
+  Shared coverage includes Astronomy Integration tests; the CameraAgent,
+  LogicHost and combined lanes include their owning Integration suites. Delivery
+  uses Unit tests with the production catalog bundle provisioned. V1 supplies
+  neither those complete slot sets nor the catalog prerequisite and claims no
+  aggregate qualification from its partial assembly coverage.
+- ReleaseTool `Program.cs` remains local/full-qualification-only because v1 does
+  not provision `HVO_PRODUCTION_CATALOG_BUNDLE` for its catalog-gated Unit tests.
+  Its `developmentV1LocalOnlyReason` lives beside its unchanged 50% line/35%
+  branch floors in the canonical baseline. Every v1 evaluation prints `SKIP`, the
+  path, floors and prerequisite. The default canonical gate still enforces it.
+  See the reproduced catalog-absent limitation in
+  [catalog-f7-1188](../validation/catalog-f7-1188.md) and
+  [issue-1644-candidate](../validation/issue-1644-candidate.md).
+- Only the three retired paths pinned in `scripts/coverage/policy.json` may have
+  absent sources: `ArtifactUploadManifest.cs`, `DistributionCatalogAcquirer.cs`
+  and `DistributionVerifier.cs`. Their skips name that policy. Any other missing
+  enforced source, including a rename/move, fails settings generation, the shared
+  evaluator and coverage policy on PR, push and merge-group events. Moving a file
+  requires reviewing its floor mapping; absence never implies retirement.
+  Coverage policy rejects changes to the three-entry retired list unless its
+  executable allowlist is also changed and reviewed; JSON edits alone cannot
+  exempt a renamed file.
+- Roy's [#1739 per-PR exception](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1739#issuecomment-6734050237)
+  is recorded in that PR's discussion, not a repository exception registry.
+  `InstallerControlWorker`, `InstallerControlJournal` and
+  `CameraAgentSystemUiService` have no canonical per-file floor; this gate adds
+  none and creates no general 85% new-file rule or permanent waiver.
+
+Reproduce the short profile with a private, short, owner-only `TMPDIR` (installer
+Unix socket fixtures need the short path), and a fresh results directory:
+
+```bash
+(
+set -euo pipefail
+evidence_root="$(mktemp -d /tmp/hvo-coverage-evidence.XXXXXXXX)"
+coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
+chmod 700 "$evidence_root" "$coverage_tmp"
+export evidence_root TMPDIR="$coverage_tmp"
+export DOTNET_CLI_USE_MSBUILD_SERVER=0 MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false
+trap 'rm -rf "$coverage_tmp"' EXIT
+flock -o /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
+dotnet tool restore
+dotnet restore HVO.SkyMonitor.v9.slnx --disable-build-servers
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disable-build-servers -p:UseSharedCompilation=false -warnaserror
+./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings "$evidence_root/coverage.runsettings" --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
+./scripts/test:coverage-development-v1
+./scripts/coverage:development-v1 "$evidence_root/unit" "$evidence_root/coverage"
+BASH
+printf 'Retained coverage evidence: %s\n' "$evidence_root"
+)
+```
+
+`scripts/test:coverage-development-v1` runs behavioral tests against the actual
+evaluator and complete merge wrapper, including line/branch violations,
+missing branch counters, malformed reports, moved sources, missing/empty data,
+and the catalog-dependent path under both profiles. The workflow contract's mutation
+controls protect collection, enforcement, evidence, and existing PR/merge-group
+triggers. Coverage shares the existing 1080-second workload deadline and appears
+as a fourth timed stage in the `hvo-development-v1-ci-v5` evidence manifest;
+failed runs retain generated settings, raw/merged XML, report paths and timings.
+The existing Build and Unit check reports failure on non-draft PRs, v1 pushes and
+`merge_group/checks_requested`; drafts retain Preflight only. Required check names
+and ruleset 26838822 need no change. No new check, permission, catalog provision,
+Integration selection, workflow dispatch or repository setting is introduced.
+
+Earlier independent review measured about 44.5 seconds added to Unit collection
+with SingleHit, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts
+growing about 18 MB. More recent local build/Unit/coverage totals were about
+628 seconds on 6ac31137 and 662 seconds on its local target merge: above the
+600-second target, within the 1080-second workload deadline. The coverage stage
+took about 48–51 seconds, including about 38 seconds of regression self-tests
+on every applicable event. These supersede the older 20.3-second stage sample.
+The self-tests now reuse their already compiled private fixture helper for fault
+cases, while still executing the wrapper, validation and pinned merger; the
+positive build path and real 21-project coverage run remain uncached. Candidate
+handoff evidence records current timings. Separate host samples are not a
+controlled incremental comparison and establish no coverage speedup. Observe
+hosted timing and memory alongside the existing workload budget.
+
 ## Development v1 Preflight Budget
 
 **Development v1 / Preflight** has a four-minute (240-second) job timeout,
@@ -60,8 +248,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 15802 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 1198 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 15877 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | 1261 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -538,7 +726,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=15802`, `Integration=1198`, `Manual=306`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=15877`, `Integration=1261`, `Manual=306`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 

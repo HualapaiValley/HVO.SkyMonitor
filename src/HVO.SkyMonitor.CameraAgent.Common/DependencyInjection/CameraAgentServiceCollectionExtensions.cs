@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather.Fetch;
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
@@ -252,6 +253,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ILocalAutomationPeriodicTaskAdapter, HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentRestartAutomationAdapter>();
         services.AddSingleton<LocalAutomationTelemetry>();
         services.AddSingleton<ILocalAutomationCaptureSequenceSource, DeploymentContinuityCaptureSequenceSource>();
+        services.AddOptions<CustomScriptOptions>().Bind(configuration.GetSection("CameraAgent:CustomScripts"));
+        services.AddSingleton<ILocalAutomationPeriodicTaskAdapter, CustomScriptTaskAdapter>();
         services.AddSingleton<EnvironmentalLocalAutomationTaskRegistry>();
         services.AddSingleton<ILocalAutomationTaskRegistry, LocalAutomationTaskRegistry>();
         services.AddSingleton<LocalAutomationWindowPlanner>();
@@ -490,6 +493,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddCameraAgentOrbitalElements();
         services.AddCameraAgentSpaceWeather();
         services.AddSingleton<LocalAutomationOffSweepWorker>();
+        services.AddSingleton<LocalAutomationScriptCommands>();
         services.AddHostedService(static provider => provider.GetRequiredService<LocalAutomationOffSweepWorker>());
         services.AddHostedService<LocalAutomationRunnerService>();
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
