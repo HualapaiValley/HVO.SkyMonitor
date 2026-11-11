@@ -30,16 +30,24 @@ internal sealed class PresentationMetadataFactsBuilder(
         var throughUtc = descriptor.Timing.ExposureEndedUtc.ToUniversalTime();
         if (throughUtc <= fromUtc) throughUtc = fromUtc.AddMilliseconds(1);
         var expectedKinds = kinds.Distinct().Order().ToArray();
-        IReadOnlyList<LocalEnvironmentalCaptureAssociation>? associated = null;
-        if (hostOptions.Value.EnvironmentalAcquisition.Enabled && expectedKinds.Length > 0)
+        IReadOnlyList<LocalEnvironmentalCaptureAssociation> persisted = [];
+        var acquisition = hostOptions.Value.EnvironmentalAcquisition;
+        // Only kinds with a configured source have capture associations. A selected kind outside the configured policy
+        // is retained as missing, exactly as with acquisition disabled, instead of failing every capture. Refs #1784
+        var policyKinds = acquisition.Enabled
+            ? EnvironmentalAssociationService.SelectConfiguredPolicyKinds(acquisition, expectedKinds)
+            : [];
+        if (policyKinds.Length > 0)
         {
-            associated = await associations.ReadCompletedAsync(
+            var completed = await associations.ReadCompletedAsync(
                 descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, fromUtc, throughUtc,
-                descriptor.Capture.RigId, expectedKinds, cancellationToken).ConfigureAwait(false);
-            if (associated is null) return null;
+                descriptor.Capture.RigId, policyKinds, cancellationToken).ConfigureAwait(false);
+            if (completed is null) return null;
+            persisted = completed;
         }
         var configuredPolicyIdentity = EnvironmentalAssociationService.CreatePolicyIdentity(expectedKinds);
-        associated ??= expectedKinds.Select(kind => new LocalEnvironmentalCaptureAssociation(
+        var associated = expectedKinds.Select(kind =>
+            persisted.SingleOrDefault(association => association.Kind == kind) ?? new LocalEnvironmentalCaptureAssociation(
             descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, kind, descriptor.Capture.RigId,
             fromUtc, throughUtc, configuredPolicyIdentity, LocalEnvironmentalAssociationStatus.Missing, null, [],
             CaptureContractJson.ComputeCanonicalJsonSha256(new
@@ -58,9 +66,9 @@ internal sealed class PresentationMetadataFactsBuilder(
             }),
             throughUtc)).ToArray();
 
-        var environment = new List<PresentationEnvironmentalFactV1>(associated.Count);
+        var environment = new List<PresentationEnvironmentalFactV1>(associated.Length);
         var sourceGroups = new HashSet<string>(StringComparer.Ordinal);
-        var retainedEnvironment = retainFrameFacts ? new List<FrameFactsRetainedEnvironmentV1>(associated.Count) : null;
+        var retainedEnvironment = retainFrameFacts ? new List<FrameFactsRetainedEnvironmentV1>(associated.Length) : null;
         foreach (var association in associated)
         {
             LocalEnvironmentalObservationRecord? observation = null;
