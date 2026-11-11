@@ -1,0 +1,235 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.DependencyInjection;
+using static HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityFormat;
+
+namespace HVO.SkyMonitor.Deployment;
+
+internal static partial class CameraAgentStateSnapshot
+{
+    private const string OverlayName = "retained-files-overlay.v1.db";
+    private const string OverlaySealName = "retained-files-overlay.v1.protected";
+    private sealed record OverlaySeal(string Contract, string Snapshot, string FilesRoot, string Nonce, StateSnapshotDatabase Database);
+    private sealed record LedgerFacts(Metadata Metadata, string FilesRoot);
+    private sealed record LedgerRow(string Key, byte[] Digest, int Kind, long Generation, byte[] Auth);
+
+    private static FileStream? AcquireIntegrityRestoreOwnership(InstallationPaths paths)
+    {
+        var directory = Path.Combine(paths.StateRoot, "raw", ".location");
+        if (!Directory.Exists(directory)) return null;
+        SafeFileSystem.EnsureSafeExistingAncestors(directory);
+        var path = Path.Combine(directory, "retained-integrity.v1.lock");
+        if (File.Exists(path)) EnsureRegularStore(path, RetainedIntegrityStore);
+        try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException exception)
+        {
+            throw new InstallerException("The retained root has a live integrity owner; restore requires the instance stopped.", exception);
+        }
+    }
+
+    // A database rollback leaves capture/product files in place. Preserve their
+    // authenticated current expectations; only journal expectations rewind.
+    private static async Task<StateSnapshotDatabase?> PrepareIntegrityRestoreAsync(
+        InstallationPaths paths, string root, StateSnapshotManifest manifest, LifecycleStateSnapshot snapshot,
+        CancellationToken cancellationToken)
+    {
+        var target = manifest.Databases.SingleOrDefault(static database => database.RelativePath == RetainedIntegrityStore);
+        var currentPath = StorePath(paths.StateRoot, RetainedIntegrityStore);
+        if (target is not { Present: true })
+        {
+            if (File.Exists(currentPath))
+                throw new InstallerException("A pre-ledger database snapshot cannot preserve current retained-file proofs; restore a complete paired backup.");
+            return null;
+        }
+        if (!File.Exists(currentPath) && !File.Exists(Path.Combine(root, OverlaySealName))) return null;
+        try
+        {
+            var keys = Path.Combine(paths.StateRoot, "raw", ".location", "keys");
+            SafeFileSystem.EnsureSafeExistingAncestors(keys);
+            if (!Directory.Exists(keys) || !Directory.EnumerateFiles(keys, "*.xml").Any())
+                throw new InvalidDataException("Retained integrity keys are unavailable.");
+            foreach (var key in Directory.EnumerateFiles(keys, "*.xml")) EnsureRegularStore(key, RetainedIntegrityStore);
+            var services = new ServiceCollection();
+            services.AddDataProtection().PersistKeysToFileSystem(new DirectoryInfo(keys))
+                .SetApplicationName("HVO.SkyMonitor.CameraAgent.DeploymentLocation").DisableAutomaticKeyGeneration();
+            using var provider = services.BuildServiceProvider();
+            var protector = provider.GetRequiredService<IDataProtectionProvider>()
+                .CreateProtector("CameraAgent", "DeploymentLocation", "v1");
+            var sealProtector = protector.CreateProtector("RetainedRestore", "v1");
+            using var old = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(root, target));
+            var targetFacts = AuthenticateLedger(old.Connection, protector, cancellationToken);
+            using var current = File.Exists(currentPath) ? CameraAgentStatePreflight.ReadOnlyDatabase.Open(currentPath) : null;
+            var currentFacts = current is null ? null : AuthenticateLedger(current.Connection, protector, cancellationToken);
+            if (currentFacts is not null && currentFacts.Metadata.Nonce != targetFacts.Metadata.Nonce)
+                throw new InvalidDataException("Retained integrity snapshots belong to different authorities.");
+            StateSnapshotDatabase? cached;
+            try
+            {
+                cached = await ReadOverlayAsync(root, snapshot, targetFacts.Metadata.Nonce, currentFacts?.FilesRoot,
+                    sealProtector, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (currentFacts is not null && exception is (IOException or CryptographicException or JsonException or InvalidDataException))
+            {
+                // Derived overlay state can be rebuilt from both authenticated sources.
+                // Without the current authority, a broken overlay remains a hard refusal.
+                cached = null;
+            }
+            if (cached is not null) return cached;
+            if (current is null || currentFacts is null)
+                throw new InvalidDataException("Interrupted retained integrity restoration has no authenticated overlay.");
+            var temporary = Path.Combine(root, ".retained-files-overlay.tmp");
+            if (File.Exists(temporary)) { EnsureRegularStore(temporary, RetainedIntegrityStore); File.Delete(temporary); }
+            if (await CopySyncedAsync(SnapshotFile(root, target), temporary, cancellationToken).ConfigureAwait(false) != target.Sha256)
+                throw new InvalidDataException("Retained integrity snapshot changed while staging its restore.");
+            using (var copy = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = temporary, Mode = SqliteOpenMode.ReadWrite, Pooling = false }.ToString()))
+            {
+                await copy.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using var transaction = (SqliteTransaction)await copy.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+                using (var remove = copy.CreateCommand())
+                {
+                    remove.Transaction = transaction;
+                    remove.CommandText = "DELETE FROM entries WHERE key LIKE 'F|%'; DELETE FROM scan_entries;";
+                    _ = await remove.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                var carried = WalkLedger(current.Connection, protector, currentFacts.Metadata, cancellationToken, row =>
+                {
+                    if (!row.Key.StartsWith("F|", StringComparison.Ordinal)) return;
+                    using var insert = copy.CreateCommand();
+                    insert.Transaction = transaction;
+                    insert.CommandText = "INSERT INTO entries(key,digest,kind,generation,auth) VALUES($key,$digest,$kind,$generation,$auth);";
+                    insert.Parameters.AddWithValue("$key", row.Key);
+                    insert.Parameters.AddWithValue("$digest", row.Digest);
+                    insert.Parameters.AddWithValue("$kind", row.Kind);
+                    insert.Parameters.AddWithValue("$generation", row.Generation);
+                    insert.Parameters.AddWithValue("$auth", row.Auth);
+                    _ = insert.ExecuteNonQuery();
+                });
+                if (Convert.ToHexString(carried.Chain) != currentFacts.Metadata.Chain || carried.Count != currentFacts.Metadata.Count ||
+                    Convert.ToHexString(carried.Files) != currentFacts.FilesRoot)
+                    throw new InvalidDataException("Retained integrity source changed while staging its restore.");
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                var generation = checked(Math.Max(currentFacts.Metadata.Generation, targetFacts.Metadata.Generation) + 1);
+                var inherited = targetFacts.Metadata with { Generation = generation };
+                var (chain, count, _) = WalkLedger(copy, protector, inherited, cancellationToken);
+                using var metadata = copy.CreateCommand();
+                metadata.CommandText = "UPDATE metadata SET payload=$payload WHERE id=1;";
+                metadata.Parameters.AddWithValue("$payload", protector.Protect(JsonSerializer.SerializeToUtf8Bytes(
+                    inherited with { Chain = Convert.ToHexString(chain), Count = count })));
+                _ = await metadata.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                _ = AuthenticateLedger(copy, protector, cancellationToken);
+            }
+            SyncFile(temporary);
+            var overlay = Path.Combine(root, OverlayName);
+            File.Move(temporary, overlay, overwrite: true);
+            NativeLinux.FlushDirectory(root);
+            var facts = VerifyFile(overlay, RetainedIntegrityStore);
+            var result = new StateSnapshotDatabase(RetainedIntegrityStore, true, OverlayName, new FileInfo(overlay).Length,
+                await SafeFileSystem.ComputeSha256Async(overlay, cancellationToken).ConfigureAwait(false),
+                facts.UserVersion, facts.SchemaSha256, facts.Tables);
+            var seal = new OverlaySeal("retained-files-overlay-v1", snapshot.ManifestSha256, currentFacts.FilesRoot,
+                targetFacts.Metadata.Nonce, result);
+            var sealPath = Path.Combine(root, OverlaySealName);
+            var sealTemporary = sealPath + ".tmp";
+            if (File.Exists(sealTemporary)) { EnsureRegularStore(sealTemporary, RetainedIntegrityStore); File.Delete(sealTemporary); }
+            await File.WriteAllBytesAsync(sealTemporary, sealProtector.Protect(JsonSerializer.SerializeToUtf8Bytes(seal)), cancellationToken).ConfigureAwait(false);
+            File.SetUnixFileMode(sealTemporary, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            SyncFile(sealTemporary);
+            File.Move(sealTemporary, sealPath, overwrite: true);
+            NativeLinux.FlushDirectory(root);
+            StepCompleted("restore-integrity-overlay-ready");
+            return result;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SqliteException or
+            CryptographicException or JsonException or InvalidDataException or FormatException or OverflowException)
+        {
+            throw new InstallerException("The retained integrity state cannot be safely paired with this database restore.", exception);
+        }
+    }
+
+    private static async Task<StateSnapshotDatabase?> ReadOverlayAsync(string root, LifecycleStateSnapshot snapshot,
+        string nonce, string? filesRoot, IDataProtector protector, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(root, OverlaySealName);
+        if (!File.Exists(path)) return null;
+        EnsureRegularStore(path, RetainedIntegrityStore);
+        if (new FileInfo(path).Length > 65_536) throw new InvalidDataException("Retained overlay seal is invalid.");
+        var seal = JsonSerializer.Deserialize<OverlaySeal>(protector.Unprotect(await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false)));
+        if (seal is null || seal.Contract != "retained-files-overlay-v1" || seal.Snapshot != snapshot.ManifestSha256 ||
+            seal.Nonce != nonce || seal.Database.RelativePath != RetainedIntegrityStore || seal.Database.SnapshotFile != OverlayName)
+            throw new InvalidDataException("Retained overlay seal is invalid.");
+        if (filesRoot is not null && filesRoot != seal.FilesRoot) return null;
+        var overlay = Path.Combine(root, OverlayName);
+        EnsureRegularStore(overlay, RetainedIntegrityStore);
+        if (new FileInfo(overlay).Length != seal.Database.Length ||
+            await SafeFileSystem.ComputeSha256Async(overlay, cancellationToken).ConfigureAwait(false) != seal.Database.Sha256)
+            throw new InvalidDataException("Retained overlay differs from its seal.");
+        return seal.Database;
+    }
+
+    private static LedgerFacts AuthenticateLedger(SqliteConnection connection, IDataProtector protector, CancellationToken token)
+    {
+        using (var layout = connection.CreateCommand())
+        {
+            layout.CommandText = "SELECT name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%';";
+            using var rows = layout.ExecuteReader();
+            var expected = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(NormalizeSchema).ToHashSet(StringComparer.Ordinal);
+            while (rows.Read()) if (!expected.Remove(NormalizeSchema(rows.GetString(1))))
+                throw new InvalidDataException("Retained integrity layout is invalid.");
+            if (expected.Count != 0) throw new InvalidDataException("Retained integrity layout is incomplete.");
+        }
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT payload FROM metadata WHERE id=1 AND length(payload)<=16384;";
+        var meta = command.ExecuteScalar() is byte[] payload
+            ? JsonSerializer.Deserialize<Metadata>(protector.Unprotect(payload)) : null;
+        if (meta is null || meta.Nonce is not { Length: 32 } || meta.Chain is not { Length: 128 } ||
+            !meta.Established || meta.Generation < 0 || meta.Count < 0 || meta.Pending != new string('0', 128))
+            throw new InvalidDataException("Retained integrity authority is unavailable or unsettled.");
+        using var pending = connection.CreateCommand();
+        pending.CommandText = "SELECT COUNT(*) FROM pending;";
+        if (Convert.ToInt64(pending.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) != 0)
+            throw new InvalidDataException("Retained integrity has unsettled writes.");
+        var (chain, count, files) = WalkLedger(connection, protector, meta, token);
+        if (Convert.ToHexString(chain) != meta.Chain || count != meta.Count)
+            throw new InvalidDataException("Retained integrity commitment is invalid.");
+        return new LedgerFacts(meta, Convert.ToHexString(files));
+    }
+
+    private static string NormalizeSchema(string sql)
+        => string.Concat(sql.Where(static c => !char.IsWhiteSpace(c))).Replace("IFNOTEXISTS", "", StringComparison.OrdinalIgnoreCase).ToUpperInvariant();
+
+    private static (byte[] Chain, long Count, byte[] Files) WalkLedger(SqliteConnection connection, IDataProtector protector,
+        Metadata metadata, CancellationToken token, Action<LedgerRow>? visit = null)
+    {
+        var root = new byte[64];
+        var files = new byte[64];
+        long count = 0;
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT length(key),length(digest),length(auth),key,digest,kind,generation,auth FROM entries;";
+        using var rows = command.ExecuteReader();
+        while (rows.Read())
+        {
+            token.ThrowIfCancellationRequested();
+            if (rows.GetInt64(0) > 4096 || rows.GetInt64(1) is not (0 or 32) || rows.GetInt64(2) > 16384)
+                throw new InvalidDataException("Retained integrity entry is invalid.");
+            var row = new LedgerRow(rows.GetString(3), (byte[])rows.GetValue(4), rows.GetInt32(5), rows.GetInt64(6), (byte[])rows.GetValue(7));
+            if (!(row.Key.StartsWith("F|", StringComparison.Ordinal) || row.Key.StartsWith("J|", StringComparison.Ordinal)) ||
+                row.Kind is < 0 or > 3 || row.Generation < 0 || row.Generation > metadata.Generation)
+                throw new InvalidDataException("Retained integrity entry is invalid.");
+            var expected = new EntryProof(metadata.Nonce, row.Key, Convert.ToHexString(row.Digest), row.Kind, row.Generation);
+            if (JsonSerializer.Deserialize<EntryProof>(protector.Unprotect(row.Auth)) != expected)
+                throw new InvalidDataException("Retained integrity entry authentication failed.");
+            var leaf = Hash(expected);
+            Accumulate(root, leaf);
+            if (row.Key.StartsWith("F|", StringComparison.Ordinal)) Accumulate(files, leaf);
+            if (row.Kind != 0) count++;
+            visit?.Invoke(row);
+        }
+        return (root, count, files);
+    }
+}

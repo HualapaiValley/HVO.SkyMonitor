@@ -1,3 +1,4 @@
+using static HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityFormat;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -34,12 +35,7 @@ internal sealed partial class RetainedIntegrityLedger
             Execute("PRAGMA synchronous=FULL;");
             Execute("PRAGMA cache_size=-4096;");
         });
-        Execute("""
-            CREATE TABLE IF NOT EXISTS entries(key TEXT PRIMARY KEY,digest BLOB NOT NULL,kind INTEGER NOT NULL,generation INTEGER NOT NULL,auth BLOB NOT NULL) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS scan_entries(key TEXT PRIMARY KEY,digest BLOB NOT NULL,kind INTEGER NOT NULL,generation INTEGER NOT NULL,auth BLOB NOT NULL) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS pending(key TEXT PRIMARY KEY,tree INTEGER NOT NULL,generation INTEGER NOT NULL,planned TEXT,source TEXT,denied INTEGER NOT NULL,auth BLOB NOT NULL) WITHOUT ROWID;
-            CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1),payload BLOB NOT NULL);
-            """);
+        Execute(SchemaSql);
     }
 
     private bool ReadMetadata()
@@ -222,17 +218,6 @@ internal sealed partial class RetainedIntegrityLedger
     // scrubs authenticate every row and recompute the complete set commitment.
     private byte[] EntryHash(Entry entry) => SHA512.HashData(JsonSerializer.SerializeToUtf8Bytes(
         new EntryProof(_nonce, entry.Key, Convert.ToHexString(entry.Digest), entry.Kind, entry.Generation)));
-
-    private static void Accumulate(byte[] accumulator, byte[] leaf, bool remove = false)
-    {
-        var carry = 0;
-        for (var i = 0; i < accumulator.Length; i++)
-        {
-            var sum = accumulator[i] + (remove ? -leaf[i] : leaf[i]) + carry;
-            accumulator[i] = unchecked((byte)sum);
-            carry = sum >> 8;
-        }
-    }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Both statements are fixed internal SQL.")]
     private byte[] ComputeEntriesRoot(string table, SqliteTransaction? transaction = null, CancellationToken cancellationToken = default)

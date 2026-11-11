@@ -2818,6 +2818,15 @@ before restore; capture/product files are preserved. Interrupted restores remain
 pending and can resume. Old database-only snapshots cannot reconstruct sealed
 state and are refused before mutation when integrity state is present; restore a
 complete paired backup. Use an updated installer for paired-state rollback.
+Database rollback preserves authenticated current capture/product file proofs
+while restoring the snapshot's authenticated journal expectations; retained files
+are not discarded to make a prior ledger fit. Both complete commitments must
+validate and belong to the same authority. An unsettled/mismatched source refuses;
+the restarted agent still performs a full scrub. A pre-ledger database snapshot
+cannot preserve current file proofs and is refused before mutation when ledger
+state exists; use a complete paired backup for that older downgrade. Derived
+restore overlays are protected and bound to the selected snapshot and current
+file set, so interrupted restores can resume without trusting partial state.
 
 The separate optional parse index has bounded batches/memory and no fixed
 proof-count cap. Fully checked prefixes survive canceled full scans; auxiliary

@@ -162,6 +162,40 @@ publication. The actual pre-seal-image upgrade/rollback campaign and immutable
 candidate gates remain pending. The `18ef8881` measurement/gate tables below are
 historical until repeated on the sealed-history candidate.
 
+### Preserving post-snapshot files during database rollback
+
+The first actual pre-seal-image campaign exposed a further interaction: the
+candidate published 24 valid new JSON files, but rollback restored a ledger that
+predated them. The older runtime correctly refused its now-stale expected set;
+the client exhausted its existing budget and recovered the original runtime.
+This failed campaign is retained as failure evidence, not credited as a pass.
+
+Database restore now preserves authenticated CURRENT file expectations and
+restores authenticated SNAPSHOT journal expectations. Both complete source
+commitments, row proofs, schema and nonce are authenticated before composition;
+unsettled or different-authority sources refuse. No file bytes are blessed as
+new proofs. The wire definitions are shared by the agent and the installer's
+offline writer. The writer holds the root's exclusive integrity-owner lock and
+rechecks source commitments while staging. A protected, snapshot-bound derived
+overlay makes retries idempotent; an incomplete overlay can rebuild only from
+authenticated source authority. The restarted agent still performs full byte,
+schema and provenance verification before qualification.
+
+A pre-ledger database snapshot cannot preserve current file proofs and is
+refused before mutation when current ledger state exists. Use a complete paired
+backup for that older downgrade. This is a disclosed development-version
+compatibility limitation. The dedicated campaign targets pre-SEAL `18ef8881`,
+which already understands the v1 ledger; it also checks exact old history bytes
+and complete installation identity after rollback. The generic owner-recovery
+baseline campaign assumes an older, pre-recovery image and was not a valid
+fixture for `18ef8881`; its early fixture refusal is not a product failure.
+
+Focused correction evidence: **128/128** protected-store/staging cases and
+**70/70** CLI cases pass warning-clean. Real-store cases exercise current file
+preservation, tampered proofs, cancellation before and after ledger installation,
+incomplete-overlay recovery, new-file cache invalidation and live-owner refusal.
+The immutable-candidate campaign and broader gates remain pending.
+
 ## Managed-writer inventory
 
 | Path | Ledger integration | Scope |

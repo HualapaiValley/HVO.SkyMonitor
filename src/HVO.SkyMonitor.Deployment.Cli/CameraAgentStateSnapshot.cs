@@ -215,6 +215,9 @@ internal static partial class CameraAgentStateSnapshot
                 throw InstallerException.Formatted($"The snapshot of '{CameraAgentStateDiagnostics.Reason(database.RelativePath)}' does not match its recorded schema and row counts.");
         }
         await VerifyProtectedFilesAsync(paths, root, manifest.ProtectedFiles, cancellationToken).ConfigureAwait(false);
+        if (File.Exists(StorePath(paths.StateRoot, RetainedIntegrityStore)) &&
+            !manifest.Databases.Any(static database => database.RelativePath == RetainedIntegrityStore && database.Present))
+            throw new InstallerException("A pre-ledger database snapshot cannot preserve current retained-file proofs; restore a complete paired backup.");
         return manifest;
     }
 
@@ -272,10 +275,14 @@ internal static partial class CameraAgentStateSnapshot
             !plan.CurrentLocations.All(CameraAgentStateInventory.IsValidStoreLocation))
             throw InstallerException.Formatted("The journaled restore plan does not match the CameraAgent database snapshot it restores.");
         var root = SnapshotRoot(paths, snapshot.OperationId, snapshot.SnapshotId);
+        using var integrityOwnership = AcquireIntegrityRestoreOwnership(paths);
+        var integrityOverlay = await PrepareIntegrityRestoreAsync(paths, root, manifest, snapshot, cancellationToken).ConfigureAwait(false);
         var touchedDirectories = new SortedSet<string>(StringComparer.Ordinal);
         var uncarried = new List<(string What, string Reason)>();
-        foreach (var database in manifest.Databases)
+        foreach (var recordedDatabase in manifest.Databases)
         {
+            var database = recordedDatabase.RelativePath == RetainedIntegrityStore && integrityOverlay is not null
+                ? integrityOverlay : recordedDatabase;
             cancellationToken.ThrowIfCancellationRequested();
             var target = StorePath(paths.StateRoot, database.RelativePath);
             var directory = Path.GetDirectoryName(target)!;
@@ -455,7 +462,7 @@ internal static partial class CameraAgentStateSnapshot
         ArgumentNullException.ThrowIfNull(snapshot);
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"Warning: restoring the CameraAgent databases from the snapshot taken at {snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ} (snapshot {snapshot.SnapshotId:D}). Every database change made after that point is lost, including captures, settings and accounts recorded since then. Capture and product files written since then stay on disk. Paired protected location and integrity metadata returns to the snapshot; inconsistent retained evidence keeps protected verification unqualified until authorized recovery. When it starts, CameraAgent records again the raw frames it can verify and may process and upload them again; other products written since then are no longer indexed.");
+            $"Warning: restoring the CameraAgent databases from the snapshot taken at {snapshot.RecordedUtc:yyyy-MM-ddTHH:mm:ssZ} (snapshot {snapshot.SnapshotId:D}). Every database change made after that point is lost, including captures, settings and accounts recorded since then. Capture and product files written since then stay on disk. Protected location state is paired with the restored journal, while authenticated current capture/product file expectations are preserved; inconsistent retained evidence keeps protected verification unqualified until authorized recovery. When it starts, CameraAgent records again the raw frames it can verify and may process and upload them again; other products written since then are no longer indexed.");
     }
 
     /// <summary>The <c>--json</c> form of <see cref="Warning"/>, as the one line written to standard error.</summary>

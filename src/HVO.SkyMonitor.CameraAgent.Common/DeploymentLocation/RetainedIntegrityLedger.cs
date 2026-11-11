@@ -1,3 +1,4 @@
+using static HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityFormat;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -39,10 +40,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private bool _disposed;
 
     internal sealed record Entry(string Key, byte[] Digest, int Kind, long Generation = 0);
-    private sealed record EntryProof(string Nonce, string Key, string Digest, int Kind, long Generation);
     private sealed record Intent(string Key, bool Tree, long Generation, string? Planned = null, string? Source = null, bool Denied = false);
-    private sealed record IntentProof(string Nonce, string Key, bool Tree, long Generation, string? Planned, string? Source, bool Denied);
-    private sealed record Metadata(string Nonce, long Generation, string Chain, long Count, bool Established, string Pending);
     private sealed record Checkpoint(string Epoch, string Nonce, string Binding, long Generation, string Chain, long Count, bool Qualified);
 
     internal RetainedIntegrityLedger(string root, IDeploymentLocationProtector protector,
