@@ -13,7 +13,7 @@ for contract in \
     '    needs: [changes, catalog-contracts]' \
     '    needs: [changes, unit, integration, architecture]' \
     '    needs: coverage' \
-    '    needs: [changes, quality, catalog-contracts, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]'; do
+    '    needs: [changes, quality, catalog-contracts, catalog-reproducibility, deployment-contracts, build, architecture, coverage-policy, migrations-cameraagent, migrations-logichost, unit, integration, coverage, shared-libraries, cameraagent-component, logichost-component, combined-integration, delivery-component]'; do
     grep -Fqx "$contract" "$workflow" ||
         fail "CI workflow dependency shape changed; update ci:timing-report and its fixtures: $contract"
 done
@@ -60,6 +60,28 @@ if "$tool" --fixture "$work_root/missing" >"$work_root/missing.out" 2>"$work_roo
 fi
 [[ ! -s "$work_root/missing.out" ]] || fail 'Missing jobs emitted a partial report.'
 grep -Fq 'Jobs input is malformed' "$work_root/missing.err" || fail 'Missing jobs were not refused explicitly.'
+
+# Catalog Reproducibility was added to the workflow after these runs were recorded (Refs #1774). A run that predates
+# it does not contain it, and Required CI's readiness is still computed from the dependencies that run does have:
+# the pr-845 check above. A run that contains it awaits it like any other dependency.
+required_readiness_with_added_job() {
+    local name="$1" status="$2" conclusion="$3" completed_at="$4"
+    mkdir -p "$work_root/$name"
+    cp "$fixtures/pr-845/run.json" "$work_root/$name/run.json"
+    jq --arg status "$status" --argjson conclusion "$conclusion" --argjson completed_at "$completed_at" '
+        .total_count += 1 |
+        .jobs += [{id: 1, name: "Catalog Reproducibility", status: $status, conclusion: $conclusion,
+                   started_at: "2026-09-16T19:39:07Z", completed_at: $completed_at, html_url: "x"}]' \
+        "$fixtures/pr-845/jobs.json" > "$work_root/$name/jobs.json"
+    "$tool" --fixture "$work_root/$name" |
+        jq -c '.jobs[] | select(.name == "Required CI") | .dependencyReadyToStartSeconds'
+}
+[[ "$(required_readiness_with_added_job added-running in_progress null null)" == null ]] ||
+    fail 'An unfinished Catalog Reproducibility job did not withhold Required CI readiness.'
+# Required CI started at 19:57:18, three seconds after Coverage; finishing one second before it, the added job is
+# what Required CI waited for.
+[[ "$(required_readiness_with_added_job added-finished completed '"success"' '"2026-09-16T19:57:17Z"')" == 1 ]] ||
+    fail 'A finished Catalog Reproducibility job did not take part in Required CI readiness.'
 
 cat > "$work_root/bin/gh" <<'GH'
 #!/usr/bin/env bash

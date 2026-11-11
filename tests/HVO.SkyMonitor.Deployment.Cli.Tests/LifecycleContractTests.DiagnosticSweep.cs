@@ -23,7 +23,7 @@ public sealed partial class LifecycleContractTests
         [
             "CameraAgentStateSnapshot.cs", "CameraAgentLifecycleManager.Backup.cs",
             "CameraAgentLifecycleManager.Restore.cs", "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs",
-            "BackupVault.cs"
+            "BackupVault.cs", "CameraConfigurationRefusals.cs"
         ];
         var failures = new List<string>();
         foreach (var file in files)

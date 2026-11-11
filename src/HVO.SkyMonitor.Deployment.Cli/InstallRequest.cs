@@ -68,6 +68,9 @@ internal sealed record InstallRequest
     /// </summary>
     public string? IlluminationMode { get; init; }
 
+    /// <summary>The lighting <see cref="IlluminationMode"/> may name explicitly.</summary>
+    internal static IReadOnlyList<string> IlluminationModes { get; } = ["LegacyScalarSolar", "SolarDriven", "ControlledNight"];
+
     /// <summary>
     /// The CameraAgent container's CPU limit the operator set with <c>--cpus</c>, or <see langword="null"/> to leave it
     /// to the installer default.
@@ -106,7 +109,7 @@ internal sealed record InstallRequest
 
     public void Validate()
     {
-        if (IlluminationMode is not (null or "LegacyScalarSolar" or "SolarDriven" or "ControlledNight"))
+        if (IlluminationMode is not null && !IlluminationModes.Contains(IlluminationMode, StringComparer.Ordinal))
         {
             throw new InstallUsageException("--illumination-mode must be LegacyScalarSolar, SolarDriven or ControlledNight.");
         }
