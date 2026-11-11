@@ -140,8 +140,8 @@ state stays unqualified, including when both ledger files disappeared. Genuine
 legacy history is still fully verified, then sealed without changing location
 identity/version or current configuration identity.
 
-This evolves the private history reader contract. The image reader floor must
-advance to the first sealed-history implementation commit. Migrating lifecycle
+This evolves the private history reader contract. The image reader floor advances to
+`b3e8a77737672ae48b7c178c53dbad9790687d2a`, the first sealed-history implementation commit. Migrating lifecycle
 snapshots now pair the SQLite stores (including the optional integrity database)
 with four confined location/marker/checkpoint files, recording presence or
 absence and hashes. All snapshot contents are verified before restore; file

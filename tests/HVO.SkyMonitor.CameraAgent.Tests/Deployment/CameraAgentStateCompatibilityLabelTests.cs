@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 [TestCategory("Unit")]
 public sealed class CameraAgentStateCompatibilityLabelTests
 {
-    private const string MinimumCompatibleRevision = "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c";
+    private const string MinimumCompatibleRevision = "b3e8a77737672ae48b7c178c53dbad9790687d2a";
 
     [TestMethod]
     public void Dockerfile_DeclaresTheDurableStateContractInsteadOfUnboundedBackwardCompatibility()
