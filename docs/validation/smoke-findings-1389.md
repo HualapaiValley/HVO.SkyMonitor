@@ -10,7 +10,7 @@ batch; no merge, deployment or installed-instance operation is included.
 The tracker has no native GitHub sub-issues. Its body and complete comment thread
 were reconciled with current issue states using `gh`, including the referenced
 UI parents' implementation slices. Its October 22 status index is historical:
-#1387 (Frame Facts), #1388 (independent deep-sky catalog/layer), #1475
+#1387 (Frame Facts), #1475
 (mixed-gain stacking), and #1490 (changelog placement) are now closed. The
 historical direct installer, overlay, startup, paging, redaction and build
 source defects listed as delivered remain closed; they are not reopened here.
@@ -20,6 +20,7 @@ Still-open references with remaining acceptance relevant to the tracker:
 | Issue | Current remaining scope and disposition |
 | --- | --- |
 | #1386 | Typed filter/overlay configuration parent. Referenced slices A–T are closed. Fix the delivered rolling/scene panel collision below; remaining families and complete parent acceptance stay open. |
+| #1388 | Smoke finding 12: separate star and deep-sky catalogs, with a configurable deep-sky layer. Closed by mistake via #1699's negated keyword and reopened on 2026-11-10. Design first; remaining acceptance stays open. |
 | #1016 | Observing Day fidelity and current real-date desktop/mobile interaction/visual acceptance. Fix stale day navigation below; full visual acceptance stays open. |
 | #1393 | Satellite planning/layers. Planner and exact-exposure publication are delivered; wider association, cadence and declared-hardware accuracy remain with their owning work. No further reproducible planner defect found in this audit. |
 | #529 | Broader capture-time satellite integration and scientific acceptance; credit delivered #1641/#1649 rather than rebuilding it. |
