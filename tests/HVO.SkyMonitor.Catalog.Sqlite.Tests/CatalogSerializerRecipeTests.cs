@@ -17,6 +17,17 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
         var recipes = SerializerSql().Matches(text);
         Assert.HasCount(connectionCount, recipes, $"Unexpected serializer connection count in {relativePath}.");
 
+        if (relativePath.EndsWith(".sh", StringComparison.Ordinal))
+        {
+            // Count writable CLI invocations independently of .bail on, so adding an
+            // inline connection cannot silently escape the recipe checks below.
+            var writableConnections = SerializerConnections().Matches(text)
+                .Where(static match => !ReadOnlyConnection().IsMatch(match.Groups["arguments"].Value))
+                .ToArray();
+            Assert.HasCount(connectionCount, writableConnections,
+                $"Every writable sqlite3 connection in {relativePath} must have a guarded serializer recipe.");
+        }
+
         foreach (Match recipe in recipes)
         {
             var sql = recipe.Groups["sql"].Value;
@@ -30,6 +41,12 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
 
     [GeneratedRegex(@"(?ms)^\.bail on\r?\n(?<sql>.*?)(?=^SQL\r?$|\z)")]
     private static partial Regex SerializerSql();
+
+    [GeneratedRegex(@"(?m)(?:^[ \t]*|\$\([ \t]*|;[ \t]*)sqlite3[ \t]+(?<arguments>[^\r\n]*)")]
+    private static partial Regex SerializerConnections();
+
+    [GeneratedRegex(@"(?:^|[ \t])-readonly(?:[ \t]|$)")]
+    private static partial Regex ReadOnlyConnection();
 
     [GeneratedRegex(@"(?mi)^\s*PRAGMA\s+secure_delete\s*=\s*ON\s*;")]
     private static partial Regex SecureDeletionPin();
