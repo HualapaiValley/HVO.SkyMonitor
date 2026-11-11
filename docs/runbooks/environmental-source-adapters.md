@@ -269,14 +269,25 @@ within 15 seconds. Unsettled work remains pending only until its receipt lease
 expires, then becomes unavailable; startup also marks interrupted work unavailable.
 Independent on-demand operations retain their own leases and admission allowance.
 
-Capture receipts and all acquisition-attempt diagnostics expire according to
-`RetentionDays`, independently of retained raw-capture rows. Capture leases never
-exceed that retention period. Expiry uses receipt/attempt timestamps without
-parsing raw manifests. An unassociated capture whose receipt has expired or is
-missing reports unavailable evidence, even if other associations still pin old
-facts. Completed associations remain immutable. Association binds retained tokens
-to raw capture IDs; explicit legacy capture IDs remain readable and anonymous
-legacy history is never guessed into a capture. The SQM interval/gap
+Capture receipts expire as complete acquisition sets according to `RetentionDays`,
+after the last source receipt is eligible, independently of retained raw-capture
+rows. A cutoff or batch boundary never removes just one source's failure fence.
+Capture leases never exceed that retention period. Ordinary acquisition-attempt
+diagnostics also expire by age; explicit pre-token capture-before failures stay
+until that capture has an association and its raw row is no longer retained.
+This finite legacy exception preserves the only durable fence for pre-upgrade
+captures. Expiry uses indexed receipt/attempt timestamps and capture IDs without
+parsing raw manifests. Full batches trigger more transactions, releasing the write
+lock between batches and yielding between bounded bursts, so failed-read history
+can drain even when no observations are produced. Schema 3 upgrades transactionally
+to schema 4 by adding retention indexes after validating the prior schema; fact
+and receipt payloads remain unchanged.
+
+An unassociated capture whose entire receipt set has expired or is missing reports
+unavailable evidence, even if other associations still pin old facts. Completed
+associations remain immutable. Association binds retained tokens to raw capture
+IDs; explicit legacy capture IDs remain readable and anonymous legacy history is
+never guessed into a capture. The SQM interval/gap
 policy and a strict total deadline under SQLite contention remain in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a

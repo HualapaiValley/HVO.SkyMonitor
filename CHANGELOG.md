@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires acquisition history at the configured retention. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. Refs #1778
+- CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. Refs #1778
 
 - The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
 

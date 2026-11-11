@@ -175,9 +175,10 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 first = Receipt(sourceId, trigger, EnvironmentalAcquisitionDisposition.TimedOut, "before-capture-timeout", null, started);
             }
             LogReceipt(source.Descriptor, first);
+            // Capture evidence must survive shutdown even if the diagnostic attempt write is interrupted.
+            if (settleFirstReceipt is not null) await settleFirstReceipt(first).ConfigureAwait(false);
             await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
-            if (settleFirstReceipt is not null) await settleFirstReceipt(first).ConfigureAwait(false);
             if (acquisitionBudgetMilliseconds.HasValue || joinBusy)
             {
                 PendingAcquisition? deferred;

@@ -177,18 +177,26 @@ public sealed partial class EnvironmentalAcquisitionService(
             var nextDelay = TimeSpan.FromHours(1);
             try
             {
-                var result = await retentionStore.RetainLocalAsync(
-                    options.Value.RawIngressRoot,
-                    timeProvider.GetUtcNow().AddDays(-configured.RetentionDays),
-                    configured.RetentionBatchSize,
-                    cancellationToken).ConfigureAwait(false);
+                LocalEnvironmentalRetentionResult result;
+                var batches = 0;
+                do
+                {
+                    result = await retentionStore.RetainLocalAsync(
+                        options.Value.RawIngressRoot,
+                        timeProvider.GetUtcNow().AddDays(-configured.RetentionDays),
+                        configured.RetentionBatchSize,
+                        cancellationToken).ConfigureAwait(false);
+                    RetentionCompleted(logger, result.RemovedCount, result.RemovedBytes);
+                    // Each batch releases SQLite's write lock; cap a burst and yield to acquisition.
+                    await Task.Yield();
+                } while (result.BatchLimitReached && ++batches < 16);
+                if (result.BatchLimitReached) nextDelay = TimeSpan.FromSeconds(1);
                 if (journalUnavailable)
                 {
                     JournalRecovered(logger, "retention");
                     journalUnavailable = false;
                 }
                 consecutiveFailures = 0;
-                RetentionCompleted(logger, result.RemovedCount, result.RemovedBytes);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

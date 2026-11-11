@@ -208,8 +208,14 @@ public sealed partial class EnvironmentalCaptureFailureTests
         private bool stopped;
         private int completionAttempts;
         internal int CompletionAttempts => Volatile.Read(ref completionAttempts);
+        internal TaskCompletionSource AttemptWriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private async ValueTask InterruptAttemptAsync(CancellationToken token)
+        {
+            AttemptWriteStarted.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
+        }
 
-        internal static async Task<AttributionFixture> CreateAsync(int budget, int queueCapacity = 64, int completionFailures = 0)
+        internal static async Task<AttributionFixture> CreateAsync(int budget, int queueCapacity = 64, int completionFailures = 0, bool interruptAttempt = false)
         {
             var fixture = new AttributionFixture();
             fixture.Store = new(fixture.Clock);
@@ -240,14 +246,16 @@ public sealed partial class EnvironmentalCaptureFailureTests
             });
             fixture.provider = new ServiceCollection().AddSingleton<IEnvironmentalDevice>(fixture.Device).BuildServiceProvider();
             IEnvironmentalAcquisitionStateStore acquisitionState = fixture.Store;
-            if (completionFailures > 0)
+            if (completionFailures > 0 || interruptAttempt)
             {
                 var state = new Mock<IEnvironmentalAcquisitionStateStore>();
                 state.Setup(value => value.RecordAttemptAsync(It.IsAny<string>(), It.IsAny<EnvironmentalSourceDescriptor>(),
                     It.IsAny<EnvironmentalAcquisitionReceipt>(), It.IsAny<long?>(), It.IsAny<Guid?>(), It.IsAny<CancellationToken>()))
                     .Returns((string root, EnvironmentalSourceDescriptor descriptor, EnvironmentalAcquisitionReceipt receipt,
                         long? sequence, Guid? capture, CancellationToken token) =>
-                        fixture.Store.RecordAttemptAsync(root, descriptor, receipt, sequence, capture, token));
+                        interruptAttempt && receipt.Trigger == EnvironmentalAcquisitionTrigger.BeforeCapture
+                            ? fixture.InterruptAttemptAsync(token)
+                            : fixture.Store.RecordAttemptAsync(root, descriptor, receipt, sequence, capture, token));
                 state.As<IEnvironmentalOnDemandCommandStore>().Setup(value => value.CompleteOnDemandAsync(It.IsAny<string>(),
                     It.IsAny<string>(), It.IsAny<string>(), It.IsAny<EnvironmentalAcquisitionReceipt>(), It.IsAny<CancellationToken>()))
                     .Returns((string root, string key, string lease, EnvironmentalAcquisitionReceipt receipt, CancellationToken token) =>

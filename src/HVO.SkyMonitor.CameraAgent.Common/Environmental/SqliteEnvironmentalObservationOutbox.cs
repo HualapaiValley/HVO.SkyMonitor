@@ -27,7 +27,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalObservationProjectionStore, ILocalEnvironmentalAssociationStore, IEnvironmentalAcquisitionStateStore,
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
 {
-    private const int CurrentSchemaVersion = 3;
+    private const int CurrentSchemaVersion = 4;
     // V3 maps local lineage into central identities. Retain legacy v1/v2 projection semantics;
     // for v3, retrying or expired input leases must not release a derivative before its inputs are acknowledged.
     private const string AcknowledgedLineageSql = """
@@ -1972,7 +1972,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 ? await InspectExistingDatabaseAsync(root, cancellationToken).ConfigureAwait(false)
                 : new EnvironmentalSchemaInspection(0, 0);
             var initializeSchema = inspection.SchemaVersion == 0 && inspection.SchemaObjectCount == 0;
-            if (!initializeSchema && inspection.SchemaVersion != CurrentSchemaVersion)
+            if (!initializeSchema && inspection.SchemaVersion is not (3 or CurrentSchemaVersion))
             {
                 var relationship = inspection.SchemaVersion > CurrentSchemaVersion
                     ? "newer than supported"
@@ -1981,7 +1981,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     $"Environmental observation schema {inspection.SchemaVersion} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
             }
             using var connection = await OpenUnconfiguredAsync(root, cancellationToken).ConfigureAwait(false);
-            if (initializeSchema)
+            if (initializeSchema || inspection.SchemaVersion == 3)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                 using var transaction = connection.BeginTransaction(deferred: false);
@@ -1996,6 +1996,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     command.Transaction = transaction;
                     command.CommandText = CanonicalSchemaSql;
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                else if (writableVersion == 3)
+                {
+                    // Validate the complete prior schema before the transactional index-only upgrade.
+                    await ValidateSchemaAsync(connection, transaction, cancellationToken, 3).ConfigureAwait(false);
+                    using var migration = connection.CreateCommand();
+                    migration.Transaction = transaction;
+                    migration.CommandText = RetentionIndexesSql + "PRAGMA user_version=4;";
+                    await migration.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
                 else if (writableVersion != CurrentSchemaVersion)
                 {
@@ -2498,6 +2507,30 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         CancellationToken cancellationToken)
     {
         var cutoffUnixMs = recordedBeforeUtc.ToUnixTimeMilliseconds();
+        var batchLimitReached = false;
+        using (var attempts = connection.CreateCommand())
+        {
+            attempts.Transaction = transaction;
+            // Explicit pre-token failures remain the only durable fence for legacy captures.
+            // Keep them until association is complete and the raw capture is no longer retained.
+            var retainedRaw = rawIngressAttached
+                ? "OR EXISTS(SELECT 1 FROM raw_ingress.raw_captures AS capture WHERE capture.capture_id = replace(attempt.capture_id, '-', ''))"
+                : string.Empty;
+            attempts.CommandText = $"""
+                DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
+                    SELECT attempt_id FROM environmental_acquisition_attempts AS attempt
+                    WHERE completed_unix_ms < $cutoff
+                        AND NOT (trigger = 'BeforeCapture' AND capture_id IS NOT NULL
+                            AND outcome IN ('Failed','Missing','TimedOut')
+                            AND (NOT EXISTS(SELECT 1 FROM environmental_capture_associations AS association
+                                WHERE association.capture_id = attempt.capture_id AND association.observation_kind = attempt.observation_kind)
+                                {retainedRaw}))
+                    ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
+                """;
+            attempts.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
+            attempts.Parameters.AddWithValue("$limit", maximumResults);
+            batchLimitReached |= await attempts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) >= maximumResults;
+        }
         using (var associations = connection.CreateCommand())
         {
             associations.Transaction = transaction;
@@ -2524,35 +2557,38 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     """;
             associations.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
             associations.Parameters.AddWithValue("$limit", maximumResults);
-            await associations.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        using (var attempts = connection.CreateCommand())
-        {
-            attempts.Transaction = transaction;
-            attempts.CommandText = """
-                DELETE FROM environmental_acquisition_attempts WHERE attempt_id IN (
-                    SELECT attempt_id FROM environmental_acquisition_attempts
-                    WHERE completed_unix_ms < $cutoff
-                    ORDER BY completed_unix_ms, attempt_id LIMIT $limit);
-                """;
-            attempts.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
-            attempts.Parameters.AddWithValue("$limit", maximumResults);
-            await attempts.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            batchLimitReached |= await associations.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) >= maximumResults;
         }
         using (var commands = connection.CreateCommand())
         {
             commands.Transaction = transaction;
+            // A capture's source receipts expire together, after its last member is eligible.
+            // Prefix range lookups use the primary key; candidate ordering uses the retention index.
             commands.CommandText = """
+                WITH candidates AS MATERIALIZED (
+                    SELECT idempotency_key FROM environmental_on_demand_commands AS candidate INDEXED BY ix_environment_on_demand_retention
+                    WHERE updated_unix_ms < $cutoff
+                        AND (status = 'completed' OR (status = 'running' AND lease_expires_unix_ms < $now))
+                        AND (idempotency_key NOT GLOB '__capture-before:*' OR NOT EXISTS (
+                            SELECT 1 FROM environmental_on_demand_commands AS sibling
+                            WHERE sibling.idempotency_key >= substr(candidate.idempotency_key, 1, 50)
+                                AND sibling.idempotency_key < substr(candidate.idempotency_key, 1, 49) || ';'
+                                AND (sibling.updated_unix_ms >= $cutoff
+                                    OR (sibling.status = 'running' AND sibling.lease_expires_unix_ms >= $now))))
+                    ORDER BY updated_unix_ms, idempotency_key LIMIT $limit)
                 DELETE FROM environmental_on_demand_commands WHERE idempotency_key IN (
-                    SELECT idempotency_key FROM environmental_on_demand_commands
-                    WHERE (status = 'completed' OR (status = 'running' AND lease_expires_unix_ms < $now))
-                        AND updated_unix_ms < $cutoff
-                    ORDER BY updated_unix_ms, idempotency_key LIMIT $limit);
+                    SELECT idempotency_key FROM candidates WHERE idempotency_key NOT GLOB '__capture-before:*'
+                    UNION ALL
+                    SELECT sibling.idempotency_key FROM candidates AS candidate
+                    JOIN environmental_on_demand_commands AS sibling
+                        ON sibling.idempotency_key >= substr(candidate.idempotency_key, 1, 50)
+                        AND sibling.idempotency_key < substr(candidate.idempotency_key, 1, 49) || ';'
+                    WHERE candidate.idempotency_key GLOB '__capture-before:*');
                 """;
             commands.Parameters.AddWithValue("$cutoff", cutoffUnixMs);
             commands.Parameters.AddWithValue("$now", nowUtc.ToUnixTimeMilliseconds());
             commands.Parameters.AddWithValue("$limit", maximumResults);
-            await commands.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            batchLimitReached |= await commands.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) >= maximumResults;
         }
         long storedCount;
         long storedBytes;
@@ -2650,7 +2686,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             candidates.Count,
             removedBytes,
             storedCount - candidates.Count,
-            storedBytes - removedBytes);
+            storedBytes - removedBytes)
+        { BatchLimitReached = batchLimitReached || candidates.Count >= maximumResults };
     }
 
     private static async ValueTask<bool> AttachRawIngressAsync(
@@ -3140,9 +3177,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             var version = await ExecuteScalarLongAsync(
                 connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
             var objectCount = await CountSchemaObjectsAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            if (version == CurrentSchemaVersion)
+            if (version is 3 or CurrentSchemaVersion)
             {
-                await ValidateSchemaAsync(connection, null, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, null, cancellationToken, checked((int)version)).ConfigureAwait(false);
             }
             return new(checked((int)version), objectCount);
         }
@@ -3227,18 +3264,22 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     private static async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int schemaVersion = CurrentSchemaVersion)
     {
         if (await ExecuteScalarLongAsync(connection, "PRAGMA user_version;", transaction, cancellationToken)
-                .ConfigureAwait(false) != CurrentSchemaVersion)
+                .ConfigureAwait(false) != schemaVersion)
         {
-            throw new InvalidDataException("Environmental observation schema version is not canonical schema 3.");
+            throw new InvalidDataException("Environmental observation schema version is not canonical.");
         }
+        var expectedDefinitions = CanonicalSchemaDefinitions.Value
+            .Where(entry => schemaVersion != 3 || entry.Key is not ("ix_environment_on_demand_retention" or "ix_environment_attempt_retention"))
+            .ToDictionary(StringComparer.Ordinal);
         var actual = await ReadSchemaDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        if (CanonicalSchemaDefinitions.Value.Any(expected =>
+        if (expectedDefinitions.Any(expected =>
                 !actual.TryGetValue(expected.Key, out var definition) ||
                 !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
-            actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
+            actual.Keys.Any(name => !expectedDefinitions.ContainsKey(name)))
         {
             throw new InvalidDataException(
                 "Environmental observation schema is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -3700,7 +3741,13 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             UNIQUE(local_record_id, target_site_id, target_agent_id, target_rig_id)) STRICT;
         CREATE INDEX ix_environment_projection_waiting
             ON environmental_observation_central_projection(status, updated_unix_ms, local_record_id);
-        PRAGMA user_version=3;
+        """ + RetentionIndexesSql + "PRAGMA user_version=4;";
+
+    private const string RetentionIndexesSql = """
+        CREATE INDEX ix_environment_on_demand_retention
+            ON environmental_on_demand_commands(updated_unix_ms, idempotency_key);
+        CREATE INDEX ix_environment_attempt_retention
+            ON environmental_acquisition_attempts(completed_unix_ms, attempt_id);
         """;
 
     private const string CanonicalSchemaSql = SchemaSql + OperationsSchemaSql + LocalSchemaSql;
