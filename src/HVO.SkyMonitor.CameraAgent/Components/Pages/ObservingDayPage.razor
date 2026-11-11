@@ -227,9 +227,9 @@
                                     {
                                         <dl class="product-viewer__facts">
                                             <div><dt>Admitted frames</dt><dd>@LocalSpan(product.FirstObservationUtc, product.LastObservationUtc)</dd></div>
-                                            <div><dt>Composed from</dt><dd>@(FormattableString.Invariant($"{viewed.Daily!.Status.AdmittedCount:N0} segment products"))</dd></div>
+                                            <div><dt>@CompositionTerm(viewed.Kind)</dt><dd>@Composition(viewed.Kind, viewed.Daily!.Status)</dd></div>
                                             <div><dt>Encoded size</dt><dd>@(FormattableString.Invariant($"{product.Width:N0} × {product.Height:N0} {product.PixelFormat}"))</dd></div>
-                                            <div><dt>Total integration</dt><dd>@FormatDuration(product.TotalIntegration)</dd></div>
+                                            <div><dt>@IntegrationTerm(viewed.Kind)</dt><dd>@FormatDuration(product.TotalIntegration)</dd></div>
                                         </dl>
                                     }
                                     else
