@@ -67,7 +67,8 @@ public sealed partial class LifecycleContractTests
         string[] formattedOwners =
         [
             "CameraAgentStateSnapshot.cs", "CameraAgentLifecycleManager.Backup.cs", "CameraAgentLifecycleManager.Restore.cs",
-            "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs", "BackupVault.cs", "InstallerException.cs"
+            "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs", "BackupVault.cs", "InstallerException.cs",
+            "CameraConfigurationRefusals.cs"
         ];
         var sourceFiles = Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
             .Where(file => !Path.GetRelativePath(sourceRoot, file).Split(Path.DirectorySeparatorChar).Any(part => part is "obj" or "bin"));

@@ -220,7 +220,9 @@ public sealed partial class InstallerFlowTests
             var rejected = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
                 changedMode, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None,
                 portAvailabilityProbe: probe.Probe));
-            StringAssert.Contains(rejected.Message, "retained immutable manifest", StringComparison.Ordinal);
+            // A lighting change is a request-driven difference: refused and named, never a generic failure (Refs #1779).
+            Assert.IsTrue(rejected.IsRefusal);
+            StringAssert.Contains(rejected.Message, $"--illumination-mode ({illuminationMode ?? "omitted"}, not SolarDriven)", StringComparison.Ordinal);
             Assert.AreEqual(legacyInProcessManifestJson, await File.ReadAllTextAsync(manifestPath));
             Assert.AreEqual(2, runner.ComposeUpCount);
 
@@ -1646,6 +1648,12 @@ public sealed partial class InstallerFlowTests
         /// <summary>The Compose file the last <c>compose up</c> started the instance from: the limits it now runs with.</summary>
         public string? LastComposeUp { get; private set; }
 
+        /// <summary>The camera configuration the last <c>compose up</c> started the instance with, as the file then held it.</summary>
+        public string? LastComposeUpConfiguration { get; private set; }
+
+        /// <summary>The arguments of every <c>compose up</c> that succeeded, in order.</summary>
+        public List<IReadOnlyList<string>> ComposeUps { get; } = [];
+
         /// <summary>
         /// The number the failing <c>compose up</c> would have: that one fails as Docker fails one it cannot complete, and
         /// the container keeps what it ran before.
@@ -1836,6 +1844,7 @@ public sealed partial class InstallerFlowTests
                     return Task.FromResult(new ProcessResult(1, string.Empty, "Error response from daemon: cannot recreate the container"));
                 }
                 ComposeUpCount++;
+                ComposeUps.Add([.. arguments]);
                 var file = arguments.ToList().IndexOf("--file");
                 return file >= 0 ? UpAsync(arguments[file + 1], cancellationToken) : Success(string.Empty);
             }
@@ -1865,6 +1874,8 @@ public sealed partial class InstallerFlowTests
         private async Task<ProcessResult> UpAsync(string composeFile, CancellationToken cancellationToken)
         {
             LastComposeUp = await File.ReadAllTextAsync(composeFile, cancellationToken);
+            var configuration = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(composeFile)!)!, "camera-module.json");
+            LastComposeUpConfiguration = File.Exists(configuration) ? await File.ReadAllTextAsync(configuration, cancellationToken) : null;
             return new ProcessResult(0, string.Empty, string.Empty);
         }
 
