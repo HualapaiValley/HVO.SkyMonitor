@@ -83,8 +83,11 @@ else
                 <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M3 10h14M13 6l4 4-4 4"></path></svg></span>
                 <span><strong>Request graceful drain</strong><small>Stop acquisition and finish accepted processing before host shutdown.</small></span>
                 <button type="button" id="control-drain" class="button secondary" disabled="@(_submitting || !CanDrain)"
-                        title="@(CanDrain ? null : DrainUnavailableReason)" aria-describedby="control-drain-unavailable" @onclick="BeginDrain">@(CanDrain ? "Drain" : "Not available")</button>
-                <span id="control-drain-unavailable" class="visually-hidden">@DrainUnavailableReason</span>
+                        title="@DrainUnavailableReason" aria-describedby="@(DrainUnavailableReason is null ? null : "control-drain-unavailable")" @onclick="BeginDrain">@(CanDrain ? "Drain" : "Not available")</button>
+                @if (DrainUnavailableReason is { } drainUnavailable)
+                {
+                    <span id="control-drain-unavailable" class="visually-hidden">@drainUnavailable</span>
+                }
             </article>
             <article class="ops-action-row danger">
                 <span class="ops-action-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg></span>
