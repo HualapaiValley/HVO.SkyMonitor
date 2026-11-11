@@ -613,6 +613,44 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
+    public async Task CaptureReceiptRetentionAndOperatorCommandCapacityAreIndependent()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox(new MutableTimeProvider(Epoch));
+        var payload = new string('A', 64);
+        _ = await store.ClaimOnDemandAsync(_root!, "operator-seed", payload, "temperature", "owner", null,
+            Epoch, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db") }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var seed = connection.CreateCommand();
+        seed.CommandText = """
+            WITH RECURSIVE numbers(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < $maximum)
+            INSERT INTO environmental_on_demand_commands(
+                idempotency_key, payload_sha256, source_id, actor_id, reason, observed_unix_ms,
+                status, lease_token, lease_expires_unix_ms, receipt_json, updated_unix_ms)
+            SELECT $prefix || numbers.value, payload_sha256, source_id, actor_id, reason, observed_unix_ms,
+                status, lease_token, lease_expires_unix_ms, receipt_json, updated_unix_ms
+            FROM environmental_on_demand_commands AS template, numbers WHERE template.idempotency_key = 'operator-seed';
+            """;
+        seed.Parameters.AddWithValue("$prefix", "__capture-before:retained-");
+        seed.Parameters.AddWithValue("$maximum", SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts);
+        await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Claimed, (await store.ClaimOnDemandAsync(
+            _root!, "operator-next", payload, "temperature", "owner", null, Epoch, TimeSpan.FromMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false)).Disposition);
+
+        seed.Parameters["$prefix"].Value = "operator-history-";
+        seed.Parameters["$maximum"].Value = SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts - 2;
+        await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<EnvironmentalOnDemandCommandCapacityException>(async () =>
+            await store.ClaimOnDemandAsync(_root!, "operator-over-capacity", payload, "temperature", "owner", null,
+                Epoch, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Claimed, (await store.ClaimOnDemandAsync(
+            _root!, EnvironmentalCaptureAcquisition.Prefix(Guid.NewGuid()) + "source", payload, "temperature", "capture-before", null,
+            Epoch, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false)).Disposition);
+    }
+
+    [TestMethod]
     public async Task OnDemandCommandIsLeasedConflictCheckedAndDurablyReplayable()
     {
         const string key = "environment-command-1";

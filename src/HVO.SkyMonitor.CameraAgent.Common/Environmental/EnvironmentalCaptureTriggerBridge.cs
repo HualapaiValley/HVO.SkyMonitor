@@ -20,7 +20,8 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         {
             return null;
         }
-        var selected = coordinator.Sources.Where(source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.BeforeCapture)).ToArray();
+        var configuredSources = coordinator.Sources;
+        var selected = configuredSources.Where(source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.BeforeCapture)).ToArray();
         if (selected.Length == 0) return null;
         var dependencies = coordinator.CaptureDependencies();
         var commands = stateStore as IEnvironmentalOnDemandCommandStore
@@ -28,8 +29,9 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         var id = Guid.NewGuid();
         var claims = new List<EnvironmentalCaptureSourceClaim>(selected.Length);
         var configured = options.Value.EnvironmentalAcquisition;
+        // Include other configured sources that may be ahead of this request at the global acquisition gate.
         var lease = TimeSpan.FromMilliseconds((long)configured.SourceTimeoutMilliseconds *
-            (configured.QueueCapacity + 1) * selected.Length) + TimeSpan.FromMinutes(1);
+            (configured.QueueCapacity + 2) * configuredSources.Count) + TimeSpan.FromMinutes(1);
         foreach (var source in selected)
         {
             var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new { Id = id, SourceId = source.Id, source.Kind });

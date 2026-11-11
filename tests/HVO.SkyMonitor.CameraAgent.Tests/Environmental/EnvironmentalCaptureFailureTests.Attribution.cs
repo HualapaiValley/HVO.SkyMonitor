@@ -23,54 +23,66 @@ public sealed partial class EnvironmentalCaptureFailureTests
     [DataRow(0, false, true)]
     public async Task EachCaptureKeepsItsOwnBusyOrQueuedOutcome(int budget, bool busyReadFails, bool restart)
     {
-        var fixture = await AttributionFixture.CreateAsync(budget).ConfigureAwait(false);
-        await using var cleanup = fixture.ConfigureAwait(false);
-        fixture.Clock.Now = Epoch;
-        var a = await fixture.Bridge.BeforeCaptureAsync(Epoch, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(a);
-        if (budget == 0)
+        // Use independent histories: an early immutable association must not hide a late-selection defect.
+        foreach (var associateAfterPoll in new[] { false, true })
         {
-            await fixture.Device.Started(2).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            fixture.Clock.Now = Epoch.AddMilliseconds(500);
-            fixture.Device.Release(2, fail: true);
-        }
-        await a.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        var rawA = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, a.Id, Epoch).ConfigureAwait(false);
-        var descriptorA = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(rawA.Manifest)).Document!.Manifest!.Descriptor;
+            var fixture = await AttributionFixture.CreateAsync(budget).ConfigureAwait(false);
+            await using var cleanup = fixture.ConfigureAwait(false);
+            fixture.Clock.Now = Epoch;
+            var a = await fixture.Bridge.BeforeCaptureAsync(Epoch, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(a);
+            if (budget == 0)
+            {
+                await fixture.Device.Started(2).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                fixture.Clock.Now = Epoch.AddMilliseconds(500);
+                fixture.Device.Release(2, fail: true);
+            }
+            await a.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var rawA = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, a.Id, Epoch).ConfigureAwait(false);
+            var descriptorA = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(rawA.Manifest)).Document!.Manifest!.Descriptor;
 
-        fixture.Clock.Now = Epoch.AddSeconds(30);
-        Task<EnvironmentalAcquisitionReceipt>? periodic = null;
-        if (budget != 0)
-        {
-            periodic = fixture.Coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).AsTask();
+            fixture.Clock.Now = Epoch.AddSeconds(30);
+            Task<EnvironmentalAcquisitionReceipt>? periodic = null;
+            if (budget != 0)
+            {
+                periodic = fixture.Coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).AsTask();
+                await fixture.Device.Started(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            var b = await fixture.Bridge.BeforeCaptureAsync(fixture.Clock.Now, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(b);
             await fixture.Device.Started(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        }
-        var b = await fixture.Bridge.BeforeCaptureAsync(fixture.Clock.Now, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(b);
-        await fixture.Device.Started(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        fixture.Clock.Now = Epoch.AddMilliseconds(budget == 0 ? 30_500 : 31_000);
-        fixture.Device.Release(3, busyReadFails);
-        if (periodic is not null) await periodic.ConfigureAwait(false);
-        await b.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        var rawB = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, b.Id, Epoch.AddSeconds(30)).ConfigureAwait(false);
-        var descriptorB = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(rawB.Manifest)).Document!.Manifest!.Descriptor;
-        Assert.AreEqual(b.Id, descriptorB.CycleEvidence!.AcquisitionAttemptId);
-        var first = await fixture.AssociateAsync(descriptorB.Capture.CaptureId, descriptorB.Capture.CaptureSequence,
-            Epoch.AddSeconds(30), b.Id).ConfigureAwait(false);
-        Assert.AreEqual(busyReadFails ? LocalEnvironmentalAssociationStatus.Missing : LocalEnvironmentalAssociationStatus.Fresh, first.Status);
+            fixture.Clock.Now = Epoch.AddMilliseconds(budget == 0 ? 30_500 : 31_000);
+            fixture.Device.Release(3, busyReadFails);
+            if (periodic is not null) await periodic.ConfigureAwait(false);
+            await b.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var rawB = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, b.Id, Epoch.AddSeconds(30)).ConfigureAwait(false);
+            var descriptorB = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(rawB.Manifest)).Document!.Manifest!.Descriptor;
+            Assert.AreEqual(b.Id, descriptorB.CycleEvidence!.AcquisitionAttemptId);
+            var expected = busyReadFails ? LocalEnvironmentalAssociationStatus.Missing : LocalEnvironmentalAssociationStatus.Fresh;
+            LocalEnvironmentalCaptureAssociation? first = null;
+            if (!associateAfterPoll)
+            {
+                first = await fixture.AssociateAsync(descriptorB.Capture.CaptureId, descriptorB.Capture.CaptureSequence,
+                    Epoch.AddSeconds(30), b.Id).ConfigureAwait(false);
+                Assert.AreEqual(expected, first.Status);
+            }
 
-        fixture.Clock.Now = Epoch.AddSeconds(40);
-        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, (await fixture.Coordinator.AcquireSourceAsync("sqm",
-            EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).ConfigureAwait(false)).Disposition);
-        await fixture.StopAsync().ConfigureAwait(false);
-        if (restart) fixture.Reopen();
-        var later = await fixture.AssociateAsync(descriptorB.Capture.CaptureId, descriptorB.Capture.CaptureSequence,
-            Epoch.AddSeconds(30), descriptorB.CycleEvidence.AcquisitionAttemptId!.Value).ConfigureAwait(false);
-        Assert.AreEqual(first.AssociationIdentitySha256, later.AssociationIdentitySha256);
-        // A has not been associated yet. B's successful poll cannot change A's failure.
-        var lateA = await fixture.AssociateAsync(descriptorA.Capture.CaptureId, descriptorA.Capture.CaptureSequence,
-            Epoch, descriptorA.CycleEvidence!.AcquisitionAttemptId!.Value).ConfigureAwait(false);
-        Assert.AreEqual(LocalEnvironmentalAssociationStatus.Missing, lateA.Status);
+            fixture.Clock.Now = Epoch.AddSeconds(40);
+            Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, (await fixture.Coordinator.AcquireSourceAsync("sqm",
+                EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).ConfigureAwait(false)).Disposition);
+            // Retention must preserve both bound receipts and the raw-publication / binding restart window.
+            await fixture.Store.RetainLocalAsync(fixture.Root, Epoch.AddDays(1), 100, CancellationToken.None).ConfigureAwait(false);
+            await fixture.StopAsync().ConfigureAwait(false);
+            if (restart) fixture.Reopen();
+            var later = await fixture.AssociateAsync(descriptorB.Capture.CaptureId, descriptorB.Capture.CaptureSequence,
+                Epoch.AddSeconds(30), descriptorB.CycleEvidence.AcquisitionAttemptId!.Value).ConfigureAwait(false);
+            Assert.AreEqual(expected, later.Status);
+            if (first is not null) Assert.AreEqual(first.AssociationIdentitySha256, later.AssociationIdentitySha256);
+            // A has not been associated yet. B's successful poll cannot change A's failure.
+            var lateA = await fixture.AssociateAsync(descriptorA.Capture.CaptureId, descriptorA.Capture.CaptureSequence,
+                Epoch, descriptorA.CycleEvidence!.AcquisitionAttemptId!.Value).ConfigureAwait(false);
+            Assert.AreEqual(LocalEnvironmentalAssociationStatus.Missing, lateA.Status);
+        }
     }
 
     [TestMethod]

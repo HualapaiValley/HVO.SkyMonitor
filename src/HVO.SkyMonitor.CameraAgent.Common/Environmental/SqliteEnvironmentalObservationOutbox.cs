@@ -1242,10 +1242,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 return new(EnvironmentalOnDemandClaimDisposition.Claimed, reclaimedToken, persistedObservedAtUtc, null);
             }
         }
-        using (var count = connection.CreateCommand())
+        // Capture receipts follow raw-capture retention and must not consume the operator command allowance.
+        if (!idempotencyKey.StartsWith("__capture-before:", StringComparison.Ordinal))
         {
+            using var count = connection.CreateCommand();
             count.Transaction = transaction;
-            count.CommandText = "SELECT COUNT(*) FROM environmental_on_demand_commands;";
+            count.CommandText = """
+                SELECT COUNT(*) FROM environmental_on_demand_commands
+                WHERE idempotency_key < '__capture-before:' OR idempotency_key >= '__capture-before;';
+                """;
             var commandCount = Convert.ToInt32(
                 await count.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false),
                 System.Globalization.CultureInfo.InvariantCulture);

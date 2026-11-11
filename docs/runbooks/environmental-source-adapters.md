@@ -264,6 +264,8 @@ after exposure starts. Pending work retries the association lane without storing
 a final Missing association. Queue refusal records an explicit unavailable result.
 Host cancellation leaves durable pending work; startup marks interrupted capture
 operations unavailable. Independent on-demand operations retain their own leases.
+Capture receipts follow raw-capture retention independently of the 10,000-entry
+operator command allowance; neither pool consumes the other's admission capacity.
 
 Completed receipts remain attached to their capture across later polls and restart.
 Association binds the retained token to the immutable raw capture ID; attempts and
