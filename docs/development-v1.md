@@ -41,8 +41,8 @@ Microsoft NuGet package pins use 10.0.14. The .NET 10.0.14 runtime security fixe
 
 The branch currently requires:
 
-- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
-- **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, and the complete Docker-disabled Unit selection.
+- **Development v1 / Preflight** on a GitHub-hosted runner: exact-range whitespace validation, pinned workflow linting, shell syntax, the inexpensive CI-control regression checks, coverage baseline policy, the full-history [secret scan](runbooks/ci-pipeline.md#secret-scan), and, when the classifier selects them, the [release script tests](runbooks/ci-pipeline.md#release-script-tests).
+- **Development v1 / Build and Unit** on a self-hosted x64 runner: pinned SDK setup, solution restore, warning-clean Release build, the complete Docker-disabled Unit selection, and [canonical per-file coverage floors](runbooks/ci-pipeline.md#development-v1-per-file-coverage). Collection targets the assemblies owning those floors. Catalog-dependent ReleaseTool and full-suite aggregate/component coverage retain their documented local/full-qualification scope.
 
 Draft pull requests run hosted Preflight only. Marking a reviewed pull request ready starts the self-hosted Build and Unit check. Pushes to `development/v1` run both checks.
 
@@ -118,8 +118,9 @@ a failure does not retract an already successful queue check.
 
 The target controlling path is under ten minutes, with a 1080-second cumulative
 workload budget and a 22-minute hard job timeout. Each self-hosted run retains
-restore/build/Unit timing, largest-process RSS, and Unit TRX evidence in the
-`hvo-development-v1-ci-v4` manifest. Failed runs retain their evidence too.
+restore/build/Unit/coverage timing, largest-process RSS, Unit TRX and raw/merged
+coverage evidence in the `hvo-development-v1-ci-v5` manifest. Failed runs retain
+their evidence too.
 
 ### Short checks and full qualification
 
@@ -129,7 +130,7 @@ The operator-approved #1142 split keeps these checks off the short path:
 | --- | --- |
 | Whole-repository ShellCheck and its contract tests | Quality |
 | Exhaustive test discovery, category disjointness and inventory counts | Build |
-| Integration, coverage, architecture/publish and migrations | Existing full-matrix jobs |
+| Integration, full-suite aggregate/component coverage, architecture/publish and migrations | Existing full-matrix jobs; measurable canonical per-file floors run in Build and Unit |
 | Deployment qualification | Existing selected Deployment Contracts job |
 
 The short run still builds the entire solution warning-clean and executes the
@@ -207,6 +208,6 @@ It can be run on demand with `gh workflow run promote-main.yml`.
 
 ## Deployment
 
-Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, coverage aggregation, or production mutation.
+Supported deployment operations use `HVO.SkyMonitor.Deployment.Cli`. Development v1 CI does not perform deployment, release packaging, complete integration qualification, full-suite aggregate coverage qualification, or production mutation.
 
 An annotated `vX.Y.Z-dev.<n>` tag that the owner pushes on a green `development/v1` commit publishes an integration pre-release for smoke testing; see [Integration Pre-releases](runbooks/prereleases.md).

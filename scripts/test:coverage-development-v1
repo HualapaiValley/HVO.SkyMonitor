@@ -1,0 +1,810 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+dotnet build "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" \
+  --configuration Release --output "$scratch/gate" --disable-build-servers -p:UseSharedCompilation=false -warnaserror > "$scratch/build.log" 2>&1 || {
+  cat "$scratch/build.log" >&2
+  exit 1
+}
+python3 - "$repo_root" "$scratch" <<'PY'
+import copy
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+
+root, scratch = map(pathlib.Path, sys.argv[1:])
+canonical = json.loads((root / "scripts/coverage/baseline.json").read_text())
+policy = json.loads((root / "scripts/coverage/policy.json").read_text())
+path = "HVO.SkyMonitor.Astronomy/CameraGeometry.cs"
+release = "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs"
+retired = "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs"
+baseline = copy.deepcopy(canonical)
+baseline["files"] = {key: copy.deepcopy(canonical["files"][key]) for key in (path, release, retired)}
+baseline_file = scratch / "repo/scripts/coverage/baseline.json"
+baseline_file.parent.mkdir(parents=True)
+baseline_file.write_text(json.dumps(baseline))
+for source in (scratch / "repo/src" / path, scratch / "repo" / release):
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.touch()
+
+
+def report(name, *, filename=path, hits=1, covered=2, empty=False, release_data=False):
+    document = ET.Element("coverage")
+    classes = ET.SubElement(ET.SubElement(ET.SubElement(document, "packages"), "package", name=path.split("/")[0]), "classes")
+    lines = ET.SubElement(ET.SubElement(classes, "class", name="Fixture", filename=filename), "lines")
+    if not empty:
+        for number in range(1, 101):
+            line = ET.SubElement(lines, "line", number=str(number), hits=str(hits), branch="false")
+            if number == 1:
+                line.set("branch", "true")
+                line.set("condition-coverage", f"{covered * 50}% ({covered}/2)")
+    if release_data:
+        lines = ET.SubElement(ET.SubElement(classes, "class", name="Release", filename=release), "lines")
+        ET.SubElement(lines, "line", number="1", hits="0", branch="true", **{"condition-coverage": "0% (0/2)"})
+    for entry in classes:
+        method = ET.SubElement(ET.SubElement(entry, "methods"), "method", name="Fixture", signature="()")
+        method.append(copy.deepcopy(entry.find("lines")))
+    output = scratch / f"{name}.xml"
+    ET.ElementTree(document).write(output)
+    return output
+
+
+cases = 0
+
+
+def check(name, report_file, expected, *needles, profile=True):
+    global cases
+    command = ["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll")]
+    if profile:
+        command += ["--development-v1"]
+    result = subprocess.run([*command, str(baseline_file), str(report_file)], capture_output=True, text=True)
+    output = result.stdout + result.stderr
+    if result.returncode != expected or any(needle not in output for needle in needles):
+        raise SystemExit(f"FAIL {name}: exit={result.returncode}\n{output}")
+    cases += 1
+    print(f"PASS {name}")
+
+
+# Final v1 evaluation uses the same reviewed denominator policy as raw input
+# validation. This private miniature pin contains no percentage thresholds.
+mini_repo = baseline_file.parents[2]
+for name in ("global.json", "Directory.Packages.props"):
+    shutil.copy2(root / name, mini_repo / name)
+(mini_repo / "tests").mkdir()
+shutil.copy2(root / "tests/coverage.runsettings", mini_repo / "tests/coverage.runsettings")
+mini_pin = json.loads((root / "scripts/coverage/development-v1-lines.json").read_text())
+mini_pin["files"] = {path: {"sourceSha256": hashlib.sha256(b"").hexdigest(), "lines": list(range(1, 101)),
+                            "branches": {"1": {"total": 2, "conditions": []}}}}
+mini_pin_path = baseline_file.with_name("development-v1-lines.json")
+mini_pin_path.write_text(json.dumps(mini_pin))
+shutil.copy2(root / "scripts/coverage/policy.json", baseline_file.with_name("policy.json"))
+
+good = report("good")
+check("measured floors pass; absent catalog and retired source are explicit", good, 0,
+      "Coverage gate passed.", f"SKIP {release}", "HVO_PRODUCTION_CATALOG_BUNDLE", f"SKIP {retired}", "source file is absent")
+check("real line-count violation fails", report("line-failure", hits=0), 1,
+      path, "line 0.00", "min 95.00", "add tests")
+check("real branch-count violation fails", report("branch-failure", covered=1), 1,
+      path, "branch 50.00", "min 90.00")
+check("missing enforced file fails", report("missing", filename="Other.cs"), 1,
+      path, "measured coverage MISSING", "floors line 95.00")
+check("empty file data does not become 100%", report("empty", empty=True), 1,
+      path, "no executable line data")
+check("default gate also rejects an empty enforced file", report("empty-full", empty=True), 1,
+      path, "no executable line data", profile=False)
+check("catalog-dependent failure is explicitly local-only in v1", report("catalog-absent", release_data=True), 0,
+      f"SKIP {release}", "Coverage gate passed.")
+check("default canonical gate still enforces the catalog-dependent floor", report("full-catalog-absent", release_data=True), 1,
+      release, "min 50.00", profile=False)
+check("default canonical gate still rejects missing paths", report("full-missing", filename="Other.cs"), 1,
+      path, "missing from the supplied reports", profile=False)
+
+missing_branch = ET.parse(good)
+line = missing_branch.find(".//line")
+del line.attrib["condition-coverage"]
+missing_branch.write(scratch / "missing-branch.xml")
+check("declared branches without counts fail", scratch / "missing-branch.xml", 1,
+      path, "measured branch data MISSING", "90.00")
+check("default gate also rejects missing branch counts", scratch / "missing-branch.xml", 1,
+      path, "measured branch data MISSING", profile=False)
+del line.attrib["branch"]
+missing_branch.write(scratch / "missing-branch-marker.xml")
+check("absent branch declarations fail", scratch / "missing-branch-marker.xml", 1,
+      path, "measured branch data MISSING")
+line.set("branch", "false")
+missing_branch.write(scratch / "branchless.xml")
+mini_pin["files"][path]["branches"] = {}
+mini_pin_path.write_text(json.dumps(mini_pin))
+check("explicitly branchless files remain valid", scratch / "branchless.xml", 0,
+      "Coverage gate passed.", "(0/0)")
+mini_pin["files"][path]["branches"] = {"1": {"total": 2, "conditions": []}}
+mini_pin_path.write_text(json.dumps(mini_pin))
+
+source = scratch / "repo/src" / path
+source.rename(source.with_suffix(".moved.cs"))
+check("a moved enforced source fails even with its original coverage", good, 1,
+      path, "not a pinned retired path")
+source.with_suffix(".moved.cs").rename(source)
+
+# A runtime-only floor bump must affect the same evaluator; no threshold is
+# copied into the development profile or its wrapper.
+baseline["files"][path]["line"] = 1.0
+baseline_file.write_text(json.dumps(baseline))
+one_uncovered = ET.parse(good)
+one_uncovered.find(".//line").set("hits", "0")
+one_uncovered.write(scratch / "bumped.xml")
+check("changed shared definition changes v1 enforcement", scratch / "bumped.xml", 1,
+      "line 99.00", "min 100.00")
+
+# Regression for the signed merged representation produced when two positive
+# Int32.MaxValue counters wrap to -2. Keep this independent of ReportGenerator's
+# source/method coalescing choices in miniature inputs; the real shared lane is
+# validated separately with full instrumentation.
+overflow_baseline = copy.deepcopy(baseline)
+overflow_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
+baseline_file.write_text(json.dumps(overflow_baseline))
+wrapped = ET.parse(good)
+for line in wrapped.findall(".//line"):
+    line.set("hits", "-2")
+merged_overflow = scratch / "wrapped-merged.xml"
+wrapped.write(merged_overflow)
+check("canonical gate treats signed wrapped merged hits as covered", merged_overflow, 0,
+      "line 100.00", "Coverage gate passed.", profile=False)
+check("v1 still rejects negative hit counts", merged_overflow, 1, "Invalid negative line hits")
+baseline_file.write_text(json.dumps(baseline))
+
+# Independently validate final measurement, even if a raw check is bypassed.
+padded = ET.parse(good)
+ET.SubElement(padded.find(".//class/lines"), "line", number="101", hits="1", branch="false")
+padded.write(scratch / "merged-padding.xml")
+check("final evaluator rejects padded line denominators", scratch / "merged-padding.xml", 1,
+      path, "final measured denominator", "unexpected [101]")
+branch_padding = ET.parse(good)
+extra = ET.SubElement(branch_padding.find(".//classes"), "class", name="Padding", filename=path)
+ET.SubElement(ET.SubElement(extra, "lines"), "line", number="1", hits="1", branch="true",
+              **{"condition-coverage": "100% (2/2)"})
+branch_padding.write(scratch / "merged-branch-padding.xml")
+check("final evaluated branch totals include every class contributing to a file", scratch / "merged-branch-padding.xml", 1,
+      path + ":1", "measured branch denominator 4", "pinned denominator 2")
+branch_loss = ET.parse(good)
+line = branch_loss.find(".//class/lines/line")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+branch_loss.write(scratch / "merged-branch-loss.xml")
+check("final evaluator rejects branch loss with intact source lines", scratch / "merged-branch-loss.xml", 1,
+      path + ":1", "measured branch denominator 0", "pinned denominator 2")
+for label, filename in (("phantom", "/phantom/src/" + path),
+                        ("tests-src", str(mini_repo / "tests/src" / path)),
+                        ("dot", str(mini_repo / "src" / path).replace("CameraGeometry.cs", "./CameraGeometry.cs"))):
+    invalid = ET.parse(good)
+    invalid.find(".//class").set("filename", filename)
+    target = scratch / ("merged-path-" + label + ".xml")
+    invalid.write(target)
+    check("final evaluator rejects non-canonical filename " + label, target, 1, "coverage filename")
+
+# Preserve canonical exclusions; only Include and SingleHit differ. Derive
+# assembly expectations from the baseline so new floor owners need no test pin.
+settings_file = scratch / "v1.runsettings"
+subprocess.run([str(root / "scripts/coverage:development-v1"), "--settings", str(settings_file)], check=True)
+original = ET.parse(root / "tests/coverage.runsettings")
+generated = ET.parse(settings_file)
+include = generated.find(".//Configuration/Include")
+expected = set()
+for floor_path, floor in canonical["files"].items():
+    source = root / floor_path if floor_path.startswith("tools/") else root / "src" / floor_path
+    if source.is_file() and not floor.get("developmentV1LocalOnlyReason"):
+        owner = floor_path.split("/")[1 if floor_path.startswith("tools/") else 0]
+        expected.add(f"[{owner}]*")
+actual = set(include.text.split(","))
+if actual != expected:
+    raise SystemExit(f"Generated assembly Include differs from active floor owners: expected={sorted(expected)}, actual={sorted(actual)}")
+single_hit = generated.find(".//Configuration/SingleHit")
+if single_hit is None or single_hit.text != "true":
+    raise SystemExit("Generated coverage must enable SingleHit to bound Unit-stage overhead")
+original_single_hit = original.find(".//Configuration/SingleHit")
+if original_single_hit is None:
+    generated.find(".//Configuration").remove(single_hit)
+else:
+    single_hit.text = original_single_hit.text
+include.text = original.find(".//Configuration/Include").text
+assert ET.tostring(generated.getroot()) == ET.tostring(original.getroot())
+cases += 1
+print("PASS settings derive floor owners and retain exclusions with SingleHit enabled")
+
+results = scratch / "results"
+results.mkdir()
+result = subprocess.run([str(root / "scripts/coverage:development-v1"), str(results), str(scratch / "coverage")],
+                        capture_output=True, text=True)
+assert result.returncode == 1 and "Missing or extra Unit coverage data" in result.stderr
+cases += 1
+print("PASS missing Unit reports fail before merging")
+
+# Build an independent two-source assembly for report-inventory fixtures. Its
+# portable PDB, not a coverage-derived file list, determines expected input.
+inventory_repo = scratch / "inventory-repo"
+assembly_name = "HVO.SkyMonitor.Astronomy"
+source_dir = inventory_repo / "src" / assembly_name
+source_dir.mkdir(parents=True)
+for filename, type_name in (("CameraGeometry.cs", "InventoryA"), ("InventorySentinel.cs", "InventoryB")):
+    (source_dir / filename).write_text(f"namespace CoverageFixture; public static class {type_name} {{ public static int Value() => 1; }}\n")
+(source_dir / "CameraGeometry.cs").write_text("namespace CoverageFixture; public static class InventoryA\n{\n    public static int Value() => 1;\n    public static int Other() => 1;\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static int Excluded() => 1;\n}\npublic static class InventoryC { public static int Value() => 1; }\n")
+# One covered line out of 37 reproduces the review's 2.70% -> 100%
+# denominator-pruning failure, using independent compiled method metadata.
+with (source_dir / "CameraGeometry.cs").open("a") as source:
+    source.write("public static class InventoryPruning\n{\n    public static int Value(int value)\n    {\n")
+    for number in range(31):
+        source.write(f"        if (value == {number}) value++;\n")
+    source.write("        return value;\n    }\n    [System.Runtime.CompilerServices.CompilerGenerated] public static int Generated() => 1;\n}\n")
+(source_dir / "Excluded.cs").write_text("namespace CoverageFixture; [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage] public static class ExcludedType { public static int Value() => 1; }\n")
+async_source = source_dir / "InventoryAsync.cs"
+async_source.write_text("namespace CoverageFixture; public static class InventoryAsync\n{\n    public static async System.Threading.Tasks.Task<int> ExecuteAsync(int value)\n    {\n        await System.Threading.Tasks.Task.CompletedTask;\n" +
+                        "".join("        value++;\n" for _ in range(46)) +
+                        "        System.Func<int> check = () => value;\n" +
+                        "".join("        value++;\n" for _ in range(128)) + "        return check();\n    }\n}\n")
+# Iterator source spans are also state-machine source, not an exempt generated
+# implementation. A multiline ordinary expression checks continuation lines.
+(source_dir / "InventoryIterator.cs").write_text("namespace CoverageFixture; public static class InventoryIterator\n{\n    public static System.Collections.Generic.IEnumerable<int> Values()\n    {\n        yield return 1;\n        yield return 2;\n    }\n    public static int Sum() =>\n        1 +\n        int.Parse(\"2\");\n}\n")
+# Coverlet excludes the synthesized lambda inside this excluded-only method.
+(source_dir / "ExcludedLambda.cs").write_text("namespace CoverageFixture; public static class ExcludedLambda\n{\n    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]\n    public static int Value()\n    {\n        System.Func<int> value = () => 1;\n        return value();\n    }\n}\n")
+fixture_project = inventory_repo / "Inventory.csproj"
+fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
+<TargetFramework>net10.0</TargetFramework><AssemblyName>{assembly_name}</AssemblyName>
+<EnableDefaultCompileItems>false</EnableDefaultCompileItems><DebugType>portable</DebugType>
+</PropertyGroup><ItemGroup><Compile Include="src/**/*.cs" /></ItemGroup></Project>""")
+assembly_output = inventory_repo / "tests/Fixture.Tests/bin/Release/net10.0"
+result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(assembly_output),
+                         "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
+shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
+shutil.copy2(assembly_output / f"{assembly_name}.deps.json", assembly_output / "Fixture.Tests.deps.json")
+(inventory_repo / "tests/Fixture.Tests/test-categories.json").write_text('{"Unit":1}')
+shutil.copy2(root / "tests/coverage.runsettings", inventory_repo / "tests/coverage.runsettings")
+fixture_scripts = inventory_repo / "scripts"
+fixture_scripts.mkdir()
+shutil.copytree(root / "scripts/coverage", fixture_scripts / "coverage", ignore=shutil.ignore_patterns("bin", "obj"))
+for name in ("coverage:development-v1", "coverage:enforce", "coverage:line-inventory"):
+    shutil.copy2(root / "scripts" / name, fixture_scripts / name)
+for name in ("global.json", "Directory.Packages.props"):
+    shutil.copy2(root / name, inventory_repo / name)
+fixture_baseline = copy.deepcopy(canonical)
+fixture_baseline["files"] = {path: copy.deepcopy(canonical["files"][path])}
+for filename in ("InventoryAsync.cs", "InventoryIterator.cs"):
+    fixture_baseline["files"][f"{assembly_name}/{filename}"] = {"line": 0.95, "branch": 0.90}
+(fixture_scripts / "coverage/baseline.json").write_text(json.dumps(fixture_baseline))
+results = inventory_repo / "results"
+(results / "original").mkdir(parents=True)
+(results / "attachment/In/computer").mkdir(parents=True)
+valid = results / "original/coverage.cobertura.xml"
+attachment = results / "attachment/In/computer/coverage.cobertura.xml"
+(results / "fixture.trx").write_text(f"""<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+<TestSettings><Deployment runDeploymentRoot="attachment" /></TestSettings>
+<TestDefinitions><UnitTest><TestMethod codeBase="{assembly_output / 'Fixture.Tests.dll'}" /></UnitTest></TestDefinitions>
+<ResultSummary><CollectorDataEntries><Collector collectorDisplayName="XPlat code coverage">
+<UriAttachments><UriAttachment><A href="computer/coverage.cobertura.xml" /></UriAttachment></UriAttachments>
+</Collector></CollectorDataEntries></ResultSummary></TestRun>""")
+composite = ET.Element("coverage")
+ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(inventory_repo)
+classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name=assembly_name), "classes")
+for type_name, filename, numbers in (("InventoryA", "CameraGeometry.cs", (3, 4)),
+                                      ("InventoryB", "InventorySentinel.cs", (1,)),
+                                      ("InventoryC", "CameraGeometry.cs", (7,)),
+                                      ("InventoryPruning", "CameraGeometry.cs", range(11, 45))):
+    entry = ET.SubElement(classes, "class", name=f"CoverageFixture.{type_name}", filename=str(source_dir / filename),
+                          **{"line-rate":"1", "branch-rate":"1"})
+    lines = ET.SubElement(entry, "lines")
+    for number in numbers:
+        ET.SubElement(lines, "line", number=str(number), hits="1", branch="true", **{"condition-coverage":"100% (2/2)"})
+
+# Include synthetic counters independently of DLL/PDB metadata, so the real
+# inventory (rather than fixture-derived expectations) must validate the lines.
+for name, filename, numbers in (("InventoryAsync/<ExecuteAsync>d__0", "InventoryAsync.cs", range(1, 184)),
+                                ("InventoryIterator/<Values>d__0", "InventoryIterator.cs", (4, 5, 6, 7)),
+                                ("InventoryIterator", "InventoryIterator.cs", (9, 10))):
+    entry = ET.SubElement(classes, "class", name=f"CoverageFixture.{name}", filename=str(source_dir / filename),
+                          **{"line-rate": "1", "branch-rate": "1"})
+    lines = ET.SubElement(entry, "lines")
+    for number in numbers:
+        line = ET.SubElement(lines, "line", number=str(number), hits="1", branch="false")
+        if filename == "InventoryAsync.cs" and number == 75:
+            line.set("branch", "true")
+            line.set("condition-coverage", "100% (32/32)")
+            conditions = ET.SubElement(line, "conditions")
+            for condition in range(16):
+                ET.SubElement(conditions, "condition", number=str(condition), type="jump", coverage="100%")
+
+
+def write_fixture(document, sync_methods=True):
+    if sync_methods:
+        for entry in document.findall(".//class"):
+            old = entry.find("methods")
+            if old is not None:
+                entry.remove(old)
+            method = ET.SubElement(ET.SubElement(entry, "methods"), "method", name="Fixture", signature="()",
+                                   **{"line-rate": "1", "branch-rate": "1"})
+            method.append(copy.deepcopy(entry.find("lines")))
+    document.set("lines-valid", str(len({(entry.get("filename"), line.get("number"))
+                                       for entry in document.findall(".//class") for line in entry.findall("lines/line")})))
+    ET.ElementTree(document).write(valid)
+    shutil.copy2(valid, attachment)
+
+
+wrapper_env = None
+
+
+def wrapper_case(name, expected, *needles):
+    global cases
+    result = subprocess.run([str(fixture_scripts / "coverage:development-v1"), str(results), str(inventory_repo / "coverage-output")],
+                            capture_output=True, text=True, env=wrapper_env)
+    output = result.stdout + result.stderr
+    if result.returncode != expected or any(needle not in output for needle in needles):
+        raise SystemExit(f"FAIL {name}: exit={result.returncode}\n{output}")
+    cases += 1
+    print(f"PASS {name}")
+
+
+write_fixture(composite)
+subprocess.run([str(fixture_scripts / "coverage:line-inventory"), str(results),
+                str(fixture_scripts / "coverage/development-v1-lines.json")], check=True)
+# The producer is a maintenance command, never part of the gate's CI child.
+assert "coverage:line-inventory" not in (root / ".github/workflows/development-v1.yml").read_text()
+fixture_pin = json.loads((fixture_scripts / "coverage/development-v1-lines.json").read_text())["files"][path]
+fixture_lines = {int(line.get("number")) for entry in composite.findall(".//class")
+                 if entry.get("filename").endswith("CameraGeometry.cs") for line in entry.findall("lines/line")}
+omitted_fixture_line = next(number for number, text in enumerate((source_dir / "CameraGeometry.cs").read_text().splitlines(), 1)
+                            if "int Generated()" in text)
+if set(fixture_pin["lines"]) != fixture_lines or omitted_fixture_line in fixture_pin["lines"]:
+    raise SystemExit("FAIL fixture emitted-line inventory: restore the complete fixture report and regenerate/review its inventory with coverage:line-inventory")
+cases += 1
+print("PASS emitted fixture inventory retains measured data and permits omitted generated points; no production line numbers")
+wrapper_case("complete wrapper accepts excluded-only lambda source and omitted generated points", 0, "Coverage gate passed.")
+# The real wrapper/build path above and the final 21-project CI run remain
+# uncached. Fault cases reuse that exact compiled fixture helper through the
+# unchanged wrapper; repeated dotnet-run restore/build adds no behavioral proof.
+launcher = scratch / "fixture-dotnet"
+launcher.mkdir()
+real_dotnet = shutil.which("dotnet")
+fixture_gate = fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.CoverageGate.dll"
+(launcher / "dotnet").write_text("#!/usr/bin/env python3\nimport os, pathlib, sys\na=sys.argv[1:]\n" +
+    f"real={str(real_dotnet)!r}\nproject={str(fixture_scripts / 'coverage/HVO.SkyMonitor.CoverageGate.csproj')!r}\n" +
+    f"gate={str(fixture_gate)!r}\n" +
+    "fault=os.environ.get('CF1_TEST_MERGER_FAULT')\n" +
+    "if a and a[0]=='reportgenerator' and fault:\n" +
+    " reports=next(v.split(':',1)[1] for v in a if v.startswith('-reports:')).split(';')\n" +
+    " for i,p in enumerate(reports if fault=='error' else reports[:-1],1): print(f\"Finished parsing '{p}' {i}/{len(reports)}\")\n" +
+    " if fault=='error': print('2099-01-01T00:00:00: Error during reading report: deliberately zero-exit control')\n" +
+    " sys.exit(0)\n" +
+    "if a and a[0]=='run' and '--project' in a and a[a.index('--project')+1]==project:\n" +
+    " os.execv(real,[real,gate,*a[a.index('--')+1:]])\nos.execv(real,[real,*a])\n")
+(launcher / "dotnet").chmod(0o700)
+wrapper_env = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"])
+
+# Raw coordinates and metadata must describe records the pinned merger reads.
+for label in ("excluded-class", "outside-classes"):
+    relocated = copy.deepcopy(composite)
+    entry = next(entry for entry in relocated.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+    moved = copy.deepcopy(entry)
+    for container in [moved.find("lines"), *moved.findall("methods/method/lines")]:
+        for line in list(container):
+            if line.get("number") != "75": container.remove(line)
+    for container in [entry.find("lines"), *entry.findall("methods/method/lines")]:
+        for line in list(container):
+            if line.get("number") == "75": container.remove(line)
+    package = relocated.find("packages/package")
+    if label == "excluded-class":
+        moved.set("name", "CF1$Unconsumed")
+        package.find("classes").append(moved)
+        needle = "merger-excluded"
+    else:
+        ET.SubElement(package, "ignored").append(moved)
+        needle = "outside package/classes/class"
+    write_fixture(relocated, sync_methods=False)
+    wrapper_case("validated points cannot move into " + label, 1, needle)
+    result = subprocess.run([str(fixture_scripts / "coverage:line-inventory"), str(results), str(scratch / "invalid-pin.json")],
+                            capture_output=True, text=True)
+    if result.returncode == 0: raise SystemExit("Inventory producer accepted merger-ignored coordinates: " + label)
+    cases += 1
+    print("PASS maintenance producer rejects " + label)
+for value in (None, " "):
+    missing_name = copy.deepcopy(composite)
+    method = missing_name.find(".//method")
+    if value is None: method.attrib.pop("name")
+    else: method.set("name", value)
+    write_fixture(missing_name, sync_methods=False)
+    wrapper_case("missing/empty method name cannot omit a redundant input", 1, "method name", "merger requires")
+for label, filename in (("phantom", "/phantom/src/" + path),
+                        ("tests-src", str(inventory_repo / "tests/src" / path)),
+                        ("dot", str(source_dir / "./CameraGeometry.cs").replace("/CameraGeometry.cs", "/./CameraGeometry.cs")),
+                        ("double-slash", str(source_dir) + "//CameraGeometry.cs"),
+                        ("parent", str(source_dir) + "/alias/../CameraGeometry.cs")):
+    injected = copy.deepcopy(composite)
+    extra = copy.deepcopy(injected.find(".//class"))
+    extra.set("filename", filename)
+    extra.set("name", "CF1.Padding")
+    injected.find(".//classes").append(extra)
+    write_fixture(injected)
+    wrapper_case("raw filename cannot escape the pin via " + label, 1, "coverage filename")
+for fault in ("error", "missing"):
+    write_fixture(composite)
+    wrapper_env["CF1_TEST_MERGER_FAULT"] = fault
+    wrapper_case("zero-exit merger cannot hide " + fault, 1, "ReportGenerator input integrity failed")
+    wrapper_env.pop("CF1_TEST_MERGER_FAULT")
+
+# A declared collector inventory cannot survive deleted emitted records,
+# including records from otherwise exempt generated methods.
+write_fixture(composite)
+corrupt_count = ET.parse(valid)
+corrupt_count.getroot().set("lines-valid", str(int(corrupt_count.getroot().get("lines-valid")) + 1))
+corrupt_count.write(valid)
+shutil.copy2(valid, attachment)
+wrapper_case("declared emitted line inventory mismatch cannot silently pass", 1,
+             "inconsistent emitted line inventory", "lines-valid")
+# Remove a whole ordinary method while retaining its source and class.
+missing_method = copy.deepcopy(composite)
+lines = missing_method.find(".//class/lines")
+lines.remove(lines.findall("line")[1])
+write_fixture(missing_method)
+wrapper_case("pruned ordinary method cannot pass with its class still present", 1,
+             "CameraGeometry.cs", "ordinary/state-machine statement lines", "4")
+
+# Sol repro: real counters fail at 1/37 (2.70%) line and 0% branch;
+# pruning all uncovered class/method data must not convert that to a pass.
+low = copy.deepcopy(composite)
+for entry in low.findall(".//class"):
+    if not entry.get("filename").endswith("CameraGeometry.cs"):
+        continue
+    for line in entry.findall("lines/line"):
+        line.set("hits", "1" if line.get("number") == "3" else "0")
+        line.set("condition-coverage", "0% (0/2)")
+write_fixture(low)
+wrapper_case("Sol repro unpruned 2.70 percent line and zero branch actually fails floors", 1,
+             "line 2.70", "branch 0.00", "min 95.00")
+pruned = copy.deepcopy(low)
+for entry in pruned.findall(".//class"):
+    if not entry.get("name").endswith("InventoryA"):
+        continue
+    lines = entry.find("lines")
+    lines.remove(lines.findall("line")[1])
+write_fixture(pruned)
+wrapper_case("Sol repro pruned missing method data is rejected before floor evaluation", 1,
+             "CameraGeometry.cs", "ordinary/state-machine statement lines")
+
+# Opus repro: delete 11 uncovered points inside a surviving multiline method.
+pruned_lines = copy.deepcopy(composite)
+lines = pruned_lines.findall(".//class")[3].find("lines")
+for line in list(lines)[1:12]:
+    lines.remove(line)
+write_fixture(pruned_lines)
+wrapper_case("Opus repro eleven pruned uncovered lines fail with all classes surviving", 1,
+             "missing 11 ordinary/state-machine statement lines", "CameraGeometry.cs")
+
+# Sol 57d17c94 repro: 12 measured async points are uncovered, alongside
+# one other uncovered line. 170/183 -> 170/171 crosses the unchanged95% floor.
+async_low = copy.deepcopy(composite)
+async_entry = next(entry for entry in async_low.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+for line in async_entry.find("lines"):
+    if int(line.get("number")) in range(5, 18):
+        line.set("hits", "0")
+write_fixture(async_low)
+wrapper_case("measured async 92.90 percent is a genuine floor failure", 1,
+             "InventoryAsync.cs", "line 92.90", "min 95.00")
+async_pruned = copy.deepcopy(async_low)
+entry = next(entry for entry in async_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+for line in list(entry.find("lines")):
+    if int(line.get("number")) in range(5, 17):
+        entry.find("lines").remove(line)
+write_fixture(async_pruned)
+wrapper_case("pruning async points cannot turn 92.90 percent into 99.42 percent", 1,
+             "InventoryAsync.cs", "statement lines")
+iterator_pruned = copy.deepcopy(composite)
+entry = next(entry for entry in iterator_pruned.findall(".//class") if "<Values>" in entry.get("name"))
+entry.find("lines").remove(next(line for line in entry.find("lines") if line.get("number") == "5"))
+write_fixture(iterator_pruned)
+wrapper_case("a measured iterator line cannot silently disappear", 1,
+             "InventoryIterator.cs", "statement lines")
+span_pruned = copy.deepcopy(composite)
+entry = next(entry for entry in span_pruned.findall(".//class") if entry.get("name") == "CoverageFixture.InventoryIterator")
+entry.find("lines").remove(entry.findall("lines/line")[-1])
+write_fixture(span_pruned)
+wrapper_case("ordinary multiline expression continuation cannot silently disappear", 1,
+             "InventoryIterator.cs", "statement lines", "10")
+# ecf705af Sol repro: this async method's line52 is shared with a generated
+# captured lambda, so PDB-only inventory intentionally cannot require it.
+# The pinned denominator must reject its removal even with declared counts fixed.
+overlap_low = copy.deepcopy(composite)
+entry = next(entry for entry in overlap_low.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+for line in entry.find("lines"):
+    if int(line.get("number")) in {11, 16, 18, 19, 20, 21, 28, 29, 52, 183}:
+        line.set("hits", "0")
+write_fixture(overlap_low)
+wrapper_case("overlap repro complete input really fails at94.54 percent", 1,
+             "InventoryAsync.cs", "line 94.54", "min 95.00")
+overlap_pruned = copy.deepcopy(overlap_low)
+entry = next(entry for entry in overlap_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+entry.find("lines").remove(next(line for line in entry.find("lines") if line.get("number") == "52"))
+write_fixture(overlap_pruned)
+wrapper_case("overlap pruning cannot turn94.54 into95.05 with a recomputed declared count", 1,
+             "InventoryAsync.cs", "class-level", "pinned emitted-line inventory", "52")
+method_pruned = copy.deepcopy(composite)
+write_fixture(method_pruned)
+entry = next(entry for entry in method_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+lines = entry.find("methods/method/lines")
+lines.remove(next(line for line in lines if line.get("number") == "52"))
+write_fixture(method_pruned, sync_methods=False)
+wrapper_case("method-only measured line omission also fails the pinned inventory", 1,
+             "InventoryAsync.cs", "method-level", "52")
+class_pruned = copy.deepcopy(composite)
+entry = next(entry for entry in class_pruned.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+entry.find("lines").remove(next(line for line in entry.find("lines") if line.get("number") == "52"))
+write_fixture(class_pruned, sync_methods=False)
+wrapper_case("surviving method records cannot mask incomplete class records", 1,
+             "InventoryAsync.cs", "class-level", "52")
+malformed_method = copy.deepcopy(composite)
+malformed_method.find(".//methods/method/lines/line").set("hits", "invalid")
+write_fixture(malformed_method, sync_methods=False)
+wrapper_case("malformed method record fails structural validation before merge", 1,
+             "Coverage input validation failed")
+# M1: real branch coverage can fail while its source line is still present.
+branch_low = copy.deepcopy(composite)
+entry = next(entry for entry in branch_low.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("condition-coverage", "0% (0/32)")
+for condition in line.findall("conditions/condition"):
+    condition.set("coverage", "0%")
+write_fixture(branch_low)
+wrapper_case("complete 32-branch failure is measured without changing its denominator", 1,
+             "InventoryAsync.cs", "branch 0.00", "min 90.00")
+missing_marker = copy.deepcopy(branch_low)
+entry = next(entry for entry in missing_marker.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.attrib.pop("branch")
+write_fixture(missing_marker)
+wrapper_case("missing branch marker cannot make the merger discard retained counts", 1,
+             "InventoryAsync.cs:75", "branch marker", "MISSING", "pinned denominator 32")
+spaced_marker = copy.deepcopy(branch_low)
+entry = next(entry for entry in spaced_marker.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("branch", " true ")
+write_fixture(spaced_marker)
+wrapper_case("branch marker uses the merger's exact syntax without whitespace", 1,
+             "InventoryAsync.cs:75", "branch marker", "pinned denominator 32")
+spaced_counts = copy.deepcopy(branch_low)
+entry = next(entry for entry in spaced_counts.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("condition-coverage", "0% (0/ 32)")
+write_fixture(spaced_counts)
+wrapper_case("counts the merger cannot parse cannot shed a pinned denominator", 1,
+             "InventoryAsync.cs:75", "Invalid branch denominator", "pinned merger can parse")
+branchless = copy.deepcopy(branch_low)
+entry = next(entry for entry in branchless.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+line.remove(line.find("conditions"))
+write_fixture(branchless)
+wrapper_case("branch=false rewrite cannot hide the measured 32-branch failure", 1,
+             "InventoryAsync.cs:75", "measured branch denominator 0", "pinned denominator 32")
+partial_branch = copy.deepcopy(branch_low)
+entry = next(entry for entry in partial_branch.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("condition-coverage", "0% (0/30)")
+line.find("conditions").remove(line.find("conditions/condition"))
+write_fixture(partial_branch)
+wrapper_case("partial branch removal with consistent counts cannot shrink the denominator", 1,
+             "InventoryAsync.cs:75", "measured branch denominator 30", "pinned denominator 32")
+condition_only = copy.deepcopy(composite)
+entry = next(entry for entry in condition_only.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.find("conditions").remove(line.find("conditions/condition"))
+write_fixture(condition_only)
+wrapper_case("condition deletion cannot hide behind an unchanged declared 32 total", 1,
+             "InventoryAsync.cs:75", "condition IDs")
+class_branch = copy.deepcopy(composite)
+entry = next(entry for entry in class_branch.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("lines") if line.get("number") == "75")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+line.remove(line.find("conditions"))
+write_fixture(class_branch, sync_methods=False)
+wrapper_case("branch structure is pinned at class level independently of methods", 1,
+             "class-level", "pinned denominator 32")
+method_branch = copy.deepcopy(composite)
+entry = next(entry for entry in method_branch.findall(".//class") if entry.get("filename").endswith("InventoryAsync.cs"))
+line = next(line for line in entry.find("methods/method/lines") if line.get("number") == "75")
+line.set("branch", "false")
+line.attrib.pop("condition-coverage")
+line.remove(line.find("conditions"))
+write_fixture(method_branch, sync_methods=False)
+wrapper_case("branch structure is pinned at method level independently of classes", 1,
+             "method-level", "pinned denominator 32")
+pinned_path = fixture_scripts / "coverage/development-v1-lines.json"
+pinned_bytes = pinned_path.read_bytes()
+pinned_missing = json.loads(pinned_bytes)
+del pinned_missing["files"][f"{assembly_name}/InventoryAsync.cs"]
+pinned_path.write_text(json.dumps(pinned_missing))
+write_fixture(composite)
+wrapper_case("removing an active floor from the pinned inventory cannot drop enforcement", 1,
+             "does not cover every active canonical floor", "InventoryAsync.cs")
+pinned_path.write_bytes(pinned_bytes)
+source_bytes = async_source.read_bytes()
+async_source.write_bytes(source_bytes + b"\n")
+write_fixture(composite)
+wrapper_case("a source edit makes the independent expected inventory stale", 1,
+             "InventoryAsync.cs", "source SHA-256 changed", "regenerate")
+async_source.write_bytes(source_bytes)
+# A valid unrelated PDB must never shrink the trusted inventory of this DLL.
+pdb_path = assembly_output / f"{assembly_name}.pdb"
+pdb_bytes = pdb_path.read_bytes()
+stale_output = scratch / "stale-pdb"
+source_before_stale_build = async_source.read_bytes()
+async_source.write_text(async_source.read_text().replace("        value++;\n", "", 1))
+result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(stale_output),
+                         "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
+assert result.returncode == 0, result.stdout + result.stderr
+async_source.write_bytes(source_before_stale_build)
+pdb_path.write_bytes((stale_output / f"{assembly_name}.pdb").read_bytes())
+write_fixture(composite)
+wrapper_case("valid stale PDB is rejected before trusting its smaller inventory", 1,
+             "does not match its DLL debug identifier", "matching Release DLL/PDB pair")
+result = subprocess.run(["dotnet", str(fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.CoverageGate.dll"),
+                         "--validate-reports", "--unit-results", str(results), str(fixture_scripts / "coverage/baseline.json"), str(valid)],
+                        capture_output=True, text=True)
+assert result.returncode == 1 and "does not match its DLL debug identifier" in result.stderr, result.stdout + result.stderr
+cases += 1
+print("PASS default inventory also rejects stale mismatched PDB")
+pdb_path.write_bytes(pdb_bytes)
+write_fixture(composite)
+wrapper_case("matching PDB restores acceptance after stale identity rejection", 0,
+             "Coverage gate passed.")
+settings_source = inventory_repo / "tests/coverage.runsettings"
+settings_bytes = settings_source.read_bytes()
+settings_source.write_bytes(settings_bytes.replace(b"**/Migrations/**", b"**/Migrations/**,**/Future/**"))
+write_fixture(composite)
+wrapper_case("new canonical exclusion fails explicitly until inventory supports it", 1,
+             "Unsupported canonical coverage settings", "DLL/PDB inventory")
+settings_source.write_bytes(settings_bytes)
+
+# Future tools floors must fail clearly instead of mapping to an owner 'tools'.
+tool_path = "tools/HVO.SkyMonitor.FutureTool/Program.cs"
+tool_source = inventory_repo / tool_path
+tool_source.parent.mkdir(parents=True)
+tool_source.touch()
+tool_baseline = copy.deepcopy(fixture_baseline)
+tool_baseline["files"][tool_path] = {"line": 0.5, "branch": 0.35}
+fixture_baseline_path = fixture_scripts / "coverage/baseline.json"
+fixture_baseline_path.write_text(json.dumps(tool_baseline))
+result = subprocess.run([str(fixture_scripts / "coverage:development-v1"), "--settings", str(scratch / "tool.runsettings")],
+                        capture_output=True, text=True)
+assert result.returncode == 1 and "extend the DLL/PDB inventory" in result.stderr, result.stdout + result.stderr
+cases += 1
+print("PASS future active tools floor fails settings generation with inventory remedy")
+wrapper_case("future active tools floor also fails coverage inventory explicitly", 1,
+             "supports active src/ floor owners only")
+fixture_baseline_path.write_text(json.dumps(fixture_baseline))
+
+valid.write_text("<coverage")
+shutil.copy2(valid, attachment)
+wrapper_case("one malformed report cannot be discarded by the merger", 1, str(valid), "Coverage input validation failed")
+valid.write_text("<not-coverage />")
+shutil.copy2(valid, attachment)
+wrapper_case("a well-formed non-coverage input fails", 1, str(valid), "Expected a Cobertura")
+broken = copy.deepcopy(composite)
+line = broken.find(".//line")
+del line.attrib["condition-coverage"]
+write_fixture(broken)
+wrapper_case("missing branch counters fail before merge", 1, path, "measured branch data MISSING")
+partial = copy.deepcopy(composite)
+partial.find(".//classes").remove(partial.findall(".//class")[1])
+write_fixture(partial)
+wrapper_case("partial report still covering every floor fails independent source inventory", 1,
+             "materially incomplete", "InventorySentinel.cs")
+partial_classes = copy.deepcopy(composite)
+classes = partial_classes.find(".//classes")
+classes.remove(classes.findall("class")[2])
+write_fixture(partial_classes)
+wrapper_case("partial class data with every source still present fails DLL/PDB inventory", 1,
+             "materially incomplete", "compiled classes")
+empty_report = ET.Element("coverage")
+ET.SubElement(empty_report, "packages")
+write_fixture(empty_report)
+wrapper_case("a classless report is rejected for a project with included assemblies", 1, "incomplete assembly inventory")
+write_fixture(composite)
+# The declared TRX attachment is independent evidence of the original input.
+valid.write_text(valid.read_text().replace('hits="1"', 'hits="0"'))
+wrapper_case("replaced report fails TRX identity binding", 1, "no matching original coverage report")
+
+# Raw Coverlet switch conditions need structural validation, not canonical math.
+switch_report = ET.parse(good)
+switch_line = switch_report.find(".//line")
+switch_line.set("condition-coverage", "100% (5/5)")
+switch_conditions = ET.SubElement(switch_line, "conditions")
+for number in ("0", "1"):
+    ET.SubElement(switch_conditions, "condition", number=number, type="jump", coverage="100%")
+switch_file = scratch / "raw-switch.xml"
+switch_report.write(switch_file)
+result = subprocess.run(["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"),
+                         "--validate-reports", str(baseline_file), str(switch_file)],
+                        capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit(f"Raw switch validation incorrectly evaluated canonical branch arities: {result.stdout}{result.stderr}")
+cases += 1
+print("PASS raw switch validation accepts unequal condition arities")
+result = subprocess.run(["dotnet", str(scratch / "gate/HVO.SkyMonitor.CoverageGate.dll"),
+                         "--development-v1", "--validate-reports", str(baseline_file), str(switch_file)],
+                        capture_output=True, text=True)
+if result.returncode != 1 or "requires --unit-results" not in result.stderr:
+    raise SystemExit("V1 input validation accepted structural checks without an independent inventory")
+cases += 1
+print("PASS v1 input validation cannot bypass the independent Unit inventory")
+
+# Exercise the actual policy, including the rule against turning arbitrary
+# low-coverage files into new local-only exceptions. This fixture is not a Git
+# worktree and never mutates the caller's baselines.
+policy_scripts = scratch / "policy-repo/scripts"
+(policy_scripts / "coverage").mkdir(parents=True)
+for script in ("coverage:policy", "coverage:component"):
+    shutil.copy2(root / "scripts" / script, policy_scripts / script)
+for source in (root / "scripts/coverage").glob("baseline*.json"):
+    shutil.copy2(source, policy_scripts / "coverage" / source.name)
+shutil.copy2(root / "scripts/coverage/policy.json", policy_scripts / "coverage/policy.json")
+for baseline_path in (policy_scripts / "coverage").glob("baseline*.json"):
+    for key in json.loads(baseline_path.read_text())["files"]:
+        if key in policy["retiredSourcePaths"]:
+            continue
+        relative = pathlib.Path(key) if key.startswith("tools/") else pathlib.Path("src") / key
+        source = policy_scripts.parent / relative
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.touch()
+command = [str(policy_scripts / "coverage:policy"), "push", ""]
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 0, result.stdout + result.stderr
+unauthorized = copy.deepcopy(canonical)
+unauthorized["files"][path]["developmentV1LocalOnlyReason"] = "Unapproved exception"
+(policy_scripts / "coverage/baseline.json").write_text(json.dumps(unauthorized))
+result = subprocess.run(command, capture_output=True, text=True)
+assert result.returncode == 1 and "malformed" in result.stderr
+cases += 1
+print("PASS actual policy rejects an arbitrary new v1 exclusion")
+
+(policy_scripts / "coverage/baseline.json").write_text(json.dumps(canonical))
+fixture = policy_scripts.parent
+subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+subprocess.run(["git", "-C", str(fixture), "add", "."], check=True)
+subprocess.run(["git", "-C", str(fixture), "-c", "user.name=Coverage fixture", "-c", "user.email=coverage@example.invalid",
+                "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "fixture"], check=True)
+subprocess.run(["git", "-C", str(fixture), "update-ref", "refs/remotes/origin/development/v1", "HEAD"], check=True)
+source = fixture / "src/HVO.SkyMonitor.Imaging/SceneRenderers.cs"
+for event, base_ref in (("push", ""), ("merge_group", ""), ("pull_request", "development/v1")):
+    command = [str(policy_scripts / "coverage:policy"), event, base_ref]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"Policy fixture failed before rename ({event}): {result.stdout}{result.stderr}")
+    source.rename(source.with_suffix(".moved.cs"))
+    result = subprocess.run(command, capture_output=True, text=True)
+    source.with_suffix(".moved.cs").rename(source)
+    if result.returncode != 1 or "SceneRenderers.cs" not in result.stderr or "not a pinned retired path" not in result.stderr:
+        raise SystemExit(f"Policy accepted a renamed floor source ({event}): {result.stdout}{result.stderr}")
+    cases += 1
+    print(f"PASS moved SceneRenderers source fails actual policy on {event}")
+    changed_policy = copy.deepcopy(policy)
+    changed_policy["retiredSourcePaths"].append("HVO.SkyMonitor.Imaging/SceneRenderers.cs")
+    (policy_scripts / "coverage/policy.json").write_text(json.dumps(changed_policy))
+    source.rename(source.with_suffix(".moved.cs"))
+    result = subprocess.run(command, capture_output=True, text=True)
+    source.with_suffix(".moved.cs").rename(source)
+    (policy_scripts / "coverage/policy.json").write_text(json.dumps(policy))
+    if result.returncode != 1 or "retired-source coverage policy" not in result.stderr:
+        raise SystemExit(f"Policy accepted a new retirement through a JSON edit ({event}): {result.stdout}{result.stderr}")
+    cases += 1
+    print(f"PASS rename plus retirement JSON edit fails policy on {event}")
+
+print(f"Development v1 coverage contracts passed: {cases} behavioral cases.")
+PY
