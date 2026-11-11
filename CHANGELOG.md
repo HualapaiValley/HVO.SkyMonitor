@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- HYG 4.2 catalog builds and catalog fixture recipes reproduce the approved checksums independently of SQLite's secure-deletion default, including the isolated SQLite 3.45.1 CLI. Refs #1773
+
 - The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
 
 - System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
