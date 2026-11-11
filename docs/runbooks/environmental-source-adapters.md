@@ -281,7 +281,11 @@ parsing raw manifests. Full batches trigger more transactions, releasing the wri
 lock between batches and yielding between bounded bursts, so failed-read history
 can drain even when no observations are produced. Schema 3 upgrades transactionally
 to schema 4 by adding retention indexes after validating the prior schema; fact
-and receipt payloads remain unchanged.
+and receipt payloads remain unchanged. The image declares writes 4 / reads 3–4.
+The earlier strict schema-3 reader cannot open schema 4; downgrade uses the paired
+SQLite checkpoint already required by the image's state boundary, recorded as a
+three-object snapshot-rollback exception. Frozen previous-release SQL images stay
+unchanged.
 
 An unassociated capture whose entire receipt set has expired or is missing reports
 unavailable evidence, even if other associations still pin old facts. Completed

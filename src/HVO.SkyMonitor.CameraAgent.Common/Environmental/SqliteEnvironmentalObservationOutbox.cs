@@ -27,7 +27,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     IEnvironmentalObservationProjectionStore, ILocalEnvironmentalAssociationStore, IEnvironmentalAcquisitionStateStore,
     IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
 {
-    private const int CurrentSchemaVersion = 4;
+    internal const int PreviousSchemaVersion = 3;
+    internal const int CurrentSchemaVersion = 4;
     // V3 maps local lineage into central identities. Retain legacy v1/v2 projection semantics;
     // for v3, retrying or expired input leases must not release a derivative before its inputs are acknowledged.
     private const string AcknowledgedLineageSql = """
@@ -1972,7 +1973,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 ? await InspectExistingDatabaseAsync(root, cancellationToken).ConfigureAwait(false)
                 : new EnvironmentalSchemaInspection(0, 0);
             var initializeSchema = inspection.SchemaVersion == 0 && inspection.SchemaObjectCount == 0;
-            if (!initializeSchema && inspection.SchemaVersion is not (3 or CurrentSchemaVersion))
+            if (!initializeSchema && inspection.SchemaVersion is not (PreviousSchemaVersion or CurrentSchemaVersion))
             {
                 var relationship = inspection.SchemaVersion > CurrentSchemaVersion
                     ? "newer than supported"
@@ -1981,7 +1982,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     $"Environmental observation schema {inspection.SchemaVersion} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
             }
             using var connection = await OpenUnconfiguredAsync(root, cancellationToken).ConfigureAwait(false);
-            if (initializeSchema || inspection.SchemaVersion == 3)
+            if (initializeSchema || inspection.SchemaVersion == PreviousSchemaVersion)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                 using var transaction = connection.BeginTransaction(deferred: false);
@@ -1997,10 +1998,10 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     command.CommandText = CanonicalSchemaSql;
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
-                else if (writableVersion == 3)
+                else if (writableVersion == PreviousSchemaVersion)
                 {
                     // Validate the complete prior schema before the transactional index-only upgrade.
-                    await ValidateSchemaAsync(connection, transaction, cancellationToken, 3).ConfigureAwait(false);
+                    await ValidateSchemaAsync(connection, transaction, cancellationToken, PreviousSchemaVersion).ConfigureAwait(false);
                     using var migration = connection.CreateCommand();
                     migration.Transaction = transaction;
                     migration.CommandText = RetentionIndexesSql + "PRAGMA user_version=4;";
@@ -3177,7 +3178,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             var version = await ExecuteScalarLongAsync(
                 connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
             var objectCount = await CountSchemaObjectsAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            if (version is 3 or CurrentSchemaVersion)
+            if (version is PreviousSchemaVersion or CurrentSchemaVersion)
             {
                 await ValidateSchemaAsync(connection, null, cancellationToken, checked((int)version)).ConfigureAwait(false);
             }
@@ -3273,7 +3274,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             throw new InvalidDataException("Environmental observation schema version is not canonical.");
         }
         var expectedDefinitions = CanonicalSchemaDefinitions.Value
-            .Where(entry => schemaVersion != 3 || entry.Key is not ("ix_environment_on_demand_retention" or "ix_environment_attempt_retention"))
+            .Where(entry => schemaVersion != PreviousSchemaVersion || entry.Key is not ("ix_environment_on_demand_retention" or "ix_environment_attempt_retention"))
             .ToDictionary(StringComparer.Ordinal);
         var actual = await ReadSchemaDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (expectedDefinitions.Any(expected =>

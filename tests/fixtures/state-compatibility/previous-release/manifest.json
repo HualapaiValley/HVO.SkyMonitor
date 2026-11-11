@@ -77,6 +77,18 @@
       "previousValue": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
       "candidateValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
       "reason": "Schema 2 is extended atomically to schema 3 for daily summaries; older binaries require the existing paired SQLite checkpoint on rollback. No previous-release SQL image changes. #1713"
+    },
+    {
+      "location": "raw/.environment/environmental-observation-outbox.db",
+      "objects": [
+        "index:ix_environment_attempt_retention",
+        "index:ix_environment_on_demand_retention",
+        "pragma:user_version"
+      ],
+      "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
+      "previousValue": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
+      "candidateValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
+      "reason": "Schema 3 gains retention indexes transactionally in schema 4; the previous reader requires the existing paired SQLite checkpoint on rollback. Frozen previous-release SQL images remain unchanged. Refs #1778"
     }
   ]
 }
