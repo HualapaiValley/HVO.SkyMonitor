@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CloudAssessmentCaptureProcessingStepTests
+public sealed partial class CloudAssessmentCaptureProcessingStepTests
 {
     [TestMethod]
     public async Task DisabledStepDoesNotPinConfiguredReference()
@@ -258,7 +258,17 @@ public sealed class CloudAssessmentCaptureProcessingStepTests
             var configured = Options.Create(new CameraAgentHostOptions
             {
                 RawIngressRoot = root,
-                EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions { Enabled = true }
+                EnvironmentalAcquisition = new EnvironmentalAcquisitionOptions
+                {
+                    Enabled = true,
+                    Sources = [new EnvironmentalSourceConfiguration
+                    {
+                        Id = "rain-state",
+                        Type = "VirtualEnvironment",
+                        Kind = EnvironmentalObservationKind.RainState,
+                        Triggers = [EnvironmentalAcquisitionTrigger.Periodic]
+                    }]
+                }
             });
             var associations = new EnvironmentalAssociationService(store, store, configured, TimeProvider.System);
             var environment = new CameraAgentCloudEnvironment(
