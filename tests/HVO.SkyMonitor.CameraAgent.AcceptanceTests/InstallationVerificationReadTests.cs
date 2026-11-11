@@ -107,7 +107,8 @@ public sealed partial class InstallationVerificationReadTests
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None)).ConfigureAwait(false);
         _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
         await File.WriteAllBytesAsync(manifestPath, originalManifest).ConfigureAwait(false);
-        _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        // Repairing files out of band requires a full scrub; ordinary loads only queue one.
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         _ = await fixture.ReadAsync(client).ConfigureAwait(false);
         using (var connection = new SqliteConnection($"Data Source={fixture.JournalPath};Pooling=False"))
         {
@@ -124,7 +125,7 @@ public sealed partial class InstallationVerificationReadTests
             command.Parameters["$manifest"].Value = originalJournalManifest;
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
-        _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         _ = await fixture.ReadAsync(client).ConfigureAwait(false);
         // Unsupported current configuration must also fail before a previously validated identity can escape.
         var configNode = JsonNode.Parse(await File.ReadAllTextAsync(fixture.ConfigPath).ConfigureAwait(false))!;
