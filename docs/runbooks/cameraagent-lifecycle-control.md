@@ -196,8 +196,10 @@ When CameraAgent returns, the worker republishes retained terminal evidence.
 
 An installer-worker interruption is settled as terminal failure
 (`lifecycle.installer-interrupted`) once any eligible pre-stop restore is proven
-or definitely refused. Transport failure leaves the journal nonterminal so a
-later poll can retry the same idempotent, version-fenced resume; an ambiguous restart is not replayed. Startup
+or definitely refused. Transport failure, unavailable capture initialization, or an
+outstanding `PauseRequested` leaves the journal nonterminal so a later poll can
+retry after the pause settles and confirm the same idempotent, version-fenced
+resume; an ambiguous restart is not replayed. Startup
 and later polls use the same owned-pause settlement. A busy deployment lock leaves
 a journal-owned interrupted operation pending and retries on a later poll; it is
 not classified as an orphan or terminalized without attempting safe restore.
@@ -228,12 +230,17 @@ reconciliation rather than deleting or editing either journal. A worker
 interrupted before the stop retries transport failures without making its
 receipt terminal, and reuses the original version-fenced resume command. Later
 owner commands remain authoritative. Drain polling renews the worker lease at
-least every ten seconds while the transport responds. A transient failure to
+least every ten seconds while the transport responds. A heartbeat transport outage
+does not abandon the authoritative drain; its existing budget and outcome still apply.
+A transient failure to
 pause after an unconfirmed resume returns a retryable 503; a concurrent owner
 pause can satisfy that settlement boundary. The same lifecycle fence also refuses
 new manual focus previews, calibration acquisition, activation and rollback during
 Draining, Restarting and Verifying. Explicit requests use the existing capture-control
 conflict response (409); scheduled capture continues waiting for admission release.
+If a lifecycle claim races calibration planning, refusal retires only the unstarted
+plan without consuming an attempt; its terminal idempotency history remains, and
+a new request can proceed after lifecycle release. Interrupted attempts remain recoverable.
 The command gate lets an already admitted preview or calibration source/master
 generation finish before a pause completes, without adding cancellation. Calibration
 profile publication and SQLite finalization follow that generation boundary and are

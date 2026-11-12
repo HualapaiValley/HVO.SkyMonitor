@@ -1242,7 +1242,9 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             ICalibrationPublicationFaultInjector? faultInjector = null,
             CameraModuleConfig? configuration = null,
             TimeProvider? timeProvider = null,
-            HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentControlStore? lifecycleControls = null)
+            HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentControlStore? lifecycleControls = null,
+            ICameraAgentConfigurationAccessor? configurationAccessor = null,
+            CalibrationTelemetry? calibrationTelemetry = null)
         {
             timeProvider ??= TimeProvider.System;
             var options = Options.Create(new CameraAgentHostOptions
@@ -1262,7 +1264,7 @@ public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
             var publisher = new CalibrationArtifactPublisher(
                 options, faultInjector ?? NullCalibrationPublicationFaultInjector.Instance);
             var coordinator = new VirtualCalibrationAcquisitionCoordinator(
-                store, publisher, admission, accessor, timeProvider);
+                store, publisher, admission, configurationAccessor ?? accessor, timeProvider, telemetry: calibrationTelemetry);
             return new Fixture(store, admission, telemetry, coordinator);
         }
 

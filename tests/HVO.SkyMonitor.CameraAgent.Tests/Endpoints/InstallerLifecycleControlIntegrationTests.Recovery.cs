@@ -33,7 +33,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 [TestCategory("Integration")]
 [OSCondition(OperatingSystems.Linux)]
 [SupportedOSPlatform("linux")]
-public sealed class InstallerLifecycleRecoveryIntegrationTests
+public sealed partial class InstallerLifecycleRecoveryIntegrationTests
 {
     [TestMethod]
     [DataRow("before", false)]

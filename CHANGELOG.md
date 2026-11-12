@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent retries interrupted pre-restart recovery, keeps drain leases alive, and fences manual focus and calibration capture during lifecycle control. Deployment transitions require settled control evidence. Refs #1746
+- CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence. Refs #1746
 
 - Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
 

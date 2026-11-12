@@ -62,7 +62,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             plan, request.IdempotencyKey, requestIdentity, request.Actor, request.Reason,
             request.ExpectedVersion, cancellationToken)
             .ConfigureAwait(false);
-        return await ExecuteSerializedAsync(job.Plan.JobId, cancellationToken).ConfigureAwait(false);
+        return await ExecuteSerializedAsync(job.Plan.JobId, cancellationToken, retireUnstartedOnRefusal: true).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -160,7 +160,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
 
     private async Task<CalibrationAcquisitionJobSnapshot> ExecuteSerializedAsync(
         string jobId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retireUnstartedOnRefusal = false)
     {
         using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.acquire");
         var started = Stopwatch.GetTimestamp();
@@ -201,6 +202,16 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         {
             _telemetry?.RecordAcquisition("cancelled", Stopwatch.GetElapsedTime(started));
             activity?.SetTag("calibration.outcome", "cancelled");
+            throw;
+        }
+        catch (CaptureControlConflictException)
+        {
+            // Planning can race a lifecycle claim. Retain the idempotent terminal history without blocking later work.
+            // Only a fresh, unstarted plan may be retired; interrupted attempts remain available for recovery.
+            if (retireUnstartedOnRefusal)
+                await _store.CancelAcquisitionAsync(jobId, CancellationToken.None, onlyIfUnstarted: true).ConfigureAwait(false);
+            _telemetry?.RecordAcquisition("rejected", Stopwatch.GetElapsedTime(started));
+            activity?.SetTag("calibration.outcome", "rejected");
             throw;
         }
         catch (CalibrationLibraryAcquisitionException exception)

@@ -241,7 +241,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         {
             var restored = await RestoreBeforeRestartAsync(receipt).ConfigureAwait(false);
             receipt = restored.Receipt;
-            if (!restored.Settled) return receipt; // Keep recovery eligible until transport can prove the owned restore.
+            if (!restored.Settled) return receipt; // Keep recovery eligible until the owned pause and restore settle.
         }
         receipt = receipt with { Cancellation = receipt.Cancellation ?? _cancellation };
         if (receipt.ResumeRequested && !receipt.ResumeConfirmed && phase != CameraAgentControlPhase.Succeeded)
@@ -260,6 +260,8 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             var current = await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
             if (!current.Initialized) return (receipt, false);
             if (current.ProcessId != receipt.OriginalProcessId) return (receipt, true);
+            // The durable pause outlives a cancelled or disconnected drain request. Its final version is not known yet.
+            if (current.CaptureState == "PauseRequested") return (receipt, false);
             if (!receipt.ResumeRequested)
             {
                 if (current.CaptureState != "Paused" || current.OwnedPauseVersion != current.CaptureVersion)
@@ -302,7 +304,10 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                 break;
             }
             await delay.ConfigureAwait(false);
-            await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
+            // Heartbeats renew observation only. A transport outage must not abandon the authoritative native drain.
+            try { await ReadAsync(receipt, cancellationToken).ConfigureAwait(false); }
+            catch (HttpRequestException) { }
+            catch (TimeoutException) { }
         }
         return await drain.ConfigureAwait(false);
     }
