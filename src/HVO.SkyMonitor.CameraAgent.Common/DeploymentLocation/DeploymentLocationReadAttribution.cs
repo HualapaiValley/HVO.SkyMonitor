@@ -9,12 +9,14 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 // time/bytes only. Neither may be added to inclusive process-wide span allocation.
 internal sealed class DeploymentLocationReadAttribution : IDisposable
 {
-    internal enum Stage { Enumeration, Security, Read, Parse, Provenance, Open, Query, Unprotect, Deserialize, Validate }
+    internal enum Stage { Enumeration, Security, Read, Parse, Provenance, Open, Query, Unprotect, Deserialize, Validate, Hash }
 
     private static readonly string[] StageNames =
-        ["enumeration", "security", "read", "parse", "provenance", "open", "query", "unprotect", "deserialize", "validate"];
+        ["enumeration", "security", "read", "parse", "provenance", "open", "query", "unprotect", "deserialize", "validate", "hash"];
     private readonly Activity _activity;
     private readonly Totals[] _totals = new Totals[StageNames.Length];
+    private long _cacheHits;
+    internal void AddCacheHit() => _cacheHits++;
     private long _manifestCount;
     private long _manifestBytes;
 
@@ -31,11 +33,12 @@ internal sealed class DeploymentLocationReadAttribution : IDisposable
     {
         _manifestCount++;
         _manifestBytes += bytes;
-        AddBytes(Stage.Parse, bytes);
+
     }
 
     public void Dispose()
     {
+        _activity.SetTag("attribution.cache_hits", _cacheHits);
         _activity.SetTag("attribution.manifest.count", _manifestCount);
         _activity.SetTag("attribution.manifest.bytes", _manifestBytes);
         for (var index = 0; index < _totals.Length; index++)

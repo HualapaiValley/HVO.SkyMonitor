@@ -1,0 +1,91 @@
+{
+  "revision": "c31afe4b16be7ed534299dbbdcceabf327d93b60",
+  "runtime": ".NET 10.0.14",
+  "processorCount": 1,
+  "heapAvailableBytes": 402653184,
+  "os": "Linux-6.8.0-149-generic-x86_64-with-glibc2.39",
+  "cpu": "Intel(R) Core(TM) i9-14900K",
+  "hostCpus": 12,
+  "scratchFilesystem": "ext4",
+  "baselineProduction": "d122742c7b619a887168d3f9e2b4f23e54ba6ee7",
+  "corpora": [
+    {
+      "captures": 1000,
+      "solar": false,
+      "corpus": {
+        "fileCount": 1000,
+        "journalCount": 1000,
+        "manifestBytes": 4855786,
+        "orderedManifestSha256": "70F06329FE268301B6F5FFDB9FAFA53BFFCD3D2C99201E760BE86D4E891E13F5",
+        "journalBytes": 5447680,
+        "configurationFileSha256": "CB41577254D2F7541324BDC58597D5B675510F3682936CD4BBEB1131CFD31B78",
+        "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+      }
+    },
+    {
+      "captures": 10000,
+      "solar": false,
+      "corpus": {
+        "fileCount": 10000,
+        "journalCount": 10000,
+        "manifestBytes": 48577788,
+        "orderedManifestSha256": "C64EF002A776257AC33FE575F1DA48AC6934E9E343EC9C0335D2649BC6511D3E",
+        "journalBytes": 49782784,
+        "configurationFileSha256": "2DFF6E12E364662732862F4AC3D5C6E34DB0BA5EA1148495AC702B941F770B5F",
+        "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+      }
+    },
+    {
+      "captures": 100001,
+      "solar": false,
+      "corpus": {
+        "fileCount": 100001,
+        "journalCount": 100001,
+        "manifestBytes": 485982652,
+        "orderedManifestSha256": "83CF8577AEB83448A215395BC5869D5C238DB7706EAD43767C8911E9DA4E060C",
+        "journalBytes": 496144384,
+        "configurationFileSha256": "BD9B4A6FE2075D05F7E08F440B0BFFC16A5E3514466DC83A0CBD96944C5FF349",
+        "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+      }
+    },
+    {
+      "captures": 1000,
+      "solar": true,
+      "corpus": {
+        "fileCount": 1000,
+        "journalCount": 1000,
+        "manifestBytes": 4855786,
+        "orderedManifestSha256": "70F06329FE268301B6F5FFDB9FAFA53BFFCD3D2C99201E760BE86D4E891E13F5",
+        "journalBytes": 5447680,
+        "configurationFileSha256": "DB77F12C6580CDC4BEE3FF1BB54BBA16F54D3198644F46DF035AC3D20B21F9A1",
+        "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+      }
+    },
+    {
+      "captures": 10000,
+      "solar": true,
+      "corpus": {
+        "fileCount": 10000,
+        "journalCount": 10000,
+        "manifestBytes": 48577788,
+        "orderedManifestSha256": "C64EF002A776257AC33FE575F1DA48AC6934E9E343EC9C0335D2649BC6511D3E",
+        "journalBytes": 49782784,
+        "configurationFileSha256": "FE44ECEF102D000C2CBBCE4CF65F723D19FBD46AEE5723DE40A22B532107A4BF",
+        "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+      }
+    },
+    {
+      "captures": 100001,
+      "solar": true,
+      "corpus": {
+        "fileCount": 100001,
+        "journalCount": 100001,
+        "manifestBytes": 485982652,
+        "orderedManifestSha256": "83CF8577AEB83448A215395BC5869D5C238DB7706EAD43767C8911E9DA4E060C",
+        "journalBytes": 496144384,
+        "configurationFileSha256": "C79CFE5072B5300B5F129FE0C436831FB799BE739F2259FCF561B567FAE43C98",
+        "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+      }
+    }
+  ]
+}
