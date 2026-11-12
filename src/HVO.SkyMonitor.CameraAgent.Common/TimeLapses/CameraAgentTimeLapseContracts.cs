@@ -102,6 +102,22 @@ public sealed record CameraAgentTimeLapseLibraryEntry(Guid JobId, DateOnly Repor
     /// <summary>Disabled generation cannot present retained pending work as executing on this host.</summary>
     public bool GenerationEnabled { get; init; } = true;
 
+    /// <summary>
+    /// The hourly segment jobs of a queued daily job: how many it has, how many have finished, and whether one is
+    /// being generated now. The daily job itself stays queued until every one has finished, so its own state cannot
+    /// say that generation is under way. All are zero or false for a job that is not queued.
+    /// </summary>
+    public int HourlyJobs { get; init; }
+
+    /// <inheritdoc cref="HourlyJobs"/>
+    public int HourlyJobsFinished { get; init; }
+
+    /// <inheritdoc cref="HourlyJobs"/>
+    public bool HourlyJobWorking { get; init; }
+
+    /// <summary>Whether a queued daily job's hourly segments have begun, so it is no longer waiting to start.</summary>
+    public bool HourlyGenerationStarted => JobState == CameraAgentTimeLapseState.Queued && (HourlyJobWorking || HourlyJobsFinished > 0);
+
     public NightlyProductLibraryState State => JobState is CameraAgentTimeLapseState.Queued or CameraAgentTimeLapseState.Working
         ? GenerationEnabled ? NightlyProductLibraryState.Running : NightlyProductLibraryState.Stalled
         : Product is not null ? NightlyProductLibraryState.Produced

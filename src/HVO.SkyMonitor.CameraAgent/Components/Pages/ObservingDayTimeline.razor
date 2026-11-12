@@ -28,7 +28,7 @@
         <div class="timeline-track" aria-label="Retained capture exposure starts in @CoverageBinLabel bins; blank intervals have no retained exposure start">
             @foreach (var segment in CaptureSegments(Day, ExposureInstantsUtc))
             {
-                <span class="timeline-bar timeline-bar--captures" style="@BarStyle(segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
+                <span class="timeline-bar timeline-bar--captures" style="@CaptureBarStyle(segment.StartUtc, segment.EndUtc)" title="@segment.Count captures @LocalTime(segment.StartUtc)–@LocalTime(segment.EndUtc)"></span>
             }
             @if (!ExposureInstantsUtc.Any(Day.Contains))
             {

@@ -153,8 +153,16 @@ public sealed partial class CaptureScalarOptionsEditorTests
         cut.Find("#node-options-0-solarSystemBodies-0").Change("Pluto");
         cut.Find("form").Submit();
         Assert.IsTrue(cut.Find("button.btn-primary").HasAttribute("disabled"));
+        // Adding never repeats a body, so ten requests select each of the nine bodies once and stay within the count.
         var form = new ProcessingNodeOptionsForm(ProjectedSceneOptionDescriptors.Descriptor, null);
         for (var index = 0; index < 10; index++) form.AddCollectionItem("solarSystemBodies");
-        Assert.IsFalse(form.TryBuild(out _, out _), "The shared validation also rejects count overflow outside the UI.");
+        CollectionAssert.AreEqual(Enum.GetNames<HVO.SkyMonitor.Astronomy.SolarSystemBody>(), form.Collection("solarSystemBodies").Items.ToArray());
+        Assert.IsTrue(form.TryBuild(out _, out _));
+        var overflow = ProcessingNodeOptionsCodec.Encode(ProjectedSceneOptionDescriptors.Descriptor,
+            System.Text.Json.JsonSerializer.SerializeToElement(new { }), new Dictionary<string, ProcessingOptionValue>
+            {
+                ["solarSystemBodies"] = ProcessingOptionValue.FromEnumCollection(Enumerable.Repeat("Mars", 10))
+            });
+        Assert.IsNotEmpty(overflow.Diagnostics, "The shared validation also rejects count overflow outside the UI.");
     }
 }

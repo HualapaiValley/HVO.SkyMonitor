@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
+using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -20,34 +21,49 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
 
     [TestMethod]
+    [DataRow("retained")]
+    [DataRow("expired")]
+    [DataRow("missing")]
     [DataRow("temporary")]
     [DataRow("bounded")]
     [DataRow("corrupt")]
-    [DataRow("missing")]
-    public async Task ManifestFailureKeepsReadableJournalAndShowsSpecificSafeReason(string failure)
+    [DataRow("absent")]
+    public async Task ManifestStateKeepsReadableJournalAndShowsSpecificSafeReasonFromOneRead(string state)
     {
         var execution = ProcessingExecutionPagesTests.Execution(Guid.NewGuid(), ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed);
+        var journal = new ProcessingGraphExecutionDetail(execution, []);
+        // The manifest evidence carries private text the page must never show, whatever its state.
+        var evidence = CameraAgentProcessingGraphOperationsEndpointsTests.ManifestDetail();
+        var read = state switch
+        {
+            "retained" => new ProcessingGraphExecutionDetailWithRunManifest(journal, evidence),
+            "expired" => new(journal, evidence with { Nodes = [evidence.Nodes[0] with { ArtifactBindingsRetained = false }] }),
+            "missing" => new(journal, evidence with { Nodes = [], FrozenNodeCount = 1 }),
+            "temporary" => new(journal, null, ProcessingRunManifestEvidenceFailure.Unavailable),
+            "bounded" => new(journal, null, ProcessingRunManifestEvidenceFailure.ExceedsBounds),
+            "corrupt" => new(journal, null, ProcessingRunManifestEvidenceFailure.Corrupt),
+            _ => new(journal, null)
+        };
+        // Strict: the page may make this one read. The manifest read it used to make is not set up and would throw.
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
-        operations.Setup(value => value.ReadExecutionDetailAsync(execution.ExecutionId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ProcessingGraphExecutionDetail(execution, []));
-        var setup = operations.Setup(value => value.ReadRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()));
-        if (failure == "temporary") setup.ThrowsAsync(new IOException("/private/sentinel?password=secret"));
-        else if (failure == "bounded") setup.ThrowsAsync(new ProcessingRunManifestBoundsException());
-        else if (failure == "corrupt") setup.ThrowsAsync(new InvalidDataException("/private/sentinel"));
-        else setup.ReturnsAsync((ProcessingGraphExecutionDetail?)null);
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(read);
         var result = await CreateService(operations.Object, authorized: true)
             .GetExecutionDetailAsync(execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(result.IsSuccess);
         Assert.AreEqual(execution.ExecutionId, result.Value!.Execution.ExecutionId);
-        Assert.AreEqual(failure switch
+        Assert.AreEqual(state switch
         {
+            "retained" => null,
+            "expired" => CameraAgentRunManifest.ArtifactEvidenceUnavailableReason,
             "temporary" => "The run manifest is temporarily unavailable. Refresh the run to try again.",
             "bounded" => ProcessingRunManifestBounds.UnavailableReason,
             "corrupt" => CameraAgentRunManifest.CorruptReason,
             _ => CameraAgentRunManifest.MissingReason
         }, result.Value.ManifestUnavailableReason);
         Assert.IsFalse(JsonSerializer.Serialize(result.Value).Contains("sentinel", StringComparison.Ordinal));
-        operations.VerifyAll();
+        operations.Verify(value => value.ReadExecutionDetailWithRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()), Times.Once);
+        operations.VerifyNoOtherCalls();
     }
 
     [TestMethod]
@@ -201,9 +217,10 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
               }
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
-        operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
-        operations.Setup(value => value.ReadRunManifestAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
-        operations.Setup(value => value.ReadExecutionDetailAsync(It.Is<Guid>(id => id != executionId), It.IsAny<CancellationToken>())).ReturnsAsync((ProcessingGraphExecutionDetail?)null);
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(executionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphExecutionDetailWithRunManifest(detail, detail));
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(It.Is<Guid>(id => id != executionId), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ProcessingGraphExecutionDetailWithRunManifest?)null);
         var service = CreateService(operations.Object, authorized: true);
 
         var found = await service.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);

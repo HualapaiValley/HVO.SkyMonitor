@@ -296,6 +296,35 @@ public sealed class NightlyProductDetailPageTests
         Assert.AreEqual("Star trail", cut.Find($"[data-nightly-section='daily-summary'] a[href='{NightlyProductLinks.Detail(linkedId)}']").TextContent);
         Assert.IsEmpty(cut.FindAll("[data-nightly-section='axis']"));
         StringAssert.Contains(cut.Markup, "Representative exposure", StringComparison.Ordinal);
+        Assert.AreEqual("Unavailable; no event count was supplied", cut.Find("[data-nightly-fact='events']").TextContent);
+    }
+
+    [TestMethod]
+    [DataRow(0, "0")]
+    [DataRow(3, "3")]
+    [DataRow(1234, "1,234")]
+    public void DailySummaryShowsARecordedEventCountIncludingZero(int events, string expected)
+    {
+        using var context = new BunitContext();
+        var nightly = Configure(context, Closed);
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
+        var window = occurrence.SourceWindow!;
+        var source = NightlyProductFixture.Frame(41, window.StartUtc.AddHours(12)).Candidate;
+        var facts = DailySummaryProducer.Summarize(window.ReportingPeriod.ReportDate, window.ReportingPeriod.IdentitySha256,
+            window.StartUtc, window.EndUtc, 1,
+            [new(source.ArtifactId, source.CaptureId, source.OutputIdentitySha256, source.ExposureStartedUtc)],
+            [], new Dictionary<string, int>()) with
+        { EventCount = events };
+        var presentation = Presentation(occurrence, NightlyProductKind.DailySummary) with { DailySummary = facts };
+        nightly.PresentationHandler = _ => OperatorUiResult<NightlyProductPresentation>.Success(presentation);
+
+        var cut = context.Render<NightlyProductDetailPage>(parameters => parameters.Add(page => page.ProductId, presentation.Detail.Summary.ProductId));
+
+        cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll("[data-nightly-section='daily-summary']")));
+        Assert.AreEqual(expected, cut.Find("[data-nightly-fact='events']").TextContent);
+        // A recorded count never keeps the unavailable wording beside it.
+        Assert.DoesNotContain("no event count was supplied", cut.Find("[data-nightly-section='daily-summary']").TextContent,
+            StringComparison.Ordinal);
     }
 
     private static TestNightlyProductUiService Configure(BunitContext context, DateTimeOffset now, bool previewFailed = false)

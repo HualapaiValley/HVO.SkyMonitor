@@ -137,9 +137,40 @@ internal sealed class CameraAgentNightlyProductUiService(
     public ValueTask<OperatorUiResult<NightlyProductLibraryPage>> ListLibraryAsync(
         NightlyProductLibraryQuery query, CancellationToken cancellationToken)
         => ReadAsync(async () => OperatorUiResult<NightlyProductLibraryPage>.Success(
-            await catalog.ListLibraryAsync(query, cancellationToken, automation is null ? [] :
-                await automation.ListNightlyProductRunsAsync(query, cancellationToken).ConfigureAwait(false)).ConfigureAwait(false)), cancellationToken,
+            await ReadLibraryAsync(query, cancellationToken).ConfigureAwait(false)), cancellationToken,
             "The requested products page is outside the generated products library bound.");
+
+    /// <summary>The most catalog reads one library page makes while the journal keeps changing under it.</summary>
+    internal const int MaximumLibraryReads = 3;
+
+    /// <summary>
+    /// The run journal and the product catalog are separate stores with no shared snapshot. A run that settled between
+    /// the two reads would be shown as running against a catalog that already holds its result. The journal is
+    /// therefore read again after the catalog: unchanged attempts were pending for the whole catalog read, so the page
+    /// is consistent; changed attempts mean the catalog is read again against the newer ones. A journal that never
+    /// holds still ends the read at its bound with the latest pair. A journal with no pending attempt shows nothing as
+    /// running, so it needs no second read.
+    /// </summary>
+    private async Task<NightlyProductLibraryPage> ReadLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+    {
+        if (automation is null) return await catalog.ListLibraryAsync(query, cancellationToken, []).ConfigureAwait(false);
+        var attempts = await automation.ListNightlyProductRunsAsync(query, cancellationToken).ConfigureAwait(false);
+        for (var read = 1; ; read++)
+        {
+            var page = await catalog.ListLibraryAsync(query, cancellationToken, attempts).ConfigureAwait(false);
+            if (attempts.Count == 0 || read == MaximumLibraryReads) return page;
+            var confirmed = await automation.ListNightlyProductRunsAsync(query, cancellationToken).ConfigureAwait(false);
+            if (SameAttempts(attempts, confirmed)) return page;
+            attempts = confirmed;
+        }
+    }
+
+    // A retained attempt changes only by settling, being retried or having its definition toggled; each moves one of these.
+    private static bool SameAttempts(IReadOnlyList<NightlyProductGenerationAttempt> first, IReadOnlyList<NightlyProductGenerationAttempt> second)
+        => first.Count == second.Count && first.Zip(second).All(static pair =>
+            pair.First.Enabled == pair.Second.Enabled && pair.First.Run.Sequence == pair.Second.Run.Sequence &&
+            pair.First.Run.Attempt == pair.Second.Run.Attempt && pair.First.Run.Outcome == pair.Second.Run.Outcome &&
+            pair.First.Run.StartedAtUtc == pair.Second.Run.StartedAtUtc && pair.First.Run.CompletedAtUtc == pair.Second.Run.CompletedAtUtc);
 
     // A sample is offered only while its file is present, so an enabled but missing sample reads as absent rather than
     // as a broken player.

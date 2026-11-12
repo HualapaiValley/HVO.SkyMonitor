@@ -145,7 +145,10 @@ public sealed partial class LocalAutomationRunnerService(
         long? captureSequence,
         CancellationToken cancellationToken)
     {
-        var offSweep = registry.RunsOffSweep(entry.Definition);
+        var occurrenceStore = store as ILocalAutomationOccurrenceStore;
+        var queuedDefinition = occurrenceStore is null ? null
+            : await occurrenceStore.GetQueuedDefinitionAsync(entry.Definition.DefinitionId, cancellationToken).ConfigureAwait(false);
+        var offSweep = registry.RunsOffSweep(queuedDefinition ?? entry.Definition);
         using var reservation = offSweep ? offSweepWorker?.TryReserve() : null;
         if (offSweep && reservation is null)
         {
@@ -153,12 +156,15 @@ public sealed partial class LocalAutomationRunnerService(
             return;
         }
         using var authority = (store as ILocalAutomationExecutionAuthority)?.RetainExecutionAuthority();
-        if (store is ILocalAutomationOccurrenceStore occurrenceStore &&
-            await occurrenceStore.TryClaimQueuedAsync(entry, cancellationToken).ConfigureAwait(false) is { Occurrence: { } prepared } queued)
+        if (occurrenceStore is not null &&
+            await occurrenceStore.TryClaimQueuedWithAdmissionAsync(entry, offSweep, cancellationToken).ConfigureAwait(false) is { Occurrence: { } prepared } queued)
         {
             await ExecuteOrDispatchAsync(prepared, queued.RunKey, reservation, cancellationToken).ConfigureAwait(false);
             return;
         }
+        // Preserve automatic scheduling when a pending head cannot be claimed (for example after
+        // a backward clock adjustment). Only defer it when admission was for a different kind.
+        if (queuedDefinition is not null && registry.RunsOffSweep(entry.Definition) != offSweep) return;
         if (entry.Definition.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
         {
             if (windowPlanner is null || store is not ILocalAutomationOccurrenceStore windowStore)
