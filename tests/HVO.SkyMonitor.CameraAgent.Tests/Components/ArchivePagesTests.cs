@@ -720,6 +720,70 @@ public sealed class ArchivePagesTests
         Assert.IsNull(noProduct.Product);
     }
 
+    [TestMethod]
+    public void ObservingDay_DailySummaryWithoutSourcesNamesPreviewsRatherThanSegmentWindows()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+        [
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.DailySummary), NightlyProductKind.DailySummary,
+                NightlyProductWindowDisposition.NoSources, candidates: 0),
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.Keogram), NightlyProductKind.Keogram,
+                NightlyProductWindowDisposition.NoSources, candidates: 0)
+        ], []), null));
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            var summary = cut.Find("[data-product-kind='daily summary']");
+            Assert.AreEqual("unavailable not-produced", summary.GetAttribute("data-nightly-state"));
+            StringAssert.Contains(summary.TextContent, "The period was evaluated: no retained preview was admitted.", StringComparison.Ordinal);
+            // A daily summary admits previews of the whole period; it has no segment windows to name.
+            Assert.DoesNotContain("segment", summary.TextContent, StringComparison.OrdinalIgnoreCase);
+            StringAssert.Contains(summary.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
+            // The same disposition on a keogram keeps the segment-window wording.
+            StringAssert.Contains(cut.Find("[data-product-kind='keogram']").TextContent,
+                "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void DailySummaryOutcomeChangesOnlyTheNoSourcesWording()
+    {
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
+        NightlyProductWindowStatus Status(NightlyProductKind kind, NightlyProductWindowDisposition disposition, string? reason = null) =>
+            NightlyDayFixture.Without(occurrence, kind, disposition, candidates: 0, reason).Status;
+
+        Assert.AreEqual("no retained preview was admitted",
+            ObservingDayPage.Outcome(Status(NightlyProductKind.DailySummary, NightlyProductWindowDisposition.NoSources)));
+        foreach (var kind in new[] { NightlyProductKind.Keogram, NightlyProductKind.StarTrail })
+        {
+            Assert.AreEqual("no segment window admitted a frame",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.NoSources)));
+        }
+        // Every other disposition reads the same for every kind.
+        foreach (var kind in Enum.GetValues<NightlyProductKind>())
+        {
+            Assert.AreEqual("rejected (nightly.rig-mismatch)",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.Rejected, "nightly.rig-mismatch")));
+            Assert.AreEqual("rejected (no reason recorded)",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.Rejected)));
+            Assert.AreEqual("no current product is recorded",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.Produced)));
+        }
+
+        // Another retained period of the date describes its daily summary the same way.
+        var missing = NightlyDayFixture.Without(occurrence, NightlyProductKind.DailySummary,
+            NightlyProductWindowDisposition.NoSources, candidates: 0);
+        Assert.AreEqual("nightly daily summary not produced, no retained preview was admitted",
+            ObservingDayPage.OtherPeriodFacts(new(NightlyDayFixture.Date, [missing], []), occurrence.SourceWindow!.ReportingPeriod,
+                NightlyProductKind.DailySummary));
+    }
+
     private static void ConfigureFixtureDay(BunitContext context)
     {
         var day = NightlyProductFixture.Calendar.Resolve(NightlyDayFixture.Date);

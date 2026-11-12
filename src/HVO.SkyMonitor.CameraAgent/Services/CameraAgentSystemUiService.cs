@@ -132,6 +132,13 @@ internal enum SystemControlOutcome
     Skipped
 }
 
+/// <summary>
+/// Who cancelled a lifecycle operation, when and why. The actor is the same fixed class every other receipt actor
+/// carries, never the account identifier the journal records, and the instant stays UTC for the page to show in
+/// site time.
+/// </summary>
+internal sealed record SystemControlCancellation(SystemControlActor Actor, DateTimeOffset Utc, string Reason);
+
 internal sealed record SystemControlReceipt(
     DateTimeOffset OccurredUtc,
     SystemControlReceiptKind Kind,
@@ -141,7 +148,8 @@ internal sealed record SystemControlReceipt(
     CaptureScheduleOverrideMode? OverrideMode,
     DateTimeOffset? OverrideStartUtc,
     DateTimeOffset? OverrideEndUtc,
-    string? Detail = null);
+    string? Detail = null,
+    SystemControlCancellation? Cancellation = null);
 
 internal sealed class CameraAgentSystemUiService(
     AuthenticationStateProvider authenticationStateProvider,
@@ -329,7 +337,7 @@ internal sealed class CameraAgentSystemUiService(
                         CameraAgentControlPhase.Cancelled => SystemControlOutcome.Cancelled,
                         CameraAgentControlPhase.Skipped => SystemControlOutcome.Skipped,
                         _ => SystemControlOutcome.Pending
-                    }, null, null, null, LifecycleDetail(item))))
+                    }, null, null, null, LifecycleDetail(item), LifecycleCancellation(item))))
                 .OrderByDescending(static receipt => receipt.OccurredUtc)
                 .Take(bounded)
                 .ToArray();
@@ -413,10 +421,12 @@ internal sealed class CameraAgentSystemUiService(
         { return Unavailable<bool>("Lifecycle cancellation could not be recorded. Refresh before retrying."); }
     }
 
-    internal static string LifecycleDetail(CameraAgentControlReceipt receipt) => LifecycleOutcomeDetail(receipt) +
-        (receipt.Cancellation is { } cancelled ? $" Cancelled by {cancelled.Actor} at {cancelled.Utc:O}: {cancelled.Reason}." : string.Empty);
+    /// <summary>The cancellation of a lifecycle receipt, with its recorded actor mapped as every other actor is.</summary>
+    internal static SystemControlCancellation? LifecycleCancellation(CameraAgentControlReceipt receipt)
+        => receipt.Cancellation is { } cancelled ? new(MapActor(cancelled.Actor), cancelled.Utc, cancelled.Reason) : null;
 
-    private static string LifecycleOutcomeDetail(CameraAgentControlReceipt receipt) => receipt.Phase switch
+    /// <summary>What a lifecycle receipt's phase means. A cancellation is carried apart, by <see cref="LifecycleCancellation"/>.</summary>
+    internal static string LifecycleDetail(CameraAgentControlReceipt receipt) => receipt.Phase switch
     {
         CameraAgentControlPhase.Queued => "Waiting for the installer worker.",
         CameraAgentControlPhase.Draining => "Stopping acquisition and settling accepted processing and delivery.",

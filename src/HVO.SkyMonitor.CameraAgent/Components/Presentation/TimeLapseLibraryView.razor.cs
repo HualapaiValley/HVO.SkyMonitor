@@ -55,11 +55,17 @@ public sealed partial class TimeLapseLibraryView : ComponentBase, IDisposable
         _loading = false;
     }
 
-    private static string Progress(CameraAgentTimeLapseLibraryEntry entry) => entry.State == NightlyProductLibraryState.Stalled
+    // A daily job stays queued while its hourly segments are generated, so a queued row says how far those have got
+    // rather than reading as work that has not begun. A retry keeps its own wording: its segments finished earlier.
+    internal static string Progress(CameraAgentTimeLapseLibraryEntry entry) => entry.State == NightlyProductLibraryState.Stalled
         ? $"Generation disabled; recorded job state: {entry.JobState}"
         : entry.JobState switch
         {
-            CameraAgentTimeLapseState.Queued => entry.ReasonCode is "timelapse.recovering" or "timelapse.explicit-retry" ? "Retrying (queued)" : "Queued",
+            CameraAgentTimeLapseState.Queued when entry.ReasonCode is "timelapse.recovering" or "timelapse.explicit-retry" => "Retrying (queued)",
+            CameraAgentTimeLapseState.Queued when entry.HourlyGenerationStarted => entry.HourlyJobsFinished < entry.HourlyJobs
+                ? FormattableString.Invariant($"Generating hourly segments ({entry.HourlyJobsFinished} of {entry.HourlyJobs} finished)")
+                : "Hourly segments finished; daily video queued",
+            CameraAgentTimeLapseState.Queued => "Queued",
             CameraAgentTimeLapseState.Working => "Running",
             CameraAgentTimeLapseState.Failed => "Generation failed",
             CameraAgentTimeLapseState.Unavailable => "Generation unavailable",

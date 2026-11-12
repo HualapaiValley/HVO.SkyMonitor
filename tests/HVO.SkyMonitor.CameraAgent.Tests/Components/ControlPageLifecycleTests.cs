@@ -2,6 +2,7 @@ using Bunit;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -343,6 +344,54 @@ public sealed partial class ControlPageTests
             StringAssert.Contains(cut.Markup, "restart stop is still pending", StringComparison.Ordinal);
             Assert.IsTrue(cut.Find("#control-capture").HasAttribute("disabled"));
             Assert.IsTrue(cut.Find("#control-drain").HasAttribute("disabled"));
+        });
+    }
+
+    [TestMethod]
+    public void CancelledLifecycleReceiptShowsTheActorLabelAndSiteTimeNotTheSubjectOrUtcStamp()
+    {
+        using var context = new BunitContext();
+        var (_, system, _) = Configure(context);
+        var calendar = HVO.SkyMonitor.CameraAgent.Common.Gallery.ObservingDayCalendar.Create("America/Phoenix");
+        context.Services.AddSingleton<HVO.SkyMonitor.CameraAgent.Common.Gallery.IObservingDayCalendarProvider>(
+            new HVO.SkyMonitor.CameraAgent.Common.Gallery.FixedObservingDayCalendarProvider(calendar));
+        const string subject = "9b1d6c1e-4f0a-4c57-8a55-2f6f0e7c3a10";
+        var cancelledUtc = OperatorUiTestData.Now.AddMinutes(-5);
+        var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Drain, subject, "maintenance", 7, OperatorUiTestData.Now.AddMinutes(-9));
+        // A cancellation is recorded while the operation is still active, and stays on its terminal receipt.
+        var active = new CameraAgentControlReceipt(request, CameraAgentControlPhase.Draining,
+            [new(CameraAgentControlPhase.Queued, request.RequestedUtc, "lifecycle.queued"), new(CameraAgentControlPhase.Draining, request.RequestedUtc, "lifecycle.draining")],
+            Cancellation: new(subject, cancelledUtc, "Weather cleared"));
+        system.LifecycleHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentControlView>.Success(new(true, [active])));
+        system.ReceiptsHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<SystemControlReceipt>>.Success(
+        [
+            new(cancelledUtc, SystemControlReceiptKind.Drain, SystemControlActor.LocalOwner, "maintenance", SystemControlOutcome.Cancelled,
+                null, null, null, CameraAgentSystemUiService.LifecycleDetail(active), CameraAgentSystemUiService.LifecycleCancellation(active)),
+            new(OperatorUiTestData.Now, SystemControlReceiptKind.ScheduledRestart, SystemControlActor.Installer, "planned", SystemControlOutcome.Applied,
+                null, null, null, "Restart verified; prior running state restored.")
+        ]));
+        var expected = $"Cancelled by Local owner at {new CameraAgentSiteTime(calendar).Format(cancelledUtc)}: Weather cleared.";
+        StringAssert.Contains(expected, "04:55:00 -07:00 (America/Phoenix)", StringComparison.Ordinal);
+
+        var cut = context.Render<ControlPage>();
+
+        cut.WaitForAssertion(() =>
+        {
+            var rows = cut.FindAll(".control-receipts tbody tr");
+            Assert.HasCount(2, rows);
+            // Exactly the cancelled receipt carries the wording; a receipt without a cancellation gains none.
+            var cancelled = rows.Single(static row => row.TextContent.Contains("Cancelled by", StringComparison.Ordinal));
+            StringAssert.Contains(cancelled.TextContent, "Stopping acquisition and settling accepted processing and delivery. " + expected, StringComparison.Ordinal);
+            StringAssert.Contains(cancelled.TextContent, "Local owner", StringComparison.Ordinal);
+            // The active-operation banner is the one that holds the cancel control; the page has other status banners.
+            var banner = cut.Find("#control-lifecycle-cancel").ParentElement!;
+            StringAssert.Contains(banner.TextContent, "Stopping acquisition and settling accepted processing and delivery. " + expected, StringComparison.Ordinal);
+            foreach (var text in new[] { cut.Find(".control-receipts").TextContent, banner.TextContent })
+            {
+                Assert.DoesNotContain(subject, text, StringComparison.Ordinal);
+                Assert.DoesNotContain(cancelledUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture), text, StringComparison.Ordinal);
+                Assert.DoesNotContain("+00:00", text, StringComparison.Ordinal);
+            }
         });
     }
 

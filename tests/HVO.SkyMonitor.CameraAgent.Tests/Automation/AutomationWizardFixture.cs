@@ -17,8 +17,13 @@ internal sealed class AutomationWizardFixture : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "hvo-wizard", Guid.NewGuid().ToString("N"));
 
-    internal AutomationWizardFixture(string zone = "America/Phoenix", double latitude = 35.347, double longitude = -113.878)
+    private readonly ILocalAutomationTaskRegistry _registry;
+
+    /// <summary>A registry other than the synthetic one backs both the store and the service, as one host would.</summary>
+    internal AutomationWizardFixture(string zone = "America/Phoenix", double latitude = 35.347, double longitude = -113.878,
+        ILocalAutomationTaskRegistry? registry = null)
     {
+        _registry = registry ?? Registry;
         Calendar = new(ObservingDayCalendar.ForDeployment(LocalAutomationWindowTests.Site(zone, latitude, longitude)));
         Planner = new(Calendar);
         Store = NewStore();
@@ -47,7 +52,7 @@ internal sealed class AutomationWizardFixture : IDisposable
         await Store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
-    private SqliteLocalAutomationStore NewStore() => new(Registry, new StubCaptureSequenceSource(),
+    private SqliteLocalAutomationStore NewStore() => new(_registry, new StubCaptureSequenceSource(),
         Options.Create(new CameraAgentHostOptions { RawIngressRoot = _root }),
         Clock, NullLogger<SqliteLocalAutomationStore>.Instance, windowPlanner: Planner);
 
@@ -61,7 +66,7 @@ internal sealed class AutomationWizardFixture : IDisposable
         authorization.Setup(service => service.AuthorizeAsync(principal, null, It.IsAny<string>()))
             .Returns(() => Task.FromResult(Authorized ? AuthorizationResult.Success() : AuthorizationResult.Failed()));
         return new(new WizardAuthentication(principal), authorization.Object, Store,
-            NullLogger<CameraAgentAutomationUiService>.Instance, Registry, Planner, Clock);
+            NullLogger<CameraAgentAutomationUiService>.Instance, _registry, Planner, Clock);
     }
 
     public void Dispose()

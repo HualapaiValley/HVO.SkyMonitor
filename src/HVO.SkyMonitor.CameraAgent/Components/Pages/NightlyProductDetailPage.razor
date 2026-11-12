@@ -120,7 +120,7 @@
                     <div><dt>Admitted previews</dt><dd>@summary.Captures.Count / @summary.CandidateCount candidates</dd></div>
                     <div><dt>Sampled coverage</dt><dd>@summary.SampledBins / @summary.TotalBins five-minute bins</dd></div>
                     <div><dt>Representative frame</dt><dd>@summary.RepresentativeArtifactId</dd></div>
-                    <div><dt>Events</dt><dd>Unavailable; no event count was supplied</dd></div>
+                    <div><dt>Events</dt><dd data-nightly-fact="events">@EventCountText(summary)</dd></div>
                 </dl>
                 @foreach (var exclusion in summary.Exclusions)
                 {

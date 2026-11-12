@@ -194,6 +194,59 @@ public sealed class InstallerLifecycleControlIntegrationTests
     }
 
     [TestMethod]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task StandaloneDrainCancelledOrBoundedAfterClaim_PublishesMatchingReceiptAndStaysPausedUntilExplicitResume(bool cancel, bool backlog)
+    {
+        var fixture = new Fixture(false) { OutboxPending = backlog ? 1 : 0, OutboxRetry = backlog };
+        await using var owned = fixture.ConfigureAwait(false);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", Guid.NewGuid(), fixture.Handler);
+        await client.ExchangeAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Drain, "owner", "maintenance",
+            fixture.Capture.Snapshot.Version, DateTimeOffset.UtcNow);
+        var queued = await fixture.Controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
+        // The browser cancellation lands on the claimed Draining projection after the installer's pause was accepted.
+        if (cancel)
+            fixture.AfterPauseAsync = () => fixture.Controls.CancelAsync(queued.Request.OperationId, CancellationToken.None,
+                "owner-drain-cancel", "Cancel the claimed drain");
+        var terminal = await new InstallerControlVerifier(client, _ => Task.CompletedTask, TimeProvider.System,
+            new(TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(5)))
+            .ExecuteAsync(queued, CancellationToken.None).ConfigureAwait(false);
+
+        var (phase, code) = backlog
+            ? (CameraAgentControlPhase.Failed, "drain.timeout")
+            : (CameraAgentControlPhase.Cancelled, "drain.cancelled-paused");
+        Assert.AreEqual(phase, terminal.Phase);
+        Assert.AreEqual(code, terminal.Events[^1].Code);
+        if (!backlog) Assert.AreEqual("owner-drain-cancel", terminal.Cancellation?.Actor);
+        Assert.IsFalse(terminal.ResumeRequested);
+        Assert.IsFalse(terminal.RestartRequested);
+        Assert.AreEqual(0, fixture.RestartCalls);
+        Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+
+        var projected = (await fixture.Controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        Assert.AreEqual(phase, projected.Phase);
+        Assert.AreEqual(code, projected.Events[^1].Code);
+        Assert.AreEqual(cancel ? "owner-drain-cancel" : null, projected.Cancellation?.Actor);
+        Assert.AreEqual(cancel ? "Cancel the claimed drain" : null, projected.Cancellation?.Reason);
+        // Recent control receipts no longer pairs a "Drained" success line with the operator's cancellation.
+        var detail = CameraAgentSystemUiService.LifecycleDetail(projected);
+        Assert.IsFalse(detail.Contains("Drained;", StringComparison.Ordinal), detail);
+        StringAssert.Contains(detail, "No automatic resume was issued", StringComparison.Ordinal);
+        StringAssert.Contains(detail, code, StringComparison.Ordinal);
+        if (cancel) StringAssert.Contains(detail, "Cancelled by owner-drain-cancel", StringComparison.Ordinal);
+
+        // Terminal settlement releases the lifecycle fence; only an explicit authorized resume reopens capture.
+        Assert.IsFalse(fixture.Controls.AdmissionHeld);
+        await fixture.Capture.ResumeAsync("explicit-resume-after-drain", fixture.Capture.Snapshot.Version, "owner", "checked drain receipt",
+            CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CaptureAdmissionState.Running, fixture.Capture.Snapshot.State);
+        using var admitted = await fixture.Capture.EnterAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     [DataRow(241)]
     [DataRow(300)]
     [DataRow(360)]

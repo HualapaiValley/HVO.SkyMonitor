@@ -40,6 +40,17 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         Task<CameraAgentControlReceipt> FinishExecutionAsync(CameraAgentControlReceipt current, CameraAgentControlPhase phase, string code) =>
             FinishAsync(current, phase, code, restartDefinitelyNotIssued: !restartCallIssued);
         var stage = "claim";
+        // CameraAgent accepts only successors that keep every field it has seen, so no exchange, including the failure and
+        // recovery path, may publish a field the journal lacks. A field is adopted only after its journal write succeeds;
+        // a failed write is reported as a journal failure, not as the stage that produced the field.
+        async Task<CameraAgentControlReceipt> JournalAsync(CameraAgentControlReceipt next)
+        {
+            var resumeStage = stage;
+            stage = "journal";
+            await persist(next).ConfigureAwait(false);
+            stage = resumeStage;
+            return next;
+        }
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -61,9 +72,18 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             var drained = await BoundedAsync(token => client.DrainAsync(receipt.Request, token), _budgets.Drain, cancellationToken)
                 .ConfigureAwait(false);
             if (!Drained(drained)) throw new InstallerException("The lifecycle boundary is not drained.");
-            receipt = receipt with { PausedVersion = drained.CaptureVersion, DrainedCaptureSequence = drained.CaptureSequence };
+            receipt = await JournalAsync(receipt with { PausedVersion = drained.CaptureVersion, DrainedCaptureSequence = drained.CaptureSequence })
+                .ConfigureAwait(false);
             if (receipt.Request.Kind == CameraAgentControlKind.Drain)
-                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
+            {
+                // A claimed cancellation is observed at the same post-drain boundary as a Restart's. A standalone Drain never
+                // resumes, so capture stays paused either way; an unreadable boundary cannot be reported as an uncancelled drain.
+                stage = "drained";
+                var afterDrain = await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
+                return afterDrain.CancelRequested
+                    ? await FinishExecutionAsync(receipt, CameraAgentControlPhase.Cancelled, "drain.cancelled-paused").ConfigureAwait(false)
+                    : await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
+            }
 
             var beforeRestart = await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
             ThrowIfCancelled(beforeRestart);
@@ -72,7 +92,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                 return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.boundary-changed").ConfigureAwait(false);
             var verificationStarted = timeProvider.GetTimestamp();
             var verificationDeadline = timeProvider.GetUtcNow() + _budgets.Verify;
-            receipt = receipt with { VerificationDeadlineUtc = verificationDeadline };
+            receipt = await JournalAsync(receipt with { VerificationDeadlineUtc = verificationDeadline }).ConfigureAwait(false);
             // Claim cancellation before committing to the potentially ambiguous restart effect.
             ThrowIfCancelled(await ReadAsync(receipt, cancellationToken).ConfigureAwait(false));
             cancellationToken.ThrowIfCancellationRequested();
@@ -93,8 +113,10 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             }
             catch (InstallerControlRefusalException)
             {
-                return await FinishExecutionAsync(receipt with { RestartRefused = true }, CameraAgentControlPhase.Failed,
-                    "restart.refused").ConfigureAwait(false);
+                // The definite refusal authorizes the owned-pause restore; it counts only once journaled. If that write
+                // fails, the receipt stays ambiguous and nothing is restored.
+                receipt = await JournalAsync(receipt with { RestartRefused = true }).ConfigureAwait(false);
+                return await FinishExecutionAsync(receipt, CameraAgentControlPhase.Failed, "restart.refused").ConfigureAwait(false);
             }
             catch (HttpRequestException)
             {
