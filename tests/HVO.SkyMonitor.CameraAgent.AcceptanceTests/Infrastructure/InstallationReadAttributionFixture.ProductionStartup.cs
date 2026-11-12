@@ -135,8 +135,15 @@ internal sealed partial class InstallationReadAttributionFixture
                     var relative = string.Create(CultureInfo.InvariantCulture,
                         $"derived/{timestamp:yyyy/MM/dd}/Metadata/{timestamp:yyyy-MM-dd_HH-mm-ss.fff'Z'}-{artifactId:N}");
                     var data = JsonSerializer.SerializeToUtf8Bytes(new { SchemaVersion = "synthetic-metadata-v1", CaptureId = captureId, Product = product, Data = metadataPadding }, EvidenceJson);
-                    var sidecar = JsonSerializer.SerializeToUtf8Bytes(new { SchemaVersion = "synthetic-processing-product-v1", CaptureId = captureId, ArtifactId = artifactId,
-                        RelativeArtifactPath = relative + ".json", PayloadSha256 = Convert.ToHexString(SHA256.HashData(data)), Data = manifestPadding }, EvidenceJson);
+                    var sidecar = JsonSerializer.SerializeToUtf8Bytes(new
+                    {
+                        SchemaVersion = "synthetic-processing-product-v1",
+                        CaptureId = captureId,
+                        ArtifactId = artifactId,
+                        RelativeArtifactPath = relative + ".json",
+                        PayloadSha256 = Convert.ToHexString(SHA256.HashData(data)),
+                        Data = manifestPadding
+                    }, EvidenceJson);
                     Write(relative + ".json", data);
                     Write(relative + ".manifest.json", sidecar);
                 }

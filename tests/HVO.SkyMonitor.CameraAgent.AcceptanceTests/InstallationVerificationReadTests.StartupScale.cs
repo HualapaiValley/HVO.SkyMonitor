@@ -130,9 +130,15 @@ public sealed partial class InstallationVerificationReadTests
                         fixture.StopStartupForBudgetProbe();
                         try { await startup.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false); }
                         catch (Exception exception) when (exception is OperationCanceledException or InvalidOperationException) { }
-                        starts.Add(new { Kind = construct ? "legacy-adoption" : "restart", Healthy = false,
-                            TimeToHealthyLowerBoundMs = ready.ElapsedMs, HealthBudgetMs = 180_000,
-                            ProtectCalls = fixture.StartupProtection?.Protects, UnprotectCalls = fixture.StartupProtection?.Unprotects });
+                        starts.Add(new
+                        {
+                            Kind = construct ? "legacy-adoption" : "restart",
+                            Healthy = false,
+                            TimeToHealthyLowerBoundMs = ready.ElapsedMs,
+                            HealthBudgetMs = 180_000,
+                            ProtectCalls = fixture.StartupProtection?.Protects,
+                            UnprotectCalls = fixture.StartupProtection?.Unprotects
+                        });
                         return false;
                     }
                     await startup.ConfigureAwait(false);
@@ -147,9 +153,15 @@ public sealed partial class InstallationVerificationReadTests
                     Assert.IsTrue(qualificationAtHealth is "qualified" or "scrub-pending");
                     if (startupOnly)
                     {
-                        starts.Add(new { Kind = construct ? "legacy-adoption" : "restart", Healthy = true,
-                            TimeToHealthyMs = ready.ElapsedMs, HealthStatusAtInstallerAcceptance = healthStatus,
-                            QualificationAtHealth = qualificationAtHealth, RecentWindows = recent.Windows.Skip(recentBefore).ToArray() });
+                        starts.Add(new
+                        {
+                            Kind = construct ? "legacy-adoption" : "restart",
+                            Healthy = true,
+                            TimeToHealthyMs = ready.ElapsedMs,
+                            HealthStatusAtInstallerAcceptance = healthStatus,
+                            QualificationAtHealth = qualificationAtHealth,
+                            RecentWindows = recent.Windows.Skip(recentBefore).ToArray()
+                        });
                         return true;
                     }
                     var protectedStart = Stopwatch.GetTimestamp();

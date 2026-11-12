@@ -175,7 +175,7 @@ public sealed partial class ProtectedDeploymentLocationStore
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var path in paths)
         {
-            hash.AppendData(File.Exists(path) ? [ (byte)1 ] : [ (byte)0 ]);
+            hash.AppendData(File.Exists(path) ? [(byte)1] : [(byte)0]);
             if (File.Exists(path)) hash.AppendData(File.ReadAllBytes(path));
         }
         return hash.GetHashAndReset();
