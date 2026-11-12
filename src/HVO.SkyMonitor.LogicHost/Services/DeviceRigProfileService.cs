@@ -241,13 +241,13 @@ internal sealed class DeviceRigProfileService(
                 {
                     writer.WriteNumberValue(i64);
                 }
-                else if (element.TryGetDouble(out var d))
+                else if (element.TryGetDouble(out var d) && double.IsFinite(d))
                 {
                     writer.WriteNumberValue(d);
                 }
                 else
                 {
-                    writer.WriteRawValue(element.GetRawText());
+                    throw new JsonException("RigConfigJson contains an invalid current camera rig configuration.");
                 }
                 break;
 

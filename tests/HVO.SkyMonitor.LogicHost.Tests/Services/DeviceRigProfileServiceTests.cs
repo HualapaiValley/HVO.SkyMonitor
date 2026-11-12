@@ -214,8 +214,15 @@ public sealed class DeviceRigProfileServiceTests
     [DataRow("invalid-gap")]
     [DataRow("invalid-identity")]
     [DataRow("null-identity")]
+    [DataRow("positive-azimuth-overflow")]
+    [DataRow("negative-azimuth-overflow")]
+    [DataRow("positive-elevation-overflow")]
+    [DataRow("negative-elevation-overflow")]
+    [DataRow("positive-gap-overflow")]
+    [DataRow("negative-gap-overflow")]
     public async Task UpsertAsync_WithInvalidHorizon_ReturnsSanitizedValidationProblemWithoutMutation(string invalidCase)
     {
+        ArgumentNullException.ThrowIfNull(invalidCase);
         await using var context = CreateContext();
         var timeProvider = new FixedTimeProvider(DateTimeOffset.UtcNow);
         var registration = await SeedRegistrationAsync(context, bootstrapped: true).ConfigureAwait(false);
@@ -245,9 +252,19 @@ public sealed class DeviceRigProfileServiceTests
             case "invalid-gap": horizon["maximumInterpolationGapDegrees"] = 91; break;
             case "invalid-identity": horizon["siteIdentitySha256"] = "invalid"; break;
             case "null-identity": horizon["geometryIdentitySha256"] = null; break;
+            case "positive-azimuth-overflow": horizon["samples"]![0]!["azimuthDegrees"] = JsonNode.Parse("1e400"); break;
+            case "negative-azimuth-overflow": horizon["samples"]![0]!["azimuthDegrees"] = JsonNode.Parse("-1e400"); break;
+            case "positive-elevation-overflow": horizon["samples"]![0]!["elevationDegrees"] = JsonNode.Parse("1e400"); break;
+            case "negative-elevation-overflow": horizon["samples"]![0]!["elevationDegrees"] = JsonNode.Parse("-1e400"); break;
+            case "positive-gap-overflow": horizon["maximumInterpolationGapDegrees"] = JsonNode.Parse("1e400"); break;
+            case "negative-gap-overflow": horizon["maximumInterpolationGapDegrees"] = JsonNode.Parse("-1e400"); break;
             default: Assert.Fail("Unknown invalid horizon case."); break;
         }
         var invalidJson = validJson.ToJsonString();
+        if (invalidCase.EndsWith("-overflow", StringComparison.Ordinal))
+        {
+            invalidJson.Should().Contain("1e400");
+        }
         Func<Task> act = () => service.UpsertAsync(new DeviceRigProfileUpsertRequest(
             registration.DeviceId, "device-key", invalidJson), CancellationToken.None);
 
