@@ -389,8 +389,8 @@ public sealed class AnnotationEnvironmentSourceTests
                 CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
 
-    // Annotation without a projected scene on a module that is not scene-bearing: image circle and cardinals from the
-    // rig projection, plus metadata corners.
+    // Annotation without scene provenance or a projected scene: metadata corners alone (regression for Refs #1789),
+    // or metadata corners with the rig's image circle and cardinal directions when drawProjection is enabled.
     private static CameraModuleConfig CreateProjectionConfiguration(string root, bool drawProjection = true)
         => ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
         {
