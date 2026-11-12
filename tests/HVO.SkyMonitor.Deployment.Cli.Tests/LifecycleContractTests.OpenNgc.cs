@@ -6,6 +6,78 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 public sealed partial class LifecycleContractTests
 {
     [TestMethod]
+    [DataRow(true, false)]
+    [DataRow(false, false)]
+    [DataRow(true, true)]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task OpenNgcCompletedReRunPreservesSelectionHistoryAndMount(bool enabled, bool changeLimits)
+    {
+        using var fixture = await DeepSkyFixtureAsync();
+        var deepSky = DeepSkyIdentity(fixture);
+        var previous = fixture.Manifest with
+        {
+            DeepSkyCatalog = enabled ? deepSky : null,
+            PreviousDeepSkyCatalog = enabled ? null : deepSky,
+            HasPreviousDeepSkySelection = true
+        };
+        var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        var request = new InstallRequest
+        {
+            AllowTestProductRoot = true,
+            ProductRoot = fixture.Root,
+            InstanceId = fixture.InstanceId,
+            FriendlyName = previous.FriendlyName,
+            OwnerEmail = previous.OwnerEmail,
+            LatitudeDegrees = previous.LatitudeDegrees,
+            LongitudeDegrees = previous.LongitudeDegrees,
+            ElevationMeters = previous.ElevationMeters,
+            TimeZoneId = previous.TimeZoneId,
+            BindAddress = previous.BindAddress,
+            Port = previous.Port
+        };
+        var target = new ContainerResourceLimits(3m, 6L * 1024 * 1024 * 1024, 256, true, true);
+        var resources = changeLimits ? target : previous.Resources;
+        var rendered = ComposeDeployment.Render(request, fixture.Paths, fixture.InstanceId, fixture.ApplicationIdentity,
+            fixture.Uid, fixture.Gid, previous.Image.ImageId, previous.Catalog.PackageVersion, result.PasswordFile,
+            "verification-token", "lifecycle-token", false, resources, deepSkyCatalog: previous.DeepSkyCatalog);
+        Assert.AreEqual(enabled, rendered.ComposeText.Contains("/app/deep-sky-catalog:ro", StringComparison.Ordinal));
+        Assert.AreEqual(enabled, rendered.EnvironmentText.Contains("HVO_DEEP_SKY_CATALOG_ROOT=", StringComparison.Ordinal));
+        InstanceManifest Rebuild(InstanceManifest retained) => CameraAgentInstaller.CreateManifest(request, fixture.Paths,
+            fixture.InstanceId, retained.InstallationId, fixture.ApplicationIdentity, fixture.Uid, fixture.Gid,
+            "verification-token", "lifecycle-token", rendered.Files, retained.ComposeModelSha256, retained.Catalog,
+            retained.Image, retained.DockerDaemon, retained, resources, keepPreviousStateSnapshot: true);
+        // Hold every other immutable field to a real installer rendering, then apply the retained selection history.
+        var originalSelection = previous;
+        previous = Rebuild(previous with { DeepSkyCatalog = null, PreviousDeepSkyCatalog = null, HasPreviousDeepSkySelection = false }) with
+        {
+            DeepSkyCatalog = originalSelection.DeepSkyCatalog,
+            PreviousDeepSkyCatalog = originalSelection.PreviousDeepSkyCatalog,
+            HasPreviousDeepSkySelection = true
+        };
+        var rebuilt = Rebuild(previous);
+        Assert.AreEqual(previous, rebuilt, "The completed-install equality guard must accept this retained selection history.");
+        Assert.AreEqual(previous.DeepSkyCatalog, rebuilt.DeepSkyCatalog);
+        Assert.AreEqual(previous.PreviousDeepSkyCatalog, rebuilt.PreviousDeepSkyCatalog);
+        Assert.AreEqual(previous.HasPreviousDeepSkySelection, rebuilt.HasPreviousDeepSkySelection);
+        if (changeLimits)
+        {
+            var written = ComposeDeployment.Write(request, fixture.Paths, fixture.InstanceId, fixture.ApplicationIdentity,
+                fixture.Uid, fixture.Gid, previous.Image.ImageId, previous.Catalog.PackageVersion, result.PasswordFile,
+                "verification-token", "lifecycle-token", false, resources, deepSkyCatalog: previous.DeepSkyCatalog);
+            Assert.AreEqual(rendered.ComposeText, await File.ReadAllTextAsync(written.ComposeFile));
+            Assert.AreEqual(rendered.EnvironmentText, await File.ReadAllTextAsync(written.EnvironmentFile));
+        }
+        var completed = new CameraAgentInstaller.CompletedInstance(rebuilt, result, fixture.Paths, previous.Catalog,
+            previous.Image, previous.DockerDaemon, fixture.ApplicationIdentity, "verification-token", "lifecycle-token",
+            rendered.Files, resources, changeLimits, false, false, false, false,
+            InstallRecordLocation.For(fixture.Root, request.ProductionProductRoot), DeploymentPlanAction.Unchanged,
+            CameraConfigurationDefaults.Current, [], rendered.Files.ConfigurationSha256, false, false);
+        var plan = CameraAgentInstaller.ReRunPlan(completed);
+        Assert.AreEqual(changeLimits, plan.HasChanges);
+        if (!changeLimits) Assert.AreEqual("Nothing to change: the instance is installed as the answers describe.", plan.Summary);
+    }
+
+    [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands()
     {

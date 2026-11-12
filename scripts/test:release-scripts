@@ -1167,6 +1167,8 @@ expect_assets_refusal() {
     fi
     grep -Fq -- "$message" "$test_root/assets.err" || { cat "$test_root/assets.err" >&2; fail "the asset script refused $* without saying: $message"; }
 }
+# A second data family must not bypass the separate HYG 4.4 adoption hold.
+grep -Fq 'build-hyg-v42.sh --fetch' "$repo_root/scripts/release:assets" || fail "the default release star catalog must remain HYG 4.2 until approved"
 expect_assets_refusal "must be a release version" --version 1.2.0+build --output "$test_root/out" --image-oci "$test_root/out.tar"
 expect_assets_refusal "must be a release version" --version v1.2.0 --output "$test_root/out" --image-oci "$test_root/out.tar"
 expect_assets_refusal "already exists" --version 1.2.0-dev.3 --output "$test_root" --image-oci "$test_root/out.tar"

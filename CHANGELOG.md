@@ -65,7 +65,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- CameraAgent can select and roll back OpenNGC independently of its star catalog, configure NGC/Messier/IC queries, and show a separate expected deep-sky layer with labels, approximate outlines and styling. Releases include the licensed OpenNGC bundle alongside approved HYG 4.4. Refs #1388
+- CameraAgent can select and roll back OpenNGC independently of its star catalog, configure NGC/Messier/IC queries, and show a separate expected deep-sky layer with labels, approximate outlines and styling. Releases include the licensed OpenNGC bundle alongside approved HYG 4.2; HYG 4.4 remains an explicit selection pending release approval. Refs #1388
 
 - Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 

@@ -49,6 +49,36 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.AreEqual(2, selected.Reads);
     }
 
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task OpenNgcActivationAndRollbackResolveBothQueriesFromTheCapturedGraph(bool activateGeneral)
+    {
+        var staging = new RecordingProjectedSceneStagingStore();
+        var selected = new TestDeepSkyGraphSelection();
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new CuratedVirtualCatalog(),
+            new ProjectedSceneStore(), stagingStore: staging, graphSelection: selected);
+        await using var lifetime = module.ConfigureAwait(false);
+        CapturePipelineConfig Pipeline(bool general) => new([new CaptureProcessingStepConfig("ProjectedScene", DependsOn: ["$raw"],
+            Options: JsonSerializer.SerializeToElement(new { deepSkyEnabled = general,
+                curatedAnnotations = new CuratedDeepSkyOptions(Enabled: !general) }))]);
+        var config = CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
+        {
+            Module = new CameraModuleDescriptor("VirtualSky", JsonSerializer.SerializeToElement(new
+            { seed = 1017, fixedSequenceStartUtc = FixtureUtc, fixedSceneUtc = FixtureUtc })),
+            Pipeline = Pipeline(!activateGeneral)
+        };
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        foreach (var general in new[] { activateGeneral, !activateGeneral })
+        {
+            selected.Selection = new(general ? "general" : "curated", Pipeline(general));
+            var result = await module.CaptureAsync(new(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(selected.Selection.RevisionId, result.Frame!.Metadata.Scene!.CaptureGraphRevisionId);
+            Assert.AreEqual(general ? ProjectedDeepSky.QueryAlgorithmVersion : ProjectedDeepSky.CurrentAlgorithmVersion,
+                staging.Scenes[^1].DeepSky!.AlgorithmVersion);
+        }
+    }
+
     private sealed class TestDeepSkyGraphSelection : IVirtualSkyGraphSelection
     {
         public VirtualSkyGraphSelection? Selection { get; set; }

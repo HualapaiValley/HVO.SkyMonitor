@@ -247,6 +247,7 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
 
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool DeepSkyEnabled { get; init; }
     public bool DeepSkyNgc { get; init; } = true;
     public bool DeepSkyMessier { get; init; } = true;

@@ -9,15 +9,16 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [DataRow(false, 1)]
-    // The independent catalog reader also advances a compatibility label. Reverting only the
-    // minimum revision cannot remove that checkpoint boundary from the current image.
-    [DataRow(true, 1)]
+    [DataRow(true, 0)]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task SchemaThreeEnvironmentalUpgradePlansTheCheckpointBeforeCandidateStartup(bool revertBoundary, int expectedSnapshots)
     {
         var previous = CameraAgentSnapshotRollbackExceptionTests.ReadSchemaThreeImageLabels();
         var candidate = CameraAgentSnapshotRollbackExceptionTests.ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        // Isolate the environmental checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in CameraAgentImageLabels.StateBoundaryLabels.Where(static label => label != "io.hvo.skymonitor.minimum-compatible-revision"))
+            candidate[label] = previous[label];
         if (revertBoundary) candidate[boundary] = previous[boundary];
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: image =>
             CameraAgentImageLabels.Identity(image.Source, image.ImmutableReference, image.ImageId, image.Architecture, null,

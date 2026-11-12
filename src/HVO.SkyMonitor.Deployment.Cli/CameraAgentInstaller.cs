@@ -741,7 +741,7 @@ internal sealed partial class CameraAgentInstaller
     /// in its Compose model: a limits change interrupted after its manifest commit, which the caller repairs. The manifest
     /// was just proved against a fresh render, so the result follows it.
     /// </summary>
-    private static InstanceManifest CreateManifest(
+    internal static InstanceManifest CreateManifest(
         InstallRequest request,
         InstallationPaths paths,
         Guid instanceId,
@@ -822,7 +822,10 @@ internal sealed partial class CameraAgentInstaller
             // A completed installation's re-run describes the manifest as it is, retained database snapshot included. Any
             // other install (a fresh one, a resumed one, the reinstall after a state reset) drops it, so a later
             // rollback can never bring back databases from before the reset.
-            keepPreviousStateSnapshot ? previous?.PreviousStateSnapshot : null);
+            keepPreviousStateSnapshot ? previous?.PreviousStateSnapshot : null,
+            previous?.DeepSkyCatalog,
+            previous?.PreviousDeepSkyCatalog,
+            previous?.HasPreviousDeepSkySelection ?? false);
     }
 
     private static InstallationResult CreateInstalledResult(

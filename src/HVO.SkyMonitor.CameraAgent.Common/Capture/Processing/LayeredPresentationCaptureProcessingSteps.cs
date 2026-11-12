@@ -385,10 +385,11 @@ internal sealed class OverlayManifestCaptureProcessingStep(
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata }, new HashSet<string> { EnvironmentPresentationLayerCaptureProcessingStep.Recipe }, Options.UseRichFrameFacts
             ? new HashSet<string> { PresentationLayerPayloadV1.RichTextSchemaVersion, PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }
             : new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion, PresentationLayerPayloadV1.PreviousSchemaVersion }, Options.EnvironmentVariant),
-        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+        .. (Options.SceneDeepSkyVariant is null ? Array.Empty<CaptureProcessingDependencyRequirement>() :
+        [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { ScenePresentationLayerCaptureProcessingStep.Recipe },
-            new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion,
-                PresentationLayerPayloadV1.RichTextSchemaVersion }, Options.SceneDeepSkyVariant, Required: false),
+            new HashSet<string> { PresentationLayerPayloadV1.CurrentSchemaVersion, PresentationLayerPayloadV1.SemanticSchemaVersion },
+            Options.SceneDeepSkyVariant, Required: false)]),
         .. (Options.SatelliteVariant is null ? Array.Empty<CaptureProcessingDependencyRequirement>() :
         [new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { PresentationProcessingProducts.LayerRecipeName },
@@ -553,6 +554,7 @@ internal sealed class PresentationMaterializerCaptureProcessingStep(
 
 internal class ScenePresentationLayerProcessingStepOptions : IValidatableObject
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool IncludeDeepSkyLayer { get; init; }
     [Required, MaxLength(128)] public string DeepSkyOutputVariant { get; init; } = "scene-deep-sky-v1";
     public bool DeepSkyLabels { get; init; } = true;
@@ -654,7 +656,8 @@ internal sealed class OverlayManifestProcessingStepOptions : IValidatableObject
 
     [Required, MaxLength(128)] public string OutputVariant { get; init; } = "overlay-manifest-v1";
     [Required, MaxLength(128)] public string BasePreviewVariant { get; init; } = "combined-preview";
-    [Required, MaxLength(128)] public string SceneDeepSkyVariant { get; init; } = "scene-deep-sky-v1";
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    [MaxLength(128)] public string? SceneDeepSkyVariant { get; init; }
     [Required, MaxLength(128)] public string SceneAnnotationVariant { get; init; } = "scene-annotation-layer-v1";
     [Required, MaxLength(128)] public string SceneCardinalVariant { get; init; } = "scene-cardinal-layer-v1";
     [Required, MaxLength(128)] public string SceneImageCircleVariant { get; init; } = "scene-image-circle-layer-v1";

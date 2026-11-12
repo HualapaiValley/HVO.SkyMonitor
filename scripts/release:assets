@@ -35,7 +35,7 @@ Options:
   --prebuilt-image <file>      Use a combined, digest-verified OCI archive instead of building the image.
   --builder <name>             The buildx builder to build the image with. Default: the current one.
   --image-repository <repo>    Default: ghcr.io/hualapaivalley/skymonitor-cameraagent.
-  --catalog-bundle <folder>    The approved catalog bundle. Default: build approved HYG 4.4.
+  --catalog-bundle <folder>    The approved catalog bundle. Default: build approved HYG 4.2.
   --deep-sky-catalog-bundle <folder>  The independent OpenNGC bundle. Default: build pinned public OpenNGC.
   --install-script <file>      Attach this install.sh.
   --allow-dirty                Build a modified checkout (local experiments only; the release workflow never passes it).
@@ -187,7 +187,7 @@ fi
 
 # The approved catalog bundle, its bytes checked against the catalog registry by the release tool.
 if [[ -z "$catalog_bundle" ]]; then
-    ./scripts/catalog/build-hyg-v44.sh --fetch "$work/catalog-build" >&2
+    ./scripts/catalog/build-hyg-v42.sh --fetch "$work/catalog-build" >&2
     bundles=("$work"/catalog-build/*.bundle)
     [[ ${#bundles[@]} -eq 1 && -d "${bundles[0]}" ]] || fail "the catalog build did not produce exactly one bundle."
     catalog_bundle="${bundles[0]}"

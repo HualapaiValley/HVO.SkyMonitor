@@ -2988,8 +2988,16 @@ does not name. It never changes a selection. Package versions are unique across
 lineages, so `--catalog-version` names exactly one root. A `select` that changes
 the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
 mount and reauthenticates the Compose model. A current image declares
-`hvo-approved-catalogs-v2` and can select HYG 4.2, HYG 4.4 and
-`hyg-v44-openngc-production`. An image declaring `hvo-approved-catalogs-v1` can
+`hvo-approved-catalogs-v3` (manifest reader 4) and can select HYG 4.2, HYG 4.4,
+retained `hyg-v44-openngc-production`, and independent `openngc-production`.
+The release default remains HYG 4.2; HYG 4.4 requires separate adoption approval.
+An image declaring `hvo-approved-catalogs-v2` reads the older HYG/composed lineages
+but refuses the standalone deep-sky package. OpenNGC has its own selected/previous
+identity and read-only mount: install its bundle with `catalog install`, select
+`openngc-v20260501-p6-s5-r1` with `catalog select --instance-id UUID --catalog-version VERSION`,
+and restore its previous selection with `catalog rollback --instance-id UUID --catalog-family deep-sky`.
+Changing this family preserves the selected star package. Both families' selected,
+previous, backup, historical and interrupted-operation references protect collection. An image declaring `hvo-approved-catalogs-v1` can
 select the two HYG lineages and refuses the composed catalog. An unknown
 catalog-contract label is refused. Cross-lineage selection retires the retained image
 rollback and pins the previous identity as a historical reference. `rollback`

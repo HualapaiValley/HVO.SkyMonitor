@@ -17,7 +17,7 @@ in the Build job, before anything is pushed.
 | `hvo-sky-install-linux-x64`, `hvo-sky-install-linux-arm64` | The self-contained installer. `--version` prints `<version>+<commit>` |
 | `hvo-sky-linux-x64`, `hvo-sky-linux-arm64` | The runtime client, `hvo-sky` (asset kind `cli`, [hvo-sky.md](hvo-sky.md), [#1317](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1317)), self-contained. `--version` prints `<version>+<commit>`. A pre-release tagged before #1317 has none |
 | `skymonitor-cameraagent-<version>-linux-amd64.oci.tar`, `...-linux-arm64.oci.tar` | The CameraAgent image for one platform, as an OCI archive `docker image load` reads |
-| `<catalog version>.bundle.tar.gz` | The approved catalog bundle, under its own version: today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
+| `<catalog version>.bundle.tar.gz` | Independent approved catalog bundles: default stars `hyg-v4.2-p3-s2-r1.bundle.tar.gz` and deep-sky `openngc-v20260501-p6-s5-r1.bundle.tar.gz`. HYG 4.4 remains held pending separate approval |
 | `install.sh` | The entry point, with the pre-release's version written in ([install.sh](deployment-installer.md#installsh), [#1311](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1311)). A pre-release tagged before #1311 has none |
 | `release.json` | The release manifest, RoofController's schema 1 (contract section 4) |
 | `SHA256SUMS` | The SHA-256 of every other file, `release.json` included |
@@ -169,6 +169,12 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    mkdir -m 700 catalog
    tar -xzf hyg-v4.2-p3-s2-r1.bundle.tar.gz -C catalog
    ```
+
+   The OpenNGC archive is independent of the star bundle. To select it after installing the instance, extract
+   `openngc-v20260501-p6-s5-r1.bundle.tar.gz`, run `hvo-sky-install catalog install --catalog-bundle BUNDLE`,
+   then `catalog select --instance-id UUID --catalog-version openngc-v20260501-p6-s5-r1`. Its package selects
+   the deep-sky family. `catalog rollback --instance-id UUID --catalog-family deep-sky` restores that family's
+   previous selection. The shell bootstrap installs the star bundle; OpenNGC selection remains explicit.
 
 4. Install, or upgrade the existing instance. Use the release's own installer. `--release` takes the folder's
    absolute path:

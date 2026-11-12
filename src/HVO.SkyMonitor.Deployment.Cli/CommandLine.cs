@@ -127,7 +127,7 @@ internal static class CommandLine
             ["--catalog-bundle", "--product-root"], OperationFlags, PlanScratchNote),
         new(["catalog", "select"], null, "Switch an instance to another installed catalog version.",
             ["--instance-id", "--catalog-version", "--catalog-family", "--product-root"], OperationFlags, PlanScratchNote),
-        new(["catalog", "rollback"], null, "Return an instance to its previous catalog selection.",
+        new(["catalog", "rollback"], null, "Return an instance to the catalog version it used before.",
             ["--instance-id", "--catalog-family", "--product-root"], OperationFlags, PlanScratchNote),
         new(["catalog", "gc"], null,
             "Remove an installed catalog version that no instance uses.",

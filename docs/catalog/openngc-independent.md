@@ -94,15 +94,14 @@ image rollback because its Compose environment predates the new catalog mount.
 On the graph's Projected scene query panel enable deep-sky annotations, choose
 NGC/Messier/IC and the V-magnitude and angular-size limits. On its Scene overlay
 panel enable the separate deep-sky layer and choose labels, approximate outlines,
-colour, thickness, scale and packaged font. Retain its optional product in the
-overlay manifest. Save, validate and explicitly activate the revision. Current
+colour, thickness, scale and packaged font. Set `sceneDeepSkyVariant` to `scene-deep-sky-v1` in the overlay manifest to retain its optional product. An absent variant keeps the legacy dependency contract unchanged. Save, validate and explicitly activate the revision. Current
 Sky then shows **Deep-sky catalog** independently of **Sky annotations**; toggles
 are remembered separately. Software & catalog reports both identities and the
 OpenNGC attribution. Existing archived scenes keep their own geometry and input
 identity. The selection cache holds at most 32 plans per immutable catalog, each
 with at most 128 candidates; caps are applied before view-dependent geometry. Plans prioritize Messier membership, then featured objects, angular size, known V magnitude and canonical ID so alphabetical IC rows cannot exhaust the default budget.
 
-Releases build approved HYG 4.4 and standalone OpenNGC by default. The release
+Releases build approved HYG 4.2 and standalone OpenNGC by default. HYG 4.4 remains held for separate release approval; registry membership alone does not approve that adoption. The release
 tool accepts `--catalog-bundle` for stars and `--deep-sky-catalog-bundle` for
 OpenNGC. The shell bootstrap selects the star bundle and leaves deep-sky
 installation/selection explicit; release assembly itself installs nothing.

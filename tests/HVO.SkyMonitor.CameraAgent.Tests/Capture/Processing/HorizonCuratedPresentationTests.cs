@@ -56,7 +56,7 @@ public sealed class HorizonCuratedPresentationTests
                 PresentationLayerPayloadJson.Create(fixture.Scene.SceneIdentitySha256, 484, 304), "environment-layer-v1", [source], "fixture-v1"));
             context.BeginNode("manifest", ["preview", "presentation", "environment"]);
             await new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 2),
-                new() { BasePreviewVariant = "preview-v1" }).ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+                new() { BasePreviewVariant = "preview-v1", SceneDeepSkyVariant = "scene-deep-sky-v1" }).ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
             var manifest = LayeredPresentationJson.ParseManifest(context.ProcessingProducts[^1].Payload).Document!;
             Assert.HasCount(6, manifest.Layers);
             Assert.AreEqual(CaptureProcessingContext.CreateArtifactId(deepSky.OutputIdentitySha256),

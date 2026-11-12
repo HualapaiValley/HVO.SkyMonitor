@@ -5,7 +5,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>Independent deep-sky selection using the existing deployment locks, journal and drain protocol.</summary>
 internal static class DeepSkyCatalogSelection
 {
-    private const string Mount = "      - ${HVO_DEEP_SKY_CATALOG_ROOT:?deep-sky catalog root required}:/app/deep-sky-catalog:ro\n";
+    internal const string Mount = "      - ${HVO_DEEP_SKY_CATALOG_ROOT:?deep-sky catalog root required}:/app/deep-sky-catalog:ro\n";
     private static readonly string[] Settings = ["Enabled", "Root", "RequiredCatalogId", "RequiredPackageKind", "RequiredPackageVersion"];
 
     internal static async Task<LifecycleResult> SelectAsync(

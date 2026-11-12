@@ -73,6 +73,9 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var previous = ReadSchemaThreeImageLabels();
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        // Isolate the environmental checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in CameraAgentImageLabels.StateBoundaryLabels.Where(static label => label != "io.hvo.skymonitor.minimum-compatible-revision"))
+            candidate[label] = previous[label];
         if (revertBoundary) candidate[boundary] = previous[boundary];
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-environment-boundary-" + Guid.NewGuid().ToString("N")),
             Guid.NewGuid(), "catalog");
