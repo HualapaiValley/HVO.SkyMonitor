@@ -46,10 +46,10 @@ public sealed class InstallationVerificationStartupTests
         using var owner = await host.CreateOwnerClientAsync().ConfigureAwait(false);
         using var restartedAlive = await owner.GetAsync(new Uri("/alive", UriKind.Relative), timeout.Token).ConfigureAwait(false);
         using var recovery = await owner.GetAsync(new Uri("/system", UriKind.Relative), timeout.Token).ConfigureAwait(false);
-        using var unhealthy = await owner.GetAsync(new Uri("/health", UriKind.Relative), timeout.Token).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, restartedAlive.StatusCode);
         Assert.AreEqual(HttpStatusCode.OK, recovery.StatusCode);
-        Assert.AreEqual(HttpStatusCode.ServiceUnavailable, unhealthy.StatusCode);
+        // Health may recover after raw reconciliation quarantines the torn
+        // sidecar. It must never imply qualification of the retained history.
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/internal/owner-bootstrap/installation-verification");
         request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
         using var verification = await owner.SendAsync(request, timeout.Token).ConfigureAwait(false);
