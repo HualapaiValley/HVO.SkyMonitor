@@ -85,7 +85,8 @@ Install the bundle with `hvo-sky-install catalog install --catalog-bundle BUNDLE
 Select it for an instance with `catalog select --instance-id UUID --catalog-version
 openngc-v20260501-p6-s5-r1`; the package identity selects the deep-sky family.
 Use `catalog rollback --instance-id UUID --catalog-family deep-sky` to restore
-that family's previous selection, including the initially disabled selection.
+that family's previous selection. To disable the family independently of that
+history, run `hvo-sky-install catalog select --instance-id UUID --catalog-family deep-sky --catalog-version disabled`.
 The unqualified rollback command continues to select the previous star catalog.
 Catalog GC retains both selected/previous families and historical, backup and
 incomplete-operation references. A deep-sky transition retires the previous

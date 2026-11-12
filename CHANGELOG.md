@@ -12,6 +12,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
+
+- CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763
+
 - Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
 
 - A tamper found by the recent startup check now forces full byte verification before lifecycle readiness can recover. Complete-archive restore discards its staged clean checkpoint so preserved timestamps cannot inherit incremental trust. Refs #1041
@@ -41,8 +45,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
 
 - Annotated previews with metadata corners, and frame-facts layers, now show a selected environmental reading that has no configured source as MISSING instead of failing on every capture, for example the default corner readings on an NWS-only or sky-quality-meter-only CameraAgent. Refs #1784
-
-- Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
 
 - Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes, identifies the most recent candidate history shown, and shows a failed representative preview without substituting another image. Product cards stack on phones; timeline glyph targets avoid intercepting neighbouring markers and link to equivalent 44px candidate-list controls on the selected day and calendar, with keyboard focus. #1016
 

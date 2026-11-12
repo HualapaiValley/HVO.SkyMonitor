@@ -1096,10 +1096,7 @@ internal sealed partial class RawCaptureIngress :
     };
 
     private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        => StorageRootIdentity.AreEqual(left, right);
 
     private FileStream AcquireProcessLock()
     {

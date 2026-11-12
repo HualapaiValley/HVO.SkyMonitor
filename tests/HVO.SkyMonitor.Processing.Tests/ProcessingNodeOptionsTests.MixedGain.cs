@@ -6,6 +6,16 @@ namespace HVO.SkyMonitor.Processing.Tests;
 public sealed partial class ProcessingNodeOptionsTests
 {
     [TestMethod]
+    public void MixedGainEnableHelpDescribesItsRecipeAndKeepsWindowBinding()
+    {
+        var descriptor = RollingCombinationOptionDescriptors.MixedGain;
+        StringAssert.Contains(descriptor.Find("enabled")!.Help, "mixed-gain", StringComparison.Ordinal);
+        Assert.AreSame(RollingCombinationOptionDescriptors.Descriptor.Find("windowKind"), descriptor.Find("windowKind"));
+        Assert.AreEqual("Centered", ProcessingNodeOptionsCodec.Decode(descriptor,
+            Json("{\"recipe\":\"mixed-gain-normalized-mean\",\"windowKind\":1}")).Get("windowKind").Value.AsText());
+    }
+
+    [TestMethod]
     [DataRow("0", "Trailing")]
     [DataRow("1", "Centered")]
     [DataRow("\"centered\"", "Centered")]

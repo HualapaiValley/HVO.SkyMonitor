@@ -174,7 +174,9 @@ operations manual's change-management rules for a live host. An upgrade pauses c
    `openngc-v20260501-p6-s5-r1.bundle.tar.gz`, run `hvo-sky-install catalog install --catalog-bundle BUNDLE`,
    then `catalog select --instance-id UUID --catalog-version openngc-v20260501-p6-s5-r1`. Its package selects
    the deep-sky family. `catalog rollback --instance-id UUID --catalog-family deep-sky` restores that family's
-   previous selection. The shell bootstrap installs the star bundle; OpenNGC selection remains explicit.
+   previous selection. To disable the family independently of that history, run
+   `hvo-sky-install catalog select --instance-id UUID --catalog-family deep-sky --catalog-version disabled`.
+   The shell bootstrap installs the star bundle; OpenNGC selection remains explicit.
 
 4. Install, or upgrade the existing instance. Use the release's own installer. `--release` takes the folder's
    absolute path:

@@ -2055,8 +2055,9 @@ deleted or installation state is rewound. If the instance is already uninstalled
 `hvo-sky-install cameraagent reinstall --instance-id <uuid>` to start it from its preserved state. While
 installed, run `hvo-sky-install catalog select --instance-id <uuid> --catalog-family deep-sky --catalog-version disabled`.
 This explicit target disables the family independently of previous-selection history; ordinary catalog
-rollback still returns to the previous selection. Then uninstall, reset and reinstall with the original
-inputs, upgrade to an image that supports the independent deep-sky catalog, and reselect OpenNGC. This
+rollback still returns to the previous selection. Then uninstall, run `cameraagent reset-state`, and run
+`hvo-sky-install cameraagent install --instance-id <uuid> <same immutable inputs>` with the original
+install inputs. Upgrade to an image that supports the independent deep-sky catalog and reselect OpenNGC. This
 ordering preserves a usable reinstall path when the original install image predates the new catalog contract.
 
 Pending installs left by an older reset can still retain an active OpenNGC selection. Both `install --plan`
@@ -3216,6 +3217,8 @@ but refuses the standalone deep-sky package. OpenNGC has its own selected/previo
 identity and read-only mount: install its bundle with `catalog install`, select
 `openngc-v20260501-p6-s5-r1` with `catalog select --instance-id UUID --catalog-version VERSION`,
 and restore its previous selection with `catalog rollback --instance-id UUID --catalog-family deep-sky`.
+To disable the family independently of previous-selection history, run
+`hvo-sky-install catalog select --instance-id UUID --catalog-family deep-sky --catalog-version disabled`.
 Changing this family preserves the selected star package. Both families' selected,
 previous, backup, historical and interrupted-operation references protect collection. An image declaring `hvo-approved-catalogs-v1` can
 select the two HYG lineages and refuses the composed catalog. An unknown
