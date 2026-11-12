@@ -11,6 +11,9 @@
          runtimes win. Restore both supported targets so publishing without restoring works after an ordinary restore. -->
     <!-- The bundled SDK props are imported later. Honor a supplied Linux SDK host RID; otherwise query the OS
          architecture here, so an ordinary build on native ARM64 does not silently select x64 assets. -->
+    <!-- _IsPublishing is an SDK-internal property supplied by dotnet publish, not a public MSBuild contract.
+         This depends on global.json's pinned SDK. Revalidate scripts/test:linux-build-rids and implicit/explicit
+         Linux publishing when upgrading the SDK; invoking the Publish target alone is not the CLI publish path. -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' != 'true' and $(NETCoreSdkPortableRuntimeIdentifier.StartsWith('linux-'))">$(NETCoreSdkPortableRuntimeIdentifier)</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and '$(_IsPublishing)' != 'true'">linux-$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())</RuntimeIdentifier>
     <RuntimeIdentifiers Condition="'$(RuntimeIdentifiers)' == ''">linux-x64;linux-arm64</RuntimeIdentifiers>
