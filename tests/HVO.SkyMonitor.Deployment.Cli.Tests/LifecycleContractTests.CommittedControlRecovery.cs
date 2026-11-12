@@ -135,6 +135,7 @@ public sealed partial class LifecycleContractTests
         await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
         {
             Phase = phase,
+            CandidateImage = kind == LifecycleOperationKind.Rollback ? fixture.Manifest.Image : null,
             MutationStarted = true,
             PostMutationContinuity = new("Paused", 1, 42, 0, 0, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow)
         }, CancellationToken.None);
