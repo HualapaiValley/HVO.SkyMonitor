@@ -14,7 +14,9 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed partial class VirtualSkyCloudScenarioTests
 {
     [TestMethod]
-    public async Task VirtualSkyFrameTraversesConfiguredAnalysisSatelliteAndStorageGraph()
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task VirtualSkyFrameTraversesConfiguredAnalysisSatelliteAndStorageGraph(bool declaredSensorLevels)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-virtual-node-execution");
         try
@@ -22,7 +24,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
             using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
             // The virtual clock completes exposure instantly; keep its readout before real durable ingress.
             var now = DateTimeOffset.UtcNow.AddSeconds(-30);
-            var config = Config(CameraPixelFormat.Mono16, null) with
+            var config = Config(CameraPixelFormat.Mono16, null, physicalMono: declaredSensorLevels) with
             {
                 AgentId = "virtual-node-execution",
                 Pipeline = ProcessingGraphOperationsTests.RemainingOptionsPipeline(Path.Combine(root, "artifacts"))
@@ -49,6 +51,20 @@ public sealed partial class VirtualSkyCloudScenarioTests
             var lease = await store.ClaimAsync(lane, "virtual-node-execution", config, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(lease);
             var outcome = await provider.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+            if (!declaredSensorLevels)
+            {
+                Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, outcome.Outcome);
+                Assert.AreEqual("processing.unsupported-measurement-input", outcome.Reason);
+                await store.FailAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false);
+                var failedId = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
+                var failed = await operations.ReadExecutionDetailAsync(failedId!.Value, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Failed, failed!.Execution.Status);
+                Assert.IsNotEmpty(failed.Nodes.Single(node => node.NodeId == "scene").Outputs);
+                Assert.IsEmpty(failed.Nodes.Single(node => node.NodeId == "measured").Outputs);
+                Assert.IsFalse(Directory.Exists(Path.Combine(root, "artifacts")));
+                Assert.AreEqual(checksum, Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false))));
+                return;
+            }
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
             await store.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
             var executionId = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
