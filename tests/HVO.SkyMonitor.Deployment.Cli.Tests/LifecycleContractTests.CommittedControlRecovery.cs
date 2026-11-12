@@ -173,9 +173,12 @@ public sealed partial class LifecycleContractTests
     [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring, true, true, false, true, true)]
     [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Prepared, true, true, false, true, false, "Running")]
     [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring, true, true, false, true, false, "PauseRequested")]
+    [DataRow(LifecycleOperationKind.Upgrade, LifecycleOperationPhase.Restoring, true, true, false, true, false, "Paused", InstanceLifecycleCondition.Installed)]
+    [DataRow(LifecycleOperationKind.Uninstall, LifecycleOperationPhase.Prepared, true, true, false, true, false, "Paused", InstanceLifecycleCondition.Installed)]
     public async Task PrecommitSettlementRequiresADifferentInitializedProcess(
         LifecycleOperationKind kind, LifecycleOperationPhase phase, bool different, bool initialized, bool allowed,
-        bool originalKnown = true, bool emptyCurrent = false, string captureState = "Paused")
+        bool originalKnown = true, bool emptyCurrent = false, string captureState = "Paused",
+        InstanceLifecycleCondition condition = InstanceLifecycleCondition.Uninstalled)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
         var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(kind), fixture.Paths, kind,
@@ -201,7 +204,7 @@ public sealed partial class LifecycleContractTests
             token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, token),
             TimeProvider.System, messages.Add,
             acquireInterruptedRecovery: (receipt, token) => CameraAgentLifecycleManager.AcquireInterruptedControlAsync(
-                fixture.Paths, InstanceLifecycleCondition.Uninstalled, receipt, returned, token)).PollAsync(CancellationToken.None);
+                fixture.Paths, condition, receipt, returned, token)).PollAsync(CancellationToken.None);
         Assert.AreEqual(allowed, journal.Receipts.Single().IsTerminal, string.Join("; ", messages));
         Assert.AreEqual(!allowed, returned.Held);
         Assert.IsEmpty(journal.Refused);
