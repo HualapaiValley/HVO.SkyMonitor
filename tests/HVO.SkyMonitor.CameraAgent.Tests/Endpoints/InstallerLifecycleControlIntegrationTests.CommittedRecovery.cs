@@ -99,7 +99,12 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
             Assert.AreEqual(CaptureAdmissionState.Running, fixture.Capture.Snapshot.State);
             CollectionAssert.AreEqual(preserved, await File.ReadAllBytesAsync(paths.LifecycleStatePath).ConfigureAwait(false));
             CollectionAssert.AreEqual(controlBytes, await File.ReadAllBytesAsync(Path.Combine(paths.OperationsRoot, $"control-worker-{id:D}.json")).ConfigureAwait(false));
-            await Assert.ThrowsAsync<CaptureControlConflictException>(() => fixture.Capture.EnterAsync(watchdog.Token).AsTask()).ConfigureAwait(false);
+            using (var admissionTimeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50)))
+                await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                {
+                    using var unexpected = await fixture.Capture.EnterAsync(admissionTimeout.Token).ConfigureAwait(false);
+                    unexpected.MarkNoPublicationRequired();
+                }).ConfigureAwait(false);
             // A retried recovery must establish its durable pause before the receipt fence can be released.
             await native.PauseAndDrainAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
             await fixture.ReloadAsync().ConfigureAwait(false);
