@@ -1051,8 +1051,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             }
             // Optional export bookkeeping must not make the ordinary journal unreadable.
             // Manifest reads still validate it and fail closed with the corrupt-evidence reason.
-            var committedOutputCounts = manifestOnly ? ReadCommittedOutputCounts(frozenPlanJson) : [];
-            var frozenInputCounts = manifestOnly ? ReadFrozenOutputInputCounts(frozenPlanJson) : [];
+            var committedOutputCounts = manifestOnly ? await ReadManifestCountsAsync(connection, executionId, ManifestOutputLedger, cancellationToken).ConfigureAwait(false) : [];
+            var frozenInputCounts = manifestOnly ? await ReadManifestCountsAsync(connection, executionId, ManifestInputLedger, cancellationToken).ConfigureAwait(false) : [];
             var legacyWindows = manifestOnly && rows.Any(row => !frozenInputCounts.ContainsKey(row.NodeId))
                 ? ReadLegacyManifestWindows(frozenPlanJson) : [];
             var frozenPlans = ReadNormalizationPlans(frozenPlanJson, nodeId: null)

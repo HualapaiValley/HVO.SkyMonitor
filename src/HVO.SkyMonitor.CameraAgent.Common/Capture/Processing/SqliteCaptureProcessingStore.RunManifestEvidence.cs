@@ -82,8 +82,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         await CheckRunManifestBoundsAsync(connection, executionId, cancellationToken).ConfigureAwait(false);
         var frozenPlanJson = await ReadExecutionFrozenPlanJsonAsync(connection, null, executionId, cancellationToken).ConfigureAwait(false);
         var frozenNodeCount = ReadRunManifestNodeCount(frozenPlanJson);
-        var committedOutputCounts = ReadCommittedOutputCounts(frozenPlanJson);
-        var frozenInputCounts = ReadFrozenOutputInputCounts(frozenPlanJson);
+        var committedOutputCounts = await ReadManifestCountsAsync(connection, executionId, ManifestOutputLedger, cancellationToken).ConfigureAwait(false);
+        var frozenInputCounts = await ReadManifestCountsAsync(connection, executionId, ManifestInputLedger, cancellationToken).ConfigureAwait(false);
         // Only an execution frozen before the input ledger existed needs its windows.
         var legacy = detail.Nodes.Any(node => !frozenInputCounts.ContainsKey(node.NodeId));
         var legacyWindows = legacy ? ReadLegacyManifestWindows(frozenPlanJson) : [];
