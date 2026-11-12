@@ -60,8 +60,8 @@ internal static partial class CameraAgentStateSnapshot
         {
             // Historical database-only snapshots remain readable for legacy state.
             // They cannot reconstruct a sealed location/ledger pair.
-            if (File.Exists(StorePath(paths.StateRoot, RetainedIntegrityStore)) ||
-                File.Exists(StorePath(paths.StateRoot, ProtectedLocations[^1])))
+            if (IntegrityPathExists(StorePath(paths.StateRoot, RetainedIntegrityStore), directory: false) ||
+                IntegrityPathExists(StorePath(paths.StateRoot, ProtectedLocations[^1]), directory: false))
                 throw new InstallerException("This database-only snapshot predates paired retained-integrity state; restore a complete paired backup.");
             await VerifyCurrentLegacyHistoryAsync(paths, cancellationToken).ConfigureAwait(false);
             return;

@@ -35,7 +35,9 @@ internal static partial class CameraAgentStateSnapshot
         StateSnapshotManifest manifest, CancellationToken cancellationToken)
     {
         var target = manifest.Databases.SingleOrDefault(static database => database.RelativePath == RetainedIntegrityStore);
-        var currentExists = File.Exists(StorePath(paths.StateRoot, RetainedIntegrityStore));
+        foreach (var relative in ProtectedLocations)
+            _ = IntegrityPathExists(StorePath(paths.StateRoot, relative), directory: false);
+        var currentExists = IntegrityPathExists(StorePath(paths.StateRoot, RetainedIntegrityStore), directory: false);
         if (target is { Present: true } && !currentExists)
             throw new InstallerException("The established retained integrity ledger is missing; restore refuses to adopt an older ledger silently.");
         if (target is { Present: true } || !currentExists) return;
@@ -73,9 +75,7 @@ internal static partial class CameraAgentStateSnapshot
     {
         cancellationToken.ThrowIfCancellationRequested();
         var history = StorePath(paths.StateRoot, ProtectedLocations[0]);
-        SafeFileSystem.EnsureSafeExistingAncestors(history);
-        if (!File.Exists(history)) return;
-        EnsureRegularStore(history, ProtectedLocations[0]);
+        if (!IntegrityPathExists(history, directory: false)) return;
         // Missing ledger paths do not prove legacy eligibility. Surviving history
         // must authenticate with existing keys and must not require established authority.
         try
@@ -91,6 +91,35 @@ internal static partial class CameraAgentStateSnapshot
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException or JsonException or InvalidDataException)
         {
             throw new InstallerException("Current protected history cannot authorize this historical database-only restore; restore a complete paired backup.", exception);
+        }
+    }
+
+    private static bool IntegrityPathExists(string path, bool directory)
+    {
+        const uint directoryType = 0x4000;
+        var fullPath = Path.GetFullPath(path);
+        var current = Path.GetPathRoot(fullPath)!;
+        var segments = fullPath[current.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
+        try
+        {
+            if (NativeLinux.GetNodeIdentity(current).Type != directoryType)
+                throw new InstallerException("Retained authority requires directory ancestors.");
+            for (var index = 0; index < segments.Length; index++)
+            {
+                current = Path.Combine(current, segments[index]);
+                // statx reports only ENOENT as absence. Permission failures and
+                // ENOTDIR throw; every existing ancestor must be a real directory.
+                var node = NativeLinux.TryGetNodeIdentity(current);
+                if (node is null) return false;
+                var expected = index == segments.Length - 1 && !directory ? NativeLinux.RegularFileNodeType : directoryType;
+                if (node.Type != expected)
+                    throw new InstallerException("Retained authority has an unexpected path type.");
+            }
+            return true;
+        }
+        catch (InstallerException exception)
+        {
+            throw new InstallerException("The retained authority path cannot be inspected safely.", exception);
         }
     }
 
@@ -207,8 +236,7 @@ internal static partial class CameraAgentStateSnapshot
     private static FileStream? AcquireIntegrityRestoreOwnership(InstallationPaths paths)
     {
         var directory = Path.Combine(paths.StateRoot, "raw", ".location");
-        if (!Directory.Exists(directory)) return null;
-        SafeFileSystem.EnsureSafeExistingAncestors(directory);
+        if (!IntegrityPathExists(directory, directory: true)) return null;
         var path = Path.Combine(directory, "retained-integrity.v1.lock");
         if (File.Exists(path)) EnsureRegularStore(path, RetainedIntegrityStore);
         try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }

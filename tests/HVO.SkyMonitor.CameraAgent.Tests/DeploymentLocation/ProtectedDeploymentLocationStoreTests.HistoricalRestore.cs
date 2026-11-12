@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Deployment.Contracts;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using SnapshotApi = InstallerRuntime::HVO.SkyMonitor.Deployment.CameraAgentStateSnapshot;
@@ -22,11 +23,25 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux)]
     [System.Runtime.Versioning.SupportedOSPlatform("linux")]
-    [DataRow(true, false)]
-    [DataRow(true, true)]
-    [DataRow(false, false)]
-    [DataRow(false, true)]
-    public async Task HistoricalDatabaseOnlyRestoreRequiresAuthenticatedLegacyAuthority(bool sealedHistory, bool restore)
+    [DataRow(true, false, "none")]
+    [DataRow(true, true, "none")]
+    [DataRow(false, false, "none")]
+    [DataRow(false, true, "none")]
+    [DataRow(true, false, "history-directory")]
+    [DataRow(true, true, "history-directory")]
+    [DataRow(true, false, "parent-file")]
+    [DataRow(true, true, "parent-file")]
+    [DataRow(true, false, "lookup-denied")]
+    [DataRow(true, true, "lookup-denied")]
+    [DataRow(true, false, "tampered-history")]
+    [DataRow(true, true, "tampered-history")]
+    [DataRow(true, false, "foreign-keys")]
+    [DataRow(true, true, "foreign-keys")]
+    [DataRow(true, false, "missing-keys")]
+    [DataRow(true, true, "missing-keys")]
+    [DataRow(true, false, "non-object")]
+    [DataRow(true, true, "non-object")]
+    public async Task HistoricalDatabaseOnlyRestoreRequiresAuthenticatedLegacyAuthority(bool sealedHistory, bool restore, string fault)
     {
         var id = Guid.NewGuid();
         var paths = InstallerPaths.Create(Path.Combine(_root, "historical-installer"), id, "synthetic");
@@ -70,25 +85,79 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.IsFalse(File.Exists(Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName)));
         Assert.IsFalse(File.Exists(Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.CheckpointName)));
         await ExecuteHistoricalFixtureSqlAsync(database, "INSERT INTO fixture_rows VALUES(2);").ConfigureAwait(false);
+        var locationDirectory = Path.GetDirectoryName(HistoryPath())!;
+        var preservedHistory = HistoryPath();
+        if (fault == "history-directory")
+        {
+            preservedHistory += ".sealed-original";
+            File.Move(HistoryPath(), preservedHistory);
+            Directory.CreateDirectory(HistoryPath());
+        }
+        else if (fault == "parent-file")
+        {
+            Directory.Move(locationDirectory, locationDirectory + ".saved");
+            await File.WriteAllTextAsync(locationDirectory, "obstructed authority").ConfigureAwait(false);
+            preservedHistory = Path.Combine(locationDirectory + ".saved", Path.GetFileName(HistoryPath()));
+        }
+        else if (fault == "tampered-history")
+        {
+            var damaged = await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false);
+            damaged[^1] ^= 1;
+            await File.WriteAllBytesAsync(HistoryPath(), damaged).ConfigureAwait(false);
+        }
+        else if (fault is "missing-keys" or "foreign-keys")
+        {
+            var keys = Path.Combine(locationDirectory, "keys");
+            Directory.Move(keys, keys + ".saved");
+            if (fault == "foreign-keys")
+            {
+                Directory.CreateDirectory(keys);
+                var foreign = DataProtectionProvider.Create(new DirectoryInfo(keys),
+                    builder => builder.SetApplicationName("HVO.SkyMonitor.CameraAgent.DeploymentLocation"));
+                _ = foreign.CreateProtector("CameraAgent", "DeploymentLocation", "v1").Protect("fixture key generation");
+            }
+        }
+        else if (fault == "non-object")
+            await File.WriteAllBytesAsync(HistoryPath(), _protector.Protect("[]"u8.ToArray())).ConfigureAwait(false);
         var before = HistoricalStateFingerprint(paths.StateRoot);
-        var originalHistory = await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false);
-        RealInstallerException? refusal = null;
+        var originalHistory = await File.ReadAllBytesAsync(preservedHistory).ConfigureAwait(false);
+        var originalMode = fault == "lookup-denied" ? File.GetUnixFileMode(locationDirectory) : (UnixFileMode?)null;
+        const UnixFileMode deniedMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        Exception? refusal = null;
         try
         {
-            if (restore)
-                _ = await SnapshotApi.RestoreAsync(paths, id, snapshot, InstallerNative.getuid(), InstallerNative.getgid(),
-                    [], plan, CancellationToken.None).ConfigureAwait(false);
-            else
-                _ = await SnapshotApi.PlanRestoreAsync(paths, id, snapshot, [], CancellationToken.None).ConfigureAwait(false);
+            if (originalMode is not null)
+            {
+                File.SetUnixFileMode(locationDirectory, deniedMode);
+                await Assert.ThrowsExactlyAsync<UnauthorizedAccessException>(async () =>
+                    _ = await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false)).ConfigureAwait(false);
+            }
+            try
+            {
+                if (restore)
+                    _ = await SnapshotApi.RestoreAsync(paths, id, snapshot, InstallerNative.getuid(), InstallerNative.getgid(),
+                        [], plan, CancellationToken.None).ConfigureAwait(false);
+                else
+                    _ = await SnapshotApi.PlanRestoreAsync(paths, id, snapshot, [], CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is RealInstallerException or IOException or UnauthorizedAccessException) { refusal = exception; }
         }
-        catch (RealInstallerException exception) { refusal = exception; }
+        finally
+        {
+            if (originalMode is { } mode)
+            {
+                var observedMode = File.GetUnixFileMode(locationDirectory);
+                File.SetUnixFileMode(locationDirectory, mode);
+                Assert.AreEqual(deniedMode, observedMode, "Restore must not repair an uninspectable authority path.");
+            }
+        }
         using var connection = new SqliteConnection($"Data Source={database};Mode=ReadOnly;Pooling=False");
         await connection.OpenAsync().ConfigureAwait(false);
         using var rows = connection.CreateCommand();
         rows.CommandText = "SELECT COUNT(*) FROM fixture_rows;";
         Assert.AreEqual(sealedHistory || !restore ? 2L : 1L, await rows.ExecuteScalarAsync().ConfigureAwait(false),
             "Missing established authority must refuse before replacing any database.");
-        CollectionAssert.AreEqual(originalHistory, await File.ReadAllBytesAsync(HistoryPath()).ConfigureAwait(false));
+        CollectionAssert.AreEqual(originalHistory, await File.ReadAllBytesAsync(preservedHistory).ConfigureAwait(false));
         if (sealedHistory)
         {
             Assert.IsTrue(before.SequenceEqual(HistoricalStateFingerprint(paths.StateRoot)), "Refusal must leave every current state file unchanged.");
