@@ -37,8 +37,7 @@ public sealed partial class VirtualSkyCloudScenarioTests
                 AgentId = "virtual-node-execution",
                 Pipeline = panelPipeline with
                 {
-                    Steps = [new("Preview", "preview", DependsOn: ["$raw"],
-                        Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
+                    Steps = [new("Preview", "preview", DependsOn: ["$raw"]),
                         .. panelPipeline.Steps.Select(step => step.Type == "Storage"
                             ? step with { DependsOn = ["preview", "measured"] } : step)]
                 }
