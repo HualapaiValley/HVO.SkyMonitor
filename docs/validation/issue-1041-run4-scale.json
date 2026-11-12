@@ -1,0 +1,1013 @@
+{
+  "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+  "sdk": "10.0.402",
+  "candidate": {
+    "revision": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+    "configuration": "Installer CameraConfiguration.Generate; fixture-local storage roots; completed synthetic owner",
+    "runtime": ".NET 10.0.14",
+    "processorCount": 1,
+    "heapAvailableBytes": 1073741824,
+    "cacheDefinition": "Idle disposable journal WAL checkpointed/truncated after construction; fsync + POSIX_FADV_DONTNEED and mincore=0 for retained data/main DB/checkpoint files before each evicted sample; transient SQLite SHM coordination files excluded; metadata/controller caches and full host cold start uncontrolled",
+    "cases": [
+      {
+        "captures": 100001,
+        "sidecars": 100001,
+        "rawJournalRows": 100001,
+        "productsPerCapture": 1,
+        "corpus": {
+          "fileCount": 100001,
+          "journalCount": 100001,
+          "manifestBytes": 488782680,
+          "orderedManifestSha256": "AA7EB11B46AE27F9235FE56FA54738C70CD3B2EAEBF3D7E082E9C95DEB14FE61",
+          "journalBytes": 500629504,
+          "configurationFileSha256": "F0FE433391ED6A28DCE3AB30B2D4501FAE660112EC7E1C46087224D442FDD266",
+          "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+        },
+        "qualificationMs": 144028.9249,
+        "firstUncapped": {
+          "kind": "first-uncapped",
+          "elapsedMs": 589.6949,
+          "cpuMs": 586.165,
+          "processAllocatedBytes": 22410616,
+          "workingSetBytes": 304918528,
+          "peakWorkingSetBytes": 304918528,
+          "ioDelta": {
+            "rchar": 45415,
+            "wchar": 231,
+            "syscr": 82,
+            "syscw": 2,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "cancelled_write_bytes": 0
+          },
+          "parses": 0,
+          "retainedScanSpans": 0,
+          "cacheHits": 0,
+          "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+        },
+        "warm": [
+          {
+            "kind": "warm",
+            "elapsedMs": 92.5199,
+            "cpuMs": 84.5,
+            "processAllocatedBytes": 8547144,
+            "workingSetBytes": 334872576,
+            "peakWorkingSetBytes": 334872576,
+            "ioDelta": {
+              "rchar": 39309,
+              "wchar": 231,
+              "syscr": 75,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 85.1889,
+            "cpuMs": 72.198,
+            "processAllocatedBytes": 8302432,
+            "workingSetBytes": 334893056,
+            "peakWorkingSetBytes": 334893056,
+            "ioDelta": {
+              "rchar": 39309,
+              "wchar": 231,
+              "syscr": 75,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 75.5754,
+            "cpuMs": 65.592,
+            "processAllocatedBytes": 8301896,
+            "workingSetBytes": 334917632,
+            "peakWorkingSetBytes": 334917632,
+            "ioDelta": {
+              "rchar": 39309,
+              "wchar": 231,
+              "syscr": 75,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+          }
+        ],
+        "evicted": [
+          {
+            "evictedFiles": 100008,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 78.3157,
+              "cpuMs": 61.098,
+              "processAllocatedBytes": 8149224,
+              "workingSetBytes": 340164608,
+              "peakWorkingSetBytes": 340164608,
+              "ioDelta": {
+                "rchar": 39310,
+                "wchar": 231,
+                "syscr": 75,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+            }
+          },
+          {
+            "evictedFiles": 100008,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 95.0706,
+              "cpuMs": 94.962,
+              "processAllocatedBytes": 7905296,
+              "workingSetBytes": 341151744,
+              "peakWorkingSetBytes": 341151744,
+              "ioDelta": {
+                "rchar": 39310,
+                "wchar": 231,
+                "syscr": 73,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+            }
+          },
+          {
+            "evictedFiles": 100008,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 59.8837,
+              "cpuMs": 47.709,
+              "processAllocatedBytes": 7901240,
+              "workingSetBytes": 344686592,
+              "peakWorkingSetBytes": 344686592,
+              "ioDelta": {
+                "rchar": 38975,
+                "wchar": 231,
+                "syscr": 73,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "de794cc171aa80ab3450eb7e7d476ef96f95d0b322cf4a36d3961228e123bea9"
+            }
+          }
+        ],
+        "ordinaryReads": [
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 61.9573,
+            "allocatedBytes": 7740384,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 123.5631,
+            "allocatedBytes": 8769720,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 61.2934,
+            "allocatedBytes": 7716608,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 96.7959,
+            "allocatedBytes": 8060744,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 148.2914,
+            "allocatedBytes": 7716784,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 73.8067,
+            "allocatedBytes": 8062024,
+            "retainedScanSpans": 0
+          }
+        ],
+        "managedPublication": [
+          {
+            "elapsedMs": 122.89,
+            "allocatedBytes": 369920,
+            "ioDelta": {
+              "rchar": 69999,
+              "wchar": 182318,
+              "syscr": 231,
+              "syscw": 91,
+              "read_bytes": 65536,
+              "write_bytes": 208896,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 108.6513,
+            "allocatedBytes": 206168,
+            "ioDelta": {
+              "rchar": 15751,
+              "wchar": 59334,
+              "syscr": 118,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 80.6858,
+            "allocatedBytes": 202944,
+            "ioDelta": {
+              "rchar": 14621,
+              "wchar": 59334,
+              "syscr": 113,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 78.3274,
+            "allocatedBytes": 203336,
+            "ioDelta": {
+              "rchar": 14621,
+              "wchar": 59334,
+              "syscr": 112,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 50.3504,
+            "allocatedBytes": 203336,
+            "ioDelta": {
+              "rchar": 14621,
+              "wchar": 59334,
+              "syscr": 112,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          }
+        ],
+        "restartQualification": {
+          "elapsedMs": 80638.4682,
+          "parses": 1,
+          "requalified": true
+        },
+        "persistedProofs": 100002
+      },
+      {
+        "captures": 300000,
+        "sidecars": 300000,
+        "rawJournalRows": 300000,
+        "productsPerCapture": 1,
+        "corpus": {
+          "fileCount": 300000,
+          "journalCount": 300000,
+          "manifestBytes": 1466777790,
+          "orderedManifestSha256": "B67857BD8D0FC3AF3E387831D24A2E254797E1B4ABE49649D4DD77E8FD63A6A8",
+          "journalBytes": 1503985664,
+          "configurationFileSha256": "ABADEB594D893FFC7070C730A2954FFC3338796E0DA24692C50B6B3BEF381C60",
+          "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+        },
+        "qualificationMs": 220730.1912,
+        "firstUncapped": {
+          "kind": "first-uncapped",
+          "elapsedMs": 349.4067,
+          "cpuMs": 346.138,
+          "processAllocatedBytes": 19993792,
+          "workingSetBytes": 405667840,
+          "peakWorkingSetBytes": 414601216,
+          "ioDelta": {
+            "rchar": 44786,
+            "wchar": 231,
+            "syscr": 80,
+            "syscw": 2,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "cancelled_write_bytes": 0
+          },
+          "parses": 0,
+          "retainedScanSpans": 0,
+          "cacheHits": 0,
+          "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+        },
+        "warm": [
+          {
+            "kind": "warm",
+            "elapsedMs": 34.3087,
+            "cpuMs": 33.769,
+            "processAllocatedBytes": 8170472,
+            "workingSetBytes": 493019136,
+            "peakWorkingSetBytes": 493019136,
+            "ioDelta": {
+              "rchar": 40394,
+              "wchar": 231,
+              "syscr": 78,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 24.4476,
+            "cpuMs": 22.825,
+            "processAllocatedBytes": 8151992,
+            "workingSetBytes": 493027328,
+            "peakWorkingSetBytes": 493027328,
+            "ioDelta": {
+              "rchar": 40427,
+              "wchar": 231,
+              "syscr": 83,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 26.5681,
+            "cpuMs": 24.664,
+            "processAllocatedBytes": 7897256,
+            "workingSetBytes": 493027328,
+            "peakWorkingSetBytes": 493027328,
+            "ioDelta": {
+              "rchar": 40395,
+              "wchar": 231,
+              "syscr": 79,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+          }
+        ],
+        "evicted": [
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 2,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 33.3465,
+              "cpuMs": 31.656,
+              "processAllocatedBytes": 7899200,
+              "workingSetBytes": 494858240,
+              "peakWorkingSetBytes": 494858240,
+              "ioDelta": {
+                "rchar": 40400,
+                "wchar": 247,
+                "syscr": 83,
+                "syscw": 4,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 70.3038,
+              "cpuMs": 65.823,
+              "processAllocatedBytes": 7903360,
+              "workingSetBytes": 495734784,
+              "peakWorkingSetBytes": 495734784,
+              "ioDelta": {
+                "rchar": 40057,
+                "wchar": 231,
+                "syscr": 78,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 74.214,
+              "cpuMs": 57.696,
+              "processAllocatedBytes": 7898936,
+              "workingSetBytes": 496590848,
+              "peakWorkingSetBytes": 496590848,
+              "ioDelta": {
+                "rchar": 40056,
+                "wchar": 247,
+                "syscr": 81,
+                "syscw": 4,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "178a90adc45461472bc06608dd413b406dabfb6bdc683321fecc39be0d32556e"
+            }
+          }
+        ],
+        "ordinaryReads": [
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 54.0377,
+            "allocatedBytes": 7856464,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 46.2609,
+            "allocatedBytes": 8473568,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 29.7932,
+            "allocatedBytes": 7716312,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 63.8228,
+            "allocatedBytes": 8057816,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 41.2698,
+            "allocatedBytes": 7716480,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 39.8124,
+            "allocatedBytes": 8057616,
+            "retainedScanSpans": 0
+          }
+        ],
+        "managedPublication": [
+          {
+            "elapsedMs": 16.4933,
+            "allocatedBytes": 349568,
+            "ioDelta": {
+              "rchar": 80021,
+              "wchar": 206918,
+              "syscr": 261,
+              "syscw": 103,
+              "read_bytes": 73728,
+              "write_bytes": 233472,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 25.8966,
+            "allocatedBytes": 178936,
+            "ioDelta": {
+              "rchar": 13283,
+              "wchar": 59334,
+              "syscr": 84,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 36.9105,
+            "allocatedBytes": 151696,
+            "ioDelta": {
+              "rchar": 11747,
+              "wchar": 59334,
+              "syscr": 52,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 21.7111,
+            "allocatedBytes": 204880,
+            "ioDelta": {
+              "rchar": 14755,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 18.2728,
+            "allocatedBytes": 205528,
+            "ioDelta": {
+              "rchar": 14755,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          }
+        ],
+        "restartQualification": {
+          "elapsedMs": 147300.4977,
+          "parses": 1,
+          "requalified": true
+        },
+        "persistedProofs": 300001
+      },
+      {
+        "captures": 100000,
+        "sidecars": 300000,
+        "rawJournalRows": 100000,
+        "productsPerCapture": 3,
+        "corpus": {
+          "fileCount": 300000,
+          "journalCount": 100000,
+          "manifestBytes": 988555580,
+          "orderedManifestSha256": "8EE00146E45829FEB281CE3EFEB684D3B38245CB177D64BDF6A46FE7DCC1BF1B",
+          "journalBytes": 500686848,
+          "configurationFileSha256": "2F389168CC460DD440C3134D53ECC663ACE2ED047A6770C800B54AC81EB7C6D4",
+          "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+        },
+        "qualificationMs": 153052.1096,
+        "firstUncapped": {
+          "kind": "first-uncapped",
+          "elapsedMs": 270.2111,
+          "cpuMs": 268.219,
+          "processAllocatedBytes": 19632184,
+          "workingSetBytes": 484626432,
+          "peakWorkingSetBytes": 587587584,
+          "ioDelta": {
+            "rchar": 45853,
+            "wchar": 231,
+            "syscr": 84,
+            "syscw": 2,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "cancelled_write_bytes": 0
+          },
+          "parses": 0,
+          "retainedScanSpans": 0,
+          "cacheHits": 0,
+          "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+        },
+        "warm": [
+          {
+            "kind": "warm",
+            "elapsedMs": 25.8736,
+            "cpuMs": 24.534,
+            "processAllocatedBytes": 8174768,
+            "workingSetBytes": 567119872,
+            "peakWorkingSetBytes": 587587584,
+            "ioDelta": {
+              "rchar": 41477,
+              "wchar": 231,
+              "syscr": 88,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 33.7098,
+            "cpuMs": 31.964,
+            "processAllocatedBytes": 7895728,
+            "workingSetBytes": 567136256,
+            "peakWorkingSetBytes": 587587584,
+            "ioDelta": {
+              "rchar": 41448,
+              "wchar": 231,
+              "syscr": 85,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 46.7347,
+            "cpuMs": 45.426,
+            "processAllocatedBytes": 7887736,
+            "workingSetBytes": 567140352,
+            "peakWorkingSetBytes": 587587584,
+            "ioDelta": {
+              "rchar": 40442,
+              "wchar": 231,
+              "syscr": 82,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+          }
+        ],
+        "evicted": [
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 58.2983,
+              "cpuMs": 58.165,
+              "processAllocatedBytes": 7897504,
+              "workingSetBytes": 567173120,
+              "peakWorkingSetBytes": 587587584,
+              "ioDelta": {
+                "rchar": 41448,
+                "wchar": 247,
+                "syscr": 87,
+                "syscw": 4,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 60.4373,
+              "cpuMs": 60.244,
+              "processAllocatedBytes": 7901928,
+              "workingSetBytes": 567279616,
+              "peakWorkingSetBytes": 587587584,
+              "ioDelta": {
+                "rchar": 41107,
+                "wchar": 231,
+                "syscr": 85,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 67.9976,
+              "cpuMs": 41.812,
+              "processAllocatedBytes": 7897424,
+              "workingSetBytes": 567758848,
+              "peakWorkingSetBytes": 587587584,
+              "ioDelta": {
+                "rchar": 40757,
+                "wchar": 231,
+                "syscr": 84,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identitySha256": "bdf2d5c709ab82f6c87462c96072fcb0d5d55f3916de2825a9bc2bd956e8c5de"
+            }
+          }
+        ],
+        "ordinaryReads": [
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 36.4253,
+            "allocatedBytes": 7715736,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 48.371,
+            "allocatedBytes": 8461824,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 34.6223,
+            "allocatedBytes": 7711200,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 45.4264,
+            "allocatedBytes": 8056080,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 36.4352,
+            "allocatedBytes": 7714384,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 38.652,
+            "allocatedBytes": 8054384,
+            "retainedScanSpans": 0
+          }
+        ],
+        "managedPublication": [
+          {
+            "elapsedMs": 12.7813,
+            "allocatedBytes": 351592,
+            "ioDelta": {
+              "rchar": 71958,
+              "wchar": 206918,
+              "syscr": 263,
+              "syscw": 103,
+              "read_bytes": 65536,
+              "write_bytes": 233472,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 10.7349,
+            "allocatedBytes": 203200,
+            "ioDelta": {
+              "rchar": 14628,
+              "wchar": 59334,
+              "syscr": 112,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 12.347,
+            "allocatedBytes": 205448,
+            "ioDelta": {
+              "rchar": 14756,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 11.5686,
+            "allocatedBytes": 203368,
+            "ioDelta": {
+              "rchar": 14628,
+              "wchar": 59334,
+              "syscr": 110,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 11.9125,
+            "allocatedBytes": 205360,
+            "ioDelta": {
+              "rchar": 14756,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          }
+        ],
+        "restartQualification": {
+          "elapsedMs": 109657.8311,
+          "parses": 1,
+          "requalified": true
+        },
+        "persistedProofs": 300001
+      }
+    ]
+  },
+  "rawArtifactSha256": "6aa716a23a9887657090bbffb59a831194027c93d5526e3a41c689ab933fa66f",
+  "baselineSource": "issue-1041-run3-scale.json: prior-run linear endpoint baseline, not relabelled as current measurement",
+  "baselineReuse": "Historical comparison only; current scale remeasured at testedHead.",
+  "baselineSourceExtension": {
+    "baseline": "0dc79eb582e2e2a583da98af0d50f61992fd2839",
+    "fetchedDevelopment": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
+    "files": [
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/CameraAgentConfigurationAccessor.cs",
+        "baselineBlob": "fcafb7526ff51ef0891df3b1451a7f6111b6082d",
+        "fetchedDevelopmentBlob": "fcafb7526ff51ef0891df3b1451a7f6111b6082d",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/CameraAgentConfigurationInitializer.cs",
+        "baselineBlob": "657308d0bc08d5a83b1f18a38d1f939a5d1d5979",
+        "fetchedDevelopmentBlob": "657308d0bc08d5a83b1f18a38d1f939a5d1d5979",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs",
+        "baselineBlob": "79cb05c959745b617ee84ff2ad4addf69a35db75",
+        "fetchedDevelopmentBlob": "79cb05c959745b617ee84ff2ad4addf69a35db75",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/ICameraAgentConfigurationAccessor.cs",
+        "baselineBlob": "7f374e19b60f1f6f23e71162780a34193e80147b",
+        "fetchedDevelopmentBlob": "7f374e19b60f1f6f23e71162780a34193e80147b",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/ICameraAgentConfigurationLoader.cs",
+        "baselineBlob": "79ed7604a39667e65da8b555ab45da9a45b893a6",
+        "fetchedDevelopmentBlob": "79ed7604a39667e65da8b555ab45da9a45b893a6",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/ICaptureAgentIdentityProvider.cs",
+        "baselineBlob": "3d5e910d7b4bacadc84ed3fa7415d452d3703110",
+        "fetchedDevelopmentBlob": "3d5e910d7b4bacadc84ed3fa7415d452d3703110",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/OperatorSettingsFile.cs",
+        "baselineBlob": "f511bcbc8e883f3d633019d0652019a51a272304",
+        "fetchedDevelopmentBlob": "f511bcbc8e883f3d633019d0652019a51a272304",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationReadAttribution.cs",
+        "baselineBlob": "758b3a56b44ea057f5e37139ed438918e7a64395",
+        "fetchedDevelopmentBlob": "758b3a56b44ea057f5e37139ed438918e7a64395",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs",
+        "baselineBlob": "243881f6f9b130b966db4eebdddfb4c6b1739e60",
+        "fetchedDevelopmentBlob": "243881f6f9b130b966db4eebdddfb4c6b1739e60",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationTelemetry.cs",
+        "baselineBlob": "7a462e14aed734a9a58733bd75f084f663c2a7c3",
+        "fetchedDevelopmentBlob": "7a462e14aed734a9a58733bd75f084f663c2a7c3",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/ManualDeploymentLocationContracts.cs",
+        "baselineBlob": "6fe7c65ce6464d5df5473d70308beb0d9cd2a15a",
+        "fetchedDevelopmentBlob": "6fe7c65ce6464d5df5473d70308beb0d9cd2a15a",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent/Program.cs",
+        "baselineBlob": "3637e9308389f42452797e1dc6f2dcba72d08674",
+        "fetchedDevelopmentBlob": "3637e9308389f42452797e1dc6f2dcba72d08674",
+        "unchanged": true
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Cli/OwnerBootstrapClient.cs",
+        "baselineBlob": "7a5355a96e9e2fd11bb9ba58f329594f9e7713fe",
+        "fetchedDevelopmentBlob": "7a5355a96e9e2fd11bb9ba58f329594f9e7713fe",
+        "unchanged": true
+      }
+    ]
+  },
+  "corpusComparison": [
+    {
+      "captures": 100001,
+      "sidecars": 100001,
+      "manifestChecksumAndJournalLengthMatchPriorBaseline": true
+    },
+    {
+      "captures": 300000,
+      "sidecars": 300000,
+      "manifestChecksumAndJournalLengthMatchPriorBaseline": true
+    },
+    {
+      "captures": 100000,
+      "sidecars": 300000,
+      "manifestChecksumAndJournalLengthMatchPriorBaseline": true
+    }
+  ],
+  "invariants": {
+    "zeroRetainedScansAndParses": true,
+    "warmEvictedIdentityUnchanged": true,
+    "evictionZeroResidentPages": true,
+    "allReadsUnderOriginalBudget": true,
+    "restartReusesAllPriorProofs": true
+  }
+}

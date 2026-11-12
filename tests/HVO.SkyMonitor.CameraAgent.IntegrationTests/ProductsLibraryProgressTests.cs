@@ -95,7 +95,7 @@ public sealed class ProductsLibraryProgressTests
     [DataRow(NightlyProductKind.StarTrail, true)]
     [DataRow(NightlyProductKind.Keogram, false)]
     [DataRow(NightlyProductKind.StarTrail, false)]
-    public async Task DisabledGenerationProjectsQueuedStillWorkAsStalled(NightlyProductKind kind, bool disableDefinition)
+    public async Task DisabledRunnerStallsQueuedWorkAndDisabledDefinitionWithdrawsIt(NightlyProductKind kind, bool disableDefinition)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-library-disabled", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -136,6 +136,19 @@ public sealed class ProductsLibraryProgressTests
             var query = new NightlyProductLibraryQuery(1, kind, ObservingDate: date);
             var runs = await reader.ListNightlyProductRunsAsync(query, CancellationToken.None).ConfigureAwait(false);
             var page = await catalog.ListLibraryAsync(query, CancellationToken.None, runs).ConfigureAwait(false);
+            if (disableDefinition)
+            {
+                Assert.IsEmpty(page.Entries);
+                var withdrawn = (await reader.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+                Assert.AreEqual(LocalAutomationRunOutcome.Skipped, withdrawn.Outcome);
+                Assert.IsNull(withdrawn.StartedAtUtc);
+                Assert.IsNotNull(withdrawn.CompletedAtUtc);
+                Assert.IsNotNull(withdrawn.Occurrence);
+                Assert.IsTrue(withdrawn.Occurrence.Definition.Enabled, "Withdrawal must preserve the retained definition snapshot.");
+                Assert.Contains("disabled", withdrawn.Detail);
+                Assert.AreEqual(window, withdrawn.Occurrence.SourceWindow);
+                return;
+            }
             var stalled = page.Entries.Single();
             Assert.AreEqual(NightlyProductLibraryState.Stalled, stalled.State);
             Assert.AreEqual(LocalAutomationRunOutcome.Queued, stalled.Generation!.Outcome);

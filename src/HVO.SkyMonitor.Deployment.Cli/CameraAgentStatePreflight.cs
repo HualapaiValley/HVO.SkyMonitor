@@ -223,7 +223,7 @@ internal static class CameraAgentStatePreflight
         var codes = string.Join(", ", report.Findings.Where(static finding => finding.Blocking)
             .Select(static finding => finding.Code).Distinct(StringComparer.Ordinal));
         throw InstallerException.Refused(
-            $"CameraAgent state preflight rejected this deployment before startup ({codes}). Minimum compatible revision {report.MinimumCompatibleRevision ?? "unknown"}; complete the CameraAgent-only reset or state-disposition procedure{(persist ? $" and see {reportPath}" : string.Empty)}.");
+            $"CameraAgent state preflight rejected this deployment before startup ({codes}). Candidate minimum compatible revision: {report.MinimumCompatibleRevision ?? "unknown"}; review each blocking finding and its remediation{(persist ? $" and see {reportPath}" : string.Empty)}.");
     }
 
     /// <summary>A diagnostic-only view; persisted preflight evidence keeps its measured values.</summary>
@@ -269,7 +269,7 @@ internal static class CameraAgentStatePreflight
             else
             {
                 builder.AppendLine(CultureInfo.InvariantCulture,
-                    $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
+                    $"Minimum compatible CameraAgent revision: {minimum}. Review the blocking findings below and follow their listed remediation.");
             }
         }
         foreach (var finding in report.Findings)

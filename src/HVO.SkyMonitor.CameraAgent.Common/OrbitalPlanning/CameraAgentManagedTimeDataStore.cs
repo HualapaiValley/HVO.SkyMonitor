@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -197,7 +198,7 @@ public sealed partial class CameraAgentManagedTimeDataStore
             {
                 var name = Path.GetFileName(directory);
                 if (name == pointer.Pair || name == pointer.Previous || new DirectoryInfo(directory).LinkTarget is not null) continue;
-                Directory.Delete(directory, recursive: true);
+                RetainedFileMutations.DeleteDirectory(directory, recursive: true);
                 retired++;
             }
             AtomicPublisher.CleanupTemporaries(OpenRoot(), RootDirectory, MaximumRetiredPerAdoption);
@@ -218,8 +219,11 @@ public sealed partial class CameraAgentManagedTimeDataStore
     }
 
     private static async Task PublishBytesAsync(PhysicalRoot root, string relativePath, byte[] bytes, CancellationToken cancellationToken)
-        => await AtomicPublisher.PublishAsync(root, relativePath, PublishMode.CreateNew,
+    {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve(relativePath), bytes);
+        await AtomicPublisher.PublishAsync(root, relativePath, PublishMode.CreateNew,
             (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
+    }
 
     private static async Task PublishJsonAsync(PhysicalRoot root, string relativePath, PublishMode mode, Action<Utf8JsonWriter> write,
         CancellationToken cancellationToken)
@@ -232,6 +236,7 @@ public sealed partial class CameraAgentManagedTimeDataStore
             writer.WriteEndObject();
         }
         var bytes = buffer.ToArray();
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve(relativePath), bytes);
         await AtomicPublisher.PublishAsync(root, relativePath, mode,
             (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
     }

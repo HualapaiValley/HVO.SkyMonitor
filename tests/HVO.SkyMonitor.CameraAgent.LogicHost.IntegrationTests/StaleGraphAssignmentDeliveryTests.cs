@@ -341,10 +341,15 @@ public sealed class StaleGraphAssignmentDeliveryTests
     private static async Task<StaleRetry?> FindStaleRetryAsync(
         CameraAgentIntegrationFixture.IsolatedCameraAgent agent, Guid installationId)
     {
+        // Capture and outbox initialization now follow host startup. Absence is
+        // an ordinary not-yet-observed state for this bounded polling helper.
+        if (!File.Exists(Path.Combine(agent.StorageRoot, "outbox", "artifact-outbox.db"))) return null;
         var candidates = new List<(string Key, Guid ArtifactId, string Status, string? LastReason, string? Terminal, long Updated)>();
         using (var connection = OpenOutboxReadConnection(agent.StorageRoot))
         using (var command = connection.CreateCommand())
         {
+            command.CommandText = "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='artifact_outbox_records';";
+            if (await command.ExecuteScalarAsync().ConfigureAwait(false) is null) return null;
             command.CommandText = """
                 SELECT idempotency_key, artifact_id, status, last_reason, terminal_reason, updated_unix_ms
                 FROM artifact_outbox_records

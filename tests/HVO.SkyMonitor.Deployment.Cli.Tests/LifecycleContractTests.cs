@@ -3779,6 +3779,13 @@ public sealed partial class LifecycleContractTests
             => Task.FromResult("owner-password-change-required");
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult(CurrentOwnerBootstrapState);
+        public Task<string> ReadInstallationStateAsync(
+            string verificationToken, InstallationVerificationExpectation expectation, CancellationToken cancellationToken)
+        {
+            // Model the current instance separately from queued candidate/restart verification outcomes.
+            Assert.AreEqual(expectedAgentId.ToString("D"), expectation.AgentId);
+            return Task.FromResult(CurrentOwnerBootstrapState);
+        }
         public Task<string> VerifyInstallationAsync(
             string verificationToken,
             InstallationVerificationExpectation expectation,

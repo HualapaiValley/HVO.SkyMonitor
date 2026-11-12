@@ -52,8 +52,7 @@ public sealed partial class OutboxOperationsEndpointTests
             var accessor = scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationAccessor>();
             if (!accessor.IsConfigured)
             {
-                accessor.SetConfiguration(await scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationLoader>()
-                    .LoadAsync(CancellationToken.None).ConfigureAwait(false));
+                await ConfigureFromOwningHostAsync(accessor).ConfigureAwait(false);
             }
             var owner = await scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>()
                 .FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
@@ -128,9 +127,7 @@ public sealed partial class OutboxOperationsEndpointTests
             var configurationAccessor = scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationAccessor>();
             if (!configurationAccessor.IsConfigured)
             {
-                configurationAccessor.SetConfiguration(await scope.ServiceProvider
-                    .GetRequiredService<ICameraAgentConfigurationLoader>()
-                    .LoadAsync(CancellationToken.None).ConfigureAwait(false));
+                await ConfigureFromOwningHostAsync(configurationAccessor).ConfigureAwait(false);
             }
             var users = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
             var owner = await users.FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
@@ -322,6 +319,16 @@ public sealed partial class OutboxOperationsEndpointTests
         request.Headers.Add("RequestVerificationToken", antiforgery);
         request.Content = JsonContent.Create(new { actionToken, reasonCode });
         return await client.SendAsync(request).ConfigureAwait(false);
+    }
+
+    private static async Task ConfigureFromOwningHostAsync(ICameraAgentConfigurationAccessor accessor)
+    {
+        // These route-only derived hosts share the primary host's root and run no
+        // workers. Reuse its configuration without opening another integrity owner.
+        using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
+        var configuration = await scope.ServiceProvider.GetRequiredService<ICameraAgentConfigurationAccessor>()
+            .WaitForConfigurationAsync(CancellationToken.None).ConfigureAwait(false);
+        accessor.SetConfiguration(configuration);
     }
 
     private static async Task<string> GetAntiforgeryTokenAsync(HttpClient client)

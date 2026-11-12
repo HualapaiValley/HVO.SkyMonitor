@@ -1,0 +1,38 @@
+using System.Diagnostics;
+using System.Text.Json;
+
+// Diagnostic only: all forced collection occurs at process exit, after timed tests and fixture disposal.
+public static class StartupHook
+{
+    public static void Initialize()
+    {
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            var directory = Environment.GetEnvironmentVariable("HVO_I41_MEMORY_REPORT_DIR");
+            if (string.IsNullOrWhiteSpace(directory)) return;
+            var before = Snapshot();
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+            var result = new { Process = AppDomain.CurrentDomain.FriendlyName, Before = before, After = Snapshot() };
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, $"exit-{Environment.ProcessId}.json"), JsonSerializer.Serialize(result));
+        };
+    }
+
+    private static object Snapshot()
+    {
+        var memory = GC.GetGCMemoryInfo();
+        using var process = Process.GetCurrentProcess();
+        return new
+        {
+            AllocatedBytes = GC.GetTotalMemory(forceFullCollection: false),
+            CommittedBytes = memory.TotalCommittedBytes,
+            HeapBytes = memory.HeapSizeBytes,
+            FragmentedBytes = memory.FragmentedBytes,
+            WorkingSetBytes = process.WorkingSet64,
+            PeakWorkingSetBytes = process.PeakWorkingSet64,
+            Gen0 = GC.CollectionCount(0), Gen1 = GC.CollectionCount(1), Gen2 = GC.CollectionCount(2)
+        };
+    }
+}

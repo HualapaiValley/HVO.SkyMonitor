@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -65,6 +66,29 @@ public interface IDeploymentLocationStore
         DeploymentLocationSeed seed,
         CancellationToken cancellationToken);
 
+    ValueTask<DeploymentLocationSnapshot> VerifyInstallationAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
+        => InitializeAsync(seed, cancellationToken);
+
+    ValueTask<DeploymentLocationSnapshot> LoadCurrentAsync(DeploymentLocationSeed seed, bool verification,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => verification ? VerifyInstallationAsync(seed, cancellationToken) : InitializeAsync(seed, cancellationToken);
+
+    bool RequiresRetainedIntegrityScrub => false;
+    bool RecentRetainedEvidenceReady => true;
+    bool RetainedIntegrityRefreshDue => RequiresRetainedIntegrityScrub;
+    DateTimeOffset? RetainedIntegrityRefreshUtc => null;
+    long RetainedIntegrityGeneration => 0;
+    string RetainedIntegrityRetryKey => RetainedIntegrityGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    bool RequiresDeploymentLocationReconciliation => false;
+
+    ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => InitializeAsync(seed, cancellationToken);
+
+    ValueTask<DeploymentLocationSnapshot> FullScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => ScrubCurrentAsync(seed, configurationStillCurrent, cancellationToken);
+
     ValueTask StageAsync(
         DeploymentLocationSnapshot deployment,
         CancellationToken cancellationToken)
@@ -78,7 +102,7 @@ public interface IDeploymentLocationStore
         DateTimeOffset? effectiveUtc = null);
 }
 
-public sealed class ProtectedDeploymentLocationStore(
+public sealed partial class ProtectedDeploymentLocationStore(
     IOptions<CameraAgentHostOptions> options,
     IDeploymentLocationProtector protector,
     TimeProvider timeProvider,
@@ -93,16 +117,32 @@ public sealed class ProtectedDeploymentLocationStore(
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly SemaphoreSlim _scrubGate = new(1, 1);
+    private bool _recentReady = true;
+    private bool _needsReconciliation;
     private readonly CameraAgentHostOptions _options = options.Value;
     private readonly IDeploymentLocationProtector _protector = protector;
     private readonly TimeProvider _timeProvider = timeProvider;
     private readonly ILogger<ProtectedDeploymentLocationStore> _logger = logger;
     internal Action<string>? BeforeStateDirectorySyncForTest { get; set; }
+    internal Action? BeforeRetainedManifestValidationForTest { get; set; }
+    internal Action<string>? BeforeRetainedProofCommitForTest { get; set; }
     private DeploymentLocationHistory? _history;
+    private DeploymentLocationHistory? _bootstrapHistory;
+    private RetainedIntegrityLedger? _integrity;
+    private bool _disposed;
     private ManualDeploymentLocationRecord? _manual;
     private DeploymentLocationSeed? _configurationSeed;
 
     public DeploymentLocationSnapshot? Active => Volatile.Read(ref _history)?.Snapshots[^1];
+
+    public bool RequiresRetainedIntegrityScrub => _needsReconciliation || (Volatile.Read(ref _integrity)?.RequiresScrub ?? true);
+    public bool RecentRetainedEvidenceReady => _recentReady;
+    public bool RetainedIntegrityRefreshDue => RequiresRetainedIntegrityScrub || (_integrity?.RefreshDue ?? true);
+    public DateTimeOffset? RetainedIntegrityRefreshUtc => _integrity?.RefreshUtc;
+    public long RetainedIntegrityGeneration => _integrity?.Generation ?? 0;
+    public string RetainedIntegrityRetryKey => FormattableString.Invariant($"{_integrity?.Nonce}:{Manual.ManualSequence}:{Staged?.CanonicalSha256}:{Active?.CanonicalSha256}");
+    public bool RequiresDeploymentLocationReconciliation => _needsReconciliation;
 
     public DeploymentLocationSnapshot? Candidate => Volatile.Read(ref _history)?.Candidate;
 
@@ -131,19 +171,56 @@ public sealed class ProtectedDeploymentLocationStore(
                 "Deployment-location source classification is missing from protected history.");
     }
 
-    public async ValueTask<DeploymentLocationSnapshot> InitializeAsync(
-        DeploymentLocationSeed seed,
-        CancellationToken cancellationToken)
+    public ValueTask<DeploymentLocationSnapshot> InitializeAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
+        => RunFullVerificationAsync(seed, false, null, cancellationToken);
+
+    public ValueTask<DeploymentLocationSnapshot> VerifyInstallationAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
+        => InitializeCoreAsync(seed, strictRetainedValidation: true, fullScrub: false, null, cancellationToken);
+
+    public ValueTask<DeploymentLocationSnapshot> FullVerifyAsync(DeploymentLocationSeed seed, CancellationToken cancellationToken)
+        => RunFullVerificationAsync(seed, true, null, cancellationToken);
+
+    public async ValueTask<DeploymentLocationSnapshot> LoadCurrentAsync(DeploymentLocationSeed seed, bool verification,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+    {
+        return await InitializeCoreAsync(seed, strictRetainedValidation: verification, fullScrub: false,
+            configurationStillCurrent, cancellationToken, startupRecentOnly: !verification).ConfigureAwait(false);
+    }
+
+    public ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => RunFullVerificationAsync(seed, false, configurationStillCurrent, cancellationToken, allowIncremental: true);
+
+    public ValueTask<DeploymentLocationSnapshot> FullScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => RunFullVerificationAsync(seed, false, configurationStillCurrent, cancellationToken);
+
+    private async ValueTask<DeploymentLocationSnapshot> RunFullVerificationAsync(DeploymentLocationSeed seed,
+        bool strict, Func<bool>? configurationStillCurrent, CancellationToken cancellationToken, bool allowIncremental = false)
+    {
+        await _scrubGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { return await InitializeCoreAsync(seed, strict, true, configurationStillCurrent, cancellationToken, allowIncremental: allowIncremental).ConfigureAwait(false); }
+        finally { _scrubGate.Release(); }
+    }
+
+    private async ValueTask<DeploymentLocationSnapshot> InitializeCoreAsync(
+        DeploymentLocationSeed seed, bool strictRetainedValidation, bool fullScrub, Func<bool>? configurationStillCurrent,
+        CancellationToken cancellationToken, bool startupRecentOnly = false, bool allowIncremental = false)
     {
         ArgumentNullException.ThrowIfNull(seed);
         var started = Stopwatch.GetTimestamp();
         var operation = "load";
         using var activity = DeploymentLocationTelemetry.ActivitySource.StartActivity("deployment-location.initialize");
-        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        if (fullScrub || !strictRetainedValidation) await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        else if (!await _gate.WaitAsync(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false))
+            throw new InstallationVerificationPendingException(requiresScrub: false);
+        RetainedIntegrityLedger.Scrub? integrityScrub = null;
+        var gateHeld = true;
         try
         {
             seed = NormalizeSeed(seed);
             var (path, markerPath, manualPath) = EnsureStatePaths();
+            var initialAuthority = AuthorityStamp(path, markerPath, manualPath);
             var configurationSeed = seed;
             var manual = File.Exists(manualPath)
                 ? await ReadManualAsync(manualPath, cancellationToken).ConfigureAwait(false)
@@ -164,12 +241,28 @@ public sealed class ProtectedDeploymentLocationStore(
                 }
             }
             var historyExists = File.Exists(path);
-            if (!historyExists && (File.Exists(markerPath) || HasLocationBearingEvidence()))
+            if (!historyExists && _history is not null)
+                throw new InvalidDataException("Protected deployment-location history disappeared from the running installation.");
+            if (!historyExists && !fullScrub && !startupRecentOnly)
+                throw new InstallationVerificationPendingException(requiresScrub: true);
+            if (!historyExists && (File.Exists(markerPath) ||
+                (startupRecentOnly ? HasAnyRetainedStateBounded(cancellationToken) : HasLocationBearingEvidence(cancellationToken))))
             {
+                if (startupRecentOnly)
+                {
+                    // Recovery UI may start; no provisional value is persisted or
+                    // exposed as active capture/installer authority before adoption.
+                    _recentReady = false;
+                    _needsReconciliation = true;
+                    if (configurationStillCurrent is not null && !configurationStillCurrent())
+                        throw new InstallationVerificationPendingException(requiresScrub: true, configurationChanged: true);
+                    return Reconcile(null, seed).Active;
+                }
                 throw new InvalidDataException(
                     "Protected deployment-location history is missing for existing capture evidence.");
             }
             var history = historyExists ? await ReadAsync(path, cancellationToken).ConfigureAwait(false) : null;
+            if (!historyExists && startupRecentOnly) fullScrub = true; // bounded proof of an empty root above
             if (File.Exists(markerPath))
             {
                 EnsurePhysicalStatePath(markerPath);
@@ -178,9 +271,25 @@ public sealed class ProtectedDeploymentLocationStore(
                 ? await ReadMarkerAsync(markerPath, cancellationToken).ConfigureAwait(false)
                 : null;
             ValidateMarker(marker, history);
-            if (history is not null)
+            var ledgerRequirementAdded = false;
+            if (history is not null && fullScrub)
             {
-                ValidateRetainedEvidence(history);
+                var ledger = GetIntegrity(history);
+                if (ledger is not null && history.RetainedIntegrityNonce is null)
+                {
+                    history = history with { RetainedIntegrityNonce = ledger.Nonce };
+                    ledgerRequirementAdded = true;
+                }
+                _gate.Release(); gateHeld = false;
+                try
+                {
+                    integrityScrub = BeginIntegrityScrub(ledger, history, strictRetainedValidation, cancellationToken,
+                        allowIncremental && _recentReady && _history is not null);
+                    using var existingProofs = CreateRetainedIndex(path, history);
+                    ValidateRetainedEvidence(history, existingProofs, strictRetainedValidation, cancellationToken, integrityScrub);
+                }
+                finally { await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false); gateHeld = true; }
+
             }
             ReconciledLocation snapshot;
             var startupUtc = ToMilliseconds(_timeProvider.GetUtcNow());
@@ -213,12 +322,68 @@ public sealed class ProtectedDeploymentLocationStore(
             {
                 snapshot = Reconcile(history, seed);
             }
-            if (history is null || !ReferenceEquals(snapshot.History, history))
+            if (!fullScrub)
             {
-                ValidateRetainedEvidence(snapshot.History);
+                if (!strictRetainedValidation && history is not null)
+                {
+                    var cold = _history is null;
+                    var ledgerForStartup = GetIntegrity(history);
+                    _needsReconciliation = !ReferenceEquals(snapshot.History, history);
+                    if (_needsReconciliation)
+                    {
+                        snapshot = new ReconciledLocation(history, history.Snapshots[^1], Appended: false);
+                        supersedeManual = false;
+                    }
+                    if (cold)
+                    {
+                        _recentReady = ValidateRecentRetainedEvidence(history, ledgerForStartup, cancellationToken);
+                        if (!_recentReady) ledgerForStartup?.RequireFullVerification();
+                    }
+                }
+                // A request never opens/rebuilds the corpus ledger. The host-owned full
+                // scrub creates a fresh epoch; request cancellation cannot restart it.
+                var ledger = _integrity;
+                if (history is null || !ReferenceEquals(snapshot.History, history))
+                    throw new InstallationVerificationPendingException(requiresScrub: true);
+                // Ordinary configuration availability is not retained-integrity qualification.
+                // Keep validating fresh protected authority, but let the host coalesce a
+                // dirty ledger's scrub instead of repeating its corpus scan on every poll.
+                var qualified = ledger is not null && await ledger.VerifyAsync(RetainedIdentity(history),
+                    cancellationToken, waitForMutation: !strictRetainedValidation).ConfigureAwait(false);
+                if ((!qualified || _needsReconciliation || !_recentReady) && strictRetainedValidation)
+                    throw new InstallationVerificationPendingException(ledger?.RequiresScrub ?? true);
             }
+            else if (history is null || !ReferenceEquals(snapshot.History, history))
+            {
+                integrityScrub?.Dispose();
+                var ledger = GetIntegrity(snapshot.History);
+                if (history is null && ledger is { HasExpectedEvidence: true })
+                    throw new InvalidDataException("Established retained authority requires its original protected history.");
+                if (ledger is not null && snapshot.History.RetainedIntegrityNonce is null)
+                {
+                    snapshot = snapshot with { History = snapshot.History with { RetainedIntegrityNonce = ledger.Nonce } };
+                    ledgerRequirementAdded = true;
+                }
+                // Registration drains earlier managed publications. Recheck before
+                // creating first identity so one cannot appear after the first probe.
+                if (history is null && HasLocationBearingEvidence(cancellationToken))
+                    throw new InvalidDataException("Protected deployment-location history is missing for existing capture evidence.");
+                _gate.Release(); gateHeld = false;
+                try
+                {
+                    integrityScrub = BeginIntegrityScrub(ledger, snapshot.History, strictRetainedValidation, cancellationToken);
+                    using var changedProofs = CreateRetainedIndex(path, snapshot.History);
+                    ValidateRetainedEvidence(snapshot.History, changedProofs, strictRetainedValidation, cancellationToken, integrityScrub);
+                }
+                finally { await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false); gateHeld = true; }
+            }
+            if (fullScrub && !AuthorityStamp(path, markerPath, manualPath).AsSpan().SequenceEqual(initialAuthority))
+                throw new InstallationVerificationPendingException(requiresScrub: true, configurationChanged: true);
+            integrityScrub?.Finish(cancellationToken);
+            if (configurationStillCurrent is not null && !configurationStillCurrent())
+                throw new InstallationVerificationPendingException(requiresScrub: true, configurationChanged: true);
             operation = history is null ? "initialize" : snapshot.Appended ? "change" : "load";
-            if (history is null || !ReferenceEquals(snapshot.History, history))
+            if (ledgerRequirementAdded || history is null || !ReferenceEquals(snapshot.History, history))
             {
                 await WriteAsync(path, snapshot.History, cancellationToken).ConfigureAwait(false);
             }
@@ -237,6 +402,34 @@ public sealed class ProtectedDeploymentLocationStore(
             Volatile.Write(ref _configurationSeed, configurationSeed);
             Volatile.Write(ref _manual, manual);
             Volatile.Write(ref _history, snapshot.History);
+            cancellationToken.ThrowIfCancellationRequested();
+            try { integrityScrub?.Publish(); }
+            catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException or FormatException)
+            {
+                integrityScrub?.Fail();
+                DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
+                if (strictRetainedValidation) throw;
+            }
+            // Finish owns the root barrier through publication. Release it before
+            // a recovery admission check takes its own bounded root observations.
+            var completedFullPass = integrityScrub is { Incremental: false };
+            integrityScrub?.Dispose();
+            integrityScrub = null;
+            if (fullScrub && _integrity is { RequiresScrub: false })
+            {
+                if (completedFullPass) _recentReady = true;
+                else if (!_recentReady)
+                {
+                    _recentReady = ValidateRecentRetainedEvidence(snapshot.History, _integrity, cancellationToken);
+                    if (!_recentReady) _integrity.RequireFullVerification();
+                }
+                _needsReconciliation = false;
+            }
+            else if (fullScrub && _history is not null)
+            {
+                if (!_recentReady) _recentReady = ValidateRecentRetainedEvidence(_history, _integrity, cancellationToken);
+                _needsReconciliation = false;
+            }
             if (snapshot.Appended)
             {
                 DeploymentLocationLog.VersionAppended(_logger, snapshot.Active.LocationId, snapshot.Active.Version);
@@ -251,8 +444,9 @@ public sealed class ProtectedDeploymentLocationStore(
             activity?.SetStatus(ActivityStatusCode.Ok);
             return snapshot.Active;
         }
-        catch
+        catch (Exception exception)
         {
+            if (exception is not OperationCanceledException) integrityScrub?.Fail();
             telemetry?.Record(operation, "failed", Stopwatch.GetElapsedTime(started));
             activity?.SetTag("operation", operation);
             activity?.SetTag("outcome", "failed");
@@ -261,7 +455,8 @@ public sealed class ProtectedDeploymentLocationStore(
         }
         finally
         {
-            _gate.Release();
+            integrityScrub?.Dispose();
+            if (gateHeld) _gate.Release();
         }
     }
 
@@ -668,7 +863,8 @@ public sealed class ProtectedDeploymentLocationStore(
                 },
             Staged: null,
             CentrallyActivatedCanonicalSha256: null,
-            Candidate: null);
+            Candidate: null,
+            RetainedIntegrityNonce: history?.RetainedIntegrityNonce);
         ValidateHistory(updated);
         return new ReconciledLocation(updated, snapshot, Appended: true);
     }
@@ -834,6 +1030,7 @@ public sealed class ProtectedDeploymentLocationStore(
                 CameraAgentFileSystem.FlushFile(stream);
             }
             RestrictFile(temporaryPath);
+            cancellationToken.ThrowIfCancellationRequested();
             CameraAgentFileSystem.PublishPrepared(directory, temporaryPath, path, overwrite: true);
             RestrictFile(path);
             BeforeStateDirectorySyncForTest?.Invoke(directory);
@@ -843,7 +1040,7 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
             }
         }
     }
@@ -882,8 +1079,8 @@ public sealed class ProtectedDeploymentLocationStore(
         RawIngressFileStore.SyncDirectoryHierarchy(root, directory);
         var path = Path.GetFullPath(Path.Combine(directory, "deployment-location.v1.protected"));
         // The manual record is a separate protected file rather than a field of the history document:
-        // the history schema stays byte-compatible so an installer rollback to a baseline image can
-        // still open it, and the baseline simply ignores this sidecar.
+        // the baseline ignores this sidecar. Ledger adoption seals the history itself;
+        // rollback across that reader boundary restores the paired pre-upgrade files.
         var manualPath = Path.GetFullPath(Path.Combine(directory, "manual-deployment-location.v1.protected"));
         var rootPrefix = string.Concat(Path.TrimEndingDirectorySeparator(root), Path.DirectorySeparatorChar);
         var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
@@ -902,6 +1099,8 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             throw new InvalidDataException("Protected deployment-location history has an unsupported schema.");
         }
+        if (history.RetainedIntegrityNonce is { } nonce && (nonce.Length != 32 || nonce.Any(static c => !char.IsAsciiHexDigit(c))))
+            throw new InvalidDataException("Protected retained integrity binding is invalid.");
         if (!string.Equals(history.ConfigurationSeed.LocationId, history.LocationId, StringComparison.Ordinal)
             || history.ConfigurationSeed.Coordinates is null
             || history.ConfigurationSeed != NormalizeSeed(history.ConfigurationSeed)
@@ -1060,7 +1259,134 @@ public sealed class ProtectedDeploymentLocationStore(
         }
     }
 
-    private void ValidateRetainedEvidence(DeploymentLocationHistory history)
+    private static byte[] RetainedIdentity(DeploymentLocationHistory history)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(history, SerializerOptions));
+        // Increment this semantic version when retained validation/proof semantics
+        // change. Unrelated builds/runtime MVIDs do not invalidate verified bytes.
+        hash.AppendData("hvo-retained-validation-contract-v3"u8);
+        return hash.GetHashAndReset();
+    }
+
+    private RetainedManifestValidationIndex CreateRetainedIndex(string historyPath, DeploymentLocationHistory history)
+    {
+        CleanupRetainedTemporaryFiles(Path.GetDirectoryName(historyPath)!);
+        return new RetainedManifestValidationIndex(Path.GetDirectoryName(historyPath)!, RetainedIdentity(history),
+            _integrity?.ParseProofProtector ?? _protector, _timeProvider.GetUtcNow(), () => DeploymentLocationLog.RetainedProofCacheUnavailable(_logger),
+            BeforeRetainedProofCommitForTest);
+    }
+
+    private RetainedIntegrityLedger.Scrub? BeginIntegrityScrub(RetainedIntegrityLedger? ledger,
+        DeploymentLocationHistory history, bool strict, CancellationToken cancellationToken, bool allowIncremental = false)
+    {
+        if (ledger is null && strict) throw new InvalidDataException("Retained integrity ledger is unavailable for qualification.");
+        try { return ledger?.BeginScrub(RetainedIdentity(history), key => ReadIntegrityEntry(key, history), strict, cancellationToken, allowIncremental); }
+        catch (Exception exception) when (!strict && exception is (InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException))
+        {
+            // A damaged ledger never qualifies, but does not close the recovery UI.
+            DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
+            return null;
+        }
+        catch (Exception exception) when (strict && exception is (IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException or FormatException))
+        {
+            throw new InvalidDataException("Retained integrity ledger is unavailable for qualification.", exception);
+        }
+    }
+
+    private RetainedIntegrityLedger? GetIntegrity(DeploymentLocationHistory history)
+    {
+        if (_integrity is not null)
+        {
+            if (history.RetainedIntegrityNonce is null || string.Equals(history.RetainedIntegrityNonce, _integrity.Nonce, StringComparison.Ordinal))
+                return _integrity;
+            DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
+            return null;
+        }
+        _bootstrapHistory = history;
+        try
+        {
+            _integrity = new RetainedIntegrityLedger(_options.RawIngressRoot, _protector,
+                key => ReadIntegrityEntry(key, Volatile.Read(ref _history) ?? _bootstrapHistory),
+                () => DeploymentLocationLog.RetainedIntegrityUnqualified(_logger), _timeProvider, history.RetainedIntegrityNonce);
+            _integrity.PrepareStartup(RetainedIdentity(history), CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException or FormatException)
+        {
+            DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
+        }
+        return _integrity;
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Both query branches are fixed SQL selected by a local schema capability; the capture key is parameterized.")]
+    private RetainedIntegrityLedger.Entry? ReadIntegrityEntry(string key, DeploymentLocationHistory history)
+    {
+        byte[]? bytes;
+        var frame = false;
+        if (key.StartsWith("F|", StringComparison.Ordinal))
+        {
+            var path = Path.GetFullPath(Path.Combine(_options.RawIngressRoot, key[2..]));
+            RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, path);
+            if (!File.Exists(path)) return null;
+            bytes = File.ReadAllBytes(path);
+            frame = IsFrameSidecar(_options.RawIngressRoot, path);
+        }
+        else
+        {
+            var path = Path.Combine(_options.RawIngressRoot, "journal", "raw-ingress.db");
+            if (!File.Exists(path)) return null;
+            RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, path);
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='raw_captures';";
+            if (Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 0) return null;
+            command.CommandText = JournalHasCaptureId(connection)
+                ? "SELECT manifest_json FROM raw_captures WHERE capture_id=$capture;"
+                : "SELECT manifest_json FROM raw_captures WHERE rowid=$capture;";
+            command.Parameters.AddWithValue("$capture", key[2..]);
+            bytes = command.ExecuteScalar() as byte[];
+            if (bytes is null) return null;
+            frame = true;
+        }
+        var (manifest, other) = ParseRetainedManifest(bytes, frame, strict: false);
+        var kind = manifest is not null ? 1 : other ? 2 : 3;
+        if (manifest?.Descriptor.Location is { } provenance)
+        {
+            var snapshot = history.Snapshots.SingleOrDefault(item => item.LocationId == provenance.LocationId && item.Version == provenance.Version);
+            if (snapshot is null || snapshot.ToProvenance() != provenance || !IsEffective(history, snapshot, manifest.Descriptor.Timing.ExposureStartedUtc)) kind = 3;
+        }
+        return new RetainedIntegrityLedger.Entry(key, SHA256.HashData(bytes), kind);
+    }
+
+    private static bool JournalHasCaptureId(Microsoft.Data.Sqlite.SqliteConnection connection)
+    {
+        using var columns = connection.CreateCommand();
+        columns.CommandText = "PRAGMA table_info(raw_captures);";
+        using var reader = columns.ExecuteReader();
+        while (reader.Read()) if (reader.GetString(1) == "capture_id") return true;
+        return false;
+    }
+
+    private void CleanupRetainedTemporaryFiles(string directory)
+    {
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(directory, ".retained-validation.v1.protected.*.tmp").Take(8))
+            {
+                RawIngressFileStore.EnsureNoSymbolicLinks(directory, file);
+                RetainedFileMutations.Delete(file);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            DeploymentLocationLog.RetainedProofCacheUnavailable(_logger);
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The nullable observation lease is always disposed by its using declaration.")]
+    private void ValidateRetainedEvidence(DeploymentLocationHistory history,
+        RetainedManifestValidationIndex summary, bool strict, CancellationToken cancellationToken, RetainedIntegrityLedger.Scrub? scrub = null)
     {
         using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained");
         var root = Path.GetFullPath(_options.RawIngressRoot);
@@ -1068,6 +1394,7 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             return;
         }
+        scrub?.LoadFileMetadata(summary, cancellationToken);
         var enumeration = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -1083,6 +1410,7 @@ public sealed class ProtectedDeploymentLocationStore(
             using var retainedPaths = paths;
             while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 bool hasNext;
                 string? path;
                 using (attribution?.Measure(ReadStage.Enumeration))
@@ -1091,17 +1419,30 @@ public sealed class ProtectedDeploymentLocationStore(
                     path = hasNext ? retainedPaths.Current : null;
                 }
                 if (!hasNext) break;
+                using var observation = scrub?.Observe(cancellationToken);
                 try
                 {
                     using (attribution?.Measure(ReadStage.Security))
                         RawIngressFileStore.EnsureNoSymbolicLinks(root, path!);
+                    var key = RetainedIntegrityLedger.FileKey(root, path!);
+                    var file = new FileInfo(path!);
+                    var stamp = new RetainedIntegrityLedger.FileStamp(file.Length, file.LastWriteTimeUtc.Ticks);
+                    if (scrub?.Reuse(key, stamp) is not null) continue;
                     byte[] manifestJson;
                     using (attribution?.Measure(ReadStage.Read))
                     {
                         manifestJson = File.ReadAllBytes(path!);
                         attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
                     }
-                    ValidateRetainedManifest(history, manifestJson, attribution);
+                    BeforeRetainedManifestValidationForTest?.Invoke();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var result = ValidateRetainedManifest(history, manifestJson, summary, attribution,
+                        requireManifest: IsFrameSidecar(root, path!), strict,
+                        digest => scrub?.ParsedKind(RetainedIntegrityLedger.FileKey(root, path!), digest));
+                    file.Refresh();
+                    if (file.Length != stamp.Length || file.LastWriteTimeUtc.Ticks != stamp.ModifiedUtcTicks)
+                        throw new InvalidDataException("Retained evidence changed while being verified.");
+                    scrub?.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind) { Stamp = stamp }, index: summary);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -1110,34 +1451,81 @@ public sealed class ProtectedDeploymentLocationStore(
                 }
             }
         }
-        ValidateJournalEvidence(root, history);
+        ValidateJournalEvidence(root, history, summary, strict, cancellationToken, scrub);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
-    private static void ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
-        DeploymentLocationReadAttribution? attribution)
+    private static bool IsFrameSidecar(string root, string path)
+        => Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar)[0] == "frames";
+
+    private static (byte[] Digest, int Kind) ValidateRetainedManifest(DeploymentLocationHistory history, byte[] manifestJson,
+        RetainedManifestValidationIndex summary, DeploymentLocationReadAttribution? attribution, bool requireManifest, bool strict,
+        Func<byte[], int?>? parsedKind = null)
     {
         attribution?.AddManifest(manifestJson.LongLength);
+        byte[] digest;
+        using (attribution?.Measure(ReadStage.Hash)) digest = RetainedManifestValidationIndex.Hash(manifestJson);
+        var known = parsedKind?.Invoke(digest) is { } kind
+            ? (RetainedManifestValidationIndex.ProofKind?)kind : summary.Find(digest);
+        if (known is not null)
+        {
+            attribution?.AddCacheHit();
+            if (requireManifest && known == RetainedManifestValidationIndex.ProofKind.OtherJson)
+            {
+                if (strict) throw new InvalidDataException("Retained capture manifest failed schema or contract validation.");
+                return (digest, 3);
+            }
+            return (digest, (int)known.Value);
+        }
         ArtifactManifestV2? manifest;
+        bool otherJson;
+        attribution?.AddBytes(ReadStage.Parse, manifestJson.LongLength);
         using (attribution?.Measure(ReadStage.Parse))
-            manifest = CaptureContractJson.ParseManifest(manifestJson).Document?.Manifest;
+            (manifest, otherJson) = ParseRetainedManifest(manifestJson, requireManifest, strict);
+        if (manifest is null)
+        {
+            if (otherJson) summary.Record(digest, RetainedManifestValidationIndex.ProofKind.OtherJson);
+            return (digest, otherJson ? 2 : 3);
+        }
         using var provenanceStage = attribution?.Measure(ReadStage.Provenance);
-        var provenance = manifest?.Descriptor.Location;
-        if (manifest is null || provenance is null)
+        var provenance = manifest.Descriptor.Location;
+        if (provenance is not null)
         {
-            return;
+            var snapshot = history.Snapshots.SingleOrDefault(item =>
+                string.Equals(item.LocationId, provenance.LocationId, StringComparison.Ordinal) && item.Version == provenance.Version);
+            if (snapshot is null || snapshot.ToProvenance() != provenance ||
+                !IsEffective(history, snapshot, manifest.Descriptor.Timing.ExposureStartedUtc))
+                throw new InvalidDataException("Retained capture location provenance does not match protected deployment-location history.");
         }
-        var snapshot = history.Snapshots.SingleOrDefault(item =>
-            string.Equals(item.LocationId, provenance.LocationId, StringComparison.Ordinal) &&
-            item.Version == provenance.Version);
-        if (snapshot is null || snapshot.ToProvenance() != provenance ||
-            !IsEffective(history, snapshot, manifest.Descriptor.Timing.ExposureStartedUtc))
-        {
-            throw new InvalidDataException(
-                "Retained capture location provenance does not match protected deployment-location history.");
-        }
+        summary.Record(digest, RetainedManifestValidationIndex.ProofKind.Artifact);
+        return (digest, 1);
     }
 
-    private static void ValidateJournalEvidence(string root, DeploymentLocationHistory history)
+    private static (ArtifactManifestV2? Manifest, bool OtherJson) ParseRetainedManifest(byte[] bytes, bool requireManifest, bool strict)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(bytes);
+            var root = document.RootElement;
+            var claimsManifest = root.ValueKind == JsonValueKind.Object &&
+                (root.TryGetProperty("schemaVersion", out var schema) && schema.ValueKind == JsonValueKind.String &&
+                    schema.ValueEquals(ArtifactManifestV2.CurrentSchemaVersion) ||
+                 root.TryGetProperty("descriptor", out _) && root.TryGetProperty("relativeArtifactPath", out _));
+            if (!requireManifest && !claimsManifest) return (null, true);
+            var manifest = CaptureContractJson.ParseManifest(bytes).Document?.Manifest;
+            if (manifest is not null) return (manifest, false);
+        }
+        catch (JsonException) { }
+        // Startup lets reconciliation and recovery UI inspect invalid/torn sidecars. The protected
+        // endpoint uses strict mode and cannot return installation identity for those same bytes.
+        if (strict) throw new InvalidDataException("Retained capture manifest failed schema or contract validation.");
+        return (null, false);
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The nullable observation lease is always disposed by its using declaration.")]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Both branches are fixed internal schema queries with no supplied SQL.")]
+    private void ValidateJournalEvidence(string root, DeploymentLocationHistory history,
+        RetainedManifestValidationIndex summary, bool strict, CancellationToken cancellationToken, RetainedIntegrityLedger.Scrub? scrub = null)
     {
         using var activity = DeploymentLocationTelemetry.AttributionActivitySource.StartActivity("deployment-location.validate-retained-journal");
         using var attribution = DeploymentLocationReadAttribution.Create(activity);
@@ -1166,28 +1554,95 @@ public sealed class ProtectedDeploymentLocationStore(
         {
             return;
         }
+        var keyed = JournalHasCaptureId(connection);
+        using var columns = connection.CreateCommand();
+        columns.CommandText = "SELECT COUNT(*) FROM pragma_table_info('raw_captures') WHERE name='manifest_sha256';";
+        var incremental = scrub?.Incremental == true && keyed &&
+            Convert.ToInt64(columns.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 1;
+        if (incremental)
+        {
+            ValidateIncrementalJournal(connection, history, summary, strict, scrub!, attribution, cancellationToken);
+            return;
+        }
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT manifest_json FROM raw_captures WHERE CAST(manifest_json AS TEXT) LIKE '%\"location\"%';";
-        Microsoft.Data.Sqlite.SqliteDataReader reader;
-        using (attribution?.Measure(ReadStage.Query))
-            reader = command.ExecuteReader();
-        using var retainedReader = reader;
+        command.CommandText = keyed ? "SELECT capture_id,manifest_json FROM raw_captures;" : "SELECT CAST(rowid AS TEXT),manifest_json FROM raw_captures;";
+        using var retainedReader = command.ExecuteReader();
         while (true)
         {
-            bool hasNext;
-            byte[]? manifestJson;
+            cancellationToken.ThrowIfCancellationRequested();
+            using var observation = scrub?.Observe(cancellationToken);
+            if (!retainedReader.Read()) break;
+            var capture = retainedReader.GetString(0);
+            byte[] manifestJson;
             using (attribution?.Measure(ReadStage.Read))
             {
-                hasNext = retainedReader.Read();
-                manifestJson = hasNext ? (byte[])retainedReader.GetValue(0) : null;
-                if (manifestJson is not null) attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
+                manifestJson = (byte[])retainedReader.GetValue(1);
+                attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
             }
-            if (!hasNext) break;
-            ValidateRetainedManifest(history, manifestJson!, attribution);
+            BeforeRetainedManifestValidationForTest?.Invoke();
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = ValidateRetainedManifest(history, manifestJson, summary, attribution, requireManifest: true, strict,
+                digest => scrub?.ParsedKind(RetainedIntegrityLedger.JournalKey(capture), digest));
+            scrub?.Record(new RetainedIntegrityLedger.Entry(RetainedIntegrityLedger.JournalKey(capture), result.Digest, result.Kind)
+            { Stamp = new RetainedIntegrityLedger.FileStamp(manifestJson.LongLength, 0) }, index: summary);
         }
     }
 
-    private bool HasLocationBearingEvidence()
+    private sealed record JournalMetadata(string Capture, byte[] Digest, long Length);
+
+    private void ValidateIncrementalJournal(Microsoft.Data.Sqlite.SqliteConnection connection, DeploymentLocationHistory history,
+        RetainedManifestValidationIndex summary, bool strict, RetainedIntegrityLedger.Scrub scrub,
+        DeploymentLocationReadAttribution? attribution, CancellationToken cancellationToken)
+    {
+        // Close each bounded SQLite read before taking the writer barrier. A live
+        // capture commit must not hold that barrier waiting on our read cursor.
+        var after = string.Empty;
+        while (true)
+        {
+            var batch = new List<JournalMetadata>(8192);
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT capture_id,manifest_sha256,length(manifest_json),typeof(manifest_json) FROM raw_captures WHERE capture_id>$after ORDER BY capture_id LIMIT 8192;";
+                command.Parameters.AddWithValue("$after", after);
+                using var rows = command.ExecuteReader();
+                while (rows.Read())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var declared = rows.GetString(1);
+                    if (declared.Length != 64 || rows.GetString(3) != "blob")
+                        throw new InvalidDataException("Retained journal metadata is invalid.");
+                    batch.Add(new JournalMetadata(rows.GetString(0), Convert.FromHexString(declared), rows.GetInt64(2)));
+                }
+            }
+            if (batch.Count == 0) return;
+            after = batch[^1].Capture;
+            foreach (var row in batch)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var observation = scrub.Observe(cancellationToken);
+                var key = RetainedIntegrityLedger.JournalKey(row.Capture);
+                if (scrub.Reuse(key, digest: row.Digest, length: row.Length) is not null) continue;
+                byte[] json;
+                using (attribution?.Measure(ReadStage.Read))
+                {
+                    using var changed = connection.CreateCommand();
+                    changed.CommandText = "SELECT manifest_json FROM raw_captures WHERE capture_id=$capture;";
+                    changed.Parameters.AddWithValue("$capture", row.Capture);
+                    json = changed.ExecuteScalar() as byte[]
+                        ?? throw new InvalidDataException("Retained journal manifest changed during verification.");
+                    attribution?.AddBytes(ReadStage.Read, json.LongLength);
+                }
+                BeforeRetainedManifestValidationForTest?.Invoke();
+                cancellationToken.ThrowIfCancellationRequested();
+                var result = ValidateRetainedManifest(history, json, summary, attribution, requireManifest: true, strict,
+                    digest => scrub.ParsedKind(key, digest));
+                scrub.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind)
+                { Stamp = new RetainedIntegrityLedger.FileStamp(json.LongLength, 0) }, index: summary);
+            }
+        }
+    }
+
+    private bool HasLocationBearingEvidence(CancellationToken cancellationToken)
     {
         var root = Path.GetFullPath(_options.RawIngressRoot);
         if (!Directory.Exists(root))
@@ -1202,6 +1657,7 @@ public sealed class ProtectedDeploymentLocationStore(
         };
         foreach (var path in Directory.EnumerateFiles(root, "*.json", enumeration))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
@@ -1507,7 +1963,11 @@ public sealed class ProtectedDeploymentLocationStore(
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        _integrity?.Dispose();
         _gate.Dispose();
+        _scrubGate.Dispose();
         GC.SuppressFinalize(this);
     }
 
@@ -1521,7 +1981,8 @@ public sealed class ProtectedDeploymentLocationStore(
         [property: JsonRequired] DeploymentLocationSnapshot? Candidate = null,
         [property: JsonRequired] DeploymentLocationSeed ConfigurationSeed = null!,
         [property: JsonRequired] IReadOnlyDictionary<long, DateTimeOffset> ActivatedAtUtc = null!,
-        [property: JsonRequired] Dictionary<long, DeploymentLocationSourceKind> SourceKinds = null!);
+        [property: JsonRequired] Dictionary<long, DeploymentLocationSourceKind> SourceKinds = null!,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RetainedIntegrityNonce = null);
 
     private sealed record DeploymentLocationMarker(int SchemaVersion, string LocationId, long Version);
 
@@ -1544,6 +2005,12 @@ public sealed class ProtectedDeploymentLocationStore(
 
 internal static partial class DeploymentLocationLog
 {
+    [LoggerMessage(7308, LogLevel.Warning, "Retained installation integrity requires a complete scrub before protected verification")]
+    internal static partial void RetainedIntegrityUnqualified(ILogger logger);
+
+    [LoggerMessage(7307, LogLevel.Warning, "Optional retained validation index unavailable; verification will inspect current bytes without cached proofs")]
+    internal static partial void RetainedProofCacheUnavailable(ILogger logger);
+
     [LoggerMessage(7301, LogLevel.Information,
         "Deployment location {LocationId} version {Version} appended to protected history")]
     internal static partial void VersionAppended(ILogger logger, string locationId, long version);

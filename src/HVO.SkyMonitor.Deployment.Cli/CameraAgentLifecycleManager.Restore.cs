@@ -618,6 +618,8 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         SyncTree(staged);
         await PlaceSnapshotsAsync(paths, archived, snapshots, cancellationToken).ConfigureAwait(false);
+        await CameraAgentStateSnapshot.StageArchiveIntegrityAsync(paths, archived.Manifest.InstanceId,
+            archived.Archive.StateSnapshot, staged, cancellationToken).ConfigureAwait(false);
         SafeFileSystem.FlushDirectoryChain(staging, paths.ProductRoot);
         BackupStepCompleted("restore-staged");
     }
