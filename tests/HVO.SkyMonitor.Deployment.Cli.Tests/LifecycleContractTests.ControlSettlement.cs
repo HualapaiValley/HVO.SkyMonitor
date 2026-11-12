@@ -31,8 +31,11 @@ public sealed partial class LifecycleContractTests
         Assert.IsFalse(File.Exists(fixture.Paths.LifecycleStatePath), "A refused deployment must not strand a new operation journal.");
         CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(path));
         if (!receipt.IsTerminal)
-            await journal.SaveAsync(receipt with { Phase = CameraAgentControlPhase.Failed,
-                Events = [.. receipt.Events, new(CameraAgentControlPhase.Failed, now, "lifecycle.installer-interrupted")] });
+            await journal.SaveAsync(receipt with
+            {
+                Phase = CameraAgentControlPhase.Failed,
+                Events = [.. receipt.Events, new(CameraAgentControlPhase.Failed, now, "lifecycle.installer-interrupted")]
+            });
         await journal.AcknowledgeAsync(request.OperationId);
         await CameraAgentLifecycleManager.BeginAsync(fixture.Request(kind), fixture.Paths, kind, fixture.Manifest, CancellationToken.None);
         Assert.IsTrue(File.Exists(fixture.Paths.LifecycleStatePath));

@@ -101,17 +101,27 @@ public sealed class InstallerLifecycleRecoveryIntegrationTests
         var queued = await fixture.Controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
         var draining = queued with
         {
-            Phase = CameraAgentControlPhase.Draining, OriginalProcessId = fixture.Controls.ProcessId, ResumeAfterVerification = true,
+            Phase = CameraAgentControlPhase.Draining,
+            OriginalProcessId = fixture.Controls.ProcessId,
+            ResumeAfterVerification = true,
             Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, DateTimeOffset.UtcNow, "lifecycle.draining")]
         };
         await client.ExchangeAsync(draining, CancellationToken.None).ConfigureAwait(false);
         var pause = await client.DrainAsync(request, CancellationToken.None).ConfigureAwait(false);
-        draining = draining with { PausedVersion = pause.CaptureVersion, DrainedCaptureSequence = pause.CaptureSequence,
-            VerifiedProcessId = fixture.Controls.ProcessId, ResumeRequested = true };
+        draining = draining with
+        {
+            PausedVersion = pause.CaptureVersion,
+            DrainedCaptureSequence = pause.CaptureSequence,
+            VerifiedProcessId = fixture.Controls.ProcessId,
+            ResumeRequested = true
+        };
         await client.ExchangeAsync(draining, CancellationToken.None).ConfigureAwait(false);
         await client.ResumeAsync(draining, CancellationToken.None).ConfigureAwait(false);
-        var failed = draining with { Phase = CameraAgentControlPhase.Failed,
-            Events = [.. draining.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "restart.resume-unconfirmed")] };
+        var failed = draining with
+        {
+            Phase = CameraAgentControlPhase.Failed,
+            Events = [.. draining.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "restart.resume-unconfirmed")]
+        };
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
