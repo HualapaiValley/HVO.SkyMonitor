@@ -31,10 +31,17 @@ public sealed partial class VirtualSkyCloudScenarioTests
                     CameraAgentOrbitalTimeDataProblem.Disabled, null));
             // The virtual clock completes exposure instantly; keep its readout before real durable ingress.
             var now = DateTimeOffset.UtcNow.AddSeconds(-30);
+            var panelPipeline = ProcessingGraphOperationsTests.RemainingOptionsPipeline(Path.Combine(root, "artifacts"));
             var config = Config(CameraPixelFormat.Mono16, null, physicalMono: declaredSensorLevels) with
             {
                 AgentId = "virtual-node-execution",
-                Pipeline = ProcessingGraphOperationsTests.RemainingOptionsPipeline(Path.Combine(root, "artifacts"))
+                Pipeline = panelPipeline with
+                {
+                    Steps = [new("Preview", "preview", DependsOn: ["$raw"],
+                        Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
+                        .. panelPipeline.Steps.Select(step => step.Type == "Storage"
+                            ? step with { DependsOn = ["preview", "measured"] } : step)]
+                }
             };
             var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(now, true), new InMemoryCelestialCatalog([]),
                 provider.GetRequiredService<IProjectedSceneStore>(), stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
