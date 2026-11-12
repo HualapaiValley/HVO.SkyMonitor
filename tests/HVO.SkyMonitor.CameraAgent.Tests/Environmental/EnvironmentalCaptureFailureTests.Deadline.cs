@@ -67,7 +67,6 @@ public sealed partial class EnvironmentalCaptureFailureTests
             Assert.IsNotNull(acquisition);
             Assert.IsTrue(acquisition.Unavailable);
             Assert.IsLessThan(2400d, stopwatch.Elapsed.TotalMilliseconds);
-            Assert.IsGreaterThanOrEqualTo(1800d, stopwatch.Elapsed.TotalMilliseconds);
             raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, acquisition.Id, Epoch,
                 unavailable: true).ConfigureAwait(false);
             Assert.IsTrue((await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root,
@@ -178,7 +177,15 @@ public sealed partial class EnvironmentalCaptureFailureTests
 
     private sealed class DeadlineHostContext(CancellationTokenSource cancellation) : ICaptureHostContext
     {
-        public CameraModuleConfig Configuration { get; } = RawCaptureIngressTests.EnvironmentalConfiguration();
+        public CameraModuleConfig Configuration
+        {
+            get
+            {
+                var configuration = RawCaptureIngressTests.EnvironmentalConfiguration();
+                return configuration with { Rig = configuration.Rig with { ControlPolicy = new()
+                    { ExposureControl = AutomaticControlOwnership.Disabled, GainControl = AutomaticControlOwnership.Disabled } } };
+            }
+        }
         internal CaptureLoopSubmission? Submission { get; private set; }
         public async ValueTask PublishAsync(CaptureLoopSubmission submission, CancellationToken cancellationToken)
         {

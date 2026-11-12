@@ -141,10 +141,12 @@ public sealed partial class EnvironmentalAcquisitionService(
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
+                    request.CaptureAcquisition?.MarkPersistenceUnavailable();
                     throw;
                 }
                 catch (Exception exception)
                 {
+                    request.CaptureAcquisition?.MarkPersistenceUnavailable();
                     AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
                 }
                 finally { request.CaptureAcquisition?.Completion.TrySetResult(); }

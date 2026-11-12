@@ -68,6 +68,9 @@ public sealed record EnvironmentalCaptureSourceClaim(EnvironmentalSourceDescript
 
 public sealed record EnvironmentalCaptureAcquisition(Guid Id, IReadOnlyList<EnvironmentalCaptureSourceClaim> Claims)
 {
+    private int _persistenceUnavailable;
+    internal bool PersistenceUnavailable => Volatile.Read(ref _persistenceUnavailable) != 0;
+    internal void MarkPersistenceUnavailable() => Interlocked.Exchange(ref _persistenceUnavailable, 1);
     public bool Unavailable { get; init; }
     internal TaskCompletionSource<Exception?> Admission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

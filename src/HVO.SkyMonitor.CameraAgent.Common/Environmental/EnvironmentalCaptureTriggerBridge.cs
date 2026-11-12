@@ -101,7 +101,7 @@ public sealed class EnvironmentalCaptureTriggerBridge(
                 await acquisition.Completion.Task.WaitAsync(admissionToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget)
+            if (Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget || acquisition.PersistenceUnavailable)
                 return acquisition with { Unavailable = true, Claims = [] };
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
