@@ -69,6 +69,31 @@ internal static partial class CameraAgentStateSnapshot
         }
     }
 
+    private static async Task VerifyCurrentLegacyHistoryAsync(InstallationPaths paths, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var history = StorePath(paths.StateRoot, ProtectedLocations[0]);
+        SafeFileSystem.EnsureSafeExistingAncestors(history);
+        if (!File.Exists(history)) return;
+        EnsureRegularStore(history, ProtectedLocations[0]);
+        // Missing ledger paths do not prove legacy eligibility. Surviving history
+        // must authenticate with existing keys and must not require established authority.
+        try
+        {
+            using var provider = IntegrityProtectionServices(paths);
+            var protector = provider.GetRequiredService<IDataProtectionProvider>().CreateProtector("CameraAgent", "DeploymentLocation", "v1");
+            using var document = JsonDocument.Parse(protector.Unprotect(
+                await File.ReadAllBytesAsync(history, cancellationToken).ConfigureAwait(false)));
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                document.RootElement.TryGetProperty("retainedIntegrityNonce", out _))
+                throw new InvalidDataException("Current history does not establish pre-ledger eligibility.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or CryptographicException or JsonException or InvalidDataException)
+        {
+            throw new InstallerException("Current protected history cannot authorize this historical database-only restore; restore a complete paired backup.", exception);
+        }
+    }
+
     // A failed rollback can have intentionally removed the ledger while applying
     // its own pre-ledger S0 snapshot. Only that active operation may recover its
     // authenticated, stopped S1 snapshot; generic missing-ledger restore still refuses.

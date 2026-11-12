@@ -63,6 +63,7 @@ internal static partial class CameraAgentStateSnapshot
             if (File.Exists(StorePath(paths.StateRoot, RetainedIntegrityStore)) ||
                 File.Exists(StorePath(paths.StateRoot, ProtectedLocations[^1])))
                 throw new InstallerException("This database-only snapshot predates paired retained-integrity state; restore a complete paired backup.");
+            await VerifyCurrentLegacyHistoryAsync(paths, cancellationToken).ConfigureAwait(false);
             return;
         }
         if (files.Count != ProtectedLocations.Length || files.Any(static file => file is null) || files.Select(static file => file.RelativePath).Distinct(StringComparer.Ordinal).Count() != files.Count ||
