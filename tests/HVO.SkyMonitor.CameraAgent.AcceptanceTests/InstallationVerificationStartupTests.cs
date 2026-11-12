@@ -29,6 +29,27 @@ public sealed class InstallationVerificationStartupTests
         using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, alive.StatusCode);
         Assert.IsTrue(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStarted.IsCancellationRequested);
+
+        await host.RunWithHostStoppedAsync(async root =>
+        {
+            var raw = Path.Combine(root, "frames", DateTimeOffset.UtcNow.ToString("yyyy/MM/dd",
+                System.Globalization.CultureInfo.InvariantCulture), "Raw");
+            Directory.CreateDirectory(raw);
+            await File.WriteAllTextAsync(Path.Combine(raw, "torn.json"), "{").ConfigureAwait(false);
+        }).ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var loader = host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
+        await loader.DrainRetainedIntegrityScrubAsync(timeout.Token).ConfigureAwait(false);
+        Assert.IsTrue(loader.RetainedIntegrityRecoveryRequired);
+        using var owner = await host.CreateOwnerClientAsync().ConfigureAwait(false);
+        using var restartedAlive = await owner.GetAsync(new Uri("/alive", UriKind.Relative), timeout.Token).ConfigureAwait(false);
+        using var recovery = await owner.GetAsync(new Uri("/system", UriKind.Relative), timeout.Token).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, restartedAlive.StatusCode);
+        Assert.AreEqual(HttpStatusCode.OK, recovery.StatusCode);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/internal/owner-bootstrap/installation-verification");
+        request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
+        using var verification = await owner.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.ServiceUnavailable, verification.StatusCode);
     }
 
     [TestMethod]
