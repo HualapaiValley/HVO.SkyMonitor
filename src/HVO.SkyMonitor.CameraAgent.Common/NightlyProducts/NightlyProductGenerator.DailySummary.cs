@@ -19,10 +19,16 @@ internal sealed partial class NightlyProductGenerator
             return report;
 
         var day = await _store.GetDayAsync(window.ReportingPeriod.ReportDate, cancellationToken).ConfigureAwait(false);
+        var evaluated = 0;
+        var published = 0;
+        var reused = 0;
+        var unchanged = 0;
         foreach (var summary in day.Windows.Where(record => record.Status.Kind == NightlyProductKind.DailySummary &&
             record.Status.Scope == NightlyProductScope.Final && record.FinalProduct is not null &&
             record.Status.WindowStartUtc == window.StartUtc && record.Status.WindowEndUtc == window.EndUtc &&
-            record.ReportingPeriod.IdentitySha256 == window.ReportingPeriod.IdentitySha256))
+            record.ReportingPeriod.IdentitySha256 == window.ReportingPeriod.IdentitySha256 &&
+            NightlyProductPreset.Matches(record.Status.Occurrence.Definition.TaskTarget,
+                NightlyProductKind.DailySummary, _options.NightlyProducts)))
         {
             var refreshed = await RunCoreAsync(summary.Status.Occurrence, cancellationToken).ConfigureAwait(false);
             if (!refreshed.Ready || refreshed.FailedWindows > 0 || refreshed.PendingWindows > 0)
@@ -31,8 +37,15 @@ internal sealed partial class NightlyProductGenerator
                     FailedWindows = report.FailedWindows + 1,
                     Note = "A retained daily summary could not be refreshed; retry this occurrence. " + refreshed.Describe()
                 };
+            evaluated++;
+            published += refreshed.ProductsPublished;
+            reused += refreshed.ProductsReused;
+            unchanged += refreshed.WindowsUnchanged;
         }
-        return report;
+        if (evaluated == 0) return report;
+        var note = string.Create(CultureInfo.InvariantCulture,
+            $"Daily summary refresh: {published} published, {reused} reused, {unchanged} unchanged.");
+        return report with { Note = report.Note is null ? note : report.Note + " " + note };
     }
 
     private async ValueTask EvaluateDailySummaryAsync(RunContext context, NightlyProductWindow window, int candidateCount,

@@ -12,8 +12,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Daily summaries refresh their immutable keogram and star-trail links when a same-period still automation finishes, including recovery on retry, so automation order no longer leaves links missing. Refs #1764
-
 - CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
 
 - CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence, with fresh liveness checks and worker settlement for offline recovery while retaining pending receipts. Refs #1746
@@ -82,7 +80,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, linked-product verification errors name the report date and product id for a later retry, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
+- Daily summaries refresh immutable keogram and star-trail links after same-period still automation, report refresh results in automation history, and recover interrupted refreshes on retry. Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, linked-product verification errors name the report date and product id for a later retry, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
 
 - Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 

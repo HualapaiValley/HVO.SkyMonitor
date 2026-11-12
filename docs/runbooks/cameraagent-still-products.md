@@ -277,6 +277,15 @@ check, allowing recovery after an interrupted refresh; a failed refresh makes
 that run fail with a retry note while preserving the last good summary. Hourly
 products and other retained periods do not trigger this refresh. This does not
 create a summary unless its own automation has already published one.
+Only retained summaries whose pinned preset still matches current NightlyProducts
+settings can refresh. Historical summaries from an unavailable preset retain
+their original links and bytes and do not fail a valid current still run.
+Refresh is maintenance of already-published summaries: it intentionally uses
+retained occurrences even if their automation was subsequently disabled or deleted.
+Disabling automation prevents new scheduled occurrences, not link maintenance of
+its published summaries; refresh neither schedules a run nor changes a definition.
+The triggering still run's history reports summary publications, reuse and unchanged
+evaluations separately from its still-product counts.
 
 The host-neutral Processing producer emits `hvo-daily-summary-v1`: canonical JSON
 in `recipe.descriptor.options.parameters` of the checksummed provenance document,
