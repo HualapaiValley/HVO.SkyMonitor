@@ -109,7 +109,8 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     public void ManifestLedgerUpgradeDeclaresTheCheckpointBoundary(bool revertBoundary, int expectedMigrations)
     {
         var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
-            item!["location"]!.GetValue<string>() == Store)!;
+            item!["location"]!.GetValue<string>() == Store &&
+            item["stateBoundaryLabel"]!.GetValue<string>() == "io.hvo.skymonitor.minimum-compatible-revision")!;
         var previous = exception["previousImageLabels"]!.AsObject().ToDictionary(
             static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal);
         var candidate = ReadDockerfileLabels();
@@ -124,8 +125,13 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null, JsonSerializer.SerializeToElement(candidate));
         var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility, target,
             Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
-        Assert.AreEqual(expectedMigrations, changes.Count);
-        if (!revertBoundary) StringAssert.StartsWith(changes.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
+        var ledgerChanges = changes.Where(change => change.StartsWith(boundary + " installed ", StringComparison.Ordinal)).ToArray();
+        Assert.AreEqual(expectedMigrations, ledgerChanges.Length);
+        Assert.AreEqual(2 + expectedMigrations, changes.Count,
+            "The independent raw schema and migration transitions still require a checkpoint.");
+        foreach (var rawBoundary in new[] { RawIngressSchema, "io.hvo.skymonitor.raw-ingress-migration" })
+            Assert.IsTrue(changes.Any(change => change.StartsWith(rawBoundary + " installed ", StringComparison.Ordinal)));
+        if (!revertBoundary) StringAssert.StartsWith(ledgerChanges.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
     }
 
     internal static Dictionary<string, string> ReadSchemaThreeImageLabels()

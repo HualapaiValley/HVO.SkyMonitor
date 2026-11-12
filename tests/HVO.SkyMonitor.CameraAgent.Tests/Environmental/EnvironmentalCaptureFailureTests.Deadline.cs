@@ -222,8 +222,14 @@ public sealed partial class EnvironmentalCaptureFailureTests
             get
             {
                 var configuration = RawCaptureIngressTests.EnvironmentalConfiguration();
-                return configuration with { Rig = configuration.Rig with { ControlPolicy = new()
-                    { ExposureControl = AutomaticControlOwnership.Disabled, GainControl = AutomaticControlOwnership.Disabled } } };
+                return configuration with
+                {
+                    Rig = configuration.Rig with
+                    {
+                        ControlPolicy = new()
+                        { ExposureControl = AutomaticControlOwnership.Disabled, GainControl = AutomaticControlOwnership.Disabled }
+                    }
+                };
             }
         }
         internal CaptureLoopSubmission? Submission { get; private set; }

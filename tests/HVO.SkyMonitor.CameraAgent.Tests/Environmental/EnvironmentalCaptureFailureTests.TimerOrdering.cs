@@ -1,5 +1,7 @@
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
+using Moq;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 
@@ -56,6 +58,71 @@ public sealed partial class EnvironmentalCaptureFailureTests
             fixture.AllowCompletionWrite.TrySetResult();
             await fixture.StopAsync().ConfigureAwait(false);
         }
+    }
+
+    [TestMethod]
+    [DataRow(1999, false, false)]
+    [DataRow(2000, false, false)]
+    [DataRow(1999, true, false)]
+    [DataRow(1999, false, true)]
+    public async Task ActivePreparationDeadlineAdmitsUnavailableAndPreservesHostCancellation(
+        int elapsedMilliseconds, bool cancelHostAtPreparationExpiry, bool storageReportsInterrupt)
+    {
+        var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
+        await using var cleanup = fixture.ConfigureAwait(false);
+        fixture.Clock.Now = Epoch;
+        var clock = new EarlyDeliveryClock();
+        using var hostCancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        async ValueTask<EnvironmentalOnDemandCommandClaim> BlockClaimAsync(CancellationToken token)
+        {
+            entered.TrySetResult();
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false); }
+            catch (OperationCanceledException)
+            {
+                if (cancelHostAtPreparationExpiry) await hostCancellation.CancelAsync().ConfigureAwait(false);
+                if (storageReportsInterrupt) throw new SqliteException("The canceled claim reported SQLite interruption.", SQLitePCL.raw.SQLITE_INTERRUPT);
+                throw;
+            }
+            throw new InvalidOperationException("The cancellation-aware claim must not complete without cancellation.");
+        }
+        var state = new Mock<IEnvironmentalAcquisitionStateStore>(MockBehavior.Strict);
+        state.As<IEnvironmentalOnDemandCommandStore>().Setup(store => store.ClaimOnDemandAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(),
+            It.IsAny<string?>(), It.IsAny<DateTimeOffset>(), It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
+            .Returns((string root, string key, string payload, string sourceId, string actorId, string? reason,
+                DateTimeOffset observed, TimeSpan lease, CancellationToken token) => BlockClaimAsync(token));
+        var bridge = fixture.CreateBridge(state.Object, clock);
+        var request = bridge.BeforeCaptureAsync(Epoch, hostCancellation.Token).AsTask();
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            // The active claim owns the newest timer: deliver preparation expiry before shared expiry.
+            clock.DeliverLatestTimerAt(TimeSpan.FromMilliseconds(elapsedMilliseconds));
+            if (cancelHostAtPreparationExpiry)
+            {
+                await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                    await request.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false)).ConfigureAwait(false);
+                Assert.IsFalse(File.Exists(Path.Combine(fixture.Root, "journal", "raw-ingress.db")));
+            }
+            else
+            {
+                var acquisition = await request.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.IsNotNull(acquisition);
+                Assert.IsTrue(acquisition.Unavailable);
+                var raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, acquisition.Id, Epoch,
+                    unavailable: acquisition.Unavailable, beforeCaptureSources: acquisition.BeforeCaptureSources).ConfigureAwait(false);
+                var capture = raw.Manifest.Descriptor.Capture;
+                Assert.IsTrue(raw.Manifest.Descriptor.CycleEvidence!.EnvironmentalUnavailable);
+                var availability = await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root, capture.CaptureId, acquisition.Id,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(availability.Pending);
+                CollectionAssert.Contains(availability.UnavailableSources.ToArray(), "sqm");
+            }
+            Assert.AreEqual(cancelHostAtPreparationExpiry, hostCancellation.IsCancellationRequested);
+            Assert.AreEqual(1, fixture.Device.Calls, "An expired preparation cannot enqueue a sensor acquisition.");
+        }
+        finally { await fixture.StopAsync().ConfigureAwait(false); }
     }
 
     private sealed class EarlyDeliveryClock : TimeProvider

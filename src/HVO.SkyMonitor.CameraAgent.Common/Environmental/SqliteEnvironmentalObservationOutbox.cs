@@ -1013,7 +1013,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 : captureEvidence.EnvironmentalBeforeCaptureSources is { } absent
                     ? new(absent, absent, _timeProvider.GetUtcNow() < captureEvidence.ModuleCallStartedUtc + EnvironmentalCaptureTriggerBridge.TotalCaptureBudget)
                     : new([], [], _timeProvider.GetUtcNow() < captureEvidence.ModuleCallStartedUtc + EnvironmentalCaptureTriggerBridge.TotalCaptureBudget)
-                        { BeforeCaptureUnavailable = true };
+                    { BeforeCaptureUnavailable = true };
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         var sources = new List<string>();

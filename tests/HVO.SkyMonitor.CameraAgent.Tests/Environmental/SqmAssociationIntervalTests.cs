@@ -141,7 +141,8 @@ public sealed class SqmAssociationIntervalTests
     private static async Task<EnvironmentalObservationFactV1> SampleAsync(double endSeconds, int integration, int valid, int fresh)
     {
         var descriptor = EnvironmentalHardwareAdapterTests.Descriptor("SkyQualityMeter", EnvironmentalObservationKind.SkyQuality)
-            with { ValidForSeconds = valid, StaleAfterSeconds = fresh };
+            with
+        { ValidForSeconds = valid, StaleAfterSeconds = fresh };
         var payload = EnvironmentalHardwareAdapterTests.Sqm.Replace("0000001.000s", integration.ToString(CultureInfo.InvariantCulture) + "s", StringComparison.Ordinal);
         var source = new SkyQualityMeterSource(descriptor, EnvironmentalHardwareAdapterTests.Options(payload));
         var result = await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with

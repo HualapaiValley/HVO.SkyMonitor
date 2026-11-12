@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -56,6 +57,8 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         { BeforeCaptureSources = selected.Select(source => source.Id).ToArray() };
         var request = new EnvironmentalTriggerRequest(EnvironmentalAcquisitionTrigger.BeforeCapture, observedAtUtc)
         { CaptureAcquisition = acquisition, CaptureBudgetMilliseconds = budget == 0 ? null : budget };
+        [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+            Justification = "Only owned deadline expiry becomes an admission outcome; other failures and host cancellation propagate unchanged.")]
         async Task PrepareAsync(CancellationToken stoppingToken)
         {
             // Preparation remains owned by the hosted worker after the caller's shorter optional wait.
@@ -63,39 +66,48 @@ public sealed class EnvironmentalCaptureTriggerBridge(
             using var preparationDeadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(preparationRemaining.TotalMilliseconds))), _timeProvider);
             using var preparation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, cancellationToken, preparationDeadline.Token);
             var preparationToken = preparation.Token;
-            foreach (var source in selected)
+            try
             {
-                var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new { Id = id, SourceId = source.Id, source.Kind });
-                var key = EnvironmentalCaptureAcquisition.Prefix(id) + payload[..32];
-                EnvironmentalOnDemandCommandClaim claim;
-                for (var attempt = 0; ; attempt++)
+                foreach (var source in selected)
                 {
-                    preparationToken.ThrowIfCancellationRequested();
-                    try
+                    var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new { Id = id, SourceId = source.Id, source.Kind });
+                    var key = EnvironmentalCaptureAcquisition.Prefix(id) + payload[..32];
+                    EnvironmentalOnDemandCommandClaim claim;
+                    for (var attempt = 0; ; attempt++)
                     {
-                        claim = await EnvironmentalCaptureStorageWork.RunAsync(() => commands.ClaimOnDemandAsync(
-                            options.Value.RawIngressRoot, key, payload, source.Id, "capture-before", null, observedAtUtc,
-                            lease, preparationToken), preparationToken).ConfigureAwait(false);
-                        break;
+                        preparationToken.ThrowIfCancellationRequested();
+                        try
+                        {
+                            claim = await EnvironmentalCaptureStorageWork.RunAsync(() => commands.ClaimOnDemandAsync(
+                                options.Value.RawIngressRoot, key, payload, source.Id, "capture-before", null, observedAtUtc,
+                                lease, preparationToken), preparationToken).ConfigureAwait(false);
+                            break;
+                        }
+                        catch (SqliteException exception) when (attempt < 3 && exception.SqliteErrorCode is
+                            SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED)
+                        {
+                            await Task.Delay(TimeSpan.FromMilliseconds(100), preparationToken).ConfigureAwait(false);
+                        }
                     }
-                    catch (SqliteException exception) when (attempt < 3 && exception.SqliteErrorCode is
-                        SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED)
-                    {
-                        await Task.Delay(TimeSpan.FromMilliseconds(100), preparationToken).ConfigureAwait(false);
-                    }
+                    if (claim.Disposition != EnvironmentalOnDemandClaimDisposition.Claimed)
+                        throw new EnvironmentalOnDemandCommandConflictException("Capture acquisition identity already exists.");
+                    claims.Add(new(source, key, claim.LeaseToken) { InFlight = dependencies.GetValueOrDefault(source.Id) });
                 }
-                if (claim.Disposition != EnvironmentalOnDemandClaimDisposition.Claimed)
-                    throw new EnvironmentalOnDemandCommandConflictException("Capture acquisition identity already exists.");
-                claims.Add(new(source, key, claim.LeaseToken) { InFlight = dependencies.GetValueOrDefault(source.Id) });
+                preparationToken.ThrowIfCancellationRequested();
+                if (!service.TryEnqueue(request))
+                {
+                    foreach (var claim in claims)
+                        await EnvironmentalCaptureStorageWork.RunAsync(() => commands.CompleteOnDemandAsync(options.Value.RawIngressRoot, claim.Key, claim.LeaseToken,
+                            new(claim.Source.Id, request.Trigger, EnvironmentalAcquisitionDisposition.Failed, "capture-queue-capacity",
+                                null, observedAtUtc, observedAtUtc), preparationToken), preparationToken).ConfigureAwait(false);
+                    acquisition.Completion.TrySetResult();
+                }
             }
-            preparationToken.ThrowIfCancellationRequested();
-            if (!service.TryEnqueue(request))
+            catch (Exception exception) when (preparationDeadline.IsCancellationRequested &&
+                !stoppingToken.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
-                foreach (var claim in claims)
-                    await EnvironmentalCaptureStorageWork.RunAsync(() => commands.CompleteOnDemandAsync(options.Value.RawIngressRoot, claim.Key, claim.LeaseToken,
-                        new(claim.Source.Id, request.Trigger, EnvironmentalAcquisitionDisposition.Failed, "capture-queue-capacity",
-                            null, observedAtUtc, observedAtUtc), preparationToken), preparationToken).ConfigureAwait(false);
-                acquisition.Completion.TrySetResult();
+                // The owned preparation timer can expire before the shared timer callback or elapsed-time observation.
+                throw new PreparationDeadlineExpiredException(exception);
             }
         }
         if (!service.TryPrepareCapture(acquisition, PrepareAsync))
@@ -106,6 +118,9 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         try
         {
             var error = await acquisition.Admission.Task.WaitAsync(admissionToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (error is PreparationDeadlineExpiredException)
+                return acquisition with { Unavailable = true, Claims = [] };
             if (error is not null) ExceptionDispatchInfo.Capture(error).Throw();
             if (budget > 0)
             {
@@ -127,6 +142,13 @@ public sealed class EnvironmentalCaptureTriggerBridge(
 
         return acquisition;
     }
+
+    [SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+        Justification = "Private admission outcome always retains its original cause and is consumed by the bridge.")]
+    [SuppressMessage("Design", "CA1064:Exceptions should be public",
+        Justification = "Private admission outcome never crosses the capture bridge boundary.")]
+    private sealed class PreparationDeadlineExpiredException(Exception cause)
+        : TimeoutException("The environmental capture preparation deadline expired.", cause);
 
     public async ValueTask AfterCaptureAsync(
         RawCaptureReceipt receipt,

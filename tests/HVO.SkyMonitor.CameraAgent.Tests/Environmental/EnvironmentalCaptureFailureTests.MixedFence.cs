@@ -67,7 +67,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var fixture = await AttributionFixture.CreateAsync(0).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         var temperature = EnvironmentalAdapterContractsTests.Fact("periodic-temperature", EnvironmentalObservationKind.AirTemperature, 18)
-            with { ObservedAtUtc = Epoch, ValidFromUtc = Epoch, ValidThroughUtc = Epoch.AddMinutes(5), StaleAfterUtc = Epoch.AddMinutes(5) };
+            with
+        { ObservedAtUtc = Epoch, ValidFromUtc = Epoch, ValidThroughUtc = Epoch.AddMinutes(5), StaleAfterUtc = Epoch.AddMinutes(5) };
         await fixture.Store.CommitLocalAsync(fixture.Root, temperature, CancellationToken.None).ConfigureAwait(false);
         var raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, Guid.NewGuid(), Epoch,
             unavailable: true).ConfigureAwait(false);
