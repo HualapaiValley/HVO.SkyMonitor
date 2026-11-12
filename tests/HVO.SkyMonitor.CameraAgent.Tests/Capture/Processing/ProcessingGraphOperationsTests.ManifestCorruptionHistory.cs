@@ -58,6 +58,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await RunManifestTestAssertions.ResponseAsync(recovered, id, corrupt ? CameraAgentRunManifest.CorruptReason : null).ConfigureAwait(false);
                 await ReplaceFrozenEvidenceAsync(root, id, original).ConfigureAwait(false);
+                await ReplaceManifestCounterAsync(root, id, "committedOutputCounts", "{\"preview\":1}").ConfigureAwait(false);
                 await RunManifestTestAssertions.ResponseAsync(recovered, id).ConfigureAwait(false);
             }
         }
@@ -112,6 +113,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 }
                 await RunManifestTestAssertions.ResponseAsync(operations, context.ExecutionId, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);
                 await ReplaceFrozenEvidenceAsync(root, context.ExecutionId, original).ConfigureAwait(false);
+                if (variant is "high" or "low")
+                    await ReplaceManifestCounterAsync(root, context.ExecutionId, "committedOutputCounts", null).ConfigureAwait(false);
                 var detail = (await operations.ReadExecutionDetailAsync(context.ExecutionId, CancellationToken.None).ConfigureAwait(false))!;
                 Assert.AreEqual("Skipped", detail.Nodes.Single().Status);
                 Assert.AreEqual("Skipped", detail.Nodes.Single().Attempts.Single().Status);

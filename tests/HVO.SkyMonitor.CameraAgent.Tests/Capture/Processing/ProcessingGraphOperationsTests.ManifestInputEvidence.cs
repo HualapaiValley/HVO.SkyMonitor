@@ -49,6 +49,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await RunManifestTestAssertions.ResponseAsync(recovered, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);
                 await ReplaceFrozenEvidenceAsync(root, id, original).ConfigureAwait(false);
+                await ReplaceManifestCounterAsync(root, id, "frozenOutputInputCounts", "{\"preview\":0}").ConfigureAwait(false);
                 await RunManifestTestAssertions.ResponseAsync(recovered, id).ConfigureAwait(false);
             }
         }
