@@ -5,9 +5,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
@@ -22,6 +24,11 @@ public sealed partial class VirtualSkyCloudScenarioTests
         try
         {
             using var provider = ProcessingGraphOperationsTests.CreateRemainingOptionsProvider(root);
+            // Model unavailable orbital inputs through their real contract, without a null mock response or a provider call.
+            Mock.Get(provider.GetRequiredService<ICameraAgentOrbitalTimeSource>())
+                .Setup(source => source.ResolveAsync(It.IsAny<OrbitalUtcInterval>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new CameraAgentOrbitalTimeResolution(CameraAgentOrbitalTimeDataSource.Bundled,
+                    CameraAgentOrbitalTimeDataProblem.Disabled, null));
             // The virtual clock completes exposure instantly; keep its readout before real durable ingress.
             var now = DateTimeOffset.UtcNow.AddSeconds(-30);
             var config = Config(CameraPixelFormat.Mono16, null, physicalMono: declaredSensorLevels) with
