@@ -139,7 +139,7 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # image that omits the manifest label is held to manifest 2 only.
 #
 # The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
-# and includes the earlier nightly schema-3 reader (#1713). Paired protected state
+# and includes environmental schema 4 (Refs #1778) and nightly schema 3 (#1713). Paired protected state
 # is snapshotted with the databases before adoption so an older-reader rollback
 # receives its pre-upgrade history.
 # Its change makes existing installers checkpoint the paired databases before the schema-2 conversion;
@@ -158,7 +158,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="87f7342ed1dcf37477ee88b14edd39e7cc84d06a" \
+      io.hvo.skymonitor.minimum-compatible-revision="53b5756ddbd26dc5ea623ecd34d34d2de2672f05" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="15" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \

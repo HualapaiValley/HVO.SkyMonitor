@@ -75,7 +75,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
-      "candidateValue": "87f7342ed1dcf37477ee88b14edd39e7cc84d06a",
+      "candidateValue": "53b5756ddbd26dc5ea623ecd34d34d2de2672f05",
       "reason": "Schema 2 is extended atomically to schema 3 for daily summaries; older binaries require the existing paired SQLite checkpoint on rollback. No previous-release SQL image changes. #1713"
     },
     {
@@ -87,8 +87,8 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
-      "candidateValue": "419f45b0fd61ae2caba2654b71ff1853080ab693",
-      "reason": "Schema 3 from development/v1 5f5d253dd38308b8e62be9a1e32194dd675d0b60 gains retention indexes in schema 4. The minimum-compatible-revision boundary advances from ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c to 419f45b0fd61ae2caba2654b71ff1853080ab693 so the installer selects the paired checkpoint before candidate startup. Frozen previous-release SQL images remain unchanged. Refs #1778",
+      "candidateValue": "53b5756ddbd26dc5ea623ecd34d34d2de2672f05",
+      "reason": "Schema 3 from development/v1 5f5d253dd38308b8e62be9a1e32194dd675d0b60 gains retention indexes in schema 4. The minimum-compatible-revision boundary advances from ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c to the combined retained-ledger/environmental reader 53b5756ddbd26dc5ea623ecd34d34d2de2672f05 so the installer selects the paired checkpoint before candidate startup. Frozen previous-release SQL images remain unchanged. Refs #1778",
       "previousImageRevision": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
       "previousImageLabels": {
         "io.hvo.skymonitor.component": "CameraAgent",

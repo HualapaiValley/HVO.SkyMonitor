@@ -2925,7 +2925,7 @@ predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
 The row-MAC reader boundary is
-`87f7342ed1dcf37477ee88b14edd39e7cc84d06a`, declared by the image's
+`53b5756ddbd26dc5ea623ecd34d34d2de2672f05` (the combined row-MAC/environmental-schema reader), declared by the image's
 `minimum-compatible-revision`. Updated agents and installers read both legacy
 Data Protection row proofs and new MAC proofs. The per-ledger random MAC secret
 is protected in metadata; nonce/key/digest/kind/generation and the authenticated
