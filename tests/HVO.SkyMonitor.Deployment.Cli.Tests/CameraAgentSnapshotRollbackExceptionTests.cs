@@ -49,6 +49,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
 
         var errors = Validate(fixture, candidate);
 
+        Assert.HasCount(1, errors, string.Join("; ", errors));
         Assert.IsTrue(errors.Any(error => error.Contains(expected, StringComparison.Ordinal)), string.Join("; ", errors));
     }
 
@@ -155,7 +156,14 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     private static void Declare(JsonObject fixture, string label, string previousValue, string candidateValue)
-        => fixture["snapshotRollbackExceptions"]!.AsArray().Add(new JsonObject
+    {
+        var exceptions = fixture["snapshotRollbackExceptions"]!.AsArray();
+        // Isolate the synthetic raw-store boundary under test from the real raw-schema transition.
+        for (var index = exceptions.Count - 1; index >= 0; index--)
+            if (exceptions[index]!["location"]!.GetValue<string>() == Store &&
+                exceptions[index]!["stateBoundaryLabel"]!.GetValue<string>() == RawIngressSchema)
+                exceptions.RemoveAt(index);
+        exceptions.Add(new JsonObject
         {
             ["location"] = Store,
             ["objects"] = new JsonArray("table:processing_outputs"),
@@ -163,6 +171,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             ["previousValue"] = previousValue,
             ["candidateValue"] = candidateValue
         });
+    }
 
     private static JsonObject LoadFixture()
         => JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "previous-release", "manifest.json")))!.AsObject();
