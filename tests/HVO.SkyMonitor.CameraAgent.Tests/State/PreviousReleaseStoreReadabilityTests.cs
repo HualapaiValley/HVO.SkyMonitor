@@ -203,7 +203,10 @@ public sealed class PreviousReleaseStoreReadabilityTests
                 // An exception is bound to the label values the two releases actually declare; whether that change
                 // makes the installer take a snapshot is proved by the installer's own comparison in Deployment.Cli.Tests.
                 Assert.IsTrue(dumps.ContainsKey(location), $"Exception names '{location}', which is not a previous-release store.");
-                Assert.AreEqual(previousLabels.GetValueOrDefault(label), previousValue,
+                var installedLabels = exception.TryGetProperty("previousImageLabels", out var installed)
+                    ? installed.EnumerateObject().ToDictionary(static entry => entry.Name, static entry => entry.Value.GetString()!, StringComparer.Ordinal)
+                    : previousLabels;
+                Assert.AreEqual(installedLabels.GetValueOrDefault(label), previousValue,
                     $"Exception for '{location}' names a previous '{label}' the frozen release does not declare.");
                 Assert.AreEqual(currentLabels.GetValueOrDefault(label), candidateValue,
                     $"Exception for '{location}' names a '{label}' this release's Dockerfile does not declare.");

@@ -78,16 +78,20 @@ public abstract class EnvironmentalAdapterSource : IEnvironmentalSource
         ArgumentNullException.ThrowIfNull(sample);
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(value);
-        var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(new
+        var fields = new Dictionary<string, object>(StringComparer.Ordinal)
         {
-            protocol = Descriptor.Type == "SkyQualityMeter" ? "sqm-rx-v1" : "environmental-bridge-v1",
-            deviceGroup = DeviceOptions.DeviceId,
-            acquisitionSourceId = Descriptor.Id,
-            readingRole = suffix is null ? "primary" : "lineage-input",
-            DeviceOptions.ModelVersion,
-            DeviceOptions.ClearDeltaCelsius,
-            DeviceOptions.CloudyDeltaCelsius
-        }, SerializerOptions));
+            ["protocol"] = Descriptor.Type == "SkyQualityMeter" ? "sqm-rx-v1" : "environmental-bridge-v1",
+            ["deviceGroup"] = DeviceOptions.DeviceId,
+            ["acquisitionSourceId"] = Descriptor.Id,
+            ["readingRole"] = suffix is null ? "primary" : "lineage-input"
+        };
+        if (Descriptor.Type == "InfraredSky")
+        {
+            fields["modelVersion"] = DeviceOptions.ModelVersion;
+            fields["clearDeltaCelsius"] = DeviceOptions.ClearDeltaCelsius;
+            fields["cloudyDeltaCelsius"] = DeviceOptions.CloudyDeltaCelsius;
+        }
+        var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(fields, SerializerOptions));
         var parametersIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
         var sourceVersion = CaptureContractJson.ComputeCanonicalJsonSha256(new
         { Algorithm = "environmental-adapter-v1", sample.Simulated, ParametersSha256 = parametersIdentity });

@@ -1,8 +1,9 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
-using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.State;
 using Microsoft.Data.Sqlite;
 
@@ -13,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 /// <c>stateContracts.cameraAgent</c> repeats (install contract section 6), equal to the stores this release keeps. Every
 /// SQLite store an instance keeps is declared; each store's <c>writes</c> is the schema the store records about itself
 /// when this release creates it; and its <c>reads</c> are the schemas this release opens: the one it writes, and for raw
-/// ingress and nightly products also the inputs they migrate from.
+/// ingress, environmental outbox and nightly products also the inputs they migrate from.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -80,7 +81,7 @@ public sealed class CameraAgentStateContractsLabelTests
         {
             // No store opens a schema newer than the one it writes.
             Assert.AreEqual(contract.Writes, contract.Max, $"{store} reads no schema newer than it writes");
-            if (store is not ("rawIngress" or "nightlyProducts"))
+            if (store is not ("rawIngress" or "nightlyProducts" or "environmentalOutbox"))
             {
                 // Every other store refuses any schema but the one it writes, at startup.
                 Assert.AreEqual(contract.Writes, contract.Min, $"{store} reads only the schema it writes");
@@ -97,6 +98,11 @@ public sealed class CameraAgentStateContractsLabelTests
         CollectionAssert.AreEqual(
             opened,
             Enumerable.Range((int)rawIngress.Min, (int)(rawIngress.Max - rawIngress.Min + 1)).Select(static schema => (long)schema).ToArray());
+        var environmental = declared["environmentalOutbox"];
+        Assert.AreEqual(SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion, environmental.Writes);
+        CollectionAssert.AreEqual(
+            new long[] { SqliteEnvironmentalObservationOutbox.PreviousSchemaVersion, SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion },
+            Enumerable.Range((int)environmental.Min, (int)(environmental.Max - environmental.Min + 1)).Select(static schema => (long)schema).ToArray());
         var nightly = declared["nightlyProducts"];
         Assert.AreEqual(NightlyProductContract.CurrentSchemaVersion, nightly.Writes);
         CollectionAssert.AreEqual(

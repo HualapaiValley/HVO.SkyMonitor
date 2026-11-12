@@ -128,7 +128,11 @@ public sealed record LocalEnvironmentalRetentionResult(
     int RemovedCount,
     long RemovedBytes,
     long RemainingCount,
-    long RemainingBytes);
+    long RemainingBytes)
+{
+    /// <summary>At least one history or observation batch filled; another transaction may have more work.</summary>
+    public bool BatchLimitReached { get; init; }
+}
 
 public interface ILocalEnvironmentalRetentionStore
 {
