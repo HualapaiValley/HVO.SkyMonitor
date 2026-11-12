@@ -12,6 +12,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     private readonly object _sync = new();
     private readonly CancellationTokenSource _stopping = new();
     private TaskCompletionSource _idle = Completed();
+    private TaskCompletionSource _registered = Completed();
     private Task _execution = Task.CompletedTask;
     private bool _reserved;
     private bool _stopped;
@@ -29,6 +30,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             }
             _reserved = true;
             _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
             return new(this);
         }
     }
@@ -47,6 +49,14 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         cancellationToken.ThrowIfCancellationRequested();
+        Task registered;
+        lock (_sync)
+        {
+            // Reservation precedes the durable claim. Stop may observe Running before Dispatch
+            // publishes its exact attempt key; registration or release wakes that handoff waiter.
+            registered = _registered.Task;
+        }
+        await registered.WaitAsync(cancellationToken).ConfigureAwait(false);
         Task cancellation;
         Task drained;
         lock (_sync)
@@ -101,6 +111,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             _scriptRunKey = null;
             _scriptStop?.Dispose();
             _scriptStop = null;
+            _registered.TrySetResult();
             _idle.TrySetResult();
         }
     }
@@ -134,6 +145,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
                 // The adapter retains the original occurrence identity across retries, but stop
                 // must name this saved attempt, just like status and terminal result persistence.
                 owner._scriptRunKey = scriptStop is null ? null : journalRunKey;
+                owner._registered.TrySetResult();
                 owner._execution = Task.Run(async () =>
                 {
                     try

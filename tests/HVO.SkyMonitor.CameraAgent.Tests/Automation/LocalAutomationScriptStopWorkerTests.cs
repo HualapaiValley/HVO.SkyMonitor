@@ -7,6 +7,33 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Automation;
 public sealed class LocalAutomationScriptStopWorkerTests
 {
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RegistrationWaitEndsOnReleaseAndCallerCancellationDoesNotCancelFutureWork(bool cancelWaiter)
+    {
+        using var worker = new LocalAutomationOffSweepWorker();
+        using var reservation = worker.TryReserve();
+        Assert.IsNotNull(reservation);
+        using var cancellation = new CancellationTokenSource();
+        var stop = worker.StopScriptRunAsync("exact-attempt", cancellation.Token).AsTask();
+        Assert.IsFalse(stop.IsCompleted);
+        if (cancelWaiter)
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<TaskCanceledException>(() => stop).ConfigureAwait(false);
+        }
+        reservation.Dispose();
+        if (!cancelWaiter) Assert.IsFalse(await stop.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false));
+        var occurrence = CustomScriptTaskAdapterTests.Occurrence(CustomScriptTaskAdapterTests.Script());
+        using var next = worker.TryReserve();
+        Assert.IsNotNull(next);
+        var cancelled = true;
+        next.Dispatch(token => { cancelled = token.IsCancellationRequested; return Task.CompletedTask; }, occurrence, "exact-attempt", default);
+        await worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsFalse(cancelled);
+    }
+
+    [TestMethod]
     public async Task OldStopCannotCancelANewerRunOrABuiltInAndTheSlotStaysHeldUntilDrain()
     {
         using var worker = new LocalAutomationOffSweepWorker();

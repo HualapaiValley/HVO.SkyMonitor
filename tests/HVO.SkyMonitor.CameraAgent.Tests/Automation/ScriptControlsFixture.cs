@@ -56,6 +56,15 @@ internal sealed class ScriptControlsFixture : IDisposable
             LocalAutomationTriggerKind.Periodic, 60, 0, "save-" + id, "untrusted", null);
     internal static LocalAutomationRunNowRequest RunNow(string key = "run") => new("script", 1, key, "untrusted", "check");
     internal static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal async Task AddNewerBuiltInHistoryAsync()
+    {
+        await Store.SaveAsync(Save("built-in", "builtin") with
+        { TaskKind = LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition }, default).ConfigureAwait(false);
+        var builtin = (await Store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single(item => item.Definition.DefinitionId == "builtin");
+        for (var index = 0; index <= LocalAutomationContract.MaximumProjectedRuns; index++)
+            await Store.RecordTerminalRunAsync(builtin, "newer-built-in-" + index, Clock.GetUtcNow(),
+                LocalAutomationRunOutcome.Succeeded, "done", null, default).ConfigureAwait(false);
+    }
     public void Dispose()
     {
         Runner.Dispose();
