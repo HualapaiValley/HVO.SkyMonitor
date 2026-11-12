@@ -143,7 +143,8 @@ public sealed class ProductsLibraryProgressTests
                 Assert.AreEqual(LocalAutomationRunOutcome.Skipped, withdrawn.Outcome);
                 Assert.IsNull(withdrawn.StartedAtUtc);
                 Assert.IsNotNull(withdrawn.CompletedAtUtc);
-                Assert.IsTrue(withdrawn.Occurrence!.Definition.Enabled, "Withdrawal must preserve the retained definition snapshot.");
+                Assert.IsNotNull(withdrawn.Occurrence);
+                Assert.IsTrue(withdrawn.Occurrence.Definition.Enabled, "Withdrawal must preserve the retained definition snapshot.");
                 Assert.Contains("disabled", withdrawn.Detail);
                 Assert.AreEqual(window, withdrawn.Occurrence.SourceWindow);
                 return;
