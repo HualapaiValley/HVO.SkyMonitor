@@ -38,10 +38,13 @@ line container and required method names. Merger-excluded `$` class names,
 misplaced records and duplicate containers fail rather than supply completeness.
 Class filenames must be plain paths beneath this checkout's `src/`, or genuine
 assembly-relative/project-root names; out-of-tree paths and `./`, `//`, `../` or
-backslash aliases fail. Unexpected executable sources outside the Release PDB
+backslash aliases fail. Each raw report must contain one `sources` container with
+roots equal to this checkout's `src/` or `src/<package>/` (an empty source list
+is valid only for a classless report); a rewritten
+root fails before merging, including on the last parsed report. Unexpected executable sources outside the Release PDB
 inventory also fail. After merging, the wrapper requires a successful verbose
 parse receipt for every expected input and rejects logged read errors even if
-the tool exits zero. This catches loss of a redundant contributor too. Legitimate
+the tool exits zero. This detects a missing parse receipt or logged read error for a redundant contributor; receipts alone do not prove its hits survived merging. Legitimate
 classless reports from projects with no included assemblies are accepted. Each report must match its
 TRX attachment and project, the included assemblies present in that project's
 Release output, and every executable source file in those assemblies' portable
@@ -197,14 +200,35 @@ handoff evidence records current timings. Separate host samples are not a
 controlled incremental comparison and establish no coverage speedup. Observe
 hosted timing and memory alongside the existing workload budget.
 
+Read-only hosted evidence for run [42920048484](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/42920048484)
+records restore 10 s, build 382 s, Unit 550 s and coverage 50 s: 992 s of the
+1,080 s workload budget, leaving 88 s before checkout/setup overhead. This
+contended sample is distinct from the local totals above. The 1,080 s budget,
+22-minute hard timeout and unconditional coverage regressions are retained;
+Roy selected additional or relocated self-hosted runner capacity in t421s2656.
+Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
+and `gh-runner-06` each have 8 vCPU and are the only runners carrying
+`hvo-skymonitor-build`. Build and Unit selects exactly
+`[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
+selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
+budget and 22-minute hard timeout unchanged while collecting new timings.
+Workflow rollback returns this job to `[self-hosted, linux, x64, hvo-skymonitor]`;
+Atlas retains `ROLLBACK.md` for the runner-side procedure.
+A later [run 43086895061, attempt 1](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43086895061/attempts/1)
+reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
+timestamps; coverage never started. This demonstrates workload-budget pressure
+outside the coverage self-tests, so making those tests conditional cannot by
+itself prevent that timeout. Refs #1747.
+
 ## Development v1 Preflight Budget
 
-**Development v1 / Preflight** has a four-minute (240-second) job timeout,
-per the owner decision in #1365. This supersedes the three-minute (180-second)
-budget retained by #1333 when the secret-scanner contract became conditional.
-PR #1364 took 173 seconds with the contract selected; the new budget provides
-67 seconds of headroom for that measured run. Ordinary PRs remain near one minute.
-All checks, their order and selection rules, job names and required-check names
+**Development v1 / Preflight** has a six-minute (360-second) job timeout for
+all events (Refs #1747). This supersedes the four-minute PR budget from #1365
+and retains the six-minute push/queue budget. PR #1811 run 43293828104,
+attempt 3, exceeded the four-minute cap: CI control contracts took 118 seconds,
+the secret-scanner contract took 86 seconds, and release-script tests were
+cancelled after 18 seconds. Six minutes gives that combined workload another
+120 seconds to finish with margin. All required checks and selection rules
 remain unchanged.
 
 ## Promotion ancestry prerequisite

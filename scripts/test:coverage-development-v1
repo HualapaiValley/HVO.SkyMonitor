@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 dotnet build "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" \
-  --configuration Release --output "$scratch/gate" --disable-build-servers -p:UseSharedCompilation=false -warnaserror > "$scratch/build.log" 2>&1 || {
+  --configuration Release --output "$scratch/gate" -nodeReuse:false --disable-build-servers -p:UseSharedCompilation=false -warnaserror > "$scratch/build.log" 2>&1 || {
   cat "$scratch/build.log" >&2
   exit 1
 }
@@ -38,6 +38,7 @@ for source in (scratch / "repo/src" / path, scratch / "repo" / release):
 
 def report(name, *, filename=path, hits=1, covered=2, empty=False, release_data=False):
     document = ET.Element("coverage")
+    ET.SubElement(ET.SubElement(document, "sources"), "source").text = str(scratch / "repo/src")
     classes = ET.SubElement(ET.SubElement(ET.SubElement(document, "packages"), "package", name=path.split("/")[0]), "classes")
     lines = ET.SubElement(ET.SubElement(classes, "class", name="Fixture", filename=filename), "lines")
     if not empty:
@@ -261,7 +262,7 @@ fixture_project.write_text(f"""<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>
 </PropertyGroup><ItemGroup><Compile Include="src/**/*.cs" /></ItemGroup></Project>""")
 assembly_output = inventory_repo / "tests/Fixture.Tests/bin/Release/net10.0"
 result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(assembly_output),
-                         "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
+                         "-nodeReuse:false", "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
 if result.returncode != 0:
     raise SystemExit(f"Inventory fixture build failed: {result.stdout}{result.stderr}")
 shutil.copy2(assembly_output / f"{assembly_name}.dll", assembly_output / "Fixture.Tests.dll")
@@ -292,7 +293,7 @@ attachment = results / "attachment/In/computer/coverage.cobertura.xml"
 <UriAttachments><UriAttachment><A href="computer/coverage.cobertura.xml" /></UriAttachment></UriAttachments>
 </Collector></CollectorDataEntries></ResultSummary></TestRun>""")
 composite = ET.Element("coverage")
-ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(inventory_repo)
+ET.SubElement(ET.SubElement(composite, "sources"), "source").text = str(inventory_repo / "src")
 classes = ET.SubElement(ET.SubElement(ET.SubElement(composite, "packages"), "package", name=assembly_name), "classes")
 for type_name, filename, numbers in (("InventoryA", "CameraGeometry.cs", (3, 4)),
                                       ("InventoryB", "InventorySentinel.cs", (1,)),
@@ -386,6 +387,74 @@ fixture_gate = fixture_scripts / "coverage/bin/Debug/net10.0/HVO.SkyMonitor.Cove
     " os.execv(real,[real,gate,*a[a.index('--')+1:]])\nos.execv(real,[real,*a])\n")
 (launcher / "dotnet").chmod(0o700)
 wrapper_env = dict(os.environ, PATH=str(launcher) + os.pathsep + os.environ["PATH"])
+
+# Both genuine root forms pass; rewritten roots in ANY contributor fail before
+# ReportGenerator can report a successful parse while silently dropping its hits.
+for source_root in (str(inventory_repo / "src") + "/", str(source_dir), str(source_dir) + "/"):
+    roots = copy.deepcopy(composite)
+    roots.find("sources/source").text = source_root
+    write_fixture(roots)
+    wrapper_case("genuine source root " + source_root, 0, "Coverage gate passed.")
+for source_root in (str(inventory_repo / "src/zzz"), "/out-of-tree/src/", "", str(source_dir) + "/../",
+                    str(inventory_repo / "src") + "//"):
+    roots = copy.deepcopy(composite)
+    roots.find("sources/source").text = source_root
+    write_fixture(roots)
+    wrapper_case("invalid source root " + repr(source_root), 1, "invalid coverage source roots")
+for fault in ("missing", "empty", "duplicate"):
+    roots = copy.deepcopy(composite)
+    if fault == "missing": roots.remove(roots.find("sources"))
+    elif fault == "empty": roots.find("sources").remove(roots.find("sources/source"))
+    else: roots.append(copy.deepcopy(roots.find("sources")))
+    write_fixture(roots)
+    wrapper_case("source container " + fault, 1, "invalid coverage source roots")
+
+# Reproduce the last-parsed redundant contributor case with two declared projects,
+# intact TRX hashes and the actual pinned merger. Only the last report hits line 3.
+second_project = inventory_repo / "tests/ZFixture.Tests"
+second_output = second_project / "bin/Release/net10.0"
+shutil.copytree(assembly_output, second_output)
+shutil.copy2(second_output / "Fixture.Tests.dll", second_output / "ZFixture.Tests.dll")
+shutil.copy2(second_output / "Fixture.Tests.deps.json", second_output / "ZFixture.Tests.deps.json")
+(second_project / "test-categories.json").write_text('{"Unit":1}')
+second_report = results / "zzz/coverage.cobertura.xml"
+second_report.parent.mkdir()
+second_attachment = results / "zattachment/In/computer/coverage.cobertura.xml"
+second_attachment.parent.mkdir(parents=True)
+second_trx = results / "zfixture.trx"
+second_trx.write_text((results / "fixture.trx").read_text().replace(str(assembly_output / "Fixture.Tests.dll"),
+                       str(second_output / "ZFixture.Tests.dll")).replace('runDeploymentRoot="attachment"', 'runDeploymentRoot="zattachment"'))
+write_fixture(composite)
+shutil.copy2(valid, second_report)
+shutil.copy2(valid, second_attachment)
+first = copy.deepcopy(composite)
+for line in first.findall(".//class/lines/line"):
+    if line.get("number") == "3": line.set("hits", "0")
+write_fixture(first)
+wrapper_case("last contributor supplies unique hits", 0, "Coverage gate passed.", "parsed all 2 expected")
+redirected = copy.deepcopy(composite)
+redirected.find("sources/source").text = str(inventory_repo / "src/zzz") + "/"
+ET.ElementTree(redirected).write(second_report)
+shutil.copy2(second_report, second_attachment)
+wrapper_case("last parsed contributor cannot redirect source roots", 1, "invalid coverage source roots", str(second_report))
+# A project with no instrumented dependencies legitimately emits no source
+# roots. It still contributes a declared TRX/report and must not be rejected.
+classless = ET.Element("coverage", **{"lines-valid": "0"})
+ET.SubElement(classless, "sources")
+ET.SubElement(classless, "packages")
+ET.ElementTree(classless).write(second_report)
+shutil.copy2(second_report, second_attachment)
+dependencies_file = second_output / "ZFixture.Tests.deps.json"
+dependencies = json.loads(dependencies_file.read_text())
+dependencies["targets"][dependencies["runtimeTarget"]["name"]] = {}
+dependencies_file.write_text(json.dumps(dependencies))
+wrapper_case("classless report with empty roots and no included assemblies is valid", 0, "Coverage gate passed.")
+# These are private temporary fixtures owned by this test.
+shutil.rmtree(second_project)
+shutil.rmtree(second_report.parent)
+shutil.rmtree(results / "zattachment")
+second_trx.unlink()
+write_fixture(composite)
 
 # Raw coordinates and metadata must describe records the pinned merger reads.
 for label in ("excluded-class", "outside-classes"):
@@ -647,7 +716,7 @@ stale_output = scratch / "stale-pdb"
 source_before_stale_build = async_source.read_bytes()
 async_source.write_text(async_source.read_text().replace("        value++;\n", "", 1))
 result = subprocess.run(["dotnet", "build", str(fixture_project), "--configuration", "Release", "--output", str(stale_output),
-                         "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
+                         "-nodeReuse:false", "--disable-build-servers", "-p:UseSharedCompilation=false"], capture_output=True, text=True)
 assert result.returncode == 0, result.stdout + result.stderr
 async_source.write_bytes(source_before_stale_build)
 pdb_path.write_bytes((stale_output / f"{assembly_name}.pdb").read_bytes())
@@ -713,6 +782,7 @@ write_fixture(partial_classes)
 wrapper_case("partial class data with every source still present fails DLL/PDB inventory", 1,
              "materially incomplete", "compiled classes")
 empty_report = ET.Element("coverage")
+ET.SubElement(empty_report, "sources")
 ET.SubElement(empty_report, "packages")
 write_fixture(empty_report)
 wrapper_case("a classless report is rejected for a project with included assemblies", 1, "incomplete assembly inventory")
