@@ -75,7 +75,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
-      "candidateValue": "b3e8a77737672ae48b7c178c53dbad9790687d2a",
+      "candidateValue": "87f7342ed1dcf37477ee88b14edd39e7cc84d06a",
       "reason": "Schema 2 is extended atomically to schema 3 for daily summaries; older binaries require the existing paired SQLite checkpoint on rollback. No previous-release SQL image changes. #1713"
     }
   ]
