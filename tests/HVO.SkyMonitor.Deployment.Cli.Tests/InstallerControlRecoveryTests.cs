@@ -21,7 +21,10 @@ public sealed class InstallerControlRecoveryTests
             await new InstallerControlJournal(path).SaveAsync(receipt);
             var recovered = new InstallerControlJournal(path);
             await recovered.LoadAsync(CancellationToken.None);
-            await recovered.RecoverInterruptedAsync(now.AddSeconds(1));
+            var client = new RecoveryClient();
+            await new InstallerControlVerifier(client, recovered.SaveAsync, TimeProvider.System)
+                .SettleInterruptedAsync(recovered.Receipts.Single());
+            Assert.AreEqual(0, client.Effects);
             Assert.AreEqual(CameraAgentControlPhase.Failed, recovered.Receipts.Single().Phase);
             Assert.AreEqual("lifecycle.installer-interrupted", recovered.Receipts.Single().Events[^1].Code);
             Assert.HasCount(1, recovered.Unpublished.ToArray());
@@ -58,4 +61,18 @@ public sealed class InstallerControlRecoveryTests
             ["cameraagent", "lifecycle-worker", "--instance-id", Guid.NewGuid().ToString("D"), option, "untrusted"],
             "/tmp/hvo-1711-root", true));
     }
+    private sealed class RecoveryClient : IInstallerControlClient
+    {
+        internal int Effects;
+        public Task<CameraAgentControlSnapshot> ExchangeAsync(CameraAgentControlReceipt? receipt, CancellationToken cancellationToken) =>
+            Task.FromResult(new CameraAgentControlSnapshot(null, false, Guid.NewGuid(), "Paused", 0, true, true, true));
+        public Task<LifecycleContinuity> DrainAsync(CameraAgentControlRequest request, CancellationToken cancellationToken)
+        { Effects++; throw new AssertFailedException("Recovery must not repeat drain."); }
+        public Task RestartAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
+        { Effects++; throw new AssertFailedException("Recovery must not repeat restart."); }
+        public Task<LifecycleContinuity> ConfirmDrainedAsync(CancellationToken cancellationToken) => throw new AssertFailedException();
+        public Task ResumeAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
+        { Effects++; throw new AssertFailedException("Unproven recovery must not resume."); }
+    }
+
 }

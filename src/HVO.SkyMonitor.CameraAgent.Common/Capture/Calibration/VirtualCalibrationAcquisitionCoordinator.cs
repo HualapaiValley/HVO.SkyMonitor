@@ -54,6 +54,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 ? replay
                 : await ExecuteSerializedAsync(replay.Plan.JobId, cancellationToken).ConfigureAwait(false);
         }
+        await _admissionCoordinator.EnsureLifecycleCaptureAllowedAsync(cancellationToken).ConfigureAwait(false);
         var configuration = _scheduleRuntimeCoordinator?.Snapshot?.Configuration ??
             await _configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
         var plan = CreatePlan(configuration, request, requestIdentity);
@@ -61,7 +62,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
             plan, request.IdempotencyKey, requestIdentity, request.Actor, request.Reason,
             request.ExpectedVersion, cancellationToken)
             .ConfigureAwait(false);
-        return await ExecuteSerializedAsync(job.Plan.JobId, cancellationToken).ConfigureAwait(false);
+        return await ExecuteSerializedAsync(job.Plan.JobId, cancellationToken, retireUnstartedOnRefusal: true).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -159,7 +160,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
 
     private async Task<CalibrationAcquisitionJobSnapshot> ExecuteSerializedAsync(
         string jobId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retireUnstartedOnRefusal = false)
     {
         using var activity = CalibrationTelemetry.ActivitySource.StartActivity("calibration.acquire");
         var started = Stopwatch.GetTimestamp();
@@ -200,6 +202,16 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         {
             _telemetry?.RecordAcquisition("cancelled", Stopwatch.GetElapsedTime(started));
             activity?.SetTag("calibration.outcome", "cancelled");
+            throw;
+        }
+        catch (CaptureControlConflictException)
+        {
+            // Planning can race a lifecycle claim. Retain the idempotent terminal history without blocking later work.
+            // Only a fresh, unstarted plan may be retired; interrupted attempts remain available for recovery.
+            if (retireUnstartedOnRefusal)
+                await _store.CancelAcquisitionAsync(jobId, CancellationToken.None, onlyIfUnstarted: true).ConfigureAwait(false);
+            _telemetry?.RecordAcquisition("rejected", Stopwatch.GetElapsedTime(started));
+            activity?.SetTag("calibration.outcome", "rejected");
             throw;
         }
         catch (CalibrationLibraryAcquisitionException exception)
@@ -275,6 +287,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
         {
             return job;
         }
+        await _admissionCoordinator.EnsureLifecycleCaptureAllowedAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var markerCommitted = await _publisher.EnsureCommittedEvidenceIsCompleteAsync(
@@ -291,13 +304,13 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                     CalibrationLibraryReasonCodes.AcquisitionFailure,
                     "Virtual calibration acquisition exhausted its retry limit.");
             }
-            job = await _store.BeginAcquisitionAttemptAsync(job.Plan.JobId, cancellationToken).ConfigureAwait(false);
             var artifacts = new List<CalibrationLibraryArtifactV1>(16);
             var masters = new List<CalibrationLibraryArtifactV1>(4);
             ushort? flatNormalization = null;
             await _admissionCoordinator.ExecuteCaptureBoundaryAsync(
                 async boundaryToken =>
                 {
+                    job = await _store.BeginAcquisitionAttemptAsync(job.Plan.JobId, boundaryToken).ConfigureAwait(false);
                     var current = job;
                     for (var kindIndex = 0; kindIndex < CalibrationReferenceKinds.All.Count; kindIndex++)
                     {
@@ -394,6 +407,10 @@ public sealed class VirtualCalibrationAcquisitionCoordinator(
                 job.Plan.JobId, bundle.BundleId, CancellationToken.None).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (CaptureControlConflictException)
         {
             throw;
         }
@@ -821,6 +838,10 @@ public sealed class VirtualCalibrationAcquisitionRecoveryService(
         catch (InvalidDataException)
         {
             if (_ingress is null || await _ingress.InitializeForOperationsAsync(cancellationToken).ConfigureAwait(false)) throw;
+            return false;
+        }
+        catch (CaptureControlConflictException)
+        {
             return false;
         }
         catch (CaptureAdmissionUnavailableException)

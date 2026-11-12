@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
 
@@ -156,6 +157,10 @@ internal sealed class CameraAgentFocusUiService(
         catch (ManualFocusSessionValidationException exception)
         {
             return Failure(OperatorUiResultKind.Invalid, exception.Message);
+        }
+        catch (CaptureControlConflictException exception)
+        {
+            return Failure(OperatorUiResultKind.Conflict, exception.Message);
         }
         catch (ManualFocusSessionConflictException exception)
         {

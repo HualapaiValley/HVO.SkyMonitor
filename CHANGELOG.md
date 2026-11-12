@@ -16,6 +16,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
 
+- CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
+
+- CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence, with fresh liveness checks and worker settlement for offline recovery while retaining pending receipts. Refs #1746
+
 - Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
 
 - CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763

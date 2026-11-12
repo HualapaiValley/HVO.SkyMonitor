@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -49,43 +48,6 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         ValidateManifestCounterRootEnd(ref reader);
         return value ?? "{}"u8.ToArray();
-    }
-
-    // Keep the existing full-plan rewrite and byte budget. Copy other members as
-    // opaque JSON bytes, so their optional schema/depth cannot affect this update.
-    private static byte[]? WriteManifestCounter(byte[] frozenJson, string memberName, Dictionary<string, int> counts)
-    {
-        var reader = CreateManifestCounterReader(frozenJson);
-        var buffer = new ArrayBufferWriter<byte>(frozenJson.Length + 256);
-        buffer.Write("{"u8);
-        var written = false;
-        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
-        {
-            if (reader.TokenType != JsonTokenType.PropertyName)
-                throw new JsonException("The frozen execution plan has an invalid member.");
-            var start = checked((int)reader.TokenStartIndex);
-            var selected = reader.ValueTextEquals(memberName);
-            if (!reader.Read()) throw new JsonException("The frozen execution plan member has no value.");
-            reader.Skip();
-            if (selected) continue;
-            if (written) buffer.Write(","u8);
-            buffer.Write(frozenJson.AsSpan(start, checked((int)reader.BytesConsumed) - start));
-            written = true;
-        }
-        ValidateManifestCounterRootEnd(ref reader);
-        var replacement = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(replacement))
-        {
-            writer.WriteStartObject();
-            writer.WriteStartObject(memberName);
-            foreach (var (node, count) in counts) writer.WriteNumber(node, count);
-            writer.WriteEndObject();
-            writer.WriteEndObject();
-        }
-        if (written) buffer.Write(","u8);
-        buffer.Write(replacement.WrittenSpan[1..^1]);
-        buffer.Write("}"u8);
-        return buffer.WrittenCount <= MaximumFrozenExecutionPlanBytes ? buffer.WrittenSpan.ToArray() : null;
     }
 
     private static Utf8JsonReader CreateManifestCounterReader(byte[] frozenJson)

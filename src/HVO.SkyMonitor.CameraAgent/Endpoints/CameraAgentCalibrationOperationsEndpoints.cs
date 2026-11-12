@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Antiforgery;
@@ -249,6 +250,11 @@ internal static class CameraAgentCalibrationOperationsEndpoints
         catch (KeyNotFoundException)
         {
             return Results.NotFound();
+        }
+        catch (CaptureControlConflictException exception)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status409Conflict,
+                title: exception.Message);
         }
         catch (CalibrationLibraryStoreConflictException)
         {

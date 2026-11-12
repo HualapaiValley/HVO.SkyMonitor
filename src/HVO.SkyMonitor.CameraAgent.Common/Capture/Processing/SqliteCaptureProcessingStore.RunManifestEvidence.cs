@@ -82,8 +82,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         await CheckRunManifestBoundsAsync(connection, executionId, cancellationToken).ConfigureAwait(false);
         var frozenPlanJson = await ReadExecutionFrozenPlanJsonAsync(connection, null, executionId, cancellationToken).ConfigureAwait(false);
         var frozenNodeCount = ReadRunManifestNodeCount(frozenPlanJson);
-        var committedOutputCounts = ReadCommittedOutputCounts(frozenPlanJson);
-        var frozenInputCounts = ReadFrozenOutputInputCounts(frozenPlanJson);
+        var committedOutputCounts = await ReadManifestCountsAsync(connection, executionId, ManifestOutputLedger, cancellationToken).ConfigureAwait(false);
+        var frozenInputCounts = await ReadManifestCountsAsync(connection, executionId, ManifestInputLedger, cancellationToken).ConfigureAwait(false);
         // Only an execution frozen before the input ledger existed needs its windows.
         var legacy = detail.Nodes.Any(node => !frozenInputCounts.ContainsKey(node.NodeId));
         var legacyWindows = legacy ? ReadLegacyManifestWindows(frozenPlanJson) : [];
@@ -95,12 +95,25 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             var inputs = await ReadExecutionInputsAsync(
                 connection, executionId, node.NodeId, manifestOnly: true, cancellationToken).ConfigureAwait(false);
+            var associations = await ReadExecutionOutputAssociationsAsync(
+                connection, executionId, node.NodeId, cancellationToken).ConfigureAwait(false);
+            var outputs = node.Outputs;
+            if (outputs.Any(output => associations.TryGetValue(output.OutputIdentitySha256, out var association) &&
+                    association.Ordinal != output.Ordinal))
+            {
+                outputs = outputs.Select(output => output with
+                {
+                    Ordinal = associations.TryGetValue(output.OutputIdentitySha256, out var association)
+                        ? association.Ordinal : output.Ordinal
+                }).ToArray();
+            }
             var bindings = await ReadRunManifestBindingsAsync(
                 connection, detail.Execution, node.NodeId, windowedNodes.Contains(node.NodeId), inputs, node.CalibrationInputs,
-                node.Outputs, node.Attempts.Count, node.Dependencies, frozenInputCounts, legacyWindows, cancellationToken).ConfigureAwait(false);
+                outputs, node.Attempts.Count, node.Dependencies, frozenInputCounts, legacyWindows, cancellationToken).ConfigureAwait(false);
             nodes.Add(node with
             {
                 Inputs = bindings.Inputs,
+                Outputs = outputs,
                 CalibrationInputs = bindings.Masters,
                 ArtifactBindingsRetained = bindings.Retained,
                 InputEvidenceIncomplete = bindings.EvidenceIncomplete,

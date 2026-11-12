@@ -186,19 +186,10 @@ public sealed partial class ProcessingGraphOperationsTests
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
     }
 
-    private static async Task ReplaceManifestCountsAsync(string root, Guid id, byte[] original, string countsJson)
+    private static Task ReplaceManifestCountsAsync(string root, Guid id, byte[] original, string countsJson)
     {
-        var plan = JsonNode.Parse(original)!.AsObject();
-        plan.Remove("committedOutputCounts");
-        var primary = plan.ToJsonString();
-        var json = Encoding.UTF8.GetBytes(primary[..^1] + ",\"committedOutputCounts\":" + countsJson + "}");
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-        await connection.OpenAsync().ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE processing_executions SET frozen_plan_json = $json WHERE execution_id = $execution;";
-        command.Parameters.AddWithValue("$execution", id.ToString("N"));
-        command.Parameters.AddWithValue("$json", json);
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        _ = original;
+        return ReplaceManifestCounterAsync(root, id, "committedOutputCounts", countsJson);
     }
 
     [TestMethod]
