@@ -1,5 +1,7 @@
+using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 
@@ -26,7 +28,16 @@ internal sealed partial class NightlyProductGenerator
             var detail = await _store.GetAsync(product.ProductId, cancellationToken).ConfigureAwait(false)
                 ?? throw new InvalidDataException("A selected summary product is no longer published.");
             if (detail.Occurrence.SourceWindow!.ReportingPeriod.IdentitySha256 != period.IdentitySha256) continue;
-            await _store.VerifyPublicationAsync(product.ProductId, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _store.VerifyPublicationAsync(product.ProductId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is InvalidDataException or IOException)
+            {
+                LogUnverifiedLinkedProduct(_logger, exception,
+                    window.ObservingDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), product.ProductId);
+                throw;
+            }
             links.Add(new(product.ProductId, NightlyProductContract.TargetFor(product.Kind), detail.OutputIdentitySha256,
                 product.FirstObservationUtc));
         }
@@ -70,4 +81,8 @@ internal sealed partial class NightlyProductGenerator
             admission.Exclusions, fingerprint, [existing.Summary.ProductId], cancellationToken).ConfigureAwait(false);
         context.FinalsRecorded++;
     }
+
+    [LoggerMessage(EventId = 1, Level = LogLevel.Error,
+        Message = "Daily summary for {ReportDate} refused unverified linked product {ProductId}; a later run will retry")]
+    private static partial void LogUnverifiedLinkedProduct(ILogger logger, Exception exception, string reportDate, Guid productId);
 }

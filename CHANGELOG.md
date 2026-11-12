@@ -67,7 +67,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
-- Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
+- Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, linked-product verification errors name the report date and product id for a later retry, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
 
 - Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 
