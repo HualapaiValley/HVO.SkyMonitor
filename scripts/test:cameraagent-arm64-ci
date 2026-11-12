@@ -253,7 +253,7 @@ if [[ $# -ne 1 || ! -d "$BUNDLE" || -L "$BUNDLE" ]]; then
     exit 2
 fi
 
-for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc readelf readlink realpath sha256sum sqlite3 stat tar tee timeout wc; do
+for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc python3 readelf readlink realpath sha256sum sqlite3 stat tar tee timeout wc; do
     require_command "$command"
 done
 
@@ -410,7 +410,7 @@ readonly CLI_TESTS="$REPO_ROOT/tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.Sky
 # Linux, which is correct for the test and fatal for the gate; it has failed every run of
 # this workflow since it was marked in 852e0770. It is excluded here by name so the gate
 # stays strict for every test that should run on ARM64 Linux. The category audit owns the
-# Unit count and still sees it; the macOS lane still runs it. If a second OS-conditioned
+# Unit count and still sees it; the obsolete macOS advisory job is retired. If a second OS-conditioned
 # test appears, add it here with its commit, not a broader pattern.
 unit_filter='TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware&FullyQualifiedName!=HVO.SkyMonitor.CameraAgent.Tests.ZwoAsiCameraModuleTests.InitializeOnMacOsRejectsBeforeRuntimeAccess'
 # The cross-lineage catalog transition added in e44804d5 needs the HYG 4.4 bundle as well as the
