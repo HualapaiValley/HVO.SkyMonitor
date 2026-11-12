@@ -18,13 +18,15 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed partial class InstallerLifecycleRecoveryIntegrationTests
 {
     [TestMethod]
+    [DataRow(LifecycleOperationKind.Reinstall, false, LifecycleOperationPhase.Prepared, true)]
+    [DataRow(LifecycleOperationKind.Rollback, false, LifecycleOperationPhase.Restoring, true)]
     [DataRow(LifecycleOperationKind.Reinstall, false, LifecycleOperationPhase.Prepared)]
     [DataRow(LifecycleOperationKind.Rollback, false, LifecycleOperationPhase.Restoring)]
     [DataRow(LifecycleOperationKind.Reinstall, false)]
     [DataRow(LifecycleOperationKind.Rollback, false)]
     [DataRow(LifecycleOperationKind.Reinstall, true)]
     [DataRow(LifecycleOperationKind.Rollback, true)]
-    public async Task InstallerLifecycleCommittedRecoveryLetsTheRealWorkerSettleBeforeNativeResume(LifecycleOperationKind kind, bool terminal, LifecycleOperationPhase phase = LifecycleOperationPhase.Committed)
+    public async Task InstallerLifecycleCommittedRecoveryLetsTheRealWorkerSettleBeforeNativeResume(LifecycleOperationKind kind, bool terminal, LifecycleOperationPhase phase = LifecycleOperationPhase.Committed, bool crashBeforePause = false)
     {
         var fixture = new Fixture(false);
         await using var owned = fixture.ConfigureAwait(false);
@@ -49,7 +51,7 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
         };
         await journal.SaveAsync(draining).ConfigureAwait(false);
         await client.ExchangeAsync(draining, watchdog.Token).ConfigureAwait(false);
-        await client.DrainAsync(queued.Request, watchdog.Token).ConfigureAwait(false);
+        if (!crashBeforePause) await client.DrainAsync(queued.Request, watchdog.Token).ConfigureAwait(false);
         if (terminal) await journal.SaveAsync(draining with
         {
             Phase = CameraAgentControlPhase.Failed,
@@ -60,7 +62,8 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
         Assert.IsTrue(fixture.Controls.AdmissionHeld);
         var deployment = Guid.NewGuid();
         var native = new NativeClient(new Uri("http://127.0.0.1"), fixture.Handler);
-        var paused = await native.PauseAndDrainAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
+        var paused = crashBeforePause ? null :
+            await native.PauseAndDrainAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
         var image = new ImageInstallationIdentity("registry", "test@sha256:" + new string('a', 64),
             "sha256:" + new string('b', 64), "amd64", null, SourceRevision: new string('8', 40),
             Component: "CameraAgent", ConfigurationContract: "cameraagent-install-v1", CatalogContract: "hvo-approved-catalogs-v1");
@@ -71,7 +74,7 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
         var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, deployment, kind,
             id, new string('a', 64), phase, InstallationStatus.Running, now, now, image,
             CandidateImage: kind == LifecycleOperationKind.Rollback ? image : null, OriginalCatalog: catalog,
-            MutationStarted: true, PostMutationContinuity: new("Paused", paused.CaptureVersion, paused.CaptureSequence,
+            MutationStarted: true, PostMutationContinuity: paused is null ? null : new("Paused", paused.CaptureVersion, paused.CaptureSequence,
                 0, 0, 0, 0, 0, 0, 0, 0, now));
         await RuntimeManager.RecordAsync(paths, operation, watchdog.Token).ConfigureAwait(false);
         Assert.AreEqual(InstallationStatus.Running,
@@ -79,15 +82,30 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
         var refusal = await Assert.ThrowsExactlyAsync<RuntimeException>(() =>
             native.ResumeAsync(deployment, "test-installation-token", watchdog.Token)).ConfigureAwait(false);
         StringAssert.Contains(refusal.Message, "409", StringComparison.Ordinal);
-        Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+        Assert.AreEqual(crashBeforePause ? CaptureAdmissionState.Running : CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
         var preserved = await File.ReadAllBytesAsync(paths.LifecycleStatePath).ConfigureAwait(false);
         var messages = new List<string>();
-        await new RuntimeWorker(client, journal, token => RuntimeManager.AcquireControlDeploymentAsync(paths, token),
+        var worker = new RuntimeWorker(client, journal, token => RuntimeManager.AcquireControlDeploymentAsync(paths, token),
             TimeProvider.System, messages.Add,
             acquireInterruptedRecovery: (receipt, token) => RuntimeManager.AcquireInterruptedControlAsync(paths,
                 phase == LifecycleOperationPhase.Prepared ? InstanceLifecycleCondition.Uninstalled : InstanceLifecycleCondition.Installed,
-                receipt, client, token))
-            .PollAsync(watchdog.Token).ConfigureAwait(false);
+                receipt, client, token));
+        if (crashBeforePause)
+        {
+            var controlBytes = await File.ReadAllBytesAsync(Path.Combine(paths.OperationsRoot, $"control-worker-{id:D}.json")).ConfigureAwait(false);
+            await worker.PollAsync(watchdog.Token).ConfigureAwait(false);
+            Assert.IsFalse(journal.Receipts.Single().IsTerminal, "A process change alone must not release a Running replacement.");
+            Assert.IsTrue(fixture.Controls.AdmissionHeld);
+            Assert.AreEqual(CaptureAdmissionState.Running, fixture.Capture.Snapshot.State);
+            CollectionAssert.AreEqual(preserved, await File.ReadAllBytesAsync(paths.LifecycleStatePath).ConfigureAwait(false));
+            CollectionAssert.AreEqual(controlBytes, await File.ReadAllBytesAsync(Path.Combine(paths.OperationsRoot, $"control-worker-{id:D}.json")).ConfigureAwait(false));
+            await Assert.ThrowsAsync<CaptureControlConflictException>(() => fixture.Capture.EnterAsync(watchdog.Token).AsTask()).ConfigureAwait(false);
+            // A retried recovery must establish its durable pause before the receipt fence can be released.
+            await native.PauseAndDrainAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
+            await fixture.ReloadAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State, "The recovery pause must survive reload.");
+        }
+        await worker.PollAsync(watchdog.Token).ConfigureAwait(false);
         Assert.IsTrue(journal.Receipts.Single().IsTerminal, string.Join("; ", messages));
         Assert.IsEmpty(journal.Unpublished);
         Assert.IsEmpty(journal.Refused);

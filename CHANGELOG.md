@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent rollback and reinstall can settle interrupted runtime control after a replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
+- CameraAgent rollback and reinstall can settle interrupted runtime control after a durably paused replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
 
 - CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
 

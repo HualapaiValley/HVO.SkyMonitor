@@ -81,6 +81,9 @@ internal sealed partial class CameraAgentLifecycleManager
             if (requireRecovery && operation is not
                 { Status: not InstallationStatus.Completed, Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback })
                 throw InstallerException.Refused("An uninstalled instance requires an incomplete reinstall or rollback for settlement.");
+            // Already admissible local settlement must not depend on an unnecessary process probe.
+            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) || IsRestored(operation))
+                return deploymentLock;
             var committedRecovery = settleCommittedRecovery && operation is
             {
                 Status: InstallationStatus.Running, Phase: LifecycleOperationPhase.Committed, MutationStarted: true,
@@ -88,8 +91,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 PostMutationContinuity: { CaptureState: "Paused" }
             } && operation.InstanceId == Guid.Parse(Path.GetFileName(paths.InstanceRoot)) &&
                 IsValidRecoveryBoundary(operation.PostMutationContinuity);
-            // Under the deployment lock, a different initialized process proves settlement cannot
-            // restore the old process's pause. No deployment boundary or mutation is required.
+            // A different process prevents reuse of the old process's resume authority. Its durable
+            // pause must also be proven: a crash before the original pause can leave Running capture
+            // fenced only by the receipt, and terminal publication would otherwise reopen admission.
             var precommitRecovery = !committedRecovery && returnedProcess is not null && operation is
             {
                 Status: not InstallationStatus.Completed,
@@ -153,7 +157,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 timeout.CancelAfter(TimeSpan.FromSeconds(10));
                 var snapshot = await client.ExchangeAsync(null, timeout.Token).ConfigureAwait(false);
-                return snapshot.Initialized && snapshot.ProcessId != Guid.Empty &&
+                return snapshot.Initialized && snapshot.CaptureState == "Paused" && snapshot.ProcessId != Guid.Empty &&
                     snapshot.ProcessId != receipt.OriginalProcessId;
             }, requireRecovery: condition != InstanceLifecycleCondition.Installed);
 }
