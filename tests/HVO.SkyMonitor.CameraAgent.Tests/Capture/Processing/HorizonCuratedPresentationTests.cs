@@ -55,8 +55,13 @@ public sealed class HorizonCuratedPresentationTests
             LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
                 PresentationLayerPayloadJson.Create(fixture.Scene.SceneIdentitySha256, 484, 304), "environment-layer-v1", [source], "fixture-v1"));
             context.BeginNode("manifest", ["preview", "presentation", "environment"]);
+            var manifestOptions = ProcessingNodeOptionsCodec.Encode(OverlayManifestOptionDescriptors.Descriptor,
+                JsonSerializer.SerializeToElement(new { basePreviewVariant = "preview-v1" }),
+                new Dictionary<string, ProcessingOptionValue> { ["includeDeepSkyLayer"] = ProcessingOptionValue.FromToggle(true) });
+            Assert.IsTrue(manifestOptions.IsValid, "The typed manifest editor must expose deep-sky retention.");
             await new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 2),
-                new() { BasePreviewVariant = "preview-v1", SceneDeepSkyVariant = "scene-deep-sky-v1" }).ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+                manifestOptions.Options!.Value.Deserialize<OverlayManifestProcessingStepOptions>(JsonSerializerOptions.Web)!)
+                .ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
             var manifest = LayeredPresentationJson.ParseManifest(context.ProcessingProducts[^1].Payload).Document!;
             Assert.HasCount(6, manifest.Layers);
             Assert.AreEqual(CaptureProcessingContext.CreateArtifactId(deepSky.OutputIdentitySha256),

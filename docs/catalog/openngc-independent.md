@@ -94,7 +94,7 @@ image rollback because its Compose environment predates the new catalog mount.
 On the graph's Projected scene query panel enable deep-sky annotations, choose
 NGC/Messier/IC and the V-magnitude and angular-size limits. On its Scene overlay
 panel enable the separate deep-sky layer and choose labels, approximate outlines,
-colour, thickness, scale and packaged font. Set `sceneDeepSkyVariant` to `scene-deep-sky-v1` in the overlay manifest to retain its optional product. An absent variant keeps the legacy dependency contract unchanged. Save, validate and explicitly activate the revision. Current
+colour, thickness, scale and packaged font. On the Overlay manifest panel enable **Retain deep-sky layer**. Leaving it off preserves the legacy dependency contract. Custom producer variants can still be bound with `sceneDeepSkyVariant` in pipeline JSON. Save, validate and explicitly activate the revision. Current
 Sky then shows **Deep-sky catalog** independently of **Sky annotations**; toggles
 are remembered separately. Software & catalog reports both identities and the
 OpenNGC attribution. Existing archived scenes keep their own geometry and input
