@@ -121,6 +121,7 @@ public sealed partial class InstallationVerificationReadTests
             System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(store)!;
         Assert.IsTrue(await gate.WaitAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false));
         gate.Release();
+        await fixture.Loader.DrainRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         var identity = await fixture.ReadAsync(client).ConfigureAwait(false);
         Assert.AreEqual(1L, identity.GetProperty("deploymentLocationVersion").GetInt64());
         Assert.AreEqual(4, observed);
