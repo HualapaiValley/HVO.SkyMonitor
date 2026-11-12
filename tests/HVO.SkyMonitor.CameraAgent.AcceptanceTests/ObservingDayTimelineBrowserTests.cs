@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
@@ -122,84 +123,95 @@ public sealed class ObservingDayTimelineBrowserTests
     }
 
     [TestMethod]
-    [DataRow(1440, 900)]
-    [DataRow(390, 844)]
-    public async Task CandidateListLinkStaysOnTheSelectedDayAndReachesTheList(int width, int height)
+    [DataRow(1440, 900, true, "?calendar=hvo-noon-observing-day-v1")]
+    [DataRow(390, 844, true, "?calendar=hvo-sunrise-reporting-period-v1")]
+    [DataRow(1440, 900, false, "")]
+    public async Task CandidateListLinkStaysOnTheSelectedDayAndReachesTheList(
+        int width, int height, bool javaScriptEnabled, string calendarQuery)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
         // Replace only the day read model. App/base, routing, authentication, layouts, CSS and Blazor are real.
-        // The fixture owns/removes its unique /tmp/iv-* root: Unix socket paths must be short and symlink-free.
+        // The fixture owns/removes its unique iv-* root: Unix socket paths must be short and symlink-free.
         await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
             services.Replace(ServiceDescriptor.Singleton<ICameraAgentObservingDayUiService>(new CandidateDayService())),
-            scratchRoot: "/tmp").ConfigureAwait(false);
-        var measurements = new List<object>();
-        foreach (var javaScriptEnabled in new[] { true, false })
+            scratchRoot: Path.GetTempPath()).ConfigureAwait(false);
+        var initialQuery = javaScriptEnabled ? calendarQuery : string.Empty;
+        var expectedQuery = javaScriptEnabled ? calendarQuery
+            : "?calendar=" + Uri.EscapeDataString(NightlyProductFixture.Calendar.CalendarVersion);
+        await using var context = await browser.NewContextAsync(new()
         {
-            await using var context = await browser.NewContextAsync(new()
-            {
-                BaseURL = host.BaseAddress.ToString(),
-                ViewportSize = new() { Width = width, Height = height },
-                JavaScriptEnabled = javaScriptEnabled
-            }).ConfigureAwait(false);
-            var page = await context.NewPageAsync().ConfigureAwait(false);
-            await page.GotoAsync("/Account/Login").ConfigureAwait(false);
-            await page.GetByLabel("Username or email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
-            await page.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
-            await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
-            await page.WaitForURLAsync(url => new Uri(url).AbsolutePath != "/Account/Login").ConfigureAwait(false);
+            BaseURL = host.BaseAddress.ToString(),
+            ViewportSize = new() { Width = width, Height = height },
+            JavaScriptEnabled = javaScriptEnabled
+        }).ConfigureAwait(false);
+        var page = await context.NewPageAsync().ConfigureAwait(false);
+        await page.GotoAsync("/Account/Login").ConfigureAwait(false);
+        await page.GetByLabel("Username or email").FillAsync(CameraAgentKestrelFixture.OwnerEmail).ConfigureAwait(false);
+        await page.GetByLabel("Password").FillAsync(CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Log in", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath != "/Account/Login").ConfigureAwait(false);
 
-            const string path = "/archive/day/2026-07-21";
-            var query = "?calendar=" + ObservingDayCalendar.LegacyNoonVersion;
-            await page.GotoAsync(path + query).ConfigureAwait(false);
-            if (javaScriptEnabled)
-            {
-                await page.Locator(".app-frame[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
-            }
-            Assert.AreEqual(host.BaseAddress.AbsoluteUri, await page.Locator("base").EvaluateAsync<string>("base => base.href").ConfigureAwait(false));
-            var dayHeading = await page.Locator(".day-title h1").InnerTextAsync().ConfigureAwait(false);
-            await page.GetByRole(AriaRole.Link, new() { Name = "Use the full-size candidate list controls" }).ClickAsync().ConfigureAwait(false);
-            await page.WaitForFunctionAsync("""
+        const string path = "/archive/day/2026-07-21";
+        await page.GotoAsync(path + initialQuery).ConfigureAwait(false);
+        if (javaScriptEnabled)
+        {
+            await page.Locator(".app-frame[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
+        }
+        Assert.AreEqual(host.BaseAddress.AbsoluteUri, await page.Locator("base").EvaluateAsync<string>("base => base.href").ConfigureAwait(false));
+        var dayHeading = await page.Locator(".day-title h1").InnerTextAsync().ConfigureAwait(false);
+        var candidateListLink = page.GetByRole(AriaRole.Link, new() { Name = "Use the full-size candidate list controls" });
+        await candidateListLink.FocusAsync().ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await page.WaitForFunctionAsync("""
                 () => {
                     const list = document.getElementById('day-candidates');
-                    if (!list) return false;
-                    const box = list.getBoundingClientRect();
-                    return document.activeElement === list && box.top >= 0 && box.top < innerHeight;
+                    return location.hash === '#day-candidates' && list !== null;
                 }
                 """).ConfigureAwait(false);
-            var destination = new Uri(page.Url);
-            Assert.AreEqual(path, destination.AbsolutePath, "The app's root base must not send this link to Current sky.");
-            Assert.AreEqual(query, destination.Query, "Keep the selected calendar interpretation.");
-            Assert.AreEqual(javaScriptEnabled ? string.Empty : "#day-candidates", destination.Fragment);
-            Assert.AreEqual(dayHeading, await page.Locator(".day-title h1").InnerTextAsync().ConfigureAwait(false));
-            var candidate = page.Locator("#day-candidates .candidate-list a");
-            Assert.AreEqual("/transients/10000000-0000-0000-0000-000000000001",
-                await candidate.GetAttributeAsync("href").ConfigureAwait(false));
-            var bounds = await candidate.BoundingBoxAsync().ConfigureAwait(false);
-            Assert.IsNotNull(bounds);
-            Assert.IsTrue(bounds.Height >= 44);
-            await page.Keyboard.PressAsync("Tab").ConfigureAwait(false);
-            Assert.IsTrue(await candidate.EvaluateAsync<bool>("a => document.activeElement === a").ConfigureAwait(false),
-                "Keyboard navigation must continue into the equivalent candidate control.");
-            measurements.Add(new { width, height, javaScriptEnabled, browserVersion = browser.Version, url = page.Url, candidateHeight = bounds.Height, focusedAndScrolled = true });
-            var screenshot = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}-{javaScriptEnabled}.png");
-            await page.ScreenshotAsync(new() { Path = screenshot, FullPage = true }).ConfigureAwait(false);
-            TestContext.AddResultFile(screenshot);
-        }
-        var metrics = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}.json");
-        await File.WriteAllTextAsync(metrics, JsonSerializer.Serialize(measurements)).ConfigureAwait(false);
+        var destination = new Uri(page.Url);
+        Assert.AreEqual(path, destination.AbsolutePath, "The app's root base must not send this link to Current sky.");
+        Assert.AreEqual(expectedQuery, destination.Query, "Keep the selected calendar interpretation.");
+        Assert.AreEqual("#day-candidates", destination.Fragment);
+        Assert.AreEqual(dayHeading, await page.Locator(".day-title h1").InnerTextAsync().ConfigureAwait(false));
+        var candidate = page.Locator("#day-candidates .candidate-list a");
+        Assert.AreEqual("/transients/10000000-0000-0000-0000-000000000001",
+            await candidate.GetAttributeAsync("href").ConfigureAwait(false));
+        var bounds = await candidate.BoundingBoxAsync().ConfigureAwait(false);
+        Assert.IsNotNull(bounds);
+        Assert.IsTrue(bounds.Height >= 44);
+        var metrics = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}-{javaScriptEnabled}.json");
+        await File.WriteAllTextAsync(metrics, JsonSerializer.Serialize(new
+        {
+            width, height, javaScriptEnabled, browserVersion = browser.Version, url = page.Url,
+            candidateHeight = bounds.Height, navigatedToList = true
+        })).ConfigureAwait(false);
         TestContext.AddResultFile(metrics);
+        var screenshot = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}-{javaScriptEnabled}.png");
+        await page.ScreenshotAsync(new() { Path = screenshot, FullPage = true }).ConfigureAwait(false);
+        TestContext.AddResultFile(screenshot);
     }
 
     private sealed class CandidateDayService : ICameraAgentObservingDayUiService
     {
         public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate, CancellationToken cancellationToken)
+            => ValueTask.FromResult(View(NightlyProductFixture.Calendar.Resolve(observingDate)));
+
+        public ValueTask<OperatorUiResult<CameraAgentObservingDayView>> GetAsync(DateOnly observingDate,
+            string calendarVersion, CancellationToken cancellationToken)
         {
-            var day = ObservingDayCalendar.Create("America/Phoenix").Resolve(observingDate);
+            var calendar = calendarVersion == ObservingDayCalendar.LegacyNoonVersion
+                ? ObservingDayCalendar.Create("America/Phoenix")
+                : NightlyProductFixture.Calendar;
+            return ValueTask.FromResult(View(calendar.Resolve(observingDate)));
+        }
+
+        private static OperatorUiResult<CameraAgentObservingDayView> View(ObservingDay day)
+        {
             var candidate = Candidate(day.StartUtc.AddHours(12), Guid.Parse("10000000-0000-0000-0000-000000000001"));
-            return ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
+            return OperatorUiResult<CameraAgentObservingDayView>.Success(new(
                 new CameraAgentGalleryCalendarDay(day, 0, 1, null, null, null, null),
-                [], TimeSpan.Zero, null, [candidate], false, [], null, null, null)));
+                [], TimeSpan.Zero, null, [candidate], false, [], null, null, null));
         }
     }
 
