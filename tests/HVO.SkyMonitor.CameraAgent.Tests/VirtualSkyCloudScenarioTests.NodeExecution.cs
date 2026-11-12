@@ -82,6 +82,16 @@ public sealed partial class VirtualSkyCloudScenarioTests
             foreach (var node in detail.Nodes)
             {
                 TestContext.WriteLine($"{node.NodeId}: {node.Status}; {node.Reason}; outputs={node.Outputs.Count}");
+                if (node.NodeId == "astrometry")
+                {
+                    // The shared panel fixture lacks a capture-time astrometry observer/calibration binding.
+                    // Its optional node must retain the refusal without inventing a solution or blocking Storage.
+                    Assert.IsFalse(node.Required);
+                    Assert.AreEqual("TerminalFailure", node.Status);
+                    Assert.AreEqual("astrometry.scene-time-calibration-mismatch", node.Reason);
+                    Assert.IsEmpty(node.Outputs);
+                    continue;
+                }
                 Assert.IsTrue(node.Status is "Completed" or "Skipped", $"{node.NodeId}: {node.Status} {node.Reason}");
             }
             Assert.IsNotEmpty(detail.Nodes.Single(node => node.NodeId == "scene").Outputs);
