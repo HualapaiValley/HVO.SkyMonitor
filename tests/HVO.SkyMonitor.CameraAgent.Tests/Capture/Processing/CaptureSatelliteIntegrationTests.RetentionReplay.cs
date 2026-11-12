@@ -108,7 +108,9 @@ public sealed partial class CaptureSatelliteIntegrationTests
     }
 
     [TestMethod]
-    public async Task RetentionProtectsRawAndSupportUntilConsumersExpireThenReleasesOrbitalReference()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RetentionProtectsRawAndSupportUntilConsumersExpireThenReleasesOrbitalReference(bool trailingRoot)
     {
         var root = CreateRoot();
         try
@@ -121,6 +123,7 @@ public sealed partial class CaptureSatelliteIntegrationTests
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await ProcessAsync(provider, config).ConfigureAwait(false)).Outcome);
             var work = provider.GetRequiredService<CaptureSatelliteWorkStore>();
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var retentionRoot = trailingRoot ? root + Path.DirectorySeparatorChar : root;
             var node = await store.ReadNodeAsync(raw.Manifest.Descriptor.Capture.CaptureId, "satellite", CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(node);
             var inputs = node.Outputs.Single(static p => p.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
@@ -139,15 +142,15 @@ public sealed partial class CaptureSatelliteIntegrationTests
             Assert.HasCount(1, holds, "Independent scene support must not form a scene/raw/satellite retention cycle.");
             await persistence.ExpireOutputsAsync(root, DateTimeOffset.UtcNow.AddYears(1), Absolute(holds), CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(node.Outputs.All(p => !File.Exists(Path.Combine(root, p.PayloadRelativePath))));
-            await work.ReconcileAsync(root, CancellationToken.None).ConfigureAwait(false);
+            await work.ReconcileAsync(retentionRoot, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(1L, await ReferenceCountAsync(root, source).ConfigureAwait(false), "The raw still needs its frozen prediction inputs.");
             File.Delete(raw.StoredFrame.AbsolutePath);
             File.Delete(Path.ChangeExtension(raw.StoredFrame.AbsolutePath, ".json"));
             await persistence.ExpireOutputsAsync(root, DateTimeOffset.UtcNow.AddYears(1), new HashSet<string>(), CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(File.Exists(Path.Combine(root, sceneOutput.PayloadRelativePath)), "Scene support can expire after raw and its other consumers.");
-            await work.ReconcileAsync(root, CancellationToken.None).ConfigureAwait(false);
+            await work.ReconcileAsync(retentionRoot, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(0L, await ReferenceCountAsync(root, source).ConfigureAwait(false));
-            await work.ReconcileAsync(root, CancellationToken.None).ConfigureAwait(false);
+            await work.ReconcileAsync(retentionRoot, CancellationToken.None).ConfigureAwait(false);
             Assert.IsEmpty(Directory.EnumerateDirectories(Path.Combine(root, "journal", "capture-satellites")));
 
             HashSet<string> Absolute(IReadOnlyList<ProcessingRetentionHold> values) => values.SelectMany(h => new[]

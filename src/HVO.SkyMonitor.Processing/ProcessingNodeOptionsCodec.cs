@@ -272,7 +272,7 @@ public static class ProcessingNodeOptionsCodec
         {
             if (described.Contains(property.Name) && !members.TryAdd(property.Name, property))
                 diagnostics.Add(new(ProcessingOptionReasonCodes.DuplicateMember, MemberPath(path, property.Name),
-                    $"Member '{property.Name}' appears more than once, ignoring case."));
+                    $"Member '{property.Name}' appears more than once, ignoring case. Remove duplicate members from the source JSON before previewing or saving; keep one spelling and the intended value."));
         }
         return members;
     }
@@ -401,7 +401,10 @@ public static class ProcessingNodeOptionsCodec
                 ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name),
                     $"Option '{option.Key}' member '{member.Name}' is outside the representable range.")
                 : new(ProcessingOptionReasonCodes.WrongType, MemberPath(path, member.Name),
-                    $"Option '{option.Key}' member '{member.Name}' must be {Describe(kind)}.");
+                    $"Option '{option.Key}' member '{member.Name}' must be {Describe(kind)}." +
+                    (member.Value.ValueKind == JsonValueKind.String && kind is ProcessingOptionKind.WholeNumber or
+                        ProcessingOptionKind.RealNumber or ProcessingOptionKind.NullableWholeNumber or ProcessingOptionKind.NullableRealNumber
+                        ? " Use a JSON number without quotes, or explicitly correct this field in the typed editor before previewing or saving." : string.Empty));
         }
         // Channels and nullable byte overrides must use the producer's unsigned token spelling. Null stays valid
         // for a nullable byte; a signed zero must be rejected and rewritten by an explicit zero edit.
