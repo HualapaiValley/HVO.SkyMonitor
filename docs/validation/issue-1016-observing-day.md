@@ -43,11 +43,12 @@ are 369.20px wide and appear in one column before events and automations.
   targets no longer intercept clicks on a neighbouring circle. Partial history
   names the most recent records shown and states that earlier records are absent.
   The list link qualifies the selected date and calendar so the app's root
-  `<base>` cannot route it home. Interactive activation prevents navigation
-  and focuses/scrolls the list; without JavaScript the qualified fragment and
-  focusable section provide the native fallback. A real-host browser test clicks
-  the link at both requested sizes, verifies date/calendar, list focus/scroll,
-  and keyboard continuation to the equivalent candidate control.
+  `<base>` cannot route it home. A real-host browser test activates the link
+  with Enter at desktop and narrow viewports, then verifies the selected
+  date/calendar, destination fragment, unchanged heading, equivalent candidate
+  link, and minimum target height. With JavaScript disabled it also verifies the
+  qualified native fragment link. Focus transfer, viewport visibility/scroll,
+  and Tab continuation are not asserted by this test.
   The period's ticks use actual elapsed time, including 23/25-hour DST periods,
   with offsets when the period crosses a clock change.
 - A failed representative preview retains its exact capture link and a visible
@@ -146,16 +147,18 @@ after provisioning the pinned Playwright Chromium headless shell. The owner
 ledger records executed/passed/skipped counters, browser version and artifacts.
 The real-host navigation cases use a disposable Kestrel host and synthetic day
 read model, with real app/base, authentication, router, CSS and Blazor. They
-exercise JavaScript-enabled focus and native no-JavaScript navigation at
-1440x900 and 390x844; they are not retained real-day production acceptance.
+exercise JavaScript-enabled fragment navigation and native no-JavaScript
+navigation at 1440x900 and 390x844; they are not retained real-day production
+acceptance. Focus transfer, viewport visibility/scroll, and Tab continuation are
+not asserted.
 
 The development-v1 protected profile executes Unit, so it does not execute these
-browser cases. The full `ci.yml` Integration selections include the AcceptanceTests
-project, but no workflow provisions Chromium. `LaunchOrInconclusiveAsync` reports
-a missing browser or required system library as Inconclusive. Consequently a
-green CI run alone cannot establish that these browser cases executed. Keep
-explicit successful local execution evidence; no CI configuration change or
-full-qualification dispatch is part of this correction.
+browser cases. The full `ci.yml` Integration and CameraAgent Component selections
+include the AcceptanceTests project, and both provision pinned Chromium before
+running its Integration rows. `LaunchAsync` requires Chromium; a missing browser
+or required system library fails the test. A green development-v1 run therefore
+does not establish that these browser cases executed; retain explicit execution
+evidence from an Integration selection.
 
 ## Historical review-status correction
 
