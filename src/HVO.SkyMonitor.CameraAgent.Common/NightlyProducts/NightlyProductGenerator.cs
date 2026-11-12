@@ -10,6 +10,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
@@ -73,6 +75,7 @@ internal sealed partial class NightlyProductGenerator : IDisposable
     private readonly IPlanetEphemeris _ephemeris;
     private readonly Func<IDeploymentLocationStore?> _locationStore;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger<NightlyProductGenerator> _logger;
     private readonly ProcessingRecipeExecutor _executor = new();
     private readonly SemaphoreSlim _run = new(1, 1);
 
@@ -83,7 +86,8 @@ internal sealed partial class NightlyProductGenerator : IDisposable
         SqliteNightlyProductStore store,
         IPlanetEphemeris ephemeris,
         Func<IDeploymentLocationStore?> locationStore,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ILogger<NightlyProductGenerator>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
@@ -93,6 +97,7 @@ internal sealed partial class NightlyProductGenerator : IDisposable
         _ephemeris = ephemeris;
         _locationStore = locationStore;
         _timeProvider = timeProvider;
+        _logger = logger ?? NullLogger<NightlyProductGenerator>.Instance;
     }
 
     public void Dispose() => _run.Dispose();

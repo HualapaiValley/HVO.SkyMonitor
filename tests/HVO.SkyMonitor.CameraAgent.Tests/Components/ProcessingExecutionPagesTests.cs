@@ -237,7 +237,9 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
-    public void DetailPage_FailedRunDoesNotUseSuccessfulTitleGlyph()
+    [DataRow(null)]
+    [DataRow("old-target")]
+    public void DetailPage_FailedRunDoesNotUseSuccessfulTitleGlyph(string? existingFragment)
     {
         using var context = new BunitContext();
         ConfigureTransientRun(context);
@@ -248,6 +250,8 @@ public sealed class ProcessingExecutionPagesTests
         {
             Detail = new CameraAgentProcessingExecutionDetailView(Now, failure, "shared", "local", [])
         });
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            $"/operations/pipeline/executions/{CompletedId}?view=local{(existingFragment is null ? string.Empty : $"#{existingFragment}")}");
 
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
 
@@ -255,6 +259,8 @@ public sealed class ProcessingExecutionPagesTests
         {
             Assert.IsTrue(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--failed"));
             Assert.IsFalse(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--completed"));
+            Assert.AreEqual($"http://localhost/operations/pipeline/executions/{CompletedId}?view=local#run-inspector",
+                cut.Find(".run-notice a").GetAttribute("href"));
         });
     }
 

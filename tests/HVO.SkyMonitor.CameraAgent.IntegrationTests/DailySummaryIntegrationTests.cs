@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
@@ -113,6 +114,36 @@ public sealed class DailySummaryIntegrationTests : IDisposable
         var retry = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
         Assert.AreEqual(1, retry.FailedWindows);
         Assert.AreEqual(0, retry.ProductsPublished);
+    }
+
+    [TestMethod]
+    public async Task UnverifiedLinkedProductKeepsSummaryFailClosedAndRetriesWithContext()
+    {
+        _reader.Add(NightlyProductFixture.Frame(11, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var logger = new CapturingNightlyProductLogger();
+        using var harness = Create(logger: logger);
+        var stillOccurrence = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
+        var stillReport = await harness.Generator.RunAsync(stillOccurrence, CancellationToken.None);
+        Assert.IsGreaterThan(0, stillReport.ProductsPublished, stillReport.Describe());
+        var linkedProduct = (await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+            .Single(product => product.Kind == NightlyProductKind.StarTrail && product.Scope == NightlyProductScope.Final);
+        var linkedFile = Directory.GetFiles(_root, linkedProduct.ProductId.ToString("N") + ".jpg", SearchOption.AllDirectories).Single();
+        await File.WriteAllBytesAsync(linkedFile, [0, 1, 2]);
+
+        var summaryOccurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        foreach (var attempt in Enumerable.Range(0, 2))
+        {
+            var report = await harness.Generator.RunAsync(summaryOccurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FailedWindows, $"Attempt {attempt} must remain failed.");
+            Assert.AreEqual(0, report.ProductsPublished);
+            Assert.IsFalse((await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Any(product => product.Kind == NightlyProductKind.DailySummary));
+        }
+
+        Assert.AreEqual(2, logger.Errors.Count);
+        Assert.IsTrue(logger.Errors.All(message => message.Contains(
+            NightlyProductFixture.ObservingDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)));
+        Assert.IsTrue(logger.Errors.All(message => message.Contains(linkedProduct.ProductId.ToString(), StringComparison.Ordinal)));
     }
 
     [TestMethod]
@@ -292,19 +323,34 @@ public sealed class DailySummaryIntegrationTests : IDisposable
         }
     }
 
-    private Harness Create(INightlyProductSourceReader? reader = null)
+    private Harness Create(INightlyProductSourceReader? reader = null, ILogger<NightlyProductGenerator>? logger = null)
     {
         Directory.CreateDirectory(_root);
         var host = NightlyProductFixture.HostOptions(_root, NightlyProductFixture.Options());
         var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
         var store = new SqliteNightlyProductStore(host, clock);
         var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
-            reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
+            reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock, logger);
         return new(store, generator);
     }
 
     private sealed record Harness(SqliteNightlyProductStore Store, NightlyProductGenerator Generator) : IDisposable
     {
         public void Dispose() { Generator.Dispose(); Store.Dispose(); }
+    }
+
+    private sealed class CapturingNightlyProductLogger : ILogger<NightlyProductGenerator>
+    {
+        internal List<string> Errors { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel)) Errors.Add(formatter(state, exception));
+        }
     }
 }

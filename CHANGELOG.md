@@ -42,8 +42,6 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Annotated previews with metadata corners, and frame-facts layers, now show a selected environmental reading that has no configured source as MISSING instead of failing on every capture, for example the default corner readings on an NWS-only or sky-quality-meter-only CameraAgent. Refs #1784
 
-- Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
-
 - Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes, identifies the most recent candidate history shown, and shows a failed representative preview without substituting another image. Product cards stack on phones; timeline glyph targets avoid intercepting neighbouring markers and link to equivalent 44px candidate-list controls on the selected day and calendar, with keyboard focus. #1016
 
 - CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
@@ -73,6 +71,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
+
+- Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, linked-product verification errors name the report date and product id for a later retry, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
 
 - Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 

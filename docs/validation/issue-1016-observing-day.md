@@ -156,3 +156,11 @@ a missing browser or required system library as Inconclusive. Consequently a
 green CI run alone cannot establish that these browser cases executed. Keep
 explicit successful local execution evidence; no CI configuration change or
 full-qualification dispatch is part of this correction.
+
+## Historical review-status correction
+
+The historical description on PR #1733 says independent local rereviews were
+its next step. PR #1733 has since been merged at `7307afab`; its follow-up
+checklist was folded into #1764, where the current correction work and evidence
+are tracked. The old PR-description sentence does not describe the current
+status. No PR description is changed here. Refs #1733; Refs #1764.
