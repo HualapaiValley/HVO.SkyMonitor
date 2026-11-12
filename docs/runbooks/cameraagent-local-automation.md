@@ -88,8 +88,8 @@ migrates the supported schema-3 predecessor by adding the retained script-stop a
 other older schemas are refused. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
 The image declares writes 4 and reads 3 to 4. Its state-boundary label requires a paired
-checkpoint before adoption; rollback restores that checkpoint for the previous reader. Every open re-asserts that write-ahead logging is
-actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
+checkpoint before adoption; rollback restores that checkpoint for the previous reader.
+Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.
 
 The store is a separate file on purpose. The raw ingress journal pins its own exact
@@ -106,6 +106,7 @@ Tables:
 - `automation_definition_revisions` — every recorded revision, including the removal.
 - `automation_commands` — the idempotency ledger.
 - `automation_runs` — the run-history journal.
+- `automation_script_stops` — the first accepted script-stop actor, run/revision, time and cause; retained with its run.
 - `automation_progress` — the last fired occurrence and the last observed capture sequence.
 
 ## Concurrency, Idempotency, And Retention
