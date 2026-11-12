@@ -458,9 +458,11 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         {
             state += " / " + observation.SourceId;
             var station = group + (observation.StationDistanceKilometers is { } distance
-                ? FormattableString.Invariant($" / {distance:0.#} km") : " / Distance unknown") +
+                ? FormattableString.Invariant($" / {distance:0.#} km")
+                : observation.SourceKind == EnvironmentalObservationSourceKind.Imported ? " / Distance unknown" : string.Empty) +
                 (observation.StationElevationMeters is { } elevation
-                    ? FormattableString.Invariant($" / elevation {elevation:0} m") : " / Elevation unknown");
+                    ? FormattableString.Invariant($" / elevation {elevation:0} m")
+                    : observation.SourceKind == EnvironmentalObservationSourceKind.Imported ? " / Elevation unknown" : string.Empty);
             detail = detail is null ? station : detail + " / " + station;
         }
         return new(observation, FormatReading(observation), state, detail);

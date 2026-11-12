@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. The environmental schema upgrade selects a paired recovery checkpoint before startup. Refs #1778
+
 - Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781
 - A lone retained capture stays visible on the Observing Day timeline. Products Library shows a still product's recorded result when its run finished while the page was being read, and reports hourly segment progress for a queued daily time-lapse instead of "Not started". A cancelled lifecycle receipt names who cancelled by actor label and shows the time in site time. Refs #1781
 

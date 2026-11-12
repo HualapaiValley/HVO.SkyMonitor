@@ -310,6 +310,10 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence.solarRegime");
         }
+        if (evidence.AcquisitionAttemptId == Guid.Empty)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.cycleEvidence.acquisitionAttemptId");
+        }
         if (evidence.MonotonicStartJitter < TimeSpan.Zero ||
             evidence.ObservedInterExposureGap.HasValue &&
             evidence.ObservedInterExposureGap.Value < TimeSpan.Zero)

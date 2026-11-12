@@ -130,7 +130,11 @@ public sealed partial class EnvironmentalEvidencePipelineIntegrationTests
             using var service = new EnvironmentalAcquisitionService(coordinator, store, store, telemetry, clock, options,
                 NullLogger<EnvironmentalAcquisitionService>.Instance);
             var bridge = new EnvironmentalCaptureTriggerBridge(coordinator, service, store, options);
-            await bridge.BeforeCaptureAsync(Epoch.AddSeconds(1), CancellationToken.None).ConfigureAwait(false);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            var captureWork = await bridge.BeforeCaptureAsync(Epoch.AddSeconds(1), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(captureWork);
+            await captureWork.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(device.Cancelled);
             Assert.IsFalse(device.SlowReadCompleted);
             Assert.AreEqual(EnvironmentalAcquisitionDisposition.TimedOut,

@@ -80,7 +80,59 @@ public sealed class EnvironmentalPageTests
             StringAssert.Contains(cut.Markup, "12.5 km", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "elevation 1000 m", StringComparison.Ordinal);
             StringAssert.Contains(cut.Markup, "Imported", StringComparison.Ordinal);
-            StringAssert.Contains(cut.Markup, "Distance unknown", StringComparison.Ordinal);
+            var local = cut.Find("[data-slot='relative-humidity']").TextContent;
+            StringAssert.Contains(local, "LocalWeatherStation/station", StringComparison.Ordinal);
+            Assert.IsFalse(local.Contains("Distance unknown", StringComparison.Ordinal));
+            Assert.IsFalse(local.Contains("Elevation unknown", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    [DataRow("LocalWeatherStation", EnvironmentalObservationSourceKind.Measured)]
+    [DataRow("LocalWeatherStation", EnvironmentalObservationSourceKind.Simulated)]
+    [DataRow("InfraredSky", EnvironmentalObservationSourceKind.Measured)]
+    [DataRow("InfraredSky", EnvironmentalObservationSourceKind.Simulated)]
+    [DataRow("SkyQualityMeter", EnvironmentalObservationSourceKind.Measured)]
+    [DataRow("SkyQualityMeter", EnvironmentalObservationSourceKind.Simulated)]
+    public void LocalDevicesDoNotShowUnknownStationMetadata(string provider, EnvironmentalObservationSourceKind kind)
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null,
+                    sourceKind: kind) with { SourceGroup = provider + "/local-device" }])
+        });
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() =>
+        {
+            var reading = cut.Find("[data-slot='air-temperature']").TextContent;
+            StringAssert.Contains(reading, provider + "/local-device", StringComparison.Ordinal);
+            Assert.IsFalse(reading.Contains("Distance unknown", StringComparison.Ordinal));
+            Assert.IsFalse(reading.Contains("Elevation unknown", StringComparison.Ordinal));
+        });
+    }
+
+    [TestMethod]
+    public void ImportedStationWithoutMetadataStillShowsUnknownDistanceAndElevation()
+    {
+        using var context = new BunitContext();
+        context.JSInterop.Mode = JSRuntimeMode.Loose;
+        context.Services.AddSingleton<ICameraAgentEnvironmentalUiService>(new TestEnvironmentalUiService
+        {
+            Status = OperatorUiResult<EnvironmentalUiStatus>.Success(Status([])),
+            Latest = () => OperatorUiResult<IReadOnlyList<EnvironmentalUiObservation>>.Success([
+                Observation(EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20, null,
+                    sourceKind: EnvironmentalObservationSourceKind.Imported) with { SourceGroup = "Nws/KIGM" }])
+        });
+        var cut = context.Render<EnvironmentalPage>();
+        cut.WaitForAssertion(() =>
+        {
+            var reading = cut.Find("[data-slot='air-temperature']").TextContent;
+            StringAssert.Contains(reading, "Distance unknown", StringComparison.Ordinal);
+            StringAssert.Contains(reading, "Elevation unknown", StringComparison.Ordinal);
         });
     }
 

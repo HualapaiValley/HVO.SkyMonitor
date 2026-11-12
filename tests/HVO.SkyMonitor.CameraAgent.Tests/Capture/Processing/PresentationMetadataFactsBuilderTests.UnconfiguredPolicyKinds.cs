@@ -303,6 +303,10 @@ public sealed partial class PresentationMetadataFactsBuilderTests
 
         internal int ReadCount => Volatile.Read(ref _reads);
 
+        public ValueTask<EnvironmentalCaptureAvailability> ReadCaptureAvailabilityAsync(
+            string root, Guid captureId, Guid? acquisitionAttemptId, CancellationToken cancellationToken)
+            => inner.ReadCaptureAvailabilityAsync(root, captureId, acquisitionAttemptId, cancellationToken);
+
         public ValueTask SaveAssociationAsync(
             string root, LocalEnvironmentalCaptureAssociation association, CancellationToken cancellationToken)
             => inner.SaveAssociationAsync(root, association, cancellationToken);

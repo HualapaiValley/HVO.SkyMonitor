@@ -2705,6 +2705,12 @@ A change that cannot meet the rule is declared in the fixture's `snapshotRollbac
 - that label's value on the previous release (`previousValue`, which must equal the frozen one);
 - its value on this release (`candidateValue`, which must equal this release's Dockerfile).
 
+For a later installed image than the frozen release, the exception also records its
+`previousImageRevision` and complete `previousImageLabels`. Its `previousValue` is
+checked against that installed image's labels, and the installer comparison uses
+those labels. This keeps the checkpoint proof tied to the transition that actually
+upgrades that store, without rewriting older stores' frozen SQL images.
+
 `CameraAgentSnapshotRollbackExceptionTests` then reads both label sets through the installer's own label reading and
 boundary comparison (`CameraAgentStateMigration.DeclaredChanges`). It accepts the exception only when that comparison
 reports a change for the label, which is what makes the upgrade snapshot the stores and the rollback restore them. An

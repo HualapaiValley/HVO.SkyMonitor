@@ -90,6 +90,13 @@ decided setpoints, bounded decision reason, and ingress-handoff start. The
 module-call time is a host observation; a deterministic virtual exposure may be
 timestamped at its requested simulated deadline before that host observation.
 Elapsed scheduling still uses monotonic timestamps rather than these UTC facts.
+The optional `cycleEvidence.acquisitionAttemptId` is a non-empty, host-issued
+correlation token for acquisition work requested for this capture. Raw publication
+retains it unchanged, including when the work settles after exposure starts.
+Omitting it preserves the legacy serialized descriptor and hash. CameraAgent owns
+the associated leased operations and their recovery; consumers do not infer the
+token or its outcome from timestamps. See the
+[environmental adapter runbook](../runbooks/environmental-source-adapters.md).
 `cycleEvidence.monotonicStartJitter` and the observed host-start gap remain
 nonnegative when the wall clock is corrected. A requested UTC deadline or a
 setpoint applied during the preceding cycle may therefore compare later or
