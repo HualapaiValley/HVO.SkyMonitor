@@ -317,7 +317,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         {
             try
             {
-                await commands.CompleteOnDemandAsync(_root, claim.Key, claim.LeaseToken, receipt, deadline.Token).ConfigureAwait(false);
+                await EnvironmentalCaptureStorageWork.RunAsync(() => commands.CompleteOnDemandAsync(
+                    _root, claim.Key, claim.LeaseToken, receipt, deadline.Token), deadline.Token).ConfigureAwait(false);
                 return;
             }
             catch (IOException) when (attempt < 2)

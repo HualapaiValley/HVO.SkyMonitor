@@ -11,6 +11,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 public sealed partial class EnvironmentalCaptureFailureTests
 {
     [TestMethod]
+    [DoNotParallelize]
     public async Task EnvironmentalWriterCannotHoldCaptureAdmissionPastTwoSeconds()
     {
         var fixture = await AttributionFixture.CreateAsync(250).ConfigureAwait(false);
@@ -45,6 +46,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task BusySettlementCannotReviveTheCaptureAfterAtomicUnavailableAdmissionAndRestart()
     {
         var fixture = await AttributionFixture.CreateAsync(250, blockCompletion: true).ConfigureAwait(false);
@@ -97,6 +99,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task BusyCapturePreparationStillPropagatesHostCancellation()
     {
         var fixture = await AttributionFixture.CreateAsync(5000).ConfigureAwait(false);
@@ -121,6 +124,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task CapturePreparationQueueIsBoundedAndShutdownDrainsItsOwnedRequests()
     {
         var fixture = await AttributionFixture.CreateAsync(0, queueCapacity: 1).ConfigureAwait(false);
@@ -150,6 +154,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task CameraRunnerCarriesTheDeadlineMarkerIntoCaptureAdmissionEvidence()
     {
         var fixture = await AttributionFixture.CreateAsync(250).ConfigureAwait(false);

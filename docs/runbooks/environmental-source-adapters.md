@@ -293,7 +293,9 @@ a two-second admission timeout or a full preparation queue instead produces an
 explicit unavailable result.
 
 A dedicated hosted preparation reader owns the potentially blocking SQLite claim
-and refused-queue settlement work. Both the preparation queue and the acquisition
+and refused-queue settlement work. Native claim and receipt writes run on dedicated
+threads awaited by these bounded workers, so SQLite busy waits do not occupy the
+shared worker pool that delivers the capture deadline. Both the preparation queue and the acquisition
 queue are bounded by the existing `QueueCapacity`; each has one reader. Deadline
 expiry stops waiting on that owned work. It cannot create a new untracked writer
 or cancel known-result settlement with an expired device budget. Host shutdown

@@ -62,8 +62,9 @@ public sealed class EnvironmentalCaptureTriggerBridge(
                     preparationToken.ThrowIfCancellationRequested();
                     try
                     {
-                        claim = await commands.ClaimOnDemandAsync(options.Value.RawIngressRoot, key, payload, source.Id,
-                            "capture-before", null, observedAtUtc, lease, preparationToken).ConfigureAwait(false);
+                        claim = await EnvironmentalCaptureStorageWork.RunAsync(() => commands.ClaimOnDemandAsync(
+                            options.Value.RawIngressRoot, key, payload, source.Id, "capture-before", null, observedAtUtc,
+                            lease, preparationToken), preparationToken).ConfigureAwait(false);
                         break;
                     }
                     catch (SqliteException exception) when (attempt < 3 && exception.SqliteErrorCode is
@@ -80,9 +81,9 @@ public sealed class EnvironmentalCaptureTriggerBridge(
             if (!service.TryEnqueue(request))
             {
                 foreach (var claim in claims)
-                    await commands.CompleteOnDemandAsync(options.Value.RawIngressRoot, claim.Key, claim.LeaseToken,
+                    await EnvironmentalCaptureStorageWork.RunAsync(() => commands.CompleteOnDemandAsync(options.Value.RawIngressRoot, claim.Key, claim.LeaseToken,
                         new(claim.Source.Id, request.Trigger, EnvironmentalAcquisitionDisposition.Failed, "capture-queue-capacity",
-                            null, observedAtUtc, observedAtUtc), preparationToken).ConfigureAwait(false);
+                            null, observedAtUtc, observedAtUtc), preparationToken), preparationToken).ConfigureAwait(false);
                 acquisition.Completion.TrySetResult();
             }
         }
