@@ -97,11 +97,16 @@ internal sealed partial class SqliteCaptureProcessingStore
                 connection, executionId, node.NodeId, manifestOnly: true, cancellationToken).ConfigureAwait(false);
             var associations = await ReadExecutionOutputAssociationsAsync(
                 connection, executionId, node.NodeId, cancellationToken).ConfigureAwait(false);
-            var outputs = node.Outputs.Select(output => output with
+            var outputs = node.Outputs;
+            if (outputs.Any(output => associations.TryGetValue(output.OutputIdentitySha256, out var association) &&
+                    association.Ordinal != output.Ordinal))
             {
-                Ordinal = associations.TryGetValue(output.OutputIdentitySha256, out var association)
-                    ? association.Ordinal : output.Ordinal
-            }).ToArray();
+                outputs = outputs.Select(output => output with
+                {
+                    Ordinal = associations.TryGetValue(output.OutputIdentitySha256, out var association)
+                        ? association.Ordinal : output.Ordinal
+                }).ToArray();
+            }
             var bindings = await ReadRunManifestBindingsAsync(
                 connection, detail.Execution, node.NodeId, windowedNodes.Contains(node.NodeId), inputs, node.CalibrationInputs,
                 outputs, node.Attempts.Count, node.Dependencies, frozenInputCounts, legacyWindows, cancellationToken).ConfigureAwait(false);
@@ -133,7 +138,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         bool hasWindow,
         IReadOnlyList<ProcessingGraphExecutionInputState> inputs,
         IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> masters,
-        ProcessingGraphExecutionOutputState[] outputs,
+        IReadOnlyList<ProcessingGraphExecutionOutputState> outputs,
         int attemptCount,
         IReadOnlyList<ProcessingGraphDependencyDefinition> dependencies,
         Dictionary<string, int> frozenInputCounts,
@@ -149,7 +154,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             // A full immutable window can prove legacy pins complete even without
             // output lineage. A shorter surviving set cannot distinguish a valid
             // short window from a cascading retention delete.
-            evidenceIncomplete = outputs.Length == 0 &&
+            evidenceIncomplete = outputs.Count == 0 &&
                 (pinnedCount > 0 || (hasWindow &&
                     dependencies.Any(static dependency => dependency.Kind == ProcessingGraphDependencyKind.Artifact &&
                         !string.Equals(dependency.ProducerId, "$raw", StringComparison.OrdinalIgnoreCase)) && attemptCount > 0)) &&
