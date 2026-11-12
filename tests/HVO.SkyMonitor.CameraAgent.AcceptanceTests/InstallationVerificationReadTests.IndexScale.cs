@@ -12,6 +12,24 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
 public sealed partial class InstallationVerificationReadTests
 {
+#if !HVO_BASELINE
+    [TestMethod]
+    [TestCategory("Integration")]
+    public async Task SmallScaleProofCountExcludesAuthenticatedMetadataHints()
+    {
+        await using var fixture = await InstallationReadAttributionFixture.CreateAsync(Path.GetTempPath(), solar: false).ConfigureAwait(false);
+        _ = await fixture.SeedScaleAsync(3).ConfigureAwait(false);
+        await fixture.QualifyLegacyScaleAsync().ConfigureAwait(false);
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(fixture.IngressRoot, ".location", "retained-validation.v2.db")};Mode=ReadOnly;Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM proofs;";
+        Assert.AreEqual(9L, await command.ExecuteScalarAsync().ConfigureAwait(false), "Fixture must include parse and metadata proofs.");
+        Assert.AreEqual(3L, ProofCount(fixture), "The scale assertion counts parsed content, excluding per-file/journal metadata hints.");
+    }
+
+#endif
+
     [TestMethod]
     [TestCategory("Manual")]
     [SupportedOSPlatform("linux")]
@@ -226,7 +244,7 @@ public sealed partial class InstallationVerificationReadTests
             using var connection = new SqliteConnection($"Data Source={path};Mode=ReadOnly;Pooling=False");
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = "SELECT COUNT(*) FROM proofs;";
+            command.CommandText = "SELECT COUNT(*) FROM proofs WHERE length(proof)=113 AND substr(proof,1,8)=X'48564F4D41433031' AND substr(proof,41,8)=X'48564F5250303032';";
             return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
         }
         path = Path.Combine(fixture.IngressRoot, ".location", "retained-validation.v1.protected");

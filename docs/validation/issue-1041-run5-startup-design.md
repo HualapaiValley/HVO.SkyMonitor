@@ -14,8 +14,12 @@ recurses through older partitions or arbitrary retained directories. The UTC dat
 partition boundary can include the older part of the first day (at most 72 hours).
 Explicit enumeration/row/byte limits bound malformed or excessive recent input;
 exhaustion cannot grant readiness. Unknown layouts and older auxiliary/quarantine
-evidence belong to background verification. Bad recent evidence keeps recovery/UI
-available but reports unhealthy location readiness; it cannot grant lifecycle identity.
+evidence belong to background verification. Bad recent evidence must keep
+recovery/UI available while refusing lifecycle identity. The later run-6
+incremental implementation violated that requirement by clearing a detected recent
+failure (round-4 F1). The [round-4 correction](issue-1041-run7-corrections.md)
+revokes incremental eligibility on recent failure and restricts readiness recovery
+to a full pass or a successful fresh recent check.
 
 The ordinary cold-load path must not fall back to a full inline scrub. Schedule/capture initialization can invoke raw-ingress reconciliation; it is deferred until ApplicationStarted as well. Capture configuration remains unpublished until that recovery completes; pending dependencies report degraded health. Fresh
 identity reconciliation is deferred when it needs old evidence; old protected

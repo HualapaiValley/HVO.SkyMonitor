@@ -2908,7 +2908,11 @@ host startup; deferred worker failure can surface through a host-cancellation
 wrapper. The underlying journal validator retains its schema-specific refusal.
 
 After host startup, one coordinator performs incremental or full background
-qualification; a checkpoint alone never grants new-process lifecycle readiness. Capture
+qualification; a checkpoint alone never grants new-process lifecycle readiness.
+A failed bounded recent check revokes incremental eligibility. The background
+pass must then read actual bytes; matching size/mtime or journal checksum/length
+cannot erase that observed failure. Recent readiness returns only after a full
+successful qualification or a successful fresh recent check. Capture
 configuration publication also waits for safe recovery: schedule initialization
 can invoke raw-ingress reconciliation, so that work runs after host startup too.
 Capture admission, calibration recovery and distribution initialization also wait
@@ -2924,8 +2928,10 @@ normal health wait can reach the recent-ready host while qualification continues
 An upgrade, rollback or backup attempted before full qualification still refuses
 within its original verification budget. If background work exceeds 120 seconds,
 wait for it to finish before retrying; repeated HTTP timeouts do not restart it.
-Complete metadata discovery, full scrubbing and raw recovery remain linear
-background work; host startup and qualified protected reads do not walk the full
+Complete metadata discovery, row authentication and full scrubbing remain linear
+background work. The current incremental pass copies and rewrites the whole
+entries table on every restart; it avoids retained-byte reads but is not an O(1)
+qualification algorithm. Raw recovery also remains linear; host startup and qualified protected reads do not walk the full
 corpus. Clean, authenticated older files avoid actual-byte reads and repeated
 Data Protection operations; the optional hints use row MACs. An explicit semantic
 validation version replaces build MVIDs, so unrelated upgrades do not invalidate
@@ -2988,7 +2994,13 @@ file set, so interrupted restores can resume without trusting partial state.
 
 Complete-backup restore verifies the archive and its database snapshot before
 replacing the instance. It authenticates the archived ledger with the extracted
-keys and stages it beside the archived retained files. Database-only restore still
+keys and stages it beside the archived retained files. Before publishing the
+staged ledger it removes and durably syncs only the staged clean checkpoint;
+protected history, keys, ledger expectations and captured evidence stay intact.
+The first archive qualification therefore reads actual bytes even if extraction
+preserves size and timestamps. Use the updated installer for complete-backup
+restore; earlier installers do not perform this checkpoint revocation. DB-only
+restore instead advances ledger generation. Database-only restore still
 refuses a deleted established ledger. Archive restore leaves the instance
 uninstalled; reinstall/startup must finish a full scrub before protected
 verification succeeds. Missing keys or drift never qualify restored state.

@@ -128,6 +128,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
 
     internal string Nonce => _nonce;
     internal bool RequiresScrub => !Volatile.Read(ref _qualified);
+    internal void RequireFullVerification() => Invalidate();
     internal static string FileKey(string root, string path) => "F|" + Path.GetRelativePath(root, path);
     internal static string JournalKey(string capture) => "J|" + capture;
 

@@ -5,7 +5,14 @@ Refs #1041. This corrects Kepler's r3 findings on
 [Option A approval/design](issue-1041-run2-ledger.md), prior attribution reports,
 and Roy's t388u/t389u/t410u directions remain governing. The
 [run-6 design](issue-1041-run6-design.md) was written before product edits.
-Kepler owns the r4 Sol/Opus HIGH reviews. No PR or issue comment is authorized.
+Kepler owns the HIGH reviews. No PR or issue comment is authorized.
+
+Round-4 correction: the run-6 recent-failure and complete-archive restore claims
+below were not established by that implementation. F1 allowed incremental work
+to clear an observed recent tamper; F2 kept a restored clean archive checkpoint.
+The [round-4 correction report](issue-1041-run7-corrections.md) and its
+failing-before tests supersede those claims. Historical pass counts remain
+attributed to their original head, not proof that those missing cases passed.
 
 Validated implementation head: `3a13549096b7abf001f17116dcabb6190fad55ac`. The
 [local evidence ledger](issue-1041-run6-local-gate.json) records exact results. The delivery evidence commit preserves its source/test/
@@ -19,7 +26,7 @@ policy/guard changes; no reviewer branch was touched.
 | Requirement | Implemented behavior | Behavioral evidence | Result |
 | --- | --- | --- | --- |
 | 1 — M-4/M-A(c), trusted incremental qualification | A drained clean shutdown seals a protected checkpoint. A new process authenticates the full row commitment and current authority, compares MAC-bound file size/mtime/digest/kind/generation hints and journal checksum/length metadata, and reads only changed/new/unaccounted content. Cache misses or bad MACs fall back to bytes. The explicit validation-contract version replaces build MVIDs. | `SuccessiveCleanRestartsReadZeroOlderFiles`: two restarts over 12 older files each read zero. `CleanRestartsSkipUnchangedProductionJournalManifestBytes`: two restarts fetch zero older sidecars/journal BLOBs. `ManagedNewEvidenceReadsOnlyTheNewFileOnNextCleanRestart`: one new file read, then zero on the next restart. `ChangedOlderFileRefusesRestartAndFullScrub`: changed metadata refuses restart qualification; same-size/time-preserving tamper is rejected by the full scrub. | PASS in the affected core selection. The unchanged-file regression failed against the preserved pre-fix product assembly. |
-| 1 — dirty/crash/restore and scrub expiry | Running checkpoints remain unclean. Incomplete work, recovered hot journals, invalid/expired authority, dirty state and paired restore force full byte qualification. Incremental restart preserves the last full-scrub deadline; maintenance uses that deadline. No saved marker alone grants lifecycle identity. | Five `UntrustedRestartFallsBackToReadingActualOlderBytes` cases; hot-journal startup reads all 12 older files; the real paired restore matrix now uses ordinary startup/coordinator qualification and asserts actual reads. `IncrementalRestartCannotExtendTheOriginalFullScrubDeadline` and `ScheduledFullScrubUsesThePreservedDeadlineAfterIncrementalRestart`. | PASS. Restore/cancellation/source authentication cases are included in the affected store selection. |
+| 1 — dirty/crash/restore and scrub expiry | Running checkpoints remain unclean. Incomplete work, recovered hot journals, invalid/expired authority and dirty state force full byte qualification. DB-only paired restore advances generation; complete-archive staging lacked invalidation in run 6 (F2), corrected in round 4. Incremental restart preserves the last full-scrub deadline; maintenance uses that deadline. No saved marker alone grants lifecycle identity. | Five `UntrustedRestartFallsBackToReadingActualOlderBytes` cases; hot-journal startup reads all 12 older files; the real paired restore matrix now uses ordinary startup/coordinator qualification and asserts actual reads. `IncrementalRestartCannotExtendTheOriginalFullScrubDeadline` and `ScheduledFullScrubUsesThePreservedDeadlineAfterIncrementalRestart`. | PASS. Restore/cancellation/source authentication cases are included in the affected store selection. |
 | 2 — M-7, hot rollback journal | The confined required ledger is opened writable so SQLite completes rollback before the unchanged read-only layout/authentication checks and schema use. This recovery forces a full pass. A hot optional hint cache is discarded and rebuilt, never promoted to authority. | `HotRollbackJournalRecoversBeforeLedgerLayoutValidation`, ledger and optional-hint variants. Both fixtures first prove that a read-only open needs writable rollback recovery. Next startup recovers, reads actual bytes, and passes a fresh full scrub and protected verification. Existing corrupt/layout/entry/authentication refusals remain in the same selection. | PASS. The authoritative-journal case failed against the preserved pre-fix assembly. |
 | 3 — initializer M1 | Initialization failure uses the shared sanitized event 7312 and capture Unhealthy readiness. Five maximum attempts use delays 1/2/4/8 seconds; success clears only this service's failure. Persistent failure remains unhealthy. Event 7310 no longer falsely says existing qualification was lost. | `DeferredConfigurationFailureMakesRealHostUnhealthyThenRecoversOnRetry` keeps the full production hosted-service graph, fails graph initialization once, observes HTTP health 503 and then 200 after retry. `PermanentInitializationFailureHasFiniteBackoffAndShutdownCancelsPendingRetry` checks exactly five attempts or cancellation after one, exact delays, unhealthy readiness and sanitized messages. | PASS in the final affected Acceptance/host selections. The full-graph regression failed against the pre-fix assembly. |
 
@@ -38,8 +45,10 @@ contract version; unrelated build/runtime MVID changes do not invalidate it.
 Clean-shutdown is an additive protected checkpoint field. Older checkpoints
 without it, or without the new semantic binding, get one full qualification;
 future unchanged builds can reuse clean proofs. Ledger row/private restore
-formats and successful HTTP fields are unchanged. Snapshot restore advances
-ledger generation, so even valid old hints cannot grant restored readiness.
+formats and successful HTTP fields are unchanged. DB-only snapshot restore advances ledger generation. Run 6 did not revoke a
+complete archive's clean checkpoint; that path could inherit incremental trust
+(F2). Round 4 removes the staged checkpoint before publishing the archived ledger,
+so the first archive qualification reads actual bytes even with preserved metadata.
 Authenticated interrupted writes may satisfy recent admission only when actual
 bytes equal expected or declared content; pending work still cannot qualify the
 whole installation. Fresh configuration, location, owner readiness, field

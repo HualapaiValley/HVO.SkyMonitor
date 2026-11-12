@@ -678,7 +678,7 @@
     "Full metadata discovery/authentication is still O(history) background work; zero retained-byte reads is not zero filesystem/SQLite metadata I/O.",
     "No new 129600-frame latency or memory measurement; run-5 values remain historical.",
     "Out-of-band metadata-preserving file edits and journal-byte edits preserving declared checksum/length are detected by the next full scrub under approved Option A.",
-    "Initial/new-format, unclean, hot-journal, expired and restored state requires actual-byte full verification; unqualified lifecycle reads retain the original finite 120-second refusal.",
+    "Run-6 intended actual-byte full verification for restored state, but complete-archive staging inherited its clean checkpoint (F2). Its incremental pass could also clear recent failure (F1). Round 4 corrects both; historical pass counts do not cover them.",
     "No production, deployment, live token, Docker, networking, CLIProxy or reviewer-branch operation."
   ],
   "skippedUnderT410u": [
@@ -688,5 +688,6 @@
     "Coverage sweeps and unrelated process probes",
     "Large-scale release burn-in and production/Pi qualification"
   ],
-  "deliveryBinding": "Final delivery adds validation report/ledger only; source/test/build tree objects above must equal delivered head. Exact delivery SHA is reported in the owner thread."
+  "deliveryBinding": "Final delivery adds validation report/ledger only; source/test/build tree objects above must equal delivered head. Exact delivery SHA is reported in the owner thread.",
+  "r4Correction": "Historical run-6 gates omitted F1 recent-tamper invalidation and F2 complete-archive trust revocation. The run-7 report supersedes unconditional refusal/restore claims; these observed pass counts remain unchanged."
 }

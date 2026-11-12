@@ -283,7 +283,8 @@ public sealed partial class ProtectedDeploymentLocationStore(
                 _gate.Release(); gateHeld = false;
                 try
                 {
-                    integrityScrub = BeginIntegrityScrub(ledger, history, strictRetainedValidation, cancellationToken, allowIncremental);
+                    integrityScrub = BeginIntegrityScrub(ledger, history, strictRetainedValidation, cancellationToken,
+                        allowIncremental && _recentReady && _history is not null);
                     using var existingProofs = CreateRetainedIndex(path, history);
                     ValidateRetainedEvidence(history, existingProofs, strictRetainedValidation, cancellationToken, integrityScrub);
                 }
@@ -336,6 +337,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
                     if (cold)
                     {
                         _recentReady = ValidateRecentRetainedEvidence(history, ledgerForStartup, cancellationToken);
+                        if (!_recentReady) ledgerForStartup?.RequireFullVerification();
                     }
                 }
                 // A request never opens/rebuilds the corpus ledger. The host-owned full
@@ -410,9 +412,19 @@ public sealed partial class ProtectedDeploymentLocationStore(
             }
             // Finish owns the root barrier through publication. Release it before
             // a recovery admission check takes its own bounded root observations.
+            var completedFullPass = integrityScrub is { Incremental: false };
             integrityScrub?.Dispose();
             integrityScrub = null;
-            if (fullScrub && _integrity is { RequiresScrub: false }) { _recentReady = true; _needsReconciliation = false; }
+            if (fullScrub && _integrity is { RequiresScrub: false })
+            {
+                if (completedFullPass) _recentReady = true;
+                else if (!_recentReady)
+                {
+                    _recentReady = ValidateRecentRetainedEvidence(snapshot.History, _integrity, cancellationToken);
+                    if (!_recentReady) _integrity.RequireFullVerification();
+                }
+                _needsReconciliation = false;
+            }
             else if (fullScrub && _history is not null)
             {
                 if (!_recentReady) _recentReady = ValidateRecentRetainedEvidence(_history, _integrity, cancellationToken);

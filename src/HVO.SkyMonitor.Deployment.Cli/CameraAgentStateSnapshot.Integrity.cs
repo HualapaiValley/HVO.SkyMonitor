@@ -164,6 +164,16 @@ internal static partial class CameraAgentStateSnapshot
         SafeFileSystem.EnsureSafeExistingAncestors(destination);
         if (File.Exists(destination)) throw new InstallerException("A complete archive must carry its ledger only through the verified database snapshot.");
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        // A restored clean seal cannot certify this staged tree. Revoke it before
+        // publishing the ledger, including on cancellation or interrupted staging.
+        // Protected history, keys, expected entries and retained files stay intact.
+        var checkpoint = StorePath(stagedPaths.StateRoot, ProtectedLocations[^1]);
+        if (File.Exists(checkpoint))
+        {
+            EnsureRegularStore(checkpoint, ProtectedLocations[^1]);
+            File.Delete(checkpoint);
+            SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(checkpoint)!, stagedInstanceRoot);
+        }
         await CopyPureAsync(root, ledger, destination, cancellationToken).ConfigureAwait(false);
         File.SetUnixFileMode(destination, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         SafeFileSystem.FlushDirectoryChain(Path.GetDirectoryName(destination)!, stagedInstanceRoot);

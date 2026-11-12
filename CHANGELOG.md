@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- A tamper found by the recent startup check now forces full byte verification before lifecycle readiness can recover. Complete-archive restore discards its staged clean checkpoint so preserved timestamps cannot inherit incremental trust. Refs #1041
+
 - Protected installation verification uses writer-maintained integrity checkpoints. Startup checks a bounded recent capture window before serving health and recovery; full history qualification and capture recovery run in the background. Lifecycle operations refuse pending or invalid history within the existing 120-second budget. Clean restarts reuse authenticated unchanged-file metadata; full scrubs detect out-of-band tampering before the original daily deadline. Deferred configuration failures report unhealthy capture readiness and retry briefly; ordinary polls coalesce work. Managed pruning, missing-ledger refusal and paired upgrade/rollback recovery preserve retained evidence. Refs #1041
 - CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. The environmental schema upgrade selects a paired recovery checkpoint before startup. Refs #1778
 

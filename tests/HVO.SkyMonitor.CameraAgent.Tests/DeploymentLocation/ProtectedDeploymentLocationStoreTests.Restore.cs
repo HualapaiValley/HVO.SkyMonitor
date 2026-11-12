@@ -175,6 +175,8 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
     [DataRow("whole")]
     [DataRow("tampered-retained")]
     [DataRow("missing-keys")]
+    [DataRow("preserved-file-tamper")]
+    [DataRow("journal-tamper")]
     public async Task CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption(string fault)
     {
         var id = Guid.NewGuid();
@@ -190,7 +192,11 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         var seed = CreateSeed(35, -113, 0, "America/Phoenix");
         using var original = CreateStore();
         var active = await original.InitializeAsync(seed, CancellationToken.None).ConfigureAwait(false);
-        var (retained, _) = await WriteSummaryCaptureAsync(active, journal: true).ConfigureAwait(false);
+        var (retained, captureBytes, capture) = await WriteRound7CaptureAsync(active).ConfigureAwait(false);
+        // Keep the archived row outside recent admission, so this probes archive
+        // invalidation independently of a recent-tamper fallback.
+        _timeProvider.UtcNow = Now.AddDays(3);
+        _ = await original.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false);
         original.Dispose();
         var image = new ImageInstallationIdentity("registry", "synthetic@sha256:" + new string('a', 64),
             "sha256:" + new string('b', 64), "amd64", null);
@@ -205,6 +211,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
             var target = Path.Combine(staged, "state", Path.GetRelativePath(paths.StateRoot, file));
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(file, target);
+            File.SetLastWriteTimeUtc(target, File.GetLastWriteTimeUtc(file));
         }
         File.Delete(Path.Combine(_options.Value.RawIngressRoot, ".location", RetainedIntegrityLedger.DatabaseName));
         _ = await SnapshotApi.VerifyAsync(paths, id, snapshot, CancellationToken.None).ConfigureAwait(false);
@@ -224,6 +231,23 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         Assert.IsTrue(File.Exists(stagedLedger));
         if (fault == "tampered-retained")
             await File.WriteAllTextAsync(Path.Combine(staged, "state", Path.GetRelativePath(paths.StateRoot, retained)), "{}").ConfigureAwait(false);
+        if (fault == "preserved-file-tamper")
+        {
+            var file = Path.Combine(staged, "state", Path.GetRelativePath(paths.StateRoot, retained));
+            var timestamp = File.GetLastWriteTimeUtc(file);
+            await File.WriteAllBytesAsync(file, ChangeRound7Manifest(captureBytes)).ConfigureAwait(false);
+            File.SetLastWriteTimeUtc(file, timestamp);
+        }
+        if (fault == "journal-tamper")
+        {
+            using var connection = new SqliteConnection($"Data Source={Path.Combine(stagedRaw, "journal", "raw-ingress.db")};Pooling=False");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "UPDATE raw_captures SET manifest_json=$json WHERE capture_id=$capture;";
+            command.Parameters.AddWithValue("$json", ChangeRound7Manifest(captureBytes));
+            command.Parameters.AddWithValue("$capture", capture);
+            _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
         _options = Options.Create(new CameraAgentHostOptions
         {
             RawIngressRoot = stagedRaw,
@@ -233,11 +257,23 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         using var restored = CreateStore();
         await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
             _ = await restored.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-        if (fault == "tampered-retained")
-            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
-                _ = await restored.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        _ = await restored.LoadCurrentAsync(seed, false, () => true, CancellationToken.None).ConfigureAwait(false);
+        var reads = 0;
+        restored.BeforeRetainedManifestValidationForTest = () => reads++;
+        if (fault != "whole")
+        {
+            try { _ = await restored.ScrubCurrentAsync(seed, () => true, CancellationToken.None).ConfigureAwait(false); }
+            catch (InvalidDataException) { /* Full qualification correctly refuses corrupted archived bytes. */ }
+            Assert.IsTrue(restored.RequiresRetainedIntegrityScrub);
+            await Assert.ThrowsExactlyAsync<InstallationVerificationPendingException>(async () =>
+                _ = await restored.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
         else
-            Assert.AreEqual(active, await restored.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false));
+        {
+            Assert.AreEqual(active, await restored.ScrubCurrentAsync(seed, () => true, CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(2, reads, "Archive qualification must read both sidecar and journal bytes, even when timestamps are preserved.");
+            Assert.AreEqual(active, await restored.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false));
+        }
     }
 
     [TestMethod]
