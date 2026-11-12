@@ -200,6 +200,7 @@ jobs:
       - name: Audit vulnerable and deprecated packages
         if: needs.changes.outputs.mode == 'full'
         run: |
+          ./scripts/test:skiasharp-pins
           ./scripts/package:audit
           ./scripts/ci:artifact-provenance package-audit quality TestResults/package-audit
       - name: Upload package audit
