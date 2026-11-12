@@ -1,0 +1,692 @@
+{
+  "validatedImplementationHead": "3a13549096b7abf001f17116dcabb6190fad55ac",
+  "previousReviewedHead": "711fa7b9cdb53023951e38fd0fe171252ed53069",
+  "branch": "kepler/1041-bounded-installation-verification",
+  "targetBase": "41ff38accb3086e8bcd265f33016e9744cdc5361",
+  "normalMerge": "8ee489c3863141167c2a615dd5ca25b8d2f89d38",
+  "targetProfile": "development/v1 Preflight plus Build and Unit; no workflow dispatch",
+  "risk": "HIGH; Kepler acquires r4 Sol and Opus reviews after push",
+  "authorization": "Roy t388u/t389u trusted incremental correction and t410u affected-only tests; no PR or issue comment",
+  "sourceTrees": {
+    "src": "eb3b7442b150286ade5401fcf580bed44b405736",
+    "tests": "bd4e7a0580e20031786343099016c3a7b563bcfb",
+    "scripts": "8c7c6429b833c967a335ba00ad924836c02190d1",
+    "tools": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a",
+    ".github": "c9f346562b184d8b631d3c1192712dbc84453693",
+    "global.json": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+    "Directory.Build.props": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+    "Directory.Build.targets": "c20a45477257b954984f2a8da9fdc939e54551a6",
+    "Directory.Packages.props": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19",
+    "HVO.SkyMonitor.v9.slnx": "8a20aed6d34edd985bb7292068cfcdab9981c229",
+    "dotnet-tools.json": "abbb20b1e1389af7707ba10563bf7079dcdb26c3",
+    ".editorconfig": "574ae9c2204756df877acabc22233d6456827557"
+  },
+  "currentGate": {
+    "head": "3a13549096b7abf001f17116dcabb6190fad55ac",
+    "scope": "Roy t410u: affected selections only",
+    "steps": [
+      {
+        "name": "format-affected",
+        "command": [
+          "dotnet",
+          "format",
+          "HVO.SkyMonitor.v9.slnx",
+          "--no-restore",
+          "--verify-no-changes",
+          "--include",
+          "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/AfterApplicationStartedService.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/DeferredCaptureInitialization.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/RetainedIntegrityScrubService.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DependencyInjection/CameraAgentServiceCollectionExtensions.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.Startup.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityLedger.Checkpoint.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityLedger.Database.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityLedger.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedManifestValidationIndex.Metadata.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedManifestValidationIndex.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationStartupTests.Retry.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationStartupTests.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests/Configuration/RetainedIntegrityScrubServiceTests.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Incremental.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Restore.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Summary.cs"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 99.905,
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "release-unit",
+        "command": [
+          "dotnet",
+          "build",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests",
+          "--no-restore",
+          "-c",
+          "Release",
+          "-warnaserror",
+          "-p:SourceRevisionId=3a13549096b7abf001f17116dcabb6190fad55ac"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 66.734,
+        "logSha256": "75c0fb90adf277a28acecd43b1701e78cefae8e7cdbf477b27cc295ec21ee9f8"
+      },
+      {
+        "name": "release-acceptance",
+        "command": [
+          "dotnet",
+          "build",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+          "--no-restore",
+          "-c",
+          "Release",
+          "-warnaserror",
+          "-p:SourceRevisionId=3a13549096b7abf001f17116dcabb6190fad55ac"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 11.514,
+        "logSha256": "e2d18a2ac9a05236fd160969be570f5e7051979ab8b79d16c1f74bc5c96bc824"
+      },
+      {
+        "name": "release-host",
+        "command": [
+          "dotnet",
+          "build",
+          "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests",
+          "--no-restore",
+          "-c",
+          "Release",
+          "-warnaserror",
+          "-p:SourceRevisionId=3a13549096b7abf001f17116dcabb6190fad55ac"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 4.695,
+        "logSha256": "ef2e4bc0e73c8f6725f87eae9c9abd72202e4424e873495a682b0943d626ff7a"
+      },
+      {
+        "name": "affected-core",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "FullyQualifiedName~ProtectedDeploymentLocationStoreTests|FullyQualifiedName~FileCameraAgentConfigurationLoaderIdentityTests|FullyQualifiedName~RetainedIntegrityScrubServiceTests|FullyQualifiedName~AfterApplicationStartedServiceTests",
+          "--logger",
+          "trx;LogFileName=core.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run6/final-core"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 17.701,
+        "logSha256": "0c05a2114bd38622dda061d2b53d5336a6f79dff718b3534d2b68a675b3feb2b"
+      },
+      {
+        "name": "affected-acceptance",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "FullyQualifiedName~InstallationVerification&TestCategory=Integration",
+          "--logger",
+          "trx;LogFileName=acceptance.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run6/final-acceptance"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 27.852,
+        "logSha256": "92636b157a6547b4cbe0eebfa7550dfe938151a5509fb2de5ace78f1be2f85d8"
+      },
+      {
+        "name": "affected-host",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "TestCategory=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware",
+          "--logger",
+          "trx;LogFileName=host.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run6/final-host"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 23.768,
+        "logSha256": "08332ec1c57756e18467a7b7d9a0789898351f250fa5f53fb92075f99c2d06e8"
+      },
+      {
+        "name": "inventory-unit",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--list-tests",
+          "--filter",
+          "TestCategory=Unit",
+          "--diag",
+          "$TMPDIR/Unit-inventory.diag"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 2.415,
+        "logSha256": "e82979af13dfade15d2ceac7ba2e58e7b88cf1cc4b9d4c6b80384044c35b7d66"
+      },
+      {
+        "name": "inventory-integration",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--list-tests",
+          "--filter",
+          "TestCategory=Integration",
+          "--diag",
+          "$TMPDIR/Integration-inventory.diag"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.724,
+        "logSha256": "8e52de8d4b6a221ff228e7274d2bac4fb1af994a15e66c3652e9148a3ab7fa0c"
+      },
+      {
+        "name": "ci-shell-syntax",
+        "command": [
+          "scripts/ci:shell-syntax"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.784,
+        "logSha256": "f2088b26f4af0e92ee5c97e03043bbbc7c64514dec1969dd00596782dfc43f95"
+      },
+      {
+        "name": "test-ci-classification",
+        "command": [
+          "scripts/test:ci-classification"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 28.295,
+        "logSha256": "2f93c02443d5f106f86f430f5bd51f936a684a19a22f65643a636205c60da5e4"
+      },
+      {
+        "name": "test-coordination-guard",
+        "command": [
+          "scripts/test:coordination-guard"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.221,
+        "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d"
+      },
+      {
+        "name": "test-pr-review-tools",
+        "command": [
+          "scripts/test:pr-review-tools"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 11.385,
+        "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644"
+      },
+      {
+        "name": "docs-audit-operations",
+        "command": [
+          "scripts/docs:audit-operations"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.586,
+        "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d"
+      },
+      {
+        "name": "classifier-correction",
+        "command": [
+          "scripts/ci:classify",
+          "pull_request",
+          "711fa7b9cdb53023951e38fd0fe171252ed53069",
+          "3a13549096b7abf001f17116dcabb6190fad55ac"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.577,
+        "logSha256": "b0508a71b68474cd838ccc3466065baa443d719e1fb83cea2999f023e30a1c54"
+      },
+      {
+        "name": "classifier-branch",
+        "command": [
+          "scripts/ci:classify",
+          "pull_request",
+          "origin/development/v1",
+          "3a13549096b7abf001f17116dcabb6190fad55ac"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 3.041,
+        "logSha256": "b7d93df6c1b0d98f0a14d19357605ad9613599fb693053963240c6288ec01f02"
+      },
+      {
+        "name": "diff-check",
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.002,
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "inventory": {
+      "HVO.SkyMonitor.CameraAgent.Tests": {
+        "category": "Unit",
+        "discovered": 8370,
+        "expected": 8370
+      },
+      "HVO.SkyMonitor.CameraAgent.AcceptanceTests": {
+        "category": "Integration",
+        "discovered": 40,
+        "expected": 40
+      }
+    }
+  },
+  "currentTrx": [
+    {
+      "path": "TestResults/issue-1041-run6/final-core/core.trx",
+      "sha256": "1b563d15a44e59d7c635437aba91d9ac6f2dd1d30583cbc8a8c6a6f06163df57",
+      "counts": {
+        "total": "171",
+        "executed": "171",
+        "passed": "171",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run6/final-acceptance/acceptance.trx",
+      "sha256": "0ecc29574fb91c5f0fafbf2614cb724eabaebfec0320b032a256a199b28f05cf",
+      "counts": {
+        "total": "14",
+        "executed": "14",
+        "passed": "14",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run6/final-host/host.trx",
+      "sha256": "93cba1229dbe4a46cfe83d1a144a5cc586ab83a609fd58ce73c9b0d038425c0a",
+      "counts": {
+        "total": "61",
+        "executed": "61",
+        "passed": "61",
+        "failed": "0",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      }
+    }
+  ],
+  "beforeFix": [
+    {
+      "scope": "before-incremental-journal",
+      "exitCode": 1,
+      "counts": {
+        "total": "2",
+        "executed": "2",
+        "passed": "0",
+        "failed": "2",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "HotRollbackJournalRecoversBeforeLedgerLayoutValidation",
+          "outcome": "Failed"
+        },
+        {
+          "name": "SuccessiveCleanRestartsReadZeroOlderFiles",
+          "outcome": "Failed"
+        }
+      ]
+    },
+    {
+      "scope": "before-initializer",
+      "exitCode": 1,
+      "counts": {
+        "total": "1",
+        "executed": "1",
+        "passed": "0",
+        "failed": "1",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      },
+      "cases": [
+        {
+          "name": "DeferredConfigurationFailureMakesRealHostUnhealthyThenRecoversOnRetry",
+          "outcome": "Failed"
+        }
+      ]
+    }
+  ],
+  "beforeBinary": {
+    "productHead": "711fa7b9cdb53023951e38fd0fe171252ed53069",
+    "binding": "Unchanged product source from cc0771f29, preserved before the run-6 build",
+    "commonSha256": "d676618e82a76faa1aeebe6492a413bdcea6849473fabafa157ea88c40b6208b"
+  },
+  "beforeFixBinding": "Preserved pre-fix Common assembly, identical product source to 711fa7b9 (evidence-only head after cc0771f29). New regressions were compiled against compatible public APIs and overlaid with that assembly; original candidate assembly was restored afterward. Later added negative/maintenance variants are covered by current full affected selections.",
+  "beforeTrx": [
+    {
+      "path": "TestResults/issue-1041-run6/before-incremental-journal/before-incremental-journal.trx",
+      "sha256": "a413a6f53da522c174ef119415a277db9479a0568ac3bf94306e8d113c81ec8f",
+      "counts": {
+        "total": "2",
+        "executed": "2",
+        "passed": "0",
+        "failed": "2",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run6/before-initializer/before-initializer.trx",
+      "sha256": "08d1a82fd3bdafd8c445af4b00ad7e37968370bb68c53103eaa578cbc1dfe8c8",
+      "counts": {
+        "total": "1",
+        "executed": "1",
+        "passed": "0",
+        "failed": "1",
+        "error": "0",
+        "timeout": "0",
+        "aborted": "0",
+        "inconclusive": "0",
+        "passedButRunAborted": "0",
+        "notRunnable": "0",
+        "notExecuted": "0",
+        "disconnected": "0",
+        "warning": "0",
+        "completed": "0",
+        "inProgress": "0",
+        "pending": "0"
+      }
+    }
+  ],
+  "issueSourceSnapshot": {
+    "readAt": "2026-11-11T23:31:06.705198+00:00",
+    "state": "open",
+    "bodySha256": "720cf8412a804ae3b87562a5be5c28c10100139b5a7168e919c8821f7d36cb3a",
+    "comments": [
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5818996168",
+        "bodySha256": "bd4bebe463f6ed6769c1d733bb7656e98305e57ad2aea47e4e8502fb72bca128"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819014251",
+        "bodySha256": "da2648c6f66b235c5054fe1d5ee76c30a4e361656f98f62444bde490d0d33fa3"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819130604",
+        "bodySha256": "05407e14f40080511ec4d7269b6b8dd8523abb39134f00d51b11a307ca5d728b"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819177718",
+        "bodySha256": "9e9f0ed018fcfb7e1c9850ebf92e721ce0d6b3bd56ad42bf1ca480bbabbeac33"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819228585",
+        "bodySha256": "3a5da5b1c40a29e374156b04f5d3adcbb0da50dbdc8c7d3f29649b799a161f78"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819437240",
+        "bodySha256": "db44a37369643e594fd93c5704a44e0c7785ceb1d9dfcd00f53026bf0f752c7c"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819929227",
+        "bodySha256": "f6600d5b01ab04e0a6cd169b590f8a99dc5725c04064f6d77e89cf7a6d229fb8"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5929867774",
+        "bodySha256": "f6ad691dba88bd662355a6a804394763c6b9699c19ddd1a2386d1642fde4ee19"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6298546933",
+        "bodySha256": "34d6733fc9385b2a0789144a94cc832c30f4f7aae7394865a08b116dea014eb9"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6353527818",
+        "bodySha256": "856fb0b8370f07bed5df5fe68c53139f22f8b295071cb0d42183b65063fa8e19"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6360532464",
+        "bodySha256": "05b635b0eb8dcdbae5be99717130de2a28e78467f88ac7295db2f8282ecefc91"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6364547958",
+        "bodySha256": "f00da7e9135045a824cb9847dbec136945160f006d2a62b9a9c5979a7f2c7bff"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6374094935",
+        "bodySha256": "64b723c4b4d0bc85ce944760f6e84e0ab0e04ab0b036aa40ad9092c8c88d56ad"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6776132038",
+        "bodySha256": "adcc70f75017eb633a67c68cdc0a3f583fdb0c28953f273f5f6ef0b2f8e50df0"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6776744600",
+        "bodySha256": "eda6d9c3d0fb25f104a51a483e1d572aa9f39197bea99ce8b8c243b328f4fc85"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6777679400",
+        "bodySha256": "d015c1cfd67e3a8587f28644689fc49390912fc023e7c259e36feba96fc7ae83"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6778357427",
+        "bodySha256": "ae6106190cf9a18e337fbfab5bebcce6a84411b24af32b3d4fe61c0da0bc8a94"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6778893715",
+        "bodySha256": "904ef7c748f87446ce878382fb9637f95daf7843c315a3eb7299ff8ff3c73581"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779049692",
+        "bodySha256": "696f0b93fb2403cacaf2f1440514b56f55cb59da1384ce7105f1c88825f26a1a"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779992529",
+        "bodySha256": "08f7504956eb9510048666619af4ebcc688f94cbc3c236bec8ce8d82c123d39c"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6780793732",
+        "bodySha256": "4cac2d8af94f4adea08c9e575aaaaf1cb0c7c6bdc9df400deec49a986b8b45c2"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6781224702",
+        "bodySha256": "2fc678bab61a6a43af2ce91e9d3f4b2a73488e8b0fdfc989e20701432ec42769"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6781584646",
+        "bodySha256": "c01684e2e64e01282f4a72a61101aa939b5f9ac584940e6d48846d5923b4a80a"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6782066132",
+        "bodySha256": "abef6577184266a5e34e5f90d34970983cb6e8c377b988e23064930dd8543b4d"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6782861786",
+        "bodySha256": "a53c64f966ed827f91c11ce1c3b5baafc54f6f6a65423283ace77fa1ae24886e"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6783315015",
+        "bodySha256": "623520956fba05660509387deadf64fbcdf102fd2cc22b61e40f4c0b6699a9b5"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6783793082",
+        "bodySha256": "6ecd6d7140378cce08234c9da182a65bdaf6cb9d29e1d847354203c44d638692"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6784282290",
+        "bodySha256": "0acfc3b869abff4b3c76c02aacce0400ef089bc9a64c3c7fe19f97ad1d47ab0b"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6784764025",
+        "bodySha256": "28e839308059f347f6d7ae86ab1ec48137293124fff1184e3046c258055e236e"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6785562693",
+        "bodySha256": "0e208ca44e56a3625319149bf2fd740d34f475f5ddf8469768eb2d44f092c083"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6786029478",
+        "bodySha256": "6a6fdc2fcef327b375acb71c05d44c008890d96907ed14106c78c6dc9e57e19e"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6786470477",
+        "bodySha256": "5f6ccd6cfefa2bee12c5853cb6bdbb67d61d1a01c3548ed26180c8f7a58390eb"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6787193399",
+        "bodySha256": "33aea73adf26100a785bf48c56a0359f567d974919981124c08e83f1a5460d69"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6787612968",
+        "bodySha256": "79c5e35b5cdcc8c1c817251e71d74bb37d242cf1765d0b6e4b4d08b7f54fa412"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788118726",
+        "bodySha256": "d695f86de7c718da5efa69428fc3e87f2ae235fed6c854d2f02360dac673a5bc"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788549345",
+        "bodySha256": "d3f3b032793ee47e02e0d96c14e9d57df7dff25a01d1613972b02e257e240327"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788961109",
+        "bodySha256": "0a77f0b5f232e4605178894064cb5192b32fd84d947cbbce6f96b8c1590079e8"
+      }
+    ]
+  },
+  "observedReadCounters": {
+    "olderFiles": 12,
+    "cleanRestarts": 2,
+    "actualOlderFileReads": [
+      0,
+      0
+    ],
+    "productionJournalRestarts": 2,
+    "actualOlderSidecarAndBlobReads": [
+      0,
+      0
+    ],
+    "managedNewEvidenceReads": [
+      1,
+      0
+    ],
+    "dirtyOrRecoveredOlderFileReads": 12
+  },
+  "guards": [
+    "ci:shell-syntax",
+    "test:ci-classification",
+    "test:coordination-guard",
+    "test:pr-review-tools"
+  ],
+  "releaseBuilds": {
+    "configuration": "Release",
+    "warnAsError": true,
+    "warnings": 0,
+    "errors": 0,
+    "projects": [
+      "CameraAgent.Tests",
+      "CameraAgent.AcceptanceTests",
+      "CameraAgent.IntegrationTests"
+    ]
+  },
+  "limits": [
+    "Full metadata discovery/authentication is still O(history) background work; zero retained-byte reads is not zero filesystem/SQLite metadata I/O.",
+    "No new 129600-frame latency or memory measurement; run-5 values remain historical.",
+    "Out-of-band metadata-preserving file edits and journal-byte edits preserving declared checksum/length are detected by the next full scrub under approved Option A.",
+    "Initial/new-format, unclean, hot-journal, expired and restored state requires actual-byte full verification; unqualified lifecycle reads retain the original finite 120-second refusal.",
+    "No production, deployment, live token, Docker, networking, CLIProxy or reviewer-branch operation."
+  ],
+  "skippedUnderT410u": [
+    "Full solution Unit/Integration reruns",
+    "Unchanged architecture/publish campaigns",
+    "The other 26 Acceptance Integration cases outside the affected InstallationVerification selection",
+    "Coverage sweeps and unrelated process probes",
+    "Large-scale release burn-in and production/Pi qualification"
+  ],
+  "deliveryBinding": "Final delivery adds validation report/ledger only; source/test/build tree objects above must equal delivered head. Exact delivery SHA is reported in the owner thread."
+}
