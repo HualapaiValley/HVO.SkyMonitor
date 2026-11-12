@@ -84,6 +84,8 @@ public sealed class InstallationReadEvidenceRootTests
                 hostRoot = fixture.Host.Root;
                 socketPath = fixture.Host.RecoverySocketPath;
                 Assert.IsTrue(Directory.Exists(hostRoot));
+                // This fixture removes startup services, so it owns initial qualification.
+                _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
                 using var client = fixture.CreateClient();
                 var identity = await fixture.ReadAsync(client).ConfigureAwait(false);
                 Assert.AreEqual(CameraAgentKestrelFixture.AgentId, identity.GetProperty("agentId").GetString());

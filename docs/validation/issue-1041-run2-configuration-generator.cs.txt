@@ -1,0 +1,19 @@
+using System.Reflection;
+var folder = Path.GetDirectoryName(Path.GetFullPath(args[0]))!;
+AppDomain.CurrentDomain.AssemblyResolve += (_, request) =>
+{
+    var path = Path.Combine(folder, new AssemblyName(request.Name).Name + ".dll");
+    return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+};
+var cli = Assembly.LoadFrom(args[0]);
+var requestType = cli.GetType("HVO.SkyMonitor.Deployment.InstallRequest", throwOnError: true)!;
+var request = Activator.CreateInstance(requestType)!;
+foreach (var (name, value) in new (string, object)[] { ("FriendlyName", "Disposable verification probe"),
+    ("LatitudeDegrees", 35d), ("LongitudeDegrees", -113d), ("TimeZoneId", "America/Phoenix") })
+    requestType.GetProperty(name)!.SetValue(request, value);
+var result = cli.GetType("HVO.SkyMonitor.Deployment.CameraConfiguration", throwOnError: true)!
+    .GetMethod("Generate", BindingFlags.Public | BindingFlags.Static)!
+    .Invoke(null, [request, Guid.Parse("10000000-0000-0000-0000-000000001041")])!;
+var json = (string)result.GetType().GetProperty("Json")!.GetValue(result)!;
+File.WriteAllText(args[1], json);
+Console.WriteLine("Installer-generated disposable configuration created; no install, daemon, token or service call.");

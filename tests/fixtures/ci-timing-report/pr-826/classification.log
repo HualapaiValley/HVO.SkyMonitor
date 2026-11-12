@@ -1,0 +1,2 @@
+# Synthetic classifier input matching this fixture; no live workflow data.
+CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true paths=10

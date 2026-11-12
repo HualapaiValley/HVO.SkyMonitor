@@ -965,7 +965,7 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         {
             if (File.Exists(temporary))
             {
-                File.Delete(temporary);
+                RetainedFileMutations.Delete(temporary);
             }
         }
     }

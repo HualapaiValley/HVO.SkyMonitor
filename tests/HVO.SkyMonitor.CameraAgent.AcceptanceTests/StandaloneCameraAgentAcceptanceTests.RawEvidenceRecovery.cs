@@ -5,6 +5,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -47,10 +48,12 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
         await fixture.StartStoppedHostAsync().ConfigureAwait(false);
         var services = fixture.Services.GetServices<IHostedService>().ToArray();
         var configurationIndex = Array.FindIndex(services, service => service is CameraAgentConfigurationInitializer);
-        var admissionIndex = Array.FindIndex(services, service => service is CaptureAdmissionInitializationService);
+        var admissionIndex = Array.FindIndex(services, service => service is AfterApplicationStartedService<CaptureAdmissionInitializationService>);
         Assert.IsGreaterThanOrEqualTo(0, configurationIndex);
         Assert.IsGreaterThan(configurationIndex, admissionIndex);
         control = fixture.Services.GetRequiredService<CaptureAdmissionCoordinator>();
+        await WaitForConditionAsync(() => control.Snapshot.State == CaptureAdmissionState.Unavailable,
+            "deferred admission to observe unavailable evidence").ConfigureAwait(false);
         Assert.AreEqual(CaptureAdmissionState.Unavailable, control.Snapshot.State);
         Assert.IsFalse(control.Snapshot.IsInitialized);
         var before = await ReadMaximumSequenceAsync(fixture.Services).ConfigureAwait(false);
@@ -111,10 +114,15 @@ public sealed partial class StandaloneCameraAgentAcceptanceTests
             _ = await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         var checksum = SHA256.HashData(await File.ReadAllBytesAsync(payload).ConfigureAwait(false));
-        var failure = await Assert.ThrowsAsync<Exception>(() => fixture.StartStoppedHostAsync()).ConfigureAwait(false);
+        _ = await Assert.ThrowsAsync<Exception>(() => fixture.StartStoppedHostAsync()).ConfigureAwait(false);
+        Assert.ThrowsExactly<InvalidOperationException>(() => { _ = fixture.Services; });
+        // Deferred recovery can stop the host before Kestrel binds, surfacing a
+        // cancellation wrapper. Verify the exact schema refusal independently.
+        var journal = new SqliteRawCaptureJournal(Path.Combine(fixture.Root, "journal", "raw-ingress.db"), 5);
+        var failure = await Assert.ThrowsAsync<Exception>(async () =>
+            await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
         Assert.Contains("Raw ingress", failure.ToString());
         Assert.Contains("schema", failure.ToString());
-        Assert.ThrowsExactly<InvalidOperationException>(() => { _ = fixture.Services; });
         CollectionAssert.AreEqual(checksum, SHA256.HashData(await File.ReadAllBytesAsync(payload).ConfigureAwait(false)));
     }
 }

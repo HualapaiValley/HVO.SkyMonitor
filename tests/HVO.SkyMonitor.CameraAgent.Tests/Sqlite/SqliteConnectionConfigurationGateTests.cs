@@ -72,6 +72,20 @@ public sealed class SqliteConnectionConfigurationGateTests
         release.SetResult();
         await Task.WhenAll(first, second).ConfigureAwait(false);
         Assert.AreEqual(1, maximumConcurrent);
+
+        using var synchronousRelease = new ManualResetEventSlim();
+        var synchronousEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var synchronous = Task.Run(() => SqliteConnectionConfigurationGate.Run(() =>
+        {
+            synchronousEntered.SetResult();
+            Assert.IsTrue(synchronousRelease.Wait(TimeSpan.FromSeconds(10)));
+        }));
+        await synchronousEntered.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+        var afterSynchronous = SqliteConnectionConfigurationGate.RunAsync(
+            () => ValueTask.CompletedTask, CancellationToken.None).AsTask();
+        try { Assert.IsFalse(afterSynchronous.IsCompleted, "Sync and async configuration must share one gate."); }
+        finally { synchronousRelease.Set(); }
+        await Task.WhenAll(synchronous, afterSynchronous).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -119,6 +133,9 @@ public sealed class SqliteConnectionConfigurationGateTests
                 CancellationToken.None).AsTask()).ConfigureAwait(false);
 
         Assert.AreSame(expected, actual);
+        var synchronousFailure = Assert.ThrowsExactly<InvalidOperationException>(() =>
+            SqliteConnectionConfigurationGate.Run(() => throw expected));
+        Assert.AreSame(expected, synchronousFailure);
         await SqliteConnectionConfigurationGate.RunAsync(
             () => ValueTask.CompletedTask,
             CancellationToken.None).ConfigureAwait(false);

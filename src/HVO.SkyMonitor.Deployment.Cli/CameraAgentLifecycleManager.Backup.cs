@@ -210,6 +210,14 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
         }
 
+        if (running)
+        {
+            // The currently running agent must validate identity before any pause, stop or archive mutation.
+            _ = await service.Owner.ReadInstallationStateAsync(
+                verificationToken, CurrentInstallationExpectation(manifest, installationResult), cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         // An earlier backup of this instance that was interrupted left its partial; it can never be restored, so it goes.
         foreach (var partial in await vault.ListPartialsAsync(manifest.InstanceId, cancellationToken).ConfigureAwait(false))
         {

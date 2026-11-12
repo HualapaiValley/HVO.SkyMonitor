@@ -104,6 +104,14 @@ public sealed class SqliteConnectionConfigurationInventoryTests
                     var message = "Example: PRAGMA foreign_keys=ON;";
                     SqliteConnectionConfigurationGate.RunAsync(() => default, token);
                 }
+
+                void Synchronous()
+                {
+                    SqliteConnectionConfigurationGate.Run(() =>
+                    {
+                        command.CommandText = "PRAGMA busy_timeout=100;";
+                    });
+                }
             }
             """;
         var root = CSharpSyntaxTree.ParseText(string.Concat(source, additionalSource)).GetRoot();
@@ -113,6 +121,7 @@ public sealed class SqliteConnectionConfigurationInventoryTests
 
         CollectionAssert.Contains(candidates, "fixture.cs:Local");
         CollectionAssert.Contains(candidates, "fixture.cs:InterpolatedOnly");
+        CollectionAssert.Contains(candidates, "fixture.cs:Synchronous");
         CollectionAssert.DoesNotContain(candidates, "fixture.cs:Outer");
         CollectionAssert.DoesNotContain(candidates, "fixture.cs:Fake");
         CollectionAssert.DoesNotContain(candidates, "fixture.cs:DiagnosticOnly");
@@ -198,6 +207,7 @@ public sealed class SqliteConnectionConfigurationInventoryTests
     {
         var expression = invocation.Expression.ToString();
         return expression.EndsWith("SqliteConnectionConfigurationGate.RunAsync", StringComparison.Ordinal) ||
+            expression.EndsWith("SqliteConnectionConfigurationGate.Run", StringComparison.Ordinal) ||
             expression.EndsWith("SqliteConnectionConfigurationGate.OpenAndConfigureAsync", StringComparison.Ordinal);
     }
 

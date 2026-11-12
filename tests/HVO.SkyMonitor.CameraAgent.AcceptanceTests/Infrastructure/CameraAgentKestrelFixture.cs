@@ -45,6 +45,9 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private bool _preserveRoot;
     private BrowserWebApplicationFactory? _factory;
     private HttpClient? _lifetimeClient;
+    private int _restartPort;
+
+    internal void PreservePortOnRestart() => _restartPort = BaseAddress.Port;
 
     private CameraAgentKestrelFixture(
         string root,
@@ -234,7 +237,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices);
         factory.UseKestrel(options =>
         {
-            options.Listen(IPAddress.Loopback, 0);
+            options.Listen(IPAddress.Loopback, _restartPort);
             options.ListenUnixSocket(RecoverySocketPath, listen => listen.Protocols = HttpProtocols.Http1);
         });
         _factory = factory;
@@ -314,7 +317,11 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
                     PayloadChecksum.ComputeSha256(payload)));
             var manifest = new ArtifactManifestV2(
                 ArtifactManifestV2.CurrentSchemaVersion, descriptor, relativePath);
+#if HVO_BASELINE
             await File.WriteAllBytesAsync(
+#else
+            await HVO.SkyMonitor.CameraAgent.Common.Storage.RetainedFileMutations.WriteAllBytesAsync(
+#endif
                 Path.ChangeExtension(path, ".json"),
                 CaptureContractJson.Serialize(manifest)).ConfigureAwait(false);
             await outbox.EnqueueAsync(root, manifest, CancellationToken.None).ConfigureAwait(false);

@@ -258,11 +258,13 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
 
     private async Task SaveAsync(State state, CancellationToken cancellationToken)
     {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(state, Json);
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(Root().Resolve(RelativePath), bytes);
         await AtomicPublisher.PublishAsync(Root(), RelativePath, PublishMode.Replace, async (stream, token) =>
         {
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(((FileStream)stream).SafeFileHandle,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite);
-            await JsonSerializer.SerializeAsync(stream, state, Json, token).ConfigureAwait(false);
+            await stream.WriteAsync(bytes, token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
         ApplyState(state);
     }
