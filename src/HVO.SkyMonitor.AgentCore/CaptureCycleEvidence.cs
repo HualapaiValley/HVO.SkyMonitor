@@ -133,6 +133,10 @@ public sealed record CaptureCycleEvidence(
     [property: JsonRequired] CaptureControlDecisionEvidence Decision,
     [property: JsonRequired] DateTimeOffset IngressHandoffStartedUtc)
 {
+    /// <summary>Gets the host-issued correlation identity for optional acquisition work belonging to this cycle.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? AcquisitionAttemptId { get; init; }
+
     /// <summary>Gets monotonic actual-start lateness relative to the requested deadline.</summary>
     [JsonRequired]
     public TimeSpan MonotonicStartJitter { get; init; }

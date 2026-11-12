@@ -933,7 +933,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     }
 
     private static string SourceWindowLabel(LocalAutomationSourceWindowKind kind)
-        => kind == LocalAutomationSourceWindowKind.SunriseDay ? "Sunrise to next sunrise" : "Completed site-local hour";
+        => CameraAgentAutomationUiService.SourceWindowLabel(kind);
 
     private static string SelectionLabel(LocalAutomationSourceSelection selection)
         => selection == LocalAutomationSourceSelection.DarkNightActualSources ? "Dark-night actual sources" : "All actual sources";
@@ -1043,10 +1043,11 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
             "The definition stops running immediately. Its recorded runs stay in the run history, and its "
             + "revisions are retained durably under a bounded limit but are no longer listed on this page.",
         PendingCommandKind.Toggle => _pendingDefinition?.Definition.Enabled == true
-            ? "The definition stops running. Its recorded revisions and run history are retained."
+            ? "The definition stops running. Queued attempts will be withdrawn. Its recorded revisions and run history are retained."
             : "The definition starts running at its next occurrence. Occurrences that elapsed while it was "
               + "disabled are not replayed.",
-        _ => "A new immutable revision is recorded. Only a registered task kind and a registered trigger kind "
+        _ => (Editing ? "Queued attempts will be withdrawn. " : string.Empty)
+             + "A new immutable revision is recorded. Only a registered task kind and a registered trigger kind "
              + "are stored; the runner issues the same operation an operator can issue by hand."
     };
 

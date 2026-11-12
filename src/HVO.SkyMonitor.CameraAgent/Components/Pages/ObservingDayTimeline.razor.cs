@@ -46,6 +46,21 @@ public sealed partial class ObservingDayTimeline : ComponentBase
         return FormattableString.Invariant($"left: {left:0.######}%; width: {Math.Max(0, Percent(endUtc) - left):0.######}%");
     }
 
+    /// <summary>
+    /// A capture band keeps its mathematical width too. The stylesheet adds only a fixed two-pixel floor, so a lone
+    /// exposure stays visible however wide the track is drawn. The band is anchored to the nearer end of the period,
+    /// which makes that floor grow toward the middle of the track and never past either end of the period.
+    /// </summary>
+    private string CaptureBarStyle(DateTimeOffset startUtc, DateTimeOffset endUtc)
+    {
+        var left = Percent(startUtc);
+        var right = Percent(endUtc);
+        var width = Math.Max(0, right - left);
+        return left + right <= 100
+            ? FormattableString.Invariant($"left: {left:0.######}%; width: {width:0.######}%")
+            : FormattableString.Invariant($"right: {100 - right:0.######}%; width: {width:0.######}%");
+    }
+
     private string MarkerStyle(DateTimeOffset utc) => FormattableString.Invariant($"left: {Percent(utc):0.######}%");
 
     /// <summary>Union coverage bins only for exposures inside the half-open period; clip the final bin to its end.</summary>

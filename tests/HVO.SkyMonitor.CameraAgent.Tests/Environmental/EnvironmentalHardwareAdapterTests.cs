@@ -125,6 +125,20 @@ public sealed class EnvironmentalHardwareAdapterTests
         Assert.IsFalse((await dry.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!.Value.BooleanValue);
         Assert.IsTrue((await rain.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!.Value.BooleanValue);
         Assert.AreEqual("wet-sensor-drying", (await drying.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Reason);
+        var rainingWhileDrying = new InfraredSkySource(dry.Descriptor,
+            Options("""{"rain":true,"drying":true}"""));
+        Assert.IsTrue((await rainingWhileDrying.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false)).Fact!.Value.BooleanValue);
+    }
+
+    [TestMethod]
+    [DataRow("{\"drying\":true}", "wet-sensor-drying")]
+    [DataRow("{\"drying\":false}", "device-malformed")]
+    public async Task InfraredMissingRainPreservesTheDryingOutcome(string payload, string expected)
+    {
+        var source = new InfraredSkySource(Descriptor("InfraredSky", EnvironmentalObservationKind.RainState), Options(payload));
+        var result = await source.AcquireAsync(Context(), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(result.Fact);
+        Assert.AreEqual(expected, result.Reason);
     }
 
     [TestMethod]

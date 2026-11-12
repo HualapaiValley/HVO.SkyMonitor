@@ -106,9 +106,16 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
             var bridge = new EnvironmentalCaptureTriggerBridge(coordinator, service, store, options);
             using var cancellation = new CancellationTokenSource();
             if (hostCanceled) await cancellation.CancelAsync().ConfigureAwait(false);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
             if (hostCanceled)
-                await Assert.ThrowsAsync<OperationCanceledException>(async () => await bridge.BeforeCaptureAsync(Epoch.AddSeconds(1), cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
-            else await bridge.BeforeCaptureAsync(Epoch.AddSeconds(1), cancellation.Token).ConfigureAwait(false);
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => { _ = await bridge.BeforeCaptureAsync(Epoch.AddSeconds(1), cancellation.Token).ConfigureAwait(false); }).ConfigureAwait(false);
+            else
+            {
+                var captureWork = await bridge.BeforeCaptureAsync(Epoch.AddSeconds(1), cancellation.Token).ConfigureAwait(false);
+                Assert.IsNotNull(captureWork);
+                await captureWork.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+            await service.StopAsync(CancellationToken.None).ConfigureAwait(false);
             var state = (await store.ReadSourceStatesAsync(root, CancellationToken.None).ConfigureAwait(false)).Single();
             Assert.AreEqual(hostCanceled ? EnvironmentalAcquisitionDisposition.Produced : EnvironmentalAcquisitionDisposition.TimedOut, state.LastDisposition);
             if (!hostCanceled)

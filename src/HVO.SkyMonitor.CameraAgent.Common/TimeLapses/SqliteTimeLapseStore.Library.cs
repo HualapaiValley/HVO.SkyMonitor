@@ -32,6 +32,8 @@ internal sealed partial class SqliteTimeLapseStore
         var truncated = dates.Count > scan;
         if (truncated) dates.RemoveAt(scan);
         if (dates.Count == 0) return new([], null, null);
+        // A daily job stays Queued until every hourly segment job has finished, so only a queued row has its segments
+        // counted. They are recorded under the daily job's report date, which keeps each count on the date index.
         using var rows = Command(connection, transaction, """
             WITH ranked AS (
                 SELECT job_id, report_date, window_json, state, updated_ticks, reason, product_id,
@@ -47,7 +49,14 @@ internal sealed partial class SqliteTimeLapseStore
                 EXISTS(SELECT 1 FROM products AS hourly
                     JOIN jobs AS hourly_job ON hourly_job.job_id=hourly.job_id AND hourly_job.state='Produced'
                     WHERE hourly.is_daily=0 AND hourly.report_date=job.report_date
-                      AND hourly.period_sha256=json_extract(job.window_json,'$.reportingPeriod.identitySha256'))
+                      AND hourly.period_sha256=json_extract(job.window_json,'$.reportingPeriod.identitySha256')),
+                CASE WHEN job.state='Queued' THEN (SELECT COUNT(*) FROM jobs AS hour
+                    WHERE hour.report_date=job.report_date AND hour.parent_job_id=job.job_id) END,
+                CASE WHEN job.state='Queued' THEN (SELECT COUNT(*) FROM jobs AS hour
+                    WHERE hour.report_date=job.report_date AND hour.parent_job_id=job.job_id
+                      AND hour.state NOT IN ('Queued','Working')) END,
+                CASE WHEN job.state='Queued' THEN EXISTS(SELECT 1 FROM jobs AS hour
+                    WHERE hour.report_date=job.report_date AND hour.parent_job_id=job.job_id AND hour.state='Working') END
             FROM ranked AS job LEFT JOIN products AS product ON product.product_id=job.product_id
             WHERE job.rank=1 ORDER BY job.report_date DESC, job.job_id LIMIT 4097;
             """, ("$dates", System.Text.Json.JsonSerializer.Serialize(dates.Select(Date))));
@@ -65,7 +74,12 @@ internal sealed partial class SqliteTimeLapseStore
                     await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(5),
                     await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : new(Guid.ParseExact(reader.GetString(6), "N"), date,
                         reader.GetInt32(7), reader.GetInt32(8), reader.GetInt32(9) != 0), reader.GetInt32(10) != 0)
-                { GenerationEnabled = options.Value.TimeLapses.Enabled });
+                {
+                    GenerationEnabled = options.Value.TimeLapses.Enabled,
+                    HourlyJobs = await reader.IsDBNullAsync(11, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt32(11),
+                    HourlyJobsFinished = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt32(12),
+                    HourlyJobWorking = !await reader.IsDBNullAsync(13, cancellationToken).ConfigureAwait(false) && reader.GetInt32(13) != 0
+                });
             }
         if (entries.Any(static entry => entry.JobState == CameraAgentTimeLapseState.Produced && entry.Product is null))
             throw new InvalidDataException("A produced daily video has no published catalog entry.");

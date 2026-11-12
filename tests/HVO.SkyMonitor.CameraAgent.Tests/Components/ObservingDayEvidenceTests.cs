@@ -42,9 +42,47 @@ public sealed class ObservingDayEvidenceTests
         var bands = cut.FindAll(".timeline-bar--captures");
         Assert.HasCount(2, bands);
         Assert.AreEqual("left: 0%; width: 0.069444%", bands[0].GetAttribute("style"));
-        Assert.AreEqual("left: 99.988426%; width: 0.011574%", bands[1].GetAttribute("style"));
+        // The band at the end of the period is anchored to that end; its width is still the mathematical one.
+        Assert.AreEqual("right: 0%; width: 0.011574%", bands[1].GetAttribute("style"));
         StringAssert.Contains(cut.Markup, "not exposure duration", StringComparison.Ordinal);
     }
+
+    [TestMethod]
+    public void ALoneCaptureKeepsItsWidthAndAVisibleFloorThatCannotLeaveThePeriod()
+    {
+        using var context = new BunitContext();
+        var noon = Day.StartUtc + (Day.Duration / 2);
+        // One retained exposure in a whole day, at each end, either side of the middle, and exactly in the middle.
+        foreach (var (instant, expected) in new[]
+                 {
+                     (Day.StartUtc, "left: 0%; width: 0.069444%"),
+                     (noon.AddMinutes(-1), "left: 49.930556%; width: 0.069444%"),
+                     (noon, "right: 49.930556%; width: 0.069444%"),
+                     (Day.EndUtc.AddMinutes(-1), "right: 0%; width: 0.069444%")
+                 })
+        {
+            var cut = context.Render<ObservingDayTimeline>(parameters => parameters
+                .Add(component => component.Day, Day).Add(component => component.ExposureInstantsUtc, [instant]));
+
+            var band = cut.FindAll(".timeline-bar--captures").Single();
+            Assert.AreEqual(expected, band.GetAttribute("style"));
+            StringAssert.StartsWith(band.GetAttribute("title"), "1 captures ", StringComparison.Ordinal);
+            Assert.DoesNotContain("No retained exposures", cut.Markup, StringComparison.Ordinal);
+        }
+
+        // A band is anchored to its nearer end, so the floor below can only grow toward the middle of the track.
+        var css = File.ReadAllText(Path.Combine(CameraAgentStateCompatibilityLabelTestsRoot(),
+            "src", "HVO.SkyMonitor.CameraAgent", "Components", "Pages", "ObservingDayTimeline.razor.css"));
+        var rule = css.Split('\n').Single(static line => line.StartsWith(".timeline-bar--captures ", StringComparison.Ordinal));
+        StringAssert.Contains(rule, "min-width: 2px;", StringComparison.Ordinal);
+        // The floor is a fixed pixel size, never a share of the night, and schedule bars keep no floor at all.
+        Assert.DoesNotContain("%", rule, StringComparison.Ordinal);
+        Assert.DoesNotContain("min-width", css.Split('\n').Single(static line => line.StartsWith(".timeline-bar--schedule ", StringComparison.Ordinal)),
+            StringComparison.Ordinal);
+    }
+
+    private static string CameraAgentStateCompatibilityLabelTestsRoot()
+        => HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateCompatibilityLabelTests.RepositoryRoot();
 
     [TestMethod]
     public void EmptyEvidenceKeepsEveryLaneWithoutClaimingClearOrUsableSky()

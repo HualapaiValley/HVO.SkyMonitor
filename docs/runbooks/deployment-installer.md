@@ -298,12 +298,13 @@ $ hvo-sky-install cameraagent install --answers camera.json --memory 6g --plan
 ...
 Plan:
   unchanged  folder     /var/lib/hvo-sky/cameraagents/<uuid> (instance)
+  unchanged  file       /var/lib/hvo-sky/cameraagents/<uuid>/config/camera-module.json (camera configuration)
   change     file       /var/lib/hvo-sky/cameraagents/<uuid>/config/compose/compose.yml (Compose model, 2 CPUs, 6 GiB of memory and 256 PIDs)
   change     file       /var/lib/hvo-sky/cameraagents/<uuid>/instance-manifest.json (instance manifest, 2 CPUs, 6 GiB of memory and 256 PIDs)
   change     file       /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/installation-result.json (installation result, its Compose model)
   change     container  hvo-skymonitor-<uuid> (recreated with 2 CPUs, 6 GiB of memory and 256 PIDs)
   change     record     /etc/hvo-sky/install.json (instance <uuid>)
-0 to create, 5 to change, 1 unchanged.
+0 to create, 5 to change, 2 unchanged.
 ```
 
 With `--json` the plan is the result's `plan` member: `items`, each with `action`
@@ -450,17 +451,21 @@ resuming or re-running an installation begun without it, including interrupted
 installations with a legacy request hash. An explicit lighting choice cannot
 resume a legacy journal that never bound that choice. Changing the
 baseline lighting of a completed installation through a re-run is refused, just
-as other camera configuration changes are.
+as other camera configuration changes are: the re-run exits `3`, names
+`--illumination-mode` with the installed and requested values (`omitted` for
+lighting left out), and changes nothing.
 
 The installer baseline is separate from the active named-rig revision. The
 supported `camera.skyLighting` setting stages a rig revision for the next start;
 it does not rewrite the manifest-bound baseline. Installation verification
 continues to hash that baseline file. Upgrade and reinstall preserve it and its
-canonical identity. Editing `camera-module.json` by hand changes the bound
-identity and causes verification to refuse. A raw-byte file checksum is not the
-canonical JSON checksum: whitespace or property-order differences alone do not
-indicate drift. For existing installations, use the active-rig setting to change
-lighting without editing the baseline or manifest.
+canonical identity. Editing `camera-module.json` by hand changes its canonical
+identity: verification refuses it, and a re-run refuses it with exit `3`, naming
+the file, and leaves it as it is (see [Re-running an install](#re-running-an-install)).
+A raw-byte file checksum is not the canonical JSON checksum: whitespace or
+property-order differences alone do not indicate drift, and a re-run writes the
+installer's exact text back. For existing installations, use the active-rig
+setting to change lighting without editing the baseline or manifest.
 
 ### Re-running an install
 
@@ -478,11 +483,82 @@ change, in the plan as in the run.
 
 A re-run is held to the instance its records describe, not to the bytes of the first
 request: the camera name, owner email, bind address, port, product root, location,
-time zone, replay profile, image and catalog must match the installed instance. Any
-difference is refused with exit `3`, names each differing option, and changes
-nothing. Only the container limits change with a re-run (see
-[Container Resources](#container-resources)). After an upgrade, a re-run names the
+time zone, lighting (`--illumination-mode`), replay profile, image and catalog must
+match the installed instance. Any difference is refused with exit `3`, names each
+differing option, and changes nothing. Only the container limits change with a re-run
+(see [Container Resources](#container-resources)). After an upgrade, a re-run names the
 image the instance now runs; the image itself changes only with `cameraagent upgrade`.
+
+#### When the installer's configuration defaults changed
+
+The installer generates `camera-module.json` from the installed answers and its own
+defaults, and the instance's records bind the canonical identity of that file. When a
+newer installer's defaults differ, for example the cloud assessment steps the
+installer added after `v0.9.1-dev.11`, a re-run compares the instance's configuration
+with what each generation of defaults the installer knows writes for the installed
+answers, and sorts every difference into one of three classes:
+
+| Class | Example | Outcome |
+| --- | --- | --- |
+| Request-driven | A different answer, such as another `--illumination-mode` or `--time-zone`. A supported `--cpus`/`--memory` change is not one. | Refused, exit `3`, each option named with the installed and requested values. Nothing changes. |
+| Default-driven | The installer's defaults moved since the instance was installed or last re-run. | Adopted, exit `0`, when the running image supports them (below). The plan and the run name each change. |
+| Unexplained | The recorded identity is not one any known generation writes for the installed answers; `camera-module.json` was edited by hand or cannot be read; the manifest and the result record identities no interrupted re-run leaves behind. | Refused, exit `3` (`--json` `errorCode` `refused`), naming the file or record and the remedy. Nothing changes. |
+
+An adoption is the first re-run of an instance after the newer installer is in place,
+with the installed answers or with new limits. Its plan and its run list
+`camera-module.json` as a change that names each adopted change, and recreate the
+container, which reads the file only when it starts:
+
+```text
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/config/camera-module.json (camera configuration, adopts the installer's new defaults: pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation))
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/instance-manifest.json (instance manifest, configuration <sha256>)
+  change     file       /var/lib/hvo-sky/cameraagents/<uuid>/state/deployment/installation-result.json (installation result, its configuration identity)
+  change     container  hvo-skymonitor-<uuid> (recreated with 2 CPUs, 4 GiB of memory and 256 PIDs and the adopted configuration)
+```
+
+`--plan --json` carries the same items. The run verifies the instance on the adopted
+configuration before it records the new identity in the manifest, then the result. The
+rig profile, schedule, request identity, lighting and active named-rig revision do not
+change. A second identical re-run prints `Nothing to change`.
+
+**Running-image prerequisite.** A re-run keeps the image, so an instance adopts a change
+that needs the image's support only when its running image already declares it. The
+cloud steps (`installer-defaults-2`) need an image whose cloud assessment records a
+missing rain-state source instead of failing (Refs #1777); such images carry the label
+`io.hvo.skymonitor.configuration-defaults=installer-defaults-2` or later. On an image
+without it the re-run, and its plan, are refused with exit `3`, rewriting nothing and
+starting nothing: upgrade the instance with `cameraagent upgrade` to a release whose
+image carries the label, then re-run. A re-run never upgrades the image.
+
+The prerequisite gates only the re-run of a completed install. A fresh install and the
+`--resume` of an unfinished one write the installer's current defaults whatever the
+image declares, and `cameraagent rollback` keeps the configuration on disk, so rolling
+an adopted instance back to an image without the label leaves it on the cloud steps.
+Install and resume with an image that carries the label, and roll back only to one that
+does.
+
+**Failures and interruptions.** A failure before the manifest records the new identity,
+whether of the file, Compose, health, verification or an interruption, puts the
+previous configuration, limits and records back and exits `1`; re-run the same install
+to carry on. An interruption after that leaves the result or the install record behind
+the manifest, and the next re-run settles them without restarting anything. A
+`camera-module.json` an interrupted adoption left behind is carried forward, not
+refused.
+
+**Edited, missing and reformatted files.** A hand-edited `camera-module.json` is never
+overwritten: move it aside and re-run, which writes the configuration the records
+describe (or adopts the new defaults). A missing file is written back. A file that
+differs only in whitespace or property order keeps its canonical identity and is
+written back with the installer's exact text, listed as a change.
+
+**Older installers.** The manifest records the configuration identity, not which
+generation of defaults wrote it. An installer that does not know the generation an
+instance is on refuses its re-run with exit `3` and changes nothing; an installer from
+before this behaviour stops with exit `1` and `The completed installation differs from
+its retained immutable manifest`, also changing nothing. Re-run such an instance with
+the installer that last re-ran it, or a newer one. `cameraagent upgrade` and
+`cameraagent reinstall` keep the configuration on disk as it is; the next re-run adopts
+newer defaults.
 
 An unfinished install is different: `--resume` continues it only with exactly the
 inputs it began with.
@@ -2077,6 +2153,9 @@ The check runs after the state preflight, so an incompatible persisted state is 
 drain and any Compose change. The journal's `stateMigration` names every difference, for example
 `io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`. The contract-identity labels (`component`,
 `configuration-contract`, `catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused.
+`configuration-defaults` is not state either, and an upgrade does not compare it: it declares the newest installer
+configuration-default generation the image runs, which a re-run requires before it adopts newer defaults (see
+[Re-running an install](#re-running-an-install)).
 The candidate must also declare the current `cameraagent-state-v2` contract, and the persisted state must satisfy
 every declared boundary described in [State Compatibility Boundary](#state-compatibility-boundary). A rollback
 target installed before that label correction is accepted as a known contract.
@@ -2625,6 +2704,12 @@ A change that cannot meet the rule is declared in the fixture's `snapshotRollbac
 - an image state-boundary label;
 - that label's value on the previous release (`previousValue`, which must equal the frozen one);
 - its value on this release (`candidateValue`, which must equal this release's Dockerfile).
+
+For a later installed image than the frozen release, the exception also records its
+`previousImageRevision` and complete `previousImageLabels`. Its `previousValue` is
+checked against that installed image's labels, and the installer comparison uses
+those labels. This keeps the checkpoint proof tied to the transition that actually
+upgrades that store, without rewriting older stores' frozen SQL images.
 
 `CameraAgentSnapshotRollbackExceptionTests` then reads both label sets through the installer's own label reading and
 boundary comparison (`CameraAgentStateMigration.DeclaredChanges`). It accepts the exception only when that comparison

@@ -194,7 +194,7 @@ else
                                             </td>
                                             <td><span class="state-chip @OutcomeClass(run.Outcome)">@Split(run.Outcome.ToString())</span></td>
                                             <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)
-                                                @if (run.Outcome == LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
+                                                @if (run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
                                                 {
                                                     <AutomationScriptRunControls Run="run" Changed="LoadAsync" />
                                                 }
@@ -312,7 +312,7 @@ else
                             </footer>
                             @if (item.TaskKind == LocalAutomationTaskKind.CustomScript)
                             {
-                                <AutomationScriptRunControls Definition="definition" Run="@(DisplayRuns.FirstOrDefault(run => run.DefinitionId == item.DefinitionId && run.Outcome == LocalAutomationRunOutcome.Running))"
+                                <AutomationScriptRunControls Definition="definition" Run="@(DisplayRuns.FirstOrDefault(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript))"
                                     Available="@(!unavailable)" Pending="@(DisplayRuns.Any(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))" Changed="LoadAsync" />
                             }
                         </article>

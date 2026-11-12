@@ -832,6 +832,18 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             ("$id", request.DefinitionId)).ConfigureAwait(false);
         var version = Math.Max(currentVersion, revisionCeiling) + 1;
         var now = ToUnixMilliseconds(Now());
+        // This mutation withdraws pending authorization, not the immutable execution identity.
+        // Explicit retries may retain an older occurrence until a subsequent mutation withdraws them.
+        if (existing is not null)
+        {
+            await ExecuteAsync(connection, transaction, """
+                UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now, detail = $detail
+                WHERE definition_id = $id AND outcome = 'Queued';
+                """, cancellationToken, ("$now", now), ("$id", definition.DefinitionId),
+                ("$detail", !existing.Definition.Enabled || !definition.Enabled
+                    ? "The definition was disabled before this prepared occurrence started."
+                    : "The definition was edited before this prepared occurrence started.")).ConfigureAwait(false);
+        }
         await ExecuteAsync(
             connection,
             transaction,
@@ -1238,7 +1250,10 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         var runs = await ReadRunsAsync(
             connection, transaction, LocalAutomationContract.MaximumProjectedRuns, cancellationToken)
             .ConfigureAwait(false);
-        var activeRuns = await ReadRunsAsync(connection, transaction, LocalAutomationContract.MaximumDefinitions,
+        // Each live definition permits one running and at most 32 queued occurrences. Include the
+        // whole bounded set so pending controls cannot disappear behind newer terminal history.
+        var activeRuns = await ReadRunsAsync(connection, transaction,
+            LocalAutomationContract.MaximumDefinitions * (MaximumQueuedOccurrencesPerDefinition + 1),
             cancellationToken, activeOnly: true).ConfigureAwait(false);
         var storeVersion = await ScalarLongAsync(
             connection, transaction,
@@ -1404,7 +1419,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
                    occurrence_json, attempt, occurrence_id, preparation_json
             FROM automation_runs
-            WHERE ($activeOnly = 0 OR outcome = 'Running')
+            WHERE ($activeOnly = 0 OR outcome IN ('Queued', 'Running'))
             ORDER BY sequence DESC
             LIMIT $limit;
             """;

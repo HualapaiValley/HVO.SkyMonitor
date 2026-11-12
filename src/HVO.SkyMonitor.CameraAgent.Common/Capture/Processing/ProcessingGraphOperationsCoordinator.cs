@@ -584,6 +584,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         Guid executionId, CancellationToken cancellationToken)
         => _store.ReadExecutionDetailAsync(executionId, cancellationToken, manifestOnly: true);
 
+    public ValueTask<ProcessingGraphExecutionDetailWithRunManifest?> ReadExecutionDetailWithRunManifestAsync(
+        Guid executionId, CancellationToken cancellationToken)
+        => _store.ReadExecutionDetailWithRunManifestAsync(executionId, cancellationToken);
+
     public async ValueTask<CapturePipelineConfig?> ReadRevisionPipelineAsync(
         string revisionId,
         CancellationToken cancellationToken)

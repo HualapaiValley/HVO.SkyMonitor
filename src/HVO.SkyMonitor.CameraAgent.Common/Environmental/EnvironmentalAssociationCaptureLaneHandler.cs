@@ -21,6 +21,15 @@ internal sealed class EnvironmentalAssociationCaptureLaneHandler(IServiceProvide
         var descriptor = context.RawCapture.Manifest.Descriptor;
         var capture = descriptor.Capture;
         var timing = descriptor.Timing;
+        try
+        {
+            await associations.EnsureCaptureAcquisitionReadyAsync(capture.CaptureId,
+                descriptor.CycleEvidence?.AcquisitionAttemptId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (EnvironmentalCaptureAcquisitionPendingException)
+        {
+            return CaptureLaneHandlerResult.Wait("environment-capture-pending");
+        }
         var observedAtUtc = timing.ReadoutCompletedUtc.ToUniversalTime();
         var afterCapture = await coordinator.AcquireTriggerAsync(
             EnvironmentalAcquisitionTrigger.AfterCapture,
@@ -47,14 +56,22 @@ internal sealed class EnvironmentalAssociationCaptureLaneHandler(IServiceProvide
         }
         var policyKinds = ResolvePolicyKinds(acquisition);
         if (policyKinds.Length == 0) return CaptureLaneHandlerResult.Success;
-        _ = await associations.AssociateAsync(
+        try
+        {
+            _ = await associations.AssociateAsync(
             capture.CaptureId,
             capture.CaptureSequence,
             exposureFromUtc,
             exposureThroughUtc,
             capture.RigId,
             policyKinds,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            descriptor.CycleEvidence?.AcquisitionAttemptId).ConfigureAwait(false);
+        }
+        catch (EnvironmentalCaptureAcquisitionPendingException)
+        {
+            return CaptureLaneHandlerResult.Wait("environment-capture-pending");
+        }
         return CaptureLaneHandlerResult.Success;
     }
 

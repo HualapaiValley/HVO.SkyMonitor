@@ -26,8 +26,11 @@ public sealed class IlluminationModeTests
         using var document = JsonDocument.Parse(generated.Json);
 
         Assert.IsFalse(document.RootElement.GetProperty("module").GetProperty("options").TryGetProperty("illuminationMode", out _));
-        // The cloud branch changes the configuration identity; omitted lighting retains the legacy request identity.
-        Assert.AreEqual("3694bb506f528030cb2b61e6a8c6ba01f8057357afb186d6b876eecf055a2141", generated.Sha256);
+        // The installer's default-configuration hash is the newest configuration-default generation's (Refs #1779): it
+        // moves only with a new named generation. Omitted lighting retains the legacy request identity.
+        Assert.AreEqual(CameraConfigurationDefaultsTests.CurrentFrozenSha256, generated.Sha256, CameraConfigurationDefaultsTests.AddAGeneration);
+        Assert.AreEqual("3694bb506f528030cb2b61e6a8c6ba01f8057357afb186d6b876eecf055a2141", CameraConfigurationDefaultsTests.CurrentFrozenSha256);
+        Assert.AreEqual(CameraConfigurationDefaults.Current.Generate(request, ApplicationIdentity).Sha256, generated.Sha256);
         Assert.AreEqual("df46995abab4cdee5f33813d3076c512b9a279b9a53178a3f39be852fb132be5",
             CameraAgentInstaller.ComputeRequestSha256(request, InstanceId));
     }

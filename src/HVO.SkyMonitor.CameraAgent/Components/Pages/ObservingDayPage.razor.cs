@@ -211,24 +211,46 @@ public sealed partial class ObservingDayPage : ComponentBase, IAsyncDisposable
     };
 
     /// <summary>
-    /// Why a recorded final evaluation has no product, from its retained disposition only. A final composes the
-    /// products of its segment windows, so it records no frame counts of its own; a final without sources means no
-    /// segment window admitted a frame.
+    /// Why a recorded final evaluation has no product, from its retained disposition only. A keogram or star-trail
+    /// final composes the products of its segment windows, so it records no frame counts of its own; a final without
+    /// sources means no segment window admitted a frame. A daily summary has no segment windows: it admits retained
+    /// previews of the whole period directly, so its wording names those instead.
     /// </summary>
     internal static string Outcome(NightlyProductWindowStatus status) => status.Disposition switch
     {
+        NightlyProductWindowDisposition.NoSources when status.Kind == NightlyProductKind.DailySummary => "no retained preview was admitted",
         NightlyProductWindowDisposition.NoSources => "no segment window admitted a frame",
         NightlyProductWindowDisposition.Rejected => $"rejected ({status.ReasonCode ?? "no reason recorded"})",
         _ => "no current product is recorded"
     };
 
-    // A final's admitted count is the segment products it composed; frame counts live in the product's lineage.
+    // A star trail's or keogram's admitted count is the segment products it composed; a daily summary's is the previews
+    // it admitted. Frame counts live in the product's lineage.
     private string ProductFacts(ProductCard card) => card.Product is { } product
         ? $"Frames {LocalSpan(product.FirstObservationUtc, product.LastObservationUtc)} from " +
           FormattableString.Invariant($"{card.Daily!.Status.AdmittedCount:N0} {(card.Kind == NightlyProductKind.DailySummary ? "admitted preview" : "segment product")}{(card.Daily.Status.AdmittedCount == 1 ? "" : "s")}; {product.Width:N0} × {product.Height:N0}.")
         : card.Daily is { Status: var status } && card.Badge.State == ArchiveCalendarPage.NightlyBadgeState.NotProduced
             ? $"The period was evaluated: {Outcome(status)}."
             : card.Badge.Description + ".";
+
+    /// <summary>
+    /// The viewer's composition and duration facts, named as Product Detail names them (Refs #1780). A star trail or
+    /// keogram composes its segment products and records their summed integration. A daily summary composes no segment
+    /// product: it admits previews out of its candidates and links the period's finals, and the producer records its
+    /// representative preview's exposure, not a sum.
+    /// </summary>
+    internal static string CompositionTerm(NightlyProductKind kind)
+        => kind == NightlyProductKind.DailySummary ? "Admitted previews" : "Composed from";
+
+    /// <inheritdoc cref="CompositionTerm(NightlyProductKind)"/>
+    internal static string Composition(NightlyProductKind kind, NightlyProductWindowStatus status)
+        => kind == NightlyProductKind.DailySummary
+            ? FormattableString.Invariant($"{status.AdmittedCount:N0} / {status.CandidateCount:N0} candidates")
+            : FormattableString.Invariant($"{status.AdmittedCount:N0} segment products");
+
+    /// <inheritdoc cref="CompositionTerm(NightlyProductKind)"/>
+    internal static string IntegrationTerm(NightlyProductKind kind)
+        => kind == NightlyProductKind.DailySummary ? "Representative exposure" : "Total integration";
 
     private string HourTitle(NightlyProductWindowRecord hour)
     {

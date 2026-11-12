@@ -12,7 +12,26 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. The environmental schema upgrade selects a paired recovery checkpoint before startup. Refs #1778
+
+- Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781
+- A lone retained capture stays visible on the Observing Day timeline. Products Library shows a still product's recorded result when its run finished while the page was being read, and reports hourly segment progress for a queued daily time-lapse instead of "Not started". A cancelled lifecycle receipt names who cancelled by actor label and shows the time in site time. Refs #1781
+
+- CameraAgent withdraws queued automation attempts when their definition is disabled or edited, and lets owners stop a queued script run without changing its schedule. Explicit historical retries keep their retained execution identity. Refs #1782
+
+- Cancelling a claimed System control drain now ends its receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded when the cancellation is recorded before the drain completes; a drain that reaches its two-minute bound still ends `drain.timeout`. The receipt records who cancelled, when and why, and capture stays paused until explicitly resumed. A completed drain whose final state the installer cannot read or record now ends Failed instead of Succeeded, and when the installer is interrupted or cannot write its journal right after a drain or just before a restart, a restarted worker now settles the receipt instead of having it refused. Refs #1775
+
+- HYG 4.2 catalog builds and catalog fixture recipes reproduce the approved checksums independently of SQLite's secure-deletion default, including the isolated SQLite 3.45.1 CLI. Refs #1773
+
+- The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
+
+- System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
+
+- Re-running an existing CameraAgent install with a newer installer no longer stops with exit 1 when the installer's configuration defaults changed: the first re-run adopts the cloud assessment steps, lists `camera-module.json` (`pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation)`) and the container recreate in its plan, and needs a running image that declares `io.hvo.skymonitor.configuration-defaults` `installer-defaults-2`; otherwise, and for a changed `--illumination-mode` or a hand-edited `camera-module.json`, the re-run is refused with exit 3 and changes nothing. Refs #1779
+
 - Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
+
+- Annotated previews with metadata corners, and frame-facts layers, now show a selected environmental reading that has no configured source as MISSING instead of failing on every capture, for example the default corner readings on an NWS-only or sky-quality-meter-only CameraAgent. Refs #1784
 
 - Calendar explains complete and partial daily summaries with a D marker, and compatible CameraAgent preflight reports no longer recommend resetting state that can convert in place. #1713
 
@@ -45,6 +64,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
+
+- Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 
 - CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
 - Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386

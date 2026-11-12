@@ -59,9 +59,40 @@ public sealed partial class CameraAgentSystemUiServiceTests
         Assert.AreEqual(CameraAgentControlPhase.Cancelled, cancelled.Phase);
         Assert.AreEqual("owner", cancelled.Cancellation!.Actor);
         Assert.AreEqual(fixture.Clock.GetUtcNow(), cancelled.Cancellation.Utc);
-        var detail = (await fixture.Service.GetControlReceiptsAsync(25, CancellationToken.None).ConfigureAwait(false)).Value!.Single().Detail;
-        StringAssert.Contains(detail, "Cancelled by owner", StringComparison.Ordinal);
-        StringAssert.Contains(detail, "Maintenance no longer needed", StringComparison.Ordinal);
+        var receipt = (await fixture.Service.GetControlReceiptsAsync(25, CancellationToken.None).ConfigureAwait(false)).Value!.Single();
+        // The cancellation is carried as its own fact: the fixed actor class, the UTC instant and the reason.
+        Assert.AreEqual(new SystemControlCancellation(SystemControlActor.LocalOwner, fixture.Clock.GetUtcNow(), "Maintenance no longer needed"),
+            receipt.Cancellation);
+        // The outcome sentence no longer embeds the recorded account identifier or a raw UTC timestamp.
+        StringAssert.Contains(receipt.Detail, "Lifecycle did not complete.", StringComparison.Ordinal);
+        Assert.DoesNotContain("Cancelled by", receipt.Detail!, StringComparison.Ordinal);
+        Assert.DoesNotContain(fixture.Clock.GetUtcNow().ToString("O", System.Globalization.CultureInfo.InvariantCulture), receipt.Detail!,
+            StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("9b1d6c1e-4f0a-4c57-8a55-2f6f0e7c3a10", nameof(SystemControlActor.LocalOwner))]
+    [DataRow("owner", nameof(SystemControlActor.LocalOwner))]
+    [DataRow("installer-lifecycle:worker-1", nameof(SystemControlActor.Installer))]
+    [DataRow("automation:nightly-restart", nameof(SystemControlActor.System))]
+    [DataRow("system", nameof(SystemControlActor.System))]
+    public void LifecycleCancellationMapsTheRecordedActorAsEveryOtherReceiptActorIsMapped(string recorded, string expectedActor)
+    {
+        var expected = Enum.Parse<SystemControlActor>(expectedActor);
+        var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Drain, "owner", "maintenance", 7, DateTimeOffset.UnixEpoch);
+        var cancelledUtc = new DateTimeOffset(2026, 11, 10, 6, 30, 0, TimeSpan.Zero);
+        var receipt = new CameraAgentControlReceipt(request, CameraAgentControlPhase.Cancelled,
+            [new(CameraAgentControlPhase.Queued, request.RequestedUtc, "lifecycle.queued"), new(CameraAgentControlPhase.Cancelled, cancelledUtc, "lifecycle.cancelled")],
+            Cancellation: new(recorded, cancelledUtc, "No longer needed"));
+
+        Assert.AreEqual(new SystemControlCancellation(expected, cancelledUtc, "No longer needed"),
+            CameraAgentSystemUiService.LifecycleCancellation(receipt));
+        Assert.AreEqual(expected, CameraAgentSystemUiService.MapActor(recorded));
+        // The outcome sentence is the same with or without a cancellation, and never names the recorded actor.
+        Assert.AreEqual(CameraAgentSystemUiService.LifecycleDetail(receipt with { Cancellation = null }),
+            CameraAgentSystemUiService.LifecycleDetail(receipt));
+        Assert.DoesNotContain(recorded, CameraAgentSystemUiService.LifecycleDetail(receipt), StringComparison.Ordinal);
+        Assert.IsNull(CameraAgentSystemUiService.LifecycleCancellation(receipt with { Cancellation = null }));
     }
 
     [TestMethod]

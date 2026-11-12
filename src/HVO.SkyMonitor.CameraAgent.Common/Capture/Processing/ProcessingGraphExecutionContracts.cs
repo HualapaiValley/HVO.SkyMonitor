@@ -202,6 +202,32 @@ public sealed record ProcessingGraphExecutionDetail(
     public int? FrozenNodeCount { get; init; }
 }
 
+/// <summary>Why the run-manifest evidence of an execution could not be read beside its detail.</summary>
+public enum ProcessingRunManifestEvidenceFailure
+{
+    /// <summary>The evidence was read.</summary>
+    None,
+
+    /// <summary>The retained evidence exceeds the manifest's row or byte bounds.</summary>
+    ExceedsBounds,
+
+    /// <summary>The retained evidence is corrupt.</summary>
+    Corrupt,
+
+    /// <summary>The evidence could not be read this time for another reason.</summary>
+    Unavailable
+}
+
+/// <summary>
+/// An execution's detail and, from the same snapshot, the detail as its run manifest carries it.
+/// <see cref="RunManifest"/> is what <see cref="IProcessingGraphOperations.ReadRunManifestAsync"/> returns for that
+/// snapshot, or null with the reason in <see cref="RunManifestFailure"/> when that evidence could not be read.
+/// </summary>
+public sealed record ProcessingGraphExecutionDetailWithRunManifest(
+    ProcessingGraphExecutionDetail Detail,
+    ProcessingGraphExecutionDetail? RunManifest,
+    ProcessingRunManifestEvidenceFailure RunManifestFailure = ProcessingRunManifestEvidenceFailure.None);
+
 public sealed record ProcessingReplaySubmission(
     Guid CaptureId,
     string GraphRevisionId,
@@ -367,6 +393,16 @@ public interface IProcessingGraphOperations
 
     /// <summary>Reads a bounded, consistent evidence snapshot without opening diagnostic payloads.</summary>
     ValueTask<ProcessingGraphExecutionDetail?> ReadRunManifestAsync(
+        Guid executionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads an execution's detail together with its run-manifest evidence in one snapshot, without reading the
+    /// execution twice. A caller that shows the detail and needs to know whether the manifest can be produced uses
+    /// this rather than <see cref="ReadExecutionDetailAsync"/> followed by <see cref="ReadRunManifestAsync"/>.
+    /// Null means the execution does not exist.
+    /// </summary>
+    ValueTask<ProcessingGraphExecutionDetailWithRunManifest?> ReadExecutionDetailWithRunManifestAsync(
         Guid executionId,
         CancellationToken cancellationToken);
 

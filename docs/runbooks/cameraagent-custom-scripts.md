@@ -4,7 +4,7 @@ Owner-registered scripts integrate with the predefined automation wizard from
 #1133 and the durable schedule contract from #1136. The merged predefined-wizard
 slice is available; #1133 itself remains open with blocked follow-up work, so this
 is not a claim that the whole prerequisite issue is closed. The custom step, explicit
-run-now and per-running-script stop controls are implemented here. #1137 remains
+run-now and per-attempt script stop controls are implemented here. #1137 remains
 open. Roy approved this Linux x64 adapter slice on November 10, 2026; remaining
 installer/runtime provisioning, production qualification, first full-CI prerequisite
 execution, non-x64 support, #1133 follow-ups and parent closure gates are tracked
@@ -90,13 +90,18 @@ An enabled script definition has an explicit, confirmed **Run now** control. It
 queues one durable invocation without moving the periodic schedule; duplicate
 keys replay the original result, and another pending run-now is refused. A lost
 response keeps the exact key for retry. **Run history** shows safe fixed outcome
-labels, numeric exit/count metadata, and **Stop this run** for running scripts.
+labels, numeric exit/count metadata, and **Stop this run** for queued or running scripts.
 Stop names the exact retained run and definition revision, including after the
-definition is edited or removed, and acknowledges only after process/result drain.
+definition is edited or removed, and acknowledges queued withdrawal only after durable settlement as `Skipped`, with no start
+time or invented process result. For a claimed run it waits for process/result drain.
 It does not disable the schedule, affect built-in tasks, or undo prior effects.
-Queued invocations cannot be stopped by this control; stop becomes available when
-execution has acquired its slot. Active runs are projected separately from the
-recent-history page so newer terminal runs cannot hide the stop control.
+Disabling or editing a definition withdraws all its queued attempts as `Skipped` in
+the same durable transition. Re-enabling never revives them. Removal retains the
+same queued-withdrawal policy. Stop racing a claim waits through worker registration
+and drain, or reports the already terminal outcome if completion won. Queued and running
+attempts are projected separately from recent history so newer terminal rows cannot hide
+their Stop controls on the definition card or in run history. Stop acknowledgement checks
+the exact retained attempt after drain, including when it is older than recent history.
 
 Fixed safe errors explain unavailable registrations, stale versions, pending runs
 and missing/nonlocal runs. Neither UI nor HTTP accepts script uploads, executable
@@ -289,7 +294,7 @@ sleep processes and other owners' script scopes cannot affect the assertions.
   implemented; real subprocess and SQLite regressions qualify this host.
 - Retry/missed policy and failure isolation: reuse the delivered durable runner;
   no exactly-once promise or automatic script retry.
-- Custom wizard step, confirmed run-now and running-script stop/history UI:
+- Custom wizard step, confirmed run-now and queued/running-script stop/history UI:
   implemented with safe registration metadata, durable replay, exact-run stop,
   retained active visibility and fixed meaningful errors. Local behavioral proof
   is recorded at the candidate SHA in the PR requirement/evidence map.
