@@ -140,7 +140,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray();
             projectionOverlay = CreateProjectionOverlay(generatedScene.Scene.Request.Projection);
         }
-        else if (sceneStore.TryGet(provenance!.SceneId, out var scene) && scene is not null)
+        else if (provenance is not null && sceneStore.TryGet(provenance.SceneId, out var scene) && scene is not null)
         {
             objects = scene.Objects.Select(item =>
             {
@@ -155,7 +155,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 : [];
             projectionOverlay = CreateProjectionOverlay(scene.Request.Projection);
         }
-        else if (provenance.Objects is { } persistedObjects)
+        else if (provenance?.Objects is { } persistedObjects)
         {
             var rigHash = RigProjectionContextFactory.CreateProfileHashSha256(context.Config.Rig);
             if (!string.IsNullOrWhiteSpace(provenance.RigProfileHashSha256) &&

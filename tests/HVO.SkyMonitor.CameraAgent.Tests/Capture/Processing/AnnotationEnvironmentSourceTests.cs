@@ -33,6 +33,8 @@ public sealed class AnnotationEnvironmentSourceTests
         "WINDSPEED MISSING", "RAINSTATE MISSING", "CLOUDCOVER MISSING"
     ];
 
+    private static readonly string[] DisabledEnvironmentMissing = ["ENVIRONMENT MISSING"];
+
     private static readonly string[] SelectedFactKinds = ["AirTemperature", "RainState"];
 
     private static readonly string[] OutsidePolicySelection = ["RainState"];
@@ -42,14 +44,19 @@ public sealed class AnnotationEnvironmentSourceTests
     // Level 1: the production Annotation step, with metadata corners and the default environment token and kinds.
 
     [TestMethod]
-    [DataRow("nws-only")]
-    [DataRow("sqm-only")]
-    public async Task Step_AnnotationWithMetadataCorners_ProducesWithMissingLinesForUnconfiguredKinds(string profile)
+    [DataRow("nws-only", true)]
+    [DataRow("sqm-only", true)]
+    [DataRow("disabled", false)]
+    [DataRow("nws-only", false)]
+    [DataRow("sqm-only", false)]
+    public async Task Step_AnnotationWithMetadataCorners_ProducesWithMissingLinesForUnconfiguredKinds(
+        string profile, bool drawProjection)
     {
         using var harness = Harness.Create(profile);
-        var (outcome, thrown, lines) = await RunAnnotationStepAsync(harness, associate: true).ConfigureAwait(false);
+        var (outcome, thrown, lines) = await RunAnnotationStepAsync(
+            harness, associate: profile != "disabled", drawProjection).ConfigureAwait(false);
 
-        Record($"STEP profile={profile} thrown={thrown?.GetType().Name ?? "-"}: {thrown?.Message ?? "-"} " +
+        Record($"STEP profile={profile} drawProjection={drawProjection} thrown={thrown?.GetType().Name ?? "-"}: {thrown?.Message ?? "-"} " +
             $"outcome={outcome?.Status.ToString() ?? "-"}/{outcome?.ReasonCode ?? "-"} lines=[{string.Join(" | ", lines ?? [])}] " +
             $"network={harness.Network.Calls}");
         Assert.IsNull(thrown, thrown?.ToString());
@@ -57,7 +64,7 @@ public sealed class AnnotationEnvironmentSourceTests
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
         Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, outcome.Products.Single().Role);
         // No reading was acquired, so the configured kind's association is Missing too.
-        CollectionAssert.AreEqual(DefaultKindsMissing, lines);
+        CollectionAssert.AreEqual(profile == "disabled" ? DisabledEnvironmentMissing : DefaultKindsMissing, lines);
         Assert.AreEqual(0, harness.Network.Calls);
     }
 
@@ -225,10 +232,10 @@ public sealed class AnnotationEnvironmentSourceTests
     }
 
     private static async Task<(ProcessingOutcome? Outcome, Exception? Thrown, string[]? Lines)> RunAnnotationStepAsync(
-        Harness harness, bool associate)
+        Harness harness, bool associate, bool drawProjection = true)
     {
         var provider = harness.Provider;
-        var configuration = CreateProjectionConfiguration(harness.Root);
+        var configuration = CreateProjectionConfiguration(harness.Root, drawProjection);
         var ingress = provider.GetRequiredService<IRawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         _ = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
@@ -313,6 +320,9 @@ public sealed class AnnotationEnvironmentSourceTests
         };
         switch (profile)
         {
+            case "disabled":
+                settings[prefix + "Enabled"] = "false";
+                break;
             case "nws-only":
                 settings[prefix + "Enabled"] = "true";
                 settings[prefix + "Sources:0:Id"] = "nws-temperature";
@@ -379,9 +389,9 @@ public sealed class AnnotationEnvironmentSourceTests
                 CapturePipelineDependencyPolicy.RejectEnabledDependent)
         };
 
-    // Annotation without a projected scene on a module that is not scene-bearing: image circle and cardinals from the
-    // rig projection, plus metadata corners.
-    private static CameraModuleConfig CreateProjectionConfiguration(string root)
+    // Annotation without scene provenance or a projected scene: metadata corners alone (regression for Refs #1789),
+    // or metadata corners with the rig's image circle and cardinal directions when drawProjection is enabled.
+    private static CameraModuleConfig CreateProjectionConfiguration(string root, bool drawProjection = true)
         => ProcessingGraphOperationsTests.CreateProjectedSceneConfiguration() with
         {
             Module = new CameraModuleDescriptor("Test"),
@@ -397,8 +407,8 @@ public sealed class AnnotationEnvironmentSourceTests
                         Options: JsonSerializer.SerializeToElement(new
                         {
                             drawLabels = false,
-                            drawImageCircle = true,
-                            drawCardinalDirections = true,
+                            drawImageCircle = drawProjection,
+                            drawCardinalDirections = drawProjection,
                             drawMetadataCorners = true,
                             outputVariant = "mono8-annotated"
                         }),
