@@ -63,7 +63,7 @@
         }
         @if (!projection.Enabled)
         {
-            <div id="space-weather-off" class="ops-note-banner compact" role="status"><span class="status-icon skipped" aria-hidden="true"></span><span><strong>Space weather is off.</strong> Nothing is fetched. Notices retained earlier are still listed below. <a href="#space-weather-switch">Turning it on</a></span></div>
+            <div id="space-weather-off" class="ops-note-banner compact" role="status"><span class="status-icon skipped" aria-hidden="true"></span><span><strong>Space weather is off.</strong> Nothing is fetched. Notices retained earlier are still listed below. <a href="@SpaceWeatherSwitchUrl">Turning it on</a></span></div>
         }
         else if (projection.HasData && projection.NoFirstSuccess)
         {

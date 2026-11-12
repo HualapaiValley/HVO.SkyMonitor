@@ -67,6 +67,8 @@ public sealed partial class SpaceWeatherPanel : ComponentBase, IAsyncDisposable
 
     private bool Busy => _reloading || _refreshing || _resuming || _acknowledging is not null;
 
+    private string SpaceWeatherSwitchUrl => $"{NavigationManager.Uri}#space-weather-switch";
+
     private bool CanMutate => _view?.CanMutate == true;
 
     /// <summary>The failed read's message, unless it only repeats the heading.</summary>

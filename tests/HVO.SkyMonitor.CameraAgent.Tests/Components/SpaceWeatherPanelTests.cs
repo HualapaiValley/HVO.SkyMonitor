@@ -181,7 +181,8 @@ public sealed class SpaceWeatherPanelTests
         {
             Assert.AreEqual("Off", cut.Find("#space-weather-state").TextContent);
             Assert.AreEqual("Off", cut.Find("#space-weather-enabled").TextContent);
-            Assert.AreEqual("#space-weather-switch", cut.Find("#space-weather-off a").GetAttribute("href"));
+            Assert.AreEqual($"{context.Services.GetRequiredService<NavigationManager>().Uri}#space-weather-switch",
+                cut.Find("#space-weather-off a").GetAttribute("href"));
             Assert.HasCount(2, cut.FindAll("article.space-weather-notice"));
             StringAssert.Contains(cut.Find("#space-weather-switch").TextContent, "Space weather is off.", StringComparison.Ordinal);
             Assert.IsEmpty(cut.FindAll("#space-weather-setup"));

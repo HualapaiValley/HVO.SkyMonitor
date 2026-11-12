@@ -255,6 +255,8 @@ public sealed class ProcessingExecutionPagesTests
         {
             Assert.IsTrue(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--failed"));
             Assert.IsFalse(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--completed"));
+            Assert.AreEqual($"{context.Services.GetRequiredService<NavigationManager>().Uri}#run-inspector",
+                cut.Find(".run-notice a").GetAttribute("href"));
         });
     }
 

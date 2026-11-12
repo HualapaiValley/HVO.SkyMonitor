@@ -41,6 +41,8 @@ public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, I
 
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
+    private string RunInspectorUrl => $"{NavigationManager.Uri}#run-inspector";
+
     [Inject] internal ICameraAgentTransientUiService TransientService { get; set; } = default!;
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;

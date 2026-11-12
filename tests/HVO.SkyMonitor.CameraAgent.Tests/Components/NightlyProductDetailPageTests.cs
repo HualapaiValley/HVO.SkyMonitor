@@ -291,6 +291,8 @@ public sealed class NightlyProductDetailPageTests
         cut.WaitForAssertion(() => Assert.HasCount(1, cut.FindAll("[data-nightly-section='daily-summary']")));
         var text = cut.Find("[data-nightly-section='daily-summary']").TextContent;
         StringAssert.Contains(text, "Partial: sampled coverage has gaps", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Coverage uses the full sunrise-to-sunrise period, not the configured capture schedule", StringComparison.Ordinal);
+        StringAssert.Contains(text, "night-only schedules can be Partial", StringComparison.Ordinal);
         StringAssert.Contains(text, "Unavailable; no event count was supplied", StringComparison.Ordinal);
         StringAssert.Contains(text, source.ArtifactId.ToString(), StringComparison.Ordinal);
         Assert.AreEqual("Star trail", cut.Find($"[data-nightly-section='daily-summary'] a[href='{NightlyProductLinks.Detail(linkedId)}']").TextContent);

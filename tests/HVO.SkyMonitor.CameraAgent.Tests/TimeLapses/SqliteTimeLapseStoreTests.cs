@@ -70,6 +70,41 @@ public sealed class SqliteTimeLapseStoreTests
                 .Add(page => page.Type, "time-lapse").Add(page => page.Status, "produced"));
             Assert.AreEqual("produced", cut.Find("li").GetAttribute("data-video-state"));
             Assert.AreEqual(TimeLapseLinks.Detail(original.ProductId), cut.Find("li a").GetAttribute("href"));
+
+            clock.UtcNow = clock.UtcNow.AddMinutes(1);
+            var paused = Occurrence(options.Value.TimeLapses, occurrence.SourceWindow!, "paused-video-definition");
+            await store.EnqueueAsync(paused, preset, hours, CancellationToken.None);
+            for (var index = 0; index < hours.Count; index++)
+                await FinishAsync(store, clock, root, await ClaimAsync(store, clock), CameraAgentTimeLapseState.NoSources);
+            var retainedWorking = await ClaimAsync(store, clock);
+            Assert.IsNull(retainedWorking.ParentJobId);
+
+            using var disabled = new SqliteTimeLapseStore(Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
+            {
+                RawIngressRoot = root,
+                TimeLapses = new() { Enabled = false }
+            }), clock);
+            var disabledPage = await disabled.ListLibraryAsync(query, CancellationToken.None);
+            Assert.AreEqual(publishedJob.JobId, disabledPage.Entries.Single().JobId);
+            Assert.AreEqual(original.ProductId, disabledPage.Entries.Single().Product!.ProductId);
+            var disabledProduced = await disabled.ListLibraryAsync(query with
+            {
+                State = Common.NightlyProducts.NightlyProductLibraryState.Produced
+            }, CancellationToken.None);
+            Assert.AreEqual(original.ProductId, disabledProduced.Entries.Single().Product!.ProductId);
+            var disabledStalled = await disabled.ListLibraryAsync(query with
+            {
+                State = Common.NightlyProducts.NightlyProductLibraryState.Stalled
+            }, CancellationToken.None);
+            Assert.IsEmpty(disabledStalled.Entries, "The published video remains the period's disabled-library result.");
+            using var disabledContext = new BunitContext();
+            disabledContext.Services.AddSingleton<ICameraAgentNightlyProductUiService>(new TestNightlyProductUiService
+            {
+                VideoLibrary = disabledProduced
+            });
+            var disabledCut = disabledContext.Render<TimeLapseLibraryView>(parameters => parameters
+                .Add(page => page.Type, "time-lapse").Add(page => page.Status, "produced"));
+            Assert.AreEqual(TimeLapseLinks.Detail(original.ProductId), disabledCut.Find("li a").GetAttribute("href"));
         }
         finally { Directory.Delete(root, true); }
     }
