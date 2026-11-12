@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
@@ -65,6 +66,7 @@ public sealed class EnvironmentalAssociationService(
         if (captureAvailability.Pending) throw new EnvironmentalCaptureAcquisitionPendingException("Capture acquisition is still pending.");
         var captureUnavailable = captureAvailability.UnavailableSources;
         var additions = new List<LocalEnvironmentalCaptureAssociation>(expectedKinds.Length - persisted.Length);
+        var intervalDiagnostics = activity?.IsAllDataRequested == true ? new List<ActivityEvent>() : null;
         foreach (var kind in expectedKinds.Where(kind => !existingKinds.Contains(kind)))
         {
             IReadOnlyList<LocalEnvironmentalObservationRecord> candidates = captureAvailability.EvidenceMissing ? []
@@ -85,10 +87,13 @@ public sealed class EnvironmentalAssociationService(
                 exposureFromUtc,
                 exposureThroughUtc,
                 policyIdentity,
-                candidates);
+                candidates,
+                intervalDiagnostics);
             additions.Add(association);
         }
         await associations.SaveAssociationSetAsync(root, additions, cancellationToken).ConfigureAwait(false);
+        if (intervalDiagnostics is not null)
+            foreach (var diagnostic in intervalDiagnostics) activity!.AddEvent(diagnostic);
         var completed = persisted.Concat(additions).OrderBy(static association => association.Kind).ToArray();
         foreach (var association in additions)
         {
@@ -230,7 +235,8 @@ public sealed class EnvironmentalAssociationService(
         DateTimeOffset exposureFromUtc,
         DateTimeOffset exposureThroughUtc,
         string policyIdentity,
-        IReadOnlyList<LocalEnvironmentalObservationRecord> candidates)
+        IReadOnlyList<LocalEnvironmentalObservationRecord> candidates,
+        List<ActivityEvent>? intervalDiagnostics)
     {
         var covering = candidates
             .Where(candidate => candidate.Fact.ValidFromUtc <= exposureFromUtc &&
@@ -289,6 +295,9 @@ public sealed class EnvironmentalAssociationService(
             conflicts = [];
             conflictIdentities = [];
         }
+        if (intervalDiagnostics is not null && SqmAssociationIntervalDiagnostics.Create(captureId, kind, status,
+                selected?.Fact, exposureFromUtc, exposureThroughUtc) is { } diagnostic)
+            intervalDiagnostics.Add(diagnostic);
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             Schema = AlgorithmVersion,

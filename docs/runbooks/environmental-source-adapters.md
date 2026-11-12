@@ -148,8 +148,30 @@ interval or classifying a valid frequency-mode packet as malformed. Configure `B
 the exposure; its association is Missing. No image-derived SQM measure is added.
 The retained integration interval describes the measurement. Optional pre-exposure
 association currently uses validity/freshness, so a sample ending just before
-capture can describe that capture without claiming temporal overlap. A versioned
-interval/gap policy and physical timing validation remain tracked in [#1735](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1735).
+capture can describe that capture without claiming temporal overlap. The in-code
+`sqm-validity-interval-diagnostics-v1` policy names the maximum preceding gap as
+one existing per-reading validity window, with the existing freshness check
+applied separately. No second time limit changes selection: stale-but-valid
+readings remain Stale, and readings whose validity ends at or before exposure
+start remain Missing. Configured windows and retained sample times remain the
+authority, including when the integration is longer than the validity window.
+When an `environment.associate` activity is sampled, a new association reports an
+`environment.association.interval` event with its status, actual sample interval,
+integration duration and maximum preceding gap. A sample ending at or before
+exposure start is `preceding` with its nonnegative gap; touching half-open
+intervals have zero gap and do not overlap. Intersecting sample/exposure intervals
+are `overlapping`. Unselected evidence is `unavailable`, without an invented
+interval; an older selected reading without an integration is `interval-unknown`.
+Non-SQM readings receive no SQM interval event. Retained associations are returned
+unchanged without backfilling or reinterpreting their diagnostics.
+
+The version remains in code only. Association records have no free-form
+diagnostic metadata slot, and sample metadata is typed. Source provenance has
+free-form parameters, but they determine source identity: placing an association
+diagnostic version there could split one source into competing identities and
+change selection. Persisting this version in a non-identity diagnostic slot
+needs a separately authorized schema or persisted-format decision. That item and
+physical timing validation remain tracked in Refs #1735.
 `BeforeCaptureWaitMilliseconds` bounds device acquisition. Durable attempt
 settlement can add storage latency; using an expired acquisition token for that
 settlement would allow old failed-source evidence to reappear. A strict total
@@ -263,7 +285,8 @@ retry retains the same acquisition identity. Other errors, identity conflicts,
 and exhausted contention propagate before acquisition is queued; they do not
 fall back to older source evidence. These retries bound attempt count, not total
 storage latency: SQLite's existing per-call timeout still applies. The strict
-total deadline and SQM interval/gap policy above still need an agreed contract.
+total deadline above still needs an agreed contract; persisted interval-policy
+versioning also remains held.
 
 A busy request follows the exact in-flight read: success leaves that capture
 available, while failure/missing/timeout fences its older readings. With any
@@ -304,8 +327,8 @@ An unassociated capture whose entire receipt set has expired or is missing repor
 unavailable evidence, even if other associations still pin old facts. Completed
 associations remain immutable. Association binds retained tokens to raw capture
 IDs; explicit legacy capture IDs remain readable and anonymous legacy history is
-never guessed into a capture. The SQM interval/gap
-policy and a strict total deadline under SQLite contention remain in Refs #1735.
+never guessed into a capture. Persisted SQM diagnostic versioning and a strict
+total deadline under SQLite contention remain held in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a
 bounded deferred queue drained by the same hosted acquisition service. Queue

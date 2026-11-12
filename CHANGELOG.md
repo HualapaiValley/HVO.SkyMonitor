@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent retries transient SQLite contention when reserving before-capture environmental evidence; persistent storage failures still refuse capture admission. Refs #1735
+- CameraAgent retries transient SQLite contention before environmental capture admission and reports SQM integration intervals and preceding gaps without changing association selection. Refs #1735
 
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 
