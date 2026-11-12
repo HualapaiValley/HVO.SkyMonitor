@@ -14,7 +14,7 @@ public sealed class GpsTimeReaderTests
     {
         var time = new FakeTimeProvider(Now.AddMilliseconds(100));
         using var reader = new GpsTimeReader(time);
-        await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None).ConfigureAwait(false);
         var status = reader.GetStatus();
         Assert.AreEqual(GpsSignalState.Available, status.State);
         Assert.AreEqual(Now, status.Utc);
@@ -34,7 +34,7 @@ public sealed class GpsTimeReaderTests
         var time = new FakeTimeProvider(Now);
         using var reader = new GpsTimeReader(time);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
-        await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None).ConfigureAwait(false);
         reader.ObserveSimulatedPps();
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().PpsState);
         time.Advance(TimeSpan.FromSeconds(6));
@@ -43,10 +43,10 @@ public sealed class GpsTimeReaderTests
         Assert.IsNull(stale.ArrivalOffset);
         Assert.IsNull(stale.Satellites);
         Assert.AreEqual(GpsSignalState.Stale, stale.PpsState);
-        await reader.ReadAsync(Source(Rmc("V")), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc("V")), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.NoFix, reader.GetStatus().State);
         Assert.IsNull(reader.GetStatus().ArrivalOffset);
-        await reader.ReadAsync(Source(Rmc()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
     }
 
@@ -62,8 +62,9 @@ public sealed class GpsTimeReaderTests
     [DataRow("GPXXX,120000,A,,,,,,,121126,,,A")]
     public async Task InvalidSentences_DoNotCreateTimeEvidence(string input)
     {
+        ArgumentNullException.ThrowIfNull(input);
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
-        await reader.ReadAsync(Source(input.StartsWith('$') || input == "noise" ? input : Sentence(input)), CancellationToken.None);
+        await reader.ReadAsync(Source(input.StartsWith('$') || input == "noise" ? input : Sentence(input)), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
         Assert.IsNull(reader.GetStatus().Utc);
     }
@@ -72,7 +73,7 @@ public sealed class GpsTimeReaderTests
     public async Task OverlengthSentence_IsDiscardedAndResynchronizesAtNextLine()
     {
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
-        await reader.ReadAsync(Source(new string('x', 200), Rmc()), CancellationToken.None);
+        await reader.ReadAsync(Source(new string('x', 200), Rmc()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
     }
 
@@ -81,10 +82,10 @@ public sealed class GpsTimeReaderTests
     {
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
         using var source = Source(new string('x', 10000));
-        await reader.ReadAsync(source, CancellationToken.None);
+        await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsTimeReader.MaximumBytesPerRead, source.Position);
         using var partial = new MemoryStream(Encoding.ASCII.GetBytes(Rmc()));
-        await reader.ReadAsync(partial, CancellationToken.None);
+        await reader.ReadAsync(partial, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
     }
 
@@ -96,11 +97,11 @@ public sealed class GpsTimeReaderTests
         using var stream = new WaitingStream();
         using var cancellation = new CancellationTokenSource();
         var pending = reader.ReadAsync(stream, cancellation.Token);
-        cancellation.Cancel();
-        await Assert.ThrowsAsync<OperationCanceledException>(() => pending);
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => pending).ConfigureAwait(false);
         var timed = reader.ReadAsync(stream, CancellationToken.None);
         time.Advance(GpsTimeReader.ReadTimeout);
-        await timed;
+        await timed.ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
     }
 
@@ -108,12 +109,12 @@ public sealed class GpsTimeReaderTests
     public async Task Disconnect_ClearsEvidenceAndNextReadRecovers()
     {
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
-        await reader.ReadAsync(Source(Rmc()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
         using var broken = new BrokenStream();
-        await reader.ReadAsync(broken, CancellationToken.None);
+        await reader.ReadAsync(broken, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Unavailable, reader.GetStatus().State);
         Assert.IsNull(reader.GetStatus().ArrivalOffset);
-        await reader.ReadAsync(Source(Rmc()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
     }
 
@@ -121,7 +122,7 @@ public sealed class GpsTimeReaderTests
     public async Task GgaAndPpsWithoutDatedRmc_CannotCreateUtcOrOffset()
     {
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
-        await reader.ReadAsync(Source(Gga()), CancellationToken.None);
+        await reader.ReadAsync(Source(Gga()), CancellationToken.None).ConfigureAwait(false);
         reader.ObserveSimulatedPps();
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
         Assert.IsNull(reader.GetStatus().Utc);
@@ -133,10 +134,10 @@ public sealed class GpsTimeReaderTests
     public async Task FreshGgaLossOfFix_SuppressesDiagnosticOffsetUntilRecovery()
     {
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
-        await reader.ReadAsync(Source(Rmc(), Sentence("GPGGA,120000.000,4807.038,N,01131.000,E,0,00,0.9,545.4,M,46.9,M,,")), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc(), Sentence("GPGGA,120000.000,4807.038,N,01131.000,E,0,00,0.9,545.4,M,46.9,M,,")), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.NoFix, reader.GetStatus().State);
         Assert.IsNull(reader.GetStatus().ArrivalOffset);
-        await reader.ReadAsync(Source(Gga()), CancellationToken.None);
+        await reader.ReadAsync(Source(Gga()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
     }
 
@@ -145,9 +146,9 @@ public sealed class GpsTimeReaderTests
     {
         var time = new FakeTimeProvider(Now);
         using var reader = new GpsTimeReader(time);
-        await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None).ConfigureAwait(false);
         time.Advance(GpsTimeReader.StaleAfter);
-        await reader.ReadAsync(Source("bad", Sentence("GPGGA,120000.000,,,,,9,100,")), CancellationToken.None);
+        await reader.ReadAsync(Source("bad", Sentence("GPGGA,120000.000,,,,,9,100,")), CancellationToken.None).ConfigureAwait(false);
         reader.ObserveSimulatedPps();
         Assert.AreEqual(GpsSignalState.Stale, reader.GetStatus().State);
         Assert.AreEqual(Now, reader.GetStatus().LastSentenceUtc);
@@ -159,11 +160,11 @@ public sealed class GpsTimeReaderTests
     {
         var time = new FakeTimeProvider(Now);
         using var reader = new GpsTimeReader(time);
-        await reader.ReadAsync(Source(Rmc()), CancellationToken.None);
+        await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
         time.AdjustTime(Now.AddHours(1));
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
         time.Advance(GpsTimeReader.StaleAfter);
-        await reader.ReadAsync(Source(Gga()), CancellationToken.None);
+        await reader.ReadAsync(Source(Gga()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Stale, reader.GetStatus().State);
         Assert.AreEqual(8, reader.GetStatus().Satellites);
     }
@@ -178,13 +179,13 @@ public sealed class GpsTimeReaderTests
         var first = reader.ReadAsync(blocked, CancellationToken.None);
         using var cancellation = new CancellationTokenSource();
         var second = reader.ReadAsync(queued, cancellation.Token);
-        cancellation.Cancel();
-        await Assert.ThrowsAsync<OperationCanceledException>(() => second);
+        await cancellation.CancelAsync().ConfigureAwait(false);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => second).ConfigureAwait(false);
         Assert.AreEqual(0L, queued.Position);
         time.Advance(GpsTimeReader.ReadTimeout);
-        await first;
+        await first.ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
-        await reader.ReadAsync(queued, CancellationToken.None);
+        await reader.ReadAsync(queued, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
     }
 
@@ -195,7 +196,7 @@ public sealed class GpsTimeReaderTests
     {
         ArgumentNullException.ThrowIfNull(body);
         using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
-        await reader.ReadAsync(Source(Sentence(body)), CancellationToken.None);
+        await reader.ReadAsync(Source(Sentence(body)), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
         Assert.AreEqual(new DateOnly(year, month, day), DateOnly.FromDateTime(reader.GetStatus().Utc!.Value.UtcDateTime));
         Assert.AreEqual(TimeSpan.Zero, reader.GetStatus().Utc!.Value.Offset);
