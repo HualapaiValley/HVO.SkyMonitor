@@ -49,6 +49,7 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await RunManifestTestAssertions.ResponseAsync(recovered, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);
                 await ReplaceFrozenEvidenceAsync(root, id, original).ConfigureAwait(false);
+                await ReplaceManifestCounterAsync(root, id, "frozenOutputInputCounts", "{\"preview\":0}").ConfigureAwait(false);
                 await RunManifestTestAssertions.ResponseAsync(recovered, id).ConfigureAwait(false);
             }
         }
@@ -62,13 +63,6 @@ public sealed partial class ProcessingGraphOperationsTests
         _ => "{\"preview\":-1}"
     };
 
-    internal static async Task ReplaceFrozenInputEvidenceAsync(string root, Guid id, string counts)
-    {
-        var plan = JsonNode.Parse(await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false),
-            documentOptions: new() { MaxDepth = 1024 })!.AsObject();
-        plan.Remove("frozenOutputInputCounts");
-        var primary = plan.ToJsonString();
-        await ReplaceFrozenEvidenceAsync(root, id,
-            Encoding.UTF8.GetBytes(primary[..^1] + ",\"frozenOutputInputCounts\":" + counts + "}")).ConfigureAwait(false);
-    }
+    internal static Task ReplaceFrozenInputEvidenceAsync(string root, Guid id, string counts)
+        => ReplaceManifestCounterAsync(root, id, "frozenOutputInputCounts", counts);
 }

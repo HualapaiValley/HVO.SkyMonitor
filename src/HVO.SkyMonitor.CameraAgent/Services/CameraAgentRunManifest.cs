@@ -87,7 +87,7 @@ internal static class CameraAgentRunManifest
         if (detail.Nodes.Any(static node => node.CommittedOutputCount is null))
             return UnrecordedOutputReason;
         if (detail.Nodes.Any(static node => node.NodeId.Length is 0 or > 128 ||
-            node.NodeId != node.NodeId.Trim() || node.NodeId.Any(static value => char.IsControl(value) || value is '/' or '\\')))
+            node.NodeId != node.NodeId.Trim() || node.NodeId.Any(char.IsControl)))
             return IdentifierUnavailableReason;
         if (detail.Nodes.Any(static node => node.Outputs.Any(static output =>
             !IsSha256(output.PayloadSha256) || output.SourceArtifactIds.Count > 512) ||

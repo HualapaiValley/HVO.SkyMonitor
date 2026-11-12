@@ -45,41 +45,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         return removed ? buffer.WrittenSpan.ToArray() : frozenJson;
     }
 
-    private static Dictionary<string, int> ReadCommittedOutputCounts(byte[] frozenJson)
-        => ReadManifestCounter(frozenJson, CommittedOutputCountsMember, 128);
-
-    private static async ValueTask RecordCommittedOutputCountAsync(
-        SqliteConnection connection, SqliteTransaction transaction, Guid executionId,
-        string nodeId, int outputCount, CancellationToken cancellationToken)
-    {
-        var frozenJson = await ReadExecutionFrozenPlanJsonAsync(connection, transaction, executionId, cancellationToken).ConfigureAwait(false);
-        // This is optional export bookkeeping for work that has already executed.
-        // Preserve corrupt frozen bytes and finish the journal transaction; primary
-        // readers and manifest downloads retain their existing validation.
-        Dictionary<string, int> counts;
-        try
-        {
-            counts = ReadCommittedOutputCounts(frozenJson);
-        }
-        catch (InvalidDataException)
-        {
-            return;
-        }
-        if (counts.TryGetValue(nodeId, out var existing) && existing >= outputCount) return;
-        // A failed attempt commits zero outputs; a successful retry can later commit
-        // its actual outputs. Ordinal slots persist across attempts, so a later
-        // outputless failure must not erase the earlier committed set. Retention
-        // cannot lower this count either. The lease and transaction protect both
-        // the count and the node/attempt/output associations.
-        counts[nodeId] = outputCount;
-        var updated = WriteManifestCounter(frozenJson, CommittedOutputCountsMember, counts);
-        // Preserve the existing plan-byte policy: bookkeeping never fails completed work.
-        if (updated is null) return;
-        using var update = connection.CreateCommand();
-        update.Transaction = transaction;
-        update.CommandText = "UPDATE processing_executions SET frozen_plan_json = $json WHERE execution_id = $execution;";
-        update.Parameters.AddWithValue("$json", updated);
-        update.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-    }
+    private static ValueTask RecordCommittedOutputCountAsync(SqliteConnection connection,
+        SqliteTransaction transaction, Guid executionId, string nodeId, int outputCount, CancellationToken cancellationToken)
+        => RecordManifestCountAsync(connection, transaction, executionId, ManifestOutputLedger, nodeId, outputCount, cancellationToken);
 }

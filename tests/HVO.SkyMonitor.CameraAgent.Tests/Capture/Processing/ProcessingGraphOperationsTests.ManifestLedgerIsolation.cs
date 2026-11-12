@@ -77,23 +77,51 @@ public sealed partial class ProcessingGraphOperationsTests
     {
         using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
         await connection.OpenAsync().ConfigureAwait(false);
+#pragma warning disable CA1849 // SQLite test transaction follows the store's immediate transaction convention.
+        using var transaction = connection.BeginTransaction();
+#pragma warning restore CA1849
+        var kind = member == "committedOutputCounts" ? SqliteCaptureProcessingStore.ManifestOutputLedger : SqliteCaptureProcessingStore.ManifestInputLedger;
         using var command = connection.CreateCommand();
-        if (replacement is null)
-            command.CommandText = "UPDATE processing_executions SET frozen_plan_json=CAST(json_remove(CAST(frozen_plan_json AS TEXT), $path) AS BLOB) WHERE execution_id=$execution;";
-        else
-            command.CommandText = "UPDATE processing_executions SET frozen_plan_json=CAST(json_set(CAST(frozen_plan_json AS TEXT), $path, json($value)) AS BLOB) WHERE execution_id=$execution;";
-        command.Parameters.AddWithValue("$path", "$." + member);
+        command.Transaction = transaction;
+        command.CommandText = "DELETE FROM processing_execution_manifest_counts WHERE execution_id=$execution AND ledger_kind=$kind AND node_id<>''; UPDATE processing_execution_manifest_counts SET evidence_status='Recorded' WHERE execution_id=$execution AND ledger_kind=$kind AND node_id='';";
         command.Parameters.AddWithValue("$execution", id.ToString("N"));
-        if (replacement is not null) command.Parameters.AddWithValue("$value", replacement);
-        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        command.Parameters.AddWithValue("$kind", kind);
+        await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        if (replacement is not null)
+        {
+            // Fault payloads are only a fixture notation. The current durable schema
+            // stores typed counts and an explicit corruption state, never this JSON.
+            try
+            {
+                using var document = JsonDocument.Parse(replacement);
+                if (document.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException();
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    if (property.Name.Length is 0 or > 128 || !seen.Add(property.Name) || !property.Value.TryGetInt32(out var count) ||
+                        count < 0 || count > (kind == SqliteCaptureProcessingStore.ManifestInputLedger ? 512 : 128)) throw new InvalidDataException();
+                    await SqliteCaptureProcessingStore.RecordManifestCountAsync(connection, transaction, id, kind, property.Name, count, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception) when (exception is JsonException or InvalidDataException or InvalidOperationException)
+            {
+                command.CommandText = "UPDATE processing_execution_manifest_counts SET evidence_status='Corrupt' WHERE execution_id=$execution AND ledger_kind=$kind AND node_id='';";
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+        }
+        await transaction.CommitAsync().ConfigureAwait(false);
     }
 
     internal static async Task<int?> ReadManifestCounterAsync(string root, Guid id, string member, string nodeId)
     {
-        var bytes = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
-        Assert.IsLessThan(65536, bytes.Length, "This fixture must be far below the existing plan byte budget.");
-        using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { MaxDepth = 1024 });
-        return document.RootElement.TryGetProperty(member, out var counts) && counts.TryGetProperty(nodeId, out var count)
-            ? count.GetInt32() : null;
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT evidence_count FROM processing_execution_manifest_counts WHERE execution_id=$execution AND ledger_kind=$kind AND node_id=$node;";
+        command.Parameters.AddWithValue("$execution", id.ToString("N"));
+        command.Parameters.AddWithValue("$kind", member == "committedOutputCounts" ? SqliteCaptureProcessingStore.ManifestOutputLedger : SqliteCaptureProcessingStore.ManifestInputLedger);
+        command.Parameters.AddWithValue("$node", nodeId);
+        var value = await command.ExecuteScalarAsync().ConfigureAwait(false);
+        return value is null or DBNull ? null : Convert.ToInt32(value, System.Globalization.CultureInfo.InvariantCulture);
     }
 }

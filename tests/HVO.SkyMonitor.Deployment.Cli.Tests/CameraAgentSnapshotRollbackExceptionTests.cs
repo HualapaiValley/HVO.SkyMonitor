@@ -97,6 +97,31 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false, 1)]
+    [DataRow(true, 0)]
+    public void ManifestLedgerUpgradeDeclaresTheCheckpointBoundary(bool revertBoundary, int expectedMigrations)
+    {
+        var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
+            item!["location"]!.GetValue<string>() == Store)!;
+        var previous = exception["previousImageLabels"]!.AsObject().ToDictionary(
+            static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal);
+        var candidate = ReadDockerfileLabels();
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
+        Assert.AreEqual("4293871b7c4cf38ce0e0e4ea969aa9a6de057eea", candidate[boundary]);
+        Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
+        CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
+        if (revertBoundary) candidate[boundary] = previous[boundary];
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-manifest-boundary-" + Guid.NewGuid().ToString("N")), Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null, JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility, target,
+            Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        Assert.AreEqual(expectedMigrations, changes.Count);
+        if (!revertBoundary) StringAssert.StartsWith(changes.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
+    }
+
     internal static Dictionary<string, string> ReadSchemaThreeImageLabels()
     {
         using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,

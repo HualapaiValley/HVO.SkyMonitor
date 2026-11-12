@@ -15,6 +15,9 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("preview")]
     [DataRow("preview main")]
     [DataRow("prévisualisation")]
+    [DataRow("preview/main")]
+    [DataRow("preview\\main")]
+    [DataRow("preview/\\main\"quoted")]
     public async Task RunManifestPreservesFrozenEvidenceChecksumsAndLineageAcrossRestart(string previewNodeId)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-run-manifest");

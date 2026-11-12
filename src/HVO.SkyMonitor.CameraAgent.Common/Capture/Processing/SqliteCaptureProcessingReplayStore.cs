@@ -238,8 +238,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 insert.Parameters.AddWithValue("$definition", revision.State.DefinitionIdentitySha256);
                 insert.Parameters.AddWithValue("$shared_plan", revision.State.SharedPlanIdentitySha256);
                 insert.Parameters.AddWithValue("$local_plan", revision.State.LocalPlanIdentitySha256);
-                insert.Parameters.AddWithValue("$frozen_plan", InitializeFrozenOutputInputCounts(
-                    preparedInputs.FrozenPlanJson, revision.Nodes.Select(static node => node.NodeId)));
+                insert.Parameters.AddWithValue("$frozen_plan", preparedInputs.FrozenPlanJson);
                 insert.Parameters.AddWithValue("$configuration", configurationJson);
                 insert.Parameters.AddWithValue("$trigger", submission.TriggerKind);
                 insert.Parameters.AddWithValue("$trigger_reference", submission.TriggerReference ?? executionId.ToString("N"));
@@ -258,6 +257,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                         "The replay trigger already identifies a different execution.", exception);
                 }
             }
+            await InitializeManifestLedgersAsync(connection, transaction, executionId,
+                revision.Nodes.Select(static node => node.NodeId), cancellationToken).ConfigureAwait(false);
             foreach (var node in revision.Nodes)
             {
                 using var insertNode = connection.CreateCommand();
