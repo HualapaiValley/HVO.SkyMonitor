@@ -14,6 +14,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Storage;
 public sealed class StorageRootIdentityTests
 {
     [TestMethod]
+    public void CanonicalPathsPreserveDirectoryCaseWhileKeysUsePlatformComparison()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "MiXeD-Root"));
+        var alias = Path.Combine(root, ".") + Path.DirectorySeparatorChar;
+        Assert.AreEqual(root, StorageRootIdentity.CanonicalPath(alias));
+        Assert.AreEqual(OperatingSystem.IsWindows() ? root.ToUpperInvariant() : root, StorageRootIdentity.Key(alias));
+        var volumeRoot = Path.GetPathRoot(root)!;
+        Assert.AreEqual(volumeRoot, StorageRootIdentity.CanonicalPath(volumeRoot));
+    }
+
+    [TestMethod]
     [DataRow("trailing")]
     [DataRow("dot")]
     [DataRow("parent")]

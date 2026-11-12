@@ -68,13 +68,18 @@ Inspect the affected executions and explicitly replay intact retained inputs
 when needed. Successful new work and replay do not erase historical skips; each
 skip ages out of this health window after 24 hours without changing its evidence. It does not
 stop raw acquisition or compatible processing, or classify unrelated abandoned
-work as a Storage skip.
+work as a Storage skip. The installer option `--allow-quarantined-readiness` does
+not waive this independent Storage-skip health reason, including when a quarantine
+also exists; that exception remains unavailable until the 24-hour count expires.
 
 Mismatch guidance names differing fields without showing directory paths or
 policy values. The fence, lifecycle/raw-ingress/index locks, retention root
-comparisons, and pressure/outbox state keys share one lexical full-path identity:
-trailing separators, dot segments and equivalent relative spellings map to the
-same root. This does not rewrite configured paths or change the storage layout.
+comparisons (including time-lapse and satellite holds), and pressure/outbox state
+keys share one lexical full-path identity: trailing separators, dot segments and
+equivalent relative spellings map to the same root. I/O and retention-hold readers
+receive a separator-trimmed canonical path that preserves directory casing;
+platform case folding applies only to comparison/in-memory keys. This does not
+rewrite configured paths or change the storage layout.
 Artifact-policy StepId selectors compare ignoring case. On Linux,
 backslash is a filename character, not a directory separator. Policy order is
 preserved: equally specific overlapping policies use the first match. Storage-policy

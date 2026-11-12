@@ -72,7 +72,7 @@ public static class CaptureStoragePolicy
         options ??= new FileStorageCaptureProcessingStepOptions();
         return JsonSerializer.SerializeToElement(new
         {
-            StorageRoot = StorageRootIdentity.Normalize(options.StorageRoot),
+            StorageRoot = StorageRootIdentity.Key(options.StorageRoot),
             options.RetentionDays,
             options.UpdateLatestFrame,
             options.QueueForUpload,

@@ -80,9 +80,9 @@ public sealed class StoragePressureState
     public IReadOnlyCollection<StoragePressureSnapshot> Snapshots => _snapshots.Values.ToArray();
 
     public StoragePressureSnapshot? Get(string storageRoot)
-        => _snapshots.TryGetValue(StorageRootIdentity.Normalize(storageRoot), out var value) ? value : null;
+        => _snapshots.TryGetValue(StorageRootIdentity.Key(storageRoot), out var value) ? value : null;
 
-    internal void Set(StoragePressureSnapshot snapshot) => _snapshots[StorageRootIdentity.Normalize(snapshot.StorageRoot)] = snapshot;
+    internal void Set(StoragePressureSnapshot snapshot) => _snapshots[StorageRootIdentity.Key(snapshot.StorageRoot)] = snapshot;
 }
 
 internal static class StorageLifecycleLock
@@ -91,7 +91,7 @@ internal static class StorageLifecycleLock
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     internal static SemaphoreSlim ForRoot(string storageRoot)
-        => Gates.GetOrAdd(StorageRootIdentity.Normalize(storageRoot), static _ => new SemaphoreSlim(1, 1));
+        => Gates.GetOrAdd(StorageRootIdentity.Key(storageRoot), static _ => new SemaphoreSlim(1, 1));
 
     internal static async ValueTask WaitAsync(
         SemaphoreSlim gate, string caller, Microsoft.Extensions.Logging.ILogger? logger,
@@ -147,5 +147,5 @@ internal static class RawIngressLifecycleLock
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     internal static SemaphoreSlim ForRoot(string storageRoot)
-        => Gates.GetOrAdd(StorageRootIdentity.Normalize(storageRoot), static _ => new SemaphoreSlim(1, 1));
+        => Gates.GetOrAdd(StorageRootIdentity.Key(storageRoot), static _ => new SemaphoreSlim(1, 1));
 }

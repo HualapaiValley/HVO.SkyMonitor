@@ -260,7 +260,7 @@ public sealed class RetentionBackgroundService(
                     continue;
                 }
 
-                var normalizedRoot = StorageRootIdentity.Normalize(storageRoot);
+                var normalizedRoot = StorageRootIdentity.CanonicalPath(storageRoot);
                 var retentionDays = Math.Max(1, options.RetentionDays);
 
                 configuredStorage.Add(new StorageRetentionPlan(
@@ -281,16 +281,16 @@ public sealed class RetentionBackgroundService(
         }
 
         var plans = configuredStorage
-            .GroupBy(static plan => StorageRootIdentity.Normalize(plan.StorageRoot), PathComparer)
+            .GroupBy(static plan => StorageRootIdentity.Key(plan.StorageRoot), StringComparer.Ordinal)
             .Select(static group => new StorageRetentionPlan(
-                group.Key,
+                group.First().StorageRoot,
                 group.Max(static plan => plan.RetentionDays),
                 MergePolicies(group.SelectMany(static plan => plan.Policies ?? []))))
             .OrderBy(static plan => plan.StorageRoot, PathComparer)
             .ToList();
         var needsRawRoot = hasDurableOutputs || _rawIngressHolds is not null || _processingHolds is not null;
         var rawRoot = needsRawRoot
-            ? StorageRootIdentity.Normalize(_hostOptions.RawIngressRoot)
+            ? StorageRootIdentity.CanonicalPath(_hostOptions.RawIngressRoot)
             : null;
         if (hasDurableOutputs && !plans.Any(plan => PathsEqual(plan.StorageRoot, rawRoot!)))
         {
@@ -345,8 +345,9 @@ public sealed class RetentionBackgroundService(
         IRawIngressLifecycleProcessingRetentionHolds? processingHoldsUnderLifecycleLock,
         CancellationToken cancellationToken)
     {
-        var normalizedRoot = StorageRootIdentity.Normalize(storageRoot);
-        var rootPrefix = string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
+        var normalizedRoot = StorageRootIdentity.CanonicalPath(storageRoot);
+        var rootPrefix = Path.EndsInDirectorySeparator(normalizedRoot)
+            ? normalizedRoot : string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
         var paths = new HashSet<string>(PathComparer);
         var artifactIds = new HashSet<Guid>();
         var outboxHolds = await _artifactOutbox.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);

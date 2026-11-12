@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently and share disk-pressure reporting. Refs #1763
+- Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
 
 - CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763
 
