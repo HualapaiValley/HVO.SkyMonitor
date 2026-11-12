@@ -24,6 +24,110 @@ public sealed class DailySummaryIntegrationTests : IDisposable
     public void Dispose() => Directory.Delete(_root, true);
 
     [TestMethod]
+    [DataRow(NightlyProductKind.StarTrail, false)]
+    [DataRow(NightlyProductKind.StarTrail, true)]
+    [DataRow(NightlyProductKind.Keogram, false)]
+    [DataRow(NightlyProductKind.Keogram, true)]
+    public async Task AutomationOrderRefreshesSummaryWithoutAnExplicitSummaryRetry(NightlyProductKind kind, bool summaryFirst)
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var summary = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        var still = NightlyProductFixture.Occurrence(kind);
+        Guid? original = null;
+        byte[]? originalBytes = null;
+        using (var harness = Create())
+        {
+            var registry = new NightlyProductAutomationTaskRegistry(harness.Generator,
+                NightlyProductFixture.HostOptions(_root, NightlyProductFixture.Options()));
+            if (summaryFirst)
+            {
+                Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await registry.ExecuteAsync(summary, CancellationToken.None)).Outcome);
+                original = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId;
+                originalBytes = (await harness.Store.OpenProvenanceAsync(original.Value, CancellationToken.None))!.Content.ToArray();
+            }
+            Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await registry.ExecuteAsync(still, CancellationToken.None)).Outcome);
+            if (!summaryFirst)
+                Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await registry.ExecuteAsync(summary, CancellationToken.None)).Outcome);
+        }
+        using var restarted = Create();
+        var current = (await restarted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!;
+        var facts = (await restarted.Store.GetPresentationAsync(current.ProductId, CancellationToken.None))!.DailySummary!;
+        var linked = facts.Products.Single();
+        var final = (await restarted.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+            .Single(product => product.Kind == kind && product.Scope == NightlyProductScope.Final);
+        Assert.AreEqual(final.ProductId, linked.ProductId);
+        await restarted.Store.VerifyPublicationAsync(current.ProductId, CancellationToken.None);
+        if (original is { } old)
+        {
+            Assert.AreNotEqual(old, current.ProductId);
+            CollectionAssert.AreEqual(originalBytes!, (await restarted.Store.OpenProvenanceAsync(old, CancellationToken.None))!.Content.ToArray());
+        }
+        await restarted.Generator.RunAsync(still, CancellationToken.None);
+        Assert.AreEqual(current.ProductId, (await restarted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InterruptedAutomaticRefreshRecoversOnUnchangedStillRetry(bool cancel)
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var summary = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        var still = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
+        Guid original;
+        byte[] provenance;
+        using (var initial = Create())
+        {
+            await initial.Generator.RunAsync(summary, CancellationToken.None);
+            original = (await initial.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId;
+            provenance = (await initial.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray();
+        }
+        using var cancellation = new CancellationTokenSource();
+        using (var interrupted = Create(new FailSecondRestoreReader(_reader, cancellation, cancel)))
+        {
+            if (cancel)
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => await interrupted.Generator.RunAsync(still, cancellation.Token));
+            else
+                Assert.AreEqual(1, (await interrupted.Generator.RunAsync(still, CancellationToken.None)).FailedWindows);
+            Assert.AreEqual(original, (await interrupted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId);
+            Assert.IsTrue((await interrupted.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Any(product => product.Kind == NightlyProductKind.StarTrail && product.Scope == NightlyProductScope.Final));
+        }
+        using var recovered = Create();
+        var retry = await recovered.Generator.RunAsync(still, CancellationToken.None);
+        Assert.AreEqual(0, retry.FailedWindows);
+        Assert.AreEqual(0, retry.ProductsPublished, "The still product must be reused.");
+        var current = (await recovered.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!;
+        Assert.AreNotEqual(original, current.ProductId);
+        Assert.AreEqual(1, (await recovered.Store.GetPresentationAsync(current.ProductId, CancellationToken.None))!.DailySummary!.Products.Count);
+        CollectionAssert.AreEqual(provenance, (await recovered.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+    }
+
+    private sealed class FailSecondRestoreReader(INightlyProductSourceReader inner, CancellationTokenSource cancellation, bool cancel)
+        : INightlyProductSourceReader
+    {
+        private int _restores;
+        public ValueTask<IReadOnlyList<NightlyProductCandidate>> ReadCandidatesAsync(string nodeId,
+            DateTimeOffset startUtc, DateTimeOffset endUtc, int maximumCount, Action<string> unsupported,
+            CancellationToken cancellationToken) => inner.ReadCandidatesAsync(nodeId, startUtc, endUtc, maximumCount, unsupported, cancellationToken);
+
+        public async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreAsync(IReadOnlyList<NightlyProductCandidate> candidates,
+            CancellationToken cancellationToken)
+        {
+            if (++_restores == 2)
+            {
+                if (cancel)
+                {
+                    await cancellation.CancelAsync();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                throw new IOException("Synthetic summary refresh interruption after still publication.");
+            }
+            return await inner.RestoreAsync(candidates, cancellationToken);
+        }
+    }
+
+    [TestMethod]
     public async Task CompleteSyntheticDayPublishesOnceAndSurvivesRestartWithExactProvenance()
     {
         var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
@@ -74,7 +178,7 @@ public sealed class DailySummaryIntegrationTests : IDisposable
         var withoutLinks = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!;
         await harness.Generator.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail), CancellationToken.None);
         var linked = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
-        Assert.AreEqual(1, linked.ProductsPublished, "New product links must invalidate the summary identity without new captures.");
+        Assert.AreEqual(0, linked.ProductsPublished, "The still run already refreshed the summary; an explicit retry must reuse it.");
         var entry = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary,
             NightlyProductLibraryState.Partial), CancellationToken.None)).Entries.Single();
         var oldId = entry.Product!.ProductId;

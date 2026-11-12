@@ -1,5 +1,6 @@
 using System.Globalization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
 
@@ -7,6 +8,33 @@ namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 
 internal sealed partial class NightlyProductGenerator
 {
+    // Run under the producer semaphore, including unchanged still retries: a crash after the still publication
+    // can leave a summary refresh outstanding. Reuse the retained summary occurrence, never today's definition.
+    private async ValueTask<NightlyProductRunReport> RefreshDailySummariesAsync(LocalAutomationOccurrence occurrence,
+        NightlyProductRunReport report, CancellationToken cancellationToken)
+    {
+        if (report.Kind == NightlyProductKind.DailySummary || !report.Ready || report.FailedWindows > 0 ||
+            report.PendingWindows > 0 || occurrence.SourceWindow is not { } window ||
+            window.Policy.Kind != LocalAutomationSourceWindowKind.SunriseDay)
+            return report;
+
+        var day = await _store.GetDayAsync(window.ReportingPeriod.ReportDate, cancellationToken).ConfigureAwait(false);
+        foreach (var summary in day.Windows.Where(record => record.Status.Kind == NightlyProductKind.DailySummary &&
+            record.Status.Scope == NightlyProductScope.Final && record.FinalProduct is not null &&
+            record.Status.WindowStartUtc == window.StartUtc && record.Status.WindowEndUtc == window.EndUtc &&
+            record.ReportingPeriod.IdentitySha256 == window.ReportingPeriod.IdentitySha256))
+        {
+            var refreshed = await RunCoreAsync(summary.Status.Occurrence, cancellationToken).ConfigureAwait(false);
+            if (!refreshed.Ready || refreshed.FailedWindows > 0 || refreshed.PendingWindows > 0)
+                return report with
+                {
+                    FailedWindows = report.FailedWindows + 1,
+                    Note = "A retained daily summary could not be refreshed; retry this occurrence. " + refreshed.Describe()
+                };
+        }
+        return report;
+    }
+
     private async ValueTask EvaluateDailySummaryAsync(RunContext context, NightlyProductWindow window, int candidateCount,
         NightlyProductAdmissionResult admission, CancellationToken cancellationToken)
     {

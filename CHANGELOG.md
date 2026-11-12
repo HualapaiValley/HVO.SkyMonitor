@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Daily summaries refresh their immutable keogram and star-trail links when a same-period still automation finishes, including recovery on retry, so automation order no longer leaves links missing. Refs #1764
+
 - CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
 
 - CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence, with fresh liveness checks and worker settlement for offline recovery while retaining pending receipts. Refs #1746

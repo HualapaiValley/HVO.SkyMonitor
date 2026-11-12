@@ -35,6 +35,25 @@ public sealed partial class UpgradePreflightTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public void Render_ConvertibleStateWithOnlyLooseBindPermissionsDoesNotRecommendReset()
+    {
+        using var fixture = new PreflightFixture();
+        fixture.WriteCatalogManifest(manifestVersion: 2);
+        fixture.WriteIdentityDatabase(CurrentIdentityMigration);
+        fixture.WriteRawIngressDatabase(schemaVersion: 13);
+        fixture.CreateBindSources();
+        fixture.RelaxBindSourceMode(CameraAgentStateLayout.DataProtectionDirectoryName);
+        var report = Evaluate(fixture);
+        Assert.IsFalse(report.Compatible);
+        Assert.AreEqual("bind-source-mode", report.Findings.Single(static finding => finding.Blocking).Code);
+        var text = CameraAgentStatePreflight.Render(report);
+        StringAssert.Contains(text, "0700", StringComparison.Ordinal);
+        StringAssert.Contains(text, "follow their listed remediation", StringComparison.Ordinal);
+        Assert.DoesNotContain("reset", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void Evaluate_CapturedPre70Ecdd3State_ReportsEveryIncompatibleBoundaryWithoutStartingCameraAgent()
     {
         using var fixture = new PreflightFixture();
