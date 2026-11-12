@@ -499,6 +499,75 @@ public sealed class InstallerControlVerifierTests
         else Assert.AreEqual("outside evidence", await File.ReadAllTextAsync(outside));
     }
 
+    [TestMethod]
+    [DataRow(false, "lifecycle.failed-check-capture")]
+    [DataRow(true, "lifecycle.timeout")]
+    public async Task PreRestartReadFailureDoesNotReportDrainTimeout(bool timeout, string code)
+    {
+        using var fixture = new Fixture();
+        fixture.Client.FailPostDrainRead = timeout;
+        var receipt = await fixture.RunAsync();
+        Assert.AreEqual(code, receipt.Events[^1].Code);
+        Assert.IsTrue(receipt.ResumeConfirmed);
+        Assert.DoesNotContain("restart", fixture.Client.Effects);
+    }
+
+    [TestMethod]
+    public async Task LongDrainRenewsWorkerLeaseUntilTheDrainCompletes()
+    {
+        using var fixture = new Fixture(CameraAgentControlKind.Drain);
+        var drain = new TaskCompletionSource<LifecycleContinuity>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Client.PendingDrain = drain.Task;
+        var heartbeats = 0;
+        fixture.Client.OnExchange = receipt =>
+        {
+            if (receipt?.Phase != CameraAgentControlPhase.Draining || !fixture.Client.Effects.Contains("drain")) return;
+            if (++heartbeats == 3)
+                drain.SetResult(new("Paused", 8, 42, 0, 0, 0, 0, 0, 0, 0, 0));
+        };
+        var terminal = await fixture.RunAsync();
+        Assert.AreEqual(CameraAgentControlPhase.Succeeded, terminal.Phase);
+        Assert.IsGreaterThanOrEqualTo(3, heartbeats);
+        CollectionAssert.AreEqual(DrainEffects, fixture.Client.Effects);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RepeatedPreStopTransportFailuresKeepRecoveryPendingAcrossWorkerReload(bool duringResume)
+    {
+        using var fixture = new Fixture();
+        fixture.Client.AfterDrain = () => fixture.Client.WindowSafe = false;
+        var remaining = 3;
+        fixture.Client.OnExchange = receipt =>
+        {
+            if (!duringResume && receipt is { IsTerminal: false } && fixture.Client.Effects.Contains("drain") && remaining-- > 0)
+                throw new HttpRequestException("Injected repeated restore read outage.");
+        };
+        fixture.Client.BeforeResume = _ =>
+        {
+            if (duringResume && remaining-- > 0) throw new HttpRequestException("Injected repeated resume outage.");
+        };
+        var pending = await fixture.RunAsync();
+        Assert.IsFalse(pending.IsTerminal);
+        Assert.AreEqual("Paused", fixture.Client.CaptureState);
+        for (var poll = 0; poll < 4; poll++)
+        {
+            var journal = new InstallerControlJournal(fixture.JournalPath);
+            await journal.LoadAsync(CancellationToken.None);
+            await new InstallerControlWorker(fixture.Client, journal, _ => Task.FromResult<IDisposable>(new RecoveryLease()),
+                TimeProvider.System, _ => { }, Budgets).PollAsync(CancellationToken.None);
+        }
+        var settled = await fixture.ReloadAsync();
+        Assert.IsTrue(settled.IsTerminal);
+        Assert.IsTrue(settled.ResumeConfirmed);
+        Assert.AreEqual("Running", fixture.Client.CaptureState);
+        Assert.DoesNotContain("restart", fixture.Client.Effects);
+        Assert.AreEqual(1, fixture.Client.Effects.Count(effect => effect == "resume"));
+    }
+
+    private sealed class RecoveryLease : IDisposable { public void Dispose() { } }
+
     private static CameraAgentControlReceipt Queued(CameraAgentControlKind kind = CameraAgentControlKind.Restart)
     {
         var request = new CameraAgentControlRequest(Guid.NewGuid(), kind, "owner", "maintenance", 7, DateTimeOffset.UtcNow);
@@ -593,6 +662,7 @@ public sealed class InstallerControlVerifierTests
         internal long Version = 7;
         internal bool Supervised = true, WindowSafe = true, NeverReturns, KeepProcessIdentity, LostAcknowledgement, HungDrain, CancelRequested, TerminalDelivered;
         internal string? Failure;
+        internal Task<LifecycleContinuity>? PendingDrain;
         internal bool? FailRestartingPublication, FailPostDrainRead;
         private bool _publicationFailed, _postDrainReadFailed;
         internal Action<CameraAgentControlReceipt>? BeforeResume;
@@ -651,8 +721,8 @@ public sealed class InstallerControlVerifierTests
             CaptureState = "Paused";
             Version = 8;
             AfterDrain?.Invoke();
-            return HungDrain ? new TaskCompletionSource<LifecycleContinuity>().Task : Task.FromResult(Boundary() with
-            { OutboxPending = Failure == "drain-backlog" ? 1 : 0, QueuesObserved = Failure != "unobserved-queues" });
+            return PendingDrain ?? (HungDrain ? new TaskCompletionSource<LifecycleContinuity>().Task : Task.FromResult(Boundary() with
+            { OutboxPending = Failure == "drain-backlog" ? 1 : 0, QueuesObserved = Failure != "unobserved-queues" }));
         }
 
         public Task RestartAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)

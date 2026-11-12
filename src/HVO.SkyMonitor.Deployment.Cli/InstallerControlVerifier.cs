@@ -69,7 +69,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
             stage = "claim";
             await ReadAsync(receipt, cancellationToken).ConfigureAwait(false); // publish the claim before issuing the pause
             stage = "drain";
-            var drained = await BoundedAsync(token => client.DrainAsync(receipt.Request, token), _budgets.Drain, cancellationToken)
+            var drained = await BoundedAsync(token => DrainWithHeartbeatAsync(receipt, token), _budgets.Drain, cancellationToken)
                 .ConfigureAwait(false);
             if (!Drained(drained)) throw new InstallerException("The lifecycle boundary is not drained.");
             receipt = await JournalAsync(receipt with { PausedVersion = drained.CaptureVersion, DrainedCaptureSequence = drained.CaptureSequence })
@@ -85,6 +85,7 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
                     : await FinishExecutionAsync(receipt, CameraAgentControlPhase.Succeeded, "lifecycle.drained-paused").ConfigureAwait(false);
             }
 
+            stage = "pre-restart";
             var beforeRestart = await ReadAsync(receipt, cancellationToken).ConfigureAwait(false);
             ThrowIfCancelled(beforeRestart);
             if (!beforeRestart.RestartWindowSafe || beforeRestart.CaptureState != "Paused" ||
@@ -237,7 +238,11 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         if (phase != CameraAgentControlPhase.Succeeded && receipt.Request.Kind == CameraAgentControlKind.Restart &&
             (receipt.Phase is CameraAgentControlPhase.Draining or CameraAgentControlPhase.Restarting) &&
             !receipt.RestartMayHaveOccurred && receipt.ResumeAfterVerification)
-            receipt = await RestoreBeforeRestartAsync(receipt).ConfigureAwait(false);
+        {
+            var restored = await RestoreBeforeRestartAsync(receipt).ConfigureAwait(false);
+            receipt = restored.Receipt;
+            if (!restored.Settled) return receipt; // Keep recovery eligible until the owned pause and restore settle.
+        }
         receipt = receipt with { Cancellation = receipt.Cancellation ?? _cancellation };
         if (receipt.ResumeRequested && !receipt.ResumeConfirmed && phase != CameraAgentControlPhase.Succeeded)
             code = "restart.resume-unconfirmed";
@@ -247,26 +252,64 @@ internal sealed class InstallerControlVerifier(IInstallerControlClient client,
         return terminal;
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failed rollback retains the fenced pause and durable unconfirmed receipt for explicit recovery.")]
-    private async Task<CameraAgentControlReceipt> RestoreBeforeRestartAsync(CameraAgentControlReceipt receipt)
+    private async Task<(CameraAgentControlReceipt Receipt, bool Settled)> RestoreBeforeRestartAsync(CameraAgentControlReceipt receipt)
     {
         try
         {
+            if (receipt.ResumeConfirmed) return (receipt, true);
             var current = await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
-            if (!current.Initialized || current.ProcessId != receipt.OriginalProcessId ||
-                current.CaptureState != "Paused" || current.OwnedPauseVersion != current.CaptureVersion)
-                return receipt;
-            // The original process and latest owned pause prove the boundary; resume rechecks accepted command order atomically.
-            receipt = receipt with { PausedVersion = current.CaptureVersion, VerifiedProcessId = current.ProcessId, ResumeRequested = true };
-            await persist(receipt).ConfigureAwait(false);
+            if (!current.Initialized) return (receipt, false);
+            if (current.ProcessId != receipt.OriginalProcessId) return (receipt, true);
+            // The durable pause outlives a cancelled or disconnected drain request. Its final version is not known yet.
+            if (current.CaptureState == "PauseRequested") return (receipt, false);
+            if (!receipt.ResumeRequested)
+            {
+                if (current.CaptureState != "Paused" || current.OwnedPauseVersion != current.CaptureVersion)
+                    return (receipt, true);
+                // Persist before publishing. A retry uses this same native idempotent resume even if its response was lost.
+                var next = receipt with { PausedVersion = current.CaptureVersion, VerifiedProcessId = current.ProcessId, ResumeRequested = true };
+                await persist(next).ConfigureAwait(false);
+                receipt = next;
+            }
             await ReadAsync(receipt, CancellationToken.None).ConfigureAwait(false);
-            await BoundedAsync(async token => { await client.ResumeAsync(receipt, token).ConfigureAwait(false); return true; },
-                _budgets.Read, CancellationToken.None).ConfigureAwait(false);
-            receipt = receipt with { ResumeConfirmed = true };
-            await persist(receipt).ConfigureAwait(false);
+            try
+            {
+                await BoundedAsync(async token => { await client.ResumeAsync(receipt, token).ConfigureAwait(false); return true; },
+                    _budgets.Read, CancellationToken.None).ConfigureAwait(false);
+            }
+            // The shared native lifecycle client wraps transport failures. A definite command refusal must instead
+            // preserve the later owner's pause and settle without retrying or losing the journaled resume intent.
+            catch (InstallerException exception) when (exception.InnerException is HttpRequestException) { return (receipt, false); }
+            catch (InstallerException) { return (receipt, true); }
+            var confirmed = receipt with { ResumeConfirmed = true };
+            await persist(confirmed).ConfigureAwait(false);
+            return (confirmed, true);
         }
-        catch (Exception) { /* The receipt records whether a recovery resume was issued and confirmed. */ }
-        return receipt;
+        catch (InstallerControlRefusalException) { return (receipt, true); } // A later owner command must remain authoritative.
+        catch (HttpRequestException) { return (receipt, false); }
+        catch (TimeoutException) { return (receipt, false); }
+        catch (OperationCanceledException) { return (receipt, false); }
+    }
+
+    private async Task<LifecycleContinuity> DrainWithHeartbeatAsync(CameraAgentControlReceipt receipt, CancellationToken cancellationToken)
+    {
+        var drain = client.DrainAsync(receipt.Request, cancellationToken);
+        while (!drain.IsCompleted)
+        {
+            using var heartbeat = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            var delay = Task.Delay(Min(TimeSpan.FromSeconds(10), _budgets.Poll), timeProvider, heartbeat.Token);
+            if (await Task.WhenAny(drain, delay).ConfigureAwait(false) == drain)
+            {
+                await heartbeat.CancelAsync().ConfigureAwait(false);
+                break;
+            }
+            await delay.ConfigureAwait(false);
+            // Heartbeats renew observation only. A transport outage must not abandon the authoritative native drain.
+            try { await ReadAsync(receipt, cancellationToken).ConfigureAwait(false); }
+            catch (HttpRequestException) { }
+            catch (TimeoutException) { }
+        }
+        return await drain.ConfigureAwait(false);
     }
 
     private void ThrowIfCancelled(CameraAgentControlSnapshot snapshot)

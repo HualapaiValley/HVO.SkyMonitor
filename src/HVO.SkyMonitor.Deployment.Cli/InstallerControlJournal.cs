@@ -69,17 +69,6 @@ internal sealed class InstallerControlJournal(string path)
         Refused = Refused.Where(item => item.OperationId != operationId).ToArray()
     });
 
-    internal async Task RecoverInterruptedAsync(DateTimeOffset utc)
-    {
-        foreach (var incomplete in _state.Receipts.Where(item => !item.IsTerminal).ToArray())
-            await SaveAsync(incomplete with
-            {
-                Phase = CameraAgentControlPhase.Failed,
-                Events = [.. incomplete.Events, new(CameraAgentControlPhase.Failed, utc, "lifecycle.installer-interrupted")]
-            })
-                .ConfigureAwait(false);
-    }
-
     private async Task WriteAsync(InstallerControlJournalState next)
     {
         await SafeFileSystem.WriteJsonAtomicAsync(path, next, DeploymentJsonContext.Default.InstallerControlJournalState,

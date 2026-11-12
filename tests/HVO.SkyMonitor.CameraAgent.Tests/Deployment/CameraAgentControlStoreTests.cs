@@ -168,6 +168,9 @@ public sealed class CameraAgentControlStoreTests
     [DataRow("pause")]
     [DataRow("request")]
     [DataRow("events")]
+    [DataRow("deadline")]
+    [DataRow("sequence")]
+    [DataRow("verified")]
     public async Task ClaimRefusalAcknowledgementCannotHideEffectsOrChangeTheCanonicalCancellation(string mutation)
     {
         using var controls = Create();
@@ -184,6 +187,9 @@ public sealed class CameraAgentControlStoreTests
             "resume" => next with { ResumeRequested = true },
             "restart" => next with { RestartRequested = true },
             "pause" => next with { PausedVersion = 2 },
+            "deadline" => next with { VerificationDeadlineUtc = _clock.GetUtcNow() },
+            "sequence" => next with { DrainedCaptureSequence = 42 },
+            "verified" => next with { VerifiedProcessId = controls.ProcessId },
             "events" => next with
             {
                 Events = [queued.Events[0], new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining"),
@@ -238,6 +244,33 @@ public sealed class CameraAgentControlStoreTests
         File.CreateSymbolicLink(path, Path.Combine(_root.FullName, "outside.json"));
         using var linked = Create();
         await Assert.ThrowsAsync<SkyMonitor.Storage.FileSystem.FileSystemFaultException>(() => linked.ReadAsync(CancellationToken.None)).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(CameraAgentControlPhase.Failed, "lifecycle.failed-check-capture", true)]
+    [DataRow(CameraAgentControlPhase.Failed, "lifecycle.installer-interrupted", true)]
+    [DataRow(CameraAgentControlPhase.Cancelled, "lifecycle.claim-refused", false)]
+    public async Task EffectFreeTerminalAcknowledgesAuditedUnclaimedCancellationWithoutReplacingIt(
+        CameraAgentControlPhase phase, string code, bool originalRunning)
+    {
+        using var controls = Create();
+        await RegisterAsync(controls).ConfigureAwait(false);
+        var queued = await controls.SubmitAsync(Request() with { Kind = CameraAgentControlKind.Restart }, CancellationToken.None).ConfigureAwait(false);
+        await controls.CancelAsync(queued.Request.OperationId, CancellationToken.None, "owner", "Cancel before claim").ConfigureAwait(false);
+        var canonical = (await controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single();
+        var terminal = queued with
+        {
+            Phase = phase,
+            OriginalProcessId = controls.ProcessId,
+            ResumeAfterVerification = originalRunning,
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, _clock.GetUtcNow(), "lifecycle.draining"),
+                new(phase, _clock.GetUtcNow(), code)]
+        };
+        Assert.IsFalse(await controls.ValidateReceiptAsync(new(Worker, terminal), CancellationToken.None).ConfigureAwait(false));
+        var (pending, _) = await controls.ExchangeAsync(new(Worker, terminal), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(pending);
+        Assert.AreEqual(canonical, (await controls.ReadAsync(CancellationToken.None).ConfigureAwait(false)).Receipts.Single());
+        Assert.IsFalse(controls.AdmissionHeld);
     }
 
     private CameraAgentControlRequest Request() => new(Guid.NewGuid(), CameraAgentControlKind.Drain, "owner",

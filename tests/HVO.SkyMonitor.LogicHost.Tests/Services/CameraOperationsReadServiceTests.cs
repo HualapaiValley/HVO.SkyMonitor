@@ -8,6 +8,7 @@ using HVO.SkyMonitor.LogicHost.Services;
 using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -192,8 +193,13 @@ public sealed class CameraOperationsReadServiceTests
             service.ListProposalsAsync(Member(), a.Observatory, a.Camera, 1, executions)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<ArgumentException>(() => service.ListAssignmentsAsync(Member(), a.Observatory,
             a.Camera, CentralProcessingGraphTargetHost.Edge, 1, assignments)).ConfigureAwait(false);
+        // Change authenticated bytes rather than Base64 padding bits or a suffix that may already equal the replacement.
+        var tamperedBytes = WebEncoders.Base64UrlDecode(executions);
+        tamperedBytes[^1] ^= 1;
+        var tampered = WebEncoders.Base64UrlEncode(tamperedBytes);
+        Assert.AreNotEqual(executions, tampered);
         await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
-            service.ListExecutionsAsync(Member(), a.Observatory, a.Camera, 1, executions[..^2] + "AA")).ConfigureAwait(false);
+            service.ListExecutionsAsync(Member(), a.Observatory, a.Camera, 1, tampered)).ConfigureAwait(false);
         await Assert.ThrowsExactlyAsync<ArgumentException>(() =>
             service.ListExecutionsAsync(Member(), a.Observatory, a.Camera, 1, new string('x', 5000))).ConfigureAwait(false);
         var nodes = (await service.GetExecutionAsync(Member(), a.Observatory, a.Camera, a.Execution, 1, null).ConfigureAwait(false))!

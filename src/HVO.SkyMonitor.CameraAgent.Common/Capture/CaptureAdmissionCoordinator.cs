@@ -340,8 +340,30 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
     public Task<long?> ReadCompletedPauseVersionAsync(string idempotencyKey, long expectedVersion, string actor,
         CancellationToken cancellationToken) => _store.ReadCompletedPauseVersionAsync(idempotencyKey, expectedVersion, actor, cancellationToken);
 
-    internal async Task<T> ExecuteCaptureBoundaryAsync<T>(
-        Func<CancellationToken, Task<T>> action,
+    internal const string LifecycleAdmissionConflictMessage =
+        "An installer lifecycle operation is pending; wait for its terminal receipt before starting capture work.";
+
+    internal async Task EnsureLifecycleCaptureAllowedAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        ThrowIfLifecycleAdmissionHeld();
+    }
+
+    private void ThrowIfLifecycleAdmissionHeld()
+    {
+        if (_lifecycleControls?.AdmissionHeld == true)
+            throw new CaptureControlConflictException(LifecycleAdmissionConflictMessage);
+    }
+
+    internal Task<T> ExecuteCaptureBoundaryAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
+        => ExecuteBoundaryAsync(action, requireLifecycleAdmission: true, cancellationToken);
+
+    /// <summary>Serializes configuration publication without admitting an exposure, including module startup during verification.</summary>
+    internal Task<T> ExecuteConfigurationBoundaryAsync<T>(Func<CancellationToken, Task<T>> action, CancellationToken cancellationToken)
+        => ExecuteBoundaryAsync(action, requireLifecycleAdmission: false, cancellationToken);
+
+    private async Task<T> ExecuteBoundaryAsync<T>(
+        Func<CancellationToken, Task<T>> action, bool requireLifecycleAdmission,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(action);
@@ -351,6 +373,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
         var reopen = Snapshot.State == CaptureAdmissionState.Running;
         try
         {
+            if (requireLifecycleAdmission) ThrowIfLifecycleAdmissionHeld();
             Interlocked.Exchange(ref _failedPublicationDuringDrain, 0);
             CloseGate();
             await WaitForDrainAsync(cancellationToken).ConfigureAwait(false);
@@ -360,6 +383,9 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
                 _fleetRuntimeState?.CaptureFailed("activation-publication-failed");
                 throw new CaptureAdmissionUnavailableException();
             }
+            // A lifecycle claim may arrive while scheduled exposures finish draining. This is the admission boundary;
+            // once the action starts, the existing command gate lets a later pause wait for it without cancelling it.
+            if (requireLifecycleAdmission) ThrowIfLifecycleAdmissionHeld();
             return await action(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -402,7 +428,7 @@ public sealed class CaptureAdmissionCoordinator : IDisposable
             {
                 var authority = await _lifecycleControls.ReadResumeAuthorityAsync(actor, cancellationToken).ConfigureAwait(false);
                 if (!authority.Allowed)
-                    throw new CaptureControlConflictException("An installer lifecycle operation is pending; wait for its terminal receipt before resuming.");
+                    throw new CaptureControlConflictException(LifecycleAdmissionConflictMessage);
                 if (authority.PauseOwner is { } owner)
                     requiredPause = ($"lifecycle:{owner.OperationId:D}:pause", owner.ExpectedCaptureVersion);
             }

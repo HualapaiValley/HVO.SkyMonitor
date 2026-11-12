@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Claims;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
@@ -375,6 +376,11 @@ internal sealed class CameraAgentCalibrationUiService(
         if (exception is OperationCanceledException && cancellationToken.IsCancellationRequested)
         {
             cancellationToken.ThrowIfCancellationRequested();
+        }
+        if (exception is CaptureControlConflictException captureConflict)
+        {
+            return OperatorUiResult<T>.Failure(
+                OperatorUiResultKind.Conflict, captureConflict.Message);
         }
         if (exception is CalibrationLibraryStoreConflictException)
         {
