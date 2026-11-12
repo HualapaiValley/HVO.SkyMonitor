@@ -156,6 +156,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
     private bool Invalidate()
     {
         _qualified = false;
+        _startupIncremental = false;
         if (!_warned) { _warned = true; _unqualifiedWarning(); }
         return false;
     }

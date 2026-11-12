@@ -1572,7 +1572,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
             var result = ValidateRetainedManifest(history, manifestJson, summary, attribution, requireManifest: true, strict,
                 digest => scrub?.ParsedKind(RetainedIntegrityLedger.JournalKey(capture), digest));
             scrub?.Record(new RetainedIntegrityLedger.Entry(RetainedIntegrityLedger.JournalKey(capture), result.Digest, result.Kind)
-                { Stamp = new RetainedIntegrityLedger.FileStamp(manifestJson.LongLength, 0) }, index: summary);
+            { Stamp = new RetainedIntegrityLedger.FileStamp(manifestJson.LongLength, 0) }, index: summary);
         }
     }
 
@@ -1625,7 +1625,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
                 var result = ValidateRetainedManifest(history, json, summary, attribution, requireManifest: true, strict,
                     digest => scrub.ParsedKind(key, digest));
                 scrub.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind)
-                    { Stamp = new RetainedIntegrityLedger.FileStamp(json.LongLength, 0) }, index: summary);
+                { Stamp = new RetainedIntegrityLedger.FileStamp(json.LongLength, 0) }, index: summary);
             }
         }
     }

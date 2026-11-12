@@ -24,7 +24,8 @@ public sealed class RetainedIntegrityScrubServiceTests
     {
         var options = Options.Create(new CameraAgentHostOptions
         {
-            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"), AgentId = "synthetic",
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
+            AgentId = "synthetic",
             Observatory = new ObservatoryLocation(35, -113, 0, "UTC"),
             CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
         });
@@ -56,7 +57,8 @@ public sealed class RetainedIntegrityScrubServiceTests
     {
         var options = Options.Create(new CameraAgentHostOptions
         {
-            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"), AgentId = "synthetic",
+            ConfigFilePath = Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"),
+            AgentId = "synthetic",
             Observatory = new ObservatoryLocation(35, -113, 0, "UTC"),
             CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
         });

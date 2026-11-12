@@ -85,9 +85,13 @@ public sealed partial class ProtectedDeploymentLocationStore
                             if (parsed.CaptureId is not null) rawCaptures.Add(parsed.CaptureId);
                             var key = RetainedIntegrityLedger.FileKey(root, path);
                             if (kind == 3) return false;
-                            expected.Remove(key);
-                            if (ledger is { HasExpectedEvidence: true } &&
-                                !ledger.MatchesRecent(key, SHA256.HashData(json), cancellationToken)) return false;
+                            var known = expected.Remove(key, out var old);
+                            if (ledger is { HasExpectedEvidence: true })
+                            {
+                                var digest = SHA256.HashData(json);
+                                var matchesExpected = known && old is { Kind: not 0 } && digest.AsSpan().SequenceEqual(old.Digest);
+                                if (!matchesExpected && !ledger.MatchesRecent(key, digest, cancellationToken)) return false;
+                            }
                         }
                     }
                     if (expected.Values.Any(entry => entry.Kind != 0 && InRecentWindow(entry.Key, cutoff) &&
