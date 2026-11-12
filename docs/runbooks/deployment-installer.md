@@ -2960,8 +2960,8 @@ procedure; never delete the ledger/evidence to force adoption. An agent that
 predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
-The row-MAC reader boundary is
-`53b5756ddbd26dc5ea623ecd34d34d2de2672f05` (the combined row-MAC/environmental-schema reader), declared by the image's
+The integrated reader boundary is
+`4293871b7c4cf38ce0e0e4ea969aa9a6de057eea` (the combined row-MAC/environmental-schema and processing-ledger reader), declared by the image's
 `minimum-compatible-revision`. Updated agents and installers read both legacy
 Data Protection row proofs and new MAC proofs. The per-ledger random MAC secret
 is protected in metadata; nonce/key/digest/kind/generation and the authenticated

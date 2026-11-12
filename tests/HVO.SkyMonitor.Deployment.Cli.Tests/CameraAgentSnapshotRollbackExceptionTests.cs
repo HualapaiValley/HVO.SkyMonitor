@@ -109,7 +109,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
         Assert.AreEqual("419f45b0fd61ae2caba2654b71ff1853080ab693", previous[boundary]);
-        Assert.AreEqual("461ae8cc3eb2cb84418c801fb24aa3bef9cdb154", candidate[boundary]);
+        Assert.AreEqual("4293871b7c4cf38ce0e0e4ea969aa9a6de057eea", candidate[boundary]);
         Assert.AreEqual("c40aa64bb8ae039e04993e01f55e0fe7b5087ab6", exception["previousImageRevision"]!.GetValue<string>());
         if (revertBoundary) candidate[boundary] = previous[boundary];
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-manifest-boundary-" + Guid.NewGuid().ToString("N")), Guid.NewGuid(), "catalog");
