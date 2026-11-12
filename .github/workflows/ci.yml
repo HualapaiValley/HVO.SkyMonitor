@@ -433,6 +433,8 @@ jobs:
       # keeps its own log; a failure in either lane fails the step after both finish.
       - name: Provision required script sandbox qualification
         run: ./scripts/ci:script-sandbox --provision
+      - name: Install pinned Playwright Chromium
+        run: pwsh tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/playwright.ps1 install --only-shell chromium
       - name: Run Integration suites
         run: |
           mkdir -p TestResults/integration
