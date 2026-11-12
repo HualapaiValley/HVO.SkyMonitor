@@ -233,7 +233,9 @@ case leave both journals intact and complete these steps:
    authority and completes the deployment journal without another image start.
    For a precommit failure, correct the reported underlying failure first, then
    use the same command with `--resume`; its existing phase checks determine
-   which deployment steps must be retried.
+   which deployment steps must be retried. A worker started while the manifest
+   says Uninstalled stays settlement-only for that worker run; restart it after
+   reinstall completes before submitting new runtime-control requests.
 
 If reinstall cannot reach commit and the worker cannot prove a different
 initialized process (or the installed tooling predates this recovery path),
