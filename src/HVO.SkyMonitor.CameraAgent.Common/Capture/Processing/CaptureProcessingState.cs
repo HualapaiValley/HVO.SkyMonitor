@@ -26,7 +26,8 @@ public sealed record CaptureProcessingSnapshot(
     long ReplayLeasedCount = 0,
     long ReplayAbandonedCount = 0,
     long LaneQuarantineTerminalCount = 0,
-    string? StoragePolicyMismatchActiveRevisionId = null);
+    string? StoragePolicyMismatchActiveRevisionId = null,
+    long StoragePolicySkippedCount = 0);
 
 /// <summary>
 /// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
@@ -64,6 +65,7 @@ public sealed class CaptureProcessingState
     private DateTimeOffset? _oldestReplay;
     private string? _supersededActiveRevision;
     private string? _storagePolicyMismatchActiveRevision;
+    private long _storagePolicySkipped;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
 
@@ -143,6 +145,7 @@ public sealed class CaptureProcessingState
     }
     internal void SetActiveRevisionSuperseded(string? revisionId) { lock (_gate) _supersededActiveRevision = revisionId; }
     internal void SetActiveStoragePolicyMismatch(string? revisionId) { lock (_gate) _storagePolicyMismatchActiveRevision = revisionId; }
+    internal void SetStoragePolicySkipped(long count) { lock (_gate) _storagePolicySkipped = count; }
     internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
     private DerivedProductReconciliationReport? _lastReconciliation;
     public DerivedProductReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
@@ -168,6 +171,7 @@ public sealed class CaptureProcessingState
         if (_replayRetry > 0) reasons.Add("replay-retry");
         if (_supersededActiveRevision is not null) reasons.Add("active-revision-superseded");
         if (_storagePolicyMismatchActiveRevision is not null) reasons.Add("active-storage-policy-mismatch");
+        if (_storagePolicySkipped > 0) reasons.Add("storage-policy-skipped");
         var availability = _terminal > 0 ? CaptureProcessingAvailability.Unhealthy :
             reasons.Count > 0 ? CaptureProcessingAvailability.Degraded : CaptureProcessingAvailability.Healthy;
         return new(availability, _pending, _retry, _terminal,
@@ -175,6 +179,6 @@ public sealed class CaptureProcessingState
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
             _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
             _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned, _laneQuarantineTerminal,
-            _storagePolicyMismatchActiveRevision);
+            _storagePolicyMismatchActiveRevision, _storagePolicySkipped);
     }
 }

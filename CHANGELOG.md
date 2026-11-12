@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763
+
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 
 - CameraAgent renders metadata corners on previews without a projected scene, image circle, or cardinal overlays instead of failing with a null-reference error. Refs #1789

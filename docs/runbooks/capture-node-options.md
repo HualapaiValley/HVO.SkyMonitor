@@ -59,6 +59,24 @@ log when it clears. Configured-basic refreshes from the active profile in the sa
 health check and needs no manual reconciliation or activation; a routine profile
 change in that mode raises no mismatch alarm.
 
+Actual abandoned standard work is a separate health signal in both modes:
+`StoragePolicySkippedCount` counts standard-lane rows abandoned in the past 24 hours for
+`storage-policy-mismatch` or `storage-policy-mismatch-scene-unavailable`.
+Processing health is Degraded with reason `storage-policy-skipped` while that
+count is nonzero, including after restart and after the active graph matches.
+Inspect the affected executions and explicitly replay intact retained inputs
+when needed. Successful new work and replay do not erase historical skips; each
+skip ages out of this health window after 24 hours without changing its evidence. It does not
+stop raw acquisition or compatible processing, or classify unrelated abandoned
+work as a Storage skip.
+
+Mismatch guidance names differing fields without showing directory paths or
+policy values. Root paths use the runtime's full-path and trailing-separator
+rules, and artifact-policy StepId selectors compare ignoring case. On Linux,
+backslash is a filename character, not a directory separator. Policy order is
+preserved: equally specific overlapping policies use the first match, so
+reordering a policy array is not generally an equivalent edit.
+
 For a planned Storage change:
 
 1. Pause acquisition and let in-flight standard processing finish before changing
@@ -112,6 +130,22 @@ version. This delivery introduces no scientific algorithm or rendering version.
 Use JSON numbers for numeric settings. Runtime binding can accept quoted numbers,
 but the typed editor currently rejects those tokens until the affected fields
 are explicitly corrected. It does not silently rewrite retained values.
+
+This restriction also applies to mixed-gain RollingCombination window sizes and
+age/integration limits, including raw JSON authored in LogicHost. Repeated
+described option names, including differently cased spellings, are rejected;
+runtime binding can instead keep the last value. Mixed-gain WindowKind retains
+its existing enum binding (names or defined numeric values).
+
+Use **Preview plan** in a CameraAgent graph draft as a preflight before saving
+an imported or retained graph. Preview and save validate raw option tokens
+before graph compilation or persistence and report the exact option path.
+For a quoted numeric token, explicitly correct the field in the typed panel or
+remove the quotes in the source JSON. For duplicate names, remove all but the
+intended member in the source JSON before importing it again. Preview once more
+and then save a new immutable revision. This preflight does not activate a graph,
+execute a node, or rewrite the source revision. Graph compilation alone is not
+this preflight: its runtime normalization may accept these source spellings.
 
 These scalar panels preserve association/label-policy settings, astrometry
 catalog/clock/prior/solver inputs, satellite catalog/work-bound/time settings and

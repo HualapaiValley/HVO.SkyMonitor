@@ -397,7 +397,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
 
     private static string? LocalPolicyFailure(Exception exception)
         => exception is ValidationException && exception.Message == CaptureStoragePolicy.RejectionMessage
-            ? CaptureStoragePolicy.RejectionMessage : EnvironmentalPolicyFailure(exception);
+            ? CaptureStoragePolicy.DescribeMismatch((ValidationException)exception) : EnvironmentalPolicyFailure(exception);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
