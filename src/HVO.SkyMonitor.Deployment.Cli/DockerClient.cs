@@ -806,6 +806,21 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         };
     }
 
+    /// <summary>Probe the fixed container-local liveness endpoint; cached Docker health never proves current unreachability.</summary>
+    internal async Task<bool> IsContainerAliveNowAsync(string containerName, CancellationToken cancellationToken)
+    {
+        var probe = await RunDockerRawAsync(["exec", containerName, "curl", "--noproxy", "*", "--silent", "--show-error",
+            "--max-time", "5", "--output", "/dev/null", "--write-out", "%{http_code}", "http://127.0.0.1:8080/alive"],
+            cancellationToken).ConfigureAwait(false);
+        var status = probe.StandardOutput.Trim();
+        // Any HTTP reply proves reachability, including authentication/readiness refusals. Only curl's explicit
+        // connection failure or bounded no-response timeout can authorize the offline recovery exception.
+        if (int.TryParse(status, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+                out var response) && response is >= 100 and <= 599) return true;
+        if (status == "000" && probe.ExitCode is 7 or 28) return false;
+        throw new InstallerException("The current CameraAgent liveness probe could not establish reachability; retain pending control evidence.");
+    }
+
     public async Task EnsureNoInstanceReferencesAsync(
         Guid instanceId,
         string instanceRoot,

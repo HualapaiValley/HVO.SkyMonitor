@@ -59,11 +59,36 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             var runtime = await docker.InspectContainerAsync(
                 $"hvo-skymonitor-{Guid.Parse(Path.GetFileName(paths.InstanceRoot)):N}", cancellationToken).ConfigureAwait(false);
-            if (!runtime.Exists || !runtime.Running || runtime.LivenessStatus == "unhealthy") return;
+            if (!runtime.Exists || !runtime.Running) return;
+            if (runtime.LivenessStatus == "unhealthy" &&
+                !await docker.IsContainerAliveNowAsync($"hvo-skymonitor-{Guid.Parse(Path.GetFileName(paths.InstanceRoot)):N}", cancellationToken)
+                    .ConfigureAwait(false)) return;
         }
         throw InstallerException.Refused("Settle installer runtime control with lifecycle-worker while CameraAgent is reachable. " +
             "If CameraAgent is down, use uninstall then restore/reinstall, or rollback subject to its recovery preconditions. " +
             "Retain both journals and refused evidence for reconciliation; do not edit them.");
+    }
+
+    /// <summary>Only settlement of retained receipts may run before a committed recovery's final resume.</summary>
+    internal static async Task<IDisposable> AcquireControlDeploymentAsync(InstallationPaths paths, CancellationToken cancellationToken,
+        bool settleCommittedRecovery = false)
+    {
+        var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), TimeSpan.Zero, cancellationToken);
+        try
+        {
+            var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+            var committedRecovery = settleCommittedRecovery && operation is
+            {
+                Status: InstallationStatus.Running, Phase: LifecycleOperationPhase.Committed, MutationStarted: true,
+                Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback,
+                PostMutationContinuity: { CaptureState: "Paused" }
+            } && operation.InstanceId == Guid.Parse(Path.GetFileName(paths.InstanceRoot)) &&
+                IsValidRecoveryBoundary(operation.PostMutationContinuity);
+            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation) && !committedRecovery)
+                throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
+            return deploymentLock;
+        }
+        catch { deploymentLock.Dispose(); throw; }
     }
 
     internal static string FormatControlWorkerDiagnostic(string message) => CameraAgentStateDiagnostics.Message(message);
@@ -93,19 +118,10 @@ internal sealed partial class CameraAgentLifecycleManager
         var address = IPAddress.TryParse(manifest.BindAddress, out var binding) && IPAddress.Any.Equals(binding)
             ? new Uri($"http://127.0.0.1:{manifest.Port}") : result.Url;
         using var client = new InstallerControlHttpClient(address, token, workerId);
-        async Task<IDisposable> AcquireDeploymentAsync(CancellationToken token)
-        {
-            var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), TimeSpan.Zero, token);
-            try
-            {
-                var operation = await ReadOperationAsync(paths.LifecycleStatePath, token).ConfigureAwait(false);
-                if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation))
-                    throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
-                return deploymentLock;
-            }
-            catch { deploymentLock.Dispose(); throw; }
-        }
+        Task<IDisposable> AcquireDeploymentAsync(CancellationToken token) => AcquireControlDeploymentAsync(paths, token);
         await new InstallerControlWorker(client, journal, AcquireDeploymentAsync, TimeProvider.System,
-            message => Console.Error.WriteLine(FormatControlWorkerDiagnostic(message))).RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
+            message => Console.Error.WriteLine(FormatControlWorkerDiagnostic(message)),
+            acquireInterruptedRecovery: token => AcquireControlDeploymentAsync(paths, token, settleCommittedRecovery: true))
+            .RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
     }
 }

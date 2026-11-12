@@ -5,7 +5,8 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>The production polling loop, independently testable with fake transport and deployment authority.</summary>
 internal sealed class InstallerControlWorker(IInstallerControlClient client, InstallerControlJournal journal,
     Func<CancellationToken, Task<IDisposable>> acquireDeployment, TimeProvider clock, Action<string> report,
-    InstallerControlBudgets? budgets = null)
+    InstallerControlBudgets? budgets = null,
+    Func<CancellationToken, Task<IDisposable>>? acquireInterruptedRecovery = null)
 {
     internal async Task RunAsync(bool once, CancellationToken cancellationToken)
     {
@@ -30,7 +31,7 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
         foreach (var interrupted in journal.Receipts.Where(item => !item.IsTerminal).ToArray())
         {
             IDisposable recoveryLock;
-            try { recoveryLock = await acquireDeployment(cancellationToken).ConfigureAwait(false); }
+            try { recoveryLock = await (acquireInterruptedRecovery ?? acquireDeployment)(cancellationToken).ConfigureAwait(false); }
             catch (InstallerException)
             {
                 report("stage=lifecycle-worker recovery=installer-busy");

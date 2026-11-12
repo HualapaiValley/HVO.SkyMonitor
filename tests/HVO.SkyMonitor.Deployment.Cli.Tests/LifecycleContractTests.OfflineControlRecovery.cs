@@ -151,6 +151,7 @@ public sealed partial class LifecycleContractTests
             if (arguments is ["context", "inspect", ..])
                 return Task.FromResult(new ProcessResult(0, "unix:///var/run/docker.sock", ""));
             if (arguments is ["--host", _, ..]) arguments = arguments.Skip(2).ToArray();
+            if (arguments is ["exec", _, ..]) return Task.FromResult(new ProcessResult(7, "000", "Connection refused."));
             Assert.AreEqual("container", arguments[0]);
             Assert.AreEqual("inspect", arguments[1]);
             if (observation == "absent") return Task.FromResult(new ProcessResult(1, "", $"Error response from daemon: No such container: {arguments[2]}"));

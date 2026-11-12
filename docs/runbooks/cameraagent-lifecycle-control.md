@@ -193,18 +193,42 @@ to the offline UI. The last acknowledged pause remains recorded; reachability
 is not proof of capture admission state. Inspect the installer journal, recover
 the supervisor/process, then read capture state before explicitly resuming.
 When CameraAgent returns, the worker republishes retained terminal evidence.
-Pending control evidence does not prevent the offline recovery route: with Docker
-confirming an absent or stopped container, or an explicitly failed `/alive` health
-check, the control-journal gate admits `uninstall`, `restore`, `reinstall`, and
-`rollback`. A missing or starting health result is not proof of failure, and a
-Docker inspection error does not authorize recovery. The commands retain their
-existing preconditions: reinstall requires a preserved uninstalled instance,
-restore requires an eligible target and a verified backup, and rollback retains
-its original-image and authenticated pre-mutation checks. For a host that cannot
-provide those checks, use preserve-by-default uninstall followed by restore when
-needed and reinstall. Do not edit either journal. Pending receipts remain intact
-for the existing lifecycle-worker settlement/publication path after return;
-definite quarantined refusals still require reconciliation.
+Pending control evidence does not prevent the offline recovery route. Docker must
+confirm an absent or stopped container; for a running container with cached
+`unhealthy` status, the installer also probes the fixed container-local `/alive`
+endpoint now. Any current HTTP reply, including an error response, means reachable
+and keeps ordinary settlement gating. Only an explicit connection failure or a
+bounded no-response timeout admits the offline exception. Starting/missing health,
+probe execution errors and Docker inspection errors do not authorize recovery.
+The control-journal exception applies to `uninstall`, `restore`, `reinstall`, and
+`rollback`; it does not change their other prerequisites. Reinstall requires a
+preserved uninstalled instance, restore requires an eligible target and verified
+backup, and rollback still requires its original-image and authenticated
+pre-mutation checks. For an original host that cannot provide those checks, use
+preserve-by-default uninstall, restore if needed, then reinstall.
+
+A retained nonterminal control projection can refuse recovery's final resume with
+409 even after the recovered image and paused boundary have committed. In that
+case leave both journals intact and complete these steps:
+
+1. Let the already-running `lifecycle-worker` poll, or explicitly run it with
+   `--once` if no worker is running. Once the recovery command releases
+   `deployment.lock`, the worker may settle retained receipts during a **Running /
+   Committed** reinstall or rollback with a verified paused boundary. It cannot
+   start new runtime-control work while that deployment is incomplete, and no
+   earlier deployment phase receives this exception.
+2. Check that the retained control receipt is terminal and published. The existing
+   conditional settlement preserves request/audit history and does not replay a
+   stop. A returned process has a new identity, so the old process's pre-stop
+   resume authority does not transfer. Capture remains paused until the recovery
+   command resumes it. Terminal-but-unpublished receipts use the worker's existing
+   publication path, which does not need the deployment lock.
+3. Rerun the **same** reinstall or rollback command with `--resume`. Its committed
+   retry verifies the recovered instance, resumes through the normal native
+   authority and completes the deployment journal without another image start.
+
+Do not edit or delete either journal. Definite quarantined refusals still require
+reconciliation; they never qualify for the offline exception.
 
 An installer-worker interruption is settled as terminal failure
 (`lifecycle.installer-interrupted`) once any eligible pre-stop restore is proven
@@ -216,7 +240,8 @@ and later polls use the same owned-pause settlement. A busy deployment lock leav
 a journal-owned interrupted operation pending and retries on a later poll; it is
 not classified as an orphan or terminalized without attempting safe restore.
 Interrupted installer deployment work must be recovered before starting another
-runtime lifecycle. Failures and cancellation preserve accepted capture/artifact
+runtime lifecycle. The committed-recovery exception above permits retained-receipt
+settlement only, not another lifecycle request. Failures and cancellation preserve accepted capture/artifact
 records, pause intent and the journal. Corrupt, unsupported or linked state is
 refused rather than silently reset.
 
