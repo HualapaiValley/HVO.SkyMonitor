@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Merge-queue half of hvo/reviewed-head; rollout is not yet live.
+# Merge-queue half of hvo/reviewed-head, for the live development/v1 merge queue.
 #
 # Run this script from a fresh trusted development/v1 checkout, never from the
 # queued tree. BASE_SHA is that checkout's HEAD. Walk the merge-commit first-parent
@@ -14,8 +14,8 @@
 # an external GitHub App producer with a required pinned integration id; that is
 # a separate owner decision, not implemented here. Never run this job on PRs.
 #
-# Before queue rollout Roy must require ALLGREEN and MERGE (every grouped PR must
-# pass required checks; merge-commit method). A success is a point-in-time read:
+# The queue ruleset requires ALLGREEN and MERGE (every grouped PR must pass
+# required checks; merge-commit method). A success is a point-in-time read:
 # revoking review after it passes requires dequeueing the PR, not just a status
 # update. Re-entry must produce a new group and fresh checks.
 #

@@ -134,7 +134,15 @@ internal sealed class DeviceRigProfileService(
 
     private static ProfileIdentityDescriptor CreateIdentity(string canonicalJson)
     {
-        var rig = JsonSerializer.Deserialize<CameraRigConfig>(canonicalJson, RigSerializerOptions);
+        CameraRigConfig? rig;
+        try
+        {
+            rig = JsonSerializer.Deserialize<CameraRigConfig>(canonicalJson, RigSerializerOptions);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new JsonException("RigConfigJson contains an invalid current camera rig configuration.", exception);
+        }
         if (rig?.Sensor is null || rig.Optics is null || rig.Orientation is null || rig.Pipeline is null ||
             string.IsNullOrWhiteSpace(rig.ProfileVersion) || rig.ProfileVersion.Length > 128)
         {
@@ -233,13 +241,13 @@ internal sealed class DeviceRigProfileService(
                 {
                     writer.WriteNumberValue(i64);
                 }
-                else if (element.TryGetDouble(out var d))
+                else if (element.TryGetDouble(out var d) && double.IsFinite(d))
                 {
                     writer.WriteNumberValue(d);
                 }
                 else
                 {
-                    writer.WriteRawValue(element.GetRawText());
+                    throw new JsonException("RigConfigJson contains an invalid current camera rig configuration.");
                 }
                 break;
 
