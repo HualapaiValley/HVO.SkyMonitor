@@ -40,6 +40,7 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
             {
                 var terminal = await new InstallerControlVerifier(client, journal.SaveAsync, clock, budgets)
                     .SettleInterruptedAsync(interrupted).ConfigureAwait(false);
+                if (!terminal.IsTerminal) continue;
                 await PublishAsync(terminal, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -78,6 +79,7 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
         {
             var terminal = await new InstallerControlVerifier(client, journal.SaveAsync, clock, budgets)
                 .ExecuteAsync(current, cancellationToken).ConfigureAwait(false);
+            if (!terminal.IsTerminal) return;
             await PublishAsync(terminal, CancellationToken.None).ConfigureAwait(false);
         }
     }

@@ -28,7 +28,8 @@ it reports `poll-completed`; the durable receipt supplies the actual lifecycle o
 registers through installation-token authentication and refreshes a 30-second
 in-memory lease. Without that lease, System control's drain stays disabled and
 the scheduled-restart task is unavailable. A CameraAgent startup requires a fresh
-worker exchange. Idle heartbeats do not write durable state or evaluate schedules.
+worker exchange. Drain polling also renews the lease at least every ten seconds
+while the transport responds. Idle heartbeats do not write durable state or evaluate schedules.
 
 ## Drain and restart contract
 
@@ -193,8 +194,10 @@ is not proof of capture admission state. Inspect the installer journal, recover
 the supervisor/process, then read capture state before explicitly resuming.
 When CameraAgent returns, the worker republishes retained terminal evidence.
 
-An installer-worker interruption is recovered as terminal failure
-(`lifecycle.installer-interrupted`); an ambiguous restart is not replayed. Startup
+An installer-worker interruption is settled as terminal failure
+(`lifecycle.installer-interrupted`) once any eligible pre-stop restore is proven
+or definitely refused. Transport failure leaves the journal nonterminal so a
+later poll can retry the same idempotent, version-fenced resume; an ambiguous restart is not replayed. Startup
 and later polls use the same owned-pause settlement. A busy deployment lock leaves
 a journal-owned interrupted operation pending and retries on a later poll; it is
 not classified as an orphan or terminalized without attempting safe restore.
@@ -215,6 +218,21 @@ bounded to that definition's retained history and never reissues an effect. Neit
 reconciliation nor installer publication rewrites an already terminal run.
 Retaining a new task kind is a forward-only definition change, consistent with
 the other appended registered task kinds; older binaries cannot read it.
+
+Before a deployment transition can start or resume, the installer checks the
+selected instance's runtime-control journal under the deployment lock. Active,
+unpublished, or quarantined control evidence refuses the transition before it
+can write a new deployment journal. Run the explicit `lifecycle-worker` to
+settle interrupted runtime work first; retain quarantined evidence for offline
+reconciliation rather than deleting or editing either journal. A worker
+interrupted before the stop retries transport failures without making its
+receipt terminal, and reuses the original version-fenced resume command. Later
+owner commands remain authoritative. Drain polling renews the worker lease at
+least every ten seconds while the transport responds. A transient failure to
+pause after an unconfirmed resume returns a retryable 503; a concurrent owner
+pause can satisfy that settlement boundary. An exclusive capture boundary still
+uses ordinary pause semantics; extending the lifecycle fence to that path needs
+an explicit operator policy decision. Refs #1746
 
 ## Expired workers, refused publication and damaged projections
 

@@ -105,6 +105,7 @@ internal sealed partial class CameraAgentLifecycleManager
             if (!Directory.Exists(paths.OperationsRoot)) throw new InstallerException("No matching interrupted purge operation exists.");
             using var interruptedPurgeLock = OperationLock.Acquire(
                 Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
+            await EnsureControlSettledAsync(paths, cancellationToken).ConfigureAwait(false);
             return await ResumeInterruptedPurgeAsync(
                     request, paths, new DockerClient(processRunner), processRunner, cancellationToken)
                 .ConfigureAwait(false);
@@ -216,6 +217,8 @@ internal sealed partial class CameraAgentLifecycleManager
             using var instanceLock = request.DryRun
                 ? OperationLock.AcquireExisting(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
                 : OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+            if (request.Operation is not null)
+                await EnsureControlSettledAsync(paths, cancellationToken).ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
             paths = paths.WithCatalog(manifest.Catalog.CatalogId);
@@ -1836,6 +1839,7 @@ internal sealed partial class CameraAgentLifecycleManager
         InstanceManifest manifest,
         CancellationToken cancellationToken)
     {
+        await EnsureControlSettledAsync(paths, cancellationToken).ConfigureAwait(false);
         // A plan meets the same journal gates as the command, and writes nothing (#1315).
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
         if (request.DryRun)

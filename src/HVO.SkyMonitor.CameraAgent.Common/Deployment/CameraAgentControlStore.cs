@@ -216,12 +216,13 @@ public sealed class CameraAgentControlStore(IOptions<CameraAgentHostOptions> opt
     private static bool AcknowledgesUnclaimedCancellation(CameraAgentControlReceipt prior, CameraAgentControlReceipt next) =>
         next.IsValid() && next.Request == prior.Request && prior.Phase == CameraAgentControlPhase.Cancelled &&
         prior.Cancellation is not null && prior.Events[^1].Code == "lifecycle.unclaimed-cancelled" &&
-        next.Phase == CameraAgentControlPhase.Cancelled && next.Events[^1].Code == "lifecycle.claim-refused" &&
+        next.IsTerminal && next.Phase != CameraAgentControlPhase.Succeeded &&
         next.Events[0] == prior.Events[0] && (next.Events.Count == 2 ||
             next.Events.Count == 3 && next.Events[1].Phase == CameraAgentControlPhase.Draining && next.Events[1].Code == "lifecycle.draining") &&
-        !next.ResumeAfterVerification && !next.ResumeRequested && !next.ResumeConfirmed &&
+        !next.ResumeRequested && !next.ResumeConfirmed &&
         !next.RestartRequested && !next.RestartRefused && !next.RestartNotIssued &&
-        next.PausedVersion is null && next.DrainedCaptureSequence is null && next.VerifiedProcessId is null;
+        next.PausedVersion is null && next.DrainedCaptureSequence is null && next.VerifiedProcessId is null &&
+        next.VerificationDeadlineUtc is null;
 
     private static bool IsValidSuccessor(CameraAgentControlReceipt prior, CameraAgentControlReceipt next) =>
         next.IsValid() && next.Request == prior.Request &&

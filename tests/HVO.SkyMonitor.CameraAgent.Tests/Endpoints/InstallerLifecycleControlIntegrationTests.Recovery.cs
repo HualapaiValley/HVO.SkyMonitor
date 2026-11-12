@@ -36,6 +36,126 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed class InstallerLifecycleRecoveryIntegrationTests
 {
     [TestMethod]
+    [DataRow("before", false)]
+    [DataRow("lost", false)]
+    [DataRow("lost", true)]
+    public async Task RealResumeTransportRetriesAcrossWorkerReloadWithoutRepeatingTheNativeEffect(string fault, bool laterOwnerPause)
+    {
+        var fixture = new Fixture(false) { LoseResumeResponse = fault == "lost" };
+        await using var owned = fixture.ConfigureAwait(false);
+        fixture.WindowOpening = fixture.WindowClock.GetUtcNow().AddMinutes(5);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        var path = Path.Combine(fixture.Root.FullName, "installer.json");
+        var journal = new InstallerControlJournal(path);
+        await journal.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", journal.WorkerId, fixture.Handler);
+        await client.ExchangeAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var queued = await fixture.RunScheduledOccurrenceAsync().ConfigureAwait(false);
+        fixture.AfterPause = () => fixture.WindowClock.Advance(TimeSpan.FromMinutes(4));
+        var failures = fault == "before" ? 3 : 0;
+        fixture.BeforeResume = () => failures-- > 0
+            ? throw new HttpRequestException("Injected native resume transport outage.") : Task.CompletedTask;
+        var pending = await new InstallerControlVerifier(client, journal.SaveAsync, TimeProvider.System)
+            .ExecuteAsync(queued, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsFalse(pending.IsTerminal);
+        Assert.IsTrue(pending.ResumeRequested);
+        Assert.IsFalse(pending.ResumeConfirmed);
+        Assert.IsTrue(fixture.Controls.AdmissionHeld);
+        var expectedVersion = pending.PausedVersion!.Value + 1;
+        if (laterOwnerPause)
+            expectedVersion = (await fixture.Capture.PauseAsync("owner-after-unconfirmed-restore", fixture.Capture.Snapshot.Version,
+                "owner", "Keep this newer pause", CancellationToken.None).ConfigureAwait(false)).Version;
+        for (var poll = 0; poll < 3; poll++)
+        {
+            journal = new InstallerControlJournal(path);
+            await journal.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+            await new InstallerControlWorker(client, journal, _ => Task.FromResult<IDisposable>(new TestDeploymentLease()),
+                TimeProvider.System, _ => { }).PollAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        var terminal = journal.Receipts.Single();
+        Assert.IsTrue(terminal.IsTerminal);
+        Assert.IsTrue(terminal.ResumeConfirmed);
+        Assert.IsEmpty(journal.Unpublished);
+        Assert.IsEmpty(journal.Refused);
+        Assert.IsFalse(fixture.Controls.AdmissionHeld);
+        Assert.AreEqual(laterOwnerPause ? CaptureAdmissionState.Paused : CaptureAdmissionState.Running, fixture.Capture.Snapshot.State);
+        Assert.AreEqual(expectedVersion, fixture.Capture.Snapshot.Version);
+        Assert.AreEqual(1, (await fixture.Capture.GetRecentCommandsAsync(10, CancellationToken.None).ConfigureAwait(false))
+            .Count(command => command.TargetState == CaptureAdmissionState.Running));
+        Assert.AreEqual(0, fixture.RestartCalls);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SettlementPauseUnavailableRetriesAndConcurrentOwnerPauseIsAccepted(bool ownerPause)
+    {
+        var fixture = new Fixture(false);
+        await using var owned = fixture.ConfigureAwait(false);
+        await fixture.InitializeAsync().ConfigureAwait(false);
+        var worker = Guid.NewGuid();
+        using var client = new InstallerControlHttpClient(new Uri("http://virtual-cameraagent"), "test-installation-token", worker, fixture.Handler);
+        await client.ExchangeAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var request = new CameraAgentControlRequest(Guid.NewGuid(), CameraAgentControlKind.Restart, "owner", "maintenance",
+            fixture.Capture.Snapshot.Version, DateTimeOffset.UtcNow);
+        var queued = await fixture.Controls.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
+        var draining = queued with
+        {
+            Phase = CameraAgentControlPhase.Draining, OriginalProcessId = fixture.Controls.ProcessId, ResumeAfterVerification = true,
+            Events = [.. queued.Events, new(CameraAgentControlPhase.Draining, DateTimeOffset.UtcNow, "lifecycle.draining")]
+        };
+        await client.ExchangeAsync(draining, CancellationToken.None).ConfigureAwait(false);
+        var pause = await client.DrainAsync(request, CancellationToken.None).ConfigureAwait(false);
+        draining = draining with { PausedVersion = pause.CaptureVersion, DrainedCaptureSequence = pause.CaptureSequence,
+            VerifiedProcessId = fixture.Controls.ProcessId, ResumeRequested = true };
+        await client.ExchangeAsync(draining, CancellationToken.None).ConfigureAwait(false);
+        await client.ResumeAsync(draining, CancellationToken.None).ConfigureAwait(false);
+        var failed = draining with { Phase = CameraAgentControlPhase.Failed,
+            Events = [.. draining.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "restart.resume-unconfirmed")] };
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var boundary = fixture.Capture.ExecuteCaptureBoundaryAsync(async token =>
+        {
+            entered.SetResult();
+            await release.Task.WaitAsync(token).ConfigureAwait(false);
+            return true;
+        }, watchdog.Token);
+        await entered.Task.WaitAsync(watchdog.Token).ConfigureAwait(false);
+        try
+        {
+            var owner = ownerPause ? fixture.Capture.PauseAsync("owner-settlement-race", fixture.Capture.Snapshot.Version,
+                "owner", "Keep capture paused", watchdog.Token) : null;
+            // Both calls reach the coordinator's command gate before the exclusive boundary is released.
+            var settlement = client.ExchangeAsync(failed, watchdog.Token);
+            Assert.IsFalse(settlement.IsCompleted);
+            if (!ownerPause) fixture.Capture.FailClosed();
+            release.SetResult();
+            await boundary.ConfigureAwait(false);
+            if (owner is not null) await owner.ConfigureAwait(false);
+            if (ownerPause)
+                await settlement.ConfigureAwait(false);
+            else
+            {
+                await Assert.ThrowsAsync<HttpRequestException>(() => settlement).ConfigureAwait(false);
+                Assert.IsTrue(fixture.Controls.AdmissionHeld);
+                Assert.IsFalse((await fixture.Controls.ReadAsync(watchdog.Token).ConfigureAwait(false)).Receipts.Single().IsTerminal);
+                await fixture.ReloadAsync().ConfigureAwait(false);
+                await client.ExchangeAsync(failed, watchdog.Token).ConfigureAwait(false);
+            }
+            Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+            Assert.IsFalse(fixture.Controls.AdmissionHeld);
+            Assert.IsTrue((await fixture.Controls.ReadAsync(watchdog.Token).ConfigureAwait(false)).Receipts.Single().IsTerminal);
+            Assert.AreEqual(0, fixture.RestartCalls);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await boundary.ConfigureAwait(false);
+        }
+    }
+
+    [TestMethod]
     [DataRow(false, false)]
     [DataRow(true, false)]
     [DataRow(false, true)]

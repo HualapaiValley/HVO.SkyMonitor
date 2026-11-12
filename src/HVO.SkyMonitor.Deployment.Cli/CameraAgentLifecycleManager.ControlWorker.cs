@@ -41,6 +41,18 @@ internal sealed record LifecycleWorkerRequest(Guid InstanceId, string ProductRoo
 
 internal sealed partial class CameraAgentLifecycleManager
 {
+    /// <summary>Read under deployment.lock before starting deployment work; never creates a journal while planning.</summary>
+    internal static async Task EnsureControlSettledAsync(InstallationPaths paths, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(paths.OperationsRoot, $"control-worker-{Guid.Parse(Path.GetFileName(paths.InstanceRoot)):D}.json");
+        SafeFileSystem.EnsureSafeExistingAncestors(path);
+        if (!File.Exists(path) && new FileInfo(path).LinkTarget is null) return;
+        var journal = new InstallerControlJournal(path);
+        await journal.LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (journal.Receipts.Any(item => !item.IsTerminal) || journal.Unpublished.Any() || journal.Refused.Count != 0)
+            throw InstallerException.Refused("Settle installer runtime control with lifecycle-worker before starting deployment operations; retain refused evidence for offline reconciliation.");
+    }
+
     internal static string FormatControlWorkerDiagnostic(string message) => CameraAgentStateDiagnostics.Message(message);
 
     /// <summary>Explicitly started by the operator, never spawned by the web host or by installation.</summary>

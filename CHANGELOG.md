@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent retries interrupted pre-restart pause recovery and transient settlement failures, keeps the worker lease alive during drains, and refuses deployment transitions until runtime control settles. Refs #1746
+
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 
 - CameraAgent renders metadata corners on previews without a projected scene, image circle, or cardinal overlays instead of failing with a null-reference error. Refs #1789
