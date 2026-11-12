@@ -341,7 +341,8 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         }
         catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
         {
-            return Problem(StatusCodes.Status409Conflict, CaptureStoragePolicy.RejectionMessage);
+            return Results.Problem(statusCode: StatusCodes.Status409Conflict, title: CaptureStoragePolicy.RejectionMessage,
+                detail: CaptureStoragePolicy.DescribeMismatch(exception));
         }
         catch (Exception exception) when (exception is KeyNotFoundException or FileNotFoundException)
         {

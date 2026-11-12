@@ -12,7 +12,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent run manifests accept slash-containing node IDs, store bounded counts separately from frozen plans, and keep ordinary output ordinals dense after retention. Refs #1766
+- CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
+
+- Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
+
+- CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763
 
 - Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
 

@@ -184,7 +184,8 @@ internal sealed record CaptureProcessingOperationalState(
     DateTimeOffset? OldestReplayPendingUtc,
     long ReplayPendingBytes,
     long ReplayLeasedCount,
-    long ReplayAbandonedCount);
+    long ReplayAbandonedCount,
+    long StoragePolicySkippedCount);
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
@@ -721,7 +722,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     /// <summary>
     /// Returns why the capture's standard processing was abandoned, or <see langword="null"/> while that work can
-    /// still produce outputs. Abandoned standard work never commits a scene, so a scene-dependent consumer stops waiting.
+    /// still produce outputs. A Storage-policy skip can commit its capture-time scene before abandoning the remaining
+    /// nodes. Consumers must check committed scene evidence first; abandonment means no further outputs can arrive.
     /// </summary>
     internal async ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(
         Guid captureId,
@@ -2563,11 +2565,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN work.state = 'retry_wait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'quarantined' THEN 1 ELSE 0 END),
                 MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END),
-                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END)
+                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'abandoned' AND work.updated_unix_ms >= $storage_skip_since AND work.failure_reason IN
+                    ('storage-policy-mismatch', 'storage-policy-mismatch-scene-unavailable') THEN 1 ELSE 0 END)
             FROM capture_lane_work AS work
             JOIN raw_captures AS raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE work.lane_name = 'standard';
             """;
+        // Journal history can outlive raw retention. Warn for a bounded day after the durable abandonment,
+        // without requiring operators to delete evidence or altering the original execution to clear health.
+        command.Parameters.AddWithValue("$storage_skip_since", _timeProvider.GetUtcNow().AddDays(-1).ToUnixTimeMilliseconds());
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         var pending = await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(0);
@@ -2577,6 +2584,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ? (DateTimeOffset?)null
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3));
         var leased = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(4);
+        var storagePolicySkipped = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(5);
         await reader.DisposeAsync().ConfigureAwait(false);
         using var replay = connection.CreateCommand();
         // A replay abandoned because this version no longer builds its frozen plan is final but not a failure: it
@@ -2612,7 +2620,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             : replayReader.GetInt64(6);
         return new CaptureProcessingOperationalState(
             pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
-            replayPendingBytes, replayLeased, replayAbandoned);
+            replayPendingBytes, replayLeased, replayAbandoned, storagePolicySkipped);
     }
 
     private async ValueTask<bool> InsertOutputAsync(

@@ -130,7 +130,7 @@ public sealed class ObservingDayTimelineBrowserTests
         int width, int height, bool javaScriptEnabled, string calendarQuery)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
-        await using var browser = await playwright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
+        await using var browser = await playwright.Chromium.LaunchAsync(new() { Headless = true, Timeout = 60_000 }).ConfigureAwait(false);
         // Replace only the day read model. App/base, routing, authentication, layouts, CSS and Blazor are real.
         // The fixture owns/removes its unique iv-* root: Unix socket paths must be short and symlink-free.
         await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>

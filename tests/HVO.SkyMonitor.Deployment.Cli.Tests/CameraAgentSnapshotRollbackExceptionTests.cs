@@ -108,9 +108,10 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal);
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
-        Assert.AreEqual("419f45b0fd61ae2caba2654b71ff1853080ab693", previous[boundary]);
+        Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
         Assert.AreEqual("4293871b7c4cf38ce0e0e4ea969aa9a6de057eea", candidate[boundary]);
-        Assert.AreEqual("c40aa64bb8ae039e04993e01f55e0fe7b5087ab6", exception["previousImageRevision"]!.GetValue<string>());
+        Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
+        CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
         if (revertBoundary) candidate[boundary] = previous[boundary];
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-manifest-boundary-" + Guid.NewGuid().ToString("N")), Guid.NewGuid(), "catalog");
         var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(previous));

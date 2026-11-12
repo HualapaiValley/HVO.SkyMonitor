@@ -393,7 +393,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
 
     public async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(string storageRoot, CancellationToken cancellationToken)
     {
-        if (!string.Equals(Path.GetFullPath(storageRoot), Path.GetFullPath(options.Value.RawIngressRoot), StringComparison.Ordinal)) return [];
+        if (!StorageRootIdentity.AreEqual(storageRoot, options.Value.RawIngressRoot)) return [];
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = Command(connection, null, "SELECT plan_json, plan_sha256 FROM jobs WHERE state IN ('Queued','Working') AND plan_json IS NOT NULL LIMIT 65;");
@@ -412,7 +412,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
 
     private PhysicalRoot Root()
     {
-        var basePath = Path.GetFullPath(options.Value.RawIngressRoot);
+        var basePath = StorageRootIdentity.CanonicalPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(basePath);
         var parent = PhysicalRoot.Open(basePath);
         var directory = parent.Resolve(".time-lapses");
