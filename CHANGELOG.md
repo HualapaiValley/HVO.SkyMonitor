@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent run manifests accept node IDs containing slashes; ordinary execution output ordinals stay dense after retention. Refs #1766
+- CameraAgent run manifests accept slash-containing node IDs, store bounded counts separately from frozen plans, and keep ordinary output ordinals dense after retention. Refs #1766
 
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 

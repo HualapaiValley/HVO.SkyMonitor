@@ -75,7 +75,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
-      "candidateValue": "419f45b0fd61ae2caba2654b71ff1853080ab693",
+      "candidateValue": "461ae8cc3eb2cb84418c801fb24aa3bef9cdb154",
       "reason": "Schema 2 is extended atomically to schema 3 for daily summaries; older binaries require the existing paired SQLite checkpoint on rollback. No previous-release SQL image changes. #1713"
     },
     {
@@ -87,7 +87,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
-      "candidateValue": "419f45b0fd61ae2caba2654b71ff1853080ab693",
+      "candidateValue": "461ae8cc3eb2cb84418c801fb24aa3bef9cdb154",
       "reason": "Schema 3 from development/v1 5f5d253dd38308b8e62be9a1e32194dd675d0b60 gains retention indexes in schema 4. The minimum-compatible-revision boundary advances from ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c to 419f45b0fd61ae2caba2654b71ff1853080ab693 so the installer selects the paired checkpoint before candidate startup. Frozen previous-release SQL images remain unchanged. Refs #1778",
       "previousImageRevision": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
       "previousImageLabels": {
@@ -103,6 +103,33 @@
         "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
         "io.hvo.skymonitor.state-contracts": "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}"
       }
+    },
+    {
+      "location": "raw/journal/raw-ingress.db",
+      "objects": [
+        "table:capture_processing_schema",
+        "version:capture_processing_schema.version",
+        "table:processing_execution_manifest_counts"
+      ],
+      "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
+      "previousValue": "419f45b0fd61ae2caba2654b71ff1853080ab693",
+      "candidateValue": "461ae8cc3eb2cb84418c801fb24aa3bef9cdb154",
+      "previousImageRevision": "c40aa64bb8ae039e04993e01f55e0fe7b5087ab6",
+      "previousImageLabels": {
+        "io.hvo.skymonitor.component": "CameraAgent",
+        "io.hvo.skymonitor.state-compatibility": "cameraagent-state-v2",
+        "io.hvo.skymonitor.minimum-compatible-revision": "419f45b0fd61ae2caba2654b71ff1853080ab693",
+        "io.hvo.skymonitor.identity-migration": "20260827053715_InitialIdentity",
+        "io.hvo.skymonitor.raw-ingress-schema": "15",
+        "io.hvo.skymonitor.raw-ingress-migration": "canonical-v13-v14-to-v15",
+        "io.hvo.skymonitor.catalog-manifest-version": "3",
+        "io.hvo.skymonitor.configuration-contract": "cameraagent-install-v1",
+        "io.hvo.skymonitor.configuration-defaults": "installer-defaults-2",
+        "io.hvo.skymonitor.catalog-contract": "hvo-approved-catalogs-v2",
+        "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
+        "io.hvo.skymonitor.state-contracts": "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}"
+      },
+      "reason": "Processing schema 8 migrates atomically to schema 9 for bounded scalar manifest ledgers. The minimum-compatible-revision boundary selects the paired checkpoint before candidate startup; older binaries use that checkpoint during rollback. Frozen SQL images remain unchanged. Refs #1766"
     }
   ]
 }

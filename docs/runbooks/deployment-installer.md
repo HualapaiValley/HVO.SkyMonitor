@@ -2679,6 +2679,17 @@ restored stores, so it cannot overwrite what that image has captured since. `--r
 (below) and then resumes capture instead of retrying. A retry takes a new snapshot. Snapshots are kept with their
 operation and are not deleted automatically.
 
+**Processing manifest ledgers (Refs #1766).** Processing schema 8 upgrades atomically to
+schema 9 at startup. Optional input/output counts move out of the frozen-plan BLOB
+into a bounded scalar table, preserving primary plan bytes and retained run evidence.
+The raw journal stays at schema 15. The image's `minimum-compatible-revision` boundary advances to the schema-9
+implementation, so an upgrade from the preceding image selects the existing paired
+SQLite checkpoint before candidate startup. The named state contract remains
+`cameraagent-state-v2`. An interrupted migration can retry
+from the previous layout; rollback to an older binary uses the retained paired
+checkpoint. The previous-release SQL images are unchanged; the declared exception
+names only the processing marker/version and the new ledger table.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a

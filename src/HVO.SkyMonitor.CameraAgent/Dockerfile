@@ -141,6 +141,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # The minimum-compatible-revision boundary also identifies the nightly schema-3 reader (#1713).
 # Its change makes existing installers checkpoint the paired databases before the schema-2 conversion;
 # rollback restores that checkpoint rather than handing schema 3 to a schema-2 binary.
+# The minimum-compatible-revision boundary also selects the paired checkpoint for processing schema 9.
+# Refs #1766. Earlier processing readers require the retained checkpoint.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -155,7 +157,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="419f45b0fd61ae2caba2654b71ff1853080ab693" \
+      io.hvo.skymonitor.minimum-compatible-revision="461ae8cc3eb2cb84418c801fb24aa3bef9cdb154" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="15" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \

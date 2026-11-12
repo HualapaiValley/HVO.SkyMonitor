@@ -176,9 +176,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     var original = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
                     if (legacy)
                     {
-                        var plan = JsonNode.Parse(original)!.AsObject();
-                        Assert.IsTrue(plan.Remove("committedOutputCounts"));
-                        await ReplaceFrozenEvidenceAsync(root, id, Encoding.UTF8.GetBytes(plan.ToJsonString())).ConfigureAwait(false);
+                        await ReplaceManifestCounterAsync(root, id, "committedOutputCounts", null).ConfigureAwait(false);
                         await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
                     }
                     var deletion = new ProcessingLifecycleOperation($"delete:{Guid.NewGuid():N}", "delete", output.OutputIdentitySha256,

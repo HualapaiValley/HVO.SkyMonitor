@@ -40,11 +40,12 @@ ordinals retain their original values after partial deletion. Declared output co
 are upper bounds: conditional outputs that were never produced do not count as
 missing evidence. Every completed node attempt, including a retryable or terminal
 failure after recording a `Produced` outcome, records the cardinality of the node's
-committed output set (zero when nothing has committed) in the existing
-execution evidence JSON, atomically with its output associations. Original plan
+committed output set (zero when nothing has committed) in the independent
+execution manifest ledger, atomically with its output associations. Original plan
 members and frozen normalization-plan values retain their bytes. Counts survive
 output retention, so partial or complete metadata deletion still refuses export.
-There is no SQLite schema, installer or image-boundary change. Older runs without
+Processing schema 9 stores these counts in a separate bounded table; the image
+state boundary selects the existing paired upgrade checkpoint. Older runs without
 recorded counts remain available when a full declared output set (including a run ending in failure) or an outputless
 node with no attempts or only uncommitted running/interrupted/skipped attempts proves completeness.
 Terminal sweeps can mark an unstarted or interrupted node failed without committing any outputs;
@@ -52,9 +53,10 @@ such Live failure/expiry and Replay failure/expiry/cancel paths remain downloada
 or failed state alone cannot prove zero outputs after earlier retries; unprovable retry/skip/failure
 history is refused rather than exporting a partial manifest. An older ambiguous run
 receives the fixed reason that its original produced-output evidence was not recorded completely, rather
-than claiming that it was deleted. If the existing frozen-plan byte limit leaves
-no room to record a count, processing continues and export applies the same
-fail-closed completeness rule. New completions record conditional and zero-output
+than claiming that it was deleted. The primary plan retains its full 2 MiB capacity independently of optional
+count evidence. Each input/output ledger admits at most 64 node counts.
+Exceeding that independent capacity refuses the manifest with the size-limit
+reason without stopping processing or concealing ordinary detail. New completions record conditional and zero-output
 counts without consulting mutable current-capture state. A successful retry updates
 the zero-output attempt's count atomically with its committed output associations.
 The largest committed ordinal set is preserved across attempts: a later outputless
@@ -64,8 +66,8 @@ Refusal for older runs applies only when their output-history completeness canno
 be proven. It does not permit other manifest failures or an unreadable ordinary journal.
 
 Historical processing-input cardinalities are initialized to zero on new Live/Replay admission
-and updated atomically when window pins are frozen. This evidence lives in the existing
-frozen execution JSON independently of cascading input-pin deletion. Even a node that produces
+and updated atomically when window pins are frozen. This evidence lives in the separate execution manifest table independently of
+cascading input-pin deletion. Even a node that produces
 no outputs must retain every frozen input; a missing historical row refuses the download with
 the missing-artifact reason before and after restart. An older outputless window without this
 proof remains downloadable when the retained pins fill its frozen maximum historical window with
@@ -116,25 +118,27 @@ as JSON strings. They are never used as manifest paths or attachment names.
 Empty, overlong, untrimmed or control-containing identifiers receive a sanitized refusal reason. The empty prototype More run actions button is removed; existing capture,
 revision and replay links remain available directly on the page. #1715
 
-## Ledger write-cost and budget assessment (Refs #1766)
+## Independent count ledgers (Refs #1766)
 
-Admission adds the zero-input ledger to an execution copy before its first INSERT;
-it does not UPDATE an already stored plan. Pin freezes skip the plan UPDATE when
-the frozen count is unchanged, and output completions skip it when the recorded
-maximum already covers the committed set. A changed count still rewrites the
-frozen-plan BLOB in the same transaction as the evidence it describes.
+Processing schema 9 adds `processing_execution_manifest_counts`. It stores one
+scalar count per execution, ledger kind and node, plus an independent status row
+for each input/output ledger. Each kind has at most 64 node entries; input counts
+are bounded to 512 and output counts to 128. Count writes share the original
+lease-checked evidence transaction and never update `frozen_plan_json`.
+Repeated counts avoid writes, and output counts preserve the largest committed
+set across retries. Rows survive pin/output retention and cascade only when the
+execution itself is removed. Ordinary detail never depends on these optional rows.
 
-An incremental side table would avoid those changed-count rewrites and separate
-optional ledger capacity from required normalization evidence. The current SQLite
-CHECK caps the entire BLOB at 2 MiB, so merely raising an application limit cannot
-provide separate headroom. A side table or larger durable bound requires a schema,
-installer compatibility and upgrade/recovery decision beyond this bounded change.
-The originating review recorded no measurable regression in two alternating A/B
-rounds; no new performance result or storage migration is claimed here.
+The startup migration accepts canonical processing schemas 5 through 8. Schema 8
+counts are validated independently, imported, and removed from the frozen plan
+in the same transaction as the schema marker. Existing primary member bytes,
+normalization plans, hashes, attempts and associations survive. Missing legacy
+counts remain unknown rather than becoming invented zeroes. Corrupt or excessive
+legacy ledgers retain explicit refusal states while ordinary processing continues.
+Migration cancellation or interruption leaves the previous layout available for retry.
 
-At the current byte boundary, skipped optional bookkeeping must not stop processing
-or conceal ordinary execution detail. The aggregate manifest snapshot byte check
-precedes completeness checks, so a full-size plan plus its node contracts receives
-the size-limit reason, including after restart. Required normalization evidence
-that exceeds the shared BLOB budget is refused without changing the stored plan.
-The shared capacity and changed-count rewrite remain limitations.
+The raw journal remains schema 15. The CameraAgent image advances its
+`minimum-compatible-revision` boundary to the schema-9 implementation, selecting
+the installer's existing paired checkpoint before startup. Older readers require that checkpoint during rollback; frozen previous-release
+SQL images remain unchanged. The manifest's existing 2 MiB aggregate snapshot and
+encoded-download limits still apply independently of the ledger capacity.

@@ -13,7 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
-    public async Task FullPlanBudgetSkipsOptionalCountsWithoutConcealingTheSizeReasonAcrossRestart()
+    public async Task FullPlanBudgetRetainsIndependentCountsAndTheSizeReasonAcrossRestart()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-manifest-budget");
         Guid id;
@@ -43,14 +43,12 @@ public sealed partial class ProcessingGraphOperationsTests
                 primary["padding"] = JsonSerializer.SerializeToElement(new string('x', 2 * 1024 * 1024 - Encoding.UTF8.GetByteCount(json)));
                 var full = JsonSerializer.SerializeToUtf8Bytes(primary);
                 Assert.AreEqual(2 * 1024 * 1024, full.Length);
-                var nodes = plan.RootElement.GetProperty("nodes").EnumerateArray()
-                    .Select(node => node.GetProperty("nodeId").GetString()!).ToArray();
-                var initialized = SqliteCaptureProcessingStore.InitializeFrozenOutputInputCounts(full, nodes);
-                Assert.AreSame(full, initialized, "Optional bookkeeping cannot exceed the SQLite BLOB constraint.");
-                await WriteFrozenExecutionJsonAsync(root, id, initialized).ConfigureAwait(false);
+                await WriteFrozenExecutionJsonAsync(root, id, full).ConfigureAwait(false);
                 await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
                 var completed = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
                 CollectionAssert.AreEqual(full, completed);
+                Assert.AreEqual(0, await ReadManifestCounterAsync(root, id, "frozenOutputInputCounts", "preview").ConfigureAwait(false));
+                Assert.AreEqual(1, await ReadManifestCounterAsync(root, id, "committedOutputCounts", "preview").ConfigureAwait(false));
                 Assert.AreEqual("Completed", (await operations.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false))!.Execution.Status.ToString());
                 Assert.IsNotNull(await operations.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false));
                 await RunManifestTestAssertions.ResponseAsync(operations, id, ProcessingRunManifestBounds.UnavailableReason).ConfigureAwait(false);
@@ -60,13 +58,14 @@ public sealed partial class ProcessingGraphOperationsTests
             await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var recovered = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             Assert.IsNotNull(await recovered.ReadExecutionDetailAsync(id, CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(1, await ReadManifestCounterAsync(root, id, "committedOutputCounts", "preview").ConfigureAwait(false));
             await RunManifestTestAssertions.ResponseAsync(recovered, id, ProcessingRunManifestBounds.UnavailableReason).ConfigureAwait(false);
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
     }
 
     [TestMethod]
-    public async Task NormalizationFreezeRefusesSharedBudgetOverflowWithoutChangingTheStoredPlan()
+    public async Task NormalizationFreezeUsesFullPrimaryBudgetIndependentlyOfManifestCounts()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-normalization-budget");
         var clock = new MutableTimeProvider(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero));
@@ -81,17 +80,20 @@ public sealed partial class ProcessingGraphOperationsTests
             var frozen = await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false);
             // Derive padding from the exact primary JSON the freezer emits, leaving one byte of headroom.
             using var document = JsonDocument.Parse(frozen);
-            var counters = document.RootElement.GetProperty("frozenOutputInputCounts").GetRawText();
-            var primaryBytes = frozen.Length - Encoding.UTF8.GetByteCount(",\"frozenOutputInputCounts\":" + counters);
+            Assert.IsFalse(document.RootElement.TryGetProperty("frozenOutputInputCounts", out _));
+            var primaryBytes = frozen.Length;
             var padding = new string('x', 2 * 1024 * 1024 - primaryBytes - Encoding.UTF8.GetByteCount(",\"padding\":\"\"") - 1);
             var padded = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(original)[..^1] + ",\"padding\":\"" + padding + "\"}");
             await WriteFrozenExecutionJsonAsync(root, fixture.ExecutionId, padded).ConfigureAwait(false);
-            // This exposes the current shared-capacity limitation: primary evidence alone
-            // would fit, but the SQLite constraint includes optional manifest bookkeeping.
+            var tooLarge = Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(padded)[..^1] + ",\"extra\":\"too large\"}");
+            await WriteFrozenExecutionJsonAsync(root, fixture.ExecutionId, tooLarge).ConfigureAwait(false);
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
                 await fixture.Store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-            CollectionAssert.AreEqual(padded, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
-            Assert.IsNull(await fixture.Store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None).ConfigureAwait(false));
+            CollectionAssert.AreEqual(tooLarge, await ReadFrozenExecutionJsonAsync(root, fixture.ExecutionId).ConfigureAwait(false));
+            await WriteFrozenExecutionJsonAsync(root, fixture.ExecutionId, padded).ConfigureAwait(false);
+            await fixture.Store.FreezeNormalizationPlanAsync(calibration, fixture.Context, PlanNode, plan, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(await fixture.Store.ReadNormalizationPlanAsync(fixture.ExecutionId, PlanNode, CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(0, await ReadManifestCounterAsync(root, fixture.ExecutionId, "frozenOutputInputCounts", PlanNode).ConfigureAwait(false));
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
     }

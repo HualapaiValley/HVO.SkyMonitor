@@ -75,9 +75,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     Assert.HasCount(2, detail.Nodes.Single().Attempts);
                     if (legacy)
                     {
-                        var plan = JsonNode.Parse(await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false))!.AsObject();
-                        Assert.IsTrue(plan.Remove("committedOutputCounts"));
-                        await ReplaceFrozenEvidenceAsync(root, id, Encoding.UTF8.GetBytes(plan.ToJsonString())).ConfigureAwait(false);
+                        await ReplaceManifestCounterAsync(root, id, "committedOutputCounts", null).ConfigureAwait(false);
                     }
                     Assert.AreEqual(retained, await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false));
                 }
