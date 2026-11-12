@@ -340,7 +340,8 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<SqliteNightlyProductStore>(),
             provider.GetRequiredService<IPlanetEphemeris>(),
             () => provider.GetService<IDeploymentLocationStore>(),
-            provider.GetRequiredService<TimeProvider>()));
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<NightlyProductGenerator>>()));
         services.AddSingleton<ILocalAutomationWindowTaskAdapter, NightlyProductAutomationTaskRegistry>();
         services.AddSingleton<SqliteTimeLapseStore>();
         services.AddSingleton<ICameraAgentTimeLapseCatalog>(static provider => provider.GetRequiredService<SqliteTimeLapseStore>());

@@ -38,7 +38,8 @@ internal sealed partial class SqliteTimeLapseStore
             WITH ranked AS (
                 SELECT job_id, report_date, window_json, state, updated_ticks, reason, product_id,
                     ROW_NUMBER() OVER(PARTITION BY report_date, json_extract(window_json,'$.reportingPeriod.identitySha256')
-                        ORDER BY (state IN ('Queued','Working')) DESC, (product_id IS NOT NULL) DESC,
+                        ORDER BY (CASE WHEN $generation_enabled=1 AND state IN ('Queued','Working') THEN 1 ELSE 0 END) DESC,
+                            (product_id IS NOT NULL) DESC,
                             updated_ticks DESC, job_id DESC) AS rank
                 FROM jobs WHERE report_date IN (SELECT value FROM json_each($dates))
                   AND json_extract(window_json,'$.policy.kind')='SunriseDay')
@@ -59,7 +60,8 @@ internal sealed partial class SqliteTimeLapseStore
                     WHERE hour.report_date=job.report_date AND hour.parent_job_id=job.job_id AND hour.state='Working') END
             FROM ranked AS job LEFT JOIN products AS product ON product.product_id=job.product_id
             WHERE job.rank=1 ORDER BY job.report_date DESC, job.job_id LIMIT 4097;
-            """, ("$dates", System.Text.Json.JsonSerializer.Serialize(dates.Select(Date))));
+            """, ("$dates", System.Text.Json.JsonSerializer.Serialize(dates.Select(Date))),
+            ("$generation_enabled", options.Value.TimeLapses.Enabled ? 1 : 0));
         var entries = new List<CameraAgentTimeLapseLibraryEntry>();
         using (var reader = await rows.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
