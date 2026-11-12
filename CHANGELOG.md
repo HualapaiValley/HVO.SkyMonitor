@@ -13,6 +13,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 ### Fixed
 
 - Protected installation verification uses writer-maintained integrity checkpoints. Startup checks a bounded recent capture window before serving health and recovery; full history qualification and capture recovery run in the background. Lifecycle operations refuse pending or invalid history within the existing 120-second budget. Full scrubs detect out-of-band tampering and refresh daily; ordinary polls coalesce work. Managed pruning, missing-ledger refusal and paired upgrade/rollback recovery preserve retained evidence. Refs #1041
+- Cancelling a claimed System control drain now ends its receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded when the cancellation is recorded before the drain completes; a drain that reaches its two-minute bound still ends `drain.timeout`. The receipt records who cancelled, when and why, and capture stays paused until explicitly resumed. A completed drain whose final state the installer cannot read or record now ends Failed instead of Succeeded, and when the installer is interrupted or cannot write its journal right after a drain or just before a restart, a restarted worker now settles the receipt instead of having it refused. Refs #1775
 
 - HYG 4.2 catalog builds and catalog fixture recipes reproduce the approved checksums independently of SQLite's secure-deletion default, including the isolated SQLite 3.45.1 CLI. Refs #1773
 

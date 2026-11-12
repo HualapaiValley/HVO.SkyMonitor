@@ -49,9 +49,64 @@ worker exchange. Idle heartbeats do not write durable state or evaluate schedule
    The command does not purge, acknowledge or bypass accepted evidence. Explicit archived
    replay retains the existing installer checkpoint semantics: pinned queued
    replay is preserved and interrupted claims recover, rather than blocking drain.
-3. A standalone drain ends **Succeeded**, with capture paused until an explicit
-   resume. Pause itself remains the existing admission-only operation: it does
-   not wait for every accepted processing/delivery queue to empty.
+3. A standalone **Drain** has finish semantics, not checkpoint semantics. After
+   its pause, all four accepted queue families must finish: raw ingress, capture
+   lanes, processing and artifact delivery (outbox) must each report zero pending
+   and zero leased work, from fresh observations, within the two-minute monotonic
+   bound of step 2. A standalone Drain never resumes capture and never purges
+   accepted work. It ends with one of these terminal codes.
+
+   Once its pause has been issued, capture stays paused until an explicit,
+   authorized resume:
+   - **Succeeded** `lifecycle.drained-paused`: every family reached zero and no
+     cancellation was recorded by the post-drain boundary.
+   - **Failed** `drain.timeout`: the two-minute bound elapsed before every family
+     reached zero. The bound takes precedence over a cancellation recorded
+     during the drain.
+   - **Failed** `drain.failed-check-capture`: the drain call failed or returned
+     without proving the boundary, for example unobserved queues or remaining
+     work.
+   - **Cancelled** `drain.cancelled-paused`: an owner cancelled after the
+     installer claimed the request. Once claimed, a Drain still pauses and
+     drains. The installer reads the cancellation when the drain ends, at the
+     same post-drain boundary where a Restart checks it before restarting. The
+     receipt records who cancelled, when and why. Cancellation does not restore
+     the prior running state.
+
+   Before any pause, capture is left as it was:
+   - **Cancelled** `lifecycle.unclaimed-cancelled`: the owner cancelled the
+     request before the installer claimed it. If the installer's claim raced that
+     cancellation, its own journal records `lifecycle.claim-refused` for the same
+     request, and Recent control receipts keeps the CameraAgent record.
+   - **Failed** `lifecycle.capture-conflict`: capture was not initialized, its
+     capture-control version no longer matched the request, or it was neither
+     Running nor Paused.
+   - **Failed** `lifecycle.installer-busy`: another installer deployment
+     operation held the deployment lock when the worker would have claimed it.
+
+   On either side of the pause, check capture state before resuming:
+   - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: an
+     exchange with CameraAgent timed out or failed, or the installer could not
+     write its journal. After a proven drain this is the post-drain boundary
+     read or the journal write that records the drained boundary; neither is
+     reported as Succeeded or as a drain failure.
+   - **Cancelled** `lifecycle.cancelled-check-capture`: the installer process was
+     stopped during the operation. This is not an owner cancellation.
+   - **Failed** `lifecycle.installer-interrupted` or
+     `lifecycle.projection-orphaned`: an interrupted worker or a projection with
+     no installer journal was settled; see the recovery sections below.
+
+   The installer journals the drained boundary before publishing it to
+   CameraAgent, and adopts it only once that write succeeds, so CameraAgent
+   never holds evidence the journal lacks. An installer interrupted there, or
+   one that stops because its journal stays unwritable, is settled by a
+   restarted worker as `lifecycle.installer-interrupted` once the journal is
+   writable, instead of having its receipt refused.
+   A cancellation recorded after the post-drain boundary is too late to change
+   the outcome: the receipt stays `lifecycle.drained-paused`, and Recent control
+   receipts shows the late cancellation beside it. Pause itself remains the
+   existing admission-only operation: it does not wait for every accepted
+   processing/delivery queue to empty.
 4. The registered **Scheduled CameraAgent Restart** task delegates the same
    sequence to the installer. Its reserved definition is `cameraagent-restart`,
    its target is `installed-cameraagent`, and its periodic interval is 3,600 to
@@ -95,7 +150,8 @@ recovery authority. The conditional resume checks this ordering in the same SQLi
 write transaction as the state change, so a pause accepted after the installer's
 snapshot is preserved too. Ordinary pause/resume versions and no-op semantics are
 unchanged. A definite refusal of the restart mechanism
-also permits this recovery; an ambiguous restart acknowledgement does not. An
+also permits this recovery; an ambiguous restart acknowledgement does not, and
+neither does a refusal the installer could not write to its journal. An
 originally paused host stays paused. If the recovery resume is unconfirmed,
 publication restores paused admission and records `restart.resume-unconfirmed`.
 A failed Restarting publication before the stop call records a separate durable
@@ -122,7 +178,8 @@ settlement at a bounded boundary, with a required cancellation reason. It record
 Recent control receipts. An unclaimed Queued request is cancelled locally without
 waiting for a worker; a concurrent late installer claim is refused before any pause.
 An unclaimed request does not fence ordinary resume. Claimed requests require
-installer settlement. Cancellation cannot undo an already accepted delayed stop.
+installer settlement; for a claimed standalone Drain that boundary is the end
+of the drain (step 3 of the contract above). Cancellation cannot undo an already accepted delayed stop.
 Closing the confirmation dialog sends no request. Storage faults return Unavailable
 without faulting the Blazor circuit. If local cancellation succeeds but the separate
 SQLite automation-history write is busy or fails, the UI reports Unavailable while
