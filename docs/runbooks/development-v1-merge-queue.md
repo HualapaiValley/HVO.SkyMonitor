@@ -103,3 +103,17 @@ This document records policy; changing settings remains an operator action.
   including its finalization lock; only Kepler performs fallback merges.
 - Re-enable the queue only after the cutover checks pass and record a fresh
   settings snapshot. Never remove review requirements to recover availability.
+
+## Approved operational follow-up
+
+Roy authorized the live cutover/rollback drill in t421s2656 (2026-11-12,
+8:14 AM PST). Kepler owns its later supervised execution. This implementation
+branch supplies the exact command plan and fresh read-only protection/ruleset
+snapshots in the local owner handoff; it changes no live settings. The
+not-yet-executed drill is a known operational limit, with no further Roy decision
+needed for the approved activity. Refs #1747.
+
+Roy also selected additional or relocated self-hosted runner capacity. Atlas
+must report the infrastructure plan, available capacity and labels before any
+workflow selector changes. That dependency is a known limit awaiting Atlas;
+this branch retains existing runner labels, timeout budgets and test selection.

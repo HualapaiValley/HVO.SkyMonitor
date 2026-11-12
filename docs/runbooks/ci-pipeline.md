@@ -205,7 +205,11 @@ records restore 10 s, build 382 s, Unit 550 s and coverage 50 s: 992 s of the
 1,080 s workload budget, leaving 88 s before checkout/setup overhead. This
 contended sample is distinct from the local totals above. The 1,080 s budget,
 22-minute hard timeout and unconditional coverage regressions are retained;
-changing those budgets or test selection needs Roy's policy decision.
+Roy selected additional or relocated self-hosted runner capacity in t421s2656
+(2026-11-12, 8:14 AM PST). Atlas owns the infrastructure plan; runner labels and
+`runs-on` stay unchanged until Atlas reports the available capacity and labels.
+Capacity delivery is a known limit awaiting Atlas. Timeout budgets and test
+selection remain unchanged by this decision.
 A later [run 43086895061, attempt 1](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43086895061/attempts/1)
 reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
 timestamps; coverage never started. This demonstrates workload-budget pressure
