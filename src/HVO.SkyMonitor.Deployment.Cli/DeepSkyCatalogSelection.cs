@@ -216,7 +216,8 @@ internal static class DeepSkyCatalogSelection
             manifest.ApplicationIdentity.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
             manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
             manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
-            manifest.ReplayProfile, manifest.Catalog, DeepSkyCatalog: manifest.DeepSkyCatalog), cancellationToken).ConfigureAwait(false);
+            manifest.ReplayProfile, manifest.Catalog, AllowCompletedPasswordReplacement: true,
+            DeepSkyCatalog: manifest.DeepSkyCatalog), cancellationToken).ConfigureAwait(false);
     }
 
     private static string SettingPath(InstallationPaths paths, string setting) => Path.Combine(paths.ConfigRoot, "secrets", "DeepSkyCatalog__" + setting);
