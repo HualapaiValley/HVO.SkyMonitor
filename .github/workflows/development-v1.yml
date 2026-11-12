@@ -53,7 +53,10 @@ jobs:
             '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
             "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint"
+          find .github/workflows -type f \( -iname '*.yml' -o -iname '*.yaml' \) -print0 > "$RUNNER_TEMP/actionlint-workflows.list"
+          mapfile -d '' -t workflows < "$RUNNER_TEMP/actionlint-workflows.list"
+          ((${#workflows[@]} > 0)) || { echo 'No workflow files found for actionlint.' >&2; exit 1; }
+          "$RUNNER_TEMP/actionlint" "${workflows[@]}"
 
       - name: Install pinned workflow YAML parser
         run: |

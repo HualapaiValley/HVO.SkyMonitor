@@ -152,7 +152,10 @@ jobs:
           curl -fsSL -o /tmp/actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
           printf '%s  %s\n' '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' /tmp/actionlint.tar.gz | sha256sum --check
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
-          /tmp/actionlint
+          find .github/workflows -type f \( -iname '*.yml' -o -iname '*.yaml' \) -print0 > "$RUNNER_TEMP/actionlint-workflows.list"
+          mapfile -d '' -t workflows < "$RUNNER_TEMP/actionlint-workflows.list"
+          ((${#workflows[@]} > 0)) || { echo 'No workflow files found for actionlint.' >&2; exit 1; }
+          /tmp/actionlint "${workflows[@]}"
       - name: Run static and lightweight contract checks
         run: |
           ./scripts/ci:shell-syntax

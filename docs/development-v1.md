@@ -65,8 +65,13 @@ fixture, including workflow/job defaults, environment and container settings.
 All workflows and job overrides reject `checks: write`, `statuses: write` and
 `write-all`; workflow tokens cannot publish an alternate required check/status.
 Job properties must use known lowercase keys. Workflow discovery includes
-hidden files and case-insensitive `.yml`/`.yaml` extensions; actionlint uses its
-own discovery with no shell glob arguments.
+hidden files and case-insensitive `.yml`/`.yaml` extensions. Both lint steps enumerate with NUL delimiters, pass
+an explicit file array to actionlint and reject an empty list;
+actionlint's default discovery omits uppercase extensions. The contract exercises
+invalid hidden and uppercase workflow files against pinned actionlint 1.7.12.
+Local runs can set `HVO_ACTIONLINT_BIN` to that binary; CI uses the binary already
+installed by the lint step. Missing or mismatched versions reject the contract
+rather than skip its behavioral regressions.
 
 ### Merge queue
 
