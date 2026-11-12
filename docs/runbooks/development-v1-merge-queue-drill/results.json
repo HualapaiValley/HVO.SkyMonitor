@@ -1,6 +1,6 @@
 {
   "liveDrill": "KNOWN LIMIT / HELD",
-  "runnerCapacity": "KNOWN LIMIT (Atlas)",
+  "runnerCapacity": "READY (Atlas)",
   "execution": "private fake API only",
   "behaviorCasesPassed": 6,
   "bashBlocksPassed": 7,
@@ -33,15 +33,15 @@
     }
   ],
   "sha256": {
-    "development-v1-merge-queue-drill.md": "63ff7f0a25f76e174e6231f78a97bda7a80d559863adb01844cfc0829a0c1dd2",
-    "development-v1-merge-queue-drill/verify.py": "e1a18da19a5b409a1014ac3992abdaee399badc6bb266af4a9f48330d5f9d456",
+    "development-v1-merge-queue-drill.md": "d74fbaacfa98250923a5911fe47f22580be4ce5ce1c6b3d4a60da61cda708599",
+    "development-v1-merge-queue-drill/verify.py": "35d19d2da040da9ebcc72be384be13cfabbf61a4647ff47fa07bfd7945b635ca",
     "development-v1-merge-queue-drill/branch-protection.before.json": "03aa0dffe726b35a892be72af4115e788c26f00fd5029d11dca6916df2f36c6e",
     "development-v1-merge-queue-drill/ruleset-26838822.before.json": "29ab59ea55fe5f1acc849fe1c601094085de360013281d93cc4130b713a14097",
     "development-v1-merge-queue-drill/rulesets-index.before.json": "11ac9f3b2de58d85cb6f2d274d7d0d24840f8503579ae66791be6b29e65ee3aa",
     "development-v1-merge-queue-drill/protection.restore.json": "1919773dbebe7d465690f54fbacf5d0245a57dd78b095a7412eae3782c5cf32f",
     "development-v1-merge-queue-drill/ruleset.restore.json": "52b6dd27fcc8ffff5b86f44964815ac30e60499f8fe7955ee801040dad26a93c",
     "development-v1-merge-queue-drill/ruleset.fallback.json": "1479aac2a031b88b806b3b0a813cd32af8302253039cb5e568e86cd192247455",
-    "development-v1-merge-queue-drill/snapshot.json": "180ebe550e8b1f63783578f6744d2a317de354084756056068975697f5dd40fe",
+    "development-v1-merge-queue-drill/snapshot.json": "d8c5d400226b15486e5fa681d21f4bed57a3e57f7a700cadd528eddab0bf0322",
     "development-v1-merge-queue-drill/queue-observation.historical.json": "9bd78db62843162c4f0688bf0a10ac679ac614890410cad0cdb09b0bbcdd1d33"
   }
 }

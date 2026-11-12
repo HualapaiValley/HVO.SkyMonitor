@@ -446,10 +446,9 @@ def violations(short, full, queue=None, extra=None):
     )
     require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
             "category audit belongs to full qualification")
-    # Issue #849 keeps two general x64 runners out of qualification so a ready v1
-    # PR is not queued behind a promotion fan-out. Qualification must opt in to
-    # the hvo-qualification label on every self-hosted job; the v1 check must not.
-    general = "[self-hosted, linux, x64, hvo-skymonitor]"
+    # Refs #1747. Atlas assigned the build label only to gh-runner-05/06.
+    # Qualification retains its own label; v1 selects the ready build pair.
+    build_pool = "[self-hosted, linux, x64, hvo-skymonitor-build]"
     reserved = "[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]"
     # A selector is either a bare GitHub-hosted image or the exact reserved list;
     # anything else (a self-hosted list carrying an image label, a mapping or an
@@ -458,8 +457,8 @@ def violations(short, full, queue=None, extra=None):
     require(reserved in selectors and all(
         value == reserved or re.fullmatch(r"ubuntu-(latest|\d+\.\d+)", value) for value in selectors),
         "every self-hosted qualification job requires hvo-qualification")
-    require(re.findall(r"^    runs-on: (.+)$", build, re.M) == [general],
-            "v1 Build and Unit stays on the general runner pool")
+    require(re.findall(r"^    runs-on: (.+)$", build, re.M) == [build_pool],
+            "v1 Build and Unit uses the reserved build pair")
     require("hvo-qualification" not in short, "v1 profile never requires the qualification label")
     return errors
 
@@ -597,7 +596,9 @@ mutations = (
     ("qualification selector with an image label", short, full.replace(
         "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor, ubuntu-24.04]", 1)),
     ("v1 confined to qualification runners", short.replace(
-        "x64, hvo-skymonitor]", "x64, hvo-skymonitor, hvo-qualification]"), full),
+        "x64, hvo-skymonitor-build]", "x64, hvo-skymonitor-build, hvo-qualification]"), full),
+    ("v1 returns to the general runner pool", short.replace(
+        "x64, hvo-skymonitor-build]", "x64, hvo-skymonitor]"), full),
     ("v1 secret scan removed", short.replace("./scripts/ci:secret-scan", ":"), full),
     ("v1 contract removed", short.replace("./scripts/test:ci-secret-scan", ":"), full),
     ("v1 history scan gated", short.replace(

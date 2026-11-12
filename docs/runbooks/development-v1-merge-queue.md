@@ -47,7 +47,8 @@ in the repository; it changes no live settings. The not-yet-executed drill is
 **KNOWN LIMIT / HELD** until the later supervised window, with Roy watching
 and a repository administrator operating the settings writes. Refs #1747.
 
-Roy also selected additional or relocated self-hosted runner capacity. Atlas
-must report the infrastructure plan, available capacity and labels before any
-workflow selector changes. That dependency is **KNOWN LIMIT (Atlas)**;
-this branch retains existing runner labels, timeout budgets and test selection.
+Atlas delivered the approved capacity on 2026-11-12 at 9:04–9:05 AM PST.
+`gh-runner-05` and `gh-runner-06` each have 8 vCPU and exclusively carry the
+`hvo-skymonitor-build` label. Build and Unit selects that label; capacity is
+ready and no longer a known limit. Timeout budgets and test selection stay
+unchanged. The live drill remains **KNOWN LIMIT / HELD**.

@@ -1,6 +1,6 @@
 # Development v1 merge queue drill appendix
 
-**Live drill: KNOWN LIMIT / HELD. Runner capacity: KNOWN LIMIT (Atlas).**
+**Live drill: KNOWN LIMIT / HELD. Runner capacity: READY (Atlas).**
 
 Roy must be watching; a repository administrator operates the later settings writes.
 Kepler coordinates the freeze and the observer checks the readbacks.
@@ -13,7 +13,7 @@ Full cutover and rollback drill plan — supplied for later supervised execution
 Refs #1747. No live write command below was executed by the implementation owner.
 
 Preconditions and people:
-- Kepler coordinates the window. Roy watches while a repository administrator operates the settings commands; a second observer verifies the snapshots and readbacks. Atlas coordinates capacity separately; no capacity work is needed to run this settings-only drill.
+- Kepler coordinates the window. Roy watches while a repository administrator operates the settings commands; a second observer verifies the snapshots and readbacks. Atlas delivered the capacity; no runner operation is part of this settings-only drill.
 - Kepler freezes all queue admission, direct merges and auto-merge activity, and obtains sole ownership of the settings window. The queue must be empty and no open PR may have auto-merge enabled. If either condition fails, stop; this plan does not dequeue, disable another PR's auto-merge, submit a PR or merge anything.
 - Have the evidence directory and rollback payloads on disk before the first write. Confirm the active account has repository-administration permission without printing credentials. Keep the freeze until the final checks pass.
 - The captured policy is already queue-active. The deliberate drill delta is temporarily removing ONLY the merge_queue rule while retaining the active ruleset, every other rule, and classic branch protection; cutover then restores the original queue rule. No required check is removed or relaxed. This small design choice exercises the return from protected fallback without admitting work.
@@ -354,7 +354,7 @@ Success criteria and limits:
 - The fallback stage changes exactly one rule; classic protection and all required checks remain intact throughout the frozen window.
 - Cutover and rollback comparisons reproduce the full mutable policy in the BEFORE snapshots, including any-source hvo/reviewed-head and the exact queue parameters. Server metadata such as updated_at can change and is not a policy value.
 - No PR, status, workflow, device, runner or merge operation is performed by the drill commands. No live setting has been changed in this implementation thread.
-- Runner capacity awaits Atlas's plan/labels. The live drill awaits Kepler's supervised window. Both are known limits, not additional implementation work or new issues.
+- Atlas delivered the gh-runner-05/06 build pair (8 vCPU each) and its exclusive hvo-skymonitor-build label. Capacity is ready. The live drill awaits Kepler's supervised window as KNOWN LIMIT / HELD.
 
 ## Committed offline restoration evidence
 
@@ -383,4 +383,4 @@ the captured verifier output is in
 [verification.txt](development-v1-merge-queue-drill/verification.txt).
 These results prove offline behavior only. Live payload acceptance and the
 supervised drill remain **KNOWN LIMIT / HELD**, with Roy watching and an admin
-operating the writes. Capacity delivery remains **KNOWN LIMIT (Atlas)**.
+operating the writes. Capacity delivery is **READY (Atlas)**.

@@ -205,11 +205,15 @@ records restore 10 s, build 382 s, Unit 550 s and coverage 50 s: 992 s of the
 1,080 s workload budget, leaving 88 s before checkout/setup overhead. This
 contended sample is distinct from the local totals above. The 1,080 s budget,
 22-minute hard timeout and unconditional coverage regressions are retained;
-Roy selected additional or relocated self-hosted runner capacity in t421s2656
-(2026-11-12, 8:14 AM PST). Atlas owns the infrastructure plan; runner labels and
-`runs-on` stay unchanged until Atlas reports the available capacity and labels.
-Capacity delivery is a known limit awaiting Atlas. Timeout budgets and test
-selection remain unchanged by this decision.
+Roy selected additional or relocated self-hosted runner capacity in t421s2656.
+Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
+and `gh-runner-06` each have 8 vCPU and are the only runners carrying
+`hvo-skymonitor-build`. Build and Unit selects exactly
+`[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
+selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
+budget and 22-minute hard timeout unchanged while collecting new timings.
+Workflow rollback returns this job to `[self-hosted, linux, x64, hvo-skymonitor]`;
+Atlas retains `ROLLBACK.md` for the runner-side procedure.
 A later [run 43086895061, attempt 1](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43086895061/attempts/1)
 reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
 timestamps; coverage never started. This demonstrates workload-budget pressure

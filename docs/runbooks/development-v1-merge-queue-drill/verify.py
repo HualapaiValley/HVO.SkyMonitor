@@ -94,7 +94,7 @@ if options.results:
     inputs = [plan_path, pathlib.Path(__file__), *sorted(data.glob("*.before.json")),
               *sorted(data.glob("*.restore.json")), data / "ruleset.fallback.json",
               data / "snapshot.json", data / "queue-observation.historical.json"]
-    results = {"liveDrill": "KNOWN LIMIT / HELD", "runnerCapacity": "KNOWN LIMIT (Atlas)",
+    results = {"liveDrill": "KNOWN LIMIT / HELD", "runnerCapacity": "READY (Atlas)",
                "execution": "private fake API only", "behaviorCasesPassed": 6,
                "bashBlocksPassed": 7, "failed": 0, "skipped": 0,
                "cases": [{"name": name, "result": "PASS"} for name in
