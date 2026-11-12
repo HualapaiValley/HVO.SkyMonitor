@@ -274,8 +274,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             if (await HashPathAsync(root.Resolve(name), token).ConfigureAwait(false) != product.Encoding.PayloadSha256 ||
                 new FileInfo(root.Resolve(name)).Length != product.Encoding.PayloadBytes)
                 throw new InvalidDataException("Published video bytes differ from encoder evidence.");
-            await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
-                (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
+            using (DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve("products/" + product.ProductId.ToString("N") + ".json"), Encoding.UTF8.GetBytes(json)))
+                await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
+                    (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
             using var connection = await OpenAsync(token).ConfigureAwait(false);
             using var transaction = Begin(connection);
             await ExecuteAsync(connection, transaction, """

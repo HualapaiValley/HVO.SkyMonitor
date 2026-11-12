@@ -480,17 +480,33 @@ public class Program
                 {
                     return Results.Unauthorized();
                 }
-                var configuration = await configurationLoader.LoadAsync(cancellationToken).ConfigureAwait(false);
+                HVO.SkyMonitor.CameraAgent.Common.Configuration.InstallationConfigurationSnapshot verified;
+                try { verified = await configurationLoader.LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false); }
+                catch (HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.InstallationVerificationPendingException)
+                {
+                    var recoveryRequired = configurationLoader.RetainedIntegrityRecoveryRequired;
+                    if (!recoveryRequired) context.Response.Headers.RetryAfter = "1";
+                    context.Response.Headers["X-HVO-Installation-Verification"] = recoveryRequired ? "recovery-required" : "scrub-pending";
+                    return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+                        title: recoveryRequired ? "Installation integrity requires recovery before verification."
+                            : "Installation integrity verification is awaiting a complete scrub.");
+                }
+                var configuration = verified.Configuration;
                 var ownerBootstrapState = await ownerBootstrapStateReader.GetStateAsync(cancellationToken).ConfigureAwait(false);
-                await using var stream = File.OpenRead(Path.GetFullPath(options.Value.ConfigFilePath));
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
+                var configurationSha256 = verified.ConfigurationSha256;
+                if (configurationSha256 is null)
+                {
+                    // Compatibility for transport/test loaders; the file loader always supplies its own parsed snapshot.
+                    await using var stream = File.OpenRead(Path.GetFullPath(options.Value.ConfigFilePath));
+                    using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement);
+                }
                 return Results.Ok(new
                 {
                     agentId = configuration.AgentId,
                     ownerEmail = hostConfiguration["LocalIdentity:AdminEmail"],
                     ownerBootstrapState,
-                    configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement),
+                    configurationSha256,
                     rigProfileSha256 = CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
                     scheduleSha256 = configuration.Schedule is null
                         ? null

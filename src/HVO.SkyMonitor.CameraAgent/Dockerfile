@@ -138,7 +138,10 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # the composed OpenNGC catalog, and still resolves the manifest 2 HYG catalogs. An
 # image that omits the manifest label is held to manifest 2 only.
 #
-# The minimum-compatible-revision boundary also identifies the nightly schema-3 reader (#1713).
+# The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
+# and includes environmental schema 4 (Refs #1778) and nightly schema 3 (#1713). Paired protected state
+# is snapshotted with the databases before adoption so an older-reader rollback
+# receives its pre-upgrade history.
 # Its change makes existing installers checkpoint the paired databases before the schema-2 conversion;
 # rollback restores that checkpoint rather than handing schema 3 to a schema-2 binary.
 # The minimum-compatible-revision boundary also selects the paired checkpoint for processing schema 9.
@@ -157,7 +160,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="461ae8cc3eb2cb84418c801fb24aa3bef9cdb154" \
+      io.hvo.skymonitor.minimum-compatible-revision="53b5756ddbd26dc5ea623ecd34d34d2de2672f05" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="15" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \

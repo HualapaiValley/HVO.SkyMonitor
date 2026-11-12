@@ -20,6 +20,10 @@ internal interface IOwnerBootstrapClient
         bool allowQuarantinedReadiness = false);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
     Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
+    // Pre-mutation callers must compare the current running installation, not only read its owner state.
+    Task<string> ReadInstallationStateAsync(
+        string verificationToken, InstallationVerificationExpectation expectation, CancellationToken cancellationToken)
+        => VerifyInstallationAsync(verificationToken, expectation, cancellationToken);
     Task<string> VerifyInstallationAsync(
         string verificationToken,
         InstallationVerificationExpectation expectation,
@@ -46,6 +50,8 @@ internal sealed class OwnerBootstrapClient(
     TimeSpan? protectedReadTimeout = null) : IOwnerBootstrapClient
 {
     internal static readonly TimeSpan ProtectedReadTimeout = TimeSpan.FromSeconds(120);
+    internal const string VerificationStateHeader = "X-HVO-Installation-Verification";
+    internal const string ScrubPendingState = "scrub-pending";
 
     private readonly TimeSpan _protectedReadTimeout = protectedReadTimeout is null
         ? ProtectedReadTimeout
@@ -200,13 +206,27 @@ internal sealed class OwnerBootstrapClient(
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
         try
         {
-            using var response = await client.GetAsync(
-                new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), deadline.Token)
-                .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsByteArrayAsync(deadline.Token).ConfigureAwait(false);
-            deadline.Token.ThrowIfCancellationRequested();
-            return JsonDocument.Parse(body);
+            while (true)
+            {
+                using (var response = await client.GetAsync(
+                    new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), deadline.Token)
+                    .ConfigureAwait(false))
+                {
+                    var scrubPending = response.StatusCode == HttpStatusCode.ServiceUnavailable &&
+                        response.Headers.TryGetValues(VerificationStateHeader, out var states) &&
+                        states.Contains(ScrubPendingState, StringComparer.Ordinal);
+                    if (!scrubPending)
+                    {
+                        response.EnsureSuccessStatusCode();
+                        var body = await response.Content.ReadAsByteArrayAsync(deadline.Token).ConfigureAwait(false);
+                        deadline.Token.ThrowIfCancellationRequested();
+                        return JsonDocument.Parse(body);
+                    }
+                }
+                // Only the explicit new-agent pending response is retryable. Requests,
+                // retry delays and the final body all spend the same finite budget.
+                await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {

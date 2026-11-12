@@ -1,0 +1,661 @@
+{
+  "generatedAtUtc": "2026-11-12T06:24:49.841095+00:00",
+  "validatedImplementationHead": "4bc5f789abcb04331d6ef258ef3a5162739c2d7a",
+  "previousReviewedHead": "9fc7d1eb8e5ce10692fc95df16827b7160ca80a9",
+  "deliveryBinding": "Delivery adds only the correction report and this evidence JSON. Exact pushed SHA is in the owner thread; all source/test/build tree objects must match validatedImplementationHead.",
+  "branch": "kepler/1041-bounded-installation-verification",
+  "targetBase": "dd49fccfd8e0b2e61c187636fbb5fed94cd55d79",
+  "normalMerge": "4bc5f789abcb04331d6ef258ef3a5162739c2d7a",
+  "freshMergeCheck": "A fresh fetch of origin/development/v1 and normal merge after gates reported already up to date.",
+  "targetProfile": "development/v1 Preflight plus Build and Unit; no workflow dispatch",
+  "risk": "HIGH; Kepler launches the next Sol and Opus independent reviews after push",
+  "authorization": "Kepler r4 correction checklist and Roy t410u affected-only validation; normal push only; no PR, issue comment or GitHub state/review write",
+  "governingSources": {
+    "issue": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041",
+    "priorFullIssueDiscussionSnapshot": {
+      "ledger": "docs/validation/issue-1041-run5-local-gate.json",
+      "readAt": "2026-11-11T23:31:06.705198+00:00",
+      "bodySha256": "720cf8412a804ae3b87562a5be5c28c10100139b5a7168e919c8821f7d36cb3a",
+      "commentCount": 37
+    },
+    "requirementMap": "docs/validation/issue-1041-run2-ledger.md",
+    "optionADesign": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779992529",
+    "attributionReports": [
+      "docs/validation/issue-1559-protected-read-attribution.md",
+      "docs/validation/issue-1591-schedule-validation-reuse.md",
+      "docs/validation/issue-1618-retained-read-attribution.md"
+    ],
+    "currentDirection": "User-provided r4 consolidated findings at 9fc7d1eb; Roy Option A, t388u/t389u and t410u remain governing"
+  },
+  "environment": {
+    "sdk": "10.0.402",
+    "tmpdir": "fresh private short TMPDIR, mode 0700; path omitted",
+    "MSBUILDDISABLENODEREUSE": "1",
+    "docker": "invalid local unix endpoint; no daemon used",
+    "catalog": "cached test catalog bundle; private path omitted",
+    "heavyLock": "/tmp/hvo-heavy-gate.lock",
+    "runnerArtifact": "TestResults/issue-1041-run7/final-gates.py",
+    "runnerSha256": "d4123839f210ca9c1d772923608f4cb67f6180649c21e22fedca54695d9495f4",
+    "sourceRevisionId": "4bc5f789abcb04331d6ef258ef3a5162739c2d7a"
+  },
+  "sourceTrees": {
+    "src": "ae13117335315ab515703bcfd4173a25098a5cc7",
+    "tests": "bd2394ac9483afed084a1588fa1bb8d1ef9bc467",
+    "scripts": "8c7c6429b833c967a335ba00ad924836c02190d1",
+    "tools": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a",
+    ".github": "c9f346562b184d8b631d3c1192712dbc84453693",
+    "global.json": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+    "Directory.Build.props": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+    "Directory.Build.targets": "c20a45477257b954984f2a8da9fdc939e54551a6",
+    "Directory.Packages.props": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19",
+    "HVO.SkyMonitor.v9.slnx": "8a20aed6d34edd985bb7292068cfcdab9981c229",
+    "dotnet-tools.json": "abbb20b1e1389af7707ba10563bf7079dcdb26c3",
+    ".editorconfig": "574ae9c2204756df877acabc22233d6456827557"
+  },
+  "failingBefore": {
+    "binding": {
+      "productHead": "9fc7d1eb8e5ce10692fc95df16827b7160ca80a9",
+      "productSourceUnchanged": true,
+      "testSourceSha256": {
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.RecentTamper.cs": "57fa45fff1ffe17f6617acd126df24f0b0f9edbc57b3fdacaafa14ec7c732b0c",
+        "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Restore.cs": "8736d7a44e0d0b8f89cedd54b4760c0fa6e2c3f860ef71b03f7b8b426612cb30",
+        "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.IndexScale.cs": "5130ae021b759f37a91a46d3546b6de1f412838398844dadac5cdbcae578da79"
+      }
+    },
+    "bindingArtifactSha256": "1656884517a0ad63d37f88822b7f27bb7a6b5d2f6d42bd630bcd4c75d8afbd5f",
+    "blocking": {
+      "artifact": "TestResults/issue-1041-run7/before/before.trx",
+      "sha256": "f6b7204a07abb41a56edcfd47b61e5542c330c156b7fbc02788430c0ea6152ea",
+      "counters": {
+        "total": 7,
+        "executed": 7,
+        "passed": 2,
+        "failed": 5,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "results": [
+        {
+          "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"missing-keys\")",
+          "outcome": "Passed"
+        },
+        {
+          "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"whole\")",
+          "outcome": "Failed"
+        },
+        {
+          "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"journal-tamper\")",
+          "outcome": "Failed"
+        },
+        {
+          "test": "StartupDetectedRecentTamperCannotBeClearedByIncrementalQualification (\"journal\")",
+          "outcome": "Failed"
+        },
+        {
+          "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"tampered-retained\")",
+          "outcome": "Passed"
+        },
+        {
+          "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"preserved-file-tamper\")",
+          "outcome": "Failed"
+        },
+        {
+          "test": "StartupDetectedRecentTamperCannotBeClearedByIncrementalQualification (\"file\")",
+          "outcome": "Failed"
+        }
+      ]
+    },
+    "proofCounterLow": {
+      "artifact": "TestResults/issue-1041-run7/proof-before/proof-before.trx",
+      "sha256": "b62fece05e70115c5b7f5a4fc942f04105e9cfd2c9c81a0086e187b3c5a43ecb",
+      "counters": {
+        "total": 1,
+        "executed": 1,
+        "passed": 0,
+        "failed": 1,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "results": [
+        {
+          "test": "SmallScaleProofCountExcludesAuthenticatedMetadataHints",
+          "outcome": "Failed"
+        }
+      ]
+    },
+    "interpretation": "Expected repro failures on unchanged 9fc7d1eb product code: F1 file+journal; F2 clean actual-read count, preserved-file tamper, journal tamper. Existing malformed/missing-key refusals passed. Proof-count Low separately failed 9 versus 3."
+  },
+  "focusedAfter": {
+    "artifact": "TestResults/issue-1041-run7/after/after.trx",
+    "sha256": "2f7f2248a33ac603cfa3f8bc7b46f5eb83a74c3cbcd7ec40f7317f5d8c24a891",
+    "counters": {
+      "total": 7,
+      "executed": 7,
+      "passed": 7,
+      "failed": 0,
+      "error": 0,
+      "timeout": 0,
+      "aborted": 0,
+      "inconclusive": 0,
+      "passedButRunAborted": 0,
+      "notRunnable": 0,
+      "notExecuted": 0,
+      "disconnected": 0,
+      "warning": 0,
+      "completed": 0,
+      "inProgress": 0,
+      "pending": 0
+    }
+  },
+  "currentGate": {
+    "head": "4bc5f789abcb04331d6ef258ef3a5162739c2d7a",
+    "scope": "Roy t410u: affected tests, requested Release/category/docs gates and lightweight controls",
+    "steps": [
+      {
+        "name": "classifier-correction",
+        "command": [
+          "scripts/ci:classify",
+          "pull_request",
+          "9fc7d1eb8e5ce10692fc95df16827b7160ca80a9",
+          "4bc5f789abcb04331d6ef258ef3a5162739c2d7a"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.565,
+        "logArtifact": "TestResults/issue-1041-run7/classifier-correction.log",
+        "logSha256": "9474b6cfbd3e380760ee883a0d41435be573f030fcd022ec7aca67f1f1f06cd9",
+        "output": [
+          "CI classification: mode=full deployment=true complete=false shared=false cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=false catalog_recipe=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=pull request changes only component-scoped paths paths=22",
+          "mode=full",
+          "deployment=true",
+          "deployment_catalog=false",
+          "deployment_shards=false",
+          "deployment_installer=true",
+          "complete=false",
+          "shared=false",
+          "cameraagent=true",
+          "logichost=true",
+          "combined=true",
+          "delivery=true",
+          "secret_scan_contract=false",
+          "release_scripts=false",
+          "catalog_recipe=false"
+        ]
+      },
+      {
+        "name": "classifier-branch",
+        "command": [
+          "scripts/ci:classify",
+          "pull_request",
+          "origin/development/v1",
+          "4bc5f789abcb04331d6ef258ef3a5162739c2d7a"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 3.645,
+        "logArtifact": "TestResults/issue-1041-run7/classifier-branch.log",
+        "logSha256": "603efe20b77c5ad13c7b3662e66be264edc256eaa4dded82d4d4a6d02b566d33",
+        "output": [
+          "CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=true catalog_recipe=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=at least one path is outside every component boundary paths=157",
+          "mode=full",
+          "deployment=true",
+          "deployment_catalog=false",
+          "deployment_shards=true",
+          "deployment_installer=true",
+          "complete=true",
+          "shared=true",
+          "cameraagent=true",
+          "logichost=true",
+          "combined=true",
+          "delivery=true",
+          "secret_scan_contract=false",
+          "release_scripts=true",
+          "catalog_recipe=false"
+        ]
+      },
+      {
+        "name": "release",
+        "command": [
+          "dotnet",
+          "build",
+          "HVO.SkyMonitor.v9.slnx",
+          "--no-restore",
+          "-c",
+          "Release",
+          "-warnaserror",
+          "-p:SourceRevisionId=4bc5f789abcb04331d6ef258ef3a5162739c2d7a"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 136.024,
+        "logArtifact": "TestResults/issue-1041-run7/release.log",
+        "logSha256": "6c7f2e11183b05fb6d9855018d91e5dcdd49735b14535ce44a30656f7b0cdf61"
+      },
+      {
+        "name": "core",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "FullyQualifiedName~ProtectedDeploymentLocationStoreTests|FullyQualifiedName~FileCameraAgentConfigurationLoaderIdentityTests|FullyQualifiedName~RetainedIntegrityScrubServiceTests|FullyQualifiedName~AfterApplicationStartedServiceTests",
+          "--logger",
+          "trx;LogFileName=core.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run7/final-core"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 17.056,
+        "logArtifact": "TestResults/issue-1041-run7/core.log",
+        "logSha256": "cee5471a1bb1eb2f6c8b7eac57d045249c20d5edaa84d32b014b266721417630"
+      },
+      {
+        "name": "acceptance",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "FullyQualifiedName~InstallationVerification&TestCategory=Integration",
+          "--logger",
+          "trx;LogFileName=acceptance.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run7/final-acceptance"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 26.231,
+        "logArtifact": "TestResults/issue-1041-run7/acceptance.log",
+        "logSha256": "3ae8a0b2900d8abc937162305692d690c46e90e0cc0f81207b6b4f9cd3b6180d"
+      },
+      {
+        "name": "cli",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.Deployment.Cli.Tests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "FullyQualifiedName~OwnerBootstrapClientTests|FullyQualifiedName~CameraAgentStateSnapshotTests|FullyQualifiedName~RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails|FullyQualifiedName~UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart",
+          "--logger",
+          "trx;LogFileName=cli.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run7/final-cli"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 15.536,
+        "logArtifact": "TestResults/issue-1041-run7/cli.log",
+        "logSha256": "0902046554443c99b4f15d6424ec5e251429da588692117ec8cf6a98b941a0c9"
+      },
+      {
+        "name": "host",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "TestCategory=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware",
+          "--logger",
+          "trx;LogFileName=host.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run7/final-host"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 20.986,
+        "logArtifact": "TestResults/issue-1041-run7/host.log",
+        "logSha256": "3350c4c463eeb6b6b5a3256200d37ae83157b0ee04690522e510f32c05c955e8"
+      },
+      {
+        "name": "base-rig-profile",
+        "command": [
+          "dotnet",
+          "test",
+          "tests/HVO.SkyMonitor.LogicHost.Tests",
+          "--no-build",
+          "--no-restore",
+          "-c",
+          "Release",
+          "--filter",
+          "FullyQualifiedName~DeviceRigProfileServiceTests",
+          "--logger",
+          "trx;LogFileName=base-rig-profile.trx",
+          "--results-directory",
+          "TestResults/issue-1041-run7/final-base-rig-profile"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 2.043,
+        "logArtifact": "TestResults/issue-1041-run7/base-rig-profile.log",
+        "logSha256": "043e201d7c044d8260ffe10b1fa3baf59b8e04ee83e20703d84833b0e5741fc2"
+      },
+      {
+        "name": "category",
+        "command": [
+          "dotnet",
+          "run",
+          "--project",
+          "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
+          "--disable-build-servers",
+          "-p:UseSharedCompilation=false"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 101.03,
+        "logArtifact": "TestResults/issue-1041-run7/category.log",
+        "logSha256": "9fa5ba4e80bedef13e838f3589c969470ec19bc8fbf1b5403568cdefc49df9eb"
+      },
+      {
+        "name": "format-affected",
+        "command": [
+          "dotnet",
+          "format",
+          "HVO.SkyMonitor.v9.slnx",
+          "--no-restore",
+          "--verify-no-changes",
+          "--include",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs",
+          "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityLedger.cs",
+          "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.Integrity.cs",
+          "src/HVO.SkyMonitor.LogicHost/Controllers/DeviceRigProfileController.cs",
+          "src/HVO.SkyMonitor.LogicHost/Services/DeviceRigProfileService.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/InstallationVerificationReadTests.IndexScale.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/VirtualSkyPipelineTests.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.RecentTamper.cs",
+          "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Restore.cs",
+          "tests/HVO.SkyMonitor.LogicHost.Tests/Services/DeviceRigProfileServiceTests.cs"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 122.93,
+        "logArtifact": "TestResults/issue-1041-run7/format-affected.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "ci-shell-syntax",
+        "command": [
+          "scripts/ci:shell-syntax"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.604,
+        "logArtifact": "TestResults/issue-1041-run7/ci-shell-syntax.log",
+        "logSha256": "f2088b26f4af0e92ee5c97e03043bbbc7c64514dec1969dd00596782dfc43f95"
+      },
+      {
+        "name": "test-ci-classification",
+        "command": [
+          "scripts/test:ci-classification"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 19.927,
+        "logArtifact": "TestResults/issue-1041-run7/test-ci-classification.log",
+        "logSha256": "2f93c02443d5f106f86f430f5bd51f936a684a19a22f65643a636205c60da5e4"
+      },
+      {
+        "name": "test-coordination-guard",
+        "command": [
+          "scripts/test:coordination-guard"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.208,
+        "logArtifact": "TestResults/issue-1041-run7/test-coordination-guard.log",
+        "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d"
+      },
+      {
+        "name": "test-pr-review-tools",
+        "command": [
+          "scripts/test:pr-review-tools"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 8.378,
+        "logArtifact": "TestResults/issue-1041-run7/test-pr-review-tools.log",
+        "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644"
+      },
+      {
+        "name": "docs-audit-operations",
+        "command": [
+          "scripts/docs:audit-operations"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.424,
+        "logArtifact": "TestResults/issue-1041-run7/docs-audit-operations.log",
+        "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d"
+      },
+      {
+        "name": "diff-check",
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "exitCode": 0,
+        "elapsedSeconds": 0.003,
+        "logArtifact": "TestResults/issue-1041-run7/diff-check.log",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "finalTestResults": {
+    "core": {
+      "artifact": "TestResults/issue-1041-run7/final-core/core.trx",
+      "sha256": "c9d66c2b8d408a7fd4f230b7da71b8960fde98a3838d513a72e7d7ac0f41a7df",
+      "counters": {
+        "total": 175,
+        "executed": 175,
+        "passed": 175,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      }
+    },
+    "acceptance": {
+      "artifact": "TestResults/issue-1041-run7/final-acceptance/acceptance.trx",
+      "sha256": "0eb44c625c55bae139b218e83f2d393af1a2063084dbf2077ef8e71a67b8a32a",
+      "counters": {
+        "total": 15,
+        "executed": 15,
+        "passed": 15,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      }
+    },
+    "cli": {
+      "artifact": "TestResults/issue-1041-run7/final-cli/cli.trx",
+      "sha256": "f18e7daed8e0f7eb67e57acff516d4843443c8c8c4399535edfb96d26924e272",
+      "counters": {
+        "total": 62,
+        "executed": 62,
+        "passed": 62,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      }
+    },
+    "host": {
+      "artifact": "TestResults/issue-1041-run7/final-host/host.trx",
+      "sha256": "12bd28e8f1df2f3a311242a52c83a8ab3ddf3c002b5b0ac014ba70428629d30d",
+      "counters": {
+        "total": 61,
+        "executed": 61,
+        "passed": 61,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      }
+    },
+    "base-rig-profile": {
+      "artifact": "TestResults/issue-1041-run7/final-base-rig-profile/base-rig-profile.trx",
+      "sha256": "6eb64ecd1cc036ac8f014e5a52f7347b4cef1de7f4f402f1545493377848e722",
+      "counters": {
+        "total": 29,
+        "executed": 29,
+        "passed": 29,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      }
+    }
+  },
+  "r4RegressionResults": {
+    "F1": [
+      {
+        "test": "StartupDetectedRecentTamperCannotBeClearedByIncrementalQualification (\"journal\")",
+        "outcome": "Passed"
+      },
+      {
+        "test": "StartupDetectedRecentTamperCannotBeClearedByIncrementalQualification (\"file\")",
+        "outcome": "Passed"
+      }
+    ],
+    "F2": [
+      {
+        "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"preserved-file-tamper\")",
+        "outcome": "Passed"
+      },
+      {
+        "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"journal-tamper\")",
+        "outcome": "Passed"
+      },
+      {
+        "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"missing-keys\")",
+        "outcome": "Passed"
+      },
+      {
+        "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"whole\")",
+        "outcome": "Passed"
+      },
+      {
+        "test": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"tampered-retained\")",
+        "outcome": "Passed"
+      }
+    ],
+    "Sol-Low": [
+      {
+        "test": "SmallScaleProofCountExcludesAuthenticatedMetadataHints",
+        "outcome": "Passed"
+      }
+    ]
+  },
+  "finalTotals": {
+    "passed": 342,
+    "failed": 0,
+    "skipped": 0
+  },
+  "releaseBuild": {
+    "warnings": 0,
+    "errors": 0
+  },
+  "categoryAudit": {
+    "scope": "full solution discovery, not test execution",
+    "Unit": 16295,
+    "Integration": 1340,
+    "Manual": 307,
+    "Soak": 1,
+    "External": 0,
+    "Hardware": 1,
+    "CameraAgent.Unit": 8374,
+    "Acceptance.Integration": 41
+  },
+  "skippedCampaigns": [
+    {
+      "name": "Full Unit and Integration execution",
+      "reason": "Roy t410u affected-only correction gate; execute only the exact selected tests recorded above."
+    },
+    {
+      "name": "Coverage sweep and architecture/publish repeat",
+      "reason": "No new architecture/publish behavior; prior evidence remains at original heads, not relabeled."
+    },
+    {
+      "name": "Large-corpus/startup/lifecycle performance burn-ins and unrelated process probes",
+      "reason": "Roy t410u reserves full in-depth runs for release burn-ins. This round proves trust/refusal using disposable regressions and retains prior scale data with its original attribution."
+    }
+  ],
+  "remainingLimitations": [
+    "hvo-retained-validation-contract-v3 is hand-maintained; no automatic semantic-change guard (recorded Opus Low).",
+    "Clean incremental qualification still enumerates/authenticates metadata and rewrites/copies the full entries table, O(N) per restart; it avoids unchanged retained-byte reads, not all retained-volume work (recorded Opus Low).",
+    "Roy-approved Option A detects unobserved metadata-preserving out-of-band edits at the next periodic/explicit full scrub. An observed failed recent check now revokes incremental trust.",
+    "Supported complete-archive staging requires the updated installer to revoke the clean checkpoint. Device/inode binding is not added; manual copies outside staging retain out-of-band detection limits.",
+    "Initial/dirty/restored full qualification may exceed the 120-second client budget; lifecycle refuses instead of bypassing identity or mutation checks.",
+    "No new large-scale latency/allocation/write-amplification claim; earlier scale results remain on their recorded heads.",
+    "Prior registration-lease/retention-continuation Lows and recent-entry cap/headroom remain recorded for Kepler; no issue filing this round."
+  ],
+  "nextAction": "Normal branch push, then stop for Kepler independent HIGH completeness/review checks; no PR-readiness or issue-closure verdict."
+}

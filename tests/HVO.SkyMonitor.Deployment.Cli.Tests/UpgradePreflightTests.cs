@@ -74,7 +74,7 @@ public sealed partial class UpgradePreflightTests
             StringAssert.Contains(rendered, code, StringComparison.Ordinal);
         }
         StringAssert.Contains(rendered, MinimumCompatibleRevision, StringComparison.Ordinal);
-        StringAssert.Contains(rendered, "Earlier state requires an explicit reset", StringComparison.Ordinal);
+        StringAssert.Contains(rendered, "Review the blocking findings below and follow their listed remediation", StringComparison.Ordinal);
     }
 
     [TestMethod]

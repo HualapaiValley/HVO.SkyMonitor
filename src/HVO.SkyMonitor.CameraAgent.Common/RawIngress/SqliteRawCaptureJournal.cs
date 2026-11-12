@@ -151,6 +151,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
         }
+        using var integrityMigration = !initializeSchema && writableVersion != CurrentSchemaVersion
+            ? DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath) : null;
         if (initializeSchema)
         {
             try
@@ -480,6 +482,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         ProcessingLiveExecutionSeed? liveExecution,
         CancellationToken cancellationToken)
     {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalTransactionBegan);
@@ -1440,6 +1443,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
         CancellationToken cancellationToken)
     {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var claims = await ReadClaimsAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);

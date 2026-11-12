@@ -2852,9 +2852,11 @@ lifecycle journal or reduce an approved memory override to work around a limit.
 
 The protected installation-verification GET used by both the pre-mutation owner
 state read and full installation identity verification has one finite **120-second
-request deadline**, including response-body receipt. Each call makes one request;
-this is not an unlimited retry or a change to the separate health/startup, login,
-or drain limits. An elapsed request deadline reports
+verification deadline**, including attempts, retry delays and response-body receipt.
+Only HTTP 503 with `X-HVO-Installation-Verification: scrub-pending` is retried,
+at one-second intervals within that same original budget. Other responses keep
+their existing refusal policy. There is no unlimited retry or change to the
+separate health/startup, login or drain limits. An elapsed request deadline reports
 `CameraAgent installation verification request timed out.` without transport
 details or credentials. Caller cancellation remains cancellation, not a timeout.
 Before mutation, a timeout follows the existing refusal policy without pause,
@@ -2864,6 +2866,207 @@ Issue [#1041](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041) reco
 an old-image response of about 35 seconds, beyond the former 15-second client
 limit; this CLI compatibility allowance does not fix or attribute the endpoint's
 underlying repeated work.
+
+Current agents maintain an authenticated retained-integrity ledger during managed
+publication, retention, reconciliation/quarantine and raw-journal changes. A
+qualified protected read validates fresh current configuration, schedule,
+protected location/history/manual state and owner readiness, plus a small
+protected checkpoint. It does not traverse retained capture history. The
+checkpoint binds the current process, explicit validation contract/history and ledger
+generation; it is never immutable installer identity.
+
+**Out-of-band tampering is detected at the next full scrub**, an explicit policy
+approved by Roy for #1041. Full scrubs authenticate the expected ledger and
+validate all current retained JSON/journal bytes after unclean/dirty startup,
+restore, relevant configuration/location changes, explicit requests and scheduled
+maintenance before the original 24-hour expiry. A clean restart authenticates the
+previous checkpoint and complete expected-row commitment, compares authenticated
+file size/mtime and journal checksum/length metadata, and reads only changed,
+new or unaccounted content. Metadata-preserving out-of-band changes are still
+found by the next full scrub. Incremental restarts never extend that deadline. Unchanged normal configuration loads, including five-minute
+rig-profile synchronization and deployment continuity polls, use the qualified
+checkpoint and do not start another scrub. Protected reads independently expire qualification after
+24 hours. Changes to managed evidence are checked at publication; arbitrary
+external edits can precede a successful protected read until the scrub detects
+them. Schema, corruption and location-provenance checks remain in the full scrub.
+The [implementation report](../validation/issue-1041-run2-ledger.md) describes
+this boundary, writer inventory and local scale/recovery evidence.
+
+Unqualified, expired or busy verification returns sanitized HTTP 503 and
+`Retry-After: 1`, with no successful installation identity. Pending work uses
+`X-HVO-Installation-Verification: scrub-pending`; a failed, unchanged qualification
+uses `recovery-required`. Only pending is retryable by the installer, inside the
+same finite 120-second budget. A request timeout or caller cancellation does not
+cancel the host-owned scrub. Older installers fail on pending state; retry their
+lifecycle command after qualification completes. No identity comparison is bypassed.
+
+Startup checks fresh configuration/protected authority plus the newest 48 hours
+in the production `frames/YYYY/MM/DD` and `derived/YYYY/MM/DD` partitions and an
+indexed recent raw-journal query. It never recurses through older partitions or
+unknown layouts before Kestrel starts. Limits are 400,000 filesystem entries,
+20,000 recent journal rows, 4 GiB total JSON and 8 MiB per JSON file; exceeding a
+limit refuses recent readiness. Recent retained-data schema/provenance/tamper failures leave
+the host and recovery UI available, report unhealthy location readiness, and do
+not admit capture. Unknown/older/quarantined evidence remains subject to the full
+background verification. Date partitions are limited to at most three UTC dates.
+The entry budget counts all files in those date partitions before timestamp
+filtering. At a 20-second cadence and 24 files per capture, the worst nearly
+72-hour enumeration is about 311,040 files plus directory entries: approximately
+78% of the 400,000 cap, leaving about 22% headroom (roughly 88,900 entries).
+Unexpected fan-out, extra files or faster cadence consumes that margin.
+An unsupported or structurally drifted raw-journal SQLite contract still refuses
+host startup; deferred worker failure can surface through a host-cancellation
+wrapper. The underlying journal validator retains its schema-specific refusal.
+
+After host startup, one coordinator performs incremental or full background
+qualification; a checkpoint alone never grants new-process lifecycle readiness.
+A failed bounded recent check revokes incremental eligibility. The background
+pass must then read actual bytes; matching size/mtime or journal checksum/length
+cannot erase that observed failure. Recent readiness returns only after a full
+successful qualification or a successful fresh recent check. Capture
+configuration publication also waits for safe recovery: schedule initialization
+can invoke raw-ingress reconciliation, so that work runs after host startup too.
+Capture admission, calibration recovery and distribution initialization also wait
+until the host has started. A deferred initialization failure leaves recovery
+available, marks capture readiness unhealthy and emits event 7312 with the service
+and error types only. Configuration initialization retries at most five times,
+with 1/2/4/8-second delays; success clears only that service's failure. Health is
+Unhealthy (HTTP 503) during this failure, so the installer cannot accept stopped
+capture as a healthy upgrade. Persistent failure stays unhealthy. Repair through
+an authorized procedure and restart normally after retries are exhausted; do not
+delete evidence or reset trust. Dependencies that are merely pending remain degraded. The installer's
+normal health wait can reach the recent-ready host while qualification continues.
+An upgrade, rollback or backup attempted before full qualification still refuses
+within its original verification budget. If background work exceeds 120 seconds,
+wait for it to finish before retrying; repeated HTTP timeouts do not restart it.
+Complete metadata discovery, row authentication and full scrubbing remain linear
+background work. The current incremental pass copies and rewrites the whole
+entries table on every restart; it avoids retained-byte reads but is not an O(1)
+qualification algorithm. Raw recovery also remains linear; host startup and qualified protected reads do not walk the full
+corpus. Clean, authenticated older files avoid actual-byte reads and repeated
+Data Protection operations; the optional hints use row MACs. An explicit semantic
+validation version replaces build MVIDs, so unrelated upgrades do not invalidate
+proofs. Missing/corrupt hints fall back to byte verification.
+
+Only an orderly, drained shutdown can seal a checkpoint clean. A running process
+keeps its checkpoint unclean; crashes, pending writes, recovered hot journals,
+restore and rollback force actual-byte full qualification. SQLite recovers a hot
+ledger journal before unchanged layout/authentication checks. A hot optional hint
+index is discarded and rebuilt; its failure never replaces authoritative proof. Pending declared writes are validated against
+their intended result. Incomplete restores, unexplained file/ledger drift and
+damaged authoritative state refuse verification. Restore paired retained state
+and ledger from a known-good backup or repair through an explicitly authorized
+procedure; never delete the ledger/evidence to force adoption. An agent that
+predates this ledger cannot maintain it after rollback, so a later new agent
+will detect those unexplained changes and refuse qualification.
+
+The row-MAC reader boundary is
+`53b5756ddbd26dc5ea623ecd34d34d2de2672f05` (the combined row-MAC/environmental-schema reader), declared by the image's
+`minimum-compatible-revision`. Updated agents and installers read both legacy
+Data Protection row proofs and new MAC proofs. The per-ledger random MAC secret
+is protected in metadata; nonce/key/digest/kind/generation and the authenticated
+set commitment remain bound. A full background scrub rewrites legacy rows in
+batches. An interrupted rewrite never qualifies. Offline paired restore must
+use the matching updated installer: carried file proofs are authenticated and
+re-signed under the target snapshot's secret, or as legacy protected proofs for
+a legacy target. Older installers are unsupported for this private-state
+migration/restore boundary, even though qualified HTTP verification remains wire
+compatible with an older client. The old image receives its own paired saved
+state on rollback; an old reader must not start on a new-format ledger.
+
+Protected history seals the original integrity-ledger nonce. Removing both ledger
+files does not turn an established installation into a legacy installation.
+Initial adoption syncs nonce metadata before publishing the seal; incomplete
+adoption requires full verification. The sealed-history reader boundary is
+declared by the image. Migrating snapshots pair the integrity database with
+protected history, manual state, identity marker and integrity checkpoint, so
+rollback restores the old reader's pre-upgrade files. All parts are verified
+before restore; capture/product files are preserved. Interrupted restores remain
+pending and can resume. Old database-only snapshots cannot reconstruct sealed
+state and are refused before mutation when integrity state is present; restore a
+complete paired backup. Use an updated installer for paired-state rollback.
+Database rollback preserves authenticated current capture/product file proofs
+while restoring the snapshot's authenticated journal expectations; retained files
+are not discarded to make a prior ledger fit. Both complete entry and pending-intent commitments must
+validate and belong to the same authority. Authenticated current file intents and
+snapshot journal intents survive restore without becoming completed proofs; the
+next full scrub checks their actual bytes/schema before trust. Mismatched or
+unverifiable source state refuses;
+the restarted agent still performs a full scrub. A paired snapshot that explicitly records ledger/checkpoint absence and authenticated
+unsealed history can recover a failed first upgrade: restore removes only the
+candidate-created ledger, restores the old protected files, and preserves retained
+captures/products. A later new runtime must fully validate and adopt that legacy
+state before qualifying. Historical database-only snapshots without this paired
+absence evidence still require a complete paired backup. Database-only restore of an established target
+ledger refuses if its current source disappeared, even when a derived
+overlay exists; deleting the ledger never authorizes silent adoption. Derived
+restore overlays are protected and bound to the selected snapshot and current
+file set, so interrupted restores can resume without trusting partial state.
+
+Complete-backup restore verifies the archive and its database snapshot before
+replacing the instance. It authenticates the archived ledger with the extracted
+keys and stages it beside the archived retained files. Before publishing the
+staged ledger it removes and durably syncs only the staged clean checkpoint;
+protected history, keys, ledger expectations and captured evidence stay intact.
+The first archive qualification therefore reads actual bytes even if extraction
+preserves size and timestamps. Use the updated installer for complete-backup
+restore; earlier installers do not perform this checkpoint revocation. DB-only
+restore instead advances ledger generation. Database-only restore still
+refuses a deleted established ledger. Archive restore leaves the instance
+uninstalled; reinstall/startup must finish a full scrub before protected
+verification succeeds. Missing keys or drift never qualify restored state.
+
+Ordinary configuration/continuity loads wait cancellably for short authority commits or
+managed writes; full corpus walks release the configuration gate; the protected endpoint alone uses the finite one-second local gate
+wait. An unchanged protected location can remain available to ordinary callers
+while retained integrity is unqualified. This does not qualify an installer
+identity: ordinary reads request the same host-owned, coalesced scrub. A failed
+unchanged state latches recovery-required; time or another continuity/rig poll
+cannot launch a replacement scan. Authorized repair followed by a normal agent
+restart, a real managed generation/configuration change, or the scheduled
+maintenance pass can retry qualification. There is no reset/delete recovery or
+new operator scrub endpoint. After repairing evidence, wait for successful full
+qualification before lifecycle commands. Missing authoritative state requires a
+complete paired backup or an explicitly authorized recovery procedure.
+Identity reconciliation runs in the background and checks the current config
+snapshot before commit; concurrent edits receive bounded re-reads.
+
+Paired database rollback also rewinds protected location history/manual state
+and the identity marker to its selected snapshot; it does not merely rewind the
+journal. When rollback crosses to pre-ledger state, that operation has already
+saved its stopped current state (S1) before applying the old paired state (S0).
+If the old image fails, only that active rollback can recover S1's authenticated
+ledger expectations after proving that current protected files belong to the
+recorded S1/S0 transition. Unknown edits refuse; generic deleted-ledger restore
+still refuses. Recovery does not generate proofs from current files, and the
+restarted agent must fully scrub before protected verification can succeed.
+
+The separate optional parse index has bounded batches/memory and no fixed
+proof-count cap. Fully checked prefixes survive canceled full scans; auxiliary
+JSON cannot become a frame-manifest proof. Missing/corrupt proofs are cache
+misses. Optional index I/O failures log a sanitized warning and continue without
+acceleration; they do not prevent startup or leave in-memory location behind
+successfully durable authority. An incomplete index never certifies the corpus.
+
+Startup tolerates malformed/schema-invalid sidecars as the baseline did, so raw
+reconciliation and the authenticated quarantine/retry UI can run. It continues
+to reject contradictory valid location provenance and invalid protected authority.
+Strict installation verification still refuses invalid current retained JSON,
+including quarantine contents. Preserve evidence: use the recovery UI to inspect
+audited state and existing authorized repair/restore workflows; never reset,
+delete retained evidence, or edit protected history to force verification through.
+If the bytes cannot be repaired through an authorized workflow, retain the
+refusal and seek an explicit disposition decision from Kepler/Roy. Starting the
+host/recovery UI is not proof that protected lifecycle verification will pass.
+
+Upgrade and rollback compare the current installation's complete identity before
+image mutation; running backup compares it before pause/stop. Stopped backup stays
+offline, and plans perform no protected read. Old installers receive the faster
+endpoint from a new agent without a wire change. New installers retain the finite
+deadline against an old agent and cannot make that agent faster. Pre-mutation
+verification always runs on the currently running agent: a server-only change
+cannot unblock an already-slow old runtime's pre-upgrade verification. A fixed
+image must reach the installation while its running verifier can still finish.
 
 Capture-admission initialization is a CameraAgent startup responsibility that
 runs after configuration initialization and before the processing and capture
