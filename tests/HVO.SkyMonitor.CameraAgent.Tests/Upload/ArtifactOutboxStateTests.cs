@@ -7,6 +7,27 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Upload;
 public sealed class ArtifactOutboxStateTests
 {
     [TestMethod]
+    public void RootsPreserveCanonicalIoPathAndEquivalentUpdatesRecoverFailures()
+    {
+        var state = new ArtifactOutboxState();
+        var root = Path.Combine(Path.GetTempPath(), "MixedCase-Outbox");
+        var equivalent = Path.Combine(root, ".") + Path.DirectorySeparatorChar;
+        state.ReportUnavailable(equivalent, "sqlite-failed");
+        state.Update(root, new ArtifactOutboxSnapshot(2, 512, null, 0, 0, 0, 0, 0, 0));
+        state.Update(equivalent, new ArtifactOutboxSnapshot(3, 768, null, 0, 0, 0, 0, 0, 0));
+
+        CollectionAssert.AreEqual(new[] { Path.GetFullPath(root) }, state.Roots.ToArray());
+        Assert.AreEqual(3L, state.Snapshot.PendingCount);
+        Assert.AreEqual(ArtifactOutboxAvailability.Healthy, state.Snapshot.Availability);
+        if (OperatingSystem.IsWindows())
+        {
+            state.Update(root.ToUpperInvariant(), new ArtifactOutboxSnapshot(4, 1024, null, 0, 0, 0, 0, 0, 0));
+            Assert.HasCount(1, state.Roots);
+            Assert.AreEqual(4L, state.Snapshot.PendingCount);
+        }
+    }
+
+    [TestMethod]
     public void Snapshot_WhenDisabledOrFullyDrained_IsHealthyAndEmpty()
     {
         var state = new ArtifactOutboxState();

@@ -24,7 +24,7 @@ public sealed record ArtifactOutboxStateSnapshot(
 
 public sealed class ArtifactOutboxState
 {
-    private readonly ConcurrentDictionary<string, ArtifactOutboxSnapshot> _roots = new(PathComparer);
+    private readonly ConcurrentDictionary<string, RootState> _roots = new(PathComparer);
     private readonly ConcurrentDictionary<string, string> _failures = new(PathComparer);
     private int _initialized;
     private long _evaluatedUnixMilliseconds = long.MinValue;
@@ -33,7 +33,7 @@ public sealed class ArtifactOutboxState
     {
         get
         {
-            var snapshots = _roots.Values.ToArray();
+            var snapshots = _roots.Values.Select(static root => root.Snapshot).ToArray();
             var failure = _failures.Values.Order(StringComparer.Ordinal).FirstOrDefault();
             var retry = snapshots.Sum(static item => item.RetryCount);
             var quarantine = snapshots.Sum(static item => item.QuarantinedCount);
@@ -61,16 +61,21 @@ public sealed class ArtifactOutboxState
         }
     }
 
-    public IReadOnlyList<string> Roots => _roots.Keys.ToArray();
+    private sealed record RootState(string Path, ArtifactOutboxSnapshot Snapshot);
+
+    public IReadOnlyList<string> Roots => _roots.Values.Select(static root => root.Path).ToArray();
 
     public void Update(string root, ArtifactOutboxSnapshot snapshot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(snapshot);
-        _roots[StorageRootIdentity.Key(root)] = snapshot;
+        var key = StorageRootIdentity.Key(root);
+        var path = StorageRootIdentity.CanonicalPath(root);
+        _roots.AddOrUpdate(key, new RootState(path, snapshot),
+            (_, existing) => existing with { Snapshot = snapshot });
         MarkEvaluated();
         Volatile.Write(ref _initialized, 1);
-        _failures.TryRemove(StorageRootIdentity.Key(root), out _);
+        _failures.TryRemove(key, out _);
     }
 
     public void MarkInitialized()

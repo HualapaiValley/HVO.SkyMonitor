@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent processing health prioritizes replacing superseded active graph revisions over historical Storage-skip guidance, and outbox delivery preserves canonical root path casing on Windows. Refs #1809
+
 - CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
 
 - CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence, with fresh liveness checks and worker settlement for offline recovery while retaining pending receipts. Refs #1746
