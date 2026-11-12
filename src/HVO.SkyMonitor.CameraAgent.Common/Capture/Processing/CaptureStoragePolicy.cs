@@ -2,6 +2,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -71,7 +72,7 @@ public static class CaptureStoragePolicy
         options ??= new FileStorageCaptureProcessingStepOptions();
         return JsonSerializer.SerializeToElement(new
         {
-            StorageRoot = NormalizeRoot(options.StorageRoot),
+            StorageRoot = StorageRootIdentity.Normalize(options.StorageRoot),
             options.RetentionDays,
             options.UpdateLatestFrame,
             options.QueueForUpload,
@@ -88,9 +89,4 @@ public static class CaptureStoragePolicy
         });
     }
 
-    private static string NormalizeRoot(string root)
-    {
-        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
-        return OperatingSystem.IsWindows() ? full.ToUpperInvariant() : full;
-    }
 }

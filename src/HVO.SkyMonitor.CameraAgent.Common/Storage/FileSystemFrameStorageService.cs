@@ -743,7 +743,7 @@ internal static class FrameIndexLock
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
 
     internal static SemaphoreSlim ForRoot(string storageRoot)
-        => Gates.GetOrAdd(Path.GetFullPath(storageRoot), static _ => new SemaphoreSlim(1, 1));
+        => Gates.GetOrAdd(StorageRootIdentity.Normalize(storageRoot), static _ => new SemaphoreSlim(1, 1));
 }
 
 internal static class FrameIndexIdentityCache

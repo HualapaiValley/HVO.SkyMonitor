@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Reflection;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -9,6 +10,42 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class CaptureStoragePolicyTests
 {
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void EveryRuntimeStorageOptionParticipatesInPolicyComparison(bool artifactPolicy)
+    {
+        var baseline = new FileStorageCaptureProcessingStepOptions
+        {
+            StorageRoot = Path.Combine(Path.GetTempPath(), "comparison-field-guard"),
+            Policies = [new() { StepId = "preview" }]
+        };
+        var source = artifactPolicy ? (object)baseline.Policies[0] : baseline;
+        foreach (var property in source.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            var changed = new FileStorageCaptureProcessingStepOptions
+            {
+                StorageRoot = baseline.StorageRoot,
+                Policies = [new() { StepId = "preview" }]
+            };
+            var target = artifactPolicy ? (object)changed.Policies[0] : changed;
+            var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+            object value = type == typeof(string) ? "different-field-value"
+                : type == typeof(bool) ? !(property.GetValue(source) as bool? ?? false)
+                : type == typeof(int) ? (property.GetValue(source) as int? ?? 30) + 1
+                : type == typeof(FrameArtifactRole) ? FrameArtifactRole.Preview
+                : type == typeof(IReadOnlyList<ArtifactStoragePolicyOptions>)
+                    ? new[] { new ArtifactStoragePolicyOptions { StepId = "other" } }
+                : throw new AssertFailedException($"Add a comparison probe for {property.Name} ({type.Name}).");
+            property.SetValue(target, value);
+            CapturePipelineConfig WithOptions(FileStorageCaptureProcessingStepOptions options)
+                => new([new("Storage", "storage", Options: JsonSerializer.SerializeToElement(options))]);
+            var error = Assert.ThrowsExactly<ValidationException>(() =>
+                CaptureStoragePolicy.EnsureMatchesProfile(WithOptions(changed), WithOptions(baseline)), property.Name);
+            Assert.AreEqual(artifactPolicy ? "Policies" : property.Name, error.ValidationResult!.MemberNames.Single());
+        }
+    }
+
     [TestMethod]
     public void MissingNodesAndNonEquivalentLinuxPathsRemainRejected()
     {

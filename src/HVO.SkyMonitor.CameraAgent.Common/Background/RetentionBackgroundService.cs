@@ -260,7 +260,7 @@ public sealed class RetentionBackgroundService(
                     continue;
                 }
 
-                var normalizedRoot = Path.GetFullPath(storageRoot);
+                var normalizedRoot = StorageRootIdentity.Normalize(storageRoot);
                 var retentionDays = Math.Max(1, options.RetentionDays);
 
                 configuredStorage.Add(new StorageRetentionPlan(
@@ -281,7 +281,7 @@ public sealed class RetentionBackgroundService(
         }
 
         var plans = configuredStorage
-            .GroupBy(static plan => Path.TrimEndingDirectorySeparator(plan.StorageRoot), PathComparer)
+            .GroupBy(static plan => StorageRootIdentity.Normalize(plan.StorageRoot), PathComparer)
             .Select(static group => new StorageRetentionPlan(
                 group.Key,
                 group.Max(static plan => plan.RetentionDays),
@@ -290,7 +290,7 @@ public sealed class RetentionBackgroundService(
             .ToList();
         var needsRawRoot = hasDurableOutputs || _rawIngressHolds is not null || _processingHolds is not null;
         var rawRoot = needsRawRoot
-            ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(_hostOptions.RawIngressRoot))
+            ? StorageRootIdentity.Normalize(_hostOptions.RawIngressRoot)
             : null;
         if (hasDurableOutputs && !plans.Any(plan => PathsEqual(plan.StorageRoot, rawRoot!)))
         {
@@ -338,17 +338,14 @@ public sealed class RetentionBackgroundService(
     }
 
     private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        => StorageRootIdentity.AreEqual(left, right);
 
     private async Task<PendingArtifacts> ReadPendingArtifactsAsync(
         string storageRoot,
         IRawIngressLifecycleProcessingRetentionHolds? processingHoldsUnderLifecycleLock,
         CancellationToken cancellationToken)
     {
-        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot));
+        var normalizedRoot = StorageRootIdentity.Normalize(storageRoot);
         var rootPrefix = string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
         var paths = new HashSet<string>(PathComparer);
         var artifactIds = new HashSet<Guid>();

@@ -71,8 +71,11 @@ stop raw acquisition or compatible processing, or classify unrelated abandoned
 work as a Storage skip.
 
 Mismatch guidance names differing fields without showing directory paths or
-policy values. Root paths use the runtime's full-path and trailing-separator
-rules, and artifact-policy StepId selectors compare ignoring case. On Linux,
+policy values. The fence, lifecycle/raw-ingress/index locks, retention root
+comparisons, and pressure/outbox state keys share one lexical full-path identity:
+trailing separators, dot segments and equivalent relative spellings map to the
+same root. This does not rewrite configured paths or change the storage layout.
+Artifact-policy StepId selectors compare ignoring case. On Linux,
 backslash is a filename character, not a directory separator. Policy order is
 preserved: equally specific overlapping policies use the first match. Storage-policy
 comparison is order-sensitive: a reordered policy array is a real policy conflict,
