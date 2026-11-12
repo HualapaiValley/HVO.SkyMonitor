@@ -12,9 +12,43 @@ public sealed partial class EnvironmentalCaptureFailureTests
 {
     [TestMethod]
     [DoNotParallelize]
+    public async Task ShortCallerWaitKeepsWriterBlockedPreparationPendingAndRecoverable()
+    {
+        var fixture = await AttributionFixture.CreateAsync(250, blockCompletion: true).ConfigureAwait(false);
+        await using var cleanup = fixture.ConfigureAwait(false);
+        fixture.Clock.Now = Epoch;
+        using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
+        await writer.OpenAsync().ConfigureAwait(false);
+        using var transaction = await writer.BeginTransactionAsync().ConfigureAwait(false);
+        EnvironmentalCaptureAcquisition acquisition;
+        HVO.SkyMonitor.CameraAgent.Common.RawIngress.RawCaptureReceipt raw;
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            acquisition = (await fixture.Bridge.BeforeCaptureAsync(Epoch, CancellationToken.None).ConfigureAwait(false))!;
+            Assert.IsLessThan(600d, stopwatch.Elapsed.TotalMilliseconds);
+            Assert.IsFalse(acquisition.Unavailable);
+            Assert.IsFalse(acquisition.Admission.Task.IsCompleted);
+            raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, acquisition.Id, Epoch,
+                unavailable: acquisition.Unavailable).ConfigureAwait(false);
+            Assert.IsFalse(raw.Manifest.Descriptor.CycleEvidence!.EnvironmentalUnavailable);
+        }
+        finally { await transaction.RollbackAsync().ConfigureAwait(false); }
+        await fixture.Device.Started(2).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        fixture.Clock.Now = Epoch.AddMilliseconds(500);
+        fixture.Device.Release(2, fail: false);
+        fixture.AllowCompletionWrite.TrySetResult();
+        await acquisition.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(LocalEnvironmentalAssociationStatus.Fresh,
+            (await fixture.AssociateAsync(raw.Manifest.Descriptor.Capture.CaptureId,
+                raw.Manifest.Descriptor.Capture.CaptureSequence, Epoch, acquisition.Id).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
     public async Task EnvironmentalWriterCannotHoldCaptureAdmissionPastTwoSeconds()
     {
-        var fixture = await AttributionFixture.CreateAsync(250).ConfigureAwait(false);
+        var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         fixture.Clock.Now = Epoch;
         using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
@@ -36,7 +70,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
             var available = await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root,
                 raw.Manifest.Descriptor.Capture.CaptureId, acquisition.Id, CancellationToken.None).ConfigureAwait(false);
             Assert.IsFalse(available.Pending, "The raw admission marker is terminal even while the environmental writer is held.");
-            Assert.IsTrue(available.EvidenceMissing);
+            CollectionAssert.Contains(available.UnavailableSources.ToArray(), "sqm");
         }
         finally
         {
@@ -49,7 +83,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     [DoNotParallelize]
     public async Task BusySettlementCannotReviveTheCaptureAfterAtomicUnavailableAdmissionAndRestart()
     {
-        var fixture = await AttributionFixture.CreateAsync(250, blockCompletion: true).ConfigureAwait(false);
+        var fixture = await AttributionFixture.CreateAsync(2000, blockCompletion: true).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         fixture.Clock.Now = Epoch;
         var stopwatch = Stopwatch.StartNew();
@@ -71,8 +105,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
             Assert.IsLessThan(2400d, stopwatch.Elapsed.TotalMilliseconds);
             raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, acquisition.Id, Epoch,
                 unavailable: true).ConfigureAwait(false);
-            Assert.IsTrue((await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root,
-                raw.Manifest.Descriptor.Capture.CaptureId, acquisition.Id, CancellationToken.None).ConfigureAwait(false)).EvidenceMissing);
+            CollectionAssert.Contains((await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root,
+                raw.Manifest.Descriptor.Capture.CaptureId, acquisition.Id, CancellationToken.None).ConfigureAwait(false)).UnavailableSources.ToArray(), "sqm");
         }
         finally
         {
@@ -87,7 +121,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var unavailable = await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root, capture.CaptureId, acquisition.Id,
             CancellationToken.None).ConfigureAwait(false);
         Assert.IsFalse(unavailable.Pending);
-        Assert.IsTrue(unavailable.EvidenceMissing);
+        CollectionAssert.Contains(unavailable.UnavailableSources.ToArray(), "sqm");
         Assert.AreEqual(LocalEnvironmentalAssociationStatus.Missing, (await fixture.AssociateAsync(capture.CaptureId,
             capture.CaptureSequence, Epoch, acquisition.Id).ConfigureAwait(false)).Status);
         var independent = new EnvironmentalAssociationService(fixture.Store, fixture.Store, fixture.HostOptions, fixture.Clock,
@@ -102,7 +136,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     [DoNotParallelize]
     public async Task BusyCapturePreparationStillPropagatesHostCancellation()
     {
-        var fixture = await AttributionFixture.CreateAsync(5000).ConfigureAwait(false);
+        var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
@@ -157,7 +191,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     [DoNotParallelize]
     public async Task CameraRunnerCarriesTheDeadlineMarkerIntoCaptureAdmissionEvidence()
     {
-        var fixture = await AttributionFixture.CreateAsync(250).ConfigureAwait(false);
+        var fixture = await AttributionFixture.CreateAsync(2000).ConfigureAwait(false);
         await using var cleanup = fixture.ConfigureAwait(false);
         using var writer = new SqliteConnection($"Data Source={Path.Combine(fixture.Root, ".environment", "environmental-observation-outbox.db")};Pooling=False");
         await writer.OpenAsync().ConfigureAwait(false);
@@ -172,6 +206,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
             Assert.IsNotNull(context.Submission?.CycleEvidence);
             Assert.IsTrue(context.Submission.CycleEvidence.EnvironmentalUnavailable);
             Assert.IsNotNull(context.Submission.CycleEvidence.AcquisitionAttemptId);
+            Assert.AreEqual("sqm", context.Submission.CycleEvidence.EnvironmentalBeforeCaptureSources!.Single());
         }
         finally
         {

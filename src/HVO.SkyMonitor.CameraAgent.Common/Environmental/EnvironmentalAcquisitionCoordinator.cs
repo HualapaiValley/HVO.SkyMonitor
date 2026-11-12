@@ -271,8 +271,10 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             async Task SettleFirstAsync(EnvironmentalAcquisitionReceipt first)
             {
                 settlementAttempted = true;
+                acquisition.BeginStorage();
                 try { await CompleteCaptureReceiptAsync(commands, claim, first).ConfigureAwait(false); }
                 catch (Exception exception) { settlementError = exception; }
+                finally { acquisition.EndStorage(); }
             }
             EnvironmentalAcquisitionReceipt receipt;
             try

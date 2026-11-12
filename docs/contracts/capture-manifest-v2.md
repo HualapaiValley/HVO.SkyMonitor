@@ -97,6 +97,16 @@ Omitting it preserves the legacy serialized descriptor and hash. CameraAgent own
 the associated leased operations and their recovery; consumers do not infer the
 token or its outcome from timestamps. See the
 [environmental adapter runbook](../runbooks/environmental-source-adapters.md).
+The optional `cycleEvidence.environmentalUnavailable` is omitted when false.
+When true, it requires a non-empty `acquisitionAttemptId` and records a terminal
+capture-specific fence for before-capture sources after the shared two-second
+writer deadline or preparation queue refusal. It is committed atomically with raw
+admission, survives restart, and cannot be cleared by a late receipt. Periodic
+sources retain their ordinary association behavior. The optional
+`cycleEvidence.environmentalBeforeCaptureSources` snapshots the 1–128 distinct,
+nonblank source IDs (each at most 128 characters) and requires an attempt ID.
+New captures retain this list so later configuration cannot change the fence;
+older evidence without the list uses the configured before-capture sources.
 `cycleEvidence.monotonicStartJitter` and the observed host-start gap remain
 nonnegative when the wall clock is corrected. A requested UTC deadline or a
 setpoint applied during the preceding cycle may therefore compare later or

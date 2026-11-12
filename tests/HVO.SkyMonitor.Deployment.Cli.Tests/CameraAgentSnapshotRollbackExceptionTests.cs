@@ -32,10 +32,10 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     [TestMethod]
-    [DataRow(RawIngressSchema, null, null, null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
+    [DataRow(RawIngressSchema, "16", "16", null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
     [DataRow("io.hvo.skymonitor.component", "CameraAgent-previous", "CameraAgent-previous", null, "does not make the installer take a snapshot", DisplayName = "a label the installer does not compare")]
     [DataRow(RawIngressSchema, "14", "13", null, "not the one the frozen release declares", DisplayName = "a previous value the frozen release does not declare")]
-    [DataRow(RawIngressSchema, "14", "14", "16", "not the one this release declares", DisplayName = "a candidate value this release does not declare")]
+    [DataRow(RawIngressSchema, "14", "14", "undeclared", "not the one this release declares", DisplayName = "a candidate value this release does not declare")]
     public void AnExceptionWithoutARealBoundaryChange_IsRefused(
         string label, string? frozenValue, string? previousValue, string? candidateValue, string expected)
     {
@@ -83,10 +83,15 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var changes = CameraAgentStateMigration.DeclaredChanges(paths, installedIdentity, installedIdentity.UpgradeCompatibility,
             candidateIdentity, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
         Console.WriteLine($"Declared environmental migrations: {changes.Count}; checkpoint required: {changes.Count > 0}.");
-        Assert.AreEqual(expectedMigrations, changes.Count);
+        var environmentalChanges = changes.Where(change => change.StartsWith(boundary + " installed ", StringComparison.Ordinal)).ToArray();
+        Assert.AreEqual(expectedMigrations, environmentalChanges.Length);
+        Assert.AreEqual(2 + expectedMigrations, changes.Count,
+            "The raw schema and migration labels independently select checkpointing even when the environmental boundary is unchanged.");
+        foreach (var rawBoundary in new[] { RawIngressSchema, "io.hvo.skymonitor.raw-ingress-migration" })
+            Assert.IsTrue(changes.Any(change => change.StartsWith(rawBoundary + " installed ", StringComparison.Ordinal)));
         if (!revertBoundary)
         {
-            StringAssert.StartsWith(changes.Single(), boundary + " installed " + previous[boundary] + ", candidate ", StringComparison.Ordinal);
+            StringAssert.StartsWith(environmentalChanges.Single(), boundary + " installed " + previous[boundary] + ", candidate ", StringComparison.Ordinal);
             var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
                 item!["location"]!.GetValue<string>() == "raw/.environment/environmental-observation-outbox.db")!;
             Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());

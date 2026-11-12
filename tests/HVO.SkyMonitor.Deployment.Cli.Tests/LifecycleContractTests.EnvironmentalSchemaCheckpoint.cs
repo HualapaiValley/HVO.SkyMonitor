@@ -9,7 +9,7 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [DataRow(false, 1)]
-    [DataRow(true, 0)]
+    [DataRow(true, 1)]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task SchemaThreeEnvironmentalUpgradePlansTheCheckpointBeforeCandidateStartup(bool revertBoundary, int expectedSnapshots)
     {
@@ -46,6 +46,8 @@ public sealed partial class LifecycleContractTests
         var snapshots = result.Plan.Items.Count(item => item.Kind == "snapshot" && item.Action == DeploymentPlanAction.Create);
         Console.WriteLine($"Schema-3 environmental upgrade: planned checkpoints={snapshots}; required={snapshots > 0}.");
         Assert.AreEqual(expectedSnapshots, snapshots);
+        // Reverting only the environmental boundary cannot waive the independent raw schema-16 checkpoint.
+        Assert.AreNotEqual(previous["io.hvo.skymonitor.raw-ingress-schema"], candidate["io.hvo.skymonitor.raw-ingress-schema"]);
         using var read = connection.CreateCommand();
         read.CommandText = "PRAGMA user_version;";
         Assert.AreEqual(3L, await read.ExecuteScalarAsync());

@@ -68,7 +68,7 @@ public sealed class SqmAssociationIntervalTests
                 .Single(tags => Equals(tags["capture_id"], capture.ToString("N")));
             Assert.AreEqual(relationship, diagnostic["relationship"]);
             Assert.AreEqual(expected.ToString(), diagnostic["status"]);
-            Assert.IsFalse(diagnostic.ContainsKey("policy_version"), "There is no authorized persisted diagnostic version slot.");
+            Assert.AreEqual(SqmAssociationIntervalDiagnostics.PolicyVersion, diagnostic["policy_version"]);
             if (expected == LocalEnvironmentalAssociationStatus.Missing)
             {
                 Assert.IsNull(original.SelectedRecordId);

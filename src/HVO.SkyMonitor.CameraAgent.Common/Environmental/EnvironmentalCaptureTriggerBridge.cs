@@ -31,9 +31,12 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         var selected = configuredSources.Where(source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.BeforeCapture)).ToArray();
         if (selected.Length == 0) return null;
         var remaining = TotalCaptureBudget - Stopwatch.GetElapsedTime(started);
-        using var deadline = new CancellationTokenSource(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(remaining.TotalMilliseconds))));
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, cancellationToken);
-        var admissionToken = wait.Token;
+        var budget = options.Value.EnvironmentalAcquisition.BeforeCaptureWaitMilliseconds;
+        using var callerWait = CancellationTokenSource.CreateLinkedTokenSource(wait.Token);
+        if (budget > 0) callerWait.CancelAfter(TimeSpan.FromMilliseconds(budget));
+        var admissionToken = callerWait.Token;
         var dependencies = coordinator.CaptureDependencies();
         var commands = stateStore as IEnvironmentalOnDemandCommandStore
             ?? throw new InvalidOperationException("Capture acquisition requires durable command storage.");
@@ -44,13 +47,16 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         var lease = TimeSpan.FromMilliseconds((long)configured.SourceTimeoutMilliseconds *
             (configured.QueueCapacity + 2) * configuredSources.Count) + TimeSpan.FromMinutes(1);
         if (lease > TimeSpan.FromDays(configured.RetentionDays)) lease = TimeSpan.FromDays(configured.RetentionDays);
-        var acquisition = new EnvironmentalCaptureAcquisition(id, claims);
-        var budget = options.Value.EnvironmentalAcquisition.BeforeCaptureWaitMilliseconds;
+        var acquisition = new EnvironmentalCaptureAcquisition(id, claims)
+        { BeforeCaptureSources = selected.Select(source => source.Id).ToArray() };
         var request = new EnvironmentalTriggerRequest(EnvironmentalAcquisitionTrigger.BeforeCapture, observedAtUtc)
         { CaptureAcquisition = acquisition, CaptureBudgetMilliseconds = budget == 0 ? null : budget };
         async Task PrepareAsync(CancellationToken stoppingToken)
         {
-            using var preparation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, admissionToken);
+            // Preparation remains owned by the hosted worker after the caller's shorter optional wait.
+            var preparationRemaining = TotalCaptureBudget - Stopwatch.GetElapsedTime(started);
+            using var preparationDeadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(preparationRemaining.TotalMilliseconds))));
+            using var preparation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, cancellationToken, preparationDeadline.Token);
             var preparationToken = preparation.Token;
             foreach (var source in selected)
             {
@@ -98,17 +104,20 @@ public sealed class EnvironmentalCaptureTriggerBridge(
             if (error is not null) ExceptionDispatchInfo.Capture(error).Throw();
             if (budget > 0)
             {
-                // Device work keeps its configured budget; durable settlement shares the two-second admission deadline.
+                // One caller wait covers preparation and completion; expiry does not cancel the captured dependency.
                 await acquisition.Completion.Task.WaitAsync(admissionToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget || acquisition.PersistenceUnavailable)
+            if (Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget && acquisition.StoragePending)
                 return acquisition with { Unavailable = true, Claims = [] };
         }
-        catch (OperationCanceledException) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
+            (callerWait.IsCancellationRequested || deadline.IsCancellationRequested || Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget))
         {
-            // The hosted worker owns all remaining writes. Raw admission persists this terminal capture fence.
-            return acquisition with { Unavailable = true, Claims = [] };
+            // Only a shared writer deadline creates the raw-admission marker. Sensor work remains pending.
+            if ((deadline.IsCancellationRequested || Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget) &&
+                (!acquisition.Admission.Task.IsCompletedSuccessfully || await acquisition.Admission.Task.ConfigureAwait(false) is not null || acquisition.StoragePending))
+                return acquisition with { Unavailable = true, Claims = [] };
         }
 
         return acquisition;
@@ -121,14 +130,12 @@ public sealed class EnvironmentalCaptureTriggerBridge(
     {
         ArgumentNullException.ThrowIfNull(receipt);
         ArgumentNullException.ThrowIfNull(submission);
-        if (!options.Value.EnvironmentalAcquisition.Enabled || submission.CycleEvidence?.EnvironmentalUnavailable == true)
+        if (!options.Value.EnvironmentalAcquisition.Enabled)
         {
             return;
         }
         var capture = receipt.Manifest.Descriptor.Capture;
-        if (submission.CycleEvidence is { EnvironmentalUnavailable: false, AcquisitionAttemptId: { } acquisitionId } &&
-            stateStore is SqliteEnvironmentalObservationOutbox store)
-            await store.BindCaptureAcquisitionAsync(options.Value.RawIngressRoot, acquisitionId, capture.CaptureId, cancellationToken).ConfigureAwait(false);
+        // Association binds the attempt once preparation is durable; optional caller waits may precede it.
         var observedAtUtc = submission.Result.AcquisitionTiming?.ReadoutCompletedUtc.ToUniversalTime()
             ?? submission.Result.Frame?.TimestampUtc.ToUniversalTime()
             ?? submission.CaptureStartedUtc.ToUniversalTime();

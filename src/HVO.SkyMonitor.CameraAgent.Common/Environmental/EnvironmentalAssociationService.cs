@@ -64,7 +64,11 @@ public sealed class EnvironmentalAssociationService(
         var captureAvailability = await associations.ReadCaptureAvailabilityAsync(
             root, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false);
         if (captureAvailability.Pending) throw new EnvironmentalCaptureAcquisitionPendingException("Capture acquisition is still pending.");
-        var captureUnavailable = captureAvailability.UnavailableSources;
+        var captureUnavailable = captureAvailability.BeforeCaptureUnavailable
+            ? captureAvailability.UnavailableSources.Concat(options.Value.EnvironmentalAcquisition.Sources
+                .Where(source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.BeforeCapture))
+                .Select(source => source.Id)).Distinct(StringComparer.Ordinal).ToArray()
+            : captureAvailability.UnavailableSources;
         var additions = new List<LocalEnvironmentalCaptureAssociation>(expectedKinds.Length - persisted.Length);
         var intervalDiagnostics = activity?.IsAllDataRequested == true ? new List<ActivityEvent>() : null;
         foreach (var kind in expectedKinds.Where(kind => !existingKinds.Contains(kind)))

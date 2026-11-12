@@ -19,12 +19,20 @@ public sealed partial class RawCaptureIngressTests
         try
         {
             var id = correlated ? Guid.NewGuid() : (Guid?)null;
+            if (unavailable && !correlated)
+            {
+                await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                    await PersistEnvironmentalCaptureAsync(root, id, Timestamp(1), unavailable: true).ConfigureAwait(false)).ConfigureAwait(false);
+                return;
+            }
             var receipt = await PersistEnvironmentalCaptureAsync(root, id, Timestamp(1), unavailable: unavailable).ConfigureAwait(false);
             var serialized = CaptureContractJson.Serialize(receipt.Manifest);
             var parsed = CaptureContractJson.ParseManifest(serialized);
             Assert.IsTrue(parsed.IsValid);
             Assert.AreEqual(id, parsed.Document!.Manifest!.Descriptor.CycleEvidence!.AcquisitionAttemptId);
             Assert.AreEqual(unavailable, parsed.Document.Manifest.Descriptor.CycleEvidence.EnvironmentalUnavailable);
+            if (correlated)
+                Assert.AreEqual("sqm", parsed.Document.Manifest.Descriptor.CycleEvidence.EnvironmentalBeforeCaptureSources!.Single());
             Assert.AreEqual(unavailable, System.Text.Encoding.UTF8.GetString(serialized).Contains("environmentalUnavailable", StringComparison.Ordinal));
             var invalid = receipt.Manifest.Descriptor with
             { CycleEvidence = receipt.Manifest.Descriptor.CycleEvidence! with { AcquisitionAttemptId = Guid.Empty } };
@@ -101,7 +109,8 @@ public sealed partial class RawCaptureIngressTests
     internal static CameraModuleConfig EnvironmentalConfiguration() => CreateConfiguration();
 
     internal static async Task<RawCaptureReceipt> PersistEnvironmentalCaptureAsync(string root, Guid? acquisitionId, DateTimeOffset start,
-        EnvironmentalAcquisitionOptions? acquisition = null, bool unavailable = false, IRawIngressFaultInjector? faultInjector = null)
+        EnvironmentalAcquisitionOptions? acquisition = null, bool unavailable = false, IRawIngressFaultInjector? faultInjector = null,
+        IReadOnlyList<string>? beforeCaptureSources = null)
     {
         var config = CreateConfiguration();
         var source = CreateEnrichedSubmission(start, [1, 2, 3, 4]);
@@ -117,6 +126,7 @@ public sealed partial class RawCaptureIngressTests
             {
                 AcquisitionAttemptId = acquisitionId,
                 EnvironmentalUnavailable = unavailable,
+                EnvironmentalBeforeCaptureSources = acquisitionId.HasValue ? beforeCaptureSources ?? ["sqm"] : null,
                 Decision = new(end, end, exposure, 1, exposure, 1, CaptureControlDecisionReason.Disabled),
                 IngressHandoffStartedUtc = end
             }

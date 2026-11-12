@@ -21,6 +21,7 @@ internal static class SqmAssociationIntervalDiagnostics
 
         var tags = new ActivityTagsCollection
         {
+            ["policy_version"] = PolicyVersion,
             ["capture_id"] = captureId.ToString("N"),
             ["status"] = status.ToString(),
             ["relationship"] = "unavailable",

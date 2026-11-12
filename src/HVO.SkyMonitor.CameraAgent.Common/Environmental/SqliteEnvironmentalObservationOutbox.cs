@@ -1002,12 +1002,18 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         if (captureId == Guid.Empty || acquisitionAttemptId == Guid.Empty)
             throw new ArgumentException("The environmental capture identity is invalid.");
         root = NormalizeRoot(root);
-        if (await ReadCaptureUnavailableMarkerAsync(root, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false))
-            return new([], [], false) { EvidenceMissing = true };
+        var captureEvidence = await ReadCaptureEnvironmentalEvidenceAsync(root, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false);
+        if (captureEvidence?.EnvironmentalUnavailable == true)
+            return captureEvidence.EnvironmentalBeforeCaptureSources is { } fenced
+                ? new(fenced, fenced, false) : new([], [], false) { BeforeCaptureUnavailable = true };
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         if (acquisitionAttemptId is { } acquisitionId &&
             !await TryBindCaptureAcquisitionAsync(root, acquisitionId, captureId, cancellationToken).ConfigureAwait(false))
-            return new([], [], false) { EvidenceMissing = true };
+            return captureEvidence is null ? new([], [], false) { EvidenceMissing = true }
+                : captureEvidence.EnvironmentalBeforeCaptureSources is { } absent
+                    ? new(absent, absent, _timeProvider.GetUtcNow() < captureEvidence.ModuleCallStartedUtc + EnvironmentalCaptureTriggerBridge.TotalCaptureBudget)
+                    : new([], [], _timeProvider.GetUtcNow() < captureEvidence.ModuleCallStartedUtc + EnvironmentalCaptureTriggerBridge.TotalCaptureBudget)
+                        { BeforeCaptureUnavailable = true };
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         var sources = new List<string>();
@@ -1058,14 +1064,17 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 if (reader.GetString(1) is "Failed" or "Missing" or "TimedOut") unavailable.Add(reader.GetString(0));
             }
         }
+        // A partially admitted preparation must never make an unclaimed source's older success eligible.
+        if (captureEvidence?.EnvironmentalBeforeCaptureSources is { } expectedSources)
+            unavailable.AddRange(expectedSources.Except(sources, StringComparer.Ordinal));
         return new(sources.Distinct(StringComparer.Ordinal).ToArray(), unavailable.Distinct(StringComparer.Ordinal).ToArray(), pending);
     }
 
-    private static async ValueTask<bool> ReadCaptureUnavailableMarkerAsync(string root, Guid captureId,
+    private static async ValueTask<CaptureCycleEvidence?> ReadCaptureEnvironmentalEvidenceAsync(string root, Guid captureId,
         Guid? acquisitionAttemptId, CancellationToken cancellationToken)
     {
         var path = Path.Combine(root, "journal", "raw-ingress.db");
-        if (!File.Exists(path)) return false;
+        if (!File.Exists(path)) return null;
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 1 }.ToString());
@@ -1075,13 +1084,13 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         command.Parameters.AddWithValue("$legacy", captureId.ToString("D"));
         var payload = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        if (payload is null or DBNull) return false;
+        if (payload is null or DBNull) return null;
         var parsed = CaptureContractJson.ParseManifest((byte[])payload);
         if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor is not { } descriptor || descriptor.Capture.CaptureId != captureId)
             throw new InvalidDataException("Capture environmental fence manifest is invalid.");
         if (acquisitionAttemptId.HasValue && descriptor.CycleEvidence?.AcquisitionAttemptId != acquisitionAttemptId)
             throw new EnvironmentalObservationIdentityConflictException("Capture environmental acquisition identity differs from its manifest.");
-        return descriptor.CycleEvidence?.EnvironmentalUnavailable == true;
+        return descriptor.CycleEvidence;
     }
 
     public async ValueTask BindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)

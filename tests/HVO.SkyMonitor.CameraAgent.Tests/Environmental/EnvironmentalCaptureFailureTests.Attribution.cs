@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -16,10 +17,12 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Environmental;
 public sealed partial class EnvironmentalCaptureFailureTests
 {
     [TestMethod]
+    [DoNotParallelize]
     [DataRow(250, false, false)]
     [DataRow(250, false, true)]
     [DataRow(250, true, false)]
     [DataRow(250, true, true)]
+    [DataRow(2000, false, false)]
     [DataRow(0, false, false)]
     [DataRow(0, false, true)]
     public async Task EachCaptureKeepsItsOwnBusyOrQueuedOutcome(int budget, bool busyReadFails, bool restart)
@@ -39,7 +42,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
                 fixture.Device.Release(2, fail: true);
             }
             await a.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            var rawA = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, a.Id, Epoch).ConfigureAwait(false);
+            var rawA = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, a.Id, Epoch,
+                unavailable: a.Unavailable).ConfigureAwait(false);
             var descriptorA = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(rawA.Manifest)).Document!.Manifest!.Descriptor;
 
             fixture.Clock.Now = Epoch.AddSeconds(30);
@@ -49,14 +53,21 @@ public sealed partial class EnvironmentalCaptureFailureTests
                 periodic = fixture.Coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).AsTask();
                 await fixture.Device.Started(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
+            var wait = Stopwatch.StartNew();
             var b = await fixture.Bridge.BeforeCaptureAsync(fixture.Clock.Now, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(b);
+            Assert.IsLessThan((double)budget + 350, wait.Elapsed.TotalMilliseconds, "The optional wait must respect its configured bound.");
+            Assert.IsFalse(b.Unavailable, "A configured wait expiry must leave the in-flight read pending.");
             await fixture.Device.Started(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            var rawB = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, b.Id, Epoch.AddSeconds(30),
+                unavailable: b.Unavailable).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<EnvironmentalCaptureAcquisitionPendingException>(async () =>
+                await fixture.AssociateAsync(rawB.Manifest.Descriptor.Capture.CaptureId, rawB.Manifest.Descriptor.Capture.CaptureSequence,
+                    Epoch.AddSeconds(30), b.Id).ConfigureAwait(false)).ConfigureAwait(false);
             fixture.Clock.Now = Epoch.AddMilliseconds(budget == 0 ? 30_500 : 31_000);
             fixture.Device.Release(3, busyReadFails);
             if (periodic is not null) await periodic.ConfigureAwait(false);
             await b.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            var rawB = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, b.Id, Epoch.AddSeconds(30)).ConfigureAwait(false);
             var descriptorB = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(rawB.Manifest)).Document!.Manifest!.Descriptor;
             Assert.AreEqual(b.Id, descriptorB.CycleEvidence!.AcquisitionAttemptId);
             var expected = busyReadFails ? LocalEnvironmentalAssociationStatus.Missing : LocalEnvironmentalAssociationStatus.Fresh;
@@ -125,6 +136,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
     }
 
     [TestMethod]
+    [DoNotParallelize]
     public async Task BusyDependencyIsChosenAtAdmissionEvenWhenTheCaptureQueueDrainsLater()
     {
         var fixture = await AttributionFixture.CreateAsync(250).ConfigureAwait(false);
@@ -136,8 +148,16 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var periodic = fixture.Coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).AsTask();
         await fixture.Device.Started(3).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         // The first queued capture occupies the request worker until the periodic read settles.
+        var wait = Stopwatch.StartNew();
         var first = await fixture.Bridge.BeforeCaptureAsync(fixture.Clock.Now, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsLessThan(600d, wait.Elapsed.TotalMilliseconds);
+        wait.Restart();
         var second = await fixture.Bridge.BeforeCaptureAsync(fixture.Clock.Now, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsLessThan(600d, wait.Elapsed.TotalMilliseconds);
+        Assert.IsFalse(first!.Unavailable);
+        Assert.IsFalse(second!.Unavailable);
+        var raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, second.Id, Epoch.AddSeconds(30),
+            unavailable: second.Unavailable).ConfigureAwait(false);
         fixture.Clock.Now = Epoch.AddSeconds(31);
         fixture.Device.Release(3, fail: true);
         await periodic.ConfigureAwait(false);
@@ -145,7 +165,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
         await second!.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         Assert.AreEqual(3, fixture.Device.Calls, "A queued capture must retain its admitted dependency rather than start another read.");
         Assert.AreEqual(LocalEnvironmentalAssociationStatus.Missing,
-            (await fixture.AssociateAsync(Guid.NewGuid(), 1, Epoch.AddSeconds(30), second.Id).ConfigureAwait(false)).Status);
+            (await fixture.AssociateAsync(raw.Manifest.Descriptor.Capture.CaptureId,
+                raw.Manifest.Descriptor.Capture.CaptureSequence, Epoch.AddSeconds(30), second.Id).ConfigureAwait(false)).Status);
     }
 
     [TestMethod]

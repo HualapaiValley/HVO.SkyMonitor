@@ -141,6 +141,10 @@ public sealed record CaptureCycleEvidence(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool EnvironmentalUnavailable { get; init; }
 
+    /// <summary>Gets the capture-time before-capture source identities; later configuration cannot change their fence.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? EnvironmentalBeforeCaptureSources { get; init; }
+
     /// <summary>Gets monotonic actual-start lateness relative to the requested deadline.</summary>
     [JsonRequired]
     public TimeSpan MonotonicStartJitter { get; init; }

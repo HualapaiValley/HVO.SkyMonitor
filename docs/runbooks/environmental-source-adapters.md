@@ -157,7 +157,7 @@ start remain Missing. Configured windows and retained sample times remain the
 authority, including when the integration is longer than the validity window.
 When an `environment.associate` activity is sampled, a new association reports an
 `environment.association.interval` event with its status, actual sample interval,
-integration duration and maximum preceding gap. A sample ending at or before
+integration duration, maximum preceding gap and `policy_version`. A sample ending at or before
 exposure start is `preceding` with its nonnegative gap; touching half-open
 intervals have zero gap and do not overlap. Intersecting sample/exposure intervals
 are `overlapping`. A retained zero-duration point inside the exposure is
@@ -166,17 +166,19 @@ interval; an older selected reading without an integration is `interval-unknown`
 Non-SQM readings receive no SQM interval event. Retained associations are returned
 unchanged without backfilling or reinterpreting their diagnostics.
 
-The version remains in code only. Association records have no free-form
+The version is surfaced only in the sampled activity event. Association records have no free-form
 diagnostic metadata slot, and sample metadata is typed. Source provenance has
 free-form parameters, but they determine source identity: placing an association
 diagnostic version there could split one source into competing identities and
 change selection. Persisting this version in a non-identity diagnostic slot
 needs a separately authorized schema or persisted-format decision. That item and
 physical timing validation remain tracked in Refs #1735.
-`BeforeCaptureWaitMilliseconds` still bounds device acquisition. Claim admission
-and, for a positive wait setting, durable receipt settlement share a strict
-two-second total before-capture wait. Expiry returns a capture-specific
-unavailable result; it never reuses an expired acquisition token for settlement.
+`BeforeCaptureWaitMilliseconds` bounds the device read and, when positive, the
+caller's whole optional wait for claim admission and receipt settlement. Values
+above 2000 ms are rejected. A shorter wait expiry leaves acquisition Pending;
+it does not fence an in-flight sensor read. The shared two-second writer deadline
+or preparation queue refusal returns a capture-specific unavailable marker for
+before-capture sources. Settlement retains its independent bounded grace token.
 The existing zero-wait setting still permits queued acquisition after its durable
 claim is admitted; claim admission itself has the same two-second bound.
 Physical SQM timing qualification remains held. Persisted diagnostic-policy
@@ -307,9 +309,12 @@ omitted when false to preserve existing capture bytes. Raw admission stores it i
 `raw_captures.manifest_json` in the same transaction as the capture and lane work.
 There is no separate environmental-store write that can be lost after admission.
 The association reader checks the committed capture marker before binding or
-reading environmental receipts; the capture stays Missing even if a late receipt
-or later poll succeeds. Its after-capture hook skips environmental writes. The
-marker is capture-specific and cannot suppress future captures. Existing completed
+reading environmental receipts; its before-capture sources stay unavailable even
+if a late receipt or later poll succeeds. New evidence also retains
+`cycleEvidence.environmentalBeforeCaptureSources`, the capture-time source ID
+snapshot, so a later trigger configuration cannot remove that fence. Periodic
+sources retain their normal association, and the after-capture hook still records
+the capture regime. The marker is capture-specific and cannot suppress future captures. Existing completed
 associations remain immutable. A pre-commit interruption admits neither the row
 nor its marker; raw-ingress recovery publishes the original sidecar evidence.
 
@@ -325,8 +330,16 @@ deployed by this software-only work.
 
 A busy request follows the exact in-flight read: success leaves that capture
 available, while failure/missing/timeout fences its older readings. With any
-before-capture budget, queued work may finish after exposure starts; a positive
-budget bounds the eventual device read; the two-second total wait also covers claim admission and requested settlement.
+before-capture budget, queued work may finish after exposure starts. A positive
+`BeforeCaptureWaitMilliseconds` bounds the caller's entire wait for preparation
+and completion and the eventual device read; valid values are 0–2000 ms. Zero
+skips the optional completion wait. A shorter configured wait leaves work Pending
+and follows the original in-flight read. The shared two-second storage deadline
+covers claim admission and requested settlement; only its expiry during storage
+work, or preparation queue refusal, writes the raw-admission unavailable marker.
+That marker fences only the capture-time before-capture source IDs retained in
+the manifest (configured before-capture sources for older markers); periodic sources keep
+their ordinary association behavior.
 Pending work defers the association lane without consuming failure attempts or
 repeating after-capture reads. Queue refusal records an explicit unavailable result.
 Known capture results settle before unrelated coalesced work drains, including
@@ -358,8 +371,11 @@ snapshot-rollback exception records the actual schema-3 image labels from
 `5f5d253dd38308b8e62be9a1e32194dd675d0b60`. Frozen previous-release SQL images
 stay unchanged.
 
-An unassociated capture whose entire receipt set has expired or is missing reports
-unavailable evidence, even if other associations still pin old facts. Completed
+An unassociated capture whose entire receipt set has expired reports unavailable
+evidence, even if other associations still pin old facts. If a shorter caller wait
+admits raw evidence before any preparation claim exists, association stays Pending
+until the shared preparation deadline and then fences the retained source IDs.
+No missing preparation can make its earlier successful readings eligible. Completed
 associations remain immutable. Association binds retained tokens to raw capture
 IDs; explicit legacy capture IDs remain readable and anonymous legacy history is
 never guessed into a capture. Persisted SQM diagnostic versioning remains a known limit in Refs #1735.

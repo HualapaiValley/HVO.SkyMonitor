@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent bounds before-capture environmental waits to two seconds, retains capture-specific unavailable evidence through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 prevents older readers from ignoring that evidence. Refs #1735
+- CameraAgent preserves configured environmental waits under a two-second storage cap, retains before-capture source fences through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 protects this evidence. Refs #1735
 
 - Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
 
