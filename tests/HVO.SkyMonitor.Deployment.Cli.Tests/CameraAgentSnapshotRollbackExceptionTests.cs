@@ -141,7 +141,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
         Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
-        Assert.AreEqual("4293871b7c4cf38ce0e0e4ea969aa9a6de057eea", candidate[boundary]);
+        Assert.AreEqual("bc5ca7489c4090c299c416309519ab72da4a8cdb", candidate[boundary]);
         Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
         CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
         if (revertBoundary) candidate[boundary] = previous[boundary];
@@ -152,6 +152,40 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
         Assert.AreEqual(expectedMigrations, changes.Count);
         if (!revertBoundary) StringAssert.StartsWith(changes.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("automation-schema3-processing9", "candidate", 3, 1)]
+    [DataRow("automation-schema3-processing9", "reuse-installed-boundary", 3, 0)]
+    [DataRow("automation-schema3-processing9", "same-candidate", 3, 0)]
+    [DataRow("automation-schema4-processing8", "candidate", 4, 1)]
+    public void CombinedReaderUpgradeDeclaresEachPredecessorsCheckpoint(
+        string fixtureName, string comparison, int previousAutomationSchema, int expectedMigrations)
+    {
+        using var fixture = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
+            "Fixtures", fixtureName + "-image-labels.json")));
+        var previous = fixture.RootElement.GetProperty("imageLabels").EnumerateObject()
+            .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
+        using var previousContracts = JsonDocument.Parse(previous["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(previousAutomationSchema, previousContracts.RootElement.GetProperty("localAutomations").GetProperty("writes").GetInt32());
+        var candidate = ReadDockerfileLabels();
+        using var candidateContracts = JsonDocument.Parse(candidate["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(4, candidateContracts.RootElement.GetProperty("localAutomations").GetProperty("writes").GetInt32());
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        if (comparison == "reuse-installed-boundary") candidate[boundary] = previous[boundary];
+        if (comparison == "same-candidate") previous = new(candidate, StringComparer.Ordinal);
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-combined-boundary-" + Guid.NewGuid().ToString("N")),
+            Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        // No raw journal can supply an unrelated migration signal and hide a missing image boundary.
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
+            target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        Assert.AreEqual(expectedMigrations, changes.Count, $"{fixtureName} -> {comparison}: {string.Join("; ", changes)}");
+        if (expectedMigrations > 0)
+            StringAssert.StartsWith(changes.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
     }
 
     internal static Dictionary<string, string> ReadSchemaThreeImageLabels()

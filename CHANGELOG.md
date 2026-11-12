@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. Installer adoption checkpoints the paired state; rollback restores that checkpoint for the previous reader. Refs #1768
+- CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. A distinct reader boundary requires a paired pre-upgrade checkpoint even from processing-schema-9 images that still use automation schema 3; rollback restores that checkpoint for the previous reader. Refs #1768
 
 - CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
 

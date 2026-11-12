@@ -2961,8 +2961,12 @@ predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
 The image's combined row-MAC, environmental-schema, processing-ledger and local-automation-schema reader boundary is
-`4293871b7c4cf38ce0e0e4ea969aa9a6de057eea`, declared by the image's
-`minimum-compatible-revision`. Updated agents and installers read both legacy
+`bc5ca7489c4090c299c416309519ab72da4a8cdb`, declared by the image's
+`minimum-compatible-revision`. This advances beyond the processing-only boundary
+`4293871b7c4cf38ce0e0e4ea969aa9a6de057eea` in development/v1 `38320d3a` so that
+upgrading from that automation-schema-3 reader still takes a paired pre-upgrade
+checkpoint before automation schema 4 is opened. Processing schema 9 and its
+checkpoint/rollback contract remain in force. Updated agents and installers read both legacy
 Data Protection row proofs and new MAC proofs. The per-ledger random MAC secret
 is protected in metadata; nonce/key/digest/kind/generation and the authenticated
 set commitment remain bound. A full background scrub rewrites legacy rows in

@@ -142,7 +142,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # and includes environmental schema 4 (Refs #1778), nightly schema 3 (Refs #1713),
 # and local automation schema 4 (Refs #1768). Paired protected state
 # is snapshotted with the databases before adoption so an older-reader rollback
-# receives its pre-upgrade history.
+# receives its pre-upgrade history. The combined reader advances beyond the processing-only
+# predecessor at development/v1 38320d3a, so that schema-3 automation reader also checkpoints.
 # Its change makes existing installers checkpoint the paired databases before store conversion;
 # rollback restores that checkpoint rather than handing converted stores to older readers.
 # The same boundary also selects the paired checkpoint for processing schema 9.
@@ -161,7 +162,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="4293871b7c4cf38ce0e0e4ea969aa9a6de057eea" \
+      io.hvo.skymonitor.minimum-compatible-revision="bc5ca7489c4090c299c416309519ab72da4a8cdb" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="15" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \

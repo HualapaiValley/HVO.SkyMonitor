@@ -87,8 +87,11 @@ column change, so any column change bumps the schema version (currently 4). Star
 migrates the supported schema-3 predecessor by adding the retained script-stop audit table;
 other older schemas are refused. Startup verifies the version, the exact schema object
 count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
-The image declares writes 4 and reads 3 to 4. Its state-boundary label requires a paired
-checkpoint before adoption; rollback restores that checkpoint for the previous reader.
+The image declares writes 4 and reads 3 to 4. Its distinct combined-reader boundary
+`bc5ca7489c4090c299c416309519ab72da4a8cdb` advances beyond the processing-only boundary
+in development/v1 `38320d3a`; adoption from that schema-3 automation reader also requires
+a paired checkpoint before startup. Rollback restores that checkpoint, including schema 3,
+for the previous reader.
 Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.
 
