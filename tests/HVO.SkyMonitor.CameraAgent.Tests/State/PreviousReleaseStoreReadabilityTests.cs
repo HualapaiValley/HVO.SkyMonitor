@@ -180,8 +180,10 @@ public sealed class PreviousReleaseStoreReadabilityTests
 
         public bool IsDeclaredException(string location, string objectKey, string? actualValue)
             => exceptions.Any(exception => exception.Location == location && exception.Objects.Contains(objectKey) &&
-                // A declared version transition cannot authorize an arbitrary later version.
-                (objectKey != "pragma:user_version" || string.Equals(actualValue, exception.CandidateValue, StringComparison.Ordinal)));
+                // The numeric raw schema exception authorizes exactly its declared version, not arbitrary later versions.
+                // Existing revision-bound exceptions retain their separately declared object scope.
+                (objectKey != "pragma:user_version" || exception.Label != "io.hvo.skymonitor.raw-ingress-schema" ||
+                    string.Equals(actualValue, exception.CandidateValue, StringComparison.Ordinal)));
 
         public static PreviousRelease Load()
         {
