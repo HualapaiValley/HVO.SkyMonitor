@@ -555,7 +555,7 @@ public sealed class RetentionBackgroundService(
                             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
                             if (!pending.AbsolutePaths.Contains(Path.GetFullPath(file)))
                             {
-                                File.Delete(file);
+                                RetainedFileMutations.Delete(file);
                                 deletedFiles++;
                             }
                         }
@@ -566,14 +566,14 @@ public sealed class RetentionBackgroundService(
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!Directory.EnumerateFileSystemEntries(monthDirectory).Any())
                 {
-                    Directory.Delete(monthDirectory, recursive: false);
+                    RetainedFileMutations.DeleteDirectory(monthDirectory, recursive: false);
                 }
             }
 
             cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(yearDirectory).Any())
             {
-                Directory.Delete(yearDirectory, recursive: false);
+                RetainedFileMutations.DeleteDirectory(yearDirectory, recursive: false);
             }
         }
         return deletedFiles;
@@ -609,7 +609,7 @@ public sealed class RetentionBackgroundService(
                 cancellationToken.ThrowIfCancellationRequested();
                 if (retainedLines.Length == 0)
                 {
-                    File.Delete(file);
+                    RetainedFileMutations.Delete(file);
                     FrameIndexIdentityCache.Invalidate(file);
                     deletedFiles++;
                     _logger.IndexFileDeleted(file);
@@ -645,7 +645,7 @@ public sealed class RetentionBackgroundService(
             var lastWrite = File.GetLastWriteTimeUtc(file).Date;
             if (lastWrite <= cutoffDate && !pendingPaths.Contains(Path.GetFullPath(file)))
             {
-                File.Delete(file);
+                RetainedFileMutations.Delete(file);
                 deletedFiles++;
                 _logger.DerivedFileDeleted(file);
             }
@@ -658,7 +658,7 @@ public sealed class RetentionBackgroundService(
             cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
-                Directory.Delete(directory, recursive: false);
+                RetainedFileMutations.DeleteDirectory(directory, recursive: false);
             }
         }
         return deletedFiles;
@@ -672,13 +672,13 @@ public sealed class RetentionBackgroundService(
             cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
-                Directory.Delete(directory);
+                RetainedFileMutations.DeleteDirectory(directory);
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (!Directory.EnumerateFileSystemEntries(root).Any())
         {
-            Directory.Delete(root);
+            RetainedFileMutations.DeleteDirectory(root);
         }
     }
 

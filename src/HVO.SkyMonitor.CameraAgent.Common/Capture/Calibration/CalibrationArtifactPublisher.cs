@@ -245,7 +245,7 @@ public sealed class CalibrationArtifactPublisher(
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
             }
         }
     }

@@ -1,0 +1,2909 @@
+{
+  "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+  "targetBase": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
+  "normalMerge": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+  "previousReviewedHead": "b3423622d197a476d5147bbec6e9b70b01ba8fcf",
+  "risk": "HIGH; independent Sol and Opus re-reviews pending with Kepler",
+  "targetProfile": "development/v1: Preflight and Build and Unit; local affected lanes selected by ci:classify",
+  "sdk": "10.0.402",
+  "sourceTrees": {
+    "src": "8952c05565405d66fceb6ae6d82a471a0c78717b",
+    "tests": "81149d4d2a4a8c2e3b43f5283a8e908429d64471",
+    "scripts": "442e107d4aec75418656fb8629919f7ce539b908",
+    "tools": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a",
+    ".github": "81526742f56c8642f71a6bb00326bcdfce4e29a9",
+    "global.json": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+    "Directory.Build.props": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+    "Directory.Build.targets": "c20a45477257b954984f2a8da9fdc939e54551a6",
+    "Directory.Packages.props": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19",
+    "HVO.SkyMonitor.v9.slnx": "8a20aed6d34edd985bb7292068cfcdab9981c229",
+    "dotnet-tools.json": "abbb20b1e1389af7707ba10563bf7079dcdb26c3",
+    ".editorconfig": "574ae9c2204756df877acabc22233d6456827557",
+    ".gitattributes": "e22988eb1f55c6d9153172d438ac743ca9da896e"
+  },
+  "probeHarnessSha256": {
+    "docs/validation/issue-1041-configuration-race-probe.cs.txt": "01f3fe3b11f9aa625f399afca3b0a13ef3a2f59cefb84de925bed51ebf41534e",
+    "docs/validation/issue-1041-configuration-race-probe.py.txt": "077bddc2998dd361717a0907070eb38812964d018ff8b9a6404b1e0140b6661d",
+    "docs/validation/issue-1041-ledger-crash-probe.cs.txt": "a7fd9d732a63a6968851cca933f9eb34baa47db1f0fec1932b1e83e50e16d8ec",
+    "docs/validation/issue-1041-ledger-crash-probe.py.txt": "0b62cafe2495fa6b6c2c974f9eb85430e73a63a5227acd6a885edf3bf2eaf798",
+    "docs/validation/issue-1041-summary-crash-probe.cs.txt": "6adc6a32e716274ba5451df0a540b2be6bdd41bcc9c0519badc6ea7429a5578f",
+    "docs/validation/issue-1041-summary-crash-probe.py.txt": "e0fd4bfcc5d23c5dc5e1718ac4a684f1cbda155db044460e8f82f0fb219e732d"
+  },
+  "classifiers": {
+    "base": "CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=true reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=at least one path is outside every component boundary paths=118\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=true\n",
+    "correction": "CI classification: mode=full deployment=true complete=false shared=false cameraagent=true logichost=false combined=true delivery=true secret_scan_contract=false release_scripts=false reason=pull request changes a deployment-contract input deployment-reason=pull request changes a deployment-contract input complete-reason=pull request changes only component-scoped paths paths=31\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=true\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=true\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=false\n",
+    "merge": "CI classification: mode=full deployment=false complete=false shared=false cameraagent=true logichost=false combined=true delivery=false secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request does not change deployment-contract inputs complete-reason=pull request changes only component-scoped paths paths=14\nmode=full\ndeployment=false\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=false\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=true\ndelivery=false\nsecret_scan_contract=false\nrelease_scripts=false\n"
+  },
+  "mergeInventory": {
+    "cameraBase": {
+      "Unit": 8084,
+      "Integration": 535,
+      "Manual": 96,
+      "Soak": 1,
+      "External": 0,
+      "Hardware": 1
+    },
+    "cameraOurs": {
+      "Unit": 8180,
+      "Integration": 535,
+      "Manual": 96,
+      "Soak": 1,
+      "External": 0,
+      "Hardware": 1
+    },
+    "cameraTheirs": {
+      "Unit": 8115,
+      "Integration": 548,
+      "Manual": 96,
+      "Soak": 1,
+      "External": 0,
+      "Hardware": 1
+    },
+    "cameraMerged": {
+      "Unit": 8211,
+      "Integration": 548,
+      "Manual": 96,
+      "Soak": 1,
+      "External": 0,
+      "Hardware": 1
+    },
+    "totals": {
+      "Unit": 15944,
+      "Integration": 1276,
+      "Manual": 306,
+      "Soak": 1,
+      "External": 0,
+      "Hardware": 1
+    }
+  },
+  "issueSourceSnapshot": {
+    "readAt": "2026-11-11T18:18:56.086122+00:00",
+    "state": "OPEN",
+    "bodySha256": "720cf8412a804ae3b87562a5be5c28c10100139b5a7168e919c8821f7d36cb3a",
+    "comments": [
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5818996168",
+        "bodySha256": "bd4bebe463f6ed6769c1d733bb7656e98305e57ad2aea47e4e8502fb72bca128"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819014251",
+        "bodySha256": "da2648c6f66b235c5054fe1d5ee76c30a4e361656f98f62444bde490d0d33fa3"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819130604",
+        "bodySha256": "05407e14f40080511ec4d7269b6b8dd8523abb39134f00d51b11a307ca5d728b"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819177718",
+        "bodySha256": "9e9f0ed018fcfb7e1c9850ebf92e721ce0d6b3bd56ad42bf1ca480bbabbeac33"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819228585",
+        "bodySha256": "3a5da5b1c40a29e374156b04f5d3adcbb0da50dbdc8c7d3f29649b799a161f78"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819437240",
+        "bodySha256": "db44a37369643e594fd93c5704a44e0c7785ceb1d9dfcd00f53026bf0f752c7c"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819929227",
+        "bodySha256": "f6600d5b01ab04e0a6cd169b590f8a99dc5725c04064f6d77e89cf7a6d229fb8"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5929867774",
+        "bodySha256": "f6ad691dba88bd662355a6a804394763c6b9699c19ddd1a2386d1642fde4ee19"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6298546933",
+        "bodySha256": "34d6733fc9385b2a0789144a94cc832c30f4f7aae7394865a08b116dea014eb9"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6353527818",
+        "bodySha256": "856fb0b8370f07bed5df5fe68c53139f22f8b295071cb0d42183b65063fa8e19"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6360532464",
+        "bodySha256": "05b635b0eb8dcdbae5be99717130de2a28e78467f88ac7295db2f8282ecefc91"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6364547958",
+        "bodySha256": "f00da7e9135045a824cb9847dbec136945160f006d2a62b9a9c5979a7f2c7bff"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6374094935",
+        "bodySha256": "64b723c4b4d0bc85ce944760f6e84e0ab0e04ab0b036aa40ad9092c8c88d56ad"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6776132038",
+        "bodySha256": "adcc70f75017eb633a67c68cdc0a3f583fdb0c28953f273f5f6ef0b2f8e50df0"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6776744600",
+        "bodySha256": "eda6d9c3d0fb25f104a51a483e1d572aa9f39197bea99ce8b8c243b328f4fc85"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6777679400",
+        "bodySha256": "d015c1cfd67e3a8587f28644689fc49390912fc023e7c259e36feba96fc7ae83"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6778357427",
+        "bodySha256": "ae6106190cf9a18e337fbfab5bebcce6a84411b24af32b3d4fe61c0da0bc8a94"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6778893715",
+        "bodySha256": "904ef7c748f87446ce878382fb9637f95daf7843c315a3eb7299ff8ff3c73581"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779049692",
+        "bodySha256": "696f0b93fb2403cacaf2f1440514b56f55cb59da1384ce7105f1c88825f26a1a"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779992529",
+        "bodySha256": "08f7504956eb9510048666619af4ebcc688f94cbc3c236bec8ce8d82c123d39c"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6780793732",
+        "bodySha256": "4cac2d8af94f4adea08c9e575aaaaf1cb0c7c6bdc9df400deec49a986b8b45c2"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6781224702",
+        "bodySha256": "2fc678bab61a6a43af2ce91e9d3f4b2a73488e8b0fdfc989e20701432ec42769"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6781584646",
+        "bodySha256": "c01684e2e64e01282f4a72a61101aa939b5f9ac584940e6d48846d5923b4a80a"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6782066132",
+        "bodySha256": "abef6577184266a5e34e5f90d34970983cb6e8c377b988e23064930dd8543b4d"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6782861786",
+        "bodySha256": "a53c64f966ed827f91c11ce1c3b5baafc54f6f6a65423283ace77fa1ae24886e"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6783315015",
+        "bodySha256": "623520956fba05660509387deadf64fbcdf102fd2cc22b61e40f4c0b6699a9b5"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6783793082",
+        "bodySha256": "6ecd6d7140378cce08234c9da182a65bdaf6cb9d29e1d847354203c44d638692"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6784282290",
+        "bodySha256": "0acfc3b869abff4b3c76c02aacce0400ef089bc9a64c3c7fe19f97ad1d47ab0b"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6784764025",
+        "bodySha256": "28e839308059f347f6d7ae86ab1ec48137293124fff1184e3046c258055e236e"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6785562693",
+        "bodySha256": "0e208ca44e56a3625319149bf2fd740d34f475f5ddf8469768eb2d44f092c083"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6786029478",
+        "bodySha256": "6a6fdc2fcef327b375acb71c05d44c008890d96907ed14106c78c6dc9e57e19e"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6786470477",
+        "bodySha256": "5f6ccd6cfefa2bee12c5853cb6bdbb67d61d1a01c3548ed26180c8f7a58390eb"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6787193399",
+        "bodySha256": "33aea73adf26100a785bf48c56a0359f567d974919981124c08e83f1a5460d69"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6787612968",
+        "bodySha256": "79c5e35b5cdcc8c1c817251e71d74bb37d242cf1765d0b6e4b4d08b7f54fa412"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788118726",
+        "bodySha256": "d695f86de7c718da5efa69428fc3e87f2ae235fed6c854d2f02360dac673a5bc"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788549345",
+        "bodySha256": "d3f3b032793ee47e02e0d96c14e9d57df7dff25a01d1613972b02e257e240327"
+      },
+      {
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788961109",
+        "bodySha256": "0a77f0b5f232e4605178894064cb5192b32fd84d947cbbce6f96b8c1590079e8"
+      }
+    ]
+  },
+  "baselineExpectedFailures": {
+    "head": "b3423622d197a476d5147bbec6e9b70b01ba8fcf",
+    "productDiffEmpty": true,
+    "runs": [
+      {
+        "path": "TestResults/issue-1041-run4/baseline/baseline-camera.trx",
+        "sha256": "4991a2713c2a6bfda19e7359a57443b94cbaa45d72676ab929912fdce3461eff",
+        "counters": {
+          "total": 6,
+          "executed": 6,
+          "passed": 0,
+          "failed": 6,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "resultOutcomes": {
+          "Failed": 6
+        },
+        "cases": [
+          {
+            "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"missing-ledger\")",
+            "outcome": "Failed"
+          },
+          {
+            "name": "OrdinaryLoadDuringManagedWriteWaitsInsteadOfFailingAfterOneSecond",
+            "outcome": "Failed"
+          },
+          {
+            "name": "OrdinaryLoadDuringRunningScrubWaitsInsteadOfFailingAfterOneSecond",
+            "outcome": "Failed"
+          },
+          {
+            "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"drift\")",
+            "outcome": "Failed"
+          },
+          {
+            "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"invalid-json\")",
+            "outcome": "Failed"
+          },
+          {
+            "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"damaged-ledger\")",
+            "outcome": "Failed"
+          }
+        ]
+      },
+      {
+        "path": "TestResults/issue-1041-run4/baseline/baseline-cli.trx",
+        "sha256": "cbdb2e59240d2fea072c21152a6d96d4056df79d07c48b0dfd12be4193c55ee8",
+        "counters": {
+          "total": 2,
+          "executed": 2,
+          "passed": 0,
+          "failed": 2,
+          "error": 0,
+          "timeout": 0,
+          "aborted": 0,
+          "inconclusive": 0,
+          "passedButRunAborted": 0,
+          "notRunnable": 0,
+          "notExecuted": 0,
+          "disconnected": 0,
+          "warning": 0,
+          "completed": 0,
+          "inProgress": 0,
+          "pending": 0
+        },
+        "resultOutcomes": {
+          "Failed": 2
+        },
+        "cases": [
+          {
+            "name": "RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails (True)",
+            "outcome": "Failed"
+          },
+          {
+            "name": "RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails (False)",
+            "outcome": "Failed"
+          }
+        ]
+      }
+    ],
+    "testSources": {
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.OrdinaryLoads.cs": "eed11575ed36257b873c25513537d65e3ee4a8d42acd2d545867c3edf806e205",
+      "tests/HVO.SkyMonitor.Deployment.Cli.Tests/LifecycleContractTests.LedgerBoundaryRecovery.cs": "1e7f8a301cd8c52167ce28337bbafbb79c32eafccd0e32629f1ec256a58a2cdf"
+    }
+  },
+  "steps": [
+    {
+      "name": "tool-restore",
+      "command": "dotnet tool restore",
+      "exitCode": 0,
+      "seconds": 0.116,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "c66fdf42706194a4de7a46c52ce1767db9419ccf74518cc4d36a9cd06a3808a7",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "restore",
+      "command": "dotnet restore HVO.SkyMonitor.v9.slnx",
+      "exitCode": 0,
+      "seconds": 1.321,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "40d104602671164ab3958225da3e1c8cabd55f0251d6df6bc911d9d5a24f44ce",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "release-build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 298.058,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "ad3579a62bbe9e6d1058bff948af086f98dd40722dfd43c31e8e4848887d147c",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "format",
+      "command": "dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+      "exitCode": 0,
+      "seconds": 194.466,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "ci-shell-syntax",
+      "command": "./scripts/ci:shell-syntax",
+      "exitCode": 0,
+      "seconds": 0.716,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "12925d6db6d7dd30310f871e1c6ab3f6f876bbca933da8d0cade2b7506c61fbc",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-ci-classification",
+      "command": "./scripts/test:ci-classification",
+      "exitCode": 0,
+      "seconds": 21.906,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "ea9f09d98117697ed6c42478830c52ee996cad15470284f1b88d497083a2ae14",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-coordination-guard",
+      "command": "./scripts/test:coordination-guard",
+      "exitCode": 0,
+      "seconds": 0.266,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-pr-review-tools",
+      "command": "./scripts/test:pr-review-tools",
+      "exitCode": 0,
+      "seconds": 9.984,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-development-v1-ci",
+      "command": "./scripts/test:development-v1-ci",
+      "exitCode": 0,
+      "seconds": 17.302,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "4345cc4b190e79b61cf1805c6f14a0f1ace80d499668bcf2dacabf829e3d23de",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-coverage-development-v1",
+      "command": "./scripts/test:coverage-development-v1",
+      "exitCode": 0,
+      "seconds": 16.152,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "7ab45d930445007d793fb3ea492b5901680ca3d03c33c36e18dfb41f5a06f6e6",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "docs-audit-operations",
+      "command": "./scripts/docs:audit-operations",
+      "exitCode": 0,
+      "seconds": 0.567,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "ci-script-sandbox-verify",
+      "command": "./scripts/ci:script-sandbox --verify",
+      "exitCode": 0,
+      "seconds": 0.017,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "102b4c1eb7d566145e8fac91d2d68d6fd27950d2218f4f66c45bfe996854c713",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "package-audit",
+      "command": "./scripts/package:audit",
+      "exitCode": 0,
+      "seconds": 39.711,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "0d89ccfc7cd423637015cb2f94551a62e8460ce891896a987aeb4561c4822bb6",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "category-audit",
+      "command": "dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release",
+      "exitCode": 0,
+      "seconds": 112.456,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "3cf41033c9a5134951e64b286f29d81aa04ae2070b8ccc9cae67fcb5c7b4e39d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "focus-camera",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"FullyQualifiedName~ProtectedDeploymentLocationStoreTests|FullyQualifiedName~FileCameraAgentConfigurationLoaderIdentityTests|FullyQualifiedName~ManualFocusSessionStoreTests|FullyQualifiedName~ProjectedSceneStagingStoreTests\" --logger \"trx;LogFileName=camera.trx\" --results-directory TestResults/issue-1041-run4/focused-final",
+      "exitCode": 0,
+      "seconds": 14.194,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "325c17e1ee9079c7364bbc00359d78cbbd0a38efdc22f638c3f9ab95bc647662",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "focus-cli",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --no-build --configuration Release --filter \"FullyQualifiedName~CameraAgentStateSnapshotTests|FullyQualifiedName~RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails|FullyQualifiedName~UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart|FullyQualifiedName~ProtectedVerificationRefusesBeforeLifecycleMutation|FullyQualifiedName~OwnerBootstrapClientTests\" --logger \"trx;LogFileName=cli.trx\" --results-directory TestResults/issue-1041-run4/focused-final",
+      "exitCode": 0,
+      "seconds": 17.356,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "b8eecbe10f4171f65a0e2b060d9139e5e8cd918b02f4cfcfabc77cdb45ab5b93",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "focus-endpoint",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --configuration Release --filter \"FullyQualifiedName~InstallationVerification&TestCategory=Integration\" --logger \"trx;LogFileName=endpoint.trx\" --results-directory TestResults/issue-1041-run4/focused-final",
+      "exitCode": 0,
+      "seconds": 14.397,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "8a12d739ab8128fd6f674d9ebf473289a6e4e765625c7e4f5ca31bbb919bd654",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-cameraagent",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run4/canonical/unit/cameraagent",
+      "exitCode": 0,
+      "seconds": 581.639,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "f6fe00d0ba4182f923f012a7e4142af404857c7729534f23aec2a8ff3bad54db",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-deployment-cli",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run4/canonical/unit/deployment-cli",
+      "exitCode": 0,
+      "seconds": 342.443,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "560c857737c7c43274ef7cde8779359267a8c759467bde91ba70da612fb58131",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-cameraagent-logichost",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run4/canonical/unit/cameraagent-logichost",
+      "exitCode": 0,
+      "seconds": 48.158,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "3e10dffbf6983793c2f6d6a481d0fba5271ab51cd41ba826be10688054b9d047",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-cameraagent-acceptance",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run4/canonical/unit/cameraagent-acceptance",
+      "exitCode": 0,
+      "seconds": 33.157,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "0bce77620a5bbfdebdbe874e98b9595d26b41380e2828243fe8efba59d7cf87f",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-deployment-distribution",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run4/canonical/unit/deployment-distribution",
+      "exitCode": 0,
+      "seconds": 11.144,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "32bddd1e11efc48973482e626a4b2e4da99fdd1f693827de92762cfa6f6ed948",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-cameraagent-storage",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=integration.trx\" --results-directory TestResults/issue-1041-run4/canonical/integration/cameraagent-storage",
+      "exitCode": 0,
+      "seconds": 266.044,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "255d7a5605154a4d41057ba5b975155dc4428f56c215fab3b4a9281084d797b1",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-cameraagent-standalone",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --configuration Release --filter \"TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=integration.trx\" --results-directory TestResults/issue-1041-run4/canonical/integration/cameraagent-standalone",
+      "exitCode": 0,
+      "seconds": 101.108,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "ff1a93e65f36e0d649a334fc5ed734ee3b70c6873b1b37af7ef94373ac8e6359",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-cameraagent",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests --no-build --configuration Release --filter \"TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=integration.trx\" --results-directory TestResults/issue-1041-run4/canonical/integration/cameraagent",
+      "exitCode": 0,
+      "seconds": 47.05,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "7471a242cd6f1970ad92c1ff52dcf997c48f24d4f841c2c01f8f2bde71d5060f",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-cameraagent-logichost",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests --no-build --configuration Release --filter \"TestCategory=Integration&TestCategory!=Soak&TestCategory!=Manual&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=integration.trx\" --results-directory TestResults/issue-1041-run4/canonical/integration/cameraagent-logichost",
+      "exitCode": 0,
+      "seconds": 216.21,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "d4a0750e5adc903539e2d4edea259c573ec54278358414d04554eaff7d02343a",
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "v1-settings",
+      "command": "./scripts/coverage:development-v1 --settings TestResults/issue-1041-run4/development-v1.runsettings",
+      "exitCode": 0,
+      "seconds": 0.032,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "4190b219e61b06e7b93a882ee045a8a471c0d186260e4d623fec545c4274b79b",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "v1-unit",
+      "command": "dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings TestResults/issue-1041-run4/development-v1.runsettings --collect:\"XPlat Code Coverage\" --logger trx --results-directory TestResults/issue-1041-run4/v1-unit -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 428.85,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "44b7a82850c3d121153b302b18e6cdc31891fbc3eb8c8b735487b74ad3ce0ae4",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "v1-coverage",
+      "command": "./scripts/coverage:development-v1 TestResults/issue-1041-run4/v1-unit TestResults/issue-1041-run4/development-v1-coverage",
+      "exitCode": 0,
+      "seconds": 18.614,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "bbfdb3f5476f87ce9603acf32a3b41ca054de110648576c42e0d47996abe9748",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "bind-coverage",
+      "command": "python3 TestResults/issue-1041-run4/bind-coverage.py",
+      "exitCode": 0,
+      "seconds": 0.417,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "12df217b075158539d4d1b9c31d50a3ef1ee383c47eb1f4120e865416124f130",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-cameraagent",
+      "command": "./scripts/coverage:component cameraagent",
+      "exitCode": 0,
+      "seconds": 11.65,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "3342c59560bf55dbb1eeffa2f899c426224888eca506e6859c73e772e69138d6",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-combined",
+      "command": "./scripts/coverage:component combined",
+      "exitCode": 0,
+      "seconds": 10.451,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "73616dad185462e63f25241b1f62a315025b91de01e0e87f78918d8c9ec2c62c",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-delivery",
+      "command": "./scripts/coverage:component delivery",
+      "exitCode": 0,
+      "seconds": 2.421,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "1b6f9a003278162ee0fd48d660af8528267b3471773fea988a801e977ecd0567",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-cameraagent",
+      "command": "./scripts/ci:component-publish cameraagent",
+      "exitCode": 0,
+      "seconds": 78.966,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "3fc086b6d1bba31e065a794bccbc1f9bc9b82e9da27cdec22729e3667b64b817",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-delivery",
+      "command": "./scripts/ci:component-publish delivery",
+      "exitCode": 0,
+      "seconds": 23.899,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "1089d680f55cffe0aea808f7f72ebb6db57ea151272ef76b87f4d5a8437d369c",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "generator",
+      "command": "bash TestResults/issue-1041-run4/generate-configuration.sh",
+      "exitCode": 0,
+      "seconds": 2.021,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "38d12c9caebce21dc5d68b4e68f0ea445faf9ec4ad5ea71a3cf5469254808a0a",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "process-crash",
+      "command": "HVO_ISSUE1041_EVIDENCE_ROOT=TestResults/issue-1041-run4 python3 docs/validation/issue-1041-ledger-crash-probe.py.txt",
+      "exitCode": 0,
+      "seconds": 4.675,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "a74008446f28ccc064dea203e89be3024b329f758f0c28c9bc8467694c77a82e",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "config-edit",
+      "command": "HVO_ISSUE1041_EVIDENCE_ROOT=TestResults/issue-1041-run4 HVO_INSTALLATION_READ_OWNER_CONFIGURATION=\"$TMPDIR/owner-configuration.json\" python3 docs/validation/issue-1041-configuration-race-probe.py.txt",
+      "exitCode": 1,
+      "seconds": 4.226,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "b96ed9e1be7dbc1c523bc410e408235433899d34c674c4081b6d68b2d54915af",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "config-edit",
+      "command": "HVO_ISSUE1041_EVIDENCE_ROOT=TestResults/issue-1041-run4 HVO_INSTALLATION_READ_OWNER_CONFIGURATION=\"$TMPDIR/owner-configuration.json\" python3 docs/validation/issue-1041-configuration-race-probe.py.txt",
+      "exitCode": 0,
+      "seconds": 4.029,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "cab487fe4de6017f1a10f8d0c17874b1824dc2dd66612b49d3e7e6b31eda31ab",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "scale",
+      "command": "bash TestResults/issue-1041-run4/scale.sh",
+      "exitCode": 0,
+      "seconds": 1303.024,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "6ede8f830703be9e633d664b99061bee3bf815baa2335acacc0b834a47d47e80",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "diff-check",
+      "command": "git diff --check",
+      "exitCode": 0,
+      "seconds": 0.019,
+      "testedHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docker": "invalid endpoint"
+    }
+  ],
+  "priorAttempt": {
+    "head": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+    "steps": [
+      {
+        "name": "tool-restore",
+        "command": "dotnet tool restore",
+        "exitCode": 0,
+        "seconds": 0.116,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "c66fdf42706194a4de7a46c52ce1767db9419ccf74518cc4d36a9cd06a3808a7",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "restore",
+        "command": "dotnet restore HVO.SkyMonitor.v9.slnx",
+        "exitCode": 0,
+        "seconds": 2.083,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "666b8c64b21caa06b5d314cf95e5630df73b51e63160b7b3d413e9b954034468",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "release-build",
+        "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+        "exitCode": 0,
+        "seconds": 246.472,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "d1399cb7af3444d56a1991d72327a8cd93daa2db2bc5cb9d035406076eb20c92",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "format",
+        "command": "dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+        "exitCode": 0,
+        "seconds": 198.892,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "ci-shell-syntax",
+        "command": "./scripts/ci:shell-syntax",
+        "exitCode": 0,
+        "seconds": 0.616,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "12925d6db6d7dd30310f871e1c6ab3f6f876bbca933da8d0cade2b7506c61fbc",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "test-ci-classification",
+        "command": "./scripts/test:ci-classification",
+        "exitCode": 0,
+        "seconds": 17.897,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "ea9f09d98117697ed6c42478830c52ee996cad15470284f1b88d497083a2ae14",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "test-coordination-guard",
+        "command": "./scripts/test:coordination-guard",
+        "exitCode": 0,
+        "seconds": 0.215,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "test-pr-review-tools",
+        "command": "./scripts/test:pr-review-tools",
+        "exitCode": 0,
+        "seconds": 8.73,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "test-development-v1-ci",
+        "command": "./scripts/test:development-v1-ci",
+        "exitCode": 0,
+        "seconds": 15.95,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "e4a598d4af62244936a0ebcb043f4110eda97129cab07239ec3076d8067d936e",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "test-coverage-development-v1",
+        "command": "./scripts/test:coverage-development-v1",
+        "exitCode": 0,
+        "seconds": 14.195,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "7ab45d930445007d793fb3ea492b5901680ca3d03c33c36e18dfb41f5a06f6e6",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "docs-audit-operations",
+        "command": "./scripts/docs:audit-operations",
+        "exitCode": 0,
+        "seconds": 0.416,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "ci-script-sandbox-verify",
+        "command": "./scripts/ci:script-sandbox --verify",
+        "exitCode": 0,
+        "seconds": 0.016,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "102b4c1eb7d566145e8fac91d2d68d6fd27950d2218f4f66c45bfe996854c713",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "package-audit",
+        "command": "./scripts/package:audit",
+        "exitCode": 0,
+        "seconds": 42.974,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "0d89ccfc7cd423637015cb2f94551a62e8460ce891896a987aeb4561c4822bb6",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "category-audit",
+        "command": "dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release",
+        "exitCode": 0,
+        "seconds": 96.738,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "3cf41033c9a5134951e64b286f29d81aa04ae2070b8ccc9cae67fcb5c7b4e39d",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "focus-camera",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"FullyQualifiedName~ProtectedDeploymentLocationStoreTests|FullyQualifiedName~FileCameraAgentConfigurationLoaderIdentityTests|FullyQualifiedName~ManualFocusSessionStoreTests|FullyQualifiedName~ProjectedSceneStagingStoreTests\" --logger \"trx;LogFileName=camera.trx\" --results-directory TestResults/issue-1041-run4/focused-final",
+        "exitCode": 0,
+        "seconds": 13.145,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "5ff46aa4ea7b6777957d23891faaf2a1380cd14ff51804afc2ad2da3bda4287e",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "focus-cli",
+        "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --no-build --configuration Release --filter \"FullyQualifiedName~CameraAgentStateSnapshotTests|FullyQualifiedName~RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails|FullyQualifiedName~UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart|FullyQualifiedName~ProtectedVerificationRefusesBeforeLifecycleMutation|FullyQualifiedName~OwnerBootstrapClientTests\" --logger \"trx;LogFileName=cli.trx\" --results-directory TestResults/issue-1041-run4/focused-final",
+        "exitCode": 0,
+        "seconds": 16.712,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "9da8b643fbfa4ab7d37d5cf116f19eea894faedf03136bb8cc11b5b7dcf4769e",
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "focus-endpoint",
+        "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --configuration Release --filter \"FullyQualifiedName~InstallationVerification&TestCategory=Integration\" --logger \"trx;LogFileName=endpoint.trx\" --results-directory TestResults/issue-1041-run4/focused-final",
+        "exitCode": 1,
+        "seconds": 12.893,
+        "testedHead": "2897df1d8c7e9ef5c871c1fd9063a138042c810c",
+        "logSha256": "dd629fa19c33571ff2c0c0a1699a2afa27cbe3e272f0f7bc3705807738853b6b",
+        "docker": "invalid endpoint"
+      }
+    ]
+  },
+  "priorAttemptDisposition": "One endpoint fixture incorrectly assumed ordinary LoadAsync requalified out-of-band repair. Explicit full scrub now required. Prior failure retained; all gates rerun at testedHead.",
+  "configurationProbeDisposition": {
+    "reason": "Standalone harness expected ordinary LoadAsync to qualify after deliberately interrupted scrub. Now asserts protected refusal, runs explicit full scrub, retains current config/hash checks. Product unchanged.",
+    "testedRuntimeHead": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+    "correctedProbeSha256": "01f3fe3b11f9aa625f399afca3b0a13ef3a2f59cefb84de925bed51ebf41534e"
+  },
+  "focused": [
+    {
+      "path": "TestResults/issue-1041-run4/focused-final/camera.trx",
+      "sha256": "0ca593bf97ed1936e58d13ed9e95f541507d1060df13158ea3bcfe8dc86ae3e9",
+      "counters": {
+        "total": 166,
+        "executed": 166,
+        "passed": 166,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 166
+      },
+      "cases": [
+        {
+          "name": "LedgerTamperCannotCertifyAFullScrub (\"checkpoint\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeRetryMustSettleMarkerDurabilityBeforePublishingActiveLocation",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageAsync_ConcurrentStoreInstancesAuthenticateIdenticalAndRejectConflict",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReadAsync_RejectsOversizedFileBeforePayloadRead",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RawIngressStartup_SecondPauseInterruptsDeferredStageLifecycleWait",
+          "outcome": "Passed"
+        },
+        {
+          "name": "WarmIndexRejectsInvalidCurrentManifestInEitherSource (False,\"contract\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"corrupt\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_MarkerMismatchFailsWithoutMutation",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ApprovedOutOfBandBoundaryDetectsDriftAtFullScrub (\"delete\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReadAsync_LinuxRejectsStageSymlinkWithoutFollowingTarget",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedHistoryCannotQualifyWithAnotherLedgersNonce",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ChangedHistoryInvalidatesProofsAndConcurrentReadsKeepCurrentValidation",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageAsync_ResolvedFootprintsSurviveRestartAndBindAsProjectedSceneV2",
+          "outcome": "Passed"
+        },
+        {
+          "name": "NativeStagePublicationCompletionDeletionAndReconciliationRemainQualifiedAcrossRestart",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitialQualificationIncludesManagedWritesAlreadyInFlightBeforeRegistration (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ApprovedOutOfBandBoundaryDetectsDriftAtFullScrub (\"add\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "NestedManagedDeleteCompletesWhileAnotherFlowStartsAWrite",
+          "outcome": "Passed"
+        },
+        {
+          "name": "IndexReusesOnlyCurrentContentAcrossRestartAndInspectsReplacementBytes",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\"journal/capture-satellites/fixture/input.json\",\"{\\\"schemaVersion\\\":\\\"capture-satellite-input-v1\\\",\\\"descriptor\\\":{}}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "EnsureAncestorChainHasNoLinks_RejectsConfiguredRootAncestorSymlink",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"pending-torn\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_EmitsBoundedSignalsWithoutCoordinates",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Save_PublishesAChecksummedRecordThatReadsBackExactly",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_OwnedInvalidEvidenceIsRetainedUntouched",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LedgerTamperCannotCertifyAFullScrub (\"entry-replay\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "MidScanCancellationPersistsOnlyCompletedProofsAndStillReadsCurrentBytes (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadsStayQualifiedAndOnlyExplicitScrubsInspectRetainedHistory",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\"journal/scene-retention-cursor.json\",\"{\\\"afterRelativePath\\\":\\\"fixture\\\"}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OptionalIndexWriteFailureKeepsDurableAndInMemoryLocationConsistent (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadDuringRunningScrubWaitsInsteadOfFailingAfterOneSecond",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"truncated\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReadAndDeleteAsync_DisappearedStageIsUnavailableAndIdempotent",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ScrubMergesConcurrentManagedChangesAndProtectedWaitIsFinite",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrphanCleanupIsBoundedAndNeverDeletesEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitialQualificationIncludesManagedWritesAlreadyInFlightBeforeRegistration (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"sourceKinds\",True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_SymbolicLinkDataRootFailsBeforeWritingState",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"activatedAtUtc\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ApprovedOutOfBandBoundaryDetectsDriftAtFullScrub (\"replace\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem (\"frames/2026/11/10/Raw/torn.json\",\"{\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"tampered\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ClearedLedgerCannotMasqueradeAsLegacyState (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryUnqualifiedLoadsShareOneHostScrubAndCooldownStartsAtCompletion",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"pending-both\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "TamperedRecords_AreNeverReturnedAsVerified",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_RestoredOlderHistoryFailsForNewerRetainedEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "WarmIndexRejectsInvalidCurrentManifestInEitherSource (True,\"contract\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"schema\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReplacedLedgerPathCannotBeHiddenByAnAlreadyOpenSqliteHandle",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StaleBackgroundConfigurationCannotCommitNewLocationAuthority",
+          "outcome": "Passed"
+        },
+        {
+          "name": "FailedFirstUpgradeRestoresRecordedLegacyAbsenceAndForcesFullAdoption (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "IncompleteRestoreAndUnmanagedDeletionCannotBeHiddenByManagedWriters",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation (\"unknown-field\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OversizedInvalidAndMissingRecords_AreRefused",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"oversized\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify (\"truncated\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"candidate\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"new-file-after-restore\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadRetriesChangedSnapshotsWithoutAcceptingStaleConfiguration (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"staged\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LedgerTamperCannotCertifyAFullScrub (\"entry-delete\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryGateAndManagedWriteWaitsHonorCallerCancellation (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalChronologyWithoutMutation (\"activation-boundary\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_RetainsOwnedAndPrunesCanonicalUnownedAndTemporaryStages",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalChronologyWithoutMutation (\"missing-supersession\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"pending-target\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeRestartAndChange_PreservesProtectedImmutableVersions",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageNamespaceRetryMustRepeatFailedDirectoryBarrier (\"complete\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ManagedPublishCopyMoveRetentionAndTreeMoveMaintainTheCheckpoint",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_RecoversInterruptedMarkerPublication",
+          "outcome": "Passed"
+        },
+        {
+          "name": "WarmIndexRejectsInvalidCurrentManifestInEitherSource (True,\"json\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\"derived/fixture/Metadata/product.json\",\"{\\\"schemaVersion\\\":\\\"metadata-v1\\\",\\\"values\\\":[]}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "NoNewProcessInheritsCheckpointTrust (\"restart\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ManualFocusPruningWithOneRecordCompletesAlongsideATrackedWriter",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify (\"metadata\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_InvalidPrefixDoesNotBlockValidOrphanCleanup",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"live-owner\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CentralIntegrationAcceptsExactAgentIdAndRejectsMismatch",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CompletedMarker_IsIdempotentAndReconciliationDeletesItDespiteRawOwnership",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageAsync_DoesNotChangeLiveGeometryAndActivatesOnlyOnRestart",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"incomplete-overlay\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"cancel-after-ledger\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StagedActivation_PreservesOldCaptureEvidenceUntilActualRestartBoundary",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StandaloneModePreservesConfiguredAgentId",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_ManyInvalidEntriesAreDeletedWithoutPerpetualBacklog",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem (\"quarantine/invalid-v2.json\",\"{\\\"schemaVersion\\\":\\\"v2\\\"}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"identity\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation (\"inconsistent-configuration-seed\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "NoNewProcessInheritsCheckpointTrust (\"rollback\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OptionalIndexWriteFailureKeepsDurableAndInMemoryLocationConsistent (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DeleteAsync_RemovesOnlyExplicitlyCommittedStage",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RevertingCandidateRemovesItsClassificationAndRemainsRestartable",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LinkedRecordDirectory_IsRejected",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageNamespaceRetryMustRepeatFailedDirectoryBarrier (\"delete\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_TransientInspectionFailureRemainsVisibleAndDoesNotDeleteEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_ResumeBeforeReadinessPublicationRetriesDeferredMaintenance (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "WarmIndexRejectsInvalidCurrentManifestInEitherSource (False,\"json\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StagedActivation_ReconcilesConfigurationChangedBeforeRestart",
+          "outcome": "Passed"
+        },
+        {
+          "name": "WarmIndexRejectsInvalidCurrentManifestInEitherSource (True,\"schema\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem (\"quarantine/torn.json\",\"{\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation (\"inconsistent-configuration-end\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "TornProductionSidecarCanReachTheRealReconcilerWithoutDeletingEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"missing\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"whole\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageAsync_EnforcesFileCountBound",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation (\"malformed-chronology\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"missing-ledger\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageNamespaceRetryMustRepeatFailedDirectoryBarrier (\"delete-completed\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"missing-keys\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryGateAndManagedWriteWaitsHonorCallerCancellation (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify (\"pending\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"centrallyActivatedCanonicalSha256\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"missing-ledger-with-overlay\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_ActionablesDrainAcrossBatchesAndNewTempAfterZeroIsDiscovered",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify (\"missing\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageAsync_RestartPreservesCanonicalGeometryAndIdentity",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation (\"unsupported-schema\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CentralIntegrationRejectsMissingPersistentIdentityProvider",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_SkippedVersionMarkerFailsWithoutMutation",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RawIngressStartup_DeferredStagesYieldToSecondPauseAndResumeWithoutRepeatingDeletes",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RawIngressStartup_DurablePauseHoldsStageCleanupWhileARunningJournalPrunes (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DailyScrubDeadlineCannotBeExtendedByManagedWrites",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Save_PrunesTheOldestRecordsAndInterruptedSavesBeyondTheBound",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CancellationAfterDurableLocationChangeDoesNotLeaveMemoryAtTheOldVersion",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"missing-ledger\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_ResumeBeforeReadinessPublicationRetriesDeferredMaintenance (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "NoNewProcessInheritsCheckpointTrust (\"restore\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadDuringManagedWriteWaitsInsteadOfFailingAfterOneSecond",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"cancel\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_BackdatedChangeCannotInvalidateRetainedCapture",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"pending-corrupt\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "WarmIndexRejectsInvalidCurrentManifestInEitherSource (False,\"schema\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\"derived/fixture/Metadata/product.manifest.json\",\"{\\\"schemaVersion\\\":\\\"hvo-cameraagent-processing-product-v1\\\",\\\"capture\\\":{},\\\"relativeArtifactPath\\\":\\\"fixture\\\"}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CentralIntegrationDerivesSampleAgentIdFromPersistentDeviceIdentity",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"configurationSeed\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "BackgroundScrubCooldownUsesTheInjectedClockAndExplicitScrubPath",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\".site/site-profile.v1.json\",\"{\\\"schemaVersion\\\":1,\\\"revision\\\":1}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "GenuineLegacyHistoryIsSealedWithoutChangingInstallationIdentity",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_InvalidKeyReleasesHardCapacity",
+          "outcome": "Passed"
+        },
+        {
+          "name": "FailedFirstUpgradeRestoresRecordedLegacyAbsenceAndForcesFullAdoption (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexWrongLayoutRebuildsWithoutChangingRetainedEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\"staging/projected-scenes/fixture.json\",\"{\\\"schemaVersion\\\":\\\"projected-scene-stage-v1\\\",\\\"objects\\\":[]}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_ManyOwnedEntriesCompleteCycleWithoutPerpetualBacklog",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_RejectsOverlapAndProtectedPayloadTampering",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InterruptedAdoptionRecoversThroughFullScrubWithTheOriginalNonce",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RawIngressStartup_DurablePauseHoldsStageCleanupWhileARunningJournalPrunes (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "QualifiedProtectedReadNeverTraversesRetainedEvidenceAndConcurrentReadsAgree",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"sourceKinds\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"normal\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "Initialize_MissingHistoryOrWrongKeyFailsClosedForExistingEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption (\"tampered-retained\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ClearedLedgerCannotMasqueradeAsLegacyState (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexDamageCannotHideFreshCorruption (\"kind\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract (\".lifecycle-control/state.json\",\"{\\\"schemaVersion\\\":1,\\\"state\\\":\\\"Capturing\\\"}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"damaged-ledger\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StageAsync_ExactDuplicateIsIdempotentAndConflictIsRejected",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs (\"pending-current\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "MidScanCancellationPersistsOnlyCompletedProofsAndStillReadsCurrentBytes (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation (\"configurationSeed.sourceKind\",False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StagedActivation_FutureOrExpiredIntervalDoesNotPreventStartup",
+          "outcome": "Passed"
+        },
+        {
+          "name": "AdvisoryIndexSymlinkIsIgnoredWithoutWritingOutsideTheStateRoot",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadRetriesChangedSnapshotsWithoutAcceptingStaleConfiguration (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CentralIntegrationRejectsBlankPersistentDeviceIdentity",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"drift\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReconcileAsync_OverBoundDeletesInvalidAndAdvancesCursor",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OrdinaryLoadsOfUnqualifiedStateDoNotRepeatFullRetainedScans (\"invalid-json\")",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "path": "TestResults/issue-1041-run4/focused-final/cli.trx",
+      "sha256": "4780977ddcae9cb5f2ed21f8ab8f80a3b7ff2875482a84fb3e25d3933dfe641b",
+      "counters": {
+        "total": 77,
+        "executed": 77,
+        "passed": 77,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 77
+      },
+      "cases": [
+        {
+          "name": "ProtectedRead_GenericUnavailableResponseDoesNotBecomeARetry (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RestoreAsync_LeavesTheCalibrationFamiliesStoreUntouched",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails (False,True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets (False,True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_PreCanceledCallerDoesNotSend (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Upgrade,\"cancel\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_UnrelatedCancellationIsNotReportedAsDeadline (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Upgrade,\"mismatch\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Upgrade,\"failure\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Backup,\"timeout\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Rollback,\"plan\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "VerifyAsync_AcceptsASnapshotAnEarlierInstallerTookWithoutTheCalibrationFamiliesStore",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Backup,\"plan\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "SqliteStores_LeaveOutTheOrbitalElementsStore",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets (True,False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_RejectsRedirectAndAuthenticationFailure (True,302)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RestoreAsync_PutsEveryStoreBackExactlyAndIsRepeatable",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_SlowResponseSucceedsWithinBudget (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReadState_PostsTheOwnerIdentifierAsInputEmailAndRequiresTheSignInRedirect (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Rollback,\"mismatch\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ExplicitPreLedgerAbsenceRemovesCandidateStateAndPreservesRetainedEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_PendingRetriesCannotRestartOrExtendTheDeadline (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedReadTimeout_TestOverrideCannotRemoveOrExtendDeadline (120001)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets (True,True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_CallerCancellationDuringPendingDelayRemainsCancellation (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_RejectsRedirectAndAuthenticationFailure (True,401)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RestoreAsync_LeavesTheOrbitalElementsStoreUntouched",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_PendingRetriesCannotRestartOrExtendTheDeadline (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InvalidPairedSnapshotRefusesBeforeAnyRestore (\"incomplete\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_FinalBodySharesTheBudgetAlreadySpentWaitingForScrub (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_PreCanceledCallerDoesNotSend (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_CallerCancellationRemainsCancellation (False,False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Rollback,\"cancel\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails (False,False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_SlowResponseSucceedsWithinBudget (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_HeadersAndBodyShareOneDeadline (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LegacyAbsenceRefusesInvalidOrSealedHistoryBeforeRemovingCurrentAuthority (\"non-object-history\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_GenericUnavailableResponseDoesNotBecomeARetry (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedReadTimeout_TestOverrideCannotRemoveOrExtendDeadline (-1)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_HeadersAndBodyShareOneDeadline (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Rollback,\"failure\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ReadState_PostsTheOwnerIdentifierAsInputEmailAndRequiresTheSignInRedirect (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "VerifyInstallation_DefaultBudgetStillRejectsIdentityMismatch",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_RejectsRedirectAndAuthenticationFailure (False,302)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_ExplicitPendingScrubRetriesWithinTheOriginalBudget (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Rollback,\"timeout\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Backup,\"failure\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedReadTimeout_ProductionPolicyIs120Seconds",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InvalidPairedSnapshotRefusesBeforeAnyRestore (\"escape\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Upgrade,\"plan\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_ExplicitPendingScrubRetriesWithinTheOriginalBudget (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InvalidPairedSnapshotRefusesBeforeAnyRestore (\"corrupt\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets (False,False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_CallerCancellationRemainsCancellation (True,False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_FinalBodySharesTheBudgetAlreadySpentWaitingForScrub (True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Backup,\"mismatch\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Upgrade,\"timeout\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "VerifyAsync_RejectsASnapshotRecordedForAnotherOperationOrInstance",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_CallerCancellationRemainsCancellation (False,True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DeletedEstablishedLedgerRefusesBeforeRestoringProtectedFilesOrRetainedEvidence",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_CallerCancellationDuringPendingDelayRemainsCancellation (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_CallerCancellationRemainsCancellation (True,True)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RollbackAcrossLedgerBoundaryRestoresCommittedUpgradeWhenOldImageFails (True,False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedVerificationRefusesBeforeLifecycleMutation (Backup,\"cancel\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LegacyAbsenceRefusesInvalidOrSealedHistoryBeforeRemovingCurrentAuthority (\"sealed-history\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_PendingScrubNeverBypassesFinalIdentityComparison",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_RejectsRedirectAndAuthenticationFailure (False,403)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "InvalidPairedSnapshotRefusesBeforeAnyRestore (\"missing\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CreateAsync_CorruptStore_IsRefusedRatherThanSnapshotted",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LegacyAbsenceRefusesInvalidOrSealedHistoryBeforeRemovingCurrentAuthority (\"unauthenticated-history\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_RejectsRedirectAndAuthenticationFailure (True,403)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_RejectsRedirectAndAuthenticationFailure (False,401)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedReadTimeout_TestOverrideCannotRemoveOrExtendDeadline (0)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ProtectedRead_UnrelatedCancellationIsNotReportedAsDeadline (False)",
+          "outcome": "Passed"
+        },
+        {
+          "name": "LegacyAbsenceRefusesInvalidOrSealedHistoryBeforeRemovingCurrentAuthority (\"missing-keys\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "CancelledPairedRestoreIsResumableAndNeverRecordsPartialCompletion",
+          "outcome": "Passed"
+        }
+      ]
+    },
+    {
+      "path": "TestResults/issue-1041-run4/focused-final/endpoint.trx",
+      "sha256": "bb9037435dcbad3515738486d3c66789f2b61571c8110ed886eb791e3b8fe80e",
+      "counters": {
+        "total": 8,
+        "executed": 8,
+        "passed": 8,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 8
+      },
+      "cases": [
+        {
+          "name": "OrdinaryConfigurationAndContinuityReadsDoNotScrubOrInvalidateTheEndpoint",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence (\"quarantine/invalid-v2.json\",\"{\\\"schemaVersion\\\":\\\"v2\\\"}\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "RepeatedDelayedAndConcurrentReadsObserveActualEditsAndRejectInvalidState",
+          "outcome": "Passed"
+        },
+        {
+          "name": "OptionalIndexWriteFailureDoesNotPreventHostStartup",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence (\"quarantine/torn.json\",\"{\")",
+          "outcome": "Passed"
+        },
+        {
+          "name": "DirtyEndpointRefusesPromptlyAndCoalescedScrubSurvivesCallerCancellation",
+          "outcome": "Passed"
+        },
+        {
+          "name": "ContinuityDuringRunningScrubWaitsAndReturnsSuccess",
+          "outcome": "Passed"
+        },
+        {
+          "name": "StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence (\"frames/2026/11/10/Raw/torn.json\",\"{\")",
+          "outcome": "Passed"
+        }
+      ]
+    }
+  ],
+  "canonicalUnit": [
+    {
+      "path": "TestResults/issue-1041-run4/canonical/unit/cameraagent/unit.trx",
+      "sha256": "531a711a1908873f33a5f36b99ca98615ca160a1a4ab038d03718e5e31ba423e",
+      "counters": {
+        "total": 8211,
+        "executed": 8210,
+        "passed": 8210,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 8210,
+        "NotExecuted": 1
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/unit/cameraagent-acceptance/unit.trx",
+      "sha256": "3e3ed6fb94351d85a7f5a4e0c50aa2f70d426fa05d80ba3d4461d09a9deb07b6",
+      "counters": {
+        "total": 30,
+        "executed": 30,
+        "passed": 30,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 30
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/unit/cameraagent-logichost/unit.trx",
+      "sha256": "3a149fc3dd84c6d9804f239ea333e5cce6286a7d787397e66abd50779b18fdea",
+      "counters": {
+        "total": 94,
+        "executed": 94,
+        "passed": 94,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 94
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/unit/deployment-cli/unit.trx",
+      "sha256": "892713e3f5159a00b1ed8394288a65011b270e9212437b35e14c95b5475d7676",
+      "counters": {
+        "total": 3199,
+        "executed": 3198,
+        "passed": 3198,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 3198,
+        "NotExecuted": 1
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/unit/deployment-distribution/unit.trx",
+      "sha256": "9f9512142e76d0d54ecc86c1530ce68d6042e255d608d449ea99154df7fb92c6",
+      "counters": {
+        "total": 120,
+        "executed": 120,
+        "passed": 120,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 120
+      }
+    }
+  ],
+  "integration": [
+    {
+      "path": "TestResults/issue-1041-run4/canonical/integration/cameraagent/integration.trx",
+      "sha256": "eb9af8a1865c848a62625b27e019bcef5c2f6068a3f1ab47479d9382c11f9493",
+      "counters": {
+        "total": 61,
+        "executed": 61,
+        "passed": 61,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 61
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/integration/cameraagent-logichost/integration.trx",
+      "sha256": "4edcf9d32ead94855d39b3eaf29ca72fce36be4b0ec3118abc4644c414c8294b",
+      "counters": {
+        "total": 24,
+        "executed": 24,
+        "passed": 24,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 24
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/integration/cameraagent-standalone/integration.trx",
+      "sha256": "8e47d4bd0e46e7a46dc7ee6c3e6c9e544b60117edf9d3e73c455b4ab8dfafdfb",
+      "counters": {
+        "total": 34,
+        "executed": 34,
+        "passed": 34,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 34
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/canonical/integration/cameraagent-storage/integration.trx",
+      "sha256": "d4de8ed46d94b2f39c5df0d28cca2cedfabb53494c8f1d2242e9c86b4ee58217",
+      "counters": {
+        "total": 548,
+        "executed": 548,
+        "passed": 548,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 548
+      }
+    }
+  ],
+  "developmentV1Unit": [
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_23_net10.0.trx",
+      "sha256": "2d6b134f4c16b00b0d9dc7b39db89118b4055f97cadd626d68b70d69cc37339b",
+      "counters": {
+        "total": 50,
+        "executed": 50,
+        "passed": 50,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 50
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_23_net10.0[1].trx",
+      "sha256": "7e7743718940123e0fb3a7da5dbe8fdba4de52c56cb388c8b5cd2635d18b9d34",
+      "counters": {
+        "total": 32,
+        "executed": 32,
+        "passed": 32,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 32
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_26_net10.0.trx",
+      "sha256": "c09a66fced2fa4d430650f30654d0aa7631e8e2aba19c4cd1ed8531f47d2370d",
+      "counters": {
+        "total": 296,
+        "executed": 296,
+        "passed": 296,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 296
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_28_net10.0.trx",
+      "sha256": "6c586555e72c492dd314d053ec762f602f4769f0a689ff2a82fabe7d6e4a4d7a",
+      "counters": {
+        "total": 3199,
+        "executed": 3198,
+        "passed": 3198,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 3198,
+        "NotExecuted": 1
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_29_net10.0.trx",
+      "sha256": "b1aafbd2c3a6c1b81badcfee081bf241cae259903b15c6f2ecc5fa1dcbe0ccc0",
+      "counters": {
+        "total": 91,
+        "executed": 91,
+        "passed": 91,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 91
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_30_net10.0.trx",
+      "sha256": "8674c5f223b63d7d011b196d7307231e379528f705eb7396f0fb38ae2159598f",
+      "counters": {
+        "total": 30,
+        "executed": 30,
+        "passed": 30,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 30
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_31_net10.0.trx",
+      "sha256": "fb625a2474c81f23e342fd1987f3de1e9043ddd274c136a4556ae14dc1930045",
+      "counters": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 4
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_32_net10.0.trx",
+      "sha256": "a2a9d4c934a014ffdf3662e277ca4a72def162df30f5121ca203274cc9bdd79a",
+      "counters": {
+        "total": 94,
+        "executed": 94,
+        "passed": 94,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 94
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_32_net10.0[1].trx",
+      "sha256": "9a812a987b1558b30f5f8ba47abe6330f68e6bae21cb6d20c9a647c09a3ed767",
+      "counters": {
+        "total": 120,
+        "executed": 120,
+        "passed": 120,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 120
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_32_net10.0[2].trx",
+      "sha256": "b2074d1bc344d82943df076106580f43bea3a32e381ef5ffb953483e13dd8bc5",
+      "counters": {
+        "total": 803,
+        "executed": 803,
+        "passed": 803,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 803
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_32_net10.0[3].trx",
+      "sha256": "1d3057b7292357c2bede413ce9bcdeba4f1e9987420d3f3a000565d36bad8461",
+      "counters": {
+        "total": 8211,
+        "executed": 8210,
+        "passed": 8210,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 8210,
+        "NotExecuted": 1
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_33_net10.0.trx",
+      "sha256": "f19a8e2782714e668e95790ecab734d9c436ede5bb2037a23d687b64b5b6fddd",
+      "counters": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 4
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_38_net10.0.trx",
+      "sha256": "cfe5b08d68d2f5e12438a2731badba916ab07b0568d966343c42c5b4d5c85605",
+      "counters": {
+        "total": 6,
+        "executed": 6,
+        "passed": 6,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 6
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_40_net10.0.trx",
+      "sha256": "8afdb7219c57b6de5aef455cac63c28cd417e33b199d4a5327018734bf08b961",
+      "counters": {
+        "total": 493,
+        "executed": 493,
+        "passed": 493,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 493
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_42_net10.0.trx",
+      "sha256": "20e6715be98f2dda95a5ac17225957e6a752c40ce85733086dbf627af51f7554",
+      "counters": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 11
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_43_net10.0.trx",
+      "sha256": "bbf796b85fdb2f5e84e1b3bf296a362d99e8f0e31042567612ec2ba0192e2a00",
+      "counters": {
+        "total": 1003,
+        "executed": 1002,
+        "passed": 1002,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 1002,
+        "NotExecuted": 1
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_44_net10.0.trx",
+      "sha256": "2cbb8ec9c3368377419691d228b111fc693da0ac4393b26048f3fb5a4c7407b2",
+      "counters": {
+        "total": 54,
+        "executed": 54,
+        "passed": 54,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 54
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_46_net10.0.trx",
+      "sha256": "2c7ae54658190f263ba6fc2c9efc1e6e9a7c5d762029a69c85d04a7e56f71360",
+      "counters": {
+        "total": 77,
+        "executed": 77,
+        "passed": 77,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 77
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_46_net10.0[1].trx",
+      "sha256": "e1831078a525d6f09e41d51eaf50dcb82f1c18780f7f9961d333312b75b6d625",
+      "counters": {
+        "total": 1320,
+        "executed": 1320,
+        "passed": 1320,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 1320
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_53_net10.0.trx",
+      "sha256": "bf2584b65217041d37ea6486c74bbc98348af6d18b8e8cb2edec61ea1099cf3f",
+      "counters": {
+        "total": 35,
+        "executed": 35,
+        "passed": 35,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 35
+      }
+    },
+    {
+      "path": "TestResults/issue-1041-run4/v1-unit/_home-dev-03_2026-11-11_12_18_54_net10.0.trx",
+      "sha256": "6d24959bcd38a4471385d78908176703692cb0a8823e2e6cacae743857f5313e",
+      "counters": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0
+      },
+      "resultOutcomes": {
+        "Passed": 11
+      }
+    }
+  ],
+  "coverageSummaries": {
+    "v1-coverage": {
+      "logSha256": "bbfdb3f5476f87ce9603acf32a3b41ca054de110648576c42e0d47996abe9748",
+      "summary": [
+        "SKIP HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs: canonical floors line 95.00 %, branch 90.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs: canonical floors line 55.00 %, branch 35.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs: canonical floors line 75.00 %, branch 48.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs: canonical floors line 50.00 %, branch 35.00 %; The short v1 workflow does not provision HVO_PRODUCTION_CATALOG_BUNDLE; catalog-gated Unit tests supply this floor's coverage. Run the canonical local/full-qualification gate with the production catalog. See docs/validation/catalog-f7-1188.md and docs/validation/issue-1644-candidate.md.",
+        "Verified 21 Unit report identities and complete assembly/source/class inventories and statement lines (ordinary and state-machine methods) of floored files against Release portable PDBs.",
+        "2026-11-11T12:25:41:  -reporttypes:TextSummary;Cobertura",
+        "2026-11-11T12:25:47: Initializing report builders for report types: TextSummary, Cobertura",
+        "2026-11-11T12:25:47: Creating report 239/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcAnchorsV1)",
+        "2026-11-11T12:25:47: Creating report 240/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcBounds)",
+        "2026-11-11T12:25:47: Creating report 241/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcJson)",
+        "2026-11-11T12:25:47: Creating report 242/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcQuery)",
+        "2026-11-11T12:25:47: Creating report 243/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcSampler)",
+        "2026-11-11T12:25:47: Creating report 244/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcSamplingResult)",
+        "2026-11-11T12:25:47: Creating report 245/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassArcV1)",
+        "2026-11-11T12:25:47: Creating report 246/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassQuery)",
+        "2026-11-11T12:25:47: Creating report 247/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassSearch)",
+        "2026-11-11T12:25:47: Creating report 248/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassSearchResult)",
+        "2026-11-11T12:25:47: Creating report 249/1031 (Assembly: HVO.SkyMonitor.Astronomy, Class: HVO.SkyMonitor.Astronomy.OrbitalPassSummaryV1)",
+        "2026-11-11T12:25:47: Creating report 639/1031 (Assembly: HVO.SkyMonitor.Processing, Class: HVO.SkyMonitor.Processing.DailySummaryCaptureV1)",
+        "2026-11-11T12:25:47: Creating report 640/1031 (Assembly: HVO.SkyMonitor.Processing, Class: HVO.SkyMonitor.Processing.DailySummaryProducer)",
+        "2026-11-11T12:25:47: Creating report 641/1031 (Assembly: HVO.SkyMonitor.Processing, Class: HVO.SkyMonitor.Processing.DailySummaryProductV1)",
+        "2026-11-11T12:25:47: Creating report 642/1031 (Assembly: HVO.SkyMonitor.Processing, Class: HVO.SkyMonitor.Processing.DailySummaryV1)",
+        "2026-11-11T12:25:47: Creating report 762/1031 (Assembly: HVO.SkyMonitor.Processing, Class: HVO.SkyMonitor.Processing.MeasuredAstrometryResidualSummaryV1)",
+        "2026-11-11T12:25:47: Creating summary",
+        "2026-11-11T12:25:47: Writing report file 'TestResults/issue-1041-run4/development-v1-coverage/Summary.txt'",
+        "SKIP HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs: canonical floors line 95.00 %, branch 90.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs: canonical floors line 55.00 %, branch 35.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs: canonical floors line 75.00 %, branch 48.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs: canonical floors line 50.00 %, branch 35.00 %; The short v1 workflow does not provision HVO_PRODUCTION_CATALOG_BUNDLE; catalog-gated Unit tests supply this floor's coverage. Run the canonical local/full-qualification gate with the production catalog. See docs/validation/catalog-f7-1188.md and docs/validation/issue-1644-candidate.md.",
+        "Aggregate coverage: line 95.2944 % (37343/39187), branch 78.7673 % (25341/32172)",
+        "Development v1 enforces 27 canonical per-file floors. Aggregate and component coverage remain local/full-qualification gates; the Unit-only aggregate above is informational.",
+        "Coverage gate passed."
+      ]
+    },
+    "coverage-cameraagent": {
+      "logSha256": "3342c59560bf55dbb1eeffa2f899c426224888eca506e6859c73e772e69138d6",
+      "summary": [
+        "2026-11-11T12:25:49:  -reporttypes:Html;TextSummary;MarkdownSummaryGithub;Cobertura",
+        "2026-11-11T12:25:59: Writing report file 'coverage-report/cameraagent/SummaryGithub.md'",
+        "2026-11-11T12:25:59: Writing report file 'coverage-report/cameraagent/Summary.txt'",
+        "Aggregate coverage: line 90.7064 % (101388/111776), branch 77.6073 % (48302/62239)",
+        "Coverage gate passed."
+      ]
+    },
+    "coverage-combined": {
+      "logSha256": "73616dad185462e63f25241b1f62a315025b91de01e0e87f78918d8c9ec2c62c",
+      "summary": [
+        "2026-11-11T12:26:01:  -reporttypes:Html;TextSummary;MarkdownSummaryGithub;Cobertura",
+        "2026-11-11T12:26:09: Writing report file 'coverage-report/combined/SummaryGithub.md'",
+        "2026-11-11T12:26:09: Writing report file 'coverage-report/combined/Summary.txt'",
+        "Aggregate coverage: line 34.4971 % (69742/202168), branch 20.0488 % (23265/116042)",
+        "Coverage gate passed."
+      ]
+    },
+    "coverage-delivery": {
+      "logSha256": "1b6f9a003278162ee0fd48d660af8528267b3471773fea988a801e977ecd0567",
+      "summary": [
+        "2026-11-11T12:26:11:  -reporttypes:Html;TextSummary;MarkdownSummaryGithub;Cobertura",
+        "2026-11-11T12:26:12: Writing report file 'coverage-report/delivery/SummaryGithub.md'",
+        "2026-11-11T12:26:12: Writing report file 'coverage-report/delivery/Summary.txt'",
+        "SKIP HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs: canonical floors line 74.00 %, branch 54.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "SKIP HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs: canonical floors line 85.00 %, branch 58.00 %; source file is absent and explicitly pinned in coverage/policy.json as retired",
+        "Aggregate coverage: line 92.2308 % (18175/19706), branch 78.2558 % (10786/13783)",
+        "Coverage gate passed."
+      ]
+    }
+  },
+  "coverageBindings": [
+    {
+      "slot": "TestResults/unit/cameraagent-logichost",
+      "source": "TestResults/issue-1041-run4/canonical/unit/cameraagent-logichost/661452c9-3a9e-4289-9c33-2d860f058d00/coverage.cobertura.xml",
+      "sha256": "3195091d55af8eb0d6324c07d6642e420a7a970979311a31a585e3f962223d51"
+    },
+    {
+      "slot": "TestResults/unit/deployment-cli",
+      "source": "TestResults/issue-1041-run4/canonical/unit/deployment-cli/b2067d34-337f-48f4-800c-5219f6c0803f/coverage.cobertura.xml",
+      "sha256": "1fc8901f6053d561cc85abc83ceebfc9fe594f81181d3995d9b9cae2aabb6c2a"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent",
+      "source": "TestResults/issue-1041-run4/canonical/unit/cameraagent/9a1fe17e-2ccd-4ca8-a74c-83aacc29be35/coverage.cobertura.xml",
+      "sha256": "d58057ce14537a101178561c646b4a5b41a1c8e0cc74ce08f72bebe60de4699d"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent-acceptance",
+      "source": "TestResults/issue-1041-run4/canonical/unit/cameraagent-acceptance/65d98e0a-dfee-4f43-94b4-7fe8dac2d70a/coverage.cobertura.xml",
+      "sha256": "6c77a9a52247b75afffb81a7cbc076d281ee3f4b1b2379519542df860e672a2e"
+    },
+    {
+      "slot": "TestResults/unit/deployment-distribution",
+      "source": "TestResults/issue-1041-run4/canonical/unit/deployment-distribution/8492b81e-3c16-42ba-8ee3-4f4ab339a4c5/coverage.cobertura.xml",
+      "sha256": "809e2695bc217d0671d8bf8a24091d930b212bfe3ea2a4cbc0a2fccd9fe431d5"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent-logichost",
+      "source": "TestResults/issue-1041-run4/canonical/integration/cameraagent-logichost/f0ceb088-62ef-404f-bbae-fc0611281c04/coverage.cobertura.xml",
+      "sha256": "ccbe11bf6eef7668cb942d27cfbf1b215d32650f474577609c7d850520164076"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent-standalone",
+      "source": "TestResults/issue-1041-run4/canonical/integration/cameraagent-standalone/5b6d84b5-9d90-4e9a-bb69-b2322b40a630/coverage.cobertura.xml",
+      "sha256": "8b4de9744c57536af22d85ef510df66da8c6198cfb0a6958568945ee358e2fb1"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent-storage",
+      "source": "TestResults/issue-1041-run4/canonical/integration/cameraagent-storage/0180fb7b-27d2-4a4c-b21e-5d12b638b57d/coverage.cobertura.xml",
+      "sha256": "5c2226da16164497d93a1ae604b582490a48e53d61fd9bfcd6401abdad977ecc"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent",
+      "source": "TestResults/issue-1041-run4/canonical/integration/cameraagent/513d796d-d17d-4a19-9334-8b7a26734acd/coverage.cobertura.xml",
+      "sha256": "08cfb4fc36cecb9f6eae6a4b12c702b5897c621a74a063b5cc00c52792dcf7c3"
+    }
+  ],
+  "limitations": [
+    "Fixture metadata only; no production requests or installation tokens.",
+    "No live camera, sustained capture/flash wear or deployment qualification.",
+    "Only Roy-approved weakening is out-of-band tamper detection at next full scrub.",
+    "Local affected-lane evidence and v1 profile do not assert full release qualification.",
+    "Sol and Opus HIGH re-reviews on final delivery head remain with Kepler."
+  ],
+  "processCrash": {
+    "head": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+    "commonSha256": "e15145a1cffed719ecf3ece791cccfbb36df4c28b1ca23e775dd0a2eb129249a",
+    "probeSourceSha256": "a7fd9d732a63a6968851cca933f9eb34baa47db1f0fec1932b1e83e50e16d8ec",
+    "runs": [
+      {
+        "mode": "crash-before",
+        "exitCode": -9,
+        "expectedExit": -9,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "mode": "recover",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"recover\",\"pending\":true,\"requalified\":true,\"files\":0}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "restart",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"restart\",\"pending\":true,\"requalified\":true,\"files\":0}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "crash-after",
+        "exitCode": -9,
+        "expectedExit": -9,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "mode": "recover",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"recover\",\"pending\":true,\"requalified\":true,\"files\":1}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "restart",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"restart\",\"pending\":true,\"requalified\":true,\"files\":1}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "crash-torn",
+        "exitCode": -9,
+        "expectedExit": -9,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "mode": "recover-torn",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"recover-torn\",\"pending\":true,\"rejected\":true,\"startup\":true}\n",
+        "stderr": ""
+      }
+    ]
+  },
+  "configurationEdit": {
+    "head": "83422a0234f752bab08838e9aa4fbac3accd5dcf",
+    "commonSha256": "e15145a1cffed719ecf3ece791cccfbb36df4c28b1ca23e775dd0a2eb129249a",
+    "probeSourceSha256": "01f3fe3b11f9aa625f399afca3b0a13ef3a2f59cefb84de925bed51ebf41534e",
+    "exitCode": 0,
+    "stdout": "{\"actualMidLoadEditRejected\":true,\"currentSnapshotHashMatches\":true,\"locationIdentityUnchanged\":true}\n",
+    "stderr": ""
+  }
+}
