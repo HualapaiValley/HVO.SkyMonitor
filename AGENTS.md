@@ -85,16 +85,12 @@ have follow-up tracking.
   its lane. None of those rounds could have found it, because none of them ran
   it. A check that cannot speak until after the finalization lock is taken is a
   check bought at the highest available price.
-- Run them under Bash 5.1 or newer. `scripts/ci:require` uses `declare -A`,
-  which the macOS system Bash 3.2 does not have, and `scripts/ci:shell-syntax`
-  refuses to run under 3.2 rather than reporting a clean pass it did not
-  perform. On macOS invoke the Homebrew Bash explicitly.
-- `scripts/test:pr-review-tools` exercises `scripts/pr:dispatch-review`, which
-  requires `flock` to serialize review dispatch. macOS does not ship `flock`, so
-  a stock Mac cannot complete this now-mandatory gate: it exits 1 saying `flock
-  is required for serialized review dispatch`, which reads as a guard failure
-  rather than as a missing tool. Install it with `brew install flock`, alongside
-  `brew install bash` for the floor above.
+- Run them on Linux under Bash 5.1 or newer with `flock` installed.
+  `scripts/ci:require` uses `declare -A`; `scripts/ci:shell-syntax` refuses older
+  interpreters rather than reporting a pass it did not perform.
+  `scripts/test:pr-review-tools` requires `flock` for serialized review dispatch.
+  SkyMonitor development/build/test hosts are Linux; the obsolete Mac advisory
+  workflow is retired and does not provide product qualification.
 - Run the guards again on the base-synced head, in the local candidate gate,
   before requesting the base-sync review. This settles the question PR #740's
   base-sync reviewer recorded rather than answered: a base-sync review verifies

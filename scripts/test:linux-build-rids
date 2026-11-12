@@ -4,6 +4,7 @@
 Run after installing global.json's SDK; no build, restore, Docker or ARM hardware is needed.
 An early SDK host RID models ARM64 evaluation on x64. The native case also exercises
 RuntimeInformation.OSArchitecture before the bundled SDK properties are imported.
+An isolated import substitutes only the OSArchitecture probe to exercise both fallback branches.
 """
 import argparse
 from collections import Counter
@@ -22,6 +23,7 @@ PROJECTS = [
     "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj",
     "src/HVO.SkyMonitor.ProcessingRunner/HVO.SkyMonitor.ProcessingRunner.csproj",
 ]
+OS_ARCHITECTURE_PROBE = "$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant())"
 
 
 def evaluate(project, arguments):
@@ -66,6 +68,22 @@ def assert_lane(calls):
             assert "--no-build" in call, call
 
 
+def assert_fallbacks(directory, source):
+    # Use the real props and conditions, with no SDK host RID available. Substitute
+    # only the host probe, so x64 can verify ARM64 selection without claiming native execution.
+    assert source.count(OS_ARCHITECTURE_PROBE) == 1, "OSArchitecture fallback probe must remain explicit"
+    properties_file = directory / "fallback.props"
+    project = directory / "fallback.proj"
+    project.write_text('<Project><Import Project="fallback.props" /></Project>')
+    results = []
+    for architecture in ("x64", "arm64"):
+        properties_file.write_text(source.replace(OS_ARCHITECTURE_PROBE, architecture))
+        command, properties = evaluate(project, ["-p:NETCoreSdkPortableRuntimeIdentifier="])
+        assert properties["RuntimeIdentifier"] == f"linux-{architecture}", (architecture, properties)
+        results.append({"scenario": f"{architecture}-os-fallback", "command": command, "properties": properties})
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="Retain the evaluated properties and forwarded commands as JSON.")
@@ -87,6 +105,15 @@ def main():
             ("arm64-host-explicit-x64", "linux-x64", ["-p:NETCoreSdkPortableRuntimeIdentifier=linux-arm64", "-p:RuntimeIdentifier=linux-x64"]),
         ]
         evaluations = []
+        props = (ROOT / "Directory.Build.props").read_text()
+        fallbacks = assert_fallbacks(directory, props)
+        # Prove the issue's hard-coded-x64 regression cannot hide behind the SDK-host scenarios.
+        try:
+            assert_fallbacks(directory, props.replace("linux-" + OS_ARCHITECTURE_PROBE, "linux-x64"))
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("OSArchitecture contract accepted a hard-coded x64 fallback")
         for project in PROJECTS:
             for scenario, expected, arguments in scenarios:
                 command, properties = evaluate(ROOT / project, arguments)
@@ -97,6 +124,7 @@ def main():
                 evaluations.append({"project": project, "scenario": scenario, "command": command, "properties": properties})
 
         harness = (ROOT / "scripts/test:cameraagent-arm64-ci").read_text()
+        assert not (ROOT / ".github/workflows/m5-mac-validation.yml").exists(), "Obsolete Mac advisory workflow must stay retired"
         phase = harness[harness.index('for project in "$CAMERA_PROJECT"'):]
         phase = phase[:phase.index("printf 'unit-tests,")]
         calls = lane_calls(phase, directory)
@@ -114,9 +142,10 @@ def main():
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps({"nativeRid": native_rid, "evaluations": evaluations,
+                                               "fallbackEvaluations": fallbacks, "rejectedFallbackMutations": 1,
                                                "arm64LaneCalls": calls, "rejectedLaneMutations": 3,
                                                "result": "PASS"}, indent=2) + "\n")
-        print(f"Linux build RIDs: {len(evaluations)} property evaluations, 16 ARM64 lane calls and 3 negative mutations passed (native {native_rid}).")
+        print(f"Linux build RIDs: {len(evaluations)} project and {len(fallbacks)} OS fallback evaluations, 16 ARM64 lane calls and 4 negative mutations passed (native {native_rid}).")
 
 
 if __name__ == "__main__":
