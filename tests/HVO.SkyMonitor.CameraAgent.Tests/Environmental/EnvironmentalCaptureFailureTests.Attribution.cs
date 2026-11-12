@@ -209,17 +209,27 @@ public sealed partial class EnvironmentalCaptureFailureTests
         private int completionAttempts;
         internal int CompletionAttempts => Volatile.Read(ref completionAttempts);
         internal TaskCompletionSource AttemptWriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource CompletionWriteStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource AllowCompletionWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private async ValueTask CompleteAfterGateAsync(string root, string key, string lease,
+            EnvironmentalAcquisitionReceipt receipt, CancellationToken token)
+        {
+            CompletionWriteStarted.TrySetResult();
+            await AllowCompletionWrite.Task.WaitAsync(token).ConfigureAwait(false);
+            await Store.CompleteOnDemandAsync(root, key, lease, receipt, token).ConfigureAwait(false);
+        }
         private async ValueTask InterruptAttemptAsync(CancellationToken token)
         {
             AttemptWriteStarted.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, token).ConfigureAwait(false);
         }
 
-        internal static async Task<AttributionFixture> CreateAsync(int budget, int queueCapacity = 64, int completionFailures = 0, bool interruptAttempt = false)
+        internal static async Task<AttributionFixture> CreateAsync(int budget, int queueCapacity = 64, int completionFailures = 0, bool interruptAttempt = false,
+            bool blockCompletion = false)
         {
             var fixture = new AttributionFixture();
             fixture.Store = new(fixture.Clock);
-            fixture.Device = new(fixture.Clock, budget == 0);
+            fixture.Device = new(fixture.Clock, budget == 0 || blockCompletion);
             var source = new EnvironmentalSourceConfiguration
             {
                 Id = "sqm",
@@ -246,7 +256,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
             });
             fixture.provider = new ServiceCollection().AddSingleton<IEnvironmentalDevice>(fixture.Device).BuildServiceProvider();
             IEnvironmentalAcquisitionStateStore acquisitionState = fixture.Store;
-            if (completionFailures > 0 || interruptAttempt)
+            if (completionFailures > 0 || interruptAttempt || blockCompletion)
             {
                 var state = new Mock<IEnvironmentalAcquisitionStateStore>();
                 state.Setup(value => value.RecordAttemptAsync(It.IsAny<string>(), It.IsAny<EnvironmentalSourceDescriptor>(),
@@ -259,7 +269,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
                 state.As<IEnvironmentalOnDemandCommandStore>().Setup(value => value.CompleteOnDemandAsync(It.IsAny<string>(),
                     It.IsAny<string>(), It.IsAny<string>(), It.IsAny<EnvironmentalAcquisitionReceipt>(), It.IsAny<CancellationToken>()))
                     .Returns((string root, string key, string lease, EnvironmentalAcquisitionReceipt receipt, CancellationToken token) =>
-                        Interlocked.Increment(ref fixture.completionAttempts) <= completionFailures
+                        blockCompletion ? fixture.CompleteAfterGateAsync(root, key, lease, receipt, token)
+                        : Interlocked.Increment(ref fixture.completionAttempts) <= completionFailures
                             ? ValueTask.FromException(new IOException("scripted transient completion failure"))
                             : fixture.Store.CompleteOnDemandAsync(root, key, lease, receipt, token));
                 acquisitionState = state.Object;
@@ -286,6 +297,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
             if (!stopped) { stopped = true; await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
         }
         internal bool Enqueue() => service.TryEnqueue(new(EnvironmentalAcquisitionTrigger.Periodic, Clock.Now));
+        internal bool Prepare(EnvironmentalCaptureAcquisition acquisition, Func<CancellationToken, Task> action)
+            => service.TryPrepareCapture(acquisition, action);
         internal EnvironmentalCaptureTriggerBridge CreateBridge(IEnvironmentalAcquisitionStateStore state)
             => new(Coordinator, service, state, options);
         internal void Reopen() { Store.Dispose(); Store = new(Clock); }

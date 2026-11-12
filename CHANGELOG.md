@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent retries transient SQLite contention before environmental capture admission and reports SQM integration intervals and preceding gaps without changing association selection. Refs #1735
+- CameraAgent bounds before-capture environmental waits to two seconds, retains capture-specific unavailable evidence through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 prevents older readers from ignoring that evidence. Refs #1735
 
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 

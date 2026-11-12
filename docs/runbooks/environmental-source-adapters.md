@@ -173,10 +173,15 @@ diagnostic version there could split one source into competing identities and
 change selection. Persisting this version in a non-identity diagnostic slot
 needs a separately authorized schema or persisted-format decision. That item and
 physical timing validation remain tracked in Refs #1735.
-`BeforeCaptureWaitMilliseconds` bounds device acquisition. Durable attempt
-settlement can add storage latency; using an expired acquisition token for that
-settlement would allow old failed-source evidence to reappear. A strict total
-capture deadline with a durable capture fence is also tracked in #1735.
+`BeforeCaptureWaitMilliseconds` still bounds device acquisition. Claim admission
+and, for a positive wait setting, durable receipt settlement share a strict
+two-second total before-capture wait. Expiry returns a capture-specific
+unavailable result; it never reuses an expired acquisition token for settlement.
+The existing zero-wait setting still permits queued acquisition after its durable
+claim is admitted; claim admission itself has the same two-second bound.
+Physical SQM timing qualification remains held. Persisted diagnostic-policy
+versioning remains a known limit under Roy's decision in Refs #1735.
+
 
 ## Online weather
 
@@ -282,17 +287,44 @@ No attempt is attributed to a capture by its timestamp or by the latest source r
 
 Before-capture reservations retry SQLite busy/locked failures at most three times,
 waiting 100 milliseconds between attempts and honoring host cancellation. Each
-retry retains the same acquisition identity. Other errors, identity conflicts,
-and exhausted contention propagate before acquisition is queued; they do not
-fall back to older source evidence. These retries bound attempt count, not total
-storage latency: SQLite's existing per-call timeout still applies. The strict
-total deadline above still needs an agreed contract; persisted interval-policy
-versioning also remains held.
+retry retains the same acquisition identity. Other errors and identity conflicts
+propagate before acquisition is queued. Exhaustion can refuse the capture cycle;
+a two-second admission timeout or a full preparation queue instead produces an
+explicit unavailable result.
+
+A dedicated hosted preparation reader owns the potentially blocking SQLite claim
+and refused-queue settlement work. Both the preparation queue and the acquisition
+queue are bounded by the existing `QueueCapacity`; each has one reader. Deadline
+expiry stops waiting on that owned work. It cannot create a new untracked writer
+or cancel known-result settlement with an expired device budget. Host shutdown
+cancels preparation, drains queued requests and remains responsible for workers;
+startup settles any interrupted capture claims through the existing recovery path.
+
+`cycleEvidence.environmentalUnavailable: true` is immutable capture evidence,
+omitted when false to preserve existing capture bytes. Raw admission stores it in
+`raw_captures.manifest_json` in the same transaction as the capture and lane work.
+There is no separate environmental-store write that can be lost after admission.
+The association reader checks the committed capture marker before binding or
+reading environmental receipts; the capture stays Missing even if a late receipt
+or later poll succeeds. Its after-capture hook skips environmental writes. The
+marker is capture-specific and cannot suppress future captures. Existing completed
+associations remain immutable. A pre-commit interruption admits neither the row
+nor its marker; raw-ingress recovery publishes the original sidecar evidence.
+
+Raw-ingress schema 16 is a reader boundary for this evidence. Canonical schemas
+13, 14 and 15 upgrade transactionally, with existing capture bytes retained.
+The image declares writes 16 / reads 13–16 and
+`canonical-v13-v14-v15-to-v16`; installer preflight verifies canonical source
+schemas, integrity and foreign keys before permitting that declared conversion.
+The changed raw-ingress boundary is an existing installer checkpoint trigger;
+older schema readers refuse 16 rather than silently discarding the marker.
+Downgrade requires the paired pre-upgrade checkpoint. No instance is upgraded or
+deployed by this software-only work.
 
 A busy request follows the exact in-flight read: success leaves that capture
 available, while failure/missing/timeout fences its older readings. With any
 before-capture budget, queued work may finish after exposure starts; a positive
-budget bounds the caller's wait and the eventual device read, not queue admission.
+budget bounds the eventual device read; the two-second total wait also covers claim admission and requested settlement.
 Pending work defers the association lane without consuming failure attempts or
 repeating after-capture reads. Queue refusal records an explicit unavailable result.
 Known capture results settle before unrelated coalesced work drains, including
@@ -328,8 +360,7 @@ An unassociated capture whose entire receipt set has expired or is missing repor
 unavailable evidence, even if other associations still pin old facts. Completed
 associations remain immutable. Association binds retained tokens to raw capture
 IDs; explicit legacy capture IDs remain readable and anonymous legacy history is
-never guessed into a capture. Persisted SQM diagnostic versioning and a strict
-total deadline under SQLite contention remain held in Refs #1735.
+never guessed into a capture. Persisted SQM diagnostic versioning remains a known limit in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a
 bounded deferred queue drained by the same hosted acquisition service. Queue

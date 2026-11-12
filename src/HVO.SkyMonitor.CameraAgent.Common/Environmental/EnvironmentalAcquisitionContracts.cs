@@ -68,6 +68,8 @@ public sealed record EnvironmentalCaptureSourceClaim(EnvironmentalSourceDescript
 
 public sealed record EnvironmentalCaptureAcquisition(Guid Id, IReadOnlyList<EnvironmentalCaptureSourceClaim> Claims)
 {
+    public bool Unavailable { get; init; }
+    internal TaskCompletionSource<Exception?> Admission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal static string Prefix(Guid id) => "__capture-before:" + id.ToString("N") + ":";
 }

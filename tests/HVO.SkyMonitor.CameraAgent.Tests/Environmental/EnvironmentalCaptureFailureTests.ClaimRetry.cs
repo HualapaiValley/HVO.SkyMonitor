@@ -90,7 +90,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         var attempts = new List<(string Key, string Payload)>();
         var bridge = ClaimRetryBridge(fixture, attempts, (_, token) =>
         {
-            Assert.AreEqual(cancellation.Token, token);
+            Assert.IsTrue(token.CanBeCanceled, "Hosted preparation links caller and host cancellation.");
             cancellation.Cancel();
             return new SqliteException("scripted contention at shutdown", 5);
         });

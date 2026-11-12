@@ -137,6 +137,10 @@ public sealed record CaptureCycleEvidence(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? AcquisitionAttemptId { get; init; }
 
+    /// <summary>Environmental evidence for this capture was unavailable at the admission deadline.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool EnvironmentalUnavailable { get; init; }
+
     /// <summary>Gets monotonic actual-start lateness relative to the requested deadline.</summary>
     [JsonRequired]
     public TimeSpan MonotonicStartJitter { get; init; }
