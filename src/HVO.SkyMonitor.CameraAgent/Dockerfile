@@ -144,6 +144,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # receives its pre-upgrade history.
 # Its change makes existing installers checkpoint the paired databases before the schema-2 conversion;
 # rollback restores that checkpoint rather than handing schema 3 to a schema-2 binary.
+# The minimum-compatible-revision boundary also selects the paired checkpoint for processing schema 9.
+# Refs #1766. Earlier processing readers require the retained checkpoint.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -158,7 +160,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="53b5756ddbd26dc5ea623ecd34d34d2de2672f05" \
+      io.hvo.skymonitor.minimum-compatible-revision="4293871b7c4cf38ce0e0e4ea969aa9a6de057eea" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="16" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-to-v16" \

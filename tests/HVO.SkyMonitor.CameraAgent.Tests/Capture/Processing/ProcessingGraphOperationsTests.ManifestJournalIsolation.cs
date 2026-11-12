@@ -46,16 +46,7 @@ public sealed partial class ProcessingGraphOperationsTests
             }
             var expected = await ReadManifestJournalConsumerAsync(root, operations, id, consumer, corrupt: false).ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
-            using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
-            await connection.OpenAsync().ConfigureAwait(false);
-            using var command = connection.CreateCommand();
-            command.CommandText = """
-                UPDATE processing_executions SET frozen_plan_json =
-                    CAST(json_set(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts', json('{"preview":-1}')) AS BLOB)
-                WHERE execution_id = $execution;
-                """;
-            command.Parameters.AddWithValue("$execution", id.ToString("N"));
-            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            await ReplaceManifestCounterAsync(root, id, "committedOutputCounts", "{\"preview\":-1}").ConfigureAwait(false);
             await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.CorruptReason).ConfigureAwait(false);
             Assert.AreEqual(expected, await ReadManifestJournalConsumerAsync(root, operations, id, consumer, corrupt: true).ConfigureAwait(false));
 
@@ -71,12 +62,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 await ReadManifestJournalConsumerAsync(root, operations, id, consumer, corrupt: true, canceled.Token).ConfigureAwait(false)).ConfigureAwait(false);
 
             // Simulate restoring a legacy frozen plan; do not fabricate a replacement count.
-            command.CommandText = """
-                UPDATE processing_executions SET frozen_plan_json =
-                    CAST(json_remove(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts') AS BLOB)
-                WHERE execution_id = $execution;
-                """;
-            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            await ReplaceManifestCounterAsync(root, id, "committedOutputCounts", null).ConfigureAwait(false);
             Assert.AreEqual(expected, await ReadManifestJournalConsumerAsync(root, operations, id, consumer, corrupt: false).ConfigureAwait(false));
             await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
         }

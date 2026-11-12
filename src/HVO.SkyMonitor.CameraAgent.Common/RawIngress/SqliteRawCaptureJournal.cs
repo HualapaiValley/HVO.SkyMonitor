@@ -56,6 +56,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "processing_execution_input_pins",
         "processing_execution_output_input_pins",
         "processing_execution_outputs",
+        "processing_execution_manifest_counts",
         "processing_replay_work",
         "ix_processing_outputs_capture_node",
         "ix_processing_outputs_window",
@@ -1119,8 +1120,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             insert.Parameters.AddWithValue("$definition", execution.Revision.State.DefinitionIdentitySha256);
             insert.Parameters.AddWithValue("$shared_plan", execution.Revision.State.SharedPlanIdentitySha256);
             insert.Parameters.AddWithValue("$local_plan", execution.Revision.State.LocalPlanIdentitySha256);
-            insert.Parameters.AddWithValue("$frozen_plan", SqliteCaptureProcessingStore.InitializeFrozenOutputInputCounts(
-                execution.Revision.FrozenPlanJson, execution.Revision.Nodes.Select(static node => node.NodeId)));
+            insert.Parameters.AddWithValue("$frozen_plan", execution.Revision.FrozenPlanJson);
             insert.Parameters.AddWithValue("$configuration", execution.ConfigurationJson);
             insert.Parameters.AddWithValue("$trigger", entry.CaptureSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
             insert.Parameters.AddWithValue("$bytes", entry.PayloadLength);
@@ -1131,6 +1131,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        await SqliteCaptureProcessingStore.InitializeManifestLedgersAsync(connection, transaction, execution.ExecutionId,
+            execution.Revision.Nodes.Select(static node => node.NodeId), cancellationToken).ConfigureAwait(false);
         foreach (var node in execution.Revision.Nodes)
         {
             using var insertNode = connection.CreateCommand();
