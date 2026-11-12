@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.Deployment;
 internal sealed class InstallerControlWorker(IInstallerControlClient client, InstallerControlJournal journal,
     Func<CancellationToken, Task<IDisposable>> acquireDeployment, TimeProvider clock, Action<string> report,
     InstallerControlBudgets? budgets = null,
-    Func<CancellationToken, Task<IDisposable>>? acquireInterruptedRecovery = null)
+    Func<CameraAgentControlReceipt, CancellationToken, Task<IDisposable>>? acquireInterruptedRecovery = null)
 {
     internal async Task RunAsync(bool once, CancellationToken cancellationToken)
     {
@@ -31,7 +31,7 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
         foreach (var interrupted in journal.Receipts.Where(item => !item.IsTerminal).ToArray())
         {
             IDisposable recoveryLock;
-            try { recoveryLock = await (acquireInterruptedRecovery ?? acquireDeployment)(cancellationToken).ConfigureAwait(false); }
+            try { recoveryLock = await (acquireInterruptedRecovery is null ? acquireDeployment(cancellationToken) : acquireInterruptedRecovery(interrupted, cancellationToken)).ConfigureAwait(false); }
             catch (InstallerException)
             {
                 report("stage=lifecycle-worker recovery=installer-busy");
