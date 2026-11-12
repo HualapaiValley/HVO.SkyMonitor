@@ -41,6 +41,7 @@ internal sealed class CaptureProcessingStateRefreshService(
             durable.ReplayPendingBytes,
             durable.ReplayAbandonedCount);
         state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
+        state.SetStoragePolicySkipped(durable.StoragePolicySkippedCount);
         if (graphOperations is not null)
         {
             ObserveActiveRevision(

@@ -18,6 +18,32 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestCategory("Unit")]
 public sealed class CameraAgentProcessingGraphUiServiceTests
 {
+    [TestMethod]
+    [DataRow("MeasuredAstrometry", "\"captureStride\":\"120\"", "Use a JSON number without quotes")]
+    [DataRow("Storage", "\"retentionDays\":\"30\"", "Use a JSON number without quotes")]
+    [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":\"7\"", "Use a JSON number without quotes")]
+    [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":5,\"WINDOWSIZE\":7", "Remove duplicate members")]
+    public async Task RawNodeOptionsPreflightRejectsAmbiguousTokensBeforeCompileOrSave(string alias, string members, string guidance)
+    {
+        var raw = JsonSerializer.Deserialize<JsonElement>("{" + members + ",\"future\":{\"keep\":1e+02}}");
+        var before = raw.GetRawText();
+        var pipeline = new CapturePipelineConfig([new(alias, "preflight", Options: raw)]);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var create = await service.CreateRevisionAsync("preflight", "1", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+        foreach (var (kind, message) in new[] { (preview.Kind, preview.Message), (create.Kind, create.Message) })
+        {
+            Assert.AreEqual(OperatorUiResultKind.Invalid, kind);
+            StringAssert.Contains(message!, guidance, StringComparison.Ordinal);
+            StringAssert.Contains(message!, "steps[0].options.", StringComparison.Ordinal);
+        }
+        Assert.AreEqual(before, pipeline.Steps[0].Options!.Value.GetRawText());
+        operations.VerifyNoOtherCalls();
+        factory.VerifyNoOtherCalls();
+    }
+
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
 
     [TestMethod]
