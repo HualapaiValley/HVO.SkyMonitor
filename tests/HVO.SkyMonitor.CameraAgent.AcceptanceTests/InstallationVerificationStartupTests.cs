@@ -27,7 +27,9 @@ public sealed class InstallationVerificationStartupTests
         }, scratchRoot: Path.GetTempPath()).ConfigureAwait(false);
         using var client = new HttpClient { BaseAddress = host.BaseAddress };
         using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative)).ConfigureAwait(false);
+        using var health = await client.GetAsync(new Uri("/health", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, alive.StatusCode);
+        Assert.AreEqual(HttpStatusCode.OK, health.StatusCode);
         Assert.IsTrue(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStarted.IsCancellationRequested);
 
         await host.RunWithHostStoppedAsync(async root =>
@@ -44,8 +46,10 @@ public sealed class InstallationVerificationStartupTests
         using var owner = await host.CreateOwnerClientAsync().ConfigureAwait(false);
         using var restartedAlive = await owner.GetAsync(new Uri("/alive", UriKind.Relative), timeout.Token).ConfigureAwait(false);
         using var recovery = await owner.GetAsync(new Uri("/system", UriKind.Relative), timeout.Token).ConfigureAwait(false);
+        using var unhealthy = await owner.GetAsync(new Uri("/health", UriKind.Relative), timeout.Token).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, restartedAlive.StatusCode);
         Assert.AreEqual(HttpStatusCode.OK, recovery.StatusCode);
+        Assert.AreEqual(HttpStatusCode.ServiceUnavailable, unhealthy.StatusCode);
         using var request = new HttpRequestMessage(HttpMethod.Get, "/api/internal/owner-bootstrap/installation-verification");
         request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
         using var verification = await owner.SendAsync(request, timeout.Token).ConfigureAwait(false);
