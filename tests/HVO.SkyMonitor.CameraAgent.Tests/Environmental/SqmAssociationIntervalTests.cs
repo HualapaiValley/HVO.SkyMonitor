@@ -26,6 +26,7 @@ public sealed class SqmAssociationIntervalTests
     [DataRow(-44, 1, 60, 45, LocalEnvironmentalAssociationStatus.Fresh, "preceding")]
     [DataRow(-59, 1, 60, 45, LocalEnvironmentalAssociationStatus.Stale, "preceding")]
     [DataRow(-2, 0, 60, 45, LocalEnvironmentalAssociationStatus.Fresh, "interval-unknown")]
+    [DataRow(0.5, -1, 60, 45, LocalEnvironmentalAssociationStatus.Stale, "instantaneous")]
     public async Task AssociationReportsTheActualIntervalWithoutChangingValiditySelection(
         double sampleEndSeconds, int integrationSeconds, int validSeconds, int freshSeconds,
         LocalEnvironmentalAssociationStatus expected, string relationship)
@@ -35,6 +36,7 @@ public sealed class SqmAssociationIntervalTests
         var sample = await SampleAsync(sampleEndSeconds, Math.Max(1, integrationSeconds), validSeconds, freshSeconds).ConfigureAwait(false);
         // Legacy facts can omit the integration; validity is not evidence of its duration.
         if (integrationSeconds == 0) sample = sample with { ObservedFromUtc = null, ObservedThroughUtc = null };
+        if (integrationSeconds < 0) sample = sample with { ObservedFromUtc = sample.ObservedThroughUtc };
         var options = OptionsFor(root);
         var activities = new ConcurrentQueue<Activity>();
         using var listener = new ActivityListener
@@ -80,7 +82,7 @@ public sealed class SqmAssociationIntervalTests
             }
             else
             {
-                Assert.AreEqual(integrationSeconds * 1000d, diagnostic["integration_ms"]);
+                Assert.AreEqual(Math.Max(0, integrationSeconds) * 1000d, diagnostic["integration_ms"]);
                 Assert.AreEqual(validSeconds * 1000d, diagnostic["maximum_pre_exposure_gap_ms"]);
                 Assert.AreEqual(sample.ObservedFromUtc!.Value.ToUnixTimeMilliseconds(), diagnostic["sample_from_unix_ms"]);
                 Assert.AreEqual(sample.ObservedThroughUtc!.Value.ToUnixTimeMilliseconds(), diagnostic["sample_through_unix_ms"]);

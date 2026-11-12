@@ -45,7 +45,8 @@ internal static class SqmAssociationIntervalDiagnostics
                     tags["relationship"] = "preceding";
                     tags["gap_ms"] = (exposureFromUtc - through).TotalMilliseconds;
                 }
-                else tags["relationship"] = from >= exposureThroughUtc ? "following" : "overlapping";
+                else if (from >= exposureThroughUtc) tags["relationship"] = "following";
+                else tags["relationship"] = from == through ? "instantaneous" : "overlapping";
             }
         }
         return new ActivityEvent("environment.association.interval", tags: tags);

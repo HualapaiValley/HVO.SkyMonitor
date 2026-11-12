@@ -160,7 +160,8 @@ When an `environment.associate` activity is sampled, a new association reports a
 integration duration and maximum preceding gap. A sample ending at or before
 exposure start is `preceding` with its nonnegative gap; touching half-open
 intervals have zero gap and do not overlap. Intersecting sample/exposure intervals
-are `overlapping`. Unselected evidence is `unavailable`, without an invented
+are `overlapping`. A retained zero-duration point inside the exposure is
+`instantaneous`. Unselected evidence is `unavailable`, without an invented
 interval; an older selected reading without an integration is `interval-unknown`.
 Non-SQM readings receive no SQM interval event. Retained associations are returned
 unchanged without backfilling or reinterpreting their diagnostics.
