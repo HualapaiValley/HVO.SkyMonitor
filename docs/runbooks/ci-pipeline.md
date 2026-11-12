@@ -222,15 +222,14 @@ itself prevent that timeout. Refs #1747.
 
 ## Development v1 Preflight Budget
 
-**Development v1 / Preflight** has a four-minute (240-second) job timeout for
-`pull_request` events and six minutes (360 seconds) for push/queue events
-(Refs #1747). The PR budget follows the owner decision in #1365. This supersedes the three-minute (180-second)
-budget retained by #1333 when the secret-scanner contract became conditional.
-PR #1364 took 173 seconds with the contract selected; the new budget provides
-67 seconds of headroom for that measured run. Ordinary PRs remain near one minute.
-Push-run samples recorded in the follow-up reached p90 214 seconds and a
-223-second maximum, leaving only 17 seconds under the former 240-second cap.
-The event-specific budget preserves all required checks and selection rules.
+**Development v1 / Preflight** has a six-minute (360-second) job timeout for
+all events (Refs #1747). This supersedes the four-minute PR budget from #1365
+and retains the six-minute push/queue budget. PR #1811 run 43293828104,
+attempt 3, exceeded the four-minute cap: CI control contracts took 118 seconds,
+the secret-scanner contract took 86 seconds, and release-script tests were
+cancelled after 18 seconds. Six minutes gives that combined workload another
+120 seconds to finish with margin. All required checks and selection rules
+remain unchanged.
 
 ## Promotion ancestry prerequisite
 

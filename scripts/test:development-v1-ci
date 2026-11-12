@@ -164,7 +164,7 @@ merge_group_trigger = (
 )
 
 
-preflight_timeout = "    timeout-minutes: ${{ github.event_name == 'pull_request' && 4 || 6 }}"
+preflight_timeout = "    timeout-minutes: 6"
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -358,7 +358,7 @@ def violations(short, full, queue=None, extra=None):
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
-    require(preflight_timeout in preflight.splitlines(), "Preflight allows 240 seconds for pull_request and 360 otherwise")
+    require(preflight_timeout in preflight.splitlines(), "Preflight allows 360 seconds for every event")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -555,9 +555,9 @@ mutations = (
     ("summary hard timeout drift", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:900"), full),
     ("Preflight budget reverted", short.replace(preflight_timeout, "    timeout-minutes: 3"), full),
     ("Preflight budget inflated to 40", short.replace(preflight_timeout, "    timeout-minutes: 40"), full),
-    ("Preflight budget raised", short.replace(preflight_timeout, "    timeout-minutes: 5"), full),
+    ("Preflight budget reduced", short.replace(preflight_timeout, "    timeout-minutes: 5"), full),
     ("Preflight budget removed", short.replace(preflight_timeout + "\n", ""), full),
-    ("merge queue Preflight budget lost", short.replace(preflight_timeout, "    timeout-minutes: 4"), full),
+    ("Preflight four-minute budget restored", short.replace(preflight_timeout, "    timeout-minutes: 4"), full),
     ("base-image check removed", short.replace("run: ./scripts/ci:base-images", "run: true"), full),
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),

@@ -83,8 +83,7 @@ requires `Development v1 / Preflight`, `Development v1 / Build and Unit` and
 who enqueues.
 
 Both v1 checks are wired for `merge_group`, which tests the combined changes of
-the queued PR and entries ahead of it. Preflight has four minutes for `pull_request` events and six minutes for
-push/queue events, whose classifier selects full mode. This changes the timeout, not the qualification profile.
+the queued PR and entries ahead of it. Preflight has six minutes for all events; push/queue events select full classifier mode. This changes the timeout, not the qualification profile.
 
 The queue's temporary commit has no operator review status. The
 `merge-queue-reviewed-head.yml` job checks out the **fresh `development/v1` tip**
