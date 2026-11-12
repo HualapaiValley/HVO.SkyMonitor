@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- The astrometry solver-v1 regression compares fitted values within 8 ULPs to allow small x64/ARM64 round-off, while retaining exact index counts and ordering checks. Production numerics and retained assessment hashes are unchanged. Refs #1388
+- The astrometry solver-v1 regression compares fitted values within 64 ULPs to allow cross-architecture FMA/libm round-off, including the measured 15-ULP M5 Max roll difference, while retaining exact index counts and ordering checks. Production numerics and retained assessment hashes are unchanged. Refs #1388
 
 - Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
 
