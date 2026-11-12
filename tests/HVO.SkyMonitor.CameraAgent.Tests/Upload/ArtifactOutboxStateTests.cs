@@ -22,7 +22,7 @@ public sealed class ArtifactOutboxStateTests
         if (OperatingSystem.IsWindows())
         {
             state.Update(root.ToUpperInvariant(), new ArtifactOutboxSnapshot(4, 1024, null, 0, 0, 0, 0, 0, 0));
-            Assert.HasCount(1, state.Roots);
+            CollectionAssert.AreEqual(new[] { Path.GetFullPath(root) }, state.Roots.ToArray());
             Assert.AreEqual(4L, state.Snapshot.PendingCount);
         }
     }
