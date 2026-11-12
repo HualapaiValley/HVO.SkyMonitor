@@ -90,7 +90,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
                 CameraAgentRunManifest.UnrecordedInputReason),
             ("unrecorded output", detail with { Nodes = [node with { CommittedOutputCount = null }] },
                 CameraAgentRunManifest.UnrecordedOutputReason),
-            ("unsafe identifier", detail with { Nodes = [node with { NodeId = "/private" }] },
+            ("unsafe identifier", detail with { Nodes = [node with { NodeId = "private\ncontrol" }] },
                 CameraAgentRunManifest.IdentifierUnavailableReason),
             ("incomplete checksum", detail with { Nodes = [node with { Inputs = [node.Inputs[0] with { PayloadSha256 = null }] }] },
                 CameraAgentRunManifest.IncompleteReason),

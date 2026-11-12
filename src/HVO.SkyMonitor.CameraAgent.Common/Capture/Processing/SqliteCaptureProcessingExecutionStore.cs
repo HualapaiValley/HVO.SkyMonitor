@@ -1102,7 +1102,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                     (int Ordinal, bool Published) association = published.TryGetValue(output.OutputIdentitySha256, out var saved)
                         ? saved : (ordinal, false);
                     return new ProcessingGraphExecutionOutputState(
-                        association.Ordinal, output.OutputIdentitySha256, output.ArtifactId,
+                        manifestOnly ? association.Ordinal : ordinal, output.OutputIdentitySha256, output.ArtifactId,
                         output.Artifact.Role, output.Artifact.Variant, output.AvailabilityState,
                         output.AvailabilityReason, association.Published)
                     {

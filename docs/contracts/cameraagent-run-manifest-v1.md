@@ -111,6 +111,30 @@ or excessive evidence return 409 with a fixed reason. Other read failures return
 a fixed 500 response. Corrupt frozen plans instead return 409 with a fixed corrupt-evidence
 reason, distinct from the row/byte-limit reason. Cancellation propagates. The run page enables the download
 only after the same bounded projection succeeds, otherwise displaying its reason.
-Valid node identifiers with spaces or Unicode retain their identities; path-like
-identifiers have a separate sanitized refusal reason. The empty prototype More run actions button is removed; existing capture,
+Valid node identifiers with spaces, Unicode, `/` or `\` retain their identities
+as JSON strings. They are never used as manifest paths or attachment names.
+Empty, overlong, untrimmed or control-containing identifiers receive a sanitized refusal reason. The empty prototype More run actions button is removed; existing capture,
 revision and replay links remain available directly on the page. #1715
+
+## Ledger write-cost and budget assessment (Refs #1766)
+
+Admission adds the zero-input ledger to an execution copy before its first INSERT;
+it does not UPDATE an already stored plan. Pin freezes skip the plan UPDATE when
+the frozen count is unchanged, and output completions skip it when the recorded
+maximum already covers the committed set. A changed count still rewrites the
+frozen-plan BLOB in the same transaction as the evidence it describes.
+
+An incremental side table would avoid those changed-count rewrites and separate
+optional ledger capacity from required normalization evidence. The current SQLite
+CHECK caps the entire BLOB at 2 MiB, so merely raising an application limit cannot
+provide separate headroom. A side table or larger durable bound requires a schema,
+installer compatibility and upgrade/recovery decision beyond this bounded change.
+The originating review recorded no measurable regression in two alternating A/B
+rounds; no new performance result or storage migration is claimed here.
+
+At the current byte boundary, skipped optional bookkeeping must not stop processing
+or conceal ordinary execution detail. The aggregate manifest snapshot byte check
+precedes completeness checks, so a full-size plan plus its node contracts receives
+the size-limit reason, including after restart. Required normalization evidence
+that exceeds the shared BLOB budget is refused without changing the stored plan.
+The shared capacity and changed-count rewrite remain limitations.

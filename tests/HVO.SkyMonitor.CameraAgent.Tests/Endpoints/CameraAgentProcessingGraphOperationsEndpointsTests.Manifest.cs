@@ -124,12 +124,15 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
     }
 
     [TestMethod]
-    public void ManifestRefusesPathLikeNodeIdentifiers()
+    public void ManifestRefusesControlCharactersInNodeIdentifiers()
     {
         var detail = ManifestDetail();
-        var result = CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { NodeId = "/private-sentinel?password=secret" }] });
-        Assert.IsNull(result.Payload);
-        Assert.AreEqual(CameraAgentRunManifest.IdentifierUnavailableReason, result.Reason);
+        foreach (var identifier in new[] { "", " leading", "trailing ", "private\ncontrol", new string('n', 129) })
+        {
+            var result = CameraAgentRunManifest.Create(detail with { Nodes = [detail.Nodes[0] with { NodeId = identifier }] });
+            Assert.IsNull(result.Payload);
+            Assert.AreEqual(CameraAgentRunManifest.IdentifierUnavailableReason, result.Reason);
+        }
     }
 
     [TestMethod]
