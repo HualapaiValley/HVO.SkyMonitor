@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Hosted Ubuntu 24.04 supplies PyYAML through yamllint's pipx environment.
+# Hosted Preflight installs hash-pinned PyYAML on PYTHONPATH; local hosts may use yamllint.
 # Prefer the developer's python3 when it already supplies the parser.
 yaml_python=python3
 if ! "$yaml_python" -c 'import yaml' >/dev/null 2>&1; then
@@ -14,6 +14,9 @@ if ! "$yaml_python" -c 'import yaml' >/dev/null 2>&1; then
 fi
 "$yaml_python" - "$repo_root" <<'PY'
 import json
+import ast
+import copy
+import unittest.mock
 import functools
 import itertools
 import os
@@ -40,8 +43,8 @@ queue_gate = (root / ".github/workflows/merge-queue-reviewed-head.yml").read_tex
 
 
 def read_workflows(directory):
-    return {path.name: path.read_text() for pattern in ("*.yml", "*.yaml")
-            for path in directory.glob(pattern)}
+    return {path.name: path.read_text() for path in directory.iterdir()
+            if path.is_file() and path.suffix.lower() in (".yml", ".yaml")}
 
 
 workflows = read_workflows(root / ".github/workflows")
@@ -76,16 +79,26 @@ def scalar(node, label):
 
 
 @functools.lru_cache(maxsize=256)
+def parsed_document(workflow):
+    return unique_mapping(yaml.compose(workflow, Loader=yaml.BaseLoader), "workflow")
+
+
+@functools.lru_cache(maxsize=256)
 def parsed_jobs(workflow):
     # BaseLoader preserves strings such as the root `on` key (YAML 1.1 boolean
     # resolution would turn it into True). Compose never constructs tagged code.
-    document = unique_mapping(yaml.compose(workflow, Loader=yaml.BaseLoader), "workflow")
+    document = parsed_document(workflow)
     if "jobs" not in document:
         raise ValueError("workflow has no jobs mapping")
     jobs_key, jobs_node = document["jobs"]
     result = {}
     for header, (key, node) in unique_mapping(jobs_node, "jobs").items():
         properties = unique_mapping(node, f"job {header}")
+        allowed = {"name", "uses", "needs", "if", "runs-on", "permissions", "environment", "concurrency",
+                   "outputs", "env", "defaults", "steps", "timeout-minutes", "strategy", "continue-on-error",
+                   "container", "services", "with", "secrets", "snapshot"}
+        if properties.keys() - allowed:
+            raise ValueError(f"job {header} has unknown or non-lowercase properties: {properties.keys() - allowed}")
         result[header] = {
             "index": key.start_mark.index,
             "name": scalar(properties["name"][1], "job name") if "name" in properties else header,
@@ -141,7 +154,7 @@ merge_group_trigger = (
 )
 
 
-preflight_timeout = "    timeout-minutes: ${{ github.event_name == 'merge_group' && 6 || 4 }}"
+preflight_timeout = "    timeout-minutes: ${{ github.event_name == 'pull_request' && 4 || 6 }}"
 queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
 trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -197,6 +210,26 @@ def violations(short, full, queue=None, extra=None):
     names = []
     for path, workflow in sources.items():
         try:
+            document = parsed_document(workflow)
+            permission_nodes = [(document["permissions"][1], "workflow")] if "permissions" in document else []
+            for header, (_, node) in unique_mapping(document["jobs"][1], "jobs").items():
+                properties = unique_mapping(node, f"job {header}")
+                if "permissions" in properties:
+                    permission_nodes.append((properties["permissions"][1], header))
+            for node, label in permission_nodes:
+                # Other write scopes (packages, contents, OIDC) have legitimate release owners.
+                # No workflow step may mint a required check or status with its token.
+                if isinstance(node, yaml.ScalarNode):
+                    require(node.value == "read-all", f"check/status permissions allowlist: {path}/{label}")
+                else:
+                    grants = unique_mapping(node, "permissions")
+                    scopes = {"actions", "attestations", "checks", "contents", "deployments", "discussions",
+                              "id-token", "issues", "models", "packages", "pages", "pull-requests",
+                              "security-events", "statuses", "artifact-metadata"}
+                    require(all(key in scopes and scalar(value[1], key) in
+                                (("read", "none") if key in ("checks", "statuses") else ("read", "write", "none"))
+                                for key, value in grants.items()),
+                            f"check/status permissions allowlist: {path}/{label}")
             jobs_index, jobs_end, actual_jobs = parsed_jobs(workflow)
         except (yaml.YAMLError, ValueError) as error:
             require(False, f"valid workflow YAML jobs: {path}: {error}")
@@ -273,6 +306,8 @@ def violations(short, full, queue=None, extra=None):
     for required in required_names:
         require(names.count(normalized_name(required)) == 1,
                 f"globally unique required job name: {required}")
+    require(queue == (root / "tests/fixtures/development-v1-ci/merge-queue-reviewed-head.expected.txt").read_text(),
+            "queue whole workflow matches approved source")
     require(queue.split("\npermissions:\n", 1)[-1].split("\njobs:\n", 1)[0].strip() ==
             queue_permissions.split("\n", 1)[1].strip() and
             len(re.findall(r"^\s*permissions:", queue, re.M)) == 1,
@@ -300,13 +335,20 @@ def violations(short, full, queue=None, extra=None):
     ):
         lint = step(section, title)
         commands = [line.strip() for line in lint.splitlines() if line.startswith("          ")]
-        require(commands[-2:] == ["shopt -s nullglob",
-                                 f"{executable} .github/workflows/*.yml .github/workflows/*.yaml"],
-                f"{profile} actionlint includes both workflow extensions without unmatched globs")
+        require(commands[-1:] == [executable],
+                f"{profile} actionlint discovers workflows without shell glob exclusions")
+    parser_install = step(preflight, "Install pinned workflow YAML parser")
+    require('--require-hashes --only-binary=:all: --no-deps' in parser_install and
+            '-r scripts/ci/pyyaml-requirements.txt' in parser_install and
+            '"$RUNNER_TEMP/hvo-pyyaml" >> "$GITHUB_ENV"' in parser_install and
+            "        if:" not in parser_install,
+            "Preflight installs hash-pinned parser before CI control contracts")
+    require(preflight.find("Install pinned workflow YAML parser") < preflight.find("Check CI control contracts"),
+            "pinned parser precedes YAML contract")
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
-    require(preflight_timeout in preflight.splitlines(), "Preflight allows 360 seconds for merge_group and 240 otherwise")
+    require(preflight_timeout in preflight.splitlines(), "Preflight allows 240 seconds for pull_request and 360 otherwise")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -422,6 +464,73 @@ def violations(short, full, queue=None, extra=None):
     return errors
 
 
+# Target each agreement independently: another overlapping error cannot stand
+# in for the named guard. Each disabled require must lose its own diagnostic.
+probe = "name: Probe\non: push\njobs:\n  probe:\n    name: Probe\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+original_parsed_jobs = parsed_jobs
+agreement_cases = (
+    ("YAML/regex jobs bounds agree", "bounds"),
+    ("YAML/regex job ids and locations agree", "location"),
+    ("YAML/regex job name agrees", "name"),
+    ("YAML/regex job uses agrees", "uses"),
+    ("reusable caller can compose a required job name", "composition"),
+)
+function_text = (root / "scripts/test:development-v1-ci").read_text().split("def violations(", 1)[1].split("# Target each agreement", 1)[0]
+function_tree = ast.parse("def violations(" + function_text)
+for diagnostic, fault in agreement_cases:
+    def altered_parse(source):
+        begin, end, jobs = original_parsed_jobs(source)
+        if source == probe:
+            jobs = copy.deepcopy(jobs)
+            if fault == "bounds": end -= 1
+            elif fault == "location": jobs["probe"]["index"] += 1
+            elif fault == "composition":
+                jobs["probe"]["name"] = "Development v1"
+                jobs["probe"]["uses"] = "./.github/workflows/callee.yml"
+            else: jobs["probe"][fault] = "different"
+        return begin, end, jobs
+    with unittest.mock.patch.dict(globals(), parsed_jobs=altered_parse):
+        observed = violations(short, full, extra={"probe.yml": probe})
+        if not any(diagnostic in error for error in observed):
+            raise SystemExit("Agreement fixture missed " + diagnostic)
+        mutant = copy.deepcopy(function_tree)
+        changed = 0
+        for node in ast.walk(mutant):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "require" and len(node.args) == 2:
+                message = node.args[1]
+                if isinstance(message, ast.JoinedStr) and any(isinstance(part, ast.Constant) and diagnostic in str(part.value) for part in message.values):
+                    node.args[0] = ast.Constant(True)
+                    changed += 1
+        if changed != 1: raise SystemExit("Expected one agreement guard: " + diagnostic)
+        namespace = dict(globals())
+        exec(compile(ast.fix_missing_locations(mutant), "<agreement-mutant>", "exec"), namespace)
+        if any(diagnostic in error for error in namespace["violations"](short, full, extra={"probe.yml": probe})):
+            raise SystemExit("Agreement mutation survived: " + diagnostic)
+    print("Killed agreement mutation: " + diagnostic)
+for key in ("name", "uses", "runs-on"):
+    for spelling in (key.title(), "unknown-key"):
+        candidate = probe.replace("    name: Probe", f"    {spelling}: Probe")
+        if not violations(short, full, extra={"probe.yml": candidate}):
+            raise SystemExit("Unknown/mixed-case job property accepted")
+mapping_source = "def unique_mapping" + (root / "scripts/test:development-v1-ci").read_text().split("def unique_mapping", 1)[1].split("def scalar", 1)[0]
+for node_text, removed in (("{name: A, name: B}", " or key.value in result"),
+                           ("{<<: {name: A}}", ' or key.value == "<<"')):
+    node = yaml.compose(node_text, Loader=yaml.BaseLoader)
+    try:
+        unique_mapping(node, "negative mapping")
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("Duplicate/merge mapping key accepted")
+    if removed not in mapping_source: raise SystemExit("Mapping mutant did not change source")
+    namespace = dict(globals())
+    exec(mapping_source.replace(removed, ""), namespace)
+    namespace["unique_mapping"](node, "mutated mapping")
+    print("Killed mapping mutation: " + removed)
+composition = probe.replace("name: Probe\n    runs-on: ubuntu-24.04", "name: Development v1\n    uses: ./.github/workflows/callee.yml").split("    steps:")[0]
+if not any("reusable caller can compose" in error for error in violations(short, full, extra={"compose.yml": composition})):
+    raise SystemExit("Dedicated reusable composition fixture missed its guard")
+
 errors = violations(short, full)
 if errors:
     raise SystemExit("Development v1 CI contracts failed:\n- " + "\n- ".join(errors))
@@ -532,6 +641,20 @@ queue_mutations = [
     ("trusted base execution removed", queue_gate.replace('BASE_SHA="$(git rev-parse HEAD)" ', "")),
     ("execution failure ignored", queue_gate.replace("./scripts/ci:queue-reviewed-head\n", "./scripts/ci:queue-reviewed-head || true\n")),
 ]
+for scope in ("workflow", "job"):
+    for key, value in (("defaults", "{run: {shell: sh}}"), ("env", "{BASH_ENV: /tmp/untrusted}"),
+                       ("container", "alpine")):
+        before = "\njobs:\n" if scope == "workflow" else "    runs-on:"
+        after = f"\n{key}: {value}\njobs:\n" if scope == "workflow" else f"    {key}: {value}\n    runs-on:"
+        queue_mutations.append((f"{scope} {key} changed", queue_gate.replace(before, after)))
+for scope in ("workflow", "job"):
+    for grant in ("{checks: write}", "{statuses: write}", "write-all"):
+        spoof = ("name: Permissions\non: push\n" +
+            (f"permissions: {grant}\n" if scope == "workflow" else "") +
+            "jobs:\n  benign:\n    name: Benign\n" +
+            (f"    permissions: {grant}\n" if scope == "job" else "") +
+            "    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n")
+        mutations += ((f"{scope} {grant}", short, full, queue_gate, {"permissions.yml": spoof}),)
 for key in ("GH_TOKEN", "REPOSITORY", "HEAD_REF", "GROUP_SHA", "BASE_REF", "ALLOWED_SETTERS"):
     line = next(line for line in queue_gate.splitlines() if line.startswith(f"          {key}:"))
     queue_mutations.append((f"{key} removed", queue_gate.replace(line + "\n", "")))
@@ -579,19 +702,21 @@ name_spoofs = (
 for name, value, matrix in name_spoofs:
     mutations += ((name, short, full, queue_gate, {"spoof.yml": spoof_workflow(value, matrix)}),)
 mutations += (
-    ("Preflight YAML lint omitted", short.replace(" .github/workflows/*.yaml", ""), full),
-    ("Preflight YML lint omitted", short.replace(" .github/workflows/*.yml", ""), full),
-    ("Preflight unmatched glob", short.replace("          shopt -s nullglob\n", ""), full),
-    ("Quality YAML lint omitted", short, full.replace(" .github/workflows/*.yaml", "")),
-    ("Quality YML lint omitted", short, full.replace(" .github/workflows/*.yml", "")),
+    ("Preflight YAML lint omitted", short.replace('"$RUNNER_TEMP/actionlint"\n', '"$RUNNER_TEMP/actionlint" .github/workflows/*.yml\n'), full),
+    ("Preflight YML lint omitted", short.replace('"$RUNNER_TEMP/actionlint"\n', '"$RUNNER_TEMP/actionlint" .github/workflows/*.yaml\n'), full),
+    ("Preflight unmatched glob", short.replace("--require-hashes ", ""), full),
+    ("Quality YAML lint omitted", short, full.replace("          /tmp/actionlint\n", "          /tmp/actionlint .github/workflows/*.yml\n")),
+    ("Quality YML lint omitted", short, full.replace("          /tmp/actionlint\n", "          /tmp/actionlint .github/workflows/*.yaml\n")),
 )
 with tempfile.TemporaryDirectory(prefix="hvo-v1-workflows-") as directory:
     fixture = pathlib.Path(directory)
     (fixture / "benign.yml").write_text(spoof_workflow("Benign"))
     (fixture / "ignored.txt").write_text(spoof_workflow("hvo/reviewed-head"))
     (fixture / "spoof.yaml").write_text(spoof_workflow("Benign YAML"))
+    (fixture / ".hidden.YML").write_text(spoof_workflow("Hidden"))
+    (fixture / "upper.YAML").write_text(spoof_workflow("Upper"))
     discovered = read_workflows(fixture)
-    if set(discovered) != {"benign.yml", "spoof.yaml"} or violations(short, full, queue_gate, discovered):
+    if set(discovered) != {"benign.yml", "spoof.yaml", ".hidden.YML", "upper.YAML"} or violations(short, full, queue_gate, discovered):
         raise SystemExit("Both workflow extensions must be discovered and safe names must pass")
     (fixture / "spoof.yaml").write_text(spoof_workflow("hvo/reviewed-head"))
     if not violations(short, full, queue_gate, read_workflows(fixture)):

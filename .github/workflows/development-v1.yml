@@ -27,7 +27,7 @@ jobs:
   preflight:
     name: Development v1 / Preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ github.event_name == 'merge_group' && 6 || 4 }}
+    timeout-minutes: ${{ github.event_name == 'pull_request' && 4 || 6 }}
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,8 +53,13 @@ jobs:
             '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
             "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          shopt -s nullglob
-          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml .github/workflows/*.yaml
+          "$RUNNER_TEMP/actionlint"
+
+      - name: Install pinned workflow YAML parser
+        run: |
+          python3 -m pip install --require-hashes --only-binary=:all: --no-deps \
+            --target "$RUNNER_TEMP/hvo-pyyaml" -r scripts/ci/pyyaml-requirements.txt
+          printf 'PYTHONPATH=%s\n' "$RUNNER_TEMP/hvo-pyyaml" >> "$GITHUB_ENV"
 
       # Offline and cheap enough to run on every draft/push (#1345).
       - name: Check Dockerfile base images
