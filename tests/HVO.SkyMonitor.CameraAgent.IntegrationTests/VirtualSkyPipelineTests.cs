@@ -53,7 +53,39 @@ public sealed class VirtualSkyPipelineTests
         [FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined, FrameArtifactRole.Preview, FrameArtifactRole.AnnotatedPreview];
     private static readonly string[] ExpectedPreviewVariants = ["calibrated-display", "default"];
 #endif
+#if COMBINED_INTEGRATION_TESTS
+    private static CameraAgentIntegrationFixture? _fixture;
+
+    private static CameraAgentIntegrationFixture Fixture => _fixture
+        ?? throw new InvalidOperationException("The configured-pipeline fixture has not been initialized.");
+
+    [ClassInitialize]
+    public static async Task InitializeFixtureAsync(TestContext _)
+    {
+        // The assembly fixture keeps acquiring while unrelated tests run. Its queued captures can predate this
+        // test's listeners by more than the readiness budget, so this class owns a fresh fixture. Refs #1740
+        var fixture = new CameraAgentIntegrationFixture();
+        try
+        {
+            await fixture.InitializeAsync().ConfigureAwait(false);
+            _fixture = fixture;
+        }
+        catch
+        {
+            fixture.Dispose();
+            throw;
+        }
+    }
+
+    [ClassCleanup]
+    public static void CleanupFixture()
+    {
+        _fixture?.Dispose();
+        _fixture = null;
+    }
+#else
     private static CameraAgentIntegrationFixture Fixture => AssemblyHooks.Fixture;
+#endif
 
 #if !COMBINED_INTEGRATION_TESTS
     [TestMethod]

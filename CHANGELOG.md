@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
+
 - CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. The environmental schema upgrade selects a paired recovery checkpoint before startup. Refs #1778
 
 - Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781
@@ -74,8 +76,12 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent can generate immutable daily summaries of sunrise-to-sunrise captures, with representative previews, sampled coverage, exclusions and product lineage in Products, Calendar and Observing Day. Opening an existing nightly catalog upgrades schema 2 to 3 in place; installer upgrades checkpoint it for paired rollback. #1713
 - Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386
 - CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, restore only the latest owned pause on pre-stop failure or interruption, retry recovery after deployment contention, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
-- Camera & Rig supports versioned manual site horizons with preview and explicit activation; satellite predictions, star/constellation and curated deep-sky overlays, and transient detection share obstruction and unknown-terrain eligibility while archived captures retain their profile. Capture-time location history, full footprint edges and reviewed editor state are preserved; rig changes and invalid drafts show per-revision revalidation status without hiding the catalog, central validation requires review for horizon evidence, and identical transient windows reuse bounded detector masks. #1394
-
+- Camera & Rig supports versioned manual site horizons with preview and explicit activation.
+  Satellite predictions, star/constellation and curated deep-sky overlays, and transient detection
+  share obstruction and unknown-terrain eligibility; archived captures retain their profile.
+  Capture-time location history, full footprint edges and reviewed editor state are preserved.
+  Rig changes and invalid drafts show per-revision revalidation status without hiding the catalog.
+  Central validation requires review for horizon evidence. Identical transient windows reuse bounded detector masks. #1394
 
 - Configure a local weather-station adapter with deterministic simulated devices, explicit sensor/freshness failures and primary station readings retained alongside IR inputs; failed acquisitions cannot reuse an old value. Physical station qualification remains held. #1089
 - Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage, ordered input delivery, recoverable dead letters for undeliverable inputs and drying-state handling; simulated clouds retain Simulated provenance. Journal failures identify storage, and explicit delivery discard survives restart. Physical sensor qualification remains held. #1090

@@ -2,21 +2,20 @@
 
 Tested merged candidate: `10a79302a1deed7bb95d582d49048fd5e7f166dc`.
 Target: `250f7727139e1c43d0b93e553e3ddedd3a9bac4f` (`development/v1`, #1743).
-Updated 2026-11-09T08:16:27+00:00.
+Evidence recorded 2026-11-09T08:16:27+00:00; publication status corrected 2026-11-12.
 
-**Current local outcome: PASSED; PUSH BLOCKED by target advancement.** The final
-fetch observed `581eccc6a2da76441c7038d02d24e7f8f4f49331` (#1744, merged at
-2026-11-09T08:13:11Z), rather than the operator's requested `250f7727`. No merge
-of that unapproved target and no push occurred. The tested source and all evidence
-remain retained. The inherited environmental per-file coverage blocker is
-resolved by upstream #1743. The PR stays draft. Kepler owns the formal
-HIGH-tier Sol/Opus reviews, ready transition and protected CI. This worker does
-not post GitHub comments, edit PR metadata, set statuses/labels or merge.
-The later commit changes this report only; product and test source remain exactly
-the frozen tested merge. Full access and xhigh are active; the harness exposes no
-FAST/service-tier control, so none is attested.
+**Local outcome: PASSED; publication completed.**
+[PR #1734](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1734) published
+head `1eb426797fa0ec69fd850b6ad2ee91a6821b6db3` and merged into `development/v1`
+at 2026-11-09T10:09:32Z as `12897952aa945805b6e9bb682d51f31e14eb8af5`.
+The former push hold and draft status are historical. The published head changes
+only this report from the tested candidate; product and test source remain the
+frozen tested merge. The inherited environmental per-file coverage blocker was
+addressed by upstream #1743. The evidence below retains its original candidate
+and target provenance; it does not claim validation of later branch changes.
+Kepler's PR ledger owns publication authorization, reviews and CI records.
 
-## Current owner evidence table — coverage-base resynchronization
+## Historical owner evidence table — coverage-base resynchronization
 
 Evidence root: `TestResults/issue-1394/resync1743/` (ignored, retained locally).
 Every fresh test project executes serially, with separate category/project TRX,
@@ -134,10 +133,10 @@ passes and one skip retained), 626 Integration selections (all passed previously
 unrelated Manual/Soak/Hardware campaigns, end-to-end W1/W2/W6 performance
 qualification, protected CI and independent formal reviews. The fresh horizon
 measurement is one component test, not end-to-end cadence qualification.
-Upstream #1744's merge-queue/CI-control changes are not merged or validated here.
-The next action is an operator-directed sync to the newly observed target, with
-classifier-selected validation of that delta before pushing. Remote PR head
-remains `e35fcf78958474ac7c31538827b4a9f5c1d49e81`, draft, with no auto-merge.
+Upstream #1744's merge-queue/CI-control changes were outside this tested candidate.
+At evidence capture, the push was held and remote head was `e35fcf78`; those
+conditions were superseded by publication of `1eb42679` and the merge recorded
+above. No further sync or push is pending for PR #1734.
 
 The host sample showed 12 effective cores with no cgroup CPU quota, approximately
 45 GiB available RAM, 685 GiB free disk and no competing test/build group.
