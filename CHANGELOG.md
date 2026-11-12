@@ -12,6 +12,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
+
+- A tamper found by the recent startup check now forces full byte verification before lifecycle readiness can recover. Complete-archive restore discards its staged clean checkpoint so preserved timestamps cannot inherit incremental trust. Refs #1041
+
+- Protected installation verification uses writer-maintained integrity checkpoints. Startup checks a bounded recent capture window before serving health and recovery; full history qualification and capture recovery run in the background. Lifecycle operations refuse pending or invalid history within the existing 120-second budget. Clean restarts reuse authenticated unchanged-file metadata; full scrubs detect out-of-band tampering before the original daily deadline. Deferred configuration failures report unhealthy capture readiness and retry briefly; ordinary polls coalesce work. Managed pruning, missing-ledger refusal and paired upgrade/rollback recovery preserve retained evidence. Refs #1041
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 
 - CameraAgent renders metadata corners on previews without a projected scene, image circle, or cardinal overlays instead of failing with a null-reference error. Refs #1789

@@ -236,7 +236,13 @@ public sealed class InstallerLifecycleControlIntegrationTests
         Assert.IsFalse(detail.Contains("Drained;", StringComparison.Ordinal), detail);
         StringAssert.Contains(detail, "No automatic resume was issued", StringComparison.Ordinal);
         StringAssert.Contains(detail, code, StringComparison.Ordinal);
-        if (cancel) StringAssert.Contains(detail, "Cancelled by owner-drain-cancel", StringComparison.Ordinal);
+        Assert.DoesNotContain("owner-drain-cancel", detail, StringComparison.Ordinal);
+        var cancellation = CameraAgentSystemUiService.LifecycleCancellation(projected);
+        if (cancel)
+            Assert.AreEqual(new SystemControlCancellation(SystemControlActor.LocalOwner, projected.Cancellation!.Utc,
+                "Cancel the claimed drain"), cancellation);
+        else
+            Assert.IsNull(cancellation);
 
         // Terminal settlement releases the lifecycle fence; only an explicit authorized resume reopens capture.
         Assert.IsFalse(fixture.Controls.AdmissionHeld);

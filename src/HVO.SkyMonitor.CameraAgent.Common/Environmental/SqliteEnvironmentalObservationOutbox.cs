@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
@@ -3216,7 +3217,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 var inspectionPath = Path.Combine(snapshotRoot.FullName, Path.GetFileName(databasePath));
                 foreach (var source in before.Where(static state => state.Exists))
                 {
-                    File.Copy(
+                    RetainedFileMutations.Copy(
                         source.Path,
                         string.Concat(inspectionPath, source.Path.AsSpan(databasePath.Length)));
                 }

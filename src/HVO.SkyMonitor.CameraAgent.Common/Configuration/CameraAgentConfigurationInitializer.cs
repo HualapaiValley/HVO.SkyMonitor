@@ -17,7 +17,9 @@ public sealed class CameraAgentConfigurationInitializer(
     SqliteCaptureScheduleStore? scheduleStore = null,
     SqliteCalibrationLibraryStore? calibrationLibrary = null,
     CalibrationLibraryReconciler? calibrationReconciler = null,
-    SqliteNamedRigProfileStore? namedRigProfiles = null) : IHostedService
+    SqliteNamedRigProfileStore? namedRigProfiles = null,
+    DeploymentLocation.IDeploymentLocationStore? deploymentLocationStore = null,
+    IHostApplicationLifetime? hostLifetime = null) : IHostedService
 {
     private readonly ICameraAgentConfigurationLoader _loader = loader;
     private readonly ICameraAgentConfigurationAccessor _accessor = accessor;
@@ -33,6 +35,18 @@ public sealed class CameraAgentConfigurationInitializer(
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var config = await _loader.LoadAsync(cancellationToken).ConfigureAwait(false);
+        if (_accessor.IsConfigured) return;
+        if (deploymentLocationStore is { } locations &&
+            (locations.Active is null || !locations.RecentRetainedEvidenceReady)) return;
+        // Schedule/calibration initialization can reconcile retained raw evidence.
+        // Keep that work after Kestrel startup; the host-owned service calls this
+        // again after ApplicationStarted, before publishing capture configuration.
+        if (hostLifetime is not null && !hostLifetime.ApplicationStarted.IsCancellationRequested) return;
+        // A real edit can arrive between the initial background result and this
+        // capture initialization. Join a fresh, bounded-snapshot reconciliation
+        // instead of leaving capture unpublished until the daily timer fires.
+        if (deploymentLocationStore?.RequiresDeploymentLocationReconciliation == true)
+            config = await _loader.LoadForRetainedIntegrityScrubAsync(cancellationToken).ConfigureAwait(false);
         if (_scheduleStore is not null)
         {
             var schedule = await _scheduleStore.InitializeAsync(config, cancellationToken).ConfigureAwait(false);

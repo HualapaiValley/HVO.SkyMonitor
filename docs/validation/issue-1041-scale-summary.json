@@ -1,0 +1,429 @@
+{
+  "baselineRevision": "c31afe4b16be7ed534299dbbdcceabf327d93b60",
+  "candidateRevision": "8879ad2ef6ee7236a872800b8a5a8adb304ae96e",
+  "runtime": ".NET 10.0.14",
+  "processorCount": 1,
+  "heapAvailableBytes": 402653184,
+  "results": [
+    {
+      "solar": false,
+      "captures": 1000,
+      "manifestBytes": 4855786,
+      "orderedManifestSha256": "70F06329FE268301B6F5FFDB9FAFA53BFFCD3D2C99201E760BE86D4E891E13F5",
+      "baseline": {
+        "elapsedMs": {
+          "median": 242.6423,
+          "min": 135.0708,
+          "max": 294.4863
+        },
+        "cpuMs": {
+          "median": 186.103,
+          "min": 133.442,
+          "max": 263.982
+        },
+        "allocationMiB": {
+          "median": 26.975425720214844,
+          "min": 26.974220275878906,
+          "max": 27.213668823242188
+        },
+        "rssMiB": {
+          "median": 252.65625,
+          "min": 244.39453125,
+          "max": 255.5234375
+        },
+        "firstMs": 517.9428,
+        "io": {
+          "rchar": 6614365,
+          "wchar": 231,
+          "syscr": 2093,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "elapsedMs": {
+          "median": 41.6598,
+          "min": 26.7197,
+          "max": 49.6028
+        },
+        "cpuMs": {
+          "median": 37.636,
+          "min": 23.783,
+          "max": 47.07
+        },
+        "allocationMiB": {
+          "median": 8.476661682128906,
+          "min": 8.476081848144531,
+          "max": 8.477676391601562
+        },
+        "rssMiB": {
+          "median": 239.96484375,
+          "min": 239.078125,
+          "max": 243.00390625
+        },
+        "firstMs": 517.5214,
+        "io": {
+          "rchar": 6645120,
+          "wchar": 230,
+          "syscr": 2091,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    },
+    {
+      "solar": false,
+      "captures": 10000,
+      "manifestBytes": 48577788,
+      "orderedManifestSha256": "C64EF002A776257AC33FE575F1DA48AC6934E9E343EC9C0335D2649BC6511D3E",
+      "baseline": {
+        "elapsedMs": {
+          "median": 856.587,
+          "min": 811.7181,
+          "max": 1222.508
+        },
+        "cpuMs": {
+          "median": 846.806,
+          "min": 810.457,
+          "max": 1216.374
+        },
+        "allocationMiB": {
+          "median": 256.12899017333984,
+          "min": 256.12860107421875,
+          "max": 256.1306838989258
+        },
+        "rssMiB": {
+          "median": 279.4921875,
+          "min": 276.83203125,
+          "max": 281.75390625
+        },
+        "firstMs": 1426.7767,
+        "io": {
+          "rchar": 65449713,
+          "wchar": 231,
+          "syscr": 20173,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "elapsedMs": {
+          "median": 208.2101,
+          "min": 185.3024,
+          "max": 230.791
+        },
+        "cpuMs": {
+          "median": 205.44,
+          "min": 181.719,
+          "max": 230.48
+        },
+        "allocationMiB": {
+          "median": 70.87399291992188,
+          "min": 70.87236022949219,
+          "max": 71.3751449584961
+        },
+        "rssMiB": {
+          "median": 287.26953125,
+          "min": 281.3125,
+          "max": 294.48046875
+        },
+        "firstMs": 1626.9627,
+        "io": {
+          "rchar": 65748100,
+          "wchar": 230,
+          "syscr": 20128,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    },
+    {
+      "solar": false,
+      "captures": 100001,
+      "manifestBytes": 485982652,
+      "orderedManifestSha256": "83CF8577AEB83448A215395BC5869D5C238DB7706EAD43767C8911E9DA4E060C",
+      "baseline": {
+        "elapsedMs": {
+          "median": 3393.0659,
+          "min": 3296.2465,
+          "max": 3537.7063
+        },
+        "cpuMs": {
+          "median": 3388.651,
+          "min": 3294.795,
+          "max": 3533.898
+        },
+        "allocationMiB": {
+          "median": 2420.9925842285156,
+          "min": 2420.986770629883,
+          "max": 2420.99959564209
+        },
+        "rssMiB": {
+          "median": 335.9921875,
+          "min": 335.671875,
+          "max": 336.71875
+        },
+        "firstMs": 4127.9105,
+        "io": {
+          "rchar": 653978391,
+          "wchar": 231,
+          "syscr": 200943,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "elapsedMs": {
+          "median": 1149.7339,
+          "min": 1078.9584,
+          "max": 1261.0461
+        },
+        "cpuMs": {
+          "median": 1146.296,
+          "min": 1072.389,
+          "max": 1254.984
+        },
+        "allocationMiB": {
+          "median": 635.6897583007812,
+          "min": 635.6830749511719,
+          "max": 635.7006530761719
+        },
+        "rssMiB": {
+          "median": 372.59375,
+          "min": 357.19921875,
+          "max": 380.8984375
+        },
+        "firstMs": 3584.6889,
+        "io": {
+          "rchar": 656963782,
+          "wchar": 230,
+          "syscr": 200496,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    },
+    {
+      "solar": true,
+      "captures": 1000,
+      "manifestBytes": 4855786,
+      "orderedManifestSha256": "70F06329FE268301B6F5FFDB9FAFA53BFFCD3D2C99201E760BE86D4E891E13F5",
+      "baseline": {
+        "elapsedMs": {
+          "median": 89.3028,
+          "min": 76.3647,
+          "max": 109.6415
+        },
+        "cpuMs": {
+          "median": 75.92,
+          "min": 73.939,
+          "max": 109.177
+        },
+        "allocationMiB": {
+          "median": 32.09002685546875,
+          "min": 32.089866638183594,
+          "max": 32.09002685546875
+        },
+        "rssMiB": {
+          "median": 381.3984375,
+          "min": 380.74609375,
+          "max": 382.16015625
+        },
+        "firstMs": 442.3954,
+        "io": {
+          "rchar": 6617082,
+          "wchar": 231,
+          "syscr": 2097,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "elapsedMs": {
+          "median": 43.9969,
+          "min": 42.3212,
+          "max": 55.8491
+        },
+        "cpuMs": {
+          "median": 39.761,
+          "min": 38.819,
+          "max": 40.539
+        },
+        "allocationMiB": {
+          "median": 14.293357849121094,
+          "min": 14.29193115234375,
+          "max": 14.296974182128906
+        },
+        "rssMiB": {
+          "median": 411.765625,
+          "min": 411.765625,
+          "max": 411.78125
+        },
+        "firstMs": 213.6375,
+        "io": {
+          "rchar": 6647916,
+          "wchar": 230,
+          "syscr": 2096,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    },
+    {
+      "solar": true,
+      "captures": 10000,
+      "manifestBytes": 48577788,
+      "orderedManifestSha256": "C64EF002A776257AC33FE575F1DA48AC6934E9E343EC9C0335D2649BC6511D3E",
+      "baseline": {
+        "elapsedMs": {
+          "median": 398.348,
+          "min": 371.8878,
+          "max": 569.3957
+        },
+        "cpuMs": {
+          "median": 396.59,
+          "min": 369.5,
+          "max": 568.572
+        },
+        "allocationMiB": {
+          "median": 249.84490966796875,
+          "min": 249.84345245361328,
+          "max": 250.06929779052734
+        },
+        "rssMiB": {
+          "median": 367.046875,
+          "min": 366.71875,
+          "max": 367.08984375
+        },
+        "firstMs": 600.1785,
+        "io": {
+          "rchar": 65450909,
+          "wchar": 231,
+          "syscr": 20178,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "elapsedMs": {
+          "median": 133.9678,
+          "min": 133.5845,
+          "max": 139.9692
+        },
+        "cpuMs": {
+          "median": 130.059,
+          "min": 129.13,
+          "max": 131.804
+        },
+        "allocationMiB": {
+          "median": 71.60828399658203,
+          "min": 71.60759735107422,
+          "max": 72.10963439941406
+        },
+        "rssMiB": {
+          "median": 403.140625,
+          "min": 403.13671875,
+          "max": 405.29296875
+        },
+        "firstMs": 691.4448,
+        "io": {
+          "rchar": 65749923,
+          "wchar": 230,
+          "syscr": 20133,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    },
+    {
+      "solar": true,
+      "captures": 100001,
+      "manifestBytes": 485982652,
+      "orderedManifestSha256": "83CF8577AEB83448A215395BC5869D5C238DB7706EAD43767C8911E9DA4E060C",
+      "baseline": {
+        "elapsedMs": {
+          "median": 4249.7739,
+          "min": 3972.5553,
+          "max": 4890.5268
+        },
+        "cpuMs": {
+          "median": 4246.543,
+          "min": 3972.029,
+          "max": 4887.596
+        },
+        "allocationMiB": {
+          "median": 2427.0384979248047,
+          "min": 2427.036376953125,
+          "max": 2427.039764404297
+        },
+        "rssMiB": {
+          "median": 400.54296875,
+          "min": 400.25390625,
+          "max": 402.44921875
+        },
+        "firstMs": 4173.5121,
+        "io": {
+          "rchar": 653981755,
+          "wchar": 231,
+          "syscr": 200950,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      },
+      "candidate": {
+        "elapsedMs": {
+          "median": 1063.882,
+          "min": 1053.6941,
+          "max": 1116.8512
+        },
+        "cpuMs": {
+          "median": 1059.312,
+          "min": 1049.858,
+          "max": 1111.3
+        },
+        "allocationMiB": {
+          "median": 641.7266693115234,
+          "min": 641.7240447998047,
+          "max": 641.7380294799805
+        },
+        "rssMiB": {
+          "median": 494.45703125,
+          "min": 490.1640625,
+          "max": 504.58984375
+        },
+        "firstMs": 2419.954,
+        "io": {
+          "rchar": 656963972,
+          "wchar": 230,
+          "syscr": 200498,
+          "syscw": 2,
+          "read_bytes": 0,
+          "write_bytes": 0,
+          "cancelled_write_bytes": 0
+        }
+      }
+    }
+  ]
+}

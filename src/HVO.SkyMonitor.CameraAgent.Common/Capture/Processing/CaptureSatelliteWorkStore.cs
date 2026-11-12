@@ -180,7 +180,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             {
                 if (!Directory.EnumerateFileSystemEntries(entry).Any())
                 {
-                    Directory.Delete(entry);
+                    RetainedFileMutations.DeleteDirectory(entry);
                     removedEmpty = true;
                     continue;
                 }
@@ -203,11 +203,11 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             foreach (var file in Directory.EnumerateFiles(entry).Where(file => !string.Equals(file, path, StringComparison.Ordinal)))
             {
                 RawIngressFileStore.EnsureNoSymbolicLinks(root, file);
-                File.Delete(file);
+                RetainedFileMutations.Delete(file);
             }
             // Keep the small reference intent until every large file is gone, so interrupted cleanup resumes.
-            File.Delete(path);
-            Directory.Delete(entry);
+            RetainedFileMutations.Delete(path);
+            RetainedFileMutations.DeleteDirectory(entry);
             RawIngressFileStore.SyncDirectory(directory);
         }
         // Empty pre-intents have no reference. A crash before this flush can only make them reappear.
@@ -218,7 +218,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
         if (orphans.Count == 0)
         {
             RawIngressFileStore.EnsureNoSymbolicLinks(root, cursorPath);
-            File.Delete(cursorPath);
+            RetainedFileMutations.Delete(cursorPath);
         }
         foreach (var entry in orphans)
         {
@@ -247,9 +247,9 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 foreach (var file in Directory.EnumerateFiles(entry))
                 {
                     RawIngressFileStore.EnsureNoSymbolicLinks(root, file);
-                    File.Delete(file);
+                    RetainedFileMutations.Delete(file);
                 }
-                Directory.Delete(entry);
+                RetainedFileMutations.DeleteDirectory(entry);
                 RawIngressFileStore.SyncDirectory(directory);
             }
             await SaveOrphanCursorAsync(cursorPath, Path.GetFileName(entry), cancellationToken).ConfigureAwait(false);
@@ -281,7 +281,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             CameraAgentFileSystem.PublishPrepared(root, temporary, path, overwrite: true);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
         }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        finally { if (File.Exists(temporary)) RetainedFileMutations.Delete(temporary); }
     }
 
     private sealed class ArchiveDiscovery(CaptureSatelliteWorkStore owner)

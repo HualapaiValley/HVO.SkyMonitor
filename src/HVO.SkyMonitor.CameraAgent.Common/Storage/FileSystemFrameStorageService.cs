@@ -304,13 +304,13 @@ public sealed class FileSystemFrameStorageService(
             var payloadPath = removal.StoredFrame.AbsolutePath;
             if (File.Exists(payloadPath))
             {
-                File.Delete(payloadPath);
+                RetainedFileMutations.Delete(payloadPath);
             }
 
             var metadataPath = Path.ChangeExtension(payloadPath, ".json");
             if (File.Exists(metadataPath))
             {
-                File.Delete(metadataPath);
+                RetainedFileMutations.Delete(metadataPath);
             }
         }
 
@@ -332,7 +332,7 @@ public sealed class FileSystemFrameStorageService(
                     .ToArray();
                 if (remainingLines.Length == 0)
                 {
-                    File.Delete(indexPath);
+                    RetainedFileMutations.Delete(indexPath);
                     continue;
                 }
 
@@ -346,7 +346,7 @@ public sealed class FileSystemFrameStorageService(
                 {
                     if (File.Exists(temporaryPath))
                     {
-                        File.Delete(temporaryPath);
+                        RetainedFileMutations.Delete(temporaryPath);
                     }
                 }
             }
@@ -400,7 +400,7 @@ public sealed class FileSystemFrameStorageService(
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
             }
         }
     }
@@ -435,7 +435,7 @@ public sealed class FileSystemFrameStorageService(
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
             }
         }
     }
