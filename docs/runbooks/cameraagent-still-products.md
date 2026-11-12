@@ -280,8 +280,19 @@ ties). The JSON retains report date, exact UTC bounds and period identity,
 candidate count, admitted preview/capture identities and output hashes, exclusions,
 and immutable links/hashes to current final keograms and star trails of the
 identical retained period and span. Missing products are explicitly absent at
-snapshot time; time-lapse and event summaries are outside this version. Event
-count is null and presented as unavailable, never as zero.
+snapshot time. Time-lapse links and event aggregation remain deferred from this
+version: adding them requires a versioned summary payload, provenance identity
+and reader contract, plus defined product-selection and event semantics. Event
+count is null and presented as unavailable, never as zero, because no verified
+event-classification input feeds this summary; local detection candidates are
+not confirmed events.
+
+Before a linked keogram or star-trail enters the summary, the generator verifies
+its publication. If verification fails, generation records no summary and does
+not publish one with the link omitted. The error log identifies the report date
+and product id. No final failure status is persisted, so each later scheduled
+or manual run retries the summary and rechecks the same linked product until its
+publication verifies.
 
 Coverage counts five-minute bins containing an admitted exposure start, including
 a possible shorter final bin. This measures sampling, not continuous exposure,
