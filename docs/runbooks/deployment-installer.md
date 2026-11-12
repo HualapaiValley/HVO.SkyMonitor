@@ -2884,15 +2884,23 @@ in the production `frames/YYYY/MM/DD` and `derived/YYYY/MM/DD` partitions and an
 indexed recent raw-journal query. It never recurses through older partitions or
 unknown layouts before Kestrel starts. Limits are 400,000 filesystem entries,
 20,000 recent journal rows, 4 GiB total JSON and 8 MiB per JSON file; exceeding a
-limit refuses recent readiness. Recent schema/provenance/tamper failures leave
+limit refuses recent readiness. Recent retained-data schema/provenance/tamper failures leave
 the host and recovery UI available, report unhealthy location readiness, and do
 not admit capture. Unknown/older/quarantined evidence remains subject to the full
 background scrub. Date partitions are limited to at most three UTC dates.
+An unsupported or structurally drifted raw-journal SQLite contract still refuses
+host startup; deferred worker failure can surface through a host-cancellation
+wrapper. The underlying journal validator retains its schema-specific refusal.
 
 After host startup, one coordinator performs full background qualification;
 new processes never inherit lifecycle readiness from a saved checkpoint. Capture
 configuration publication also waits for safe recovery: schedule initialization
 can invoke raw-ingress reconciliation, so that work runs after host startup too.
+Capture admission, calibration recovery and distribution initialization also wait
+until the host has started. A deferred initialization failure leaves recovery
+available, marks capture readiness unhealthy and emits event 7312 with the service
+and error types only. Repair the underlying state through an authorized procedure,
+then restart normally to retry initialization; do not delete evidence or reset trust.
 Health reports these pending capture dependencies as degraded. The installer's
 normal health wait can reach the recent-ready host while qualification continues.
 An upgrade, rollback or backup attempted before full qualification still refuses
