@@ -53,6 +53,12 @@
     <Compile Include="..\HVO.SkyMonitor.CameraAgent\Configuration\OwnerPasswordFileText.cs" Link="Shared/OwnerPasswordFileText.cs" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <!-- The agent owns the authenticated v1 ledger wire layout used during offline restore. -->
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" Link="Shared/RetainedIntegrityFormat.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <EmbeddedResource Include="SplitHost/*.jq" />
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Cli.Tests" />
     <InternalsVisibleTo Include="HVO.SkyMonitor.CameraAgent.Tests" />
