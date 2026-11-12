@@ -14,6 +14,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 
+- CameraAgent renders metadata corners on previews without a projected scene, image circle, or cardinal overlays instead of failing with a null-reference error. Refs #1789
+
 - CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. The environmental schema upgrade selects a paired recovery checkpoint before startup. Refs #1778
 
 - Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781

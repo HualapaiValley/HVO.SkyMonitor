@@ -105,6 +105,54 @@ public sealed class RealCameraAnnotationPipelineTests
     }
 
     [TestMethod]
+    [DataRow(CameraPixelFormat.Mono16)]
+    [DataRow(CameraPixelFormat.BayerRggb16)]
+    public async Task ConfiguredPipeline_MetadataCornersWithoutSceneAnnotateOnlyThePreview(CameraPixelFormat pixelFormat)
+    {
+        var config = CreateConfig(constellationIds: [], pixelFormat: pixelFormat) with
+        {
+            Pipeline = new CapturePipelineConfig(
+            [
+                new CaptureProcessingStepConfig("Preview", "Preview", 50, DependsOn: ["$raw"]),
+                new CaptureProcessingStepConfig("Annotation", "Annotation", 75,
+                    JsonSerializer.SerializeToElement(new
+                    {
+                        drawLabels = false,
+                        drawConstellationLines = false,
+                        drawImageCircle = false,
+                        drawCardinalDirections = false,
+                        drawMetadataCorners = true,
+                        bottomLeftTokens = Array.Empty<string>()
+                    }),
+                    ["Preview"])
+            ])
+        };
+        using var provider = CreateServices(CreateCatalog(), new InMemoryConstellationTopology([]));
+        var pipeline = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateGraph(config).Nodes
+            .Select(static node => node.Step).ToArray();
+        var rawBytes = new byte[200 * 200 * 2];
+        var raw = new CameraFrame(
+            Utc, 200, 200, pixelFormat, rawBytes,
+            new FrameMetadata(TimeSpan.FromSeconds(20), 150, -10), 400);
+
+        var context = await RunPipelineAsync(config, pipeline, raw).ConfigureAwait(false);
+
+        Assert.AreSame(raw, context.Artifacts!.Raw.Frame);
+        Assert.IsTrue(raw.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
+        var preview = context.Artifacts[FrameArtifactRole.Preview];
+        var annotated = context.Artifacts[FrameArtifactRole.AnnotatedPreview];
+        Assert.IsNull(raw.Metadata.Scene);
+        Assert.IsNull(annotated.Frame.Metadata.Scene);
+        Assert.AreEqual(preview.Frame.PixelFormat, annotated.Frame.PixelFormat);
+        Assert.AreEqual(preview.Frame.Width, annotated.Frame.Width);
+        Assert.AreEqual(preview.Frame.Height, annotated.Frame.Height);
+        Assert.IsTrue(preview.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
+        Assert.IsTrue(annotated.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) >= 0,
+            "Metadata corners must render even when no projected scene or projection overlay is available.");
+        CollectionAssert.AreEqual(new[] { preview.ArtifactId }, annotated.SourceArtifactIds!.ToArray());
+    }
+
+    [TestMethod]
     public async Task RetainedPipeline_AnnotatesBayerPreviewWithoutChangingRawPhotosites()
     {
         var catalog = CreateCatalog();
