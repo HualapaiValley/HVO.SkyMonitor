@@ -32,7 +32,9 @@ public static class RollingCombinationOptionDescriptors
         new MixedGainNormalizedMeanRecipe().Definition.ImplementationVersion,
         "Mixed-gain rolling combination",
         "Configure the existing mixed-gain window. Each execution still requires its frozen normalization plan and compatible calibration masters. Recipe, output routes and normalization bindings are preserved; saving does not acquire masters, change algorithms or activate the graph.",
-        Descriptor.Options);
+        [ProcessingOptionDescriptor.Toggle("enabled", "enabled", "Enable rolling combination",
+            "Run the existing mixed-gain normalized mean with the frozen normalization plan and compatible calibration masters when this graph node is enabled.", true),
+        .. Descriptor.Options.Where(static option => option.Key != "enabled")]);
 
     public static bool IsSameGain(JsonElement options) => options.ValueKind == JsonValueKind.Object &&
         options.EnumerateObject().Where(static property => property.Name.Equals("recipe", StringComparison.OrdinalIgnoreCase))

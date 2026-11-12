@@ -14,6 +14,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
 
+- Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
+
+- CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763
+
 - Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
 
 - A tamper found by the recent startup check now forces full byte verification before lifecycle readiness can recover. Complete-archive restore discards its staged clean checkpoint so preserved timestamps cannot inherit incremental trust. Refs #1041
