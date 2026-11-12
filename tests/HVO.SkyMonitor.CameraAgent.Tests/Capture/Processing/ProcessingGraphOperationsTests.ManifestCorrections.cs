@@ -33,7 +33,7 @@ public sealed partial class ProcessingGraphOperationsTests
             command.CommandText = corruption switch
             {
                 "normalization" => "UPDATE processing_executions SET frozen_plan_json = CAST(json_set(CAST(frozen_plan_json AS TEXT), '$.normalizationPlans', json('{}')) AS BLOB);",
-                "counts" => "UPDATE processing_executions SET frozen_plan_json = CAST(json_set(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts', json('{\"preview\":-1}')) AS BLOB);",
+                "counts" => "UPDATE processing_execution_manifest_counts SET evidence_status='Corrupt' WHERE ledger_kind='Outputs' AND node_id='';",
                 "nodes" => "UPDATE processing_executions SET frozen_plan_json = CAST(json_remove(CAST(frozen_plan_json AS TEXT), '$.nodes') AS BLOB);",
                 _ => "UPDATE processing_executions SET frozen_plan_json = CAST('private-sentinel invalid JSON' AS BLOB);"
             };
@@ -89,7 +89,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     frozenGraph = (byte[])reader[1];
                 }
                 using var legacy = connection.CreateCommand();
-                legacy.CommandText = "UPDATE processing_executions SET frozen_plan_json = CAST(json_remove(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts') AS BLOB);";
+                legacy.CommandText = "DELETE FROM processing_execution_manifest_counts WHERE ledger_kind='Outputs' AND node_id<>'';";
                 await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
                 using var legacyReader = await read.ExecuteReaderAsync().ConfigureAwait(false);
                 Assert.IsTrue(await legacyReader.ReadAsync().ConfigureAwait(false));
@@ -120,7 +120,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
                 CollectionAssert.AreEqual(frozenPlan, (byte[])reader[0]);
                 CollectionAssert.AreEqual(frozenGraph, (byte[])reader[1]);
-                Assert.AreEqual(8L, reader.GetInt64(2));
+                Assert.AreEqual(9L, reader.GetInt64(2));
             }
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
@@ -205,9 +205,8 @@ public sealed partial class ProcessingGraphOperationsTests
             using var completed = JsonDocument.Parse(after);
             foreach (var member in original.RootElement.EnumerateObject())
                 Assert.AreEqual(member.Value.GetRawText(), completed.RootElement.GetProperty(member.Name).GetRawText(), member.Name);
-            var counts = completed.RootElement.GetProperty("committedOutputCounts");
-            Assert.AreEqual(1, counts.GetProperty("preview").GetInt32());
-            Assert.AreEqual(0, counts.GetProperty("telemetry").GetInt32());
+            Assert.AreEqual(1, await ReadManifestCounterAsync(root, id, "committedOutputCounts", "preview").ConfigureAwait(false));
+            Assert.AreEqual(0, await ReadManifestCounterAsync(root, id, "committedOutputCounts", "telemetry").ConfigureAwait(false));
             await RunManifestTestAssertions.ResponseAsync(operations, id).ConfigureAwait(false);
         }
         finally { Directory.Delete(root, recursive: true); }
