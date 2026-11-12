@@ -251,9 +251,16 @@ internal static class CameraAgentAutomationOperationsEndpoints
         // The credential-aware helper preserves the existing owner ReadWrite API-key policy.
         if (!CameraAgentCredentialAccess.IsForgeryProtected(context))
         {
+            loggerFactory.CreateLogger(typeof(CameraAgentAutomationOperationsEndpoints))
+                .LogWarning(new EventId(7431, "AutomationAntiforgeryRejected"),
+                    "CameraAgent automation command rejected: {ReasonCode}.", "automation.antiforgery-invalid");
             return Results.Problem(
                 statusCode: StatusCodes.Status400BadRequest,
-                title: "The automation request is invalid.");
+                title: "The automation request is invalid.",
+                extensions: new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["reasonCode"] = "automation.antiforgery-invalid"
+                });
         }
         try
         {

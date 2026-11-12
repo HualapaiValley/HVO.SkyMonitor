@@ -165,11 +165,15 @@ public sealed class AutomationScriptControlsTests
         await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
         await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
         fixture.Stub.Available = false;
+        fixture.Stub.UnavailableReason = "script.sandbox-tools-required";
         using var context = Context(fixture.Service);
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement("#automation-edit-script");
         Assert.IsTrue(cut.Find("[data-script-action=run-now]").HasAttribute("disabled"));
-        Assert.Contains("Unavailable", cut.Find("#automation-definition-script").TextContent, StringComparison.Ordinal);
+        var card = cut.Find("#automation-definition-script").TextContent;
+        Assert.Contains("Unavailable", card, StringComparison.Ordinal);
+        Assert.Contains("Custom scripts require sandbox tools that are not installed on this host.", card, StringComparison.Ordinal);
+        Assert.DoesNotContain("script.sandbox-tools-required", card, StringComparison.Ordinal);
         await cut.Find("#automation-create").ClickAsync(new()).ConfigureAwait(false);
         Assert.IsFalse(cut.FindAll("#automation-task option").Any(item => item.GetAttribute("value") == "CustomScript"));
         Assert.IsEmpty(cut.FindAll("#automation-script-step"));

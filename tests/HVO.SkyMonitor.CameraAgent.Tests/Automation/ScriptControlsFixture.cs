@@ -79,12 +79,13 @@ internal sealed class ScriptControlsFixture : IDisposable
     internal sealed class ScriptRegistry : ILocalAutomationTaskRegistry
     {
         internal bool Available { get; set; } = true;
+        internal string UnavailableReason { get; set; } = "script.disabled";
         internal string Target { get; set; } = "registered.digest";
         internal Func<LocalAutomationOccurrence, CancellationToken, ValueTask<LocalAutomationExecution>> Execute { get; set; }
             = (_, _) => ValueTask.FromResult(new LocalAutomationExecution(LocalAutomationRunOutcome.Succeeded, "script.completed; exit=0; stdoutBytes=0; stderrBytes=0"));
         public IReadOnlyList<LocalAutomationTaskDescriptor> Describe() => [
             new(LocalAutomationTaskKind.CustomScript, "Registered script", [LocalAutomationTriggerKind.Periodic],
-                Available ? [Target] : [], Available, Available ? null : "script.disabled")
+                Available ? [Target] : [], Available, Available ? null : UnavailableReason)
             { ScriptInvocations = Available ? [new(Target, "registered", 30, 1048576, 65536, 1)] : [] },
             new(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition, "Built-in", [LocalAutomationTriggerKind.Periodic], ["built-in"], true, null)];
         public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition)

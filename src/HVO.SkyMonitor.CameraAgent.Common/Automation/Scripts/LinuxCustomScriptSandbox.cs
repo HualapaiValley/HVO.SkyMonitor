@@ -64,6 +64,7 @@ internal static class LinuxCustomScriptSandbox
         using var launchFailure = new CancellationTokenSource();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token, outputLimit.Token, launchFailure.Token);
         using var process = new Process { StartInfo = BuildStartInfo(script) };
+        var termination = new CustomScriptTermination(() => process.HasExited, Kill);
         var launched = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var reaped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         // PDEATHSIG is tied to the forking thread, not merely the .NET process. Keep it alive.
@@ -74,6 +75,7 @@ internal static class LinuxCustomScriptSandbox
                 if (!process.Start()) { launched.TrySetResult(false); return; }
                 launched.TrySetResult(true);
                 process.WaitForExit();
+                termination.Exited();
             }
             catch (Exception exception) when (exception is Win32Exception or IOException or InvalidOperationException)
             {
@@ -88,6 +90,10 @@ internal static class LinuxCustomScriptSandbox
             await reaped.Task.ConfigureAwait(false);
             return new("launch-failed", null, 0, 0);
         }
+        using var cancelledRegistration = cancellationToken.Register(() => termination.Stop("cancelled"));
+        using var timeoutRegistration = timeout.Token.Register(() => termination.Stop("timeout"));
+        using var outputRegistration = outputLimit.Token.Register(() => termination.Stop("output-limit"));
+        using var failureRegistration = launchFailure.Token.Register(() => termination.Stop("launch-failed"));
         long total = 0;
         var stdout = DrainAsync(process.StandardOutput.BaseStream);
         var stderr = DrainAsync(process.StandardError.BaseStream);
@@ -98,19 +104,19 @@ internal static class LinuxCustomScriptSandbox
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
-            Kill();
+            // The individual token callbacks latch the cause and terminate the live process.
         }
         finally
         {
             // The PID namespace init dies with its parent; exiting it kills even detached descendants.
             // Keep the worker/authority until exit and both redirected pipes have really drained.
-            if (!process.HasExited) Kill();
+            if (!process.HasExited) termination.Stop("launch-failed");
             await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             await input.ConfigureAwait(false);
             await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
             await reaped.Task.ConfigureAwait(false);
         }
-        return new(cancellationToken.IsCancellationRequested ? "cancelled" : launchFailure.IsCancellationRequested ? "launch-failed" : outputLimit.IsCancellationRequested ? "output-limit" : timeout.IsCancellationRequested ? "timeout" : process.ExitCode == 0 ? "completed" : "process-failed",
+        return new(termination.Status(process.ExitCode),
             process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
 
         async Task<long> DrainAsync(Stream stream)

@@ -137,6 +137,22 @@ public sealed class ArchitectureBoundaryTests
     /// </summary>
     [TestMethod]
     [TestCategory("Unit")]
+    public void CustomScriptsAndOffSweepWorkerReferenceNoCaptureOrAcquisitionServices()
+    {
+        var result = CompiledDependencyChecker.Check(ProductionAssembly(Repository.Value.Projects[CameraAgentCommon]),
+            type => type.Type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts", StringComparison.Ordinal)
+                || type.Type.Name.StartsWith("LocalAutomationOffSweepWorker", StringComparison.Ordinal),
+            type => type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common", StringComparison.Ordinal)
+                && (new[] { "Capture", "Acquisition", "RawIngress", "Scheduling", "Modules" }.Any(word =>
+                    type.Namespace.Split('.').Contains(word, StringComparer.Ordinal)
+                    || type.Name.Contains(word, StringComparison.Ordinal))));
+        Assert.IsTrue(result.SelectedTypes.Any(type => type.Type.Name == "CustomScriptTaskAdapter"));
+        Assert.IsTrue(result.SelectedTypes.Any(type => type.Type.Name == "LocalAutomationOffSweepWorker"));
+        Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public void Repository_EmbedsNoReleaseSigningTrustRoot()
     {
         var root = RepositoryGraph.FindRepositoryRoot();

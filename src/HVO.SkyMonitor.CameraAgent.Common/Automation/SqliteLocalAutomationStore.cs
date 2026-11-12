@@ -108,7 +108,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
 {
     private const string DirectoryName = ".automation";
     private const string FileName = "local-automations.db";
-    private const int ExpectedSchemaObjectCount = 8;
+    private const int ExpectedSchemaObjectCount = 9;
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -116,6 +116,17 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         Converters = { new JsonStringEnumConverter() }
     };
+
+    private const string ScriptStopAuditSchemaSql = """
+        CREATE TABLE automation_script_stops (
+            run_key TEXT PRIMARY KEY REFERENCES automation_runs(run_key) ON DELETE CASCADE,
+            revision_sha256 TEXT NOT NULL CHECK (length(revision_sha256) = 64),
+            definition_version INTEGER NOT NULL CHECK (definition_version > 0),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 256),
+            cause TEXT NOT NULL CHECK (cause = 'operator-stop-requested'),
+            requested_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        """;
 
     private static readonly string SchemaSql = $"""
         CREATE TABLE IF NOT EXISTS automation_definitions (
@@ -289,11 +300,23 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                     + "before starting this CameraAgent.");
             }
             await ExecuteAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, ScriptStopAuditSchemaSql, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(
                 connection,
                 transaction,
                 $"PRAGMA user_version = {LocalAutomationContract.CurrentSchemaVersion};",
                 cancellationToken).ConfigureAwait(false);
+        }
+        else if (version == 3)
+        {
+            // Only the known predecessor is a supported forward input. Do not bless a drifted store.
+            var predecessorObjects = await ScalarLongAsync(connection, transaction,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", cancellationToken).ConfigureAwait(false);
+            if (predecessorObjects != 8)
+                throw new InvalidDataException("Local automation SQLite schema is incomplete or drifted.");
+            await ExecuteAsync(connection, transaction, ScriptStopAuditSchemaSql, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                $"PRAGMA user_version = {LocalAutomationContract.CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
         }
         else if (version != LocalAutomationContract.CurrentSchemaVersion)
         {

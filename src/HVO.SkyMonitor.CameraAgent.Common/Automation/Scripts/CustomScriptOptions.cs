@@ -38,6 +38,10 @@ public sealed class CustomScriptRegistration
     public IReadOnlyList<CustomScriptArgument> Arguments { get; set; } = [];
     public int TimeoutSeconds { get; set; } = 30;
     public int ScratchBytes { get; set; } = 1_048_576;
+    /// <summary>
+    /// Combined stdout/stderr termination threshold, not a byte cap. Reads and process-tree drain
+    /// continue after it is crossed, so recorded byte counts can exceed this value; no output is retained.
+    /// </summary>
     public int OutputBytes { get; set; } = 65_536;
 
     internal bool IsValid() => LocalAutomationDefinitionValidator.IsIdentifier(Id, 48) &&
