@@ -81,7 +81,12 @@ public sealed class CaptureStoragePolicyTests
         var reversed = options.Policies.Reverse().ToArray();
         secondOptions[nameof(options.Policies)] = JsonSerializer.SerializeToNode(reversed);
         var second = first with { Steps = [first.Steps[0] with { Options = JsonSerializer.SerializeToElement(secondOptions) }] };
-        Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(first, second));
+        CaptureStoragePolicy.EnsureMatchesProfile(first, first);
+        CaptureStoragePolicy.EnsureMatchesProfile(second, second);
+        var forward = Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(first, second));
+        var backward = Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(second, first));
+        Assert.AreEqual("Policies", forward.ValidationResult!.MemberNames.Single());
+        Assert.AreEqual("Policies", backward.ValidationResult!.MemberNames.Single());
     }
 
     private static CapturePipelineConfig Pipeline(string root, string selector)

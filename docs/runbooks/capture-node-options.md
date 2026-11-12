@@ -74,8 +74,10 @@ Mismatch guidance names differing fields without showing directory paths or
 policy values. Root paths use the runtime's full-path and trailing-separator
 rules, and artifact-policy StepId selectors compare ignoring case. On Linux,
 backslash is a filename character, not a directory separator. Policy order is
-preserved: equally specific overlapping policies use the first match, so
-reordering a policy array is not generally an equivalent edit.
+preserved: equally specific overlapping policies use the first match. Storage-policy
+comparison is order-sensitive: a reordered policy array is a real policy conflict,
+including when its individual rules are unchanged. Reconcile it with the active
+profile before preview, save or selection; no order-insensitive normalization applies.
 
 For a planned Storage change:
 
@@ -119,8 +121,13 @@ request conflicts; a new key does not bypass current Storage-policy validation.
 
 Other graph settings can still be edited and activated while preserving Storage.
 This panel does not update the profile or teach retention/upload workers to read
-graph revisions. Explicit archived replay keeps its existing retained-revision
-path and does not gain a current-profile Storage check in this delivery.
+graph revisions. Explicit archived replay uses the capture's retained camera/rig
+configuration with the validated/active graph revision named in the replay request,
+including that revision's Storage options. It can differ from the live current
+profile; replay does not change the active capture profile or graph selection.
+The replay execution records the selected graph revision and frozen plan identities
+for audit. This does not migrate Storage roots, bypass retained-input/plan eligibility
+checks, or enable automatic publication/upload. No new current-profile fence applies.
 
 Defaults match the existing runtime option classes. Unchanged saves preserve
 absent defaults, source member casing, unknown fields and nested scientific
@@ -150,4 +157,4 @@ this preflight: its runtime normalization may accept these source spellings.
 These scalar panels preserve association/label-policy settings, astrometry
 catalog/clock/prior/solver inputs, satellite catalog/work-bound/time settings and
 artifact-specific storage policies. Their richer editors and the remaining
-per-overlay styling are tracked by #1386; this partial delivery does not close it.
+per-overlay styling remain outside this partial delivery. Refs #1386.
