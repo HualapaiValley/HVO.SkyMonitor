@@ -26,8 +26,8 @@ internal static class ReleaseCatalogs
             specification.License.Identifier,
             specification.License.File.RelativePath,
             specification.License.Attribution.RelativePath,
-            specification.Topology.Identity,
-            specification.Topology.Sha256)));
+            specification.Topology?.Identity ?? string.Empty,
+            specification.Topology?.Sha256 ?? string.Empty)));
 
     public static ApprovedCatalogContract Get(string? catalogId, string? packageVersion)
         => catalogId is not null && Specifications.TryGet(catalogId, out var specification) &&

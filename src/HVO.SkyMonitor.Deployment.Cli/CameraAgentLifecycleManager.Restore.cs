@@ -169,7 +169,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 // The release records came back with the archive; they are settled for the restored image, so the record of
                 // the image the instance runs is the current one and the install record reads its versions from them.
                 await ReleaseRecords.SettleAsync(paths, null, manifest.Image, cancellationToken).ConfigureAwait(false);
-                await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
+                await PinCatalogsAsync(paths, manifest, operation.OperationId, cancellationToken)
                     .ConfigureAwait(false);
                 await SafeFileSystem.WriteJsonAtomicAsync(paths.ManifestPath, committed, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
                     .ConfigureAwait(false);
@@ -423,6 +423,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (!archive.Entries.Any(entry => entry.Path == BackupInventory.SnapshotPrefix(archive.StateSnapshot) + "manifest.json"))
             throw InstallerException.RefusedFormatted($"The backup is not one the installer can restore: it does not hold its database snapshot. Nothing was changed.");
 
+        if (manifest.DeepSkyCatalog is { } deepSky) CatalogLifecycleManager.ValidateInstalled(paths, deepSky);
         var catalogPaths = paths.WithCatalog(manifest.Catalog.CatalogId);
         try
         {

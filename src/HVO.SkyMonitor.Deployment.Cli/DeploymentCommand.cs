@@ -191,6 +191,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public bool Abort { get; init; }
     public string? CatalogBundle { get; init; }
     public string? CatalogVersion { get; init; }
+    public string? CatalogFamily { get; init; }
 
     /// <summary>The name of the backup <c>cameraagent restore</c> puts back, in the product root's backup folder (#1353).</summary>
     public string? Archive { get; init; }
@@ -206,6 +207,8 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public void Validate()
     {
         ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
+        if (CatalogFamily is not null && (CatalogFamily != "deep-sky" || Operation is not (LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback)))
+            throw new InstallUsageException("--catalog-family deep-sky applies only to catalog select or rollback.");
         if (TargetRelease is not null && Operation != LifecycleOperationKind.Upgrade)
         {
             throw new InstallUsageException("A release's upgrade notes apply only to an upgrade.");
@@ -296,6 +299,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
             AssetBaseUrl = (string?)null,
             Channel = 0
         });
+        if (CatalogFamily is not null) value += JsonSerializer.Serialize(new { CatalogFamily });
         // The release selection is appended only when it is used, for the same reason.
         if (Release is not null)
         {

@@ -18,7 +18,7 @@ public sealed partial class ProcessingNodeOptionsTests
             Assert.IsNull(resolved.Upgrade);
         }
         var defaults = ProcessingNodeOptionsCodec.Decode(descriptor, Json("{}"));
-        Assert.HasCount(5, defaults.Options);
+        Assert.HasCount(14, defaults.Options);
         Assert.AreEqual(6.5, defaults.Get("maximumMagnitude").Value.AsRealNumber());
         Assert.AreEqual(2000, defaults.Get("maximumResults").Value.AsWholeNumber());
         Assert.IsFalse(defaults.Get("includeConstellationEndpointStars").Value.AsToggle());

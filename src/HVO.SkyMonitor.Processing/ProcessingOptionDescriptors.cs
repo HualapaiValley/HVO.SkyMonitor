@@ -836,7 +836,7 @@ public static class ProcessingNodeOptionsDescriptors
         "projected-scene-presentation-v13-plain-circle-bounded-expected-labels",
         ScenePresentationLayerV12.Title,
         ScenePresentationLayerV12.Help,
-        ScenePresentationLayerV12.Options.Add(ProcessingOptionDescriptor.Toggle(
+        ScenePresentationLayerV12.Options.AddRange(DeepSkyOptionDescriptors.Presentation).Add(ProcessingOptionDescriptor.Toggle(
             "expectedPositionDiagnostics", "expectedPositionDiagnostics", "Show expected star names",
             "Label catalog positions with (expected) when measured associations are unavailable. Turning this off keeps only qualified measured star labels.", true)));
 

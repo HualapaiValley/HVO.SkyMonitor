@@ -12,6 +12,19 @@ namespace HVO.SkyMonitor.AgentCore.Tests;
 public sealed class SceneProvenanceCatalogIdentityTests
 {
     [TestMethod]
+    public void IndependentDeepSkyIdentityRoundTripsAndChangesTheFrameManifestDigest()
+    {
+        var identity = new CatalogSnapshotIdentity("openngc-fixture", "openngc-fixture-1", "5", "6", new string('a', 64));
+        var source = CreateManifest(CreateScene());
+        var selected = CreateManifest(CreateScene() with { DeepSkyCatalog = identity });
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(selected));
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(identity, parsed.Document!.Manifest.Scene!.DeepSkyCatalog);
+        Assert.AreNotEqual(CaptureContractJson.ComputeManifestSha256(source), CaptureContractJson.ComputeManifestSha256(selected));
+        Assert.AreEqual(source.Scene!.CatalogChecksumSha256, selected.Scene!.CatalogChecksumSha256);
+    }
+
+    [TestMethod]
     public void PersistedSceneWithoutCatalogIdentityKeepsItsBytesAndDeserializes()
     {
         var manifest = CreateManifest(CreateScene());

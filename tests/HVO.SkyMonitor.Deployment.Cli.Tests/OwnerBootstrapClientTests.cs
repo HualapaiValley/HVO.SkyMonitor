@@ -188,6 +188,34 @@ public sealed class OwnerBootstrapClientTests
     }
 
     [TestMethod]
+    public async Task VerifyInstallationBindsTheIndependentDeepSkyIdentity()
+    {
+        var selected = Expectation.Catalog with
+        {
+            CatalogId = "openngc-production",
+            PackageVersion = "openngc-v20260501-p6-s5-r1",
+            SchemaVersion = "5",
+            PreprocessingVersion = "6"
+        };
+        var body = System.Text.Json.Nodes.JsonNode.Parse(ValidBody())!.AsObject();
+        body["deepSkyCatalog"] = JsonSerializer.SerializeToNode(new
+        {
+            catalogId = selected.CatalogId,
+            packageVersion = selected.PackageVersion,
+            schemaVersion = selected.SchemaVersion,
+            preprocessingVersion = selected.PreprocessingVersion,
+            databaseSha256 = selected.DatabaseSha256
+        });
+        using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        { Content = new StringContent(body.ToJsonString()) }));
+        var client = new OwnerBootstrapClient(BaseAddress, handler);
+        Assert.AreEqual("owner-ready", await client.VerifyInstallationAsync(Token, Expectation with { DeepSkyCatalog = selected }, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => client.VerifyInstallationAsync(Token,
+            Expectation with { DeepSkyCatalog = selected with { DatabaseSha256 = new string('f', 64) } }, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => client.VerifyInstallationAsync(Token, Expectation, CancellationToken.None));
+    }
+
+    [TestMethod]
     public async Task VerifyInstallation_DefaultBudgetStillRejectsIdentityMismatch()
     {
         using var handler = new ScriptedHandler((_, _, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)

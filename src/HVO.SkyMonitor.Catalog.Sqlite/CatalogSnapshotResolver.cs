@@ -73,7 +73,10 @@ public static class CatalogSnapshotResolver
     /// <see cref="MinimumSupportedManifestVersion"/> through this one. Deployment images declare the same value so an
     /// upgrade preflight can refuse a selected catalog newer than the runtime that will read it.
     /// </summary>
-    public const int SupportedManifestVersion = ComposedManifestVersion;
+    public const int SupportedManifestVersion = DeepSkyManifestVersion;
+
+    /// <summary>Standalone OpenNGC: no star tables or constellation topology.</summary>
+    public const int DeepSkyManifestVersion = 4;
 
     /// <summary>The lowest catalog manifest version this resolver accepts: the stars-only schema 2 and 3 layout.</summary>
     public const int MinimumSupportedManifestVersion = 2;
@@ -234,9 +237,9 @@ public static class CatalogSnapshotResolver
             throw new InvalidDataException(
                 $"Catalog name mismatch. Expected '{manifest.Catalog.Name}', got '{catalog.Metadata.Name}'.");
         }
-        if (specification is not null)
+        if (specification?.Topology is { } topology)
         {
-            ValidateTopologyEndpoints(catalog, manifest.Topology!, specification.Topology);
+            ValidateTopologyEndpoints(catalog, manifest.Topology!, topology);
         }
 
         return new CatalogSnapshotResult(
@@ -325,11 +328,14 @@ public static class CatalogSnapshotResolver
         ValidateConstant("license.url", expected.License.Url.OriginalString, manifest.License.Url);
         ValidateFileConstant("license.file", manifest.License.File, expected.License.File);
         ValidateFileConstant("license.attribution", manifest.License.Attribution, expected.License.Attribution);
-        ValidateConstant("topology.identity", expected.Topology.Identity, manifest.Topology!.Identity);
-        ValidateConstant("topology.sha256", expected.Topology.Sha256, manifest.Topology.Sha256);
-        ValidateConstant("topology.constellationCount", expected.Topology.ConstellationCount,
-            manifest.Topology.ConstellationCount);
-        ValidateConstant("topology.segmentCount", expected.Topology.SegmentCount, manifest.Topology.SegmentCount);
+        if (expected.Topology is not null)
+        {
+            ValidateConstant("topology.identity", expected.Topology.Identity, manifest.Topology!.Identity);
+            ValidateConstant("topology.sha256", expected.Topology.Sha256, manifest.Topology.Sha256);
+            ValidateConstant("topology.constellationCount", expected.Topology.ConstellationCount,
+                manifest.Topology.ConstellationCount);
+            ValidateConstant("topology.segmentCount", expected.Topology.SegmentCount, manifest.Topology.SegmentCount);
+        }
         // The manifest versions match, and exactly the version-3 specifications and manifests have a composition.
         if (expected.Composition is { } composition)
         {
@@ -370,6 +376,7 @@ public static class CatalogSnapshotResolver
             (MinimumSupportedManifestVersion, "2", "3") => "hyg_v42.sqlite",
             (MinimumSupportedManifestVersion, "3", "4") => "hyg_v44.sqlite",
             (ComposedManifestVersion, "4", "5") => "hyg_v44_openngc.sqlite",
+            (DeepSkyManifestVersion, "5", "6") => "openngc.sqlite",
             _ => throw new InvalidDataException(
                 "Catalog fixture must declare a supported manifest, schema, and preprocessing combination.")
         };
@@ -516,12 +523,14 @@ public static class CatalogSnapshotResolver
 
     private static SnapshotManifest ReadProductionManifest(JsonElement root, JsonElement package, int manifestVersion)
     {
-        var composed = manifestVersion == ComposedManifestVersion;
+        var standalone = manifestVersion == DeepSkyManifestVersion;
+        var composed = standalone || manifestVersion == ComposedManifestVersion;
         string[] rootProperties =
         [
             "manifestVersion", "package", "catalog", "source", "schemaVersion", "preprocessingVersion",
             "serializer", "database", "license", "topology"
         ];
+        if (standalone) rootProperties = rootProperties.Where(static name => name != "topology").ToArray();
         string[] databaseProperties = ["relativePath", "sha256", "length", "rowCount", "solCount", "requiredColumn"];
         RequireExactProperties(root, "manifest", composed ? [.. rootProperties, "components", "transformations"] : rootProperties);
         var catalog = RequireObject(RequireProperty(root, "catalog"), "catalog");
@@ -533,7 +542,7 @@ public static class CatalogSnapshotResolver
         var license = RequireObject(RequireProperty(root, "license"), "license");
         var licenseFile = RequireObject(RequireProperty(license, "file"), "license.file");
         var attribution = RequireObject(RequireProperty(license, "attribution"), "license.attribution");
-        var topology = RequireObject(RequireProperty(root, "topology"), "topology");
+        var topology = standalone ? default : RequireObject(RequireProperty(root, "topology"), "topology");
 
         RequireExactProperties(catalog, "catalog", "id", "name", "version");
         RequireExactProperties(source, "source", "projectUrl", "downloadUrl", "oid", "compressed", "decompressed");
@@ -542,10 +551,10 @@ public static class CatalogSnapshotResolver
         RequireExactProperties(serializer, "serializer", "name", "version");
         RequireExactProperties(database, "database", composed ? [.. databaseProperties, "deepSky"] : databaseProperties);
         RequireExactProperties(license, "license", "identifier", "url", "file", "attribution");
-        var composition = composed ? ApprovedCatalogComposition.Read(root, database) : null;
+        var composition = composed ? ApprovedCatalogComposition.Read(root, database, standalone) : null;
         RequireExactProperties(licenseFile, "license.file", "relativePath", "sha256", "length");
         RequireExactProperties(attribution, "license.attribution", "relativePath", "sha256", "length");
-        RequireExactProperties(topology, "topology", "identity", "sha256", "constellationCount", "segmentCount");
+        if (!standalone) RequireExactProperties(topology, "topology", "identity", "sha256", "constellationCount", "segmentCount");
 
         var manifest = new SnapshotManifest(
             manifestVersion,
@@ -572,7 +581,7 @@ public static class CatalogSnapshotResolver
                 RequireString(license, "url"),
                 ReadFileEvidence(licenseFile),
                 ReadFileEvidence(attribution)),
-            new SnapshotTopology(
+            standalone ? null : new SnapshotTopology(
                 RequireString(topology, "identity"),
                 RequireString(topology, "sha256"),
                 RequireInt64(topology, "constellationCount"),
@@ -593,7 +602,8 @@ public static class CatalogSnapshotResolver
         var database = RequireObject(RequireProperty(root, "database"), "database");
         RequireExactProperties(catalog, "catalog", "id", "name", "version");
         string[] databaseProperties = ["relativePath", "sha256", "length", "rowCount"];
-        var composed = manifestVersion == ComposedManifestVersion;
+        var standalone = manifestVersion == DeepSkyManifestVersion;
+        var composed = standalone || manifestVersion == ComposedManifestVersion;
         RequireExactProperties(database, "database", composed ? [.. databaseProperties, "deepSky"] : databaseProperties);
 
         var manifest = new SnapshotManifest(

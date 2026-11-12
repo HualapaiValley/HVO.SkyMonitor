@@ -166,9 +166,10 @@ public static class PresentationLayerProducers
         bool includeCardinalDirections = true,
         MeasuredStellarAssociationsV1? associations = null,
         bool expectedPositionDiagnostics = false,
-        HorizonObstructionSceneEligibility? horizon = null)
+        HorizonObstructionSceneEligibility? horizon = null,
+        bool includeDeepSky = true)
     => FromProjectedSceneGroupsCore(scene, style, includeMarkers, includeLabels, includeConstellations,
-            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon);
+            includeImageCircle, includeCardinalDirections, associations, expectedPositionDiagnostics, horizon: horizon, includeDeepSky: includeDeepSky);
 
     internal static PresentationSceneLayerPayloadsV2 FromProjectedSceneGroupsCore(
         ProjectedSceneV1 scene,
@@ -181,7 +182,8 @@ public static class PresentationLayerProducers
         MeasuredStellarAssociationsV1? associations = null,
         bool expectedPositionDiagnostics = false,
         ScenePresentationStyleV1? selectedStyle = null,
-        HorizonObstructionSceneEligibility? horizon = null)
+        HorizonObstructionSceneEligibility? horizon = null,
+        bool includeDeepSky = true)
     {
         ArgumentNullException.ThrowIfNull(scene);
         ProjectedSceneJson.Validate(scene);
@@ -369,7 +371,7 @@ public static class PresentationLayerProducers
         }
         var remainingPrimitives = PresentationLayerCompositor.MaximumLayerPrimitives -
             markers.Length - footprintSegments.Count - starTexts.Sum(static block => block.Lines.Count);
-        var curated = scene.DeepSky is null || remainingPrimitives < PresentationDeepSkyLayerProducer.CaptionPrimitives
+        var curated = !includeDeepSky || scene.DeepSky is null || remainingPrimitives < PresentationDeepSkyLayerProducer.CaptionPrimitives
             ? null : PresentationDeepSkyLayerProducer.Create(scene,
             new PresentationDeepSkyStyleV1(MaximumLabels: includeLabels
                 ? Math.Min(24, PresentationLayerPayloadV1.MaximumTextBlocks - starTexts.Count - 1) : 0), reservedLabelBounds:

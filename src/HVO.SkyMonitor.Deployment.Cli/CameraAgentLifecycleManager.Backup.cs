@@ -260,6 +260,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 Phase = LifecycleOperationPhase.StateSnapshotRecorded,
                 StateSnapshot = snapshot
             }, cancellationToken).ConfigureAwait(false);
+            if (manifest.DeepSkyCatalog is { } deepSky)
+                await CatalogReferenceStore.PinHistoricalAsync(paths.WithCatalog(deepSky.CatalogId), deepSky, operation.OperationId, cancellationToken).ConfigureAwait(false);
             var (items, omitted) = await BackupInventory.CollectAsync(paths, manifest, stores, snapshot, cancellationToken)
                 .ConfigureAwait(false);
             var releaseVersion = await ReleaseRecords.VersionOfAsync(paths, manifest.Image.ImageId, cancellationToken).ConfigureAwait(false);

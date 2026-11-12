@@ -27,7 +27,8 @@ public sealed class VirtualSkyCameraModule(
     IConstellationTopology? constellationTopology = null,
     IPlanetEphemeris? planetEphemeris = null,
     IProjectedSceneStagingStore? stagingStore = null,
-    ISceneObjectBound? sceneObjectBound = null) :
+    ISceneObjectBound? sceneObjectBound = null,
+    IVirtualSkyGraphSelection? graphSelection = null) :
     ICameraModule,
     ICameraSetpointController,
     ICameraModuleConfigurationPreflight,
@@ -39,11 +40,16 @@ public sealed class VirtualSkyCameraModule(
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
     private static readonly AstronomyEnginePlanetEphemeris SolarBackgroundEphemeris = new();
+    private static readonly JsonSerializerOptions ProjectedSceneSerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
     private static readonly JsonSerializerOptions SceneIdentitySerializerOptions = CreateSceneIdentitySerializerOptions();
     private static readonly VirtualSimulatedFocusOptions DefaultSimulatedFocus = new();
     private CameraModuleConfig? _config;
     private VirtualSkyCameraModuleOptions _options = new();
     private CuratedDeepSkyOptions? _curatedAnnotations;
+    private OpenNgcDeepSkyOptions? _deepSkyAnnotations;
     private VirtualCloudField? _cloudField;
     private VirtualTransientScenario? _transientScenario;
     private ResolvedSensorReadout? _resolvedReadout;
@@ -91,6 +97,10 @@ public sealed class VirtualSkyCameraModule(
         ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
         _config = config;
         _curatedAnnotations = ResolveCuratedAnnotations();
+        _deepSkyAnnotations = _options.DeepSky ?? ResolveDeepSkyAnnotations();
+        if (_deepSkyAnnotations is not null) _ = _deepSkyAnnotations.ToSelection();
+        if (_deepSkyAnnotations is { Enabled: true } && _curatedAnnotations is { Enabled: true })
+            throw new InvalidOperationException("Choose either the general deep-sky query or the legacy curated preset.");
         if (_curatedAnnotations is not null)
         {
             _ = _curatedAnnotations.ToSelection();
@@ -224,6 +234,14 @@ public sealed class VirtualSkyCameraModule(
             ? _options.PsfRadiusPixels
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
+        var captureGraph = preview is null && graphSelection is not null
+            ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
+        var captureDeepSky = _options.DeepSky ?? (captureGraph is null ? _deepSkyAnnotations : ResolveDeepSkyAnnotations(captureGraph.Pipeline));
+        var stageProjectedScene = captureGraph is null ? _stageProjectedScene : captureGraph.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));
+        if (captureDeepSky is { Enabled: true } && _curatedAnnotations is { Enabled: true })
+            throw new InvalidOperationException("Choose either the general deep-sky query or the legacy curated preset.");
+        if (preview is null && captureDeepSky is { Enabled: true } && (!stageProjectedScene || stagingStore is null))
+            throw new InvalidOperationException("Deep-sky captures require a retained ProjectedScene step and staging store.");
         if (preview is null && _curatedAnnotations is { Enabled: true } &&
             (!_stageProjectedScene || stagingStore is null))
             throw new InvalidOperationException("Curated captures require a retained ProjectedScene step and staging store.");
@@ -403,7 +421,13 @@ public sealed class VirtualSkyCameraModule(
             // Annotations outline the same topocentric disks the sensor receives.
             renderScene = renderScene.WithResolvedBodies(resolvedDisks.Disks);
         }
-        if (_curatedAnnotations is { Enabled: true } curated)
+        if (captureDeepSky is { Enabled: true } selected)
+        {
+            var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
+                ?? throw new InvalidOperationException("Deep-sky annotations require an independently selected deep-sky catalog.");
+            renderScene = renderScene.WithCuratedDeepSky(deepSky, selected.ToSelection());
+        }
+        else if (_curatedAnnotations is { Enabled: true } curated)
         {
             var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
                 ?? throw new InvalidOperationException("Curated annotation requires an approved composed catalog.");
@@ -446,6 +470,12 @@ public sealed class VirtualSkyCameraModule(
             sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(
                 sceneId, "\ncurated-annotations-v1\n", JsonSerializer.Serialize(curatedIdentity.ToSelection())))));
         }
+        if (captureDeepSky is { Enabled: true } deepSkyIdentity)
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId,
+                "\nopenngc-query-v1\n", JsonSerializer.Serialize(deepSkyIdentity.ToSelection()), "\n",
+                JsonSerializer.Serialize(renderScene.DeepSky?.CatalogIdentity)))));
+        if (captureGraph is not null)
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sceneId + "\ngraph\n" + captureGraph.RevisionId)));
         sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
             CaptureContractJson.ComputeCanonicalJsonSha256(virtualExposure)))));
         if (preview is not null)
@@ -456,7 +486,7 @@ public sealed class VirtualSkyCameraModule(
                 focusModel?.ParametersSha256(_options.PsfSigmaPixels) ?? "fixed-psf", "\n",
                 focusPosition?.ToString("R", CultureInfo.InvariantCulture) ?? "none"))));
         }
-        var stageKey = preview is null && _stageProjectedScene && stagingStore is not null
+        var stageKey = preview is null && stageProjectedScene && stagingStore is not null
             ? Convert.ToHexString(RandomNumberGenerator.GetBytes(32))
             : null;
         // Previews draw noise from their own negative sequence so the capture sequence is never consumed.
@@ -580,7 +610,9 @@ public sealed class VirtualSkyCameraModule(
             VirtualExposure: virtualExposure,
             ProjectedSceneSchemaVersion: stageKey is null ? null : scene.ProjectedSceneSchemaVersion,
             CatalogId: catalogIdentity.CatalogId,
-            CatalogPackageVersion: catalogIdentity.PackageVersion);
+            CatalogPackageVersion: catalogIdentity.PackageVersion,
+            DeepSkyCatalog: renderScene.DeepSky?.CatalogIdentity,
+            CaptureGraphRevisionId: captureGraph?.RevisionId);
         var extra = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["sceneId"] = sceneId,
@@ -1389,6 +1421,15 @@ public sealed class VirtualSkyCameraModule(
     /// When the module omits it, the first enabled <c>ProjectedScene</c> step supplies the same object so an
     /// installed profile can opt in without rewriting the named rig's module options.
     /// </summary>
+    private OpenNgcDeepSkyOptions? ResolveDeepSkyAnnotations(CapturePipelineConfig? pipeline = null)
+    {
+        foreach (var step in (pipeline ?? _config?.Pipeline)?.Steps ?? [])
+            if (step.Enabled != false && IsProjectedSceneStep(step) && step.Options is { ValueKind: JsonValueKind.Object } options)
+                return JsonSerializer.Deserialize<HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.ProjectedSceneCaptureProcessingStepOptions>(
+                    options.GetRawText(), ProjectedSceneSerializerOptions)?.DeepSkySelection();
+        return null;
+    }
+
     private CuratedDeepSkyOptions? ResolveCuratedAnnotations()
     {
         if (_options.CuratedAnnotations is { } module)
@@ -1435,6 +1476,7 @@ public sealed class VirtualSkyCameraModule(
             foreach (var name in new[]
             {
                 nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations),
+                nameof(VirtualSkyCameraModuleOptions.DeepSky),
                 nameof(VirtualSkyCameraModuleOptions.StellarCandidateSelection)
             })
             {
@@ -1595,6 +1637,8 @@ public sealed class VirtualSkyCameraModuleOptions
     public bool IncludeConstellationEndpointStars { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public OpenNgcDeepSkyOptions? DeepSky { get; init; }
     public IReadOnlyList<string> SolarSystemBodies { get; init; } = Array.Empty<string>();
 
     /// <summary>Manual-focus preview model; unset uses the declared defaults and never affects ordinary captures.</summary>
@@ -1604,6 +1648,7 @@ public sealed class VirtualSkyCameraModuleOptions
     internal void Validate()
     {
         SimulatedFocus?.Validate(PsfSigmaPixels);
+        if (DeepSky is not null) _ = DeepSky.ToSelection();
         if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
         new StellarExposureGeometryOptions(MaximumResults, MaximumStellarSamples, MaximumStellarStepPixels, PsfRadiusPixels).Validate();
         new StellarExposureRenderSettings(MinimumStellarSignalToNoise, MaximumStellarKernelCellVisits, MaximumStellarSparsePixels).Validate();

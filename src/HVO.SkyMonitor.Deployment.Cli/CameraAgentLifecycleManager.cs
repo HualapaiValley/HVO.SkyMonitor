@@ -139,6 +139,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     ResumableCatalogSelectionVersion(request, retainedOperation), cancellationToken)
                 .ConfigureAwait(false);
         }
+        await ValidateDeepSkySelectionSettingAsync(paths, manifest.DeepSkyCatalog, retainedOperation, cancellationToken).ConfigureAwait(false);
         if (RequiresInstallationVerification(request.Operation))
         {
             installationVerificationToken = await ReadInstallationVerificationTokenAsync(paths, manifest, cancellationToken)
@@ -233,6 +234,7 @@ internal sealed partial class CameraAgentLifecycleManager
                         ResumableCatalogSelectionVersion(request, retainedOperation), cancellationToken)
                     .ConfigureAwait(false);
             }
+            await ValidateDeepSkySelectionSettingAsync(paths, manifest.DeepSkyCatalog, retainedOperation, cancellationToken).ConfigureAwait(false);
             if (RequiresInstallationVerification(request.Operation))
             {
                 installationVerificationToken = await ReadInstallationVerificationTokenAsync(paths, manifest, cancellationToken)
@@ -741,6 +743,7 @@ internal sealed partial class CameraAgentLifecycleManager
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
         CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
+        if (manifest.DeepSkyCatalog is { } deepSky) CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, deepSky.CatalogId);
         if (!rollback && !CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
         {
             throw InstallerException.Refused(
@@ -1446,7 +1449,7 @@ internal sealed partial class CameraAgentLifecycleManager
             LastLifecycleOperationId = operation.OperationId,
             UpdatedUtc = DateTimeOffset.UtcNow
         };
-        await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
+        await PinCatalogsAsync(paths, manifest, operation.OperationId, cancellationToken)
             .ConfigureAwait(false);
         await SafeFileSystem.WriteJsonAtomicAsync(paths.ManifestPath, committed, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
             .ConfigureAwait(false);
@@ -1572,7 +1575,7 @@ internal sealed partial class CameraAgentLifecycleManager
         // committed purge is a different tree that this operation never authenticated.
         if (operation.Phase == LifecycleOperationPhase.Committed)
             throw new InstallerException("The retained purge already committed its deletion; it cannot adopt an instance root that reappeared.");
-        await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
+        await PinCatalogsAsync(paths, manifest, operation.OperationId, cancellationToken)
             .ConfigureAwait(false);
         var parent = Directory.GetParent(paths.InstanceRoot)?.FullName
             ?? throw new InstallerException("The instance root has no authenticated parent.");
@@ -1710,9 +1713,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
                 manifest.Catalog,
-                allowCompletedPasswordReplacement),
+                allowCompletedPasswordReplacement, manifest.DeepSkyCatalog),
             cancellationToken).ConfigureAwait(false);
-        await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken).ConfigureAwait(false);
+        await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken, manifest.DeepSkyCatalog?.InstallRoot).ConfigureAwait(false);
         return verifiedOwnerState;
     }
 
@@ -1793,6 +1796,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
             }
             CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
+            if (manifest.DeepSkyCatalog is { } deepSky) CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, deepSky.CatalogId);
             if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
             {
                 throw new InstallerException(
@@ -1852,7 +1856,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 now,
                 now,
                 manifest.Image,
-                OriginalCatalog: manifest.Catalog);
+                OriginalCatalog: manifest.Catalog, OriginalDeepSkyCatalog: manifest.DeepSkyCatalog);
         }
         if (resumed is not null) return resumed;
         var state = new LifecycleOperationState(
@@ -1866,7 +1870,7 @@ internal sealed partial class CameraAgentLifecycleManager
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
             manifest.Image,
-            OriginalCatalog: manifest.Catalog);
+            OriginalCatalog: manifest.Catalog, OriginalDeepSkyCatalog: manifest.DeepSkyCatalog);
         return await RecordAsync(paths, state, cancellationToken).ConfigureAwait(false);
     }
 
@@ -2061,6 +2065,9 @@ internal sealed partial class CameraAgentLifecycleManager
             value.CandidateImage is not null &&
             !IsCanonicalImage(value.CandidateImage, "cameraagent-install-v1", value.CandidateImage.Architecture) ||
             value.CandidateCatalog is not null && !IsValidCatalog(value.CandidateCatalog) ||
+            value.OriginalDeepSkyCatalog is not null && !IsValidCatalog(value.OriginalDeepSkyCatalog) ||
+            value.CandidateDeepSkyCatalog is not null && !IsValidCatalog(value.CandidateDeepSkyCatalog) ||
+            value.DeepSkyTransition && value.Kind is not (LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback) ||
             value.Phase == LifecycleOperationPhase.Planned ||
             value.Status == InstallationStatus.Completed && value.Phase != LifecycleOperationPhase.Completed ||
             value.Phase == LifecycleOperationPhase.Completed && value.Status != InstallationStatus.Completed ||
@@ -2390,7 +2397,7 @@ internal sealed partial class CameraAgentLifecycleManager
             !IsSha256(result.ScheduleSha256) || !HasValue(result.RigProfileName) ||
             !HasValue(result.RigProfileVersion) || !HasValue(result.ScheduleSchemaVersion) ||
             !HasValue(result.ScheduleState) || !IsSha256(result.ComposeModelSha256) ||
-            !IsValidCatalog(result.Catalog) ||
+            !IsValidCatalog(result.Catalog) || !ValidDeepSky(result.DeepSkyCatalog, result.ProductRoot) ||
             result.Catalog.InstallRoot != Path.Combine(result.ProductRoot, "catalogs", result.Catalog.CatalogId) ||
             !IsCanonicalImage(
                 result.Image,
@@ -2418,7 +2425,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var result = await ReadResultAsync(resultPath, cancellationToken).ConfigureAwait(false);
         EnsureCorrelated(paths, operation.InstanceId!.Value, manifest, result, allowTransactionalDrift: false);
         if (manifest.Image != operation.OriginalImage || result.Image != operation.OriginalImage ||
-            manifest.Catalog != operation.OriginalCatalog || result.Catalog != operation.OriginalCatalog)
+            manifest.Catalog != operation.OriginalCatalog || result.Catalog != operation.OriginalCatalog ||
+            manifest.DeepSkyCatalog != operation.OriginalDeepSkyCatalog || result.DeepSkyCatalog != operation.OriginalDeepSkyCatalog)
         {
             throw new InstallerException("The retained lifecycle recovery records do not match the original operation identities.");
         }
@@ -2524,6 +2532,8 @@ internal sealed partial class CameraAgentLifecycleManager
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
             !HasValue(manifest.ScheduleState) || !IsSha256(manifest.InstallationVerificationTokenSha256) ||
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
+            !ValidDeepSky(manifest.DeepSkyCatalog, manifest.ProductRoot) || !ValidDeepSky(manifest.PreviousDeepSkyCatalog, manifest.ProductRoot) ||
+            manifest.DeepSkyCatalog is not null && !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.DeepSkyCatalog.CatalogId) ||
             manifest.Resources is not null && !CameraAgentContainerResources.IsValid(manifest.Resources) ||
             !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.Catalog.CatalogId) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
@@ -2580,7 +2590,7 @@ internal sealed partial class CameraAgentLifecycleManager
             manifest.DeploymentLocationId != $"installer-{instanceId:D}" || manifest.DockerDaemon != result.DockerDaemon ||
             (!allowTransactionalDrift &&
              (manifest.ComposeModelSha256 != result.ComposeModelSha256 ||
-              manifest.Image != result.Image || manifest.Catalog != result.Catalog)))
+              manifest.Image != result.Image || manifest.Catalog != result.Catalog || manifest.DeepSkyCatalog != result.DeepSkyCatalog)))
         {
             throw new InstallerException("The retained instance identities do not correlate.");
         }
@@ -2616,7 +2626,11 @@ internal sealed partial class CameraAgentLifecycleManager
               (manifest.Catalog == operation.OriginalCatalog || manifest.Catalog == operation.CandidateCatalog) &&
               (result.Catalog == operation.OriginalCatalog || result.Catalog == operation.CandidateCatalog)
             : manifest.Catalog == operation.OriginalCatalog && result.Catalog == operation.OriginalCatalog;
-        if (!imagesCorrelate || !catalogsCorrelate)
+        var deepSkyCorrelates = operation.DeepSkyTransition
+            ? (manifest.DeepSkyCatalog == operation.OriginalDeepSkyCatalog || manifest.DeepSkyCatalog == operation.CandidateDeepSkyCatalog) &&
+              (result.DeepSkyCatalog == operation.OriginalDeepSkyCatalog || result.DeepSkyCatalog == operation.CandidateDeepSkyCatalog)
+            : manifest.DeepSkyCatalog == operation.OriginalDeepSkyCatalog && result.DeepSkyCatalog == operation.OriginalDeepSkyCatalog;
+        if (!imagesCorrelate || !catalogsCorrelate || !deepSkyCorrelates)
             throw new InstallerException("The retained transactional identities do not match the lifecycle operation.");
     }
 
@@ -2677,6 +2691,44 @@ internal sealed partial class CameraAgentLifecycleManager
     private static bool IsValidCatalog(CatalogInstallationIdentity? value)
         => ProductionCatalog.IsPinned(value) &&
            HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline";
+
+    internal static async Task ValidateDeepSkySelectionSettingAsync(InstallationPaths paths, CatalogInstallationIdentity? selected,
+        LifecycleOperationState? retained, CancellationToken cancellationToken)
+    {
+        if (retained is { DeepSkyTransition: true, MutationStarted: true }) return;
+        var root = Path.Combine(paths.ConfigRoot, "secrets");
+        var enabledPath = Path.Combine(root, "DeepSkyCatalog__Enabled");
+        if (selected is null)
+        {
+            if (!File.Exists(enabledPath)) return;
+            using var source = SafeFileSystem.OpenOwnerFileRead(enabledPath);
+            using var reader = new StreamReader(source);
+            if ((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).TrimEnd('\r', '\n') != "false")
+                throw new InstallerException("The deep-sky configuration differs from the retained independent selection.");
+            return;
+        }
+        foreach (var (key, expected) in new[] { ("Enabled", "true"), ("Root", "/app/deep-sky-catalog"),
+                     ("RequiredCatalogId", selected.CatalogId), ("RequiredPackageKind", "Production"), ("RequiredPackageVersion", selected.PackageVersion) })
+        {
+            var path = Path.Combine(root, "DeepSkyCatalog__" + key);
+            if (!File.Exists(path)) throw new InstallerException("The deep-sky selection configuration is incomplete.");
+            using var source = SafeFileSystem.OpenOwnerFileRead(path);
+            using var reader = new StreamReader(source);
+            if ((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).TrimEnd('\r', '\n') != expected)
+                throw new InstallerException("The deep-sky configuration differs from the retained independent selection.");
+        }
+    }
+
+    internal static async Task PinCatalogsAsync(InstallationPaths paths, InstanceManifest manifest, Guid operationId, CancellationToken cancellationToken)
+    {
+        await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operationId, cancellationToken).ConfigureAwait(false);
+        if (manifest.DeepSkyCatalog is { } deepSky)
+            await CatalogReferenceStore.PinHistoricalAsync(paths.WithCatalog(deepSky.CatalogId), deepSky, operationId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool ValidDeepSky(CatalogInstallationIdentity? catalog, string productRoot) => catalog is null ||
+        IsValidCatalog(catalog) && ProductionCatalog.Get(catalog.CatalogId).ManifestVersion == 4 &&
+        catalog.InstallRoot == Path.Combine(productRoot, "catalogs", catalog.CatalogId);
 
     internal static void ValidateCanonicalCatalog(InstallationPaths paths, CatalogInstallationIdentity value)
     {
@@ -2860,7 +2912,8 @@ internal sealed partial class CameraAgentLifecycleManager
             manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
                 ? $"{InstallerProgram.Current} cameraagent reinstall --instance-id {manifest.InstanceId:D}"
                 : null,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        { DeepSkyCatalog = manifest.DeepSkyCatalog };
 
     private static async Task<LifecycleResult> ListAsync(string productRoot, CancellationToken cancellationToken)
     {

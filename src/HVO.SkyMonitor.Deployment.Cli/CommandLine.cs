@@ -126,8 +126,9 @@ internal static class CommandLine
         new(["catalog", "install"], null, "Install a catalog bundle beside the catalogs already installed.",
             ["--catalog-bundle", "--product-root"], OperationFlags, PlanScratchNote),
         new(["catalog", "select"], null, "Switch an instance to another installed catalog version.",
-            ["--instance-id", "--catalog-version", "--product-root"], OperationFlags, PlanScratchNote),
-        Lifecycle("Return an instance to the catalog version it used before.", "catalog", "rollback"),
+            ["--instance-id", "--catalog-version", "--catalog-family", "--product-root"], OperationFlags, PlanScratchNote),
+        new(["catalog", "rollback"], null, "Return an instance to its previous catalog selection.",
+            ["--instance-id", "--catalog-family", "--product-root"], OperationFlags, PlanScratchNote),
         new(["catalog", "gc"], null,
             "Remove an installed catalog version that no instance uses.",
             ["--catalog-version", "--product-root"], OperationFlags,
@@ -164,6 +165,7 @@ internal static class CommandLine
         ["--product-root"] = ("<path>", "The product root (default: this host's production product root)."),
         ["--catalog-bundle"] = ("<path>", "The catalog bundle folder."),
         ["--catalog-version"] = ("<version>", "An installed catalog version."),
+        ["--catalog-family"] = ("<deep-sky>", "Select the independent deep-sky family, including rollback."),
         ["--release"] = ("<folder>", "The release folder, holding the release's release.json and SHA256SUMS."),
         ["--image-source"] = ("<source>", "With --release: archive (default) loads its offline image archive; registry pulls its image."),
         ["--image-ref"] = ("<image>", "An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's."),
@@ -801,6 +803,7 @@ internal static class CommandLine
             Abort = flags.Contains("--abort"),
             CatalogBundle = Get(values, "--catalog-bundle"),
             CatalogVersion = Get(values, "--catalog-version"),
+            CatalogFamily = Get(values, "--catalog-family"),
             Archive = archive
         };
         if (archive is not null && archive.Contains('/', StringComparison.Ordinal))

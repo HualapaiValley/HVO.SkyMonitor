@@ -247,8 +247,24 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public CuratedDeepSkyOptions? CuratedAnnotations { get; init; }
 
+    public bool DeepSkyEnabled { get; init; }
+    public bool DeepSkyNgc { get; init; } = true;
+    public bool DeepSkyMessier { get; init; } = true;
+    public bool DeepSkyIc { get; init; } = true;
+    [Range(-30d, 30d)] public double DeepSkyMaximumMagnitude { get; init; } = 12;
+    public bool DeepSkyIncludeUnknownMagnitude { get; init; } = true;
+    [Range(0d, 1200d)] public double DeepSkyMinimumSizeArcminutes { get; init; }
+    [Range(0d, 1200d)] public double DeepSkyMaximumSizeArcminutes { get; init; } = 1200;
+    public bool DeepSkyIncludeUnknownSize { get; init; } = true;
+    public OpenNgcDeepSkyOptions DeepSkySelection() => new(DeepSkyEnabled, DeepSkyNgc, DeepSkyMessier, DeepSkyIc,
+        DeepSkyMaximumMagnitude, DeepSkyIncludeUnknownMagnitude, DeepSkyMinimumSizeArcminutes,
+        DeepSkyMaximumSizeArcminutes, DeepSkyIncludeUnknownSize);
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        _ = DeepSkySelection().ToSelection();
+        if (DeepSkyEnabled && CuratedAnnotations is { Enabled: true })
+            yield return new ValidationResult("Choose either the general deep-sky query or the legacy curated preset.");
         if (CuratedAnnotations is { } curated) _ = curated.ToSelection();
         if (ConstellationIds.Count > 128 || ConstellationIds.Any(static value => string.IsNullOrWhiteSpace(value) || value.Length > 16))
             yield return new ValidationResult("Constellation selections exceed their bounds.", [nameof(ConstellationIds)]);

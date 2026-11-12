@@ -125,7 +125,10 @@ internal sealed partial class CameraAgentInstaller
             _ = CatalogInstaller.Admit(request.CatalogBundle!, paths.ProductRoot);
         }
         // The bundle's approved specification selects the side-by-side catalog root this instance installs into.
-        var catalogId = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!).CatalogId;
+        var catalogSpecification = ProductionCatalog.ReadBundleSpecification(request.CatalogBundle!);
+        if (catalogSpecification.ManifestVersion == 4)
+            throw InstallerException.Refused("CameraAgent installation requires a star catalog bundle; install and select OpenNGC independently after installation.");
+        var catalogId = catalogSpecification.CatalogId;
         paths = paths.WithCatalog(catalogId);
         // A release's image is proved to be the release's, and an image this instance can run, and a new installation
         // imports it, before anything is claimed for it: no product root, state, application identity, catalog or staged
@@ -1150,6 +1153,9 @@ internal sealed partial class CameraAgentInstaller
     {
         if (!CameraAgentImageContract.SupportsCatalog(image.CatalogContract, catalogId))
             throw new InstallerException("The CameraAgent image cannot resolve the selected catalog.");
+        if (ProductionCatalog.Get(catalogId).ManifestVersion == 4 &&
+            (!int.TryParse(image.CatalogManifestVersion, out var supportedManifest) || supportedManifest < 4))
+            throw new InstallerException("The CameraAgent image does not declare support for the standalone deep-sky manifest.");
     }
 
 

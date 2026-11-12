@@ -97,6 +97,12 @@ public sealed class ProductionCatalogRegistryTests
     }
 
     [TestMethod]
+    [DataRow("hvo-approved-catalogs-v3", "openngc-production", true)]
+    [DataRow("hvo-approved-catalogs-v3", "hyg-v44-production", true)]
+    [DataRow("hvo-approved-catalogs-v3", "hyg-v44-openngc-production", true)]
+    [DataRow("hvo-approved-catalogs-v3", "hyg-v45-production", false)]
+    [DataRow("hvo-approved-catalogs-v3", null, false)]
+    [DataRow("hvo-approved-catalogs-v2", "openngc-production", false)]
     [DataRow("hvo-approved-catalogs-v2", "hyg-v42-production", true)]
     [DataRow("hvo-approved-catalogs-v2", "hyg-v44-production", true)]
     [DataRow("hvo-approved-catalogs-v2", "hyg-v44-openngc-production", true)]
@@ -115,7 +121,8 @@ public sealed class ProductionCatalogRegistryTests
     {
         Assert.AreEqual(supported, CameraAgentImageContract.SupportsCatalog(catalogContract, catalogId));
         Assert.AreEqual(
-            catalogContract is CameraAgentImageContract.ComposedCatalogContract
+            catalogContract is CameraAgentImageContract.IndependentCatalogContract
+                or CameraAgentImageContract.ComposedCatalogContract
                 or CameraAgentImageContract.CatalogContract
                 or CameraAgentImageContract.LegacyCatalogContract,
             CameraAgentImageContract.IsKnownCatalogContract(catalogContract));
@@ -159,7 +166,7 @@ public sealed class ProductionCatalogRegistryTests
         Assert.AreEqual(hygV42.InstanceRoot, hygV44.InstanceRoot);
         Assert.AreEqual(hygV42, hygV44.WithCatalog(HygV42.CatalogId));
         CollectionAssert.AreEquivalent(
-            new[] { hygV42.CatalogRoot, hygV44.CatalogRoot, composed.CatalogRoot },
+            new[] { hygV42.CatalogRoot, hygV44.CatalogRoot, composed.CatalogRoot, hygV42.WithCatalog("openngc-production").CatalogRoot },
             hygV42.ForEveryApprovedCatalog().Select(static item => item.CatalogRoot).ToArray());
     }
 

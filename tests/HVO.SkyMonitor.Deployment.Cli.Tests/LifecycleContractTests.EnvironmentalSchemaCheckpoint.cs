@@ -9,7 +9,9 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [DataRow(false, 1)]
-    [DataRow(true, 0)]
+    // The independent catalog reader also advances a compatibility label. Reverting only the
+    // minimum revision cannot remove that checkpoint boundary from the current image.
+    [DataRow(true, 1)]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task SchemaThreeEnvironmentalUpgradePlansTheCheckpointBeforeCandidateStartup(bool revertBoundary, int expectedSnapshots)
     {

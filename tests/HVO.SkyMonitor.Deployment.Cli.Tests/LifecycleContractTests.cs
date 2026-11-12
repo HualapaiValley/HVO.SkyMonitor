@@ -3659,13 +3659,20 @@ public sealed partial class LifecycleContractTests
                                 ["8080/tcp"] = new[] { new { HostIp = "127.0.0.1", HostPort = WrongPort ? "9999" : "5130" } }
                             }
                         },
-                        Mounts = mounts
+                        Mounts = mounts.Concat(DeepSkyMounts(paths!)).ToArray()
                     }
                 }), string.Empty));
             }
             if (arguments is ["container", "inspect", _, ..])
                 return Task.FromResult(new ProcessResult(1, string.Empty, $"Error response from daemon: No such container: {arguments[2]}"));
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+        }
+
+        private static IEnumerable<object> DeepSkyMounts(InstallationPaths currentPaths)
+        {
+            var environment = File.ReadAllLines(Path.Combine(currentPaths.ConfigRoot, "compose", "instance.env"));
+            var source = environment.SingleOrDefault(static line => line.StartsWith("HVO_DEEP_SKY_CATALOG_ROOT=", StringComparison.Ordinal));
+            return source is null ? [] : [new { Type = "bind", Source = source["HVO_DEEP_SKY_CATALOG_ROOT=".Length..], Destination = "/app/deep-sky-catalog", RW = false }];
         }
 
         private int infoCallCount;
