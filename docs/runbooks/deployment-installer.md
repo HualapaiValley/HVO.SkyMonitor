@@ -2047,10 +2047,19 @@ Preserved: `instance-manifest.json`, `application-identity.json`, the whole `con
 `config/secrets`, `config/owner-bootstrap`, `config/lifecycle-control`, `config/installation-verification`,
 and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations`, and instance backups.
 
-Star and deep-sky catalog selections, including their previous selections, are preserved deployment
-configuration. The subsequent `install` revalidates the selected OpenNGC snapshot and the image's reader
-support, restores its read-only mount and settings, and records the same selection in the installation result.
-A missing or incompatible selected snapshot stops reinstallation before container startup.
+The shared catalog files remain in place. Reinstallation selects the star catalog from the original
+`--catalog-bundle` input, so a later star selection can be replaced.
+
+An active deep-sky selection refuses `reset-state`, including `--dry-run`, before any runtime state is
+deleted or installation state is rewound. While the instance is still installed, roll the deep-sky family
+back to its disabled selection before uninstalling. Then reset and reinstall with the original inputs,
+upgrade to an image that supports the independent deep-sky catalog, and reselect OpenNGC. This ordering
+preserves a usable reinstall path when the original install image predates the new catalog contract.
+
+Pending installs left by an older reset can still retain an active OpenNGC selection. Both `install --plan`
+and the install run validate that snapshot and the requested image's reader support before configuration
+writes. A valid retained selection keeps its mount, settings and installation-result identity; a missing or
+incompatible snapshot stops admission.
 
 The operator settings file `state/identity/appsettings.local.json` shares the Identity mount but is operator
 configuration, not runtime state, so the reset carries it across the deletion. It is read before anything is

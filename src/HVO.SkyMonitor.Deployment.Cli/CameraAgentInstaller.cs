@@ -157,7 +157,7 @@ internal sealed partial class CameraAgentInstaller
         }
         if (request.DryRun)
         {
-            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, cancellationToken)
+            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, retained?.Manifest, cancellationToken)
                 .ConfigureAwait(false);
             var plannedPaths = paths.WithCatalog(Path.GetFileName(plan.Catalog.InstallRoot));
             var plannedRecord = InstallRecordLocation.For(plannedPaths.ProductRoot, request.ProductionProductRoot);
@@ -257,12 +257,7 @@ internal sealed partial class CameraAgentInstaller
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
             EnsureImageSupportsCatalog(image, catalog.CatalogId);
-            var deepSkyCatalog = existingManifest?.DeepSkyCatalog;
-            if (deepSkyCatalog is not null)
-            {
-                EnsureImageSupportsCatalog(image, deepSkyCatalog.CatalogId);
-                CatalogLifecycleManager.ValidateInstalled(paths, deepSkyCatalog);
-            }
+            var deepSkyCatalog = ValidateRetainedDeepSkyCatalog(paths, image, existingManifest);
             if (daemon != preflightDaemon)
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
@@ -537,6 +532,7 @@ internal sealed partial class CameraAgentInstaller
         {
             return;
         }
+        _ = ValidateRetainedDeepSkyCatalog(paths, image, retained.Manifest);
         await CameraAgentStatePreflight.EnsureCompatibleAsync(
                 paths,
                 instanceId,
@@ -553,6 +549,29 @@ internal sealed partial class CameraAgentInstaller
                 CameraAgentStateContractPolicy.AllowLegacy,
                 release?.Release.Tag)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>The same read-only catalog gate for pending-install admission, planning and the locked install.</summary>
+    private static CatalogInstallationIdentity? ValidateRetainedDeepSkyCatalog(
+        InstallationPaths paths, ImageInstallationIdentity image, InstanceManifest? manifest)
+    {
+        var selected = manifest?.DeepSkyCatalog;
+        if (selected is null) return null;
+        try
+        {
+            EnsureImageSupportsCatalog(image, selected.CatalogId);
+            CatalogLifecycleManager.ValidateInstalled(paths, selected);
+        }
+        catch (InstallerException exception) when (!exception.IsRefusal)
+        {
+            throw InstallerException.Refused(exception.Message, exception);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            throw InstallerException.Refused(
+                "The retained deep-sky catalog snapshot is missing, altered, or unavailable. Restore the selected catalog before reinstalling.", exception);
+        }
+        return selected;
     }
 
     /// <summary>
@@ -641,6 +660,7 @@ internal sealed partial class CameraAgentInstaller
         Guid instanceId,
         DockerClient docker,
         AcquiredImage? release,
+        InstanceManifest? retainedManifest,
         CancellationToken cancellationToken)
     {
         var applicationIdentity = Guid.NewGuid();
@@ -654,6 +674,7 @@ internal sealed partial class CameraAgentInstaller
         if (!IsValid(image, request.ReplayProfile))
             throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
         EnsureImageSupportsCatalog(image, catalog.CatalogId);
+        var deepSkyCatalog = ValidateRetainedDeepSkyCatalog(finalPaths, image, retainedManifest);
         var compose = ComposeDeployment.Render(
             request,
             finalPaths,
@@ -667,7 +688,7 @@ internal sealed partial class CameraAgentInstaller
             "dry-run-installation-verification-token",
             "dry-run-lifecycle-control-token",
             passwordAuthorityEnabled: true,
-            request.ContainerResources()).Files;
+            request.ContainerResources(), deepSkyCatalog: deepSkyCatalog).Files;
         return new InstallationResult(
             DeploymentSchemaVersions.InstallationResult,
             InstallationOutcome.Planned,
@@ -705,7 +726,8 @@ internal sealed partial class CameraAgentInstaller
             "planned",
             DateTimeOffset.UtcNow,
             (ContractReplayProfile)request.ReplayProfile,
-            OwnerPasswordIsDefault: request.PasswordFile is null && !request.GeneratePassword);
+            OwnerPasswordIsDefault: request.PasswordFile is null && !request.GeneratePassword)
+        { DeepSkyCatalog = deepSkyCatalog };
     }
 
     private static async Task<Guid> GetOrCreateApplicationIdentityAsync(

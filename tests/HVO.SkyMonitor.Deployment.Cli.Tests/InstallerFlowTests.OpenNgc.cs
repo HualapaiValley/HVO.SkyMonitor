@@ -9,7 +9,7 @@ public sealed partial class InstallerFlowTests
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(false)]
     [DataRow(true)]
-    public async Task InstallAsync_OpenNgcSelectionSurvivesUninstallResetAndReinstall(bool missingSnapshot)
+    public async Task InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite(bool missingSnapshot)
     {
         var (request, root) = ResourceRequest(RequireProductionCatalogBundle(), Guid.NewGuid());
         var runner = OpenNgcInstallerRunner(request);
@@ -24,22 +24,21 @@ public sealed partial class InstallerFlowTests
             var removed = await CameraAgentLifecycleManager.ExecuteAsync(uninstall, lifecycleRunner,
                 _ => new OpenNgcInstallerLifecycleClient(), null, RuntimeUid, RuntimeGid, CancellationToken.None);
             Assert.AreEqual(InstanceLifecycleCondition.Uninstalled, removed.LifecycleCondition);
-            var reset = await CameraAgentStateResetManager.ExecuteAsync(
-                new(first.InstanceId, first.InstanceId, root, false, false) { AllowTestProductRoot = true },
-                lifecycleRunner, RuntimeUid, RuntimeGid, CancellationToken.None);
-            Assert.AreEqual("completed", reset.Outcome);
+            await RetainLegacyOpenNgcResetAsync(paths, InstallationPhase.OwnerSeeded);
             Assert.IsFalse(File.Exists(paths.ResultPath));
 
             var expectations = new List<InstallationVerificationExpectation>();
             var reinstallRunner = OpenNgcInstallerRunner(request);
-            var owner = new InstallerOwnerClient { InspectVerification = expectations.Add };
+            var owner = new InstallerOwnerClient { InspectVerification = expectations.Add, OwnerAlreadySeeded = true };
             if (missingSnapshot)
             {
                 var version = Path.Combine(selected.InstallRoot, "versions", selected.PackageVersion);
                 File.Delete(Path.Combine(selected.InstallRoot, "current"));
                 SafeFileSystem.MakeTreeOwnerWritable(version);
                 Directory.Delete(version, recursive: true);
-                await Assert.ThrowsExactlyAsync<InstallerException>(() => InstallResourceRequestAsync(request, reinstallRunner, owner));
+                var missing = await Assert.ThrowsExactlyAsync<InstallerException>(() => InstallResourceRequestAsync(request, reinstallRunner, owner));
+                Assert.IsInstanceOfType<DirectoryNotFoundException>(missing.GetBaseException());
+                StringAssert.Contains(missing.GetBaseException().Message, "Catalog snapshot directory is missing", StringComparison.Ordinal);
                 Assert.AreEqual(0, reinstallRunner.ComposeUpCount, "A missing retained snapshot must stop installation before container startup.");
                 Assert.AreEqual(selected, (await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None)).DeepSkyCatalog);
                 return;
@@ -50,7 +49,9 @@ public sealed partial class InstallerFlowTests
             await AssertOpenNgcInstallationAsync(paths, restored, selected);
             Assert.IsTrue(expectations.Count > 0);
             Assert.IsTrue(expectations.All(expectation => expectation.DeepSkyCatalog == selected));
-            Assert.AreEqual(2, reinstallRunner.ComposeUpCount, "Owner bootstrap rewrites Compose a second time.");
+            Assert.AreEqual(1, reinstallRunner.ComposeUpCount, "Resuming past OwnerSeeded must start the first Compose write without an owner-bootstrap rewrite.");
+            StringAssert.Contains(reinstallRunner.LastComposeUp!, DeepSkyCatalogSelection.Mount, StringComparison.Ordinal);
+            StringAssert.Contains(reinstallRunner.LastComposeUpEnvironment!, $"HVO_DEEP_SKY_CATALOG_ROOT={selected.InstallRoot}\n", StringComparison.Ordinal);
 
             manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, CancellationToken.None);
             lifecycleRunner = OpenNgcLifecycleRunner(paths, manifest);
@@ -176,7 +177,7 @@ public sealed partial class InstallerFlowTests
 
     private sealed class OpenNgcInstallerLifecycleClient : ICameraAgentLifecycleClient
     {
-        private static readonly LifecycleContinuity Drained = new("Paused", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        private static readonly LifecycleContinuity Drained = new("Paused", 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, ReplayCatalogIndependent: true);
         public Task<LifecycleContinuity> PauseAndDrainAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken) => Task.FromResult(Drained);
         public Task<LifecycleContinuity> ConfirmDrainedAsync(string verificationToken, CancellationToken cancellationToken) => Task.FromResult(Drained);
         public Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken) => Task.CompletedTask;

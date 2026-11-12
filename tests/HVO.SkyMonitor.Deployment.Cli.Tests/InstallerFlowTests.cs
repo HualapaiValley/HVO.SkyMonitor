@@ -1585,6 +1585,7 @@ public sealed partial class InstallerFlowTests
         public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         private int stateReadCount;
         public string CurrentInstallationState { get; set; } = "owner-password-change-required";
+        public bool OwnerAlreadySeeded { get; init; }
         public string ExpectedOwnerEmail { get; init; } = "owner@example.test";
         public List<string> Passwords { get; } = [];
 
@@ -1608,7 +1609,7 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual(ExpectedOwnerEmail, ownerEmail);
             Assert.IsGreaterThanOrEqualTo(8, password.Length);
             Passwords.Add(password);
-            return Task.FromResult(stateReadCount++ == 0
+            return Task.FromResult(!OwnerAlreadySeeded && stateReadCount++ == 0
                 ? "owner-temporary-password"
                 : "owner-password-change-required");
         }
