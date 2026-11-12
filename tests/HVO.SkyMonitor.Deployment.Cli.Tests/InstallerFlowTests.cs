@@ -1648,6 +1648,8 @@ public sealed partial class InstallerFlowTests
         /// <summary>The Compose file the last <c>compose up</c> started the instance from: the limits it now runs with.</summary>
         public string? LastComposeUp { get; private set; }
 
+        public string? LastComposeUpEnvironment { get; private set; }
+
         /// <summary>The camera configuration the last <c>compose up</c> started the instance with, as the file then held it.</summary>
         public string? LastComposeUpConfiguration { get; private set; }
 
@@ -1820,12 +1822,7 @@ public sealed partial class InstallerFlowTests
                             }
                         },
                         HostConfig = Limits(),
-                        Mounts = new[]
-                        {
-                            new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
-                            new { Source = catalog, Destination = "/app/catalog", RW = false },
-                            new { Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
-                        }
+                        Mounts = StartedMounts(instanceRoot, catalog)
                     }
                 }));
             }
@@ -1871,9 +1868,25 @@ public sealed partial class InstallerFlowTests
         private static async Task<ProcessResult> RenderAsync(string composeFile, CancellationToken cancellationToken)
             => new(0, await File.ReadAllTextAsync(composeFile, cancellationToken), string.Empty);
 
+        private object[] StartedMounts(string instanceRoot, string catalog)
+        {
+            var mounts = new List<object>
+            {
+                new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
+                new { Source = catalog, Destination = "/app/catalog", RW = false },
+                new { Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
+            };
+            const string prefix = "HVO_DEEP_SKY_CATALOG_ROOT=";
+            if (LastComposeUp?.Contains(DeepSkyCatalogSelection.Mount, StringComparison.Ordinal) == true &&
+                LastComposeUpEnvironment?.Split('\n').SingleOrDefault(static line => line.StartsWith(prefix, StringComparison.Ordinal)) is { } root)
+                mounts.Add(new { Source = root[prefix.Length..], Destination = "/app/deep-sky-catalog", RW = false });
+            return [.. mounts];
+        }
+
         private async Task<ProcessResult> UpAsync(string composeFile, CancellationToken cancellationToken)
         {
             LastComposeUp = await File.ReadAllTextAsync(composeFile, cancellationToken);
+            LastComposeUpEnvironment = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(composeFile)!, "instance.env"), cancellationToken);
             var configuration = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(composeFile)!)!, "camera-module.json");
             LastComposeUpConfiguration = File.Exists(configuration) ? await File.ReadAllTextAsync(configuration, cancellationToken) : null;
             return new ProcessResult(0, string.Empty, string.Empty);

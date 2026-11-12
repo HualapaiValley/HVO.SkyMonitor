@@ -257,6 +257,12 @@ internal sealed partial class CameraAgentInstaller
             if (!IsValid(image, request.ReplayProfile))
                 throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
             EnsureImageSupportsCatalog(image, catalog.CatalogId);
+            var deepSkyCatalog = existingManifest?.DeepSkyCatalog;
+            if (deepSkyCatalog is not null)
+            {
+                EnsureImageSupportsCatalog(image, deepSkyCatalog.CatalogId);
+                CatalogLifecycleManager.ValidateInstalled(paths, deepSkyCatalog);
+            }
             if (daemon != preflightDaemon)
             {
                 throw new InstallerException("The Docker daemon identity changed after preflight.");
@@ -293,7 +299,7 @@ internal sealed partial class CameraAgentInstaller
                 verificationToken,
                 lifecycleControlToken,
                 passwordAuthorityEnabled,
-                resources);
+                resources, deepSkyCatalog: deepSkyCatalog);
             StepCompleted("configuration-written");
 
             // Compose writing created every writable bind source with the runtime identity. Prove the persisted
@@ -372,7 +378,7 @@ internal sealed partial class CameraAgentInstaller
                     verificationToken,
                     lifecycleControlToken,
                     passwordAuthorityEnabled: false,
-                    resources);
+                    resources, deepSkyCatalog: deepSkyCatalog);
                 rendered = await docker.ComposeAsync(
                     compose.ComposeFile,
                     compose.EnvironmentFile,
@@ -400,7 +406,7 @@ internal sealed partial class CameraAgentInstaller
                 image,
                 uid,
                 gid,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken, deepSkyCatalog?.InstallRoot).ConfigureAwait(false);
             await ownerClient.VerifyInstallationAsync(
                 verificationToken,
                 new InstallationVerificationExpectation(
@@ -415,7 +421,7 @@ internal sealed partial class CameraAgentInstaller
                     manifest.DeploymentLocationSha256,
                     (ContractReplayProfile)request.ReplayProfile,
                     catalog,
-                    AllowCompletedPasswordReplacement: false),
+                    AllowCompletedPasswordReplacement: false, DeepSkyCatalog: deepSkyCatalog),
                 cancellationToken).ConfigureAwait(false);
 
             manifest = manifest with { ComposeModelSha256 = composeModelSha256 };
@@ -442,7 +448,8 @@ internal sealed partial class CameraAgentInstaller
                 daemon,
                 ownerState,
                 ownerPasswordIsDefault,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow) with
+            { DeepSkyCatalog = deepSkyCatalog };
             await SafeFileSystem.WriteJsonAtomicAsync(
                 paths.ResultPath,
                 result,
@@ -823,6 +830,7 @@ internal sealed partial class CameraAgentInstaller
             // other install (a fresh one, a resumed one, the reinstall after a state reset) drops it, so a later
             // rollback can never bring back databases from before the reset.
             keepPreviousStateSnapshot ? previous?.PreviousStateSnapshot : null,
+            // Catalog selections are deployment configuration and survive state reset and reinstall.
             previous?.DeepSkyCatalog,
             previous?.PreviousDeepSkyCatalog,
             previous?.HasPreviousDeepSkySelection ?? false);

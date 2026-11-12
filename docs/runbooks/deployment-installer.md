@@ -2047,6 +2047,11 @@ Preserved: `instance-manifest.json`, `application-identity.json`, the whole `con
 `config/secrets`, `config/owner-bootstrap`, `config/lifecycle-control`, `config/installation-verification`,
 and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations`, and instance backups.
 
+Star and deep-sky catalog selections, including their previous selections, are preserved deployment
+configuration. The subsequent `install` revalidates the selected OpenNGC snapshot and the image's reader
+support, restores its read-only mount and settings, and records the same selection in the installation result.
+A missing or incompatible selected snapshot stops reinstallation before container startup.
+
 The operator settings file `state/identity/appsettings.local.json` shares the Identity mount but is operator
 configuration, not runtime state, so the reset carries it across the deletion. It is read before anything is
 deleted, kept as `operations/cameraagent-<uuid>.state-reset-<operation-uuid>.appsettings.local.json` until it
