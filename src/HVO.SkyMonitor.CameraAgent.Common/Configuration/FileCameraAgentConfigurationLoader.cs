@@ -141,7 +141,7 @@ public sealed class FileCameraAgentConfigurationLoader(
                     InstallationConfigurationSnapshot snapshot;
                     for (var attempt = 0; ; attempt++)
                     {
-                        try { snapshot = await LoadCoreAsync(false, stoppingToken, fullScrub: true).ConfigureAwait(false); break; }
+                        try { snapshot = await LoadCoreAsync(false, stoppingToken, fullScrub: true, forceFullScrub: force).ConfigureAwait(false); break; }
                         catch (InstallationVerificationPendingException exception) when (exception.ConfigurationChanged && attempt < 2)
                         {
                             stoppingToken.ThrowIfCancellationRequested();
@@ -167,7 +167,7 @@ public sealed class FileCameraAgentConfigurationLoader(
     }
 
     private async Task<InstallationConfigurationSnapshot> LoadCoreAsync(bool strictRetainedValidation, CancellationToken cancellationToken,
-        bool fullScrub = false)
+        bool fullScrub = false, bool forceFullScrub = true)
     {
         using var activity = ActivitySource.StartActivity("configuration.load");
         var path = Path.GetFullPath(_options.ConfigFilePath);
@@ -260,7 +260,9 @@ public sealed class FileCameraAgentConfigurationLoader(
             bool ConfigurationStillCurrent() => File.Exists(path) &&
                 System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(snapshotDigest);
             location = fullScrub
-                ? await _deploymentLocationStore.ScrubCurrentAsync(locationSeed, ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false)
+                ? forceFullScrub
+                    ? await _deploymentLocationStore.FullScrubCurrentAsync(locationSeed, ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false)
+                    : await _deploymentLocationStore.ScrubCurrentAsync(locationSeed, ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false)
                 : await _deploymentLocationStore.LoadCurrentAsync(locationSeed, strictRetainedValidation,
                     ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false);
             config = config with { DeploymentLocation = location };

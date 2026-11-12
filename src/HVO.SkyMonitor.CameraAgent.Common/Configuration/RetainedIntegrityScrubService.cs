@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -10,7 +11,7 @@ internal sealed partial class RetainedIntegrityScrubService(
     CameraAgentConfigurationInitializer? initializer = null,
     ICameraAgentConfigurationAccessor? accessor = null,
     DeploymentLocation.IDeploymentLocationStore? locations = null,
-    IHostApplicationLifetime? hostLifetime = null) : BackgroundService
+    IHostApplicationLifetime? hostLifetime = null, CaptureLaneState? captureState = null) : BackgroundService
 {
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An independent scrub failure must keep the host/recovery UI alive while protected verification remains refused.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -21,21 +22,48 @@ internal sealed partial class RetainedIntegrityScrubService(
             using var registration = hostLifetime.ApplicationStarted.Register(() => started.TrySetResult());
             await started.Task.WaitAsync(stoppingToken).ConfigureAwait(false);
         }
-        using var timer = new PeriodicTimer(TimeSpan.FromHours(23), timeProvider);
         var force = false;
         do
         {
             try
             {
                 await loader.RequestRetainedIntegrityScrubAsync(force, stoppingToken).ConfigureAwait(false);
-                if (initializer is not null && accessor is { IsConfigured: false } && locations is
-                    { Active: not null, RecentRetainedEvidenceReady: true })
-                    await initializer.StartAsync(stoppingToken).ConfigureAwait(false);
+                await InitializeCaptureAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception) { ScrubFailed(logger); }
+            // Incremental restarts preserve the previous full-scrub deadline.
+            // Persistent faults retain the daily retry rather than a polling loop.
+            var delay = locations is { RequiresRetainedIntegrityScrub: false, RetainedIntegrityRefreshUtc: { } refresh }
+                ? refresh - timeProvider.GetUtcNow() : TimeSpan.FromHours(23);
+            delay = TimeSpan.FromSeconds(Math.Clamp(delay.TotalSeconds, 30, TimeSpan.FromHours(23).TotalSeconds));
+            await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
             force = true;
-        } while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
+        } while (!stoppingToken.IsCancellationRequested);
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Deferred capture initialization exposes unhealthy readiness and sanitized failure events while retaining recovery access.")]
+    private async Task InitializeCaptureAsync(CancellationToken stoppingToken)
+    {
+        if (initializer is null || accessor is not { IsConfigured: false } || locations is not
+            { Active: not null, RecentRetainedEvidenceReady: true }) return;
+        foreach (var seconds in new[] { 0, 1, 2, 4, 8 })
+        {
+            if (seconds != 0)
+                await Task.Delay(TimeSpan.FromSeconds(seconds), timeProvider, stoppingToken).ConfigureAwait(false);
+            try
+            {
+                await initializer.StartAsync(stoppingToken).ConfigureAwait(false);
+                if (accessor.IsConfigured)
+                    DeferredCaptureInitialization.Recover(captureState, typeof(CameraAgentConfigurationInitializer));
+                return;
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                DeferredCaptureInitialization.Fail(logger, captureState, typeof(CameraAgentConfigurationInitializer), exception);
+            }
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -44,6 +72,6 @@ internal sealed partial class RetainedIntegrityScrubService(
         await loader.DrainRetainedIntegrityScrubAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    [LoggerMessage(7310, LogLevel.Warning, "Periodic retained integrity scrub failed; protected verification remains unqualified")]
+    [LoggerMessage(7310, LogLevel.Warning, "Retained integrity maintenance failed; protected verification readiness must be checked")]
     private static partial void ScrubFailed(ILogger logger);
 }

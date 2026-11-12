@@ -2861,14 +2861,18 @@ publication, retention, reconciliation/quarantine and raw-journal changes. A
 qualified protected read validates fresh current configuration, schedule,
 protected location/history/manual state and owner readiness, plus a small
 protected checkpoint. It does not traverse retained capture history. The
-checkpoint binds the current process, validator/runtime/history and ledger
+checkpoint binds the current process, explicit validation contract/history and ledger
 generation; it is never immutable installer identity.
 
 **Out-of-band tampering is detected at the next full scrub**, an explicit policy
 approved by Roy for #1041. Full scrubs authenticate the expected ledger and
-validate all current retained JSON/journal metadata at startup, after dirty state
-or relevant configuration/location changes, and every 24 hours through an explicit
-maintenance load. Unchanged normal configuration loads, including five-minute
+validate all current retained JSON/journal bytes after unclean/dirty startup,
+restore, relevant configuration/location changes, explicit requests and scheduled
+maintenance before the original 24-hour expiry. A clean restart authenticates the
+previous checkpoint and complete expected-row commitment, compares authenticated
+file size/mtime and journal checksum/length metadata, and reads only changed,
+new or unaccounted content. Metadata-preserving out-of-band changes are still
+found by the next full scrub. Incremental restarts never extend that deadline. Unchanged normal configuration loads, including five-minute
 rig-profile synchronization and deployment continuity polls, use the qualified
 checkpoint and do not start another scrub. Protected reads independently expire qualification after
 24 hours. Changes to managed evidence are checked at publication; arbitrary
@@ -2893,30 +2897,45 @@ unknown layouts before Kestrel starts. Limits are 400,000 filesystem entries,
 limit refuses recent readiness. Recent retained-data schema/provenance/tamper failures leave
 the host and recovery UI available, report unhealthy location readiness, and do
 not admit capture. Unknown/older/quarantined evidence remains subject to the full
-background scrub. Date partitions are limited to at most three UTC dates.
+background verification. Date partitions are limited to at most three UTC dates.
+The entry budget counts all files in those date partitions before timestamp
+filtering. At a 20-second cadence and 24 files per capture, the worst nearly
+72-hour enumeration is about 311,040 files plus directory entries: approximately
+78% of the 400,000 cap, leaving about 22% headroom (roughly 88,900 entries).
+Unexpected fan-out, extra files or faster cadence consumes that margin.
 An unsupported or structurally drifted raw-journal SQLite contract still refuses
 host startup; deferred worker failure can surface through a host-cancellation
 wrapper. The underlying journal validator retains its schema-specific refusal.
 
-After host startup, one coordinator performs full background qualification;
-new processes never inherit lifecycle readiness from a saved checkpoint. Capture
+After host startup, one coordinator performs incremental or full background
+qualification; a checkpoint alone never grants new-process lifecycle readiness. Capture
 configuration publication also waits for safe recovery: schedule initialization
 can invoke raw-ingress reconciliation, so that work runs after host startup too.
 Capture admission, calibration recovery and distribution initialization also wait
 until the host has started. A deferred initialization failure leaves recovery
 available, marks capture readiness unhealthy and emits event 7312 with the service
-and error types only. Repair the underlying state through an authorized procedure,
-then restart normally to retry initialization; do not delete evidence or reset trust.
-Health reports these pending capture dependencies as degraded. The installer's
+and error types only. Configuration initialization retries at most five times,
+with 1/2/4/8-second delays; success clears only that service's failure. Health is
+Unhealthy (HTTP 503) during this failure, so the installer cannot accept stopped
+capture as a healthy upgrade. Persistent failure stays unhealthy. Repair through
+an authorized procedure and restart normally after retries are exhausted; do not
+delete evidence or reset trust. Dependencies that are merely pending remain degraded. The installer's
 normal health wait can reach the recent-ready host while qualification continues.
 An upgrade, rollback or backup attempted before full qualification still refuses
 within its original verification budget. If background work exceeds 120 seconds,
 wait for it to finish before retrying; repeated HTTP timeouts do not restart it.
-Full qualification and raw recovery remain linear background work; host startup
-and qualified protected reads do not walk the full corpus.
+Complete metadata discovery, full scrubbing and raw recovery remain linear
+background work; host startup and qualified protected reads do not walk the full
+corpus. Clean, authenticated older files avoid actual-byte reads and repeated
+Data Protection operations; the optional hints use row MACs. An explicit semantic
+validation version replaces build MVIDs, so unrelated upgrades do not invalidate
+proofs. Missing/corrupt hints fall back to byte verification.
 
-Every restart, crash, restore or rollback requires a full scrub before a new
-process can trust the checkpoint. Pending declared writes are validated against
+Only an orderly, drained shutdown can seal a checkpoint clean. A running process
+keeps its checkpoint unclean; crashes, pending writes, recovered hot journals,
+restore and rollback force actual-byte full qualification. SQLite recovers a hot
+ledger journal before unchanged layout/authentication checks. A hot optional hint
+index is discarded and rebuilt; its failure never replaces authoritative proof. Pending declared writes are validated against
 their intended result. Incomplete restores, unexplained file/ledger drift and
 damaged authoritative state refuse verification. Restore paired retained state
 and ledger from a known-good backup or repair through an explicitly authorized

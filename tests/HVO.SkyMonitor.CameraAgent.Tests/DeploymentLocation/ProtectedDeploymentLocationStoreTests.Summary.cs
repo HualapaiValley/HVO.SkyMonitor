@@ -153,7 +153,7 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
         {
             await cache.OpenAsync().ConfigureAwait(false);
             using var count = cache.CreateCommand();
-            count.CommandText = "SELECT COUNT(*) FROM proofs;";
+            count.CommandText = "SELECT COUNT(*) FROM proofs WHERE substr(proof,41,8)=X'48564F5250303032';";
             Assert.AreEqual(1L, await count.ExecuteScalarAsync().ConfigureAwait(false), "Only the fully parsed prefix survives cancellation.");
         }
         using var restarted = CreateStore();

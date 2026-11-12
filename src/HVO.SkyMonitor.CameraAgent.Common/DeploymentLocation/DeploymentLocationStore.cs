@@ -76,6 +76,7 @@ public interface IDeploymentLocationStore
     bool RequiresRetainedIntegrityScrub => false;
     bool RecentRetainedEvidenceReady => true;
     bool RetainedIntegrityRefreshDue => RequiresRetainedIntegrityScrub;
+    DateTimeOffset? RetainedIntegrityRefreshUtc => null;
     long RetainedIntegrityGeneration => 0;
     string RetainedIntegrityRetryKey => RetainedIntegrityGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture);
     bool RequiresDeploymentLocationReconciliation => false;
@@ -83,6 +84,10 @@ public interface IDeploymentLocationStore
     ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
         Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
         => InitializeAsync(seed, cancellationToken);
+
+    ValueTask<DeploymentLocationSnapshot> FullScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => ScrubCurrentAsync(seed, configurationStillCurrent, cancellationToken);
 
     ValueTask StageAsync(
         DeploymentLocationSnapshot deployment,
@@ -134,8 +139,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
     public bool RequiresRetainedIntegrityScrub => _needsReconciliation || (Volatile.Read(ref _integrity)?.RequiresScrub ?? true);
     public bool RecentRetainedEvidenceReady => _recentReady;
     public bool RetainedIntegrityRefreshDue => RequiresRetainedIntegrityScrub || (_integrity?.RefreshDue ?? true);
+    public DateTimeOffset? RetainedIntegrityRefreshUtc => _integrity?.RefreshUtc;
     public long RetainedIntegrityGeneration => _integrity?.Generation ?? 0;
-    public string RetainedIntegrityRetryKey => FormattableString.Invariant($"{RetainedIntegrityGeneration}:{Manual.ManualSequence}:{Staged?.Version}:{Active?.Version}");
+    public string RetainedIntegrityRetryKey => FormattableString.Invariant($"{_integrity?.Nonce}:{Manual.ManualSequence}:{Staged?.CanonicalSha256}:{Active?.CanonicalSha256}");
     public bool RequiresDeploymentLocationReconciliation => _needsReconciliation;
 
     public DeploymentLocationSnapshot? Candidate => Volatile.Read(ref _history)?.Candidate;
@@ -183,19 +189,23 @@ public sealed partial class ProtectedDeploymentLocationStore(
 
     public ValueTask<DeploymentLocationSnapshot> ScrubCurrentAsync(DeploymentLocationSeed seed,
         Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
+        => RunFullVerificationAsync(seed, false, configurationStillCurrent, cancellationToken, allowIncremental: true);
+
+    public ValueTask<DeploymentLocationSnapshot> FullScrubCurrentAsync(DeploymentLocationSeed seed,
+        Func<bool> configurationStillCurrent, CancellationToken cancellationToken)
         => RunFullVerificationAsync(seed, false, configurationStillCurrent, cancellationToken);
 
     private async ValueTask<DeploymentLocationSnapshot> RunFullVerificationAsync(DeploymentLocationSeed seed,
-        bool strict, Func<bool>? configurationStillCurrent, CancellationToken cancellationToken)
+        bool strict, Func<bool>? configurationStillCurrent, CancellationToken cancellationToken, bool allowIncremental = false)
     {
         await _scrubGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try { return await InitializeCoreAsync(seed, strict, true, configurationStillCurrent, cancellationToken).ConfigureAwait(false); }
+        try { return await InitializeCoreAsync(seed, strict, true, configurationStillCurrent, cancellationToken, allowIncremental: allowIncremental).ConfigureAwait(false); }
         finally { _scrubGate.Release(); }
     }
 
     private async ValueTask<DeploymentLocationSnapshot> InitializeCoreAsync(
         DeploymentLocationSeed seed, bool strictRetainedValidation, bool fullScrub, Func<bool>? configurationStillCurrent,
-        CancellationToken cancellationToken, bool startupRecentOnly = false)
+        CancellationToken cancellationToken, bool startupRecentOnly = false, bool allowIncremental = false)
     {
         ArgumentNullException.ThrowIfNull(seed);
         var started = Stopwatch.GetTimestamp();
@@ -273,7 +283,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
                 _gate.Release(); gateHeld = false;
                 try
                 {
-                    integrityScrub = BeginIntegrityScrub(ledger, history, strictRetainedValidation, cancellationToken);
+                    integrityScrub = BeginIntegrityScrub(ledger, history, strictRetainedValidation, cancellationToken, allowIncremental);
                     using var existingProofs = CreateRetainedIndex(path, history);
                     ValidateRetainedEvidence(history, existingProofs, strictRetainedValidation, cancellationToken, integrityScrub);
                 }
@@ -1241,9 +1251,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         hash.AppendData(JsonSerializer.SerializeToUtf8Bytes(history, SerializerOptions));
-        hash.AppendData(typeof(ProtectedDeploymentLocationStore).Module.ModuleVersionId.ToByteArray());
-        hash.AppendData(typeof(CaptureContractJson).Module.ModuleVersionId.ToByteArray());
-        hash.AppendData(typeof(object).Module.ModuleVersionId.ToByteArray());
+        // Increment this semantic version when retained validation/proof semantics
+        // change. Unrelated builds/runtime MVIDs do not invalidate verified bytes.
+        hash.AppendData("hvo-retained-validation-contract-v3"u8);
         return hash.GetHashAndReset();
     }
 
@@ -1256,10 +1266,10 @@ public sealed partial class ProtectedDeploymentLocationStore(
     }
 
     private RetainedIntegrityLedger.Scrub? BeginIntegrityScrub(RetainedIntegrityLedger? ledger,
-        DeploymentLocationHistory history, bool strict, CancellationToken cancellationToken)
+        DeploymentLocationHistory history, bool strict, CancellationToken cancellationToken, bool allowIncremental = false)
     {
         if (ledger is null && strict) throw new InvalidDataException("Retained integrity ledger is unavailable for qualification.");
-        try { return ledger?.BeginScrub(RetainedIdentity(history), key => ReadIntegrityEntry(key, history), strict, cancellationToken); }
+        try { return ledger?.BeginScrub(RetainedIdentity(history), key => ReadIntegrityEntry(key, history), strict, cancellationToken, allowIncremental); }
         catch (Exception exception) when (!strict && exception is (InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException))
         {
             // A damaged ledger never qualifies, but does not close the recovery UI.
@@ -1372,6 +1382,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             return;
         }
+        scrub?.LoadFileMetadata(summary, cancellationToken);
         var enumeration = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -1401,6 +1412,10 @@ public sealed partial class ProtectedDeploymentLocationStore(
                 {
                     using (attribution?.Measure(ReadStage.Security))
                         RawIngressFileStore.EnsureNoSymbolicLinks(root, path!);
+                    var key = RetainedIntegrityLedger.FileKey(root, path!);
+                    var file = new FileInfo(path!);
+                    var stamp = new RetainedIntegrityLedger.FileStamp(file.Length, file.LastWriteTimeUtc.Ticks);
+                    if (scrub?.Reuse(key, stamp) is not null) continue;
                     byte[] manifestJson;
                     using (attribution?.Measure(ReadStage.Read))
                     {
@@ -1412,7 +1427,10 @@ public sealed partial class ProtectedDeploymentLocationStore(
                     var result = ValidateRetainedManifest(history, manifestJson, summary, attribution,
                         requireManifest: IsFrameSidecar(root, path!), strict,
                         digest => scrub?.ParsedKind(RetainedIntegrityLedger.FileKey(root, path!), digest));
-                    scrub?.Record(new RetainedIntegrityLedger.Entry(RetainedIntegrityLedger.FileKey(root, path!), result.Digest, result.Kind));
+                    file.Refresh();
+                    if (file.Length != stamp.Length || file.LastWriteTimeUtc.Ticks != stamp.ModifiedUtcTicks)
+                        throw new InvalidDataException("Retained evidence changed while being verified.");
+                    scrub?.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind) { Stamp = stamp }, index: summary);
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
@@ -1524,32 +1542,91 @@ public sealed partial class ProtectedDeploymentLocationStore(
         {
             return;
         }
+        var keyed = JournalHasCaptureId(connection);
+        using var columns = connection.CreateCommand();
+        columns.CommandText = "SELECT COUNT(*) FROM pragma_table_info('raw_captures') WHERE name='manifest_sha256';";
+        var incremental = scrub?.Incremental == true && keyed &&
+            Convert.ToInt64(columns.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) == 1;
+        if (incremental)
+        {
+            ValidateIncrementalJournal(connection, history, summary, strict, scrub!, attribution, cancellationToken);
+            return;
+        }
         using var command = connection.CreateCommand();
-        command.CommandText = JournalHasCaptureId(connection) ? "SELECT capture_id,manifest_json FROM raw_captures;" : "SELECT CAST(rowid AS TEXT),manifest_json FROM raw_captures;";
-        Microsoft.Data.Sqlite.SqliteDataReader reader;
-        using (attribution?.Measure(ReadStage.Query))
-            reader = command.ExecuteReader();
-        using var retainedReader = reader;
+        command.CommandText = keyed ? "SELECT capture_id,manifest_json FROM raw_captures;" : "SELECT CAST(rowid AS TEXT),manifest_json FROM raw_captures;";
+        using var retainedReader = command.ExecuteReader();
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
             using var observation = scrub?.Observe(cancellationToken);
-            bool hasNext;
-            byte[]? manifestJson;
-            string? capture;
+            if (!retainedReader.Read()) break;
+            var capture = retainedReader.GetString(0);
+            byte[] manifestJson;
             using (attribution?.Measure(ReadStage.Read))
             {
-                hasNext = retainedReader.Read();
-                capture = hasNext ? retainedReader.GetString(0) : null;
-                manifestJson = hasNext ? (byte[])retainedReader.GetValue(1) : null;
-                if (manifestJson is not null) attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
+                manifestJson = (byte[])retainedReader.GetValue(1);
+                attribution?.AddBytes(ReadStage.Read, manifestJson.LongLength);
             }
-            if (!hasNext) break;
             BeforeRetainedManifestValidationForTest?.Invoke();
             cancellationToken.ThrowIfCancellationRequested();
-            var result = ValidateRetainedManifest(history, manifestJson!, summary, attribution, requireManifest: true, strict,
-                digest => scrub?.ParsedKind(RetainedIntegrityLedger.JournalKey(capture!), digest));
-            scrub?.Record(new RetainedIntegrityLedger.Entry(RetainedIntegrityLedger.JournalKey(capture!), result.Digest, result.Kind));
+            var result = ValidateRetainedManifest(history, manifestJson, summary, attribution, requireManifest: true, strict,
+                digest => scrub?.ParsedKind(RetainedIntegrityLedger.JournalKey(capture), digest));
+            scrub?.Record(new RetainedIntegrityLedger.Entry(RetainedIntegrityLedger.JournalKey(capture), result.Digest, result.Kind)
+                { Stamp = new RetainedIntegrityLedger.FileStamp(manifestJson.LongLength, 0) }, index: summary);
+        }
+    }
+
+    private sealed record JournalMetadata(string Capture, byte[] Digest, long Length);
+
+    private void ValidateIncrementalJournal(Microsoft.Data.Sqlite.SqliteConnection connection, DeploymentLocationHistory history,
+        RetainedManifestValidationIndex summary, bool strict, RetainedIntegrityLedger.Scrub scrub,
+        DeploymentLocationReadAttribution? attribution, CancellationToken cancellationToken)
+    {
+        // Close each bounded SQLite read before taking the writer barrier. A live
+        // capture commit must not hold that barrier waiting on our read cursor.
+        var after = string.Empty;
+        while (true)
+        {
+            var batch = new List<JournalMetadata>(8192);
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "SELECT capture_id,manifest_sha256,length(manifest_json),typeof(manifest_json) FROM raw_captures WHERE capture_id>$after ORDER BY capture_id LIMIT 8192;";
+                command.Parameters.AddWithValue("$after", after);
+                using var rows = command.ExecuteReader();
+                while (rows.Read())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var declared = rows.GetString(1);
+                    if (declared.Length != 64 || rows.GetString(3) != "blob")
+                        throw new InvalidDataException("Retained journal metadata is invalid.");
+                    batch.Add(new JournalMetadata(rows.GetString(0), Convert.FromHexString(declared), rows.GetInt64(2)));
+                }
+            }
+            if (batch.Count == 0) return;
+            after = batch[^1].Capture;
+            foreach (var row in batch)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                using var observation = scrub.Observe(cancellationToken);
+                var key = RetainedIntegrityLedger.JournalKey(row.Capture);
+                if (scrub.Reuse(key, digest: row.Digest, length: row.Length) is not null) continue;
+                byte[] json;
+                using (attribution?.Measure(ReadStage.Read))
+                {
+                    using var changed = connection.CreateCommand();
+                    changed.CommandText = "SELECT manifest_json FROM raw_captures WHERE capture_id=$capture;";
+                    changed.Parameters.AddWithValue("$capture", row.Capture);
+                    json = changed.ExecuteScalar() as byte[]
+                        ?? throw new InvalidDataException("Retained journal manifest changed during verification.");
+                    attribution?.AddBytes(ReadStage.Read, json.LongLength);
+                }
+                BeforeRetainedManifestValidationForTest?.Invoke();
+                cancellationToken.ThrowIfCancellationRequested();
+                var result = ValidateRetainedManifest(history, json, summary, attribution, requireManifest: true, strict,
+                    digest => scrub.ParsedKind(key, digest));
+                scrub.Record(new RetainedIntegrityLedger.Entry(key, result.Digest, result.Kind)
+                    { Stamp = new RetainedIntegrityLedger.FileStamp(json.LongLength, 0) }, index: summary);
+            }
         }
     }
 

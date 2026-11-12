@@ -14,7 +14,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Configured fixture disposal hides its strongly typed members; all asynchronous calls are configured.")]
-public sealed class InstallationVerificationStartupTests
+public sealed partial class InstallationVerificationStartupTests
 {
     [TestMethod]
     public async Task CompleteHostedServiceGraphStartsBeforeDeferredCaptureConfiguration()

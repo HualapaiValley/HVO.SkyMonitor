@@ -159,7 +159,11 @@ public sealed partial class ProtectedDeploymentLocationStoreTests
                     _ = await restarted.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
                 return;
             }
-            Assert.AreEqual(active, await restarted.FullVerifyAsync(seed, CancellationToken.None).ConfigureAwait(false));
+            var actualReads = 0;
+            restarted.BeforeRetainedManifestValidationForTest = () => actualReads++;
+            _ = await restarted.LoadCurrentAsync(seed, false, () => true, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(active, await restarted.ScrubCurrentAsync(seed, () => true, CancellationToken.None).ConfigureAwait(false));
+            Assert.IsGreaterThan(0, actualReads, "A paired restore must force actual-byte qualification, even with valid cached hints.");
             Assert.AreEqual(active, await restarted.VerifyInstallationAsync(seed, CancellationToken.None).ConfigureAwait(false));
         }
         Assert.IsTrue(File.Exists(added));

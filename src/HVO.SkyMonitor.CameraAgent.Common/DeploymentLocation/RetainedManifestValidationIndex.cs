@@ -6,7 +6,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 // Disposable parse proofs only. Every caller hashes current bytes, including cache hits.
 // Bounded transactions persist independently validated prefixes; none certifies a whole scan.
-internal sealed class RetainedManifestValidationIndex : IDisposable
+internal sealed partial class RetainedManifestValidationIndex : IDisposable
 {
     internal const string FileName = "retained-validation.v2.db";
     internal const int BatchSize = 8192;
@@ -38,7 +38,7 @@ internal sealed class RetainedManifestValidationIndex : IDisposable
             EnsureConfined();
             try { ValidateExistingLayout(); Open(); }
             catch (InvalidDataException) { Recreate(); }
-            catch (SqliteException exception) when (exception.SqliteErrorCode is 11 or 26) { Recreate(); }
+            catch (SqliteException exception) when (exception.SqliteErrorCode is 11 or 26 || exception.SqliteExtendedErrorCode == 776) { Recreate(); }
         }
         catch (Exception exception) when (IsOptionalFailure(exception)) { Disable(); }
     }
@@ -109,7 +109,7 @@ internal sealed class RetainedManifestValidationIndex : IDisposable
     {
         Close();
         // Remove only the dedicated advisory names. A foreign DB/hard link is never opened writable.
-        foreach (var suffix in new[] { "", "-journal" }) File.Delete(_path + suffix);
+        foreach (var suffix in new[] { "", "-journal", "-wal", "-shm" }) File.Delete(_path + suffix);
         Open();
     }
 

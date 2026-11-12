@@ -8,6 +8,7 @@ internal sealed partial class RetainedIntegrityLedger
 {
     internal bool RefreshDue => _timeProvider.GetUtcNow().AddHours(1) >= _scrubDue;
     internal long Generation => _generation;
+    internal DateTimeOffset? RefreshUtc => _scrubDue == default ? null : _scrubDue.AddHours(-1);
 
     internal void PrepareStartup(byte[] binding, CancellationToken cancellationToken)
     {
@@ -26,7 +27,11 @@ internal sealed partial class RetainedIntegrityLedger
                 previous.Chain != Convert.ToHexString(_chain) || previous.Count != _count ||
                 previous.Binding != Convert.ToHexString(binding)) return;
             _binding = binding;
-            // The new process must finish authentication before any lifecycle success.
+            _scrubDue = previous.VerifiedUntilUtc;
+            _startupIncremental = previous.Qualified && previous.CleanShutdown && !_recoveredJournal && _established &&
+                _pendingCommitment.All(static value => value == 0) && _timeProvider.GetUtcNow() < _scrubDue;
+            // Authenticate rows and compare current metadata before any lifecycle success.
+            // A crash during that work forces a full pass next time.
             WriteCheckpoint(qualified: false);
         }
         catch (Exception exception) when (OptionalIo(exception)) { Invalidate(); }

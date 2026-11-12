@@ -365,7 +365,7 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<ICameraAgentConfigurationLoader>(), provider.GetRequiredService<ILogger<RetainedIntegrityScrubService>>(),
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<CameraAgentConfigurationInitializer>(),
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), provider.GetRequiredService<IDeploymentLocationStore>(),
-            provider.GetRequiredService<IHostApplicationLifetime>()));
+            provider.GetRequiredService<IHostApplicationLifetime>(), provider.GetRequiredService<CaptureLaneState>()));
         services.AddSingleton<CaptureAdmissionInitializationService>();
         services.AddHostedService<AfterApplicationStartedService<CaptureAdmissionInitializationService>>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();

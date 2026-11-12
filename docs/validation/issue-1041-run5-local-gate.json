@@ -673,7 +673,8 @@
         ],
         "exitCode": 1,
         "elapsedSeconds": 225.416,
-        "log": "TestResults/issue-1041-run5/integration-cameraagent-storage.log"
+        "log": "TestResults/issue-1041-run5/integration-cameraagent-storage.log",
+        "failureDisposition": "Two stale UI-wording assertions in StandaloneDrainCancelledOrBoundedAfterClaim_PublishesMatchingReceiptAndStaysPausedUntilExplicitResume (cancel=true, backlog=false/true). Receipts, pause and explicit-resume behavior passed; upstream moved cancellation into structured actor/time/reason fields. Corrected by 587f111b2; the three-row focused drain/compatibility selection passed at cc0771f29 (19 total cases). Not an unexplained retained-ledger or host still-work failure. Full storage rerun was skipped per Roy t410u."
       }
     ]
   },

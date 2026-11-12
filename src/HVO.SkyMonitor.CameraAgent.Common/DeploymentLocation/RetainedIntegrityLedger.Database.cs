@@ -257,10 +257,15 @@ internal sealed partial class RetainedIntegrityLedger
         finally { _barrier.Release(); }
     }
 
-    internal bool MatchesRecent(string key, byte[] digest, CancellationToken cancellationToken)
+    internal bool MatchesRecent(string key, byte[]? digest, CancellationToken cancellationToken)
     {
         _barrier.Wait(cancellationToken);
-        try { return ReadEntry(key) is { Kind: not 0 } entry && entry.Digest.AsSpan().SequenceEqual(digest); }
+        try
+        {
+            if (!_pendingLoaded) ReadIntents();
+            return AllowedPending(key, digest) ||
+                digest is not null && ReadEntry(key) is { Kind: not 0 } entry && entry.Digest.AsSpan().SequenceEqual(digest);
+        }
         finally { _barrier.Release(); }
     }
 

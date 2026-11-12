@@ -84,12 +84,14 @@ public sealed partial class ProtectedDeploymentLocationStore
                             var kind = parsed.Kind;
                             if (parsed.CaptureId is not null) rawCaptures.Add(parsed.CaptureId);
                             var key = RetainedIntegrityLedger.FileKey(root, path);
-                            if (kind == 3 || ledger is { HasExpectedEvidence: true } &&
-                                (!expected.Remove(key, out var old) || old.Kind == 0 ||
-                                 !SHA256.HashData(json).AsSpan().SequenceEqual(old.Digest))) return false;
+                            if (kind == 3) return false;
+                            expected.Remove(key);
+                            if (ledger is { HasExpectedEvidence: true } &&
+                                !ledger.MatchesRecent(key, SHA256.HashData(json), cancellationToken)) return false;
                         }
                     }
-                    if (expected.Values.Any(entry => entry.Kind != 0 && InRecentWindow(entry.Key, cutoff))) return false;
+                    if (expected.Values.Any(entry => entry.Kind != 0 && InRecentWindow(entry.Key, cutoff) &&
+                        !ledger!.MatchesRecent(entry.Key, null, cancellationToken))) return false;
                 }
             }
             return ValidateRecentJournal(root, history, ledger, cutoff, rawCaptures, ref bytesRead, cancellationToken);
