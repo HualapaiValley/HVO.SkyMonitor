@@ -17,6 +17,21 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed class InstallationVerificationStartupTests
 {
     [TestMethod]
+    public async Task CompleteHostedServiceGraphStartsBeforeDeferredCaptureConfiguration()
+    {
+        await using var host = await CameraAgentKestrelFixture.CreateAsync(services =>
+        {
+            // Keep every production hosted service. A service waiting inline for
+            // deferred configuration must not prevent ApplicationStarted.
+            services.Configure<HostOptions>(options => options.StartupTimeout = TimeSpan.FromSeconds(10));
+        }, scratchRoot: Path.GetTempPath()).ConfigureAwait(false);
+        using var client = new HttpClient { BaseAddress = host.BaseAddress };
+        using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative)).ConfigureAwait(false);
+        Assert.AreEqual(HttpStatusCode.OK, alive.StatusCode);
+        Assert.IsTrue(host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStarted.IsCancellationRequested);
+    }
+
+    [TestMethod]
     [DataRow("quarantine/torn.json", "{")]
     [DataRow("quarantine/invalid-v2.json", "{\"schemaVersion\":\"v2\"}")]
     [DataRow("frames/2026/11/10/Raw/torn.json", "{")]

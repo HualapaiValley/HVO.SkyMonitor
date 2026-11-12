@@ -366,7 +366,8 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<TimeProvider>(), provider.GetRequiredService<CameraAgentConfigurationInitializer>(),
             provider.GetRequiredService<ICameraAgentConfigurationAccessor>(), provider.GetRequiredService<IDeploymentLocationStore>(),
             provider.GetRequiredService<IHostApplicationLifetime>()));
-        services.AddHostedService<CaptureAdmissionInitializationService>();
+        services.AddSingleton<CaptureAdmissionInitializationService>();
+        services.AddHostedService<AfterApplicationStartedService<CaptureAdmissionInitializationService>>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
         services.AddHostedService<DerivedProductReconciliationService>();
         services.AddHostedService<ProjectedSceneStageReconciliationService>();
@@ -502,8 +503,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddHostedService<EnvironmentalObservationSchemaInitializationService>();
         services.AddHostedService(provider => provider.GetRequiredService<EnvironmentalAcquisitionService>());
         services.AddHostedService<CalibrationLibraryValidationService>();
-        services.AddHostedService<VirtualCalibrationAcquisitionRecoveryService>();
-        services.AddHostedService(provider => provider.GetRequiredService<CaptureDistributionService>());
+        services.AddSingleton<VirtualCalibrationAcquisitionRecoveryService>();
+        services.AddHostedService<AfterApplicationStartedService<VirtualCalibrationAcquisitionRecoveryService>>();
+        services.AddHostedService<AfterApplicationStartedService<CaptureDistributionService>>();
         services.AddSingleton<ProcessingReplayWorker>();
         services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<ProcessingReplayWorker>());
         services.AddHostedService<CameraCaptureService>();
