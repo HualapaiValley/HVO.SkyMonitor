@@ -286,6 +286,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
             if (!stopped) { stopped = true; await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
         }
         internal bool Enqueue() => service.TryEnqueue(new(EnvironmentalAcquisitionTrigger.Periodic, Clock.Now));
+        internal EnvironmentalCaptureTriggerBridge CreateBridge(IEnvironmentalAcquisitionStateStore state)
+            => new(Coordinator, service, state, options);
         internal void Reopen() { Store.Dispose(); Store = new(Clock); }
         public async ValueTask DisposeAsync()
         {

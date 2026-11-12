@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Environmental;
@@ -37,8 +38,22 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         {
             var payload = CaptureContractJson.ComputeCanonicalJsonSha256(new { Id = id, SourceId = source.Id, source.Kind });
             var key = EnvironmentalCaptureAcquisition.Prefix(id) + payload[..32];
-            var claim = await commands.ClaimOnDemandAsync(options.Value.RawIngressRoot, key, payload, source.Id,
-                "capture-before", null, observedAtUtc, lease, cancellationToken).ConfigureAwait(false);
+            EnvironmentalOnDemandCommandClaim claim;
+            for (var attempt = 0; ; attempt++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                try
+                {
+                    claim = await commands.ClaimOnDemandAsync(options.Value.RawIngressRoot, key, payload, source.Id,
+                        "capture-before", null, observedAtUtc, lease, cancellationToken).ConfigureAwait(false);
+                    break;
+                }
+                catch (SqliteException exception) when (attempt < 3 && exception.SqliteErrorCode is
+                    SQLitePCL.raw.SQLITE_BUSY or SQLitePCL.raw.SQLITE_LOCKED)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+                }
+            }
             if (claim.Disposition != EnvironmentalOnDemandClaimDisposition.Claimed)
                 throw new EnvironmentalOnDemandCommandConflictException("Capture acquisition identity already exists.");
             claims.Add(new(source, key, claim.LeaseToken) { InFlight = dependencies.GetValueOrDefault(source.Id) });

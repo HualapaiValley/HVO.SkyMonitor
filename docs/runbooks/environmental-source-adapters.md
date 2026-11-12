@@ -257,6 +257,14 @@ The optional `cycleEvidence.acquisitionAttemptId` correlates that request with t
 raw capture. It is omitted for legacy captures, preserving their serialized form.
 No attempt is attributed to a capture by its timestamp or by the latest source row.
 
+Before-capture reservations retry SQLite busy/locked failures at most three times,
+waiting 100 milliseconds between attempts and honoring host cancellation. Each
+retry retains the same acquisition identity. Other errors, identity conflicts,
+and exhausted contention propagate before acquisition is queued; they do not
+fall back to older source evidence. These retries bound attempt count, not total
+storage latency: SQLite's existing per-call timeout still applies. The strict
+total deadline and SQM interval/gap policy above still need an agreed contract.
+
 A busy request follows the exact in-flight read: success leaves that capture
 available, while failure/missing/timeout fences its older readings. With any
 before-capture budget, queued work may finish after exposure starts; a positive
