@@ -988,6 +988,16 @@ internal sealed partial class SqliteCaptureProcessingStore
         ArgumentOutOfRangeException.ThrowIfEqual(executionId, Guid.Empty);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadExecutionDetailAsync(connection, executionId, manifestOnly, cancellationToken).ConfigureAwait(false);
+    }
+
+    // The same read on the caller's connection, so a caller can keep it on the snapshot of its other reads.
+    private async ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
+        SqliteConnection connection,
+        Guid executionId,
+        bool manifestOnly,
+        CancellationToken cancellationToken)
+    {
         if (manifestOnly)
         {
             // A SQL transaction keeps the size check and subsequent reads on one WAL snapshot.
@@ -1111,24 +1121,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                 var inputEvidenceIncomplete = false;
                 if (manifestOnly)
                 {
-                    var pinnedCount = inputs.Count(static input => input.Kind == ProcessingGraphExecutionInputKind.ProcessingOutput);
-                    if (frozenInputCounts.TryGetValue(row.NodeId, out var originalInputs))
-                        bindingsRetained = pinnedCount == originalInputs;
-                    else
-                        // A full immutable window can prove legacy pins complete even without
-                        // output lineage. A shorter surviving set cannot distinguish a valid
-                        // short window from a cascading retention delete.
-                        inputEvidenceIncomplete = outputs.Length == 0 &&
-                            (pinnedCount > 0 || (row.HasWindow &&
-                                dependencies.Any(static dependency => dependency.Kind == ProcessingGraphDependencyKind.Artifact &&
-                                    !string.Equals(dependency.ProducerId, "$raw", StringComparison.OrdinalIgnoreCase)) && attempts.Count > 0)) &&
-                            !HasCompleteLegacyManifestWindow(legacyWindows.GetValueOrDefault(row.NodeId), inputs,
-                                execution.ExecutionClass, attempts.Count);
-                    var completedInputs = await CompleteRunManifestInputsAsync(
-                        connection, execution, inputs, masters, outputs, cancellationToken).ConfigureAwait(false);
-                    inputs = completedInputs.Inputs;
-                    masters = completedInputs.Masters;
-                    bindingsRetained &= completedInputs.Complete;
+                    (inputs, masters, bindingsRetained, inputEvidenceIncomplete) = await ReadRunManifestBindingsAsync(
+                        connection, execution, row.NodeId, row.HasWindow, inputs, masters, outputs, attempts.Count, dependencies,
+                        frozenInputCounts, legacyWindows, cancellationToken).ConfigureAwait(false);
                 }
                 var contracts = JsonSerializer.Deserialize<ProcessingGraphProductContract[]>(row.OutputsJson, ExecutionSerializerOptions)
                     ?? throw new ProcessingGraphStoreConflictException("Frozen execution outputs are missing.");

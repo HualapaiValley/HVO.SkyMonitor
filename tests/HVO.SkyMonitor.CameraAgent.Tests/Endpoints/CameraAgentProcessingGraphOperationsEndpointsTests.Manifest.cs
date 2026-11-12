@@ -168,7 +168,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         Assert.AreEqual(CameraAgentRunManifest.UnrecordedOutputReason, result.Reason);
     }
 
-    private static ProcessingGraphExecutionDetail ManifestDetail()
+    internal static ProcessingGraphExecutionDetail ManifestDetail()
     {
         var execution = CreateExecutionDetail().Execution with { FailureReason = "private-sentinel", TriggerReference = "private-sentinel", GraphRevisionId = new string('F', 64) };
         return new(execution, [new("preview", true, new string('A', 64), "Completed", "private-sentinel", 1,

@@ -1,15 +1,20 @@
 using AngleSharp.Dom;
 using Bunit;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Automation;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
+using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
 [TestClass]
 [TestCategory("Unit")]
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused MSTest methods.")]
 public sealed class AutomationWindowWizardTests
 {
     [TestMethod]
@@ -173,6 +178,136 @@ public sealed class AutomationWindowWizardTests
         Assert.AreEqual(mismatch == "target" ? "new-preset" : "old-preset", request.TaskTarget);
         Assert.AreEqual(1, request.ExpectedVersion);
         Assert.AreEqual(expectedKind, request.SourceWindow!.Kind);
+    }
+
+    private const string GenericCombinationMessage = "That task and trigger combination is not registered on this CameraAgent.";
+
+    [TestMethod]
+    public async Task Wizard_DailySummaryWithAnHourlyPeriodNamesTheSelectedPeriodAndTheOneItNeeds()
+    {
+        await WithStillProductWizardAsync(async (fixture, targets) =>
+        {
+            using var context = new BunitContext();
+            context.JSInterop.Mode = JSRuntimeMode.Loose;
+            context.Services.AddSingleton<ICameraAgentAutomationUiService>(fixture.Service);
+            context.Services.AddSingleton<ICameraAgentScheduleUiService>(new SchedulePageTests.ScheduleUiService(SchedulePageTests.State()));
+            var cut = context.Render<AutomationsPage>();
+            Start(cut, "summary");
+            await cut.Find("#automation-back-task").ClickAsync(new());
+            await cut.Find("#automation-target").ChangeAsync(new ChangeEventArgs { Value = targets[NightlyProductKind.DailySummary] });
+            await cut.Find("#automation-save").ClickAsync(new());
+            await cut.Find("#automation-source-window").ChangeAsync(new ChangeEventArgs
+            { Value = nameof(LocalAutomationSourceWindowKind.CompletedCivilHour) });
+            await cut.Find("#automation-save").ClickAsync(new());
+
+            var alert = cut.WaitForElement("[role=alert]").TextContent;
+            StringAssert.Contains(alert, "The source period \"Completed site-local hour\" is not accepted by this task target.", StringComparison.Ordinal);
+            StringAssert.Contains(alert, "Choose \"Sunrise to next sunrise\" for this producer.", StringComparison.Ordinal);
+            Assert.DoesNotContain(GenericCombinationMessage, alert, StringComparison.Ordinal);
+            // The rejected preview saved nothing and left the editor open on the same step.
+            Assert.IsEmpty(cut.FindAll("#automation-confirm"));
+            Assert.IsEmpty((await fixture.Store.GetStateAsync(CancellationToken.None)).Definitions);
+
+            // Choosing the named period is the whole correction: the same definition then previews and saves.
+            await cut.Find("#automation-source-window").ChangeAsync(new ChangeEventArgs
+            { Value = nameof(LocalAutomationSourceWindowKind.SunriseDay) });
+            await cut.Find("#automation-save").ClickAsync(new());
+            cut.WaitForElement("#automation-window-preview");
+            await cut.Find("#automation-confirm").ClickAsync(new());
+            cut.WaitForElement("#automation-edit-summary");
+            var saved = (await fixture.Store.GetStateAsync(CancellationToken.None)).Definitions.Single().Definition;
+            Assert.AreEqual(targets[NightlyProductKind.DailySummary], saved.TaskTarget);
+            Assert.AreEqual(LocalAutomationSourceWindowKind.SunriseDay, saved.SourceWindow!.Kind);
+        });
+    }
+
+    [TestMethod]
+    public async Task Preview_SourcePeriodMismatchIsReportedOnlyForATargetThatRejectsThePeriod()
+    {
+        await WithStillProductWizardAsync(async (fixture, targets) =>
+        {
+            LocalAutomationSaveRequest Request(NightlyProductKind kind, LocalAutomationSourceWindowKind period,
+                LocalAutomationSourceSelection selection = LocalAutomationSourceSelection.AllActualSources)
+                => AutomationWizardFixture.Request(kind: period) with
+                {
+                    TaskTarget = targets[kind],
+                    SourceWindow = LocalAutomationWindowTests.Policy(period, selection)
+                };
+
+            var hourlySummary = await fixture.Service.PreviewWindowAsync(
+                Request(NightlyProductKind.DailySummary, LocalAutomationSourceWindowKind.CompletedCivilHour), CancellationToken.None);
+            Assert.AreEqual(OperatorUiResultKind.Invalid, hourlySummary.Kind);
+            Assert.AreEqual("The source period \"Completed site-local hour\" is not accepted by this task target. "
+                + "Choose \"Sunrise to next sunrise\" for this producer.", hourlySummary.Message);
+
+            // The period is named first even when the selection is wrong too; the selection has its own message next.
+            var hourlyDarkSummary = await fixture.Service.PreviewWindowAsync(Request(NightlyProductKind.DailySummary,
+                LocalAutomationSourceWindowKind.CompletedCivilHour, LocalAutomationSourceSelection.DarkNightActualSources), CancellationToken.None);
+            Assert.AreEqual(hourlySummary.Message, hourlyDarkSummary.Message);
+            var dailyDarkSummary = await fixture.Service.PreviewWindowAsync(Request(NightlyProductKind.DailySummary,
+                LocalAutomationSourceWindowKind.SunriseDay, LocalAutomationSourceSelection.DarkNightActualSources), CancellationToken.None);
+            Assert.AreEqual("The source selection does not match this task target. Choose All actual sources for this producer.",
+                dailyDarkSummary.Message);
+
+            // The same hourly period stays valid for the targets that take it, and a sunrise day for the daily summary.
+            foreach (var (kind, period) in new[]
+                     {
+                         (NightlyProductKind.Keogram, LocalAutomationSourceWindowKind.CompletedCivilHour),
+                         (NightlyProductKind.Keogram, LocalAutomationSourceWindowKind.SunriseDay),
+                         (NightlyProductKind.DailySummary, LocalAutomationSourceWindowKind.SunriseDay)
+                     })
+            {
+                var accepted = await fixture.Service.PreviewWindowAsync(Request(kind, period), CancellationToken.None);
+                Assert.IsTrue(accepted.IsSuccess, $"{kind} over {period}: {accepted.Message}");
+            }
+        });
+    }
+
+    [TestMethod]
+    [DataRow("definition.triggerKind")]
+    [DataRow("definition.taskKind")]
+    [DataRow(null)]
+    public void OtherUnregisteredCombinationsKeepTheGenericMessage(string? fieldPath)
+        => Assert.AreEqual(GenericCombinationMessage, CameraAgentAutomationUiService.DescribeFailure(new(
+            LocalAutomationCommandStatus.Invalid, LocalAutomationContract.UnregisteredCombinationReasonCode, fieldPath,
+            LocalAutomationOperatorState.Empty)));
+
+    /// <summary>
+    /// A wizard over the shipped still-product rules: the registry delegates to the installed adapter, so the
+    /// rejection under test is the one a host returns rather than one a test double invents.
+    /// </summary>
+    private static async Task WithStillProductWizardAsync(
+        Func<AutomationWizardFixture, IReadOnlyDictionary<NightlyProductKind, string>, Task> test)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-wizard-still");
+        try
+        {
+            var options = NightlyProductFixture.HostOptions(root, NightlyProductFixture.Options());
+            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+            using var store = new SqliteNightlyProductStore(options, clock);
+            using var generator = new NightlyProductGenerator(options, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
+                new InMemoryNightlySourceReader(), store, new AstronomyEnginePlanetEphemeris(), static () => null, clock);
+            var adapter = new NightlyProductAutomationTaskRegistry(generator, options);
+            using var fixture = new AutomationWizardFixture(registry: new StillProductRegistry(adapter));
+            await fixture.Store.InitializeAsync(CancellationToken.None);
+            var targets = adapter.Describe().Targets.ToDictionary(
+                static target => NightlyProductPreset.TryParseTarget(target, out var kind) ? kind : throw new InvalidOperationException(target));
+            await test(fixture, targets);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private sealed class StillProductRegistry(ILocalAutomationWindowTaskAdapter adapter) : ILocalAutomationTaskRegistry
+    {
+        public IReadOnlyList<LocalAutomationTaskDescriptor> Describe() => [adapter.Describe()];
+
+        public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition) => adapter.Validate(definition);
+
+        public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationDefinition definition, string runKey,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
+            => adapter.ExecuteAsync(occurrence, cancellationToken);
     }
 
     private static BunitContext RetainedContext(string mismatch, out AutomationsPageTests.AutomationUiService service)

@@ -265,38 +265,26 @@ internal sealed class CameraAgentProcessingGraphUiService(
         CancellationToken cancellationToken)
         => ReadAsync(async token =>
         {
-            var detail = await operations.ReadExecutionDetailAsync(executionId, token).ConfigureAwait(false);
-            if (detail is null) return null;
-            var reason = await ReadManifestUnavailableReasonAsync(executionId, token).ConfigureAwait(false);
-            return CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow()) with
+            // One read supplies the journal and the evidence the manifest alone needs. The page never performs the
+            // manifest read or builds its payload to decide whether the download can be offered.
+            var read = await operations.ReadExecutionDetailWithRunManifestAsync(executionId, token).ConfigureAwait(false);
+            if (read is null) return null;
+            return CameraAgentProcessingExecutionProjection.Detail(read.Detail, timeProvider.GetUtcNow()) with
             {
-                ManifestUnavailableReason = reason
+                ManifestUnavailableReason = ManifestUnavailableReason(read)
             };
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An optional manifest read cannot conceal the primary execution journal; failures have a fixed public reason.")]
-    private async Task<string?> ReadManifestUnavailableReasonAsync(Guid executionId, CancellationToken cancellationToken)
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional manifest evidence cannot conceal the primary execution journal; failures have a fixed public reason.")]
+    private static string? ManifestUnavailableReason(ProcessingGraphExecutionDetailWithRunManifest read)
     {
         try
         {
-            var manifest = await operations.ReadRunManifestAsync(executionId, cancellationToken).ConfigureAwait(false);
-            return manifest is null ? CameraAgentRunManifest.MissingReason : CameraAgentRunManifest.Create(manifest).Reason;
-        }
-        catch (ProcessingRunManifestBoundsException)
-        {
-            return ProcessingRunManifestBounds.UnavailableReason;
-        }
-        catch (InvalidDataException)
-        {
-            return CameraAgentRunManifest.CorruptReason;
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
+            return CameraAgentRunManifest.UnavailableReason(read);
         }
         catch (Exception)
         {
-            return "The run manifest is temporarily unavailable. Refresh the run to try again.";
+            return CameraAgentRunManifest.TemporarilyUnavailableReason;
         }
     }
 

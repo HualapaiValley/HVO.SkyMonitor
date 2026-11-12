@@ -12,6 +12,9 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781
+- A lone retained capture stays visible on the Observing Day timeline. Products Library shows a still product's recorded result when its run finished while the page was being read, and reports hourly segment progress for a queued daily time-lapse instead of "Not started". A cancelled lifecycle receipt names who cancelled by actor label and shows the time in site time. Refs #1781
+
 - CameraAgent withdraws queued automation attempts when their definition is disabled or edited, and lets owners stop a queued script run without changing its schedule. Explicit historical retries keep their retained execution identity. Refs #1782
 
 - Cancelling a claimed System control drain now ends its receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded when the cancellation is recorded before the drain completes; a drain that reaches its two-minute bound still ends `drain.timeout`. The receipt records who cancelled, when and why, and capture stays paused until explicitly resumed. A completed drain whose final state the installer cannot read or record now ends Failed instead of Succeeded, and when the installer is interrupted or cannot write its journal right after a drain or just before a restart, a restarted worker now settles the receipt instead of having it refused. Refs #1775
