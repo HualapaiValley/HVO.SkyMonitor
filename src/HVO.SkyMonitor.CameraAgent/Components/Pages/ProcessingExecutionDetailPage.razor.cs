@@ -4,6 +4,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
+using HVO.SkyMonitor.CameraAgent.Components.Shared;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.AspNetCore.Components;
@@ -41,7 +42,7 @@ public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, I
 
     [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
 
-    private string RunInspectorUrl => $"{NavigationManager.Uri}#run-inspector";
+    private string RunInspectorUrl => SamePageFragmentLink.Build(NavigationManager.Uri, "run-inspector");
 
     [Inject] internal ICameraAgentTransientUiService TransientService { get; set; } = default!;
 

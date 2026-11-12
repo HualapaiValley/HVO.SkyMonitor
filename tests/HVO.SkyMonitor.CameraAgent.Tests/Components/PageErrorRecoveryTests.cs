@@ -53,10 +53,13 @@ public sealed class PageErrorRecoveryTests
     }
 
     [TestMethod]
-    public void StaticFailureHasWorkingLinksAndNoInertButtons()
+    [DataRow(null)]
+    [DataRow("old-target")]
+    public void StaticFailureHasWorkingLinksAndNoInertButtons(string? existingFragment)
     {
         using var context = CreateContext(interactive: false);
-        context.Services.GetRequiredService<NavigationManager>().NavigateTo("/Account/Login?returnUrl=%2Foperations");
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            $"/Account/Login?returnUrl=%2Foperations{(existingFragment is null ? string.Empty : $"#{existingFragment}")}");
         var cut = context.Render<MainLayout>(parameters => parameters.Add(layout => layout.Body, PageBody(new FailureState { FailRender = true })));
 
         Assert.AreEqual("http://localhost/Account/Login?returnUrl=%2Foperations#mainContent", cut.Find(".skip-link").GetAttribute("href"));
@@ -65,7 +68,7 @@ public sealed class PageErrorRecoveryTests
         Assert.HasCount(0, panel.QuerySelectorAll("button"));
         var reload = panel.QuerySelector("a[data-enhance-nav='false']");
         Assert.IsNotNull(reload);
-        Assert.AreEqual("http://localhost/Account/Login?returnUrl=%2Foperations", reload.GetAttribute("href"));
+        Assert.AreEqual($"http://localhost/Account/Login?returnUrl=%2Foperations{(existingFragment is null ? string.Empty : $"#{existingFragment}")}", reload.GetAttribute("href"));
         Assert.AreEqual("Reload page", reload.TextContent);
         Assert.IsNotNull(panel.QuerySelector("a[href='/']"));
     }

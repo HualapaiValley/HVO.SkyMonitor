@@ -110,6 +110,61 @@ public sealed class SqliteTimeLapseStoreTests
     }
 
     [TestMethod]
+    public async Task Library_PublishedVideoWinsOverQueuedLaterOccurrenceWhenReopenedDisabled()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-library-queued");
+        try
+        {
+            var options = Options(root);
+            var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+            var occurrence = Occurrence(options.Value.TimeLapses, LocalAutomationSourceWindowKind.SunriseDay);
+            var hours = Windows(NightlyProductFixture.ObservingDate, LocalAutomationSourceWindowKind.CompletedCivilHour);
+            var preset = options.Value.TimeLapses.Freeze(NightlyProductFixture.Configuration());
+            CameraAgentTimeLapseJob publishedJob;
+            using (var store = new SqliteTimeLapseStore(options, clock))
+            {
+                await store.EnqueueAsync(occurrence, preset, hours, CancellationToken.None);
+                for (var index = 0; index < hours.Count; index++)
+                    await FinishAsync(store, clock, root, await ClaimAsync(store, clock), CameraAgentTimeLapseState.NoSources);
+                publishedJob = await ClaimAsync(store, clock);
+                await FinishAsync(store, clock, root, publishedJob, CameraAgentTimeLapseState.Produced);
+                await RecordLibraryProductAsync(root, publishedJob);
+                var original = (await store.ListLibraryAsync(new(1), CancellationToken.None)).Entries.Single().Product!;
+
+                var later = Occurrence(options.Value.TimeLapses, occurrence.SourceWindow!, "later-video-definition");
+                await store.EnqueueAsync(later, preset, hours, CancellationToken.None);
+                var queuedAndWorking = await CountLaterOccurrenceJobsAsync(root);
+                Assert.AreEqual(hours.Count + 1, queuedAndWorking.Queued,
+                    "The later daily occurrence and every hourly segment remain queued without an active worker.");
+                Assert.AreEqual(0, queuedAndWorking.Working);
+
+                using var disabled = new SqliteTimeLapseStore(Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
+                {
+                    RawIngressRoot = root,
+                    TimeLapses = new() { Enabled = false }
+                }), clock);
+                var disabledPage = await disabled.ListLibraryAsync(new(1), CancellationToken.None);
+                Assert.AreEqual(publishedJob.JobId, disabledPage.Entries.Single().JobId);
+                Assert.AreEqual(Common.NightlyProducts.NightlyProductLibraryState.Produced, disabledPage.Entries.Single().State);
+                Assert.AreEqual(original.ProductId, disabledPage.Entries.Single().Product!.ProductId);
+                var produced = await disabled.ListLibraryAsync(new(1, State: Common.NightlyProducts.NightlyProductLibraryState.Produced), CancellationToken.None);
+                Assert.AreEqual(original.ProductId, produced.Entries.Single().Product!.ProductId);
+                Assert.IsEmpty((await disabled.ListLibraryAsync(new(1, State: Common.NightlyProducts.NightlyProductLibraryState.NotProduced), CancellationToken.None)).Entries);
+                using var context = new BunitContext();
+                context.Services.AddSingleton<ICameraAgentNightlyProductUiService>(new TestNightlyProductUiService { VideoLibrary = produced });
+                var cut = context.Render<TimeLapseLibraryView>(parameters => parameters
+                    .Add(page => page.Type, "time-lapse").Add(page => page.Status, "produced"));
+                Assert.AreEqual(TimeLapseLinks.Detail(original.ProductId), cut.Find("li a").GetAttribute("href"));
+            }
+
+            var finalCounts = await CountLaterOccurrenceJobsAsync(root);
+            Assert.AreEqual(hours.Count + 1, finalCounts.Queued);
+            Assert.AreEqual(0, finalCounts.Working);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
     public async Task Library_QueuedWorkingAndRestartRecoveryRetainActualStartAndWindow()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-video-library");
@@ -924,6 +979,19 @@ public sealed class SqliteTimeLapseStoreTests
         var job = await store.ClaimAsync(CancellationToken.None);
         Assert.IsNotNull(job);
         return job;
+    }
+
+    private static async Task<(int Queued, int Working)> CountLaterOccurrenceJobsAsync(string root)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(root, ".time-lapses", "time-lapses.db"), Pooling = false }.ToString());
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT state, COUNT(*) FROM jobs WHERE occurrence_json LIKE '%later-video-definition%' GROUP BY state;";
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync()) counts.Add(reader.GetString(0), reader.GetInt32(1));
+        return (counts.GetValueOrDefault("Queued"), counts.GetValueOrDefault("Working"));
     }
 
     private static async Task FinishAsync(SqliteTimeLapseStore store, NightlyClock clock, string root, CameraAgentTimeLapseJob job,

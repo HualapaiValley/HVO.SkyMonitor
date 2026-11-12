@@ -12,7 +12,7 @@ public sealed partial class MainLayout : LayoutComponentBase
     private ElementReference _mainContent;
     private AppErrorBoundary? _pageErrorBoundary;
 
-    private string MainContentUrl => $"{NavigationManager.Uri}#mainContent";
+    private string MainContentUrl => SamePageFragmentLink.Build(NavigationManager.Uri, "mainContent");
 
     protected override void OnParametersSet() => RecoverFromError();
 

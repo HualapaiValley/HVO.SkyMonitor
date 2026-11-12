@@ -169,10 +169,14 @@ public sealed class SpaceWeatherPanelTests
     }
 
     [TestMethod]
-    public void Off_KeepsRetainedNoticesListedAndPointsToTheSwitch()
+    [DataRow(null)]
+    [DataRow("old-target")]
+    public void Off_KeepsRetainedNoticesListedAndPointsToTheSwitch(string? existingFragment)
     {
         using var context = new BunitContext();
         var service = Configure(context);
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            $"/operations/space-weather?view=local{(existingFragment is null ? string.Empty : $"#{existingFragment}")}");
         service.GetHandler = _ => Success(View(Projection(SwData.Status(enabled: false))));
 
         var cut = context.Render<SpaceWeatherPanel>();
@@ -181,7 +185,7 @@ public sealed class SpaceWeatherPanelTests
         {
             Assert.AreEqual("Off", cut.Find("#space-weather-state").TextContent);
             Assert.AreEqual("Off", cut.Find("#space-weather-enabled").TextContent);
-            Assert.AreEqual($"{context.Services.GetRequiredService<NavigationManager>().Uri}#space-weather-switch",
+            Assert.AreEqual("http://localhost/operations/space-weather?view=local#space-weather-switch",
                 cut.Find("#space-weather-off a").GetAttribute("href"));
             Assert.HasCount(2, cut.FindAll("article.space-weather-notice"));
             StringAssert.Contains(cut.Find("#space-weather-switch").TextContent, "Space weather is off.", StringComparison.Ordinal);
