@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent retries interrupted pre-restart pause recovery and transient settlement failures, keeps the worker lease alive during drains, and refuses deployment transitions until runtime control settles. Refs #1746
+- CameraAgent retries interrupted pre-restart recovery, keeps drain leases alive, and fences manual focus and calibration capture during lifecycle control. Deployment transitions require settled control evidence. Refs #1746
 
 - LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
 

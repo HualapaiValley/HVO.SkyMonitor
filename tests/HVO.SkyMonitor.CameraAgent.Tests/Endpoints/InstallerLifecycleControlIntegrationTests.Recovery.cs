@@ -122,26 +122,22 @@ public sealed class InstallerLifecycleRecoveryIntegrationTests
             Phase = CameraAgentControlPhase.Failed,
             Events = [.. draining.Events, new(CameraAgentControlPhase.Failed, DateTimeOffset.UtcNow, "restart.resume-unconfirmed")]
         };
-        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var boundary = fixture.Capture.ExecuteCaptureBoundaryAsync(async token =>
-        {
-            entered.SetResult();
-            await release.Task.WaitAsync(token).ConfigureAwait(false);
-            return true;
-        }, watchdog.Token);
-        await entered.Task.WaitAsync(watchdog.Token).ConfigureAwait(false);
+        // Hold only the command mutex to model competing capture commands; lifecycle fencing now refuses new exclusive work.
+        var commandGate = (SemaphoreSlim)typeof(CaptureAdmissionCoordinator).GetField("_commandGate",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(fixture.Capture)!;
+        await commandGate.WaitAsync(watchdog.Token).ConfigureAwait(false);
+        var released = false;
         try
         {
             var owner = ownerPause ? fixture.Capture.PauseAsync("owner-settlement-race", fixture.Capture.Snapshot.Version,
                 "owner", "Keep capture paused", watchdog.Token) : null;
-            // Both calls reach the coordinator's command gate before the exclusive boundary is released.
+            // Both calls reach the coordinator's command gate before the simulated contention ends.
             var settlement = client.ExchangeAsync(failed, watchdog.Token);
             Assert.IsFalse(settlement.IsCompleted);
             if (!ownerPause) fixture.Capture.FailClosed();
-            release.SetResult();
-            await boundary.ConfigureAwait(false);
+            commandGate.Release();
+            released = true;
             if (owner is not null) await owner.ConfigureAwait(false);
             if (ownerPause)
                 await settlement.ConfigureAwait(false);
@@ -160,8 +156,7 @@ public sealed class InstallerLifecycleRecoveryIntegrationTests
         }
         finally
         {
-            release.TrySetResult();
-            await boundary.ConfigureAwait(false);
+            if (!released) commandGate.Release();
         }
     }
 

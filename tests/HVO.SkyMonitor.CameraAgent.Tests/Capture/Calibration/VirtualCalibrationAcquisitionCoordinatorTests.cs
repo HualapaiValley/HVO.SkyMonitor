@@ -24,7 +24,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Calibration;
 [DoNotParallelize]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
     Justification = "Test helpers receive only constant SQL from this test class.")]
-public sealed class VirtualCalibrationAcquisitionCoordinatorTests
+public sealed partial class VirtualCalibrationAcquisitionCoordinatorTests
 {
     [TestMethod]
     public void CalibrationLibraryStrategy_ValidatesWithoutSyntheticModel()
@@ -1241,7 +1241,8 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             string root,
             ICalibrationPublicationFaultInjector? faultInjector = null,
             CameraModuleConfig? configuration = null,
-            TimeProvider? timeProvider = null)
+            TimeProvider? timeProvider = null,
+            HVO.SkyMonitor.CameraAgent.Common.Deployment.CameraAgentControlStore? lifecycleControls = null)
         {
             timeProvider ??= TimeProvider.System;
             var options = Options.Create(new CameraAgentHostOptions
@@ -1252,7 +1253,7 @@ public sealed class VirtualCalibrationAcquisitionCoordinatorTests
             var ingress = new InitializingIngress(root);
             var telemetry = new CaptureControlTelemetry();
             var admission = new CaptureAdmissionCoordinator(
-                ingress, options, timeProvider, telemetry);
+                ingress, options, timeProvider, telemetry, lifecycleControls: lifecycleControls);
             await admission.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var store = new SqliteCalibrationLibraryStore(ingress, options, timeProvider);
             _ = await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);

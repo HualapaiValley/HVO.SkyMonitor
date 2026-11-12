@@ -230,9 +230,16 @@ receipt terminal, and reuses the original version-fenced resume command. Later
 owner commands remain authoritative. Drain polling renews the worker lease at
 least every ten seconds while the transport responds. A transient failure to
 pause after an unconfirmed resume returns a retryable 503; a concurrent owner
-pause can satisfy that settlement boundary. An exclusive capture boundary still
-uses ordinary pause semantics; extending the lifecycle fence to that path needs
-an explicit operator policy decision. Refs #1746
+pause can satisfy that settlement boundary. The same lifecycle fence also refuses
+new manual focus previews, calibration acquisition, activation and rollback during
+Draining, Restarting and Verifying. Explicit requests use the existing capture-control
+conflict response (409); scheduled capture continues waiting for admission release.
+The command gate lets an already admitted preview or calibration source/master
+generation finish before a pause completes, without adding cancellation. Calibration
+profile publication and SQLite finalization follow that generation boundary and are
+not independently tracked by drain. After terminal settlement, ordinary pause/resume
+semantics apply again; an armed stop still fences its original process until restart.
+Refs #1746
 
 ## Expired workers, refused publication and damaged projections
 
