@@ -146,6 +146,24 @@ public sealed partial class CustomScriptSandboxIntegrationTests
     }
 
     [TestMethod]
+    public async Task BurstOutputThenNaturalSuccessIsAlwaysAnOutputLimitFailure()
+    {
+        var script = CustomScriptTaskAdapterTests.Script("""
+            block=xxxxxxxxxxxxxxxx
+            while [ "${#block}" -lt 4096 ]; do block=$block$block; done
+            printf '%s' "$block"
+            exit 0
+            """);
+        script.OutputBytes = 256;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+            Assert.IsGreaterThan((long)script.OutputBytes, result.StdoutBytes + result.StderrBytes, $"Attempt {attempt}");
+            Assert.AreEqual("output-limit", result.Status, $"A finite burst cannot become success during drain; attempt {attempt}, exit {result.ExitCode}.");
+        }
+    }
+
+    [TestMethod]
     public async Task ScratchCapacityIsSharedAcrossFilesAndNothingIsPublished()
     {
         var script = CustomScriptTaskAdapterTests.Script("""

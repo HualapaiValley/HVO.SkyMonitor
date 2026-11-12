@@ -63,7 +63,9 @@ text or a host path. Registrations are snapshotted at startup; changing any
 covered field creates a new target. Old definitions/occurrences are unavailable
 until deliberately revised, rather than reinterpreted. Definition revision and
 occurrence/run hashes retain that identity through the existing journal. The
-SQLite schema and hashing of existing task kinds are unchanged. Older binaries
+hashing of existing task kinds is unchanged. The local automation store migrates
+schema 3 to 4 for script-stop attribution; adoption checkpoints the paired state,
+and rollback restores that checkpoint for the previous reader. Older binaries
 cannot read the appended enum value in retained revisions: downgrade after use
 is unsupported, even if the current definition is removed.
 
@@ -246,7 +248,10 @@ scheduled/start/end instants and terminal outcome. Detail contains
 `script.completed`, `script.timeout`, `script.output-limit` or
 `script.launch-failed`, `script.isolation-unavailable` or `script.cancelled`, exit
 status and stdout/stderr counts. `script.process-failed` identifies a nonzero script or
-post-launch setup exit without pretending the script completed successfully; raw diagnostic output remains deliberately discarded. Nonzero exit,
+post-launch setup exit without pretending the script completed successfully; raw diagnostic output remains deliberately discarded.
+A combined byte count above `OutputBytes` is `script.output-limit` even if the
+process exits naturally before drain observes the excess. A live cancellation or
+timeout latched first keeps its own cause. Nonzero exit,
 timeout, capacity/launch failure and output excess are failures. Host shutdown
 cancellation kills the process tree, waits for process exit and pipe drain,
 then records an `Interrupted` terminal result with the real exit code, stream

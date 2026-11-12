@@ -97,6 +97,38 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false, 1)]
+    [DataRow(true, 0)]
+    public void SchemaThreeLocalAutomationUpgradeDeclaresTheCheckpointBoundary(bool revertBoundary, int expectedMigrations)
+    {
+        var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
+            item!["location"]!.GetValue<string>() == "raw/.automation/local-automations.db")!;
+        var previous = exception["previousImageLabels"]!.AsObject()
+            .ToDictionary(static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal);
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        using var contract = JsonDocument.Parse(previous["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(3, contract.RootElement.GetProperty("localAutomations").GetProperty("writes").GetInt32());
+        Assert.AreEqual("d3f35d22ee02e56290f7bd06da491df21b715134", exception["previousImageRevision"]!.GetValue<string>());
+        var candidate = ReadDockerfileLabels();
+        if (revertBoundary) candidate[boundary] = previous[boundary];
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-script-boundary-" + Guid.NewGuid().ToString("N")),
+            Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
+            target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        Assert.AreEqual(expectedMigrations, changes.Count);
+        if (!revertBoundary)
+        {
+            Assert.AreEqual(previous[boundary], exception["previousValue"]!.GetValue<string>());
+            Assert.AreEqual(candidate[boundary], exception["candidateValue"]!.GetValue<string>());
+            StringAssert.StartsWith(changes.Single(), boundary + " installed ", StringComparison.Ordinal);
+        }
+    }
+
     internal static Dictionary<string, string> ReadSchemaThreeImageLabels()
     {
         using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,

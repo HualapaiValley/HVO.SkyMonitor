@@ -15,6 +15,23 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class AutomationScriptControlsTests
 {
     [TestMethod]
+    [DataRow("script.sandbox-tools-required", "Custom scripts require sandbox tools that are not installed on this host.")]
+    [DataRow("script.disabled", "Custom scripts are disabled in this CameraAgent's startup configuration.")]
+    public void UnavailableScriptBannerUsesAnOperatorSentence(string code, string sentence)
+    {
+        var state = LocalAutomationOperatorState.Empty with
+        {
+            Registry = [new(LocalAutomationTaskKind.CustomScript, "Script", [LocalAutomationTriggerKind.Periodic], [], false, code)]
+        };
+        using var context = Context(new AutomationsPageTests.AutomationUiService(state));
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-create[disabled]");
+        Assert.AreEqual(sentence, cut.Find("#automation-create-reason").TextContent.Trim());
+        Assert.Contains("No automation task is available.", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain(code, cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task PageDefinitionConfirmationExplainsPendingWithdrawal(bool disable)

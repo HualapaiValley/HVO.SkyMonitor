@@ -1,6 +1,6 @@
 namespace HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts;
 
-/// <summary>First exit/termination decision wins, independently of redirected stream drain.</summary>
+/// <summary>Latches exit/termination decisions before drain; excess-byte accounting is evaluated at settlement.</summary>
 internal sealed class CustomScriptTermination(Func<bool> hasExited, Action kill)
 {
     private readonly object _sync = new();
@@ -22,10 +22,13 @@ internal sealed class CustomScriptTermination(Func<bool> hasExited, Action kill)
         }
     }
 
-    internal string Status(int exitCode)
+    internal string Status(int exitCode, bool outputLimitExceeded = false)
     {
         lock (_sync)
         {
+            // Output is a byte-budget failure even when native exit precedes redirected EOF.
+            // A previously latched live cancellation/timeout still owns its termination cause.
+            if (outputLimitExceeded && _cause is not ("cancelled" or "timeout")) return "output-limit";
             return _cause is null or "exited" ? exitCode == 0 ? "completed" : "process-failed" : _cause;
         }
     }

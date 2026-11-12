@@ -116,7 +116,7 @@ internal static class LinuxCustomScriptSandbox
             await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
             await reaped.Task.ConfigureAwait(false);
         }
-        return new(termination.Status(process.ExitCode),
+        return new(termination.Status(process.ExitCode, total > script.OutputBytes),
             process.ExitCode, await stdout.ConfigureAwait(false), await stderr.ConfigureAwait(false));
 
         async Task<long> DrainAsync(Stream stream)

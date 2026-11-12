@@ -10,7 +10,7 @@ public sealed class CustomScriptTerminationTests
     [DataRow("cancelled", 0)]
     [DataRow("timeout", 17)]
     [DataRow("output-limit", 0)]
-    public async Task NaturalExitDuringDelayedDrainCannotBecomeALaterTermination(string cause, int exitCode)
+    public async Task DelayedDrainPreservesNaturalExitExceptForExcessOutput(string cause, int exitCode)
     {
         var exited = false;
         var kills = 0;
@@ -19,7 +19,7 @@ public sealed class CustomScriptTerminationTests
         async Task<string> ResultAsync()
         {
             await drain.Task.ConfigureAwait(false);
-            return termination.Status(exitCode);
+            return termination.Status(exitCode, cause == "output-limit");
         }
         var result = ResultAsync();
         // Native exit is observable before its managed exit notification and redirected EOF.
@@ -28,7 +28,8 @@ public sealed class CustomScriptTerminationTests
         termination.Exited();
         Assert.IsFalse(result.IsCompleted);
         drain.SetResult();
-        Assert.AreEqual(exitCode == 0 ? "completed" : "process-failed", await result.ConfigureAwait(false));
+        Assert.AreEqual(cause == "output-limit" ? "output-limit" : exitCode == 0 ? "completed" : "process-failed",
+            await result.ConfigureAwait(false));
         Assert.AreEqual(0, kills);
     }
 
@@ -47,4 +48,18 @@ public sealed class CustomScriptTerminationTests
         Assert.AreEqual(first, termination.Status(137));
         Assert.AreEqual(1, kills);
     }
+    [TestMethod]
+    [DataRow("exited", "output-limit")]
+    [DataRow("cancelled", "cancelled")]
+    [DataRow("timeout", "timeout")]
+    [DataRow("launch-failed", "output-limit")]
+    public void ExcessBytesRemainAFailureUnlessLiveCancellationOrTimeoutWasLatchedFirst(string cause, string expected)
+    {
+        var termination = new CustomScriptTermination(() => false, static () => { });
+        if (cause == "exited") termination.Exited();
+        else termination.Stop(cause);
+        termination.Exited();
+        Assert.AreEqual(expected, termination.Status(0, outputLimitExceeded: true));
+    }
+
 }
