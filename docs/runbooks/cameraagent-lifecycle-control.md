@@ -193,6 +193,18 @@ to the offline UI. The last acknowledged pause remains recorded; reachability
 is not proof of capture admission state. Inspect the installer journal, recover
 the supervisor/process, then read capture state before explicitly resuming.
 When CameraAgent returns, the worker republishes retained terminal evidence.
+Pending control evidence does not prevent the offline recovery route: with Docker
+confirming an absent or stopped container, or an explicitly failed `/alive` health
+check, the control-journal gate admits `uninstall`, `restore`, `reinstall`, and
+`rollback`. A missing or starting health result is not proof of failure, and a
+Docker inspection error does not authorize recovery. The commands retain their
+existing preconditions: reinstall requires a preserved uninstalled instance,
+restore requires an eligible target and a verified backup, and rollback retains
+its original-image and authenticated pre-mutation checks. For a host that cannot
+provide those checks, use preserve-by-default uninstall followed by restore when
+needed and reinstall. Do not edit either journal. Pending receipts remain intact
+for the existing lifecycle-worker settlement/publication path after return;
+definite quarantined refusals still require reconciliation.
 
 An installer-worker interruption is settled as terminal failure
 (`lifecycle.installer-interrupted`) once any eligible pre-stop restore is proven
@@ -223,9 +235,11 @@ the other appended registered task kinds; older binaries cannot read it.
 
 Before a deployment transition can start or resume, the installer checks the
 selected instance's runtime-control journal under the deployment lock. Active,
-unpublished, or quarantined control evidence refuses the transition before it
-can write a new deployment journal. Run the explicit `lifecycle-worker` to
-settle interrupted runtime work first; retain quarantined evidence for offline
+unpublished, or quarantined control evidence refuses ordinary deployment before it
+can write a new deployment journal. The offline recovery exception above applies
+only to the four named recovery commands and never to quarantined refusals.
+While CameraAgent is reachable, run the explicit `lifecycle-worker` to settle
+interrupted runtime work first; retain quarantined evidence for offline
 reconciliation rather than deleting or editing either journal. A worker
 interrupted before the stop retries transport failures without making its
 receipt terminal, and reuses the original version-fenced resume command. Later

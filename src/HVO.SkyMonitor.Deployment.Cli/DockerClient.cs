@@ -26,6 +26,9 @@ internal sealed class DockerClient(IProcessRunner processRunner)
 
     internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId)
     {
+        // Ephemeral Docker observation: only an explicit failed /alive check proves a running host unavailable.
+        internal string? LivenessStatus { get; init; }
+
         /// <summary>
         /// The CPU, memory and PID limits Docker enforces on the container, as its <c>HostConfig</c> reports them, or
         /// <see langword="null"/> when it reports none of them. Docker reports an unset limit as zero.
@@ -797,7 +800,9 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             healthy,
             container.GetProperty("Image").GetString())
         {
-            Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null
+            Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null,
+            LivenessStatus = state.TryGetProperty("Health", out var observedHealth)
+                ? observedHealth.GetProperty("Status").GetString() : null
         };
     }
 

@@ -42,15 +42,28 @@ internal sealed record LifecycleWorkerRequest(Guid InstanceId, string ProductRoo
 internal sealed partial class CameraAgentLifecycleManager
 {
     /// <summary>Read under deployment.lock before starting deployment work; never creates a journal while planning.</summary>
-    internal static async Task EnsureControlSettledAsync(InstallationPaths paths, CancellationToken cancellationToken)
+    internal static async Task EnsureControlSettledAsync(InstallationPaths paths, CancellationToken cancellationToken,
+        LifecycleOperationKind? kind = null, DockerClient? docker = null)
     {
         var path = Path.Combine(paths.OperationsRoot, $"control-worker-{Guid.Parse(Path.GetFileName(paths.InstanceRoot)):D}.json");
         SafeFileSystem.EnsureSafeExistingAncestors(path);
         if (!File.Exists(path) && new FileInfo(path).LinkTarget is null) return;
         var journal = new InstallerControlJournal(path);
         await journal.LoadAsync(cancellationToken).ConfigureAwait(false);
-        if (journal.Receipts.Any(item => !item.IsTerminal) || journal.Unpublished.Any() || journal.Refused.Count != 0)
-            throw InstallerException.Refused("Settle installer runtime control with lifecycle-worker before starting deployment operations; retain refused evidence for offline reconciliation.");
+        if (!journal.Receipts.Any(item => !item.IsTerminal) && !journal.Unpublished.Any() && journal.Refused.Count == 0)
+            return;
+        // Keep definite refusals quarantined. Only transport-blocked evidence can admit an explicit recovery;
+        // neither this read-only gate nor the recovery discards the worker's journal.
+        if (journal.Refused.Count == 0 && docker is not null && kind is
+            (LifecycleOperationKind.Reinstall or LifecycleOperationKind.Uninstall or LifecycleOperationKind.Restore or LifecycleOperationKind.Rollback))
+        {
+            var runtime = await docker.InspectContainerAsync(
+                $"hvo-skymonitor-{Guid.Parse(Path.GetFileName(paths.InstanceRoot)):N}", cancellationToken).ConfigureAwait(false);
+            if (!runtime.Exists || !runtime.Running || runtime.LivenessStatus == "unhealthy") return;
+        }
+        throw InstallerException.Refused("Settle installer runtime control with lifecycle-worker while CameraAgent is reachable. " +
+            "If CameraAgent is down, use uninstall then restore/reinstall, or rollback subject to its recovery preconditions. " +
+            "Retain both journals and refused evidence for reconciliation; do not edit them.");
     }
 
     internal static string FormatControlWorkerDiagnostic(string message) => CameraAgentStateDiagnostics.Message(message);

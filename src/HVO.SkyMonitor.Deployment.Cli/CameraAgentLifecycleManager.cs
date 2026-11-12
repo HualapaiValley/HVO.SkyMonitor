@@ -218,7 +218,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 ? OperationLock.AcquireExisting(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
                 : OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
             if (request.Operation is not null)
-                await EnsureControlSettledAsync(paths, cancellationToken).ConfigureAwait(false);
+                await EnsureControlSettledAsync(paths, cancellationToken, request.Operation, docker).ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
             paths = paths.WithCatalog(manifest.Catalog.CatalogId);
@@ -590,7 +590,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         // A release candidate was checked, and a registry image pulled, before the locks (AdmitBeforeWritingAsync).
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
-            manifest, cancellationToken).ConfigureAwait(false);
+            manifest, cancellationToken, docker).ConfigureAwait(false);
         try
         {
             // A rollback going ahead without a limit Docker cannot enforce logs it with the operation before anything
@@ -1421,7 +1421,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     .ConfigureAwait(false);
             }
         }
-        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Uninstall, manifest, cancellationToken)
+        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Uninstall, manifest, cancellationToken, docker)
             .ConfigureAwait(false);
         if (request.DryRun)
         {
@@ -1505,7 +1505,7 @@ internal sealed partial class CameraAgentLifecycleManager
             }
             throw InstallerException.Refused("Reinstall requires a preserved uninstalled instance.");
         }
-        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Reinstall, manifest, cancellationToken)
+        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Reinstall, manifest, cancellationToken, docker)
             .ConfigureAwait(false);
         if (request.DryRun)
         {
@@ -1848,9 +1848,10 @@ internal sealed partial class CameraAgentLifecycleManager
         InstallationPaths paths,
         LifecycleOperationKind kind,
         InstanceManifest manifest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DockerClient? docker = null)
     {
-        await EnsureControlSettledAsync(paths, cancellationToken).ConfigureAwait(false);
+        await EnsureControlSettledAsync(paths, cancellationToken, kind, docker).ConfigureAwait(false);
         // A plan meets the same journal gates as the command, and writes nothing (#1315).
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
         if (request.DryRun)
