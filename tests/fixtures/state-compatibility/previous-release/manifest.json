@@ -88,7 +88,7 @@
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
       "candidateValue": "4293871b7c4cf38ce0e0e4ea969aa9a6de057eea",
-      "reason": "Schema 3 from development/v1 5f5d253dd38308b8e62be9a1e32194dd675d0b60 gains retention indexes in schema 4. The minimum-compatible-revision boundary advances from ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c to the combined retained-ledger/environmental reader 53b5756ddbd26dc5ea623ecd34d34d2de2672f05 so the installer selects the paired checkpoint before candidate startup. Frozen previous-release SQL images remain unchanged. Refs #1778",
+      "reason": "Schema 3 from development/v1 5f5d253dd38308b8e62be9a1e32194dd675d0b60 gains retention indexes in schema 4. The minimum-compatible-revision boundary advances from ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c to the combined retained-ledger/environmental and processing-ledger reader 4293871b7c4cf38ce0e0e4ea969aa9a6de057eea so the installer selects the paired checkpoint before candidate startup. Frozen previous-release SQL images remain unchanged. Refs #1778",
       "previousImageRevision": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
       "previousImageLabels": {
         "io.hvo.skymonitor.component": "CameraAgent",

@@ -28,7 +28,8 @@ it reports `poll-completed`; the durable receipt supplies the actual lifecycle o
 registers through installation-token authentication and refreshes a 30-second
 in-memory lease. Without that lease, System control's drain stays disabled and
 the scheduled-restart task is unavailable. A CameraAgent startup requires a fresh
-worker exchange. Idle heartbeats do not write durable state or evaluate schedules.
+worker exchange. Drain polling also renews the lease at least every ten seconds
+while the transport responds. Idle heartbeats do not write durable state or evaluate schedules.
 
 ## Drain and restart contract
 
@@ -192,14 +193,55 @@ to the offline UI. The last acknowledged pause remains recorded; reachability
 is not proof of capture admission state. Inspect the installer journal, recover
 the supervisor/process, then read capture state before explicitly resuming.
 When CameraAgent returns, the worker republishes retained terminal evidence.
+Pending control evidence does not prevent the offline recovery route. Docker must
+confirm an absent or stopped container; for a running container with cached
+`unhealthy` status, the installer also probes the fixed container-local `/alive`
+endpoint now. Any current HTTP reply, including an error response, means reachable
+and keeps ordinary settlement gating. Only an explicit connection failure or a
+bounded no-response timeout admits the offline exception. Starting/missing health,
+probe execution errors and Docker inspection errors do not authorize recovery.
+The control-journal exception applies to `uninstall`, `restore`, `reinstall`, and
+`rollback`; it does not change their other prerequisites. Reinstall requires a
+preserved uninstalled instance, restore requires an eligible target and verified
+backup, and rollback still requires its original-image and authenticated
+pre-mutation checks. For an original host that cannot provide those checks, use
+preserve-by-default uninstall, restore if needed, then reinstall.
 
-An installer-worker interruption is recovered as terminal failure
-(`lifecycle.installer-interrupted`); an ambiguous restart is not replayed. Startup
+A retained nonterminal control projection can refuse recovery's final resume with
+409 even after the recovered image and paused boundary have committed. In that
+case leave both journals intact and complete these steps:
+
+1. Let the already-running `lifecycle-worker` poll, or explicitly run it with
+   `--once` if no worker is running. Once the recovery command releases
+   `deployment.lock`, the worker may settle retained receipts during a **Running /
+   Committed** reinstall or rollback with a verified paused boundary. It cannot
+   start new runtime-control work while that deployment is incomplete, and no
+   earlier deployment phase receives this exception.
+2. Check that the retained control receipt is terminal and published. The existing
+   conditional settlement preserves request/audit history and does not replay a
+   stop. A returned process has a new identity, so the old process's pre-stop
+   resume authority does not transfer. Capture remains paused until the recovery
+   command resumes it. Terminal-but-unpublished receipts use the worker's existing
+   publication path, which does not need the deployment lock.
+3. Rerun the **same** reinstall or rollback command with `--resume`. Its committed
+   retry verifies the recovered instance, resumes through the normal native
+   authority and completes the deployment journal without another image start.
+
+Do not edit or delete either journal. Definite quarantined refusals still require
+reconciliation; they never qualify for the offline exception.
+
+An installer-worker interruption is settled as terminal failure
+(`lifecycle.installer-interrupted`) once any eligible pre-stop restore is proven
+or definitely refused. Transport failure, unavailable capture initialization, or an
+outstanding `PauseRequested` leaves the journal nonterminal so a later poll can
+retry after the pause settles and confirm the same idempotent, version-fenced
+resume; an ambiguous restart is not replayed. Startup
 and later polls use the same owned-pause settlement. A busy deployment lock leaves
 a journal-owned interrupted operation pending and retries on a later poll; it is
 not classified as an orphan or terminalized without attempting safe restore.
 Interrupted installer deployment work must be recovered before starting another
-runtime lifecycle. Failures and cancellation preserve accepted capture/artifact
+runtime lifecycle. The committed-recovery exception above permits retained-receipt
+settlement only, not another lifecycle request. Failures and cancellation preserve accepted capture/artifact
 records, pause intent and the journal. Corrupt, unsupported or linked state is
 refused rather than silently reset.
 
@@ -215,6 +257,35 @@ bounded to that definition's retained history and never reissues an effect. Neit
 reconciliation nor installer publication rewrites an already terminal run.
 Retaining a new task kind is a forward-only definition change, consistent with
 the other appended registered task kinds; older binaries cannot read it.
+
+Before a deployment transition can start or resume, the installer checks the
+selected instance's runtime-control journal under the deployment lock. Active,
+unpublished, or quarantined control evidence refuses ordinary deployment before it
+can write a new deployment journal. The offline recovery exception above applies
+only to the four named recovery commands and never to quarantined refusals.
+While CameraAgent is reachable, run the explicit `lifecycle-worker` to settle
+interrupted runtime work first; retain quarantined evidence for offline
+reconciliation rather than deleting or editing either journal. A worker
+interrupted before the stop retries transport failures without making its
+receipt terminal, and reuses the original version-fenced resume command. Later
+owner commands remain authoritative. Drain polling renews the worker lease at
+least every ten seconds while the transport responds. A heartbeat transport outage
+does not abandon the authoritative drain; its existing budget and outcome still apply.
+A transient failure to
+pause after an unconfirmed resume returns a retryable 503; a concurrent owner
+pause can satisfy that settlement boundary. The same lifecycle fence also refuses
+new manual focus previews, calibration acquisition, activation and rollback during
+Draining, Restarting and Verifying. Explicit requests use the existing capture-control
+conflict response (409); scheduled capture continues waiting for admission release.
+If a lifecycle claim races calibration planning, refusal retires only the unstarted
+plan without consuming an attempt; its terminal idempotency history remains, and
+a new request can proceed after lifecycle release. Interrupted attempts remain recoverable.
+The command gate lets an already admitted preview or calibration source/master
+generation finish before a pause completes, without adding cancellation. Calibration
+profile publication and SQLite finalization follow that generation boundary and are
+not independently tracked by drain. After terminal settlement, ordinary pause/resume
+semantics apply again; an armed stop still fences its original process until restart.
+Refs #1746
 
 ## Expired workers, refused publication and damaged projections
 

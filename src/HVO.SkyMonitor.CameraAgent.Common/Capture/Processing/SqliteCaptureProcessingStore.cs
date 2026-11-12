@@ -3474,7 +3474,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             command.CommandText = statement + ";";
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        // A schema 6 database reaches schema 8 in one step, so it needs the attempt-table rebuild schema 7
+        // A schema 6 database reaches schema 9 in one step, so it needs the attempt-table rebuild schema 7
         // introduces as well. Without it the marker would advance while the execution route column stayed
         // absent, and the validation that follows this migration in the same transaction would reject it.
         await RebuildNodeAttemptsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
