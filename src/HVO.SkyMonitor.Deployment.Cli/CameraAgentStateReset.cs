@@ -187,8 +187,13 @@ internal static class CameraAgentStateResetManager
     private static void EnsureDeepSkyDisabled(InstanceManifest manifest)
     {
         if (manifest.DeepSkyCatalog is not null)
+        {
+            var restore = manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
+                ? $"First run '{InstallerProgram.Current} cameraagent reinstall --instance-id {manifest.InstanceId:D}' to start the preserved instance. "
+                : string.Empty;
             throw InstallerException.Refused(
-                "An active deep-sky selection blocks CameraAgent state reset. While installed, roll the deep-sky family back to disabled before uninstalling. Then reset and reinstall, upgrade to a compatible image, and reselect OpenNGC.");
+                $"An active deep-sky selection blocks CameraAgent state reset. {restore}While installed, run '{InstallerProgram.Current} catalog select --instance-id {manifest.InstanceId:D} --catalog-family deep-sky --catalog-version disabled'. Then uninstall, reset and reinstall, upgrade to a compatible image, and reselect OpenNGC.");
+        }
     }
 
     private static IReadOnlyList<string> PreservedPaths(InstallationPaths paths) =>

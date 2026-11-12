@@ -209,6 +209,9 @@ internal sealed record LifecycleRequest : DeploymentCommand
         ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
         if (CatalogFamily is not null && (CatalogFamily != "deep-sky" || Operation is not (LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback)))
             throw new InstallUsageException("--catalog-family deep-sky applies only to catalog select or rollback.");
+        if (CatalogVersion == DeepSkyCatalogSelection.DisabledVersion &&
+            (Operation != LifecycleOperationKind.CatalogSelect || CatalogFamily != "deep-sky"))
+            throw new InstallUsageException("The disabled target applies only to catalog select --catalog-family deep-sky.");
         if (TargetRelease is not null && Operation != LifecycleOperationKind.Upgrade)
         {
             throw new InstallUsageException("A release's upgrade notes apply only to an upgrade.");

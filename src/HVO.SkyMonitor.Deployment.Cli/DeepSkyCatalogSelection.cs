@@ -5,6 +5,7 @@ namespace HVO.SkyMonitor.Deployment;
 /// <summary>Independent deep-sky selection using the existing deployment locks, journal and drain protocol.</summary>
 internal static class DeepSkyCatalogSelection
 {
+    internal const string DisabledVersion = "disabled";
     internal const string Mount = "      - ${HVO_DEEP_SKY_CATALOG_ROOT:?deep-sky catalog root required}:/app/deep-sky-catalog:ro\n";
     private static readonly string[] Settings = ["Enabled", "Root", "RequiredCatalogId", "RequiredPackageKind", "RequiredPackageVersion"];
 
@@ -21,11 +22,12 @@ internal static class DeepSkyCatalogSelection
             ? await CameraAgentLifecycleManager.ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false)
             : null;
         var rollback = request.Operation == LifecycleOperationKind.CatalogRollback;
+        var disable = !rollback && request.CatalogFamily == "deep-sky" && request.CatalogVersion == DisabledVersion;
         if (rollback && !manifest.HasPreviousDeepSkySelection && retained is null)
             throw new InstallerException("No previous deep-sky selection is retained.");
         var candidate = retained is { DeepSkyTransition: true } ? retained.CandidateDeepSkyCatalog : rollback
             ? manifest.PreviousDeepSkyCatalog
-            : await CatalogLifecycleManager.ReadInstalledIdentityAsync(paths, request.CatalogVersion!, cancellationToken).ConfigureAwait(false);
+            : disable ? null : await CatalogLifecycleManager.ReadInstalledIdentityAsync(paths, request.CatalogVersion!, cancellationToken).ConfigureAwait(false);
         if (candidate is not null)
         {
             if (ProductionCatalog.Get(candidate.CatalogId).ManifestVersion != 4)

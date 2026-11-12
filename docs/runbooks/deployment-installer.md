@@ -2051,10 +2051,13 @@ The shared catalog files remain in place. Reinstallation selects the star catalo
 `--catalog-bundle` input, so a later star selection can be replaced.
 
 An active deep-sky selection refuses `reset-state`, including `--dry-run`, before any runtime state is
-deleted or installation state is rewound. While the instance is still installed, roll the deep-sky family
-back to its disabled selection before uninstalling. Then reset and reinstall with the original inputs,
-upgrade to an image that supports the independent deep-sky catalog, and reselect OpenNGC. This ordering
-preserves a usable reinstall path when the original install image predates the new catalog contract.
+deleted or installation state is rewound. If the instance is already uninstalled, first run
+`hvo-sky-install cameraagent reinstall --instance-id <uuid>` to start it from its preserved state. While
+installed, run `hvo-sky-install catalog select --instance-id <uuid> --catalog-family deep-sky --catalog-version disabled`.
+This explicit target disables the family independently of previous-selection history; ordinary catalog
+rollback still returns to the previous selection. Then uninstall, reset and reinstall with the original
+inputs, upgrade to an image that supports the independent deep-sky catalog, and reselect OpenNGC. This
+ordering preserves a usable reinstall path when the original install image predates the new catalog contract.
 
 Pending installs left by an older reset can still retain an active OpenNGC selection. Both `install --plan`
 and the install run validate that snapshot and the requested image's reader support before configuration

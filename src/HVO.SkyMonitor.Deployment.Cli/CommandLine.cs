@@ -164,7 +164,7 @@ internal static class CommandLine
         ["--port"] = ("<port>", "The port CameraAgent listens on (default 5130)."),
         ["--product-root"] = ("<path>", "The product root (default: this host's production product root)."),
         ["--catalog-bundle"] = ("<path>", "The catalog bundle folder."),
-        ["--catalog-version"] = ("<version>", "An installed catalog version."),
+        ["--catalog-version"] = ("<version>", "An installed catalog version, or disabled with catalog select --catalog-family deep-sky."),
         ["--catalog-family"] = ("<deep-sky>", "Select the independent deep-sky family, including rollback."),
         ["--release"] = ("<folder>", "The release folder, holding the release's release.json and SHA256SUMS."),
         ["--image-source"] = ("<source>", "With --release: archive (default) loads its offline image archive; registry pulls its image."),
