@@ -18,11 +18,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 public sealed partial class InstallerLifecycleRecoveryIntegrationTests
 {
     [TestMethod]
+    [DataRow(LifecycleOperationKind.Reinstall, false, LifecycleOperationPhase.Prepared)]
+    [DataRow(LifecycleOperationKind.Rollback, false, LifecycleOperationPhase.Restoring)]
     [DataRow(LifecycleOperationKind.Reinstall, false)]
     [DataRow(LifecycleOperationKind.Rollback, false)]
     [DataRow(LifecycleOperationKind.Reinstall, true)]
     [DataRow(LifecycleOperationKind.Rollback, true)]
-    public async Task InstallerLifecycleCommittedRecoveryLetsTheRealWorkerSettleBeforeNativeResume(LifecycleOperationKind kind, bool terminal)
+    public async Task InstallerLifecycleCommittedRecoveryLetsTheRealWorkerSettleBeforeNativeResume(LifecycleOperationKind kind, bool terminal, LifecycleOperationPhase phase = LifecycleOperationPhase.Committed)
     {
         var fixture = new Fixture(false);
         await using var owned = fixture.ConfigureAwait(false);
@@ -67,7 +69,7 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
             specification.SchemaVersion, specification.PreprocessingVersion, specification.DatabaseSha256,
             specification.DatabaseLength, specification.RowCount, paths.CatalogRoot, new string('a', 64), "local-offline");
         var operation = new LifecycleOperationState(DeploymentSchemaVersions.LifecycleOperation, deployment, kind,
-            id, new string('a', 64), LifecycleOperationPhase.Committed, InstallationStatus.Running, now, now, image,
+            id, new string('a', 64), phase, InstallationStatus.Running, now, now, image,
             CandidateImage: kind == LifecycleOperationKind.Rollback ? image : null, OriginalCatalog: catalog,
             MutationStarted: true, PostMutationContinuity: new("Paused", paused.CaptureVersion, paused.CaptureSequence,
                 0, 0, 0, 0, 0, 0, 0, 0, now));
@@ -78,15 +80,19 @@ public sealed partial class InstallerLifecycleRecoveryIntegrationTests
             native.ResumeAsync(deployment, "test-installation-token", watchdog.Token)).ConfigureAwait(false);
         StringAssert.Contains(refusal.Message, "409", StringComparison.Ordinal);
         Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State);
+        var preserved = await File.ReadAllBytesAsync(paths.LifecycleStatePath).ConfigureAwait(false);
         var messages = new List<string>();
         await new RuntimeWorker(client, journal, token => RuntimeManager.AcquireControlDeploymentAsync(paths, token),
             TimeProvider.System, messages.Add,
-            acquireInterruptedRecovery: token => RuntimeManager.AcquireControlDeploymentAsync(paths, token, settleCommittedRecovery: true))
+            acquireInterruptedRecovery: (receipt, token) => RuntimeManager.AcquireInterruptedControlAsync(paths,
+                phase == LifecycleOperationPhase.Prepared ? InstanceLifecycleCondition.Uninstalled : InstanceLifecycleCondition.Installed,
+                receipt, client, token))
             .PollAsync(watchdog.Token).ConfigureAwait(false);
         Assert.IsTrue(journal.Receipts.Single().IsTerminal, string.Join("; ", messages));
         Assert.IsEmpty(journal.Unpublished);
         Assert.IsEmpty(journal.Refused);
         Assert.IsFalse(fixture.Controls.AdmissionHeld);
+        CollectionAssert.AreEqual(preserved, await File.ReadAllBytesAsync(paths.LifecycleStatePath).ConfigureAwait(false));
         Assert.AreEqual(CaptureAdmissionState.Paused, fixture.Capture.Snapshot.State, "Settlement must not invent a deployment resume.");
         await native.ResumeAsync(deployment, "test-installation-token", watchdog.Token).ConfigureAwait(false);
         await RuntimeManager.CompleteAsync(paths, operation, watchdog.Token).ConfigureAwait(false);

@@ -69,14 +69,18 @@ internal sealed partial class CameraAgentLifecycleManager
             "Retain both journals and refused evidence for reconciliation; do not edit them.");
     }
 
-    /// <summary>Only settlement of retained receipts may run before a committed recovery's final resume.</summary>
+    /// <summary>Only settlement of retained receipts may enter an incomplete recovery.</summary>
     internal static async Task<IDisposable> AcquireControlDeploymentAsync(InstallationPaths paths, CancellationToken cancellationToken,
-        bool settleCommittedRecovery = false)
+        bool settleCommittedRecovery = false,
+        Func<CancellationToken, Task<bool>>? returnedProcess = null, bool requireRecovery = false)
     {
         var deploymentLock = OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), TimeSpan.Zero, cancellationToken);
         try
         {
             var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+            if (requireRecovery && operation is not
+                { Status: not InstallationStatus.Completed, Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback })
+                throw InstallerException.Refused("An uninstalled instance requires an incomplete reinstall or rollback for settlement.");
             var committedRecovery = settleCommittedRecovery && operation is
             {
                 Status: InstallationStatus.Running, Phase: LifecycleOperationPhase.Committed, MutationStarted: true,
@@ -84,7 +88,15 @@ internal sealed partial class CameraAgentLifecycleManager
                 PostMutationContinuity: { CaptureState: "Paused" }
             } && operation.InstanceId == Guid.Parse(Path.GetFileName(paths.InstanceRoot)) &&
                 IsValidRecoveryBoundary(operation.PostMutationContinuity);
-            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation) && !committedRecovery)
+            // Under the deployment lock, a different initialized process proves settlement cannot
+            // restore the old process's pause. No deployment boundary or mutation is required.
+            var precommitRecovery = !committedRecovery && returnedProcess is not null && operation is
+            {
+                Status: not InstallationStatus.Completed,
+                Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback
+            } && operation.InstanceId == Guid.Parse(Path.GetFileName(paths.InstanceRoot)) &&
+                await returnedProcess(cancellationToken).ConfigureAwait(false);
+            if (operation is { Status: not InstallationStatus.Completed } && !IsRefused(operation) && !IsRestored(operation) && !committedRecovery && !precommitRecovery)
                 throw InstallerException.Refused("An installer lifecycle operation must be recovered before runtime control.");
             return deploymentLock;
         }
@@ -104,8 +116,10 @@ internal sealed partial class CameraAgentLifecycleManager
         if (NativeLinux.getuid() == 0 || manifest.RuntimeUid != NativeLinux.getuid() || manifest.RuntimeGid != NativeLinux.getgid())
             throw InstallerException.Refused("Run the lifecycle worker as the recorded runtime account, never as root.");
         EnsureCorrelated(paths, request.InstanceId, manifest, result, allowTransactionalDrift: false);
-        if (manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
-            throw InstallerException.Refused("The lifecycle worker requires an installed instance.");
+        // An interrupted reinstall may still have an Uninstalled manifest. Only retained
+        // receipt settlement can use it; the ordinary acquire below remains refused.
+        if (manifest.LifecycleCondition is not (InstanceLifecycleCondition.Installed or InstanceLifecycleCondition.Uninstalled))
+            throw InstallerException.Refused("The lifecycle worker requires a retained instance.");
         var token = await ReadLifecycleControlTokenAsync(paths, cancellationToken).ConfigureAwait(false);
         ValidateLifecycleControlToken(manifest, token);
         SafeFileSystem.CreateOwnerDirectory(paths.OperationsRoot);
@@ -118,10 +132,28 @@ internal sealed partial class CameraAgentLifecycleManager
         var address = IPAddress.TryParse(manifest.BindAddress, out var binding) && IPAddress.Any.Equals(binding)
             ? new Uri($"http://127.0.0.1:{manifest.Port}") : result.Url;
         using var client = new InstallerControlHttpClient(address, token, workerId);
-        Task<IDisposable> AcquireDeploymentAsync(CancellationToken token) => AcquireControlDeploymentAsync(paths, token);
+        Task<IDisposable> AcquireDeploymentAsync(CancellationToken token) =>
+            manifest.LifecycleCondition == InstanceLifecycleCondition.Installed
+                ? AcquireControlDeploymentAsync(paths, token)
+                : throw InstallerException.Refused("New runtime control requires an installed instance.");
         await new InstallerControlWorker(client, journal, AcquireDeploymentAsync, TimeProvider.System,
             message => Console.Error.WriteLine(FormatControlWorkerDiagnostic(message)),
-            acquireInterruptedRecovery: token => AcquireControlDeploymentAsync(paths, token, settleCommittedRecovery: true))
+            acquireInterruptedRecovery: (receipt, token) => AcquireInterruptedControlAsync(paths, manifest.LifecycleCondition,
+                receipt, client, token))
             .RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
     }
+
+    internal static Task<IDisposable> AcquireInterruptedControlAsync(InstallationPaths paths,
+        InstanceLifecycleCondition condition, CameraAgentControlReceipt receipt, IInstallerControlClient client,
+        CancellationToken token) => AcquireControlDeploymentAsync(paths, token,
+            settleCommittedRecovery: condition == InstanceLifecycleCondition.Installed,
+            returnedProcess: async cancellation =>
+            {
+                if (receipt.OriginalProcessId is null || receipt.OriginalProcessId == Guid.Empty) return false;
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                var snapshot = await client.ExchangeAsync(null, timeout.Token).ConfigureAwait(false);
+                return snapshot.Initialized && snapshot.ProcessId != Guid.Empty &&
+                    snapshot.ProcessId != receipt.OriginalProcessId;
+            }, requireRecovery: condition != InstanceLifecycleCondition.Installed);
 }
