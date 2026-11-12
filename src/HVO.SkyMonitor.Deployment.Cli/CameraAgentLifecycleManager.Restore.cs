@@ -54,7 +54,7 @@ internal sealed partial class CameraAgentLifecycleManager
         var daemon = archived.Manifest.DockerDaemon;
         if (request.DryRun)
         {
-            var planned = await BeginAsync(request, paths, LifecycleOperationKind.Restore, archived.Manifest, cancellationToken)
+            var planned = await BeginAsync(request, paths, LifecycleOperationKind.Restore, archived.Manifest, cancellationToken, docker)
                 .ConfigureAwait(false);
             var plannedResult = Result(planned.Kind, "planned", planned.OperationId, paths,
                 archived.Manifest with { LifecycleCondition = InstanceLifecycleCondition.Uninstalled }, daemon, false, false);
@@ -73,7 +73,7 @@ internal sealed partial class CameraAgentLifecycleManager
             using var instanceLock = OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
             // Decided again under the locks: another run may have installed the instance since it was admitted.
             if (!request.Resume) EnsureRestorableTarget(paths, instanceId);
-            var operation = await BeginAsync(request, paths, LifecycleOperationKind.Restore, archived.Manifest, cancellationToken)
+            var operation = await BeginAsync(request, paths, LifecycleOperationKind.Restore, archived.Manifest, cancellationToken, docker)
                 .ConfigureAwait(false);
             return await RestoreLockedAsync(request, paths, vault, name, archived, operation, daemon, error, cancellationToken)
                 .ConfigureAwait(false);

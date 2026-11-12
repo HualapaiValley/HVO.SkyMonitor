@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- The astrometry solver-v1 regression compares fitted values within 64 ULPs to allow cross-architecture FMA/libm round-off, including the measured 15-ULP M5 Max roll difference, while retaining exact index counts and ordering checks. Production numerics and retained assessment hashes are unchanged. Refs #1388
+- CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence, with fresh liveness checks and worker settlement for offline recovery while retaining pending receipts. Refs #1746
 
 - Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
 

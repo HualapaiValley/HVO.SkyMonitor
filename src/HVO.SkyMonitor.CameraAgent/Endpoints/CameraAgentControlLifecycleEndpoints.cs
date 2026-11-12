@@ -41,9 +41,18 @@ internal static partial class CameraAgentControlLifecycleEndpoints
                 {
                     if (failed.PausedVersion is not { } paused || capture.Snapshot.Version != checked(paused + 1))
                         return Results.Conflict();
-                    await capture.PauseAsync($"lifecycle-settlement:{failed.Request.OperationId:D}", capture.Snapshot.Version,
-                        $"installer-lifecycle:{failed.Request.OperationId:D}", "Unconfirmed lifecycle resume; preserve paused admission",
-                        cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await capture.PauseAsync($"lifecycle-settlement:{failed.Request.OperationId:D}", checked(paused + 1),
+                            $"installer-lifecycle:{failed.Request.OperationId:D}", "Unconfirmed lifecycle resume; preserve paused admission",
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (CaptureControlConflictException)
+                    {
+                        // An owner pause may have won the version race. Any other transient boundary remains retryable.
+                        if (capture.Snapshot.State != CaptureAdmissionState.Paused)
+                            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+                    }
                 }
                 if (capture.Snapshot.State != CaptureAdmissionState.Paused)
                     return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
@@ -62,6 +71,7 @@ internal static partial class CameraAgentControlLifecycleEndpoints
                 snapshot.State.ToString(), snapshot.Version, snapshot.IsInitialized,
                 CameraAgentRestart.IsSupervised(configuration), safeWindow, ownedPause));
         }
+        catch (CaptureAdmissionUnavailableException) { return Results.StatusCode(StatusCodes.Status503ServiceUnavailable); }
         catch (ArgumentException) { return Results.BadRequest(); }
         catch (InvalidOperationException) { return Results.Conflict(); }
     }
