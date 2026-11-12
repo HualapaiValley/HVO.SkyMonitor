@@ -115,6 +115,9 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         Assert.AreEqual("4293871b7c4cf38ce0e0e4ea969aa9a6de057eea", candidate[boundary]);
         Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
         CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
+        // Isolate the processing-ledger checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in CameraAgentImageLabels.StateBoundaryLabels.Where(static label => label != "io.hvo.skymonitor.minimum-compatible-revision"))
+            candidate[label] = previous[label];
         if (revertBoundary) candidate[boundary] = previous[boundary];
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-manifest-boundary-" + Guid.NewGuid().ToString("N")), Guid.NewGuid(), "catalog");
         var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(previous));
