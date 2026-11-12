@@ -4,81 +4,12 @@ Refs #1747. Read-only settings snapshot taken 2026-11-12 UTC from
 `GET /repos/HualapaiValley/HVO.SkyMonitor/rulesets/26838822`.
 This document records policy; changing settings remains an operator action.
 
-```json
-{
-  "id": 26838822,
-  "name": "development/v1 merge queue",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": {
-    "ref_name": {
-      "exclude": [],
-      "include": [
-        "refs/heads/development/v1"
-      ]
-    }
-  },
-  "rules": [
-    {
-      "type": "deletion"
-    },
-    {
-      "type": "non_fast_forward"
-    },
-    {
-      "type": "pull_request",
-      "parameters": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews_on_push": false,
-        "required_reviewers": [],
-        "require_code_owner_review": false,
-        "dismissal_restriction": {
-          "enabled": false,
-          "allowed_actors": []
-        },
-        "require_last_push_approval": false,
-        "required_review_thread_resolution": true,
-        "require_extra_approval_for_unattributed_changes": true,
-        "allowed_merge_methods": [
-          "merge"
-        ]
-      }
-    },
-    {
-      "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": false,
-        "do_not_enforce_on_create": false,
-        "required_status_checks": [
-          {
-            "context": "Development v1 / Preflight",
-            "integration_id": 15368
-          },
-          {
-            "context": "Development v1 / Build and Unit",
-            "integration_id": 15368
-          },
-          {
-            "context": "hvo/reviewed-head"
-          }
-        ]
-      }
-    },
-    {
-      "type": "merge_queue",
-      "parameters": {
-        "merge_method": "MERGE",
-        "max_entries_to_build": 3,
-        "min_entries_to_merge": 1,
-        "max_entries_to_merge": 3,
-        "min_entries_to_merge_wait_minutes": 2,
-        "grouping_strategy": "ALLGREEN",
-        "check_response_timeout_minutes": 45
-      }
-    }
-  ]
-}
-```
+The complete [ruleset snapshot](development-v1-merge-queue-drill/ruleset-26838822.before.json)
+includes `bypass_actors: []` and every other returned field. The
+[classic branch-protection snapshot](development-v1-merge-queue-drill/branch-protection.before.json)
+is retained alongside it. See the [exact command appendix](development-v1-merge-queue-drill.md)
+for the empty-queue admission/merge freeze, committed restore payloads,
+readback stop conditions, and reproducible offline restoration evidence.
 
 ## Cutover checklist
 
@@ -94,6 +25,9 @@ This document records policy; changing settings remains an operator action.
 
 ## Rollback checklist
 
+The supervised drill uses the numbered appendix and requires an empty queue.
+This checklist describes ordinary fallback operations.
+
 - Kepler records the reason and current queue entries, then the operator stops
   new admission and dequeues pending groups before disabling the queue rule.
 - Preserve all three required checks, including hvo/reviewed-head with any
@@ -108,12 +42,12 @@ This document records policy; changing settings remains an operator action.
 
 Roy authorized the live cutover/rollback drill in t421s2656 (2026-11-12,
 8:14 AM PST). Kepler owns its later supervised execution. This implementation
-branch supplies the exact command plan and fresh read-only protection/ruleset
-snapshots in the local owner handoff; it changes no live settings. The
-not-yet-executed drill is a known operational limit, with no further Roy decision
-needed for the approved activity. Refs #1747.
+branch supplies the [exact command plan and restoration evidence](development-v1-merge-queue-drill.md)
+in the repository; it changes no live settings. The not-yet-executed drill is
+**KNOWN LIMIT / HELD** until the later supervised window, with Roy watching
+and a repository administrator operating the settings writes. Refs #1747.
 
 Roy also selected additional or relocated self-hosted runner capacity. Atlas
 must report the infrastructure plan, available capacity and labels before any
-workflow selector changes. That dependency is a known limit awaiting Atlas;
+workflow selector changes. That dependency is **KNOWN LIMIT (Atlas)**;
 this branch retains existing runner labels, timeout budgets and test selection.
