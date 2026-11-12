@@ -6,6 +6,10 @@ using Microsoft.Extensions.Logging.Abstractions;
 using HVO.SkyMonitor.AgentCore;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
+using HVO.SkyMonitor.LogicHost.Controllers;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 
 namespace HVO.SkyMonitor.Tests.LogicHost.Services;
 
@@ -193,6 +197,100 @@ public sealed class DeviceRigProfileServiceTests
 
         CameraRigProfileIdentity.ComputeSha256(rig).Should().Be(
             CaptureContractJson.ComputeCanonicalJsonSha256(contractJson));
+    }
+
+    [TestMethod]
+    [DataRow("unsorted")]
+    [DataRow("duplicate")]
+    [DataRow("negative-azimuth")]
+    [DataRow("azimuth-360")]
+    [DataRow("low-elevation")]
+    [DataRow("high-elevation")]
+    [DataRow("null-sample")]
+    [DataRow("null-samples")]
+    [DataRow("too-many-samples")]
+    [DataRow("invalid-schema")]
+    [DataRow("invalid-revision")]
+    [DataRow("invalid-gap")]
+    [DataRow("invalid-identity")]
+    [DataRow("null-identity")]
+    public async Task UpsertAsync_WithInvalidHorizon_ReturnsSanitizedValidationProblemWithoutMutation(string invalidCase)
+    {
+        await using var context = CreateContext();
+        var timeProvider = new FixedTimeProvider(DateTimeOffset.UtcNow);
+        var registration = await SeedRegistrationAsync(context, bootstrapped: true).ConfigureAwait(false);
+        registration.DeviceKeyHash = DeviceRegistrationService.ComputeSha256("device-key");
+        await context.SaveChangesAsync().ConfigureAwait(false);
+        var service = new DeviceRigProfileService(
+            new DeviceCredentialValidator(context, timeProvider), context, timeProvider, NullLogger<DeviceRigProfileService>.Instance);
+        var validJson = CreateHorizonRigJson();
+        var accepted = await service.UpsertAsync(new DeviceRigProfileUpsertRequest(
+            registration.DeviceId, "device-key", validJson.ToJsonString()), CancellationToken.None).ConfigureAwait(false);
+        var updatedAt = registration.CurrentRigProfileUpdatedAtUtc;
+        var lastSeen = registration.LastSeenUtc;
+        var horizon = validJson["horizonObstruction"]!.AsObject();
+        switch (invalidCase)
+        {
+            case "unsorted": horizon["samples"] = JsonNode.Parse("[{\"azimuthDegrees\":20,\"elevationDegrees\":0},{\"azimuthDegrees\":10,\"elevationDegrees\":0}]"); break;
+            case "duplicate": horizon["samples"] = JsonNode.Parse("[{\"azimuthDegrees\":10,\"elevationDegrees\":0},{\"azimuthDegrees\":10,\"elevationDegrees\":1}]"); break;
+            case "negative-azimuth": horizon["samples"]![0]!["azimuthDegrees"] = -1; break;
+            case "azimuth-360": horizon["samples"]![0]!["azimuthDegrees"] = 360; break;
+            case "low-elevation": horizon["samples"]![0]!["elevationDegrees"] = -91; break;
+            case "high-elevation": horizon["samples"]![0]!["elevationDegrees"] = 91; break;
+            case "null-sample": horizon["samples"] = new JsonArray((JsonNode?)null); break;
+            case "null-samples": horizon["samples"] = null; break;
+            case "too-many-samples": horizon["samples"] = JsonSerializer.SerializeToNode(Enumerable.Range(0, 721).Select(index => new HorizonObstructionSample(index / 3.0, 0)), RigSerializerOptions); break;
+            case "invalid-schema": horizon["schemaVersion"] = "invalid"; break;
+            case "invalid-revision": horizon["revision"] = 0; break;
+            case "invalid-gap": horizon["maximumInterpolationGapDegrees"] = 91; break;
+            case "invalid-identity": horizon["siteIdentitySha256"] = "invalid"; break;
+            case "null-identity": horizon["geometryIdentitySha256"] = null; break;
+            default: Assert.Fail("Unknown invalid horizon case."); break;
+        }
+        var invalidJson = validJson.ToJsonString();
+        Func<Task> act = () => service.UpsertAsync(new DeviceRigProfileUpsertRequest(
+            registration.DeviceId, "device-key", invalidJson), CancellationToken.None);
+
+        await act.Should().ThrowAsync<JsonException>()
+            .WithMessage("RigConfigJson contains an invalid current camera rig configuration.").ConfigureAwait(false);
+
+        var controller = new DeviceRigProfileController(service, NullLogger<DeviceRigProfileController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
+        var response = await controller.UpsertAsync(new DeviceRigProfileController.DeviceRigProfileUpsertRequestDto(
+            registration.DeviceId, "device-key", invalidJson, null), CancellationToken.None).ConfigureAwait(false);
+        var result = response.Result.Should().BeAssignableTo<ObjectResult>().Subject;
+        result.StatusCode.Should().Be(StatusCodes.Status400BadRequest);
+        var problem = result.Value.Should().BeOfType<ValidationProblemDetails>().Subject;
+        problem.Status.Should().Be(StatusCodes.Status400BadRequest);
+        problem.Errors.Should().ContainSingle().Which.Key.Should().Be("RigConfigJson");
+        problem.Errors["RigConfigJson"].Should().Equal("RigConfigJson must contain a valid camera rig configuration.");
+        var responseJson = JsonSerializer.Serialize(problem);
+        responseJson.Should().NotContain("ArgumentException").And.NotContain("JsonException")
+            .And.NotContain("HorizonObstructionProfile").And.NotContain("samples")
+            .And.NotContain("StackTrace").And.NotContain(".cs:").And.NotContain(invalidJson);
+
+        (await context.DeviceRigProfiles.SingleAsync().ConfigureAwait(false)).ConfigHash.Should().Be(accepted.RigProfileHash);
+        registration.CurrentRigProfileVersion.Should().Be(accepted.RigProfileVersion);
+        registration.CurrentRigProfileHash.Should().Be(accepted.RigProfileHash);
+        registration.CurrentRigProfileUpdatedAtUtc.Should().Be(updatedAt);
+        registration.LastSeenUtc.Should().Be(lastSeen);
+        context.ChangeTracker.HasChanges().Should().BeFalse();
+        var recovered = await service.UpsertAsync(new DeviceRigProfileUpsertRequest(
+            registration.DeviceId, "device-key", CreateHorizonRigJson().ToJsonString()), CancellationToken.None).ConfigureAwait(false);
+        recovered.CreatedNewVersion.Should().BeFalse();
+        recovered.RigProfileHash.Should().Be(accepted.RigProfileHash);
+    }
+
+    private static JsonObject CreateHorizonRigJson()
+    {
+        var rig = CreateRig();
+        var horizon = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion,
+            "test-horizon", 1, "test-installation", new string('A', 64),
+            HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Manual, 30,
+            [new HorizonObstructionSample(0, 0), new HorizonObstructionSample(30, null)]);
+        return JsonSerializer.SerializeToNode(rig with { HorizonObstruction = horizon }, RigSerializerOptions)!.AsObject();
     }
 
     private static CameraRigConfig CreateRig() =>
