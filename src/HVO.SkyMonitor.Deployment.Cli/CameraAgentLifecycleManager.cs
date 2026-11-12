@@ -852,7 +852,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var expectedOwnerState = operation.ExpectedOwnerBootstrapState;
         if (!operation.MutationStarted)
         {
-            var currentOwnerState = await owner.ReadInstallationStateAsync(verificationToken, cancellationToken)
+            var currentOwnerState = await owner.ReadInstallationStateAsync(
+                verificationToken, CurrentInstallationExpectation(manifest, installationResult), cancellationToken)
                 .ConfigureAwait(false);
             if (expectedOwnerState is null)
             {
@@ -1300,6 +1301,8 @@ internal sealed partial class CameraAgentLifecycleManager
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        await CameraAgentStateSnapshot.RecoverLegacyBoundaryAuthorityAsync(paths, manifest.InstanceId,
+            operation, snapshot, cancellationToken).ConfigureAwait(false);
         await CameraAgentStateSnapshot.ShowWarningAsync(snapshot, json, error).ConfigureAwait(false);
         operation = await RestoreStoresAsync(paths, manifest, operation, snapshot, json, error, cancellationToken).ConfigureAwait(false);
         return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
@@ -1685,6 +1688,15 @@ internal sealed partial class CameraAgentLifecycleManager
             null,
             DateTimeOffset.UtcNow);
     }
+
+    private static InstallationVerificationExpectation CurrentInstallationExpectation(
+        InstanceManifest manifest, InstallationResult result)
+        => new(
+            manifest.ApplicationIdentity.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
+            manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
+            manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
+            manifest.ReplayProfile, manifest.Catalog, AllowCompletedPasswordReplacement: true,
+            DeepSkyCatalog: manifest.DeepSkyCatalog);
 
     private static async Task<string> VerifyCandidateAsync(
         IOwnerBootstrapClient owner,

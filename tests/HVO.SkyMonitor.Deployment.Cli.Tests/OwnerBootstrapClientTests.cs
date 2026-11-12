@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class OwnerBootstrapClientTests
+public sealed partial class OwnerBootstrapClientTests
 {
     private const string Token = "synthetic-verification-secret";
     private const string TimeoutMessage = "CameraAgent installation verification request timed out.";

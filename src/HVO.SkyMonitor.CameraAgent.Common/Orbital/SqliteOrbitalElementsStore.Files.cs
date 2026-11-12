@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -63,9 +64,10 @@ public sealed partial class SqliteOrbitalElementsStore
                 throw new OrbitalStorageException("orbital.storage-integrity",
                     "An accepted orbital file no longer matches its identity.", null);
             }
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
             DurableSync.Directory(Path.GetDirectoryName(path)!);
         }
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve(relative), content);
         await AtomicPublisher.PublishAsync(root, relative, PublishMode.CreateNew,
             (stream, token) => stream.WriteAsync(content, token).AsTask(), cancellationToken).ConfigureAwait(false);
     }
@@ -156,7 +158,7 @@ public sealed partial class SqliteOrbitalElementsStore
                 }
             }
         }
-        File.Delete(intentPath);
+        RetainedFileMutations.Delete(intentPath);
         SyncDirectories(StagingDirectoryName, RawDirectoryName, PayloadDirectoryName, ManifestDirectoryName);
         return deleted;
     }
@@ -276,9 +278,10 @@ public sealed partial class SqliteOrbitalElementsStore
             {
                 return false;
             }
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
             DurableSync.Directory(Path.GetDirectoryName(path)!);
         }
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve(relative), rawBytes);
         await AtomicPublisher.PublishAsync(root, relative, PublishMode.CreateNew,
             (stream, token) => stream.WriteAsync(rawBytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
         return true;
@@ -402,7 +405,7 @@ public sealed partial class SqliteOrbitalElementsStore
                 return DeleteOutcome.Absent;
             }
             DurableSync.RequireRegularFile(path);
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
             return DeleteOutcome.Deleted;
         }
         catch (FileSystemFaultException fault) when (fault.Kind == FileSystemFaultKind.Containment)

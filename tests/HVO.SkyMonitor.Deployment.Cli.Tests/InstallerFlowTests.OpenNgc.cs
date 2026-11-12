@@ -70,6 +70,20 @@ public sealed partial class InstallerFlowTests
                 lifecycleRunner, null, null, RuntimeUid, RuntimeGid, CancellationToken.None);
             Assert.AreEqual("planned", upgrade.Outcome);
             await AssertOpenNgcInstallationAsync(paths, restored, selected);
+            expectations.Clear();
+            await CameraAgentLifecycleManager.ExecuteAsync(
+                uninstall with
+                {
+                    Operation = LifecycleOperationKind.Upgrade,
+                    ImageReference = OpenNgcUpgradeReference,
+                    NoDownload = true,
+                    MigrationBackwardCompatible = true
+                },
+                lifecycleRunner, _ => new OpenNgcInstallerLifecycleClient(), _ => owner,
+                RuntimeUid, RuntimeGid, CancellationToken.None);
+            Assert.IsTrue(expectations.Count > 1, "Upgrade must verify the current installation before mutation and the candidate after startup.");
+            Assert.IsTrue(expectations.All(expectation => expectation.DeepSkyCatalog == selected),
+                "Pre-mutation and candidate verification must both retain the active deep-sky identity.");
         }
         finally
         {
