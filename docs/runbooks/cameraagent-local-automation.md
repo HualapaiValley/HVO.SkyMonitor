@@ -206,9 +206,18 @@ Explicit backfill names a report date and, for an hour, its exact UTC start. It 
 finality, current enablement/version and a window ending within seven days. Explicit
 retry accepts only a retained `Failed` or `Interrupted` attempt and caps each occurrence
 at three attempts. Both commands require an operator reason and retain actor, request
-key/time and payload digest. Queued rows have no start time. Disabling pauses queued work;
-removal cancels queued work and is rejected while an attempt is running. Retries retain
-the original definition/window while requiring the operator's current definition version.
+key/time and payload digest. Queued rows have no start time. For every supported task
+kind and queued trigger (run-now, backfill or retry), disabling or a version-changing
+edit withdraws every pending attempt as `Skipped` in the same durable transaction.
+Re-enabling does not revive it. No-op saves, rejected commands and idempotent replays
+do not withdraw pending work. Removal also withdraws queued work and is rejected
+while an attempt is running. The exact-run script Stop control can withdraw a queued
+attempt without changing its schedule; if claim wins, Stop waits for worker registration
+and real process/result drain. Retries retain the original definition/window while
+requiring the operator's current definition version to authorize that queue attempt.
+A later disable, edit or removal withdraws that pending retry too; an older occurrence
+version alone does not invalidate an explicitly authorized retry. Admission and Stop
+authority follow its retained task kind.
 Adapter command identity stays the original run key; journal retries use `:retry2` or
 `:retry3`. Prepared work does not rewind automatic progress. Restart retains queued work.
 
