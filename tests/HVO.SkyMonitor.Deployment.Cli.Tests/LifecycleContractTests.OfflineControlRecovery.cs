@@ -175,7 +175,9 @@ public sealed partial class LifecycleContractTests
         var lifecycle = new FakeLifecycleClient();
         await CameraAgentLifecycleManager.ExecuteAsync(fixture.Request(LifecycleOperationKind.Upgrade) with
         {
-            ImageReference = candidateReference, NoDownload = true, MigrationBackwardCompatible = true
+            ImageReference = candidateReference,
+            NoDownload = true,
+            MigrationBackwardCompatible = true
         }, fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None);
         var (_, path, _) = await PendingControlAsync(fixture, terminal);
