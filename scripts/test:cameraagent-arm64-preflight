@@ -17,6 +17,16 @@ call = 'dotnet_runtime_home_check || fail "runner runtime directory is unusable"
 assert source in harness and call in harness, "ARM64 harness must enforce the runtime directory check"
 assert harness.index(source) < harness.index(call) < harness.index('--arg sdk "$(dotnet --version)"')
 
+# Exercise the harness's real command preflight without installing or hiding tools.
+preflight = harness.split("for command in ", 1)[1].split("\ndone", 1)[0]
+preflight = "for command in " + preflight + "\ndone\n"
+assert "python3" in preflight
+for missing_python, expected in ((False, 0), (True, 79)):
+    check = 'require_command() { [[ "$1" != python3 ]] || return 79; }' if missing_python else 'require_command() { :; }'
+    result = subprocess.run(["bash", "-e", "-c", check + "\n" + preflight], capture_output=True, text=True)
+    assert result.returncode == expected, "ARM64 python3 command preflight must fail before workloads"
+print("ARM64 python3 preflight: 2 cases passed.")
+
 # Exercise the actual hosted dispatch guard: a branch that moved since review must
 # fail before the dependent self-hosted job starts, including shell-shaped input.
 workflow = (pathlib.Path(sys.argv[1]).parent / ".github/workflows/cameraagent-arm64.yml").read_text()
