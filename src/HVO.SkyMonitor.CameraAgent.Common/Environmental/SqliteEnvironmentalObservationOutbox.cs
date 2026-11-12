@@ -1093,12 +1093,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return descriptor.CycleEvidence;
     }
 
-    public async ValueTask BindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)
-    {
-        if (!await TryBindCaptureAcquisitionAsync(root, acquisitionId, captureId, cancellationToken).ConfigureAwait(false))
-            throw new InvalidDataException("Capture acquisition evidence is missing.");
-    }
-
     private async ValueTask<bool> TryBindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)
     {
         if (acquisitionId == Guid.Empty || captureId == Guid.Empty) throw new ArgumentException("Capture acquisition identities are invalid.");

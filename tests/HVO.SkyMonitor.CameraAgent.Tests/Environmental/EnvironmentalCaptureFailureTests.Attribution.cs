@@ -320,8 +320,8 @@ public sealed partial class EnvironmentalCaptureFailureTests
         internal bool Enqueue() => service.TryEnqueue(new(EnvironmentalAcquisitionTrigger.Periodic, Clock.Now));
         internal bool Prepare(EnvironmentalCaptureAcquisition acquisition, Func<CancellationToken, Task> action)
             => service.TryPrepareCapture(acquisition, action);
-        internal EnvironmentalCaptureTriggerBridge CreateBridge(IEnvironmentalAcquisitionStateStore state)
-            => new(Coordinator, service, state, options);
+        internal EnvironmentalCaptureTriggerBridge CreateBridge(IEnvironmentalAcquisitionStateStore state, TimeProvider? timeProvider = null)
+            => new(Coordinator, service, state, options, timeProvider);
         internal void Reopen() { Store.Dispose(); Store = new(Clock); }
         public async ValueTask DisposeAsync()
         {

@@ -1322,12 +1322,13 @@ records `raw-evidence-written-off` as its terminal disposition.
 The next admission attempt reinitializes ingress; other unresolved evidence
 failures continue to refuse captures. No release deletes or rewrites raw data.
 
-Audited recovery requires raw-journal version 15. A canonical v13 or v14 journal
-upgrades transactionally through the declared `canonical-v13-v14-to-v15`
-transition. The image must declare schema 15 and that
-migration. Older readers cannot preserve these dispositions, so installer
-preflight refuses rollback to an image declaring an earlier raw-journal version;
-the earlier runtime also refuses the v15 journal. Select a compatible image
+The image declares raw-journal version 16, including audited recovery and
+capture-specific environmental evidence. A canonical v13, v14 or v15 journal
+upgrades transactionally through the declared `canonical-v13-v14-v15-to-v16`
+transition. The image must declare schema 16 and that migration. Older readers
+cannot preserve this evidence, so installer preflight refuses rollback to an
+image declaring an earlier raw-journal version; the earlier runtime also refuses
+the v16 journal. Select a compatible image
 instead of deleting or resetting evidence to force a rollback.
 
 A Named active revision compiled by the earlier version cannot run any live work.
@@ -2151,7 +2152,7 @@ migration, and the upgrade then snapshots the small databases before the candida
 
 The check runs after the state preflight, so an incompatible persisted state is reported first, and before the
 drain and any Compose change. The journal's `stateMigration` names every difference, for example
-`io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`. The contract-identity labels (`component`,
+`io.hvo.skymonitor.raw-ingress-schema installed 15, candidate 16`. The contract-identity labels (`component`,
 `configuration-contract`, `catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused.
 `configuration-defaults` is not state either, and an upgrade does not compare it: it declares the newest installer
 configuration-default generation the image runs, which a re-run requires before it adopts newer defaults (see

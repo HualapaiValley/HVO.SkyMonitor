@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.ExceptionServices;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -13,8 +12,10 @@ public sealed class EnvironmentalCaptureTriggerBridge(
     EnvironmentalAcquisitionCoordinator coordinator,
     EnvironmentalAcquisitionService service,
     IEnvironmentalAcquisitionStateStore stateStore,
-    IOptions<CameraAgentHostOptions> options)
+    IOptions<CameraAgentHostOptions> options,
+    TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     internal static readonly TimeSpan TotalCaptureBudget = TimeSpan.FromSeconds(2);
 
     public async ValueTask<EnvironmentalCaptureAcquisition?> BeforeCaptureAsync(
@@ -26,16 +27,20 @@ public sealed class EnvironmentalCaptureTriggerBridge(
             return null;
         }
         cancellationToken.ThrowIfCancellationRequested();
-        var started = Stopwatch.GetTimestamp();
+        var started = _timeProvider.GetTimestamp();
         var configuredSources = coordinator.Sources;
         var selected = configuredSources.Where(source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.BeforeCapture)).ToArray();
         if (selected.Length == 0) return null;
-        var remaining = TotalCaptureBudget - Stopwatch.GetElapsedTime(started);
-        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(remaining.TotalMilliseconds))));
+        var remaining = TotalCaptureBudget - _timeProvider.GetElapsedTime(started);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(remaining.TotalMilliseconds))), _timeProvider);
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, cancellationToken);
         var budget = options.Value.EnvironmentalAcquisition.BeforeCaptureWaitMilliseconds;
-        using var callerWait = CancellationTokenSource.CreateLinkedTokenSource(wait.Token);
-        if (budget > 0) callerWait.CancelAfter(TimeSpan.FromMilliseconds(budget));
+        // At the shared budget, one timer owns expiry and the terminal marker. An independent caller
+        // timer could resume first while the shared token and monotonic elapsed time still look unexpired.
+        using var callerDeadline = budget > 0 && TimeSpan.FromMilliseconds(budget) < remaining
+            ? new CancellationTokenSource(TimeSpan.FromMilliseconds(budget), _timeProvider) : null;
+        using var callerWait = callerDeadline is null ? CancellationTokenSource.CreateLinkedTokenSource(wait.Token)
+            : CancellationTokenSource.CreateLinkedTokenSource(wait.Token, callerDeadline.Token);
         var admissionToken = callerWait.Token;
         var dependencies = coordinator.CaptureDependencies();
         var commands = stateStore as IEnvironmentalOnDemandCommandStore
@@ -54,8 +59,8 @@ public sealed class EnvironmentalCaptureTriggerBridge(
         async Task PrepareAsync(CancellationToken stoppingToken)
         {
             // Preparation remains owned by the hosted worker after the caller's shorter optional wait.
-            var preparationRemaining = TotalCaptureBudget - Stopwatch.GetElapsedTime(started);
-            using var preparationDeadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(preparationRemaining.TotalMilliseconds))));
+            var preparationRemaining = TotalCaptureBudget - _timeProvider.GetElapsedTime(started);
+            using var preparationDeadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(0, Math.Ceiling(preparationRemaining.TotalMilliseconds))), _timeProvider);
             using var preparation = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, cancellationToken, preparationDeadline.Token);
             var preparationToken = preparation.Token;
             foreach (var source in selected)
@@ -108,14 +113,14 @@ public sealed class EnvironmentalCaptureTriggerBridge(
                 await acquisition.Completion.Task.WaitAsync(admissionToken).ConfigureAwait(false);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget && acquisition.StoragePending)
+            if (_timeProvider.GetElapsedTime(started) >= TotalCaptureBudget && acquisition.StoragePending)
                 return acquisition with { Unavailable = true, Claims = [] };
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
-            (callerWait.IsCancellationRequested || deadline.IsCancellationRequested || Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget))
+            (callerWait.IsCancellationRequested || deadline.IsCancellationRequested || _timeProvider.GetElapsedTime(started) >= TotalCaptureBudget))
         {
             // Only a shared writer deadline creates the raw-admission marker. Sensor work remains pending.
-            if ((deadline.IsCancellationRequested || Stopwatch.GetElapsedTime(started) >= TotalCaptureBudget) &&
+            if ((deadline.IsCancellationRequested || _timeProvider.GetElapsedTime(started) >= TotalCaptureBudget) &&
                 (!acquisition.Admission.Task.IsCompletedSuccessfully || await acquisition.Admission.Task.ConfigureAwait(false) is not null || acquisition.StoragePending))
                 return acquisition with { Unavailable = true, Claims = [] };
         }
