@@ -433,6 +433,8 @@ jobs:
       # keeps its own log; a failure in either lane fails the step after both finish.
       - name: Provision required script sandbox qualification
         run: ./scripts/ci:script-sandbox --provision
+      - name: Install pinned Playwright Chromium
+        run: pwsh tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/playwright.ps1 install --only-shell chromium
       - name: Run Integration suites
         run: |
           mkdir -p TestResults/integration
@@ -759,6 +761,8 @@ jobs:
           dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter "$UNIT_FILTER" --results-directory TestResults/unit/cameraagent-integration --logger "trx;LogFileName=unit-cameraagent-integration.trx"
       - name: Provision required script sandbox qualification
         run: ./scripts/ci:script-sandbox --provision
+      - name: Install pinned Playwright Chromium
+        run: pwsh tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/bin/Release/net10.0/playwright.ps1 install --only-shell chromium
       - name: Run CameraAgent Integration suites
         run: |
           dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter "$INTEGRATION_FILTER" --settings tests/coverage.runsettings --collect:"XPlat Code Coverage" --results-directory TestResults/integration/cameraagent-storage --logger "trx;LogFileName=integration-cameraagent-storage.trx"

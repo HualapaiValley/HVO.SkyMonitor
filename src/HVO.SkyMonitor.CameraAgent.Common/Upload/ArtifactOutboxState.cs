@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Upload;
 
@@ -66,10 +67,10 @@ public sealed class ArtifactOutboxState
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentNullException.ThrowIfNull(snapshot);
-        _roots[Path.GetFullPath(root)] = snapshot;
+        _roots[StorageRootIdentity.Key(root)] = snapshot;
         MarkEvaluated();
         Volatile.Write(ref _initialized, 1);
-        _failures.TryRemove(Path.GetFullPath(root), out _);
+        _failures.TryRemove(StorageRootIdentity.Key(root), out _);
     }
 
     public void MarkInitialized()
@@ -82,7 +83,7 @@ public sealed class ArtifactOutboxState
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        _failures[Path.GetFullPath(root)] = reason.Length <= 256 ? reason : reason[..256];
+        _failures[StorageRootIdentity.Key(root)] = reason.Length <= 256 ? reason : reason[..256];
         MarkEvaluated();
     }
 
