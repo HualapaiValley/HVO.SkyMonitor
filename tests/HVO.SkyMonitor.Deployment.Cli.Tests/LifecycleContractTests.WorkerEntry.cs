@@ -348,7 +348,7 @@ public sealed partial class LifecycleContractTests
                 WorkerRequest(fixture) with { Once = false }, handler, stop.Token));
         }
         finally { Console.SetError(previousError); }
-        StringAssert.Contains(error.ToString(), "recovery=restart-required");
+        StringAssert.Contains(error.ToString(), "recovery=restart-required", StringComparison.Ordinal);
         Assert.AreEqual(3, reads);
         Assert.AreEqual(0, publications);
         CollectionAssert.AreEqual(pending, await File.ReadAllBytesAsync(path));
