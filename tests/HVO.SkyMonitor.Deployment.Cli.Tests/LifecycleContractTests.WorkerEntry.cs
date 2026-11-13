@@ -277,7 +277,9 @@ public sealed partial class LifecycleContractTests
                 manifest = await File.ReadAllBytesAsync(fixture.Paths.ManifestPath);
                 result = await File.ReadAllBytesAsync(fixture.Paths.ResultPath);
             }
-            else if (reads == 3) await stop.CancelAsync();
+            // Allow a later Paused recovery probe to finish before cancellation, so dropping a
+            // drift guard can settle/publish the receipt and must fail the assertions below.
+            else if (reads == 4) await stop.CancelAsync();
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = JsonContent.Create(new CameraAgentControlSnapshot(original, false, Guid.NewGuid(),
@@ -287,7 +289,7 @@ public sealed partial class LifecycleContractTests
         });
         await Assert.ThrowsAsync<OperationCanceledException>(() => CameraAgentLifecycleManager.RunControlWorkerAsync(
             WorkerRequest(fixture) with { Once = false }, handler, stop.Token));
-        Assert.AreEqual(3, reads);
+        Assert.AreEqual(4, reads);
         Assert.AreEqual(0, publications);
         CollectionAssert.AreEqual(pending, await File.ReadAllBytesAsync(path));
         CollectionAssert.AreEqual(deployment, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
