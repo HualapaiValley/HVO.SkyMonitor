@@ -208,15 +208,17 @@ unsupported version-1 manifests remain rejected.
 
 ## Image selection
 
-The current CameraAgent image declares catalog contract `hvo-approved-catalogs-v2`
-and `io.hvo.skymonitor.catalog-manifest-version` `3`. That label is the highest
+The current CameraAgent image declares catalog contract `hvo-approved-catalogs-v3`
+and `io.hvo.skymonitor.catalog-manifest-version` `4`. That label is the highest
 manifest version the image reads. Upgrade preflight accepts a selected catalog
-whose manifest is version 2 or 3, so an instance that still has HYG 4.2 or
-HYG 4.4 keeps that selection. Manifest version 1, and any manifest newer than
-the label, is refused.
+whose manifest is version 2, 3 or 4, so an instance that still has HYG 4.2,
+HYG 4.4 or this composed lineage keeps that selection. Manifest version 1, and
+any manifest newer than the label, is refused. Manifest 4 is the standalone
+OpenNGC deep-sky lineage described in [openngc-independent.md](openngc-independent.md).
 
-`catalog select` accepts `hyg-v44-openngc-production` only from an image whose
-catalog contract is `hvo-approved-catalogs-v2`. An image that still declares
+`catalog select` accepts `hyg-v44-openngc-production` from an image whose
+catalog contract is `hvo-approved-catalogs-v3` or `hvo-approved-catalogs-v2`.
+An image that still declares
 `hvo-approved-catalogs-v1` resolves HYG 4.2 and HYG 4.4 and refuses this lineage.
 An image that declares only `hyg-v42-production-p3-s2` resolves HYG 4.2.
 An image that omits the manifest label is still held to manifest version 2.
@@ -229,7 +231,8 @@ is explicit. An upgrade from an image labeled manifest version 2 to one labeled
 3 changes that label, so the upgrade snapshots the small databases; the selected
 HYG catalog itself stays mounted. Roll a composed selection back to a manifest 2
 lineage before rolling the image back to a v1 contract: the older image refuses
-manifest 3.
+manifest 3. Likewise, disable a standalone OpenNGC selection before rolling the
+image back to a v2 contract, which refuses manifest 4.
 
 The package root is:
 

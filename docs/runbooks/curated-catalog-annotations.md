@@ -47,11 +47,12 @@ installation or automatic default replacement is performed.
 
 ## Installed CameraAgent
 
-A current CameraAgent image declares `hvo-approved-catalogs-v2` and catalog
-manifest version 3. That label is a ceiling: manifest 2 HYG catalogs stay
-selected across the upgrade, and manifest 3 is accepted only for a bundle the
-embedded registry approves. Upgrade from an image labeled manifest 2 snapshots
-the small databases because the label changed. The catalog checksums do not.
+A current CameraAgent image declares `hvo-approved-catalogs-v3` and catalog
+manifest version 4. That label is a ceiling: manifest 2 HYG catalogs and the
+manifest 3 composed catalog stay selected across the upgrade, and manifest 3 or 4
+is accepted only for a bundle the embedded registry approves. Upgrade from an
+image labeled with a lower manifest version snapshots the small databases because
+the label changed. The catalog checksums do not.
 
 Import the verified composed bundle, then select it. The bundle directory is
 the output of `scripts/catalog/bundle-hyg-v44-openngc.sh` for package
