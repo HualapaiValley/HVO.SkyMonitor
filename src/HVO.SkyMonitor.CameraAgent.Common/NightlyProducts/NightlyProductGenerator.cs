@@ -108,7 +108,8 @@ internal sealed partial class NightlyProductGenerator : IDisposable
         await _run.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await RunCoreAsync(occurrence, cancellationToken).ConfigureAwait(false);
+            var report = await RunCoreAsync(occurrence, cancellationToken).ConfigureAwait(false);
+            return await RefreshDailySummariesAsync(occurrence, report, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
