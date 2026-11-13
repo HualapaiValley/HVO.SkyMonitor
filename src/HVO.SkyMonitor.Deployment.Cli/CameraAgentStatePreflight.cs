@@ -88,6 +88,13 @@ internal static class CameraAgentImageContract
 /// The persisted-state boundaries a candidate CameraAgent image declares through its OCI labels.
 /// A boundary the image does not declare cannot be checked and is reported rather than assumed compatible.
 /// </summary>
+/// <summary>A raw-ingress schema's declared migration: the oldest source schema it converts and its contract.</summary>
+internal sealed record RawIngressMigration(long MinimumSource, string Contract)
+{
+    /// <summary>Whether this migration converts a journal at <paramref name="observed"/> to <paramref name="expected"/>.</summary>
+    public bool Migrates(long observed, long expected) => observed >= MinimumSource && observed < expected;
+}
+
 internal sealed record CameraAgentStateRequirements(
     string? StateContract,
     string? MinimumCompatibleRevision,
@@ -115,6 +122,28 @@ internal sealed record CameraAgentStateRequirements(
 internal static class CameraAgentStatePreflight
 {
     public const int SchemaVersion = DeploymentSchemaVersions.StatePreflightReport;
+
+    /// <summary>
+    /// The raw-ingress schemas this installer verifies as canonical, each with the oldest schema its declared migration
+    /// converts and that migration's contract. The canonical-eligibility check and the remediation a blocking finding
+    /// names both read this table, so a schema bump that adds a row updates both (#1823).
+    /// </summary>
+    internal static IReadOnlyDictionary<long, RawIngressMigration> RawIngressMigrations { get; } =
+        new Dictionary<long, RawIngressMigration>
+        {
+            [14] = new(13, RawIngressV13Schema.MigrationContract),
+            [15] = new(13, RawIngressV13Schema.RecoveryMigrationContract),
+            [16] = new(13, RawIngressV13Schema.EnvironmentalFenceMigrationContract),
+        };
+
+    internal const string RawIngressDriftRemediation =
+        "The raw journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup.";
+
+    internal const string RawIngressMigrationRemediation =
+        "The earlier raw journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before this image can migrate it; resolve drift or restore a healthy canonical backup.";
+
+    internal const string RawIngressResetRemediation =
+        "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading.";
 
     /// <summary>
     /// Runs after the main database has been copied for inspection and before its recovery files are. That is
@@ -481,17 +510,15 @@ internal static class CameraAgentStatePreflight
         long observed;
         long schemaObjects;
         bool canonical = false;
+        var migration = RawIngressMigrations.GetValueOrDefault(expected);
         try
         {
             using var database = ReadOnlyDatabase.Open(databasePath);
             (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
-            if ((observed == 14 && expected == 14) || (observed == 15 && expected == 15) || (observed == 16 && expected == 16) ||
-                (observed == 13 && expected == 14 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract) ||
-                (observed is 13 or 14 && expected == 15 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.RecoveryMigrationContract) ||
-                (observed is 13 or 14 or 15 && expected == 16 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.EnvironmentalFenceMigrationContract))
+            if (migration is { } declared &&
+                (observed == expected ||
+                 (declared.Migrates(observed, expected) && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
+                  requirements.RawIngressMigration == declared.Contract)))
             {
                 canonical = observed is 14 or 15 or 16
                     ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
@@ -521,19 +548,26 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if ((observed == expected && expected is not (14 or 15 or 16)) || (observed == 0 && schemaObjects == 0) || canonical)
+        if ((observed == expected && migration is null) || (observed == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }
         findings.Add(new CameraAgentStatePreflightFinding(
             "raw-ingress-schema", boundary, Blocking: true, databasePath,
             observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
-            observed == expected && expected is 14 or 15
-                ? "The raw journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
-                : observed is 13 or 14 && expected is 14 or 15
-                ? "The earlier raw journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before this image can migrate it; resolve drift or restore a healthy canonical backup."
-                : "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
+            RawIngressRemediation(observed, expected, migration)));
     }
+
+    /// <summary>
+    /// The remediation for a blocking raw-ingress finding: repair drift or restore a backup for a journal already at a
+    /// schema this installer verifies; satisfy the migration preconditions for an older journal the image's migration
+    /// converts; otherwise archive and reset.
+    /// </summary>
+    private static string RawIngressRemediation(long observed, long expected, RawIngressMigration? migration)
+        => migration is not { } declared ? RawIngressResetRemediation
+            : observed == expected ? RawIngressDriftRemediation
+            : declared.Migrates(observed, expected) ? RawIngressMigrationRemediation
+            : RawIngressResetRemediation;
 
     private static void EvaluateBindSources(
         List<CameraAgentStatePreflightFinding> findings,
