@@ -183,8 +183,13 @@ public sealed class ObservingDayTimelineBrowserTests
         var metrics = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}-{javaScriptEnabled}.json");
         await File.WriteAllTextAsync(metrics, JsonSerializer.Serialize(new
         {
-            width, height, javaScriptEnabled, browserVersion = browser.Version, url = page.Url,
-            candidateHeight = bounds.Height, navigatedToList = true
+            width,
+            height,
+            javaScriptEnabled,
+            browserVersion = browser.Version,
+            url = page.Url,
+            candidateHeight = bounds.Height,
+            navigatedToList = true
         })).ConfigureAwait(false);
         TestContext.AddResultFile(metrics);
         var screenshot = Path.Combine(TestContext.ResultsDirectory!, $"candidate-list-{width}-{javaScriptEnabled}.png");

@@ -183,8 +183,11 @@ internal sealed partial class CameraAgentLifecycleManager
         catch (InstallerException)
         {
             var operation = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
-            if (operation is { Kind: LifecycleOperationKind.Rollback, Phase: LifecycleOperationPhase.CandidateVerified,
-                MutationStarted: true, Status: not InstallationStatus.Completed } && operation.InstanceId == instanceId)
+            if (operation is
+                {
+                    Kind: LifecycleOperationKind.Rollback, Phase: LifecycleOperationPhase.CandidateVerified,
+                    MutationStarted: true, Status: not InstallationStatus.Completed
+                } && operation.InstanceId == instanceId)
             {
                 EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift: true);
                 EnsureTransactionalCorrelation(operation, manifest, result);
