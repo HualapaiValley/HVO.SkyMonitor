@@ -13,10 +13,15 @@ receipt timestamps and monotonic freshness. The reader never opens a path.
 Each read has a 4096-byte budget and a two-second deadline, including waiting
 for another read. Streams must honor asynchronous read cancellation. Caller
 cancellation propagates; an internal deadline ends a round normally. Each line
-is limited to 82 characters including its optional CR, excluding LF. Non-ASCII,
-control characters, invalid checksums, unsupported sentences, and malformed
-supported data are ignored. Overlong lines are discarded through the next LF.
-Unterminated lines and partial lines at round boundaries are discarded.
+is limited to 82 characters including its optional CR, excluding LF. LF ends a
+physical line; one CR is allowed only immediately before that LF. Non-ASCII,
+DEL, other control characters, invalid checksums, unsupported sentences, and
+malformed supported data are ignored. Overlong or invalid lines are discarded
+through the next LF. Partial lines are not buffered across rounds: their tails
+remain discarded through LF when the same source continues, even after a byte
+budget, timeout, cancellation, EOF, or an intervening read from another source.
+Framing state uses weak stream identities, so it does not retain caller-owned
+streams. Continuations assume forward reads; use a fresh stream for a new script.
 
 RMC supplies dated UTC and A/V validity. GGA supplies fix quality (0..8) and
 satellite count (0..99), with its own freshness; a fresh quality of zero

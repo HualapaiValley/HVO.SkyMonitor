@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeSync;
 
@@ -35,8 +36,10 @@ public sealed record GpsTimeStatus(
 /// Known limits requiring Roy's decision: PPS source and edge; which NMEA UTC second an edge marks;
 /// acceptable measurement uncertainty. Simulated PPS edges intentionally have no implicit UTC-second mapping.
 /// No settings persistence, clock setting, background polling, or production health authority is provided.
-/// Callers own streams, which must honor ReadAsync cancellation; reads are serialized and retain no partial line
-/// across rounds. Status/edge observation is safe during a read. Freshness uses monotonic time, not wall-clock age.
+/// Callers own streams, which must honor ReadAsync cancellation; reads are serialized. Partial lines are discarded
+/// through LF even across rounds or interleaved sources. Weak per-stream framing state does not retain caller-owned
+/// streams; continuation assumes forward reads (use a new stream for a new script). Status/edge observation is safe
+/// during a read. Freshness uses monotonic time, not wall-clock age.
 /// </summary>
 public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
 {
@@ -48,6 +51,7 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
     private readonly TimeProvider _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     private readonly SemaphoreSlim _reading = new(1, 1);
     private readonly Lock _gate = new();
+    private readonly ConditionalWeakTable<Stream, LineFraming> _framing = new();
     private DateTimeOffset? _utc, _lastSentence, _lastPps;
     private TimeSpan? _arrivalOffset;
     private long? _rmcTimestamp, _ggaTimestamp, _ppsTimestamp;
@@ -65,14 +69,15 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
         using var timeout = new CancellationTokenSource(ReadTimeout, _time);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         var entered = false;
+        LineFraming? framing = null;
+        var length = 0;
         try
         {
             await _reading.WaitAsync(linked.Token).ConfigureAwait(false);
             entered = true;
+            framing = _framing.GetValue(source, static _ => new LineFraming());
             var buffer = new byte[1];
             var sentence = new char[MaximumSentenceLength];
-            var length = 0;
-            var discard = false;
             for (var count = 0; count < MaximumBytesPerRead; count++)
             {
                 linked.Token.ThrowIfCancellationRequested();
@@ -83,20 +88,25 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
                 var value = (char)buffer[0];
                 if (value == '\n')
                 {
-                    if (!discard)
+                    if (!framing.DiscardUntilLineFeed)
                     {
-                        Accept(sentence.AsSpan(0, length).TrimEnd('\r'));
+                        var contentLength = length > 0 && sentence[length - 1] == '\r' ? length - 1 : length;
+                        Accept(sentence.AsSpan(0, contentLength));
                     }
                     length = 0;
-                    discard = false;
+                    framing.DiscardUntilLineFeed = false;
                 }
-                else if (length == sentence.Length || value > 127 || (value < 32 && value != '\r'))
+                else if (!framing.DiscardUntilLineFeed)
                 {
-                    discard = true;
-                }
-                else if (!discard)
-                {
-                    sentence[length++] = value;
+                    if (length == sentence.Length || value >= 127 || (value < 32 && value != '\r') ||
+                        (length > 0 && sentence[length - 1] == '\r'))
+                    {
+                        framing.DiscardUntilLineFeed = true;
+                    }
+                    else
+                    {
+                        sentence[length++] = value;
+                    }
                 }
             }
         }
@@ -119,6 +129,11 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
         {
             if (entered)
             {
+                // A round boundary is not a physical line boundary. Never admit the remainder of a partial line.
+                if (framing is not null && length > 0)
+                {
+                    framing.DiscardUntilLineFeed = true;
+                }
                 _reading.Release();
             }
         }
@@ -160,6 +175,12 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
 
     /// <summary>Dispose after all reads and observations have completed; the caller retains stream ownership.</summary>
     public void Dispose() => _reading.Dispose();
+
+    // Accessed only while _reading is held; weak keys prevent keeping caller-owned streams alive.
+    private sealed class LineFraming
+    {
+        internal bool DiscardUntilLineFeed { get; set; }
+    }
 
     private bool Fresh(long? timestamp) => timestamp is { } value && _time.GetElapsedTime(value) < StaleAfter;
 

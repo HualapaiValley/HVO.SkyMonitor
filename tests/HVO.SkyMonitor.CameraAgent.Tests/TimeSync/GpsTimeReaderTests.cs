@@ -206,6 +206,136 @@ public sealed class GpsTimeReaderTests
         }
     }
 
+    [TestMethod]
+    [DataRow(4096)]
+    [DataRow(8192)]
+    public async Task ByteBudgetBoundary_DiscardsTheSamePhysicalLineUntilLf_ThenRecovers(int prefixLength)
+    {
+        using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
+        using var source = new MemoryStream();
+        await source.WriteAsync(Encoding.ASCII.GetBytes(new string('x', prefixLength) + Rmc() + "\n")).ConfigureAwait(false);
+        source.Position = 0;
+        for (var consumed = 0; consumed < prefixLength; consumed += GpsTimeReader.MaximumBytesPerRead)
+        {
+            await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
+        }
+        await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State, "A checksummed tail is still part of the overlong physical line.");
+        Assert.IsNull(reader.GetStatus().Utc);
+        Assert.IsNull(reader.GetStatus().ArrivalOffset);
+        await AppendAsync(source, Rmc() + "\r\n").ConfigureAwait(false);
+        await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
+        Assert.AreEqual(Now, reader.GetStatus().Utc);
+    }
+
+    [TestMethod]
+    public async Task PartialLineFraming_RemainsWithItsSourceAcrossEofAndOtherStreams()
+    {
+        var time = new FakeTimeProvider(Now);
+        using var reader = new GpsTimeReader(time);
+        using var partial = new MemoryStream();
+        await partial.WriteAsync(Encoding.ASCII.GetBytes("partial")).ConfigureAwait(false);
+        partial.Position = 0;
+        await reader.ReadAsync(partial, CancellationToken.None).ConfigureAwait(false);
+        time.Advance(TimeSpan.FromSeconds(1));
+        using var independent = Source(Rmc());
+        await reader.ReadAsync(independent, CancellationToken.None).ConfigureAwait(false);
+        var accepted = reader.GetStatus();
+        time.Advance(TimeSpan.FromSeconds(1));
+        await AppendAsync(partial, Rmc() + "\n").ConfigureAwait(false);
+        await reader.ReadAsync(partial, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(accepted.LastSentenceUtc, reader.GetStatus().LastSentenceUtc, "Returning to a source cannot turn its partial-line tail into a new sentence.");
+        Assert.AreEqual(accepted.ArrivalOffset, reader.GetStatus().ArrivalOffset);
+        await AppendAsync(partial, Rmc() + "\r\n").ConfigureAwait(false);
+        await reader.ReadAsync(partial, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(time.GetUtcNow(), reader.GetStatus().LastSentenceUtc);
+    }
+
+    [TestMethod]
+    [DataRow(127)]
+    [DataRow(13)]
+    public async Task EmbeddedControlCharacter_IsRejectedDespiteValidChecksum_AndNextLineRecovers(int control)
+    {
+        using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
+        var fields = "GNRMC,120000.000,A,,,,,,,121126,,,A".Split(',');
+        fields[3] = ((char)control).ToString();
+        using var invalid = Source(Sentence(string.Join(',', fields)));
+        await reader.ReadAsync(invalid, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
+        Assert.IsNull(reader.GetStatus().Utc);
+        Assert.IsNull(reader.GetStatus().ArrivalOffset);
+        using var valid = Source(Rmc());
+        await reader.ReadAsync(valid, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State, "A single terminal CR in CRLF is allowed.");
+    }
+
+    [TestMethod]
+    [DataRow(82, true)]
+    [DataRow(83, false)]
+    public async Task LineLengthBoundary_IncludesTerminalCrAndExcludesLf(int length, bool accepted)
+    {
+        using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
+        const string body = "GNRMC,120000.000,A,,,,,,,121126,,,A,";
+        var line = Sentence(body + new string('x', length - Sentence(body).Length - 1)) + "\r\n";
+        Assert.AreEqual(length + 1, line.Length);
+        using var source = new MemoryStream(Encoding.ASCII.GetBytes(line));
+        await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(accepted ? GpsSignalState.Available : GpsSignalState.Missing, reader.GetStatus().State);
+    }
+
+    [TestMethod]
+    public async Task GgaAndPps_ExpireAtExactlyFiveMonotonicSeconds()
+    {
+        var time = new FakeTimeProvider(Now);
+        using var reader = new GpsTimeReader(time);
+        using var source = Source(Rmc(), Gga());
+        await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
+        reader.ObserveSimulatedPps();
+        time.Advance(GpsTimeReader.StaleAfter - TimeSpan.FromTicks(1));
+        Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().PpsState);
+        Assert.AreEqual(8, reader.GetStatus().Satellites);
+        time.Advance(TimeSpan.FromTicks(1));
+        var expired = reader.GetStatus();
+        Assert.AreEqual(GpsSignalState.Stale, expired.State);
+        Assert.AreEqual(GpsSignalState.Stale, expired.PpsState);
+        Assert.IsNull(expired.FixQuality);
+        Assert.IsNull(expired.Satellites);
+        Assert.IsNull(expired.ArrivalOffset);
+        Assert.AreEqual(Now, expired.LastPpsUtc);
+    }
+
+    [TestMethod]
+    public async Task ReportInto_PreservesPopulatedInToleranceNetworkAndKernelEvidence()
+    {
+        using var reader = new GpsTimeReader(new FakeTimeProvider(Now));
+        using var source = Source(Rmc());
+        await reader.ReadAsync(source, CancellationToken.None).ConfigureAwait(false);
+        var selected = new TimeServerResult("fake", null, TimeSpan.FromMilliseconds(10), TimeSpan.FromMilliseconds(1), 1);
+        var kernel = new KernelClockState(KernelClockStatus.Synchronized, TimeSpan.Zero, TimeSpan.Zero);
+        var snapshot = new ClockSyncSnapshot(Now, true, selected, [selected], 1, kernel);
+        var projected = reader.ReportInto(snapshot);
+        Assert.IsNull(snapshot.Gps);
+        Assert.AreSame(selected, projected.Selected);
+        Assert.AreSame(snapshot.Servers, projected.Servers);
+        Assert.AreSame(kernel, projected.Kernel);
+        Assert.AreEqual(snapshot.MeasuredUtc, projected.MeasuredUtc);
+        Assert.AreEqual(snapshot.IgnoredEntries, projected.IgnoredEntries);
+        Assert.AreEqual(GpsSignalState.Available, projected.Gps!.State);
+        Assert.IsFalse(projected.Gps.CanVerifyClock);
+        Assert.AreEqual(ClockSyncStatus.InTolerance, ClockAssessment.Evaluate(TimeSyncSettings.Default, projected).Status);
+        Assert.AreEqual(ClockAssessment.Evaluate(TimeSyncSettings.Default, snapshot), ClockAssessment.Evaluate(TimeSyncSettings.Default, projected));
+    }
+
+    private static async Task AppendAsync(MemoryStream source, string text)
+    {
+        var position = source.Position;
+        source.Position = source.Length;
+        await source.WriteAsync(Encoding.ASCII.GetBytes(text)).ConfigureAwait(false);
+        source.Position = position;
+    }
+
     internal static string Rmc(string fix = "A") => Sentence($"GNRMC,120000.000,{fix},,,,,,,121126,,,A");
     internal static string Gga() => Sentence("GPGGA,120000.000,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,");
     internal static MemoryStream Source(params string[] lines) => new(Encoding.ASCII.GetBytes(string.Join("\r\n", lines) + "\r\n"));
