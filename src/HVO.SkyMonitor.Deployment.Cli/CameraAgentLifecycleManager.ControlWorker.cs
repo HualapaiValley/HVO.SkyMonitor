@@ -144,9 +144,11 @@ internal sealed partial class CameraAgentLifecycleManager
         var address = IPAddress.TryParse(manifest.BindAddress, out var binding) && IPAddress.Any.Equals(binding)
             ? new Uri($"http://127.0.0.1:{manifest.Port}") : result.Url;
         using var client = new InstallerControlHttpClient(address, token, workerId, handler);
-        async Task<InstanceLifecycleCondition> ReadConditionAsync(CancellationToken cancellation)
+        Task<InstanceLifecycleCondition> ReadConditionAsync(CancellationToken cancellation) => ReadConditionCoreAsync(false, cancellation);
+        Task<InstanceLifecycleCondition> ReadRecoveryConditionAsync(CancellationToken cancellation) => ReadConditionCoreAsync(true, cancellation);
+        async Task<InstanceLifecycleCondition> ReadConditionCoreAsync(bool allowPartialRollback, CancellationToken cancellation)
         {
-            var (current, _) = await ReadWorkerIdentityAsync(paths, request.InstanceId, cancellation).ConfigureAwait(false);
+            var (current, _) = await ReadWorkerIdentityAsync(paths, request.InstanceId, cancellation, allowPartialRollback).ConfigureAwait(false);
             ValidateLifecycleControlToken(current, token);
             if (current.InstallationId != manifest.InstallationId || current.ApplicationIdentity != manifest.ApplicationIdentity || current.RuntimeUid != manifest.RuntimeUid ||
                 current.RuntimeGid != manifest.RuntimeGid || current.BindAddress != manifest.BindAddress || current.Port != manifest.Port)
@@ -167,13 +169,13 @@ internal sealed partial class CameraAgentLifecycleManager
         await new InstallerControlWorker(client, journal, AcquireDeploymentAsync, TimeProvider.System,
             message => Console.Error.WriteLine(FormatControlWorkerDiagnostic(message)),
             acquireInterruptedRecovery: (receipt, token) => AcquireInterruptedControlAsync(paths, manifest.LifecycleCondition,
-                receipt, client, token, ReadConditionAsync))
+                receipt, client, token, ReadRecoveryConditionAsync))
             .RunAsync(request.Once, cancellationToken).ConfigureAwait(false);
     }
 
     // The caller holds deployment.lock so manifest/result publication cannot be observed halfway through a live write.
     private static async Task<(InstanceManifest Manifest, InstallationResult Result)> ReadWorkerIdentityAsync(
-        InstallationPaths paths, Guid instanceId, CancellationToken cancellationToken)
+        InstallationPaths paths, Guid instanceId, CancellationToken cancellationToken, bool allowPartialRollback = false)
     {
         var manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
         var result = await ReadResultAsync(paths.ResultPath, cancellationToken).ConfigureAwait(false);
@@ -186,10 +188,13 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 EnsureCorrelated(paths, instanceId, manifest, result, allowTransactionalDrift: true);
                 EnsureTransactionalCorrelation(operation, manifest, result);
-                throw InstallerException.Refused("lifecycle.rollback-partial-commit: rollback manifest/result publication was interrupted. " +
-                    "Runtime control remains fenced. Retain both journals and escalate for transaction-aware recovery; do not edit records.");
+                // A running worker may settle its retained receipt after a safe replacement probe.
+                // Startup and fresh work still refuse this partial publication explicitly.
+                if (!allowPartialRollback)
+                    throw InstallerException.Refused("lifecycle.rollback-partial-commit: rollback manifest/result publication was interrupted. " +
+                        "Runtime control remains fenced. Retain both journals and escalate for transaction-aware recovery; do not edit records.");
             }
-            throw;
+            else throw;
         }
         if (manifest.LifecycleCondition is not (InstanceLifecycleCondition.Installed or InstanceLifecycleCondition.Uninstalled))
             throw InstallerException.Refused("The lifecycle worker requires a retained instance.");

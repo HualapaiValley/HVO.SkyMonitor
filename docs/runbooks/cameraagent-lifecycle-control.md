@@ -269,7 +269,14 @@ CandidateVerified rollback transaction, the worker refuses startup with
 fence. This is an interrupted publication, not arbitrary identity corruption;
 the reachable-agent retry gate can also refuse the pending receipt. Retain both
 journals and escalate for transaction-aware recovery rather than editing records
-to force correlation. Unrelated identity mismatches keep their strict refusal.
+to force correlation. An already-running worker can still settle retained receipts
+across this matching transaction after its initialized, different replacement
+process is durably Paused; new runtime work stays refused until rollback resume
+completes. Unrelated identity mismatches keep their strict refusal.
+
+Worker startup takes `deployment.lock` for a consistent identity read. If an
+installer holds it, startup fails promptly as busy; retry starting the worker
+after that installer command exits. A running worker retains its polling retries.
 
 A required returned-process probe that times out, loses transport, or receives an
 HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed.
