@@ -10,9 +10,17 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
 ### Fixed
 
+- CameraAgent preserves configured environmental waits under a two-second storage cap, retains before-capture source fences through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 protects this evidence. BeforeCaptureWaitMilliseconds now accepts 0–2000 ms; larger values are refused at startup. Refs #1735
+
 - CameraAgent rollback and reinstall can settle interrupted runtime control after a durably paused replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
+
+- CameraAgent processing health prioritizes replacing superseded active graph revisions over historical Storage-skip guidance, and outbox delivery preserves canonical root path casing on Windows. Refs #1809
 
 - CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
 

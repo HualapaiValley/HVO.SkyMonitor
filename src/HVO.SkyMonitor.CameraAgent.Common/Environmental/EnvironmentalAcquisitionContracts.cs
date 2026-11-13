@@ -68,6 +68,13 @@ public sealed record EnvironmentalCaptureSourceClaim(EnvironmentalSourceDescript
 
 public sealed record EnvironmentalCaptureAcquisition(Guid Id, IReadOnlyList<EnvironmentalCaptureSourceClaim> Claims)
 {
+    private int _storagePending;
+    internal bool StoragePending => Volatile.Read(ref _storagePending) > 0;
+    internal void BeginStorage() => Interlocked.Increment(ref _storagePending);
+    internal void EndStorage() => Interlocked.Decrement(ref _storagePending);
+    public bool Unavailable { get; init; }
+    public IReadOnlyList<string> BeforeCaptureSources { get; init; } = [];
+    internal TaskCompletionSource<Exception?> Admission { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal static string Prefix(Guid id) => "__capture-before:" + id.ToString("N") + ":";
 }
@@ -76,6 +83,7 @@ public sealed record EnvironmentalCaptureAvailability(
     IReadOnlyList<string> Sources, IReadOnlyList<string> UnavailableSources, bool Pending)
 {
     public bool EvidenceMissing { get; init; }
+    public bool BeforeCaptureUnavailable { get; init; }
 }
 
 public sealed class EnvironmentalCaptureAcquisitionPendingException : Exception

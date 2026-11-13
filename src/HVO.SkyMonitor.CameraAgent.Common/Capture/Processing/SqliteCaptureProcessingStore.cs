@@ -2567,13 +2567,15 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END),
                 SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'abandoned' AND work.updated_unix_ms >= $storage_skip_since AND work.failure_reason IN
-                    ('storage-policy-mismatch', 'storage-policy-mismatch-scene-unavailable') THEN 1 ELSE 0 END)
+                    ($storage_mismatch_reason, $scene_unavailable_reason) THEN 1 ELSE 0 END)
             FROM capture_lane_work AS work
             JOIN raw_captures AS raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE work.lane_name = 'standard';
             """;
         // Journal history can outlive raw retention. Warn for a bounded day after the durable abandonment,
         // without requiring operators to delete evidence or altering the original execution to clear health.
+        command.Parameters.AddWithValue("$storage_mismatch_reason", CaptureStoragePolicy.LiveMismatchLaneReason);
+        command.Parameters.AddWithValue("$scene_unavailable_reason", CaptureStoragePolicy.SceneUnavailableLaneReason);
         command.Parameters.AddWithValue("$storage_skip_since", _timeProvider.GetUtcNow().AddDays(-1).ToUnixTimeMilliseconds());
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);

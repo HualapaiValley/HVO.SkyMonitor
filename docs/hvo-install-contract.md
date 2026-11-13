@@ -166,6 +166,11 @@ Every release carries assets with these names and kinds:
     only integration pre-releases, so this choice changes the product that has no released readers. A component's key
     also outlives a rename of its image.
   - **Today:** both products use these keys. SkyMonitor's `release.json` names `images.cameraAgent` (#1359, #1364).
+- **LogicHost reader-first preparation** (#1242). Schema 1 additionally supports `images.logicHost` and
+  `componentMetadata.logicHost` for a local identity candidate. The bounded central declaration is repeated in the
+  image's `io.hvo.skymonitor.logichost-release` label. The [candidate format](planning/logichost-offline-candidate.md)
+  defines the exact fields, checks and remaining bundle/trust gates. This additive reader support enables no publication
+  or installation, and does not change the CameraAgent reader or release writer.
 - **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
   the installer that reads it. CRLF is normalized to LF first. After that, a note is
   refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or
@@ -504,7 +509,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
 | `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 15, reads 13 to 15. `io.hvo.skymonitor.raw-ingress-schema` 15 and `raw-ingress-migration` `canonical-v13-v14-to-v15` also declare it |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 16, reads 13 to 16. `io.hvo.skymonitor.raw-ingress-schema` 16 and `raw-ingress-migration` `canonical-v13-v14-v15-to-v16` also declare it |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
 | `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4 |
