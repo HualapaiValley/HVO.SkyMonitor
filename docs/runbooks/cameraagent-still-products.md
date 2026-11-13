@@ -266,12 +266,26 @@ baseline/after attribution and the actual measured build configuration.
 
 With the same enabled and pinned `NightlyProducts` settings, select the registered
 `daily-summary:<preset SHA-256>` target, `SourceWindowClosed`, `SunriseDay` and
-`AllActualSources`. Hourly or dark-night-only definitions are rejected. Allow
-settlement after other still-product automations if their links should appear.
+`AllActualSources`. Hourly or dark-night-only definitions are rejected.
 No physical camera is required; VirtualSky previews use the ordinary path.
 A later evaluation of the same retained occurrence includes newly published
 still-product links as a new immutable summary; it never rewrites the earlier
-snapshot. There is no automatic link refresh after the scheduled evaluation.
+snapshot. A successful same-period sunrise-day keogram or star-trail run also
+re-evaluates already-published summaries using their retained occurrences, so
+links do not depend on automation order. Unchanged still retries repeat this
+check, allowing recovery after an interrupted refresh; a failed refresh makes
+that run fail with a retry note while preserving the last good summary. Hourly
+products and other retained periods do not trigger this refresh. This does not
+create a summary unless its own automation has already published one.
+Only retained summaries whose pinned preset still matches current NightlyProducts
+settings can refresh. Historical summaries from an unavailable preset retain
+their original links and bytes and do not fail a valid current still run.
+Refresh is maintenance of already-published summaries: it intentionally uses
+retained occurrences even if their automation was subsequently disabled or deleted.
+Disabling automation prevents new scheduled occurrences, not link maintenance of
+its published summaries; refresh neither schedules a run nor changes a definition.
+The triggering still run's history reports summary publications, reuse and unchanged
+evaluations separately from its still-product counts.
 
 The host-neutral Processing producer emits `hvo-daily-summary-v1`: canonical JSON
 in `recipe.descriptor.options.parameters` of the checksummed provenance document,
