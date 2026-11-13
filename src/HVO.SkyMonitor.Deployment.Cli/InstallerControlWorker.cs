@@ -32,6 +32,11 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
         {
             IDisposable recoveryLock;
             try { recoveryLock = await (acquireInterruptedRecovery is null ? acquireDeployment(cancellationToken) : acquireInterruptedRecovery(interrupted, cancellationToken)).ConfigureAwait(false); }
+            catch (InstallerException exception) when (exception.IsWorkerRestartRequired)
+            {
+                report("stage=lifecycle-worker recovery=restart-required");
+                continue;
+            }
             catch (InstallerException)
             {
                 report("stage=lifecycle-worker recovery=installer-busy");
@@ -86,6 +91,11 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
         }
         IDisposable deploymentLock;
         try { deploymentLock = await acquireDeployment(cancellationToken).ConfigureAwait(false); }
+        catch (InstallerException exception) when (exception.IsWorkerRestartRequired)
+        {
+            await FailAsync(current, "lifecycle.restart-required", cancellationToken).ConfigureAwait(false);
+            return;
+        }
         catch (InstallerException)
         {
             await FailAsync(current, "lifecycle.installer-busy", cancellationToken).ConfigureAwait(false);

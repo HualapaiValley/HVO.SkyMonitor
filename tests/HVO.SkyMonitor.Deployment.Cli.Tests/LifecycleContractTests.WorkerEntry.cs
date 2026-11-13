@@ -78,6 +78,10 @@ public sealed partial class LifecycleContractTests
     [DataRow("installed")]
     [DataRow("listener")]
     [DataRow("token")]
+    [DataRow("installation")]
+    [DataRow("application")]
+    [DataRow("uid")]
+    [DataRow("gid")]
     public async Task WorkerEntryObservesLaterInstallWithoutRestart(string change)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Uninstalled);
@@ -104,18 +108,7 @@ public sealed partial class LifecycleContractTests
             heartbeats++;
             if (heartbeats == 2)
             {
-                var current = fixture.Manifest with { LifecycleCondition = InstanceLifecycleCondition.Installed };
-                if (change == "listener")
-                {
-                    current = current with { Port = current.Port + 1 };
-                    var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
-                    await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ResultPath,
-                        result with { Url = new Uri($"http://127.0.0.1:{current.Port}") },
-                        DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
-                }
-                if (change == "token") current = current with { LifecycleControlTokenSha256 = new string('8', 64) };
-                await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath, current,
-                    DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+                await ChangeWorkerIdentityAsync(fixture, change);
             }
             // A capture-version mismatch distinguishes admitted execution from installer-busy without issuing a pause.
             return EntrySnapshot(Queued());
@@ -124,8 +117,42 @@ public sealed partial class LifecycleContractTests
             WorkerRequest(fixture) with { Once = false }, handler, stop.Token));
         Assert.AreEqual(2, terminalCodes.Count);
         Assert.AreEqual("lifecycle.installer-busy", terminalCodes[0]);
-        Assert.AreEqual(change == "installed" ? "lifecycle.capture-conflict" : "lifecycle.installer-busy", terminalCodes[1]);
+        Assert.AreEqual(change == "installed" ? "lifecycle.capture-conflict" : "lifecycle.restart-required", terminalCodes[1]);
         Assert.AreEqual(2, heartbeats);
+    }
+
+    private static async Task ChangeWorkerIdentityAsync(LifecycleFixture fixture, string change)
+    {
+        var current = fixture.Manifest with { LifecycleCondition = InstanceLifecycleCondition.Installed };
+        var result = await CameraAgentLifecycleManager.ReadResultAsync(fixture.Paths.ResultPath, CancellationToken.None);
+        switch (change)
+        {
+            case "listener":
+                current = current with { Port = current.Port + 1 };
+                result = result with { Url = new Uri($"http://127.0.0.1:{current.Port}") };
+                break;
+            case "token": current = current with { LifecycleControlTokenSha256 = new string('8', 64) }; break;
+            case "installation":
+                current = current with { InstallationId = Guid.NewGuid() };
+                result = result with { InstallationId = current.InstallationId };
+                break;
+            case "application":
+                current = current with { ApplicationIdentity = Guid.NewGuid() };
+                result = result with { ApplicationIdentity = current.ApplicationIdentity };
+                break;
+            case "uid":
+                current = current with { RuntimeUid = current.RuntimeUid + 1 };
+                result = result with { RuntimeUid = current.RuntimeUid };
+                break;
+            case "gid":
+                current = current with { RuntimeGid = current.RuntimeGid + 1 };
+                result = result with { RuntimeGid = current.RuntimeGid };
+                break;
+        }
+        await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ResultPath, result,
+            DeploymentJsonContext.Default.InstallationResult, CancellationToken.None);
+        await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath, current,
+            DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
     }
 
     [TestMethod]
@@ -204,6 +231,133 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual("lifecycle.installer-interrupted", reloaded.Receipts.Single().Events[^1].Code);
         CollectionAssert.AreEqual(deployment, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
         CollectionAssert.AreEqual(result, await File.ReadAllBytesAsync(fixture.Paths.ResultPath));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("image")]
+    [DataRow("instance")]
+    [DataRow("kind")]
+    [DataRow("phase")]
+    public async Task WorkerEntryRejectsNonmatchingMidRunRollbackDrift(string mismatch)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Rollback),
+            fixture.Paths, LifecycleOperationKind.Rollback, fixture.Manifest, CancellationToken.None);
+        var candidate = fixture.Manifest.Image with { ImageId = "sha256:" + new string('9', 64) };
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+        {
+            Phase = LifecycleOperationPhase.CandidateVerified, MutationStarted = true, CandidateImage = candidate
+        }, CancellationToken.None);
+        var (journal, path, original) = await PendingControlAsync(fixture, terminal: false);
+        original = original with { OriginalProcessId = Guid.NewGuid(), ResumeAfterVerification = true };
+        await journal.SaveAsync(original);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var reads = 0;
+        var publications = 0;
+        byte[]? pending = null, deployment = null, manifest = null, result = null;
+        using var handler = new WorkerEntryHandler(async request =>
+        {
+            var exchange = await request.Content!.ReadFromJsonAsync(CameraAgentControlJsonContext.Default.CameraAgentControlExchange);
+            if (exchange!.Receipt is { IsTerminal: true }) publications++;
+            if (exchange.Receipt is null && ++reads == 2)
+            {
+                await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+                {
+                    InstanceId = mismatch == "instance" ? Guid.NewGuid() : fixture.InstanceId,
+                    Kind = mismatch == "kind" ? LifecycleOperationKind.Upgrade : LifecycleOperationKind.Rollback,
+                    Phase = mismatch == "phase" ? LifecycleOperationPhase.Restoring : LifecycleOperationPhase.CandidateVerified,
+                    MutationStarted = true, CandidateImage = candidate
+                }, CancellationToken.None);
+                await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath,
+                    fixture.Manifest with { Image = mismatch == "image" ? candidate with { ImageId = "sha256:" + new string('7', 64) } : candidate },
+                    DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
+                pending = await File.ReadAllBytesAsync(path);
+                deployment = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+                manifest = await File.ReadAllBytesAsync(fixture.Paths.ManifestPath);
+                result = await File.ReadAllBytesAsync(fixture.Paths.ResultPath);
+            }
+            else if (reads == 3) await stop.CancelAsync();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new CameraAgentControlSnapshot(original, false, Guid.NewGuid(),
+                    reads == 1 ? "Running" : "Paused", 1, true, true, true),
+                    CameraAgentControlJsonContext.Default.CameraAgentControlSnapshot)
+            };
+        });
+        await Assert.ThrowsAsync<OperationCanceledException>(() => CameraAgentLifecycleManager.RunControlWorkerAsync(
+            WorkerRequest(fixture) with { Once = false }, handler, stop.Token));
+        Assert.AreEqual(3, reads);
+        Assert.AreEqual(0, publications);
+        CollectionAssert.AreEqual(pending, await File.ReadAllBytesAsync(path));
+        CollectionAssert.AreEqual(deployment, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        CollectionAssert.AreEqual(manifest, await File.ReadAllBytesAsync(fixture.Paths.ManifestPath));
+        CollectionAssert.AreEqual(result, await File.ReadAllBytesAsync(fixture.Paths.ResultPath));
+        var reloaded = new InstallerControlJournal(path);
+        await reloaded.LoadAsync(CancellationToken.None);
+        Assert.IsFalse(reloaded.Receipts.Single().IsTerminal);
+        Assert.IsEmpty(reloaded.Unpublished);
+        Assert.IsEmpty(reloaded.Refused);
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("listener")]
+    [DataRow("token")]
+    [DataRow("installation")]
+    [DataRow("application")]
+    [DataRow("uid")]
+    [DataRow("gid")]
+    public async Task WorkerEntryReportsRestartRequiredForRetainedRecovery(string change)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Rollback),
+            fixture.Paths, LifecycleOperationKind.Rollback, fixture.Manifest, CancellationToken.None);
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+        {
+            Phase = LifecycleOperationPhase.Prepared, MutationStarted = false
+        }, CancellationToken.None);
+        var (journal, path, original) = await PendingControlAsync(fixture, terminal: false);
+        original = original with { OriginalProcessId = Guid.NewGuid(), ResumeAfterVerification = true };
+        await journal.SaveAsync(original);
+        var pending = await File.ReadAllBytesAsync(path);
+        var deployment = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var reads = 0;
+        var publications = 0;
+        using var handler = new WorkerEntryHandler(async request =>
+        {
+            var exchange = await request.Content!.ReadFromJsonAsync(CameraAgentControlJsonContext.Default.CameraAgentControlExchange);
+            if (exchange!.Receipt is { IsTerminal: true }) publications++;
+            if (exchange.Receipt is null && ++reads == 2) await ChangeWorkerIdentityAsync(fixture, change);
+            else if (reads == 3) await stop.CancelAsync();
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new CameraAgentControlSnapshot(original, false, Guid.NewGuid(),
+                    reads == 1 ? "Running" : "Paused", 1, true, true, true),
+                    CameraAgentControlJsonContext.Default.CameraAgentControlSnapshot)
+            };
+        });
+        var previousError = Console.Error;
+        using var error = new StringWriter();
+        try
+        {
+            Console.SetError(error);
+            await Assert.ThrowsAsync<OperationCanceledException>(() => CameraAgentLifecycleManager.RunControlWorkerAsync(
+                WorkerRequest(fixture) with { Once = false }, handler, stop.Token));
+        }
+        finally { Console.SetError(previousError); }
+        StringAssert.Contains(error.ToString(), "recovery=restart-required");
+        Assert.AreEqual(3, reads);
+        Assert.AreEqual(0, publications);
+        CollectionAssert.AreEqual(pending, await File.ReadAllBytesAsync(path));
+        CollectionAssert.AreEqual(deployment, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        var reloaded = new InstallerControlJournal(path);
+        await reloaded.LoadAsync(CancellationToken.None);
+        Assert.IsFalse(reloaded.Receipts.Single().IsTerminal);
+        Assert.IsEmpty(reloaded.Unpublished);
+        Assert.IsEmpty(reloaded.Refused);
     }
 
     private static LifecycleWorkerRequest WorkerRequest(LifecycleFixture fixture) =>
