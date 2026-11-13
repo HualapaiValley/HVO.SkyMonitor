@@ -267,12 +267,15 @@ result can retain mismatched image records. When these match the same retained
 CandidateVerified rollback transaction, the worker refuses startup with
 `lifecycle.rollback-partial-commit`, explicitly retaining the runtime-control
 fence. This is an interrupted publication, not arbitrary identity corruption;
-the reachable-agent retry gate can also refuse the pending receipt. Retain both
-journals and escalate for transaction-aware recovery rather than editing records
-to force correlation. An already-running worker can still settle retained receipts
-across this matching transaction after its initialized, different replacement
-process is durably Paused; new runtime work stays refused until rollback resume
-completes. Unrelated identity mismatches keep their strict refusal.
+the reachable-agent retry gate can also refuse the pending receipt. An
+already-running worker can still settle retained receipts across this matching
+transaction after its initialized, different replacement process is durably
+Paused; new runtime work stays refused until rollback resume completes.
+If an already-running worker settles and publishes the retained receipt, rerun
+the same rollback command with `--resume`. If worker startup instead refuses with
+`lifecycle.rollback-partial-commit`, retain both journals and escalate for
+transaction-aware recovery. Do not edit records to force correlation. Unrelated
+identity mismatches keep their strict refusal.
 
 Worker startup takes `deployment.lock` for a consistent identity read. If an
 installer holds it, startup fails promptly as busy; retry starting the worker
