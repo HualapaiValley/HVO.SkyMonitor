@@ -1,3 +1,9 @@
+> Historical reproducer at `25847588c1800296b2db65562384d32e3e793ee8`.
+> The coordinator corrected its shipped-edge interpretation and authorized a scoped
+> fix in [the current conformance record](issue-529-host-adapter-parity-r2.md).
+> Original failures and the original hashed archive remain retained; the record
+> below describes the initial generic-factory experiment.
+
 # Frozen satellite host-adapter conformance — #529
 
 Status: **BLOCKED / IMPLEMENTATION REQUIRED**, 2026-11-13. This is a retained

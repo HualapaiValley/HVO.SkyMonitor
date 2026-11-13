@@ -44,7 +44,8 @@ frame-available-to-publication acceptance remain #1395.
 
 ## Evidence index
 
-- [Frozen host-adapter reproducer and outstanding conformance blockers](../issue-529-host-adapter-parity.md)
+- [Descriptor-exact frozen host-adapter conformance](../issue-529-host-adapter-parity-r2.md)
+- [Historical generic-factory reproducer and corrected interpretation](../issue-529-host-adapter-parity.md)
 
 - [SGP4 qualification and source pins](sgp4-qualification.md)
 - [Resolved time and independent coordinate/pass references](coordinate-reference.md)
