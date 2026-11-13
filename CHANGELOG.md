@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
 ### Fixed
 
 - CameraAgent preserves configured environmental waits under a two-second storage cap, retains before-capture source fences through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 protects this evidence. BeforeCaptureWaitMilliseconds now accepts 0–2000 ms; larger values are refused at startup. Refs #1735
