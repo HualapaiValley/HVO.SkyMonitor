@@ -36,6 +36,8 @@ public sealed class AstrometricUncertaintyEstimatorTests
         Assert.IsTrue(f.Result.Assessment.HasMeasuredMapping);
         Assert.IsNotNull(new AstrometricMapping(f.Calibration, f.Result.Assessment).PixelToSky(new(256, 256)));
         Assert.AreEqual("exposure-not-qualified", u.ReasonCode);
+        Assert.AreNotEqual(new AstrometricUncertaintyOptions().IdentitySha256, u.OptionsIdentitySha256);
+        Assert.AreEqual(new AstrometricUncertaintyOptions().IdentityForExposure(TimeSpan.FromTicks(ticks)), u.OptionsIdentitySha256);
         Assert.IsFalse(u.IsAvailable);
         Assert.IsNull(u.Estimate);
         Assert.IsNull(u.Validity.ChiSquare);
@@ -68,6 +70,7 @@ public sealed class AstrometricUncertaintyEstimatorTests
         var baseline = Estimate(Accepted.Value, Covariances(Accepted.Value, Sigma));
         var u = Estimate(f, Covariances(f, Sigma));
         Assert.IsTrue(u.IsAvailable, u.Reason);
+        Assert.AreEqual(new AstrometricUncertaintyOptions().IdentitySha256, u.OptionsIdentitySha256);
         Assert.AreEqual(Numerics(baseline), Numerics(u));
         Console.WriteLine("NUMERICAL_BASELINE " + Numerics(u));
     }
@@ -124,6 +127,20 @@ public sealed class AstrometricUncertaintyEstimatorTests
 
     private static string Numerics(AstrometricFrameUncertainty u) => System.Text.Json.JsonSerializer.Serialize(new
     { u.Estimate, u.Centroid, u.ConditionalFit, u.Systematic, u.SharedCalibration, u.Total, u.ClockComponent, u.Validity });
+
+    [TestMethod]
+    public void ExposurePolicyIdentity_PreservesLegacySettingsAndVersionsOnlyUnsupportedDurations()
+    {
+        var options = new AstrometricUncertaintyOptions();
+        var legacy = AstrometricIdentity.Hash(new { schema = "astrometric-frame-uncertainty-v1", options = options with { } });
+        Assert.AreEqual(legacy, options.IdentitySha256);
+        Assert.AreEqual(legacy, options.IdentityForExposure(TimeSpan.Zero));
+        Assert.AreEqual(legacy, options.IdentityForExposure(TimeSpan.FromSeconds(1)));
+        Assert.AreNotEqual(legacy, options.IdentityForExposure(TimeSpan.FromTicks(TimeSpan.TicksPerSecond + 1)));
+        Assert.AreEqual(options.IdentityForExposure(TimeSpan.FromSeconds(20)), options.IdentityForExposure(TimeSpan.FromSeconds(60)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.IdentityForExposure(TimeSpan.FromTicks(-1)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.IdentityForExposure(TimeSpan.FromDays(1).Add(TimeSpan.FromTicks(1))));
+    }
 
     [TestMethod]
     public void AcceptedFrame_PublishesSeparateComponentsBoundToEveryIdentity()

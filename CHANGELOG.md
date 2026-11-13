@@ -12,7 +12,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Refs #1179
+- Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Qualified one-second retained results keep their identities across restart, replay and viewer reads. Refs #1179
 
 - CameraAgent rollback and reinstall can settle interrupted runtime control after a durably paused replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
 

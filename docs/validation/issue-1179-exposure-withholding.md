@@ -18,8 +18,12 @@ override. Rejected assessments retain `assessment-not-accepted`; invalid inputs 
 cancellation retain their existing behavior. Mapping acceptance and midpoint binding
 do not change. Retained available evidence above the boundary must be rejected.
 
-The estimator settings identity will change to v2, while the result JSON shape stays
-v1. One-second numerical results must be unchanged. Eligibility at shorter durations
+The initial candidate changed estimator/settings identity globally to v2. Review
+found this invalidated qualified retained products. The corrected design preserves
+the v1 numerical estimator, settings and Processing algorithm identities up to one
+second, and binds `astrometric-exposure-release-v1` into the settings identity only
+above that boundary. The result JSON shape stays v1. One-second results and
+retained identities must be unchanged. Eligibility at shorter durations
 does not qualify a new profile, gain, lens, measurer, or physical camera.
 
 ### Scientific evidence retained, not retuned
@@ -62,10 +66,15 @@ long-trail metadata, deeper catalogs and other long-exposure projection families
 are explicit non-goals of this slice. Existing refusal and fail-closed behavior
 stays in force. Physical accuracy remains unclaimed.
 
-Durable-state migration, storage, deployment, background workers and runtime
-telemetry are N/A: this is a synchronous, host-neutral numerical/evidence policy.
+No storage migration or CameraAgent production change is made. Retained restore,
+replay, viewer and central reconstruction are affected consumers and require
+compatibility evidence. Deployment and background-worker protocol changes remain
+out of scope; existing fail-closed worker handling is assessed below.
 
 ## Local results
+
+The first table records initial candidate `2723490d`; final correction results
+are recorded below and supersede its candidate counts and identity design.
 
 Environment: Ubuntu 24.04 x64, SDK 10.0.402, runtime 10.0.14, Release.
 Sources/discussion were read and snapshotted at 2026-11-13T00:33:43Z.
@@ -124,7 +133,7 @@ CI remain for Kepler/CI, as explicitly directed by the operator.
 
 | Source requirement | Implemented evidence | Disposition |
 | --- | --- | --- |
-| Issue acceptance: record exposure-gated release decision in shared owner with identity/version change | v2 estimator settings identity; fixed one-second gate; every covariance component absent above it | Proved |
+| Issue acceptance: record exposure-gated release decision in shared owner with identity/version change | Versioned exposure policy bound into settings identity only above one second; fixed gate; every covariance component absent above it | Proved |
 | Issue acceptance: preserve qualified one-second baseline | Exact numerical component comparison and existing Monte Carlo core tests; no changes to numerical refit or declared floors | Proved for the bounded change; historical sensor-pixel baseline retained |
 | Issue consumer constraint: no unsupported covariance release | Estimator, retained validation and cross-covariance regressions; Processing JSON/publication tests | Proved |
 | Issue acceptance: tuning before independent held-out evaluation | No new qualification or tuning; original independent held-out failures remain the reason to withhold | Preserved; new requalification deferred |
@@ -133,9 +142,89 @@ CI remain for Kepler/CI, as explicitly directed by the operator.
 
 Normal and boundary release, unsupported exposure, malformed input, cancelled
 execution, missing contributor and retained evidence interactions have local
-tests. Restart/recovery and durable-state cases are N/A because no persistence
-or host protocol changes. The resource test records output parity and bounded
+tests. Retained restart/replay/read compatibility is assessed below; no persistent
+layout or host protocol changes. The resource test records output parity and bounded
 native/recipe workloads; it is a sanity check, not a new comparative performance
 qualification. The new gate is constant-time after existing input validation and
 avoids the unsupported refit entirely. Sol/Opus exact-candidate review reports
 and the classifier output belong to the external handoff pack.
+
+## Independent-review correction (F1, F2)
+
+Opus identified a retained-product interaction in initial candidate `2723490d`:
+a global v2 settings/algorithm identity invalidates historical one-second products
+at viewer, restore, replay and central verification. It also breaks the existing
+Manual retained-resource test's canonical solution hash pin. That candidate is
+superseded; its test counts above remain historical evidence.
+
+The correction preserves original identities for exposures up to one second,
+including rejected assessments and withheld centroid covariance. The new policy
+identity is scoped to unsupported longer exposures. Input-bound validation and
+Processing context matching compute the same scoped identity. The existing
+Manual solution hash pin remains unchanged and must pass. No automatic rewrite,
+refit, prepared-file deletion or new storage protocol is introduced. Historical
+available long-exposure evidence remains rejected, as the original envelope
+requires; retained runbook guidance states the limitation.
+
+Correction acceptance, declared before runs: repeat the affected Astronomy and
+Processing selection with the two new identity/restore regressions; run existing
+retained-astrometry restart/read/export/replay cases and the Manual resource pin;
+inspect optional-node exception disposition; preserve coverage floors, policy
+and original one-second numerical baseline hash. None of the three edited source
+files is pinned in the canonical inventory.
+
+Worker disposition was traced through `MeasuredAstrometryCaptureProcessingStep`,
+`CaptureAstrometryPersistence` and `FrameProcessingWorker`: an invalid prepared
+result raises through the normal exception path. The production graph makes
+astrometry optional; live work degrades the node without retrying its lane, and
+replay uses its configured `ReplayMaximumAttempts` before optional exhaustion.
+Qualified one-second restore/replay has unchanged payload and identity. The
+existing optional-node regressions are included in the focused correction run;
+no worker or storage implementation changes are made.
+
+Low notes L2/L3 are addressed by exposure-eligible naming and exact tick semantics.
+L4 is documented: future requalification must freeze its evaluation path as well
+as tuning before evidence; this slice adds no public bypass. L1 (generic recipe/
+algorithm identity coupling) remains proposed follow-up text for Kepler; this owner
+has filed no GitHub issue.
+
+### Correction validation results
+
+| Final selection | Pass | Fail | Skip |
+| --- | ---: | ---: | ---: |
+| Astronomy: estimator (34), Monte Carlo (23), catalog selection (23) | 80 | 0 | 0 |
+| Processing: recipe (22), integrity (37), Manual resources (1) | 60 | 0 | 0 |
+| CameraAgent retained astrometry: graph, restart/read/export/replay, viewer and Manual resource pin | 30 | 0 | 0 |
+| Existing optional-worker terminal/degraded/exhausted disposition | 4 | 0 | 0 |
+| **Final affected total** | **174** | **0** | **0** |
+
+The original Manual retained solution pin passes unchanged:
+`959067FF97697681F5118ED6543F39C40EEACEC4CA43999D083A75316B6B80A9`.
+This proves the qualified one-second canonical solution identity remains the
+pre-change identity. Existing restore/replay/export/read tests and the new
+Processing restore regression pass without refitting. Both numerical boundary
+JSON rows still match the original SHA-256
+`f83322fbd08be32a6d6971e3ba25156e385bb759e247ddf63ae9afaaf6b1a1e1`.
+The warning-as-error build caught a redundant constant assertion in the new test;
+it was removed and the final Astronomy build/run exits 0. No production logic
+was changed to suppress a diagnostic.
+
+Additional focused commands, with the declared short TMPDIR, node-reuse setting
+and heavy lock (no Docker or live service is used):
+
+```bash
+HVO_ISSUE1643_EVIDENCE_ROOT=/tmp/hvo-1179/evidence/correction/retained-resource \
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release --filter 'FullyQualifiedName~RetainedAstrometry_'
+dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj \
+  --configuration Release --no-build --no-restore \
+  --filter 'FullyQualifiedName~OptionalTerminalNode_DoesNotBlockIndependentRequiredNode|FullyQualifiedName~OptionalRetryableNode_'
+```
+
+Focused static discovery observes Astronomy Unit=816/Integration=2/Manual=5 and
+Processing Unit=1324/Manual=19, all other categories zero. Owning inventories and
+runbook totals are updated from this discovery. Final whitespace verification on
+all seven changed C# files and the four CI-control guards pass. The full coverage
+gate remains in CI by the operator's instruction; floors, policy and pinned
+inventory are unchanged. Detailed TRX, logs and exact-candidate Sol/Opus correction
+reports are retained in the external evidence directory.

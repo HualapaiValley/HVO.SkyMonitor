@@ -16,7 +16,7 @@ facts. It builds on the [shared astrometry library](shared-astrometry-v1.md).
 
 - **`HVO.SkyMonitor.Astronomy`**
   - Owns the estimator: `AstrometricUncertaintyEstimator.Estimate` and `CrossCovariance`, with
-    `AstrometricUncertaintyOptions` (estimator `astrometric-frame-uncertainty-v2`) and the result
+    `AstrometricUncertaintyOptions` (estimator `astrometric-frame-uncertainty-v1`) and the result
     `AstrometricFrameUncertainty` (schema `astrometric-frame-uncertainty-v1`).
   - Owns the shared-calibration input `AstrometricCalibrationCovariance` (`astrometric-calibration-covariance-v1`).
   - Owns the clock-facts contract `AstrometricClockFacts`, which is host-neutral.
@@ -126,7 +126,7 @@ The estimator rejects incompatible reuse rather than propagating it:
 
 ## Exposure release policy (Refs #1179)
 
-The v2 estimator withholds every covariance component for an accepted mapping
+The `astrometric-exposure-release-v1` policy withholds every covariance component for an accepted mapping
 whose authoritative `ExposureEndUtc - ExposureStartUtc` exceeds one second,
 with reason `exposure-not-qualified`. There is no tuning option to bypass this
 gate. A good residual fit or a supplied session covariance cannot qualify an
@@ -140,14 +140,18 @@ does not requalify long exposures. Durations at or below one second retain the
 same numerical path, subject to all existing validity gates; only the previously
 qualified profiles carry a qualification claim.
 
-The result JSON schema remains v1 because its shape is unchanged. The estimator
-version in the options hash changes to v2, changing options/result identities and
-the Processing recipe's algorithm identity even at one second. Retained evidence
-validation rejects available long-exposure results, including historical v1
-results, so consumers cannot promote old overconfident covariance. Recompute
-under v2 to retain an explicit withheld result. Existing one-second native
-evidence remains structurally readable; input-bound validation still requires
-the exact estimator settings identity that produced it.
+The result JSON schema, numerical estimator version and Processing algorithm list
+remain v1. `IdentityForExposure` preserves the exact original settings identity at
+durations up to one second; above that boundary it hashes the new policy version
+with the original settings identity. Qualified one-second payloads, output
+identities, restore, replay and viewer validation remain compatible. Unsupported
+long-exposure results receive a policy-bound identity without a storage migration.
+Retained validation rejects historical available long-exposure covariance; old
+long-exposure products may become unavailable and are never silently rewritten
+or refitted by a viewer, restart or replay. See the retained-astrometry runbook
+for that fail-closed boundary. A future campaign must explicitly version its
+qualification/evaluation path before collecting evidence; the current Manual
+long-exposure uncertainty harness will correctly report the policy withholding.
 
 The [frozen slice plan and validation](../validation/issue-1179-exposure-withholding.md)
 records the baseline comparison and remaining work.

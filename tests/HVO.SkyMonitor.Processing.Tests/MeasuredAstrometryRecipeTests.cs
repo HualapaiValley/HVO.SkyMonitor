@@ -48,6 +48,23 @@ public sealed class MeasuredAstrometryRecipeTests
     }
 
     [TestMethod]
+    public async Task OneSecondLegacyProductRetainsAlgorithmIdentityAndRestoresWithoutRefitting()
+    {
+        var f = await Fixture.Value.ConfigureAwait(false);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(f.Request()).ConfigureAwait(false);
+        var solution = Solution(outcome);
+        var product = outcome.Products.Single();
+        Assert.AreEqual("astrometric-frame-uncertainty-v1", product.Algorithms.Single(a => a.Name == "astrometric-uncertainty").Version);
+        var options = new AstrometricUncertaintyOptions();
+        Assert.AreEqual(options.IdentitySha256, solution.Uncertainty!.OptionsIdentitySha256);
+        var restored = RetainedAstrometryProducts.Restore(f.Request(), product.Payload);
+        Assert.AreEqual(product.OutputIdentitySha256, restored.OutputIdentitySha256);
+        Assert.AreEqual(solution.SolutionIdentitySha256, RetainedAstrometryProducts.Verify(f.Request(), restored).SolutionIdentitySha256);
+        CollectionAssert.AreEqual(product.Payload.ToArray(), restored.Payload.ToArray());
+        CollectionAssert.AreEqual(product.Algorithms.ToArray(), restored.Algorithms.ToArray());
+    }
+
+    [TestMethod]
     public async Task RenderedMeasuredInputAcceptsAndMatchesNativeSolverWithoutTruthOrNewAssociation()
     {
         var f = await Fixture.Value.ConfigureAwait(false);

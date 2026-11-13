@@ -72,7 +72,7 @@ public static class AstrometricUncertaintyEvidence
         }
         else
         {
-            if (!assessment.HasMeasuredMapping || !AstrometricUncertaintyEstimator.IsExposureQualified(assessment.Frame.ExposureEndUtc - assessment.Frame.ExposureStartUtc) ||
+            if (!assessment.HasMeasuredMapping || !AstrometricUncertaintyEstimator.IsExposureEligible(assessment.Frame.ExposureEndUtc - assessment.Frame.ExposureStartUtc) ||
                 value.ReasonCode != Available || value.Estimate is null ||
                 value.ConditionalFit.Status != Available || value.ConditionalFit.ReasonCode != Available || value.Systematic.Status != Available ||
                 value.Systematic.ReasonCode is not ("declared-systematic-budget" or "declared-zero-budget") ||
@@ -122,7 +122,7 @@ public static class AstrometricUncertaintyEvidence
         var held = associations.Where(a => a.Verification).ToArray();
         var scale = assessment.Parameters?.FocalScale ?? 1;
         var earlyReason = !assessment.HasMeasuredMapping ? "assessment-not-accepted" :
-            !AstrometricUncertaintyEstimator.IsExposureQualified(assessment.Frame.ExposureEndUtc - assessment.Frame.ExposureStartUtc) ? "exposure-not-qualified" :
+            !AstrometricUncertaintyEstimator.IsExposureEligible(assessment.Frame.ExposureEndUtc - assessment.Frame.ExposureStartUtc) ? "exposure-not-qualified" :
             Math.Abs(scale - solverOptions.MinimumFocalScale) <= 1e-9 * Math.Max(1, scale) ||
             Math.Abs(scale - solverOptions.MaximumFocalScale) <= 1e-9 * Math.Max(1, scale) ? "focal-scale-at-search-bound" :
             fitting.Any(a => !covarianceByIndex.ContainsKey(a.DetectionIndex)) ? "centroid-covariance-missing" :
@@ -131,7 +131,8 @@ public static class AstrometricUncertaintyEvidence
             held.Length < options.MinimumHeldOutStars ? "insufficient-held-out-stars" : null;
         if (earlyReason is not null && (value.Status != Withheld || value.ReasonCode != earlyReason))
             throw new ArgumentException("Uncertainty does not preserve the estimator's input withhold reason.", nameof(value));
-        if (value.CalibrationIdentitySha256 != calibration.IdentitySha256 || value.Clock != clock || value.OptionsIdentitySha256 != options.IdentitySha256 ||
+        if (value.CalibrationIdentitySha256 != calibration.IdentitySha256 || value.Clock != clock ||
+            value.OptionsIdentitySha256 != options.IdentityForExposure(assessment.Frame.ExposureEndUtc - assessment.Frame.ExposureStartUtc) ||
             value.MeasurementInputIdentitySha256 != AstrometricUncertaintyEstimator.MeasurementIdentity(detections, covariances) ||
             value.ReadoutIdentitySha256 != AstrometricUncertaintyEstimator.ReadoutIdentity(readout, calibration.Projection) ||
             value.SharedCalibration.CalibrationCovarianceIdentitySha256 != sharedCalibration?.IdentitySha256 ||

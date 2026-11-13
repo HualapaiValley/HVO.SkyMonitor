@@ -1071,8 +1071,10 @@ makes no physical claim. Support stands only for a cell that passes in both `fin
 **Consumer constraints**, first for #1169 (registered stacking):
 - **Covariance.** Treat astrometric covariance above 1 s as unsupported. The historical v1 estimator could mark
   it `available`: at 60 s it released overconfident intervals, so its residual validity gate is not sufficient.
-  The v2 shared estimator now enforces `exposure-not-qualified` above 1 s and withholds every covariance
+  The shared `astrometric-exposure-release-v1` policy now enforces `exposure-not-qualified` above 1 s and withholds every covariance
   component. Retained-evidence validation rejects available long-exposure results, including historical ones.
+  Duration uses exact 100 ns ticks: one second plus one tick is unsupported. No tolerance or rounding extends
+  the qualified envelope above the recorded boundary.
 - **Reference time.** Bind the solve and every cross-frame mapping to the exposure midpoint, not the `CameraFrame`
   timestamp. A start-UTC binding is accepted silently and shifts the ground pose by 0.036° at 20 s and 0.109° at
   60 s.
