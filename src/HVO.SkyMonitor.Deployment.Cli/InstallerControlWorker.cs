@@ -37,6 +37,21 @@ internal sealed class InstallerControlWorker(IInstallerControlClient client, Ins
                 report("stage=lifecycle-worker recovery=installer-busy");
                 continue;
             }
+            catch (InstallerControlRefusalException refusal)
+            {
+                report($"stage=lifecycle-worker recovery=probe-refused status={refusal.StatusCode}");
+                continue;
+            }
+            catch (HttpRequestException)
+            {
+                report("stage=lifecycle-worker recovery=transport-unavailable");
+                continue;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                report("stage=lifecycle-worker recovery=probe-timeout");
+                continue;
+            }
             using (recoveryLock)
             {
                 var terminal = await new InstallerControlVerifier(client, journal.SaveAsync, clock, budgets)
