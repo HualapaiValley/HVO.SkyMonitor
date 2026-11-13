@@ -68,6 +68,10 @@ also refuse. Candidate assets total at most 128 GiB; release.json is at most
 1 MiB, SHA256SUMS 64 KiB, component metadata 16 Ki characters and individual OCI
 metadata entries 4 MiB. LogicHost archives contain at most 4096 entries. Layers are hashed as streams rather than retained.
 
+OCI layout/image indexes and platform manifests must explicitly declare supported
+schemaVersion 2 on the LogicHost path. File identity is revalidated after hashing
+and after archive inspection; the immutable-input precondition still applies.
+
 The image index, platform manifest, configuration/image ID, every layer and
 Docker-classic manifest must describe the same image. Version, source revision,
 created time, component and central declarations must agree with the archive

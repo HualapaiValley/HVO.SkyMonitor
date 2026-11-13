@@ -74,6 +74,7 @@ internal static class LogicHostCandidate
         if (input.Stream.Length != asset.Size || sums.Files[asset.Name] != asset.Sha256 ||
             Convert.ToHexStringLower(await SHA256.HashDataAsync(input.Stream, cancellationToken).ConfigureAwait(false)) != asset.Sha256)
             throw Invalid("an asset's length or SHA-256 disagrees with release.json or SHA256SUMS");
+        Revalidate(input);
         var archive = release.LogicHost!.OfflineArchives.Single();
         if (archive.Name != asset.Name)
             return;
@@ -87,6 +88,7 @@ internal static class LogicHostCandidate
         ValidateMetadata(declaration.RootElement);
         if (!JsonElement.DeepEquals(metadata, declaration.RootElement))
             throw Invalid("the LogicHost image and release metadata declare different compatibility identities");
+        Revalidate(input);
     }
 
     private static void ValidateMetadata(JsonElement metadata)
@@ -139,6 +141,18 @@ internal static class LogicHostCandidate
         catch (InvalidDataException exception)
         {
             throw new ReleaseToolException("A candidate input is not a regular singly linked file.", exception);
+        }
+    }
+
+    private static void Revalidate(CatalogSnapshotResolver.AuthenticatedFile input)
+    {
+        try
+        {
+            CatalogSnapshotResolver.RevalidateFile(input, "Local candidate input");
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new ReleaseToolException("A candidate input changed identity while it was being verified.", exception);
         }
     }
 

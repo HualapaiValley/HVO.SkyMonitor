@@ -39,10 +39,18 @@ public sealed class LogicHostCandidateTests
     [DataRow("hardlink")]
     public async Task Verify_IncompleteOrAlteredFiles_RefusesReadOnly(string fault)
     {
+        ArgumentNullException.ThrowIfNull(fault);
         using var fixture = new CandidateFixture();
         fixture.DamageFiles(fault);
         var before = fixture.Snapshot();
-        Assert.AreEqual(1, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]), fault);
+        await AssertRefusedAsync(fixture, fault switch
+        {
+            "manifest-missing" or "checksums-missing" => "retained file is missing",
+            "manifest-altered" or "checksum-missing" or "checksum-extra" => "SHA256SUMS must cover exactly",
+            "asset-altered" or "asset-length" or "checksum-disagreement" => "an asset's length or SHA-256 disagrees",
+            "hardlink" => "not a regular singly linked file",
+            _ => "contain exactly its manifest"
+        });
         CollectionAssert.AreEqual(before, fixture.Snapshot());
     }
 
@@ -76,6 +84,7 @@ public sealed class LogicHostCandidateTests
     [DataRow("metadata-type")]
     public async Task Verify_ConsistentlyRehashedButIncompatibleMetadata_Refuses(string fault)
     {
+        ArgumentNullException.ThrowIfNull(fault);
         using var fixture = new CandidateFixture();
         var root = fixture.Document;
         var image = root["images"]!["logicHost"]!;
@@ -112,7 +121,25 @@ public sealed class LogicHostCandidateTests
             case "metadata-type": metadata["migrationId"] = 1; break;
         }
         fixture.Save();
-        Assert.AreEqual(1, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]), fault);
+        await AssertRefusedAsync(fixture, fault switch
+        {
+            "product-type" => "only the LogicHost component",
+            "schema" => "reads schema 1",
+            "reader" or "metadata-schema" or "upgrade-policy" => "schema, verifier version or installation policy is unsupported",
+            "metadata-unknown" or "metadata-missing" => "exactly the supported bounded fields",
+            "migration" or "sql-hash" or "seed-hash" or "metadata-type" => "schema, initialization, SQL or seed identity",
+            "catalog" or "catalog-package" => "not an approved production catalog",
+            "archive-missing" => "requires exactly one linux/amd64 offline archive",
+            "archive-hash" => "same size and SHA-256",
+            "image-id" => "configuration",
+            "manifest-digest" => "does not name an image index",
+            "platform" => "not named",
+            "repository" => "repository is not a",
+            "version" => "tag is not v1.2.1",
+            "commit" or "created" => "not labelled as LogicHost",
+            "metadata-disagreement" => "different compatibility identities",
+            _ => "unsupported configuration or object/recovery format"
+        });
     }
 
     [TestMethod]
@@ -127,8 +154,19 @@ public sealed class LogicHostCandidateTests
     [DataRow("duplicate")]
     public async Task Verify_RehashedArchiveWithWrongContent_Refuses(string fault)
     {
+        ArgumentNullException.ThrowIfNull(fault);
         using var fixture = new CandidateFixture(fault);
-        Assert.AreEqual(1, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]), fault);
+        await AssertRefusedAsync(fixture, fault switch
+        {
+            "component" => "not labelled as LogicHost",
+            "metadata" => "exactly the supported bounded fields",
+            "metadata-duplicate" => "same property twice",
+            "metadata-absent" => "omits its bounded LogicHost",
+            "platform" or "blob" => "not the blob",
+            "link" => "something other than a file",
+            "traversal" => "not the canonical spelling",
+            _ => "holds index.json twice"
+        });
     }
 
     [TestMethod]
@@ -138,6 +176,7 @@ public sealed class LogicHostCandidateTests
     [DataRow("deep")]
     public async Task Verify_MalformedManifest_Refuses(string fault)
     {
+        ArgumentNullException.ThrowIfNull(fault);
         using var fixture = new CandidateFixture();
         var json = await File.ReadAllTextAsync(fixture.ManifestPath);
         json = fault switch
@@ -149,7 +188,31 @@ public sealed class LogicHostCandidateTests
         };
         await File.WriteAllTextAsync(fixture.ManifestPath, json);
         fixture.Checksums();
-        Assert.AreEqual(1, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]));
+        await AssertRefusedAsync(fixture, fault switch
+        {
+            "duplicate" => "same property twice",
+            "case" => "one property in two spellings",
+            "large" => "exceeds its size bound",
+            _ => "not valid JSON"
+        });
+    }
+
+    [TestMethod]
+    [DataRow("layout-schema")]
+    [DataRow("layout-schema-missing")]
+    [DataRow("layout-schema-type")]
+    [DataRow("manifest-schema")]
+    [DataRow("manifest-schema-missing")]
+    [DataRow("manifest-schema-type")]
+    [DataRow("image-index-schema")]
+    [DataRow("image-index-schema-missing")]
+    [DataRow("image-index-schema-type")]
+    public async Task Verify_UnsupportedOciSchemas_RefusesConsistentlyRehashedCandidates(string fault)
+    {
+        ArgumentNullException.ThrowIfNull(fault);
+        using var fixture = new CandidateFixture(fault);
+        var error = await Assert.ThrowsExactlyAsync<InstallerException>(() => LogicHostCandidate.VerifyAsync(fixture.Root, CancellationToken.None));
+        StringAssert.Contains(error.Message, "schemaVersion 2", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -180,17 +243,88 @@ public sealed class LogicHostCandidateTests
         Assert.ThrowsExactly<InstallerException>(() => ReleaseManifest.Parse(File.ReadAllBytes(fixture.ManifestPath)));
     }
 
+    [TestMethod]
+    [DataRow("linux/arm64")]
+    [DataRow("two-platform")]
+    public async Task Verify_UnsupportedPlatformDeclarations_ReachTheCentralPolicyGate(string platform)
+    {
+        ArgumentNullException.ThrowIfNull(platform);
+        using var fixture = new CandidateFixture(platform: platform == "two-platform" ? "linux/amd64" : platform);
+        if (platform == "two-platform")
+        {
+            fixture.Document["images"]!["logicHost"]!["platforms"] = new JsonArray("linux/amd64", "linux/arm64");
+            fixture.Save();
+        }
+        await AssertRefusedAsync(fixture, "requires exactly one linux/amd64 offline archive");
+    }
+
+    [TestMethod]
+    [DataRow("subdirectory")]
+    [DataRow("checksums-bound")]
+    [DataRow("metadata-bound")]
+    [DataRow("label-bound")]
+    public async Task Verify_DirectoryAndMetadataBounds_RefuseForTheirDeclaredReason(string fault)
+    {
+        ArgumentNullException.ThrowIfNull(fault);
+        using var fixture = new CandidateFixture(fault == "label-bound" ? fault : null);
+        switch (fault)
+        {
+            case "subdirectory": Directory.CreateDirectory(Path.Combine(fixture.Root, "unexpected-directory")); break;
+            case "checksums-bound": await File.WriteAllTextAsync(Path.Combine(fixture.Root, "SHA256SUMS"), new string(' ', ReleaseChecksums.MaximumLength + 1)); break;
+            case "metadata-bound": fixture.Document["componentMetadata"]!["logicHost"]!["initializationTarget"] = new string('a', 16 * 1024); fixture.Save(); break;
+        }
+        await AssertRefusedAsync(fixture, fault switch
+        {
+            "subdirectory" => "contain exactly its manifest",
+            "checksums-bound" => "exceeds its size bound",
+            "metadata-bound" => "exactly the supported bounded fields",
+            _ => "omits its bounded LogicHost"
+        });
+    }
+
+    [TestMethod]
+    public async Task Verify_SymbolicLinkAncestor_RefusesBeforeReadingCandidate()
+    {
+        using var fixture = new CandidateFixture();
+        var alias = fixture.Root + "-alias";
+        Directory.CreateSymbolicLink(alias, fixture.Root);
+        try
+        {
+            var failure = await Assert.ThrowsExactlyAsync<ReleaseToolException>(() => LogicHostCandidate.VerifyAsync(alias, CancellationToken.None));
+            StringAssert.Contains(failure.Message, "directory traverses a symbolic link", StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(alias); }
+    }
+
+    [TestMethod]
+    [DataRow("entries-at-limit")]
+    [DataRow("image-index-valid")]
+    public async Task Verify_SupportedArchiveShapes_Accepts(string shape)
+    {
+        ArgumentNullException.ThrowIfNull(shape);
+        using var fixture = new CandidateFixture(shape);
+        Assert.AreEqual(0, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]));
+    }
+
+    private static async Task AssertRefusedAsync(CandidateFixture fixture, string reason)
+    {
+        var failure = await Assert.ThrowsAsync<Exception>(() => LogicHostCandidate.VerifyAsync(fixture.Root, CancellationToken.None));
+        StringAssert.Contains(failure.Message, reason, StringComparison.Ordinal);
+        Assert.AreEqual(1, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]));
+    }
+
     private sealed class CandidateFixture : IDisposable
     {
         private const string Repository = "ghcr.io/hualapaivalley/skymonitor-logichost";
-        private const string ArchiveName = "skymonitor-logichost-1.2.0-dev.3-linux-amd64.oci.tar";
+        private readonly string archiveName;
         public string Root { get; } = Directory.CreateTempSubdirectory("hvo-lh-candidate-").FullName;
         public string ManifestPath => Path.Combine(Root, "release.json");
         public JsonObject Document { get; }
         public string ImageId { get; }
 
-        public CandidateFixture(string? fault = null)
+        public CandidateFixture(string? fault = null, string platform = "linux/amd64")
         {
+            archiveName = $"skymonitor-logichost-{OciReleaseFixture.Version}-{platform.Replace('/', '-')}.oci.tar";
             var metadata = JsonNode.Parse("""
                 {"schemaVersion":1,"minimumVerifierVersion":1,"installationMode":"fresh-database-only",
                  "migrationId":"20260828153943_InitialBaseline","initializationTarget":"fixture-target",
@@ -201,7 +335,7 @@ public sealed class LogicHostCandidateTests
                 """)!;
             // Reuse the existing build fixture; assemble the distribution archive independently of its writer.
             using var input = OciReleaseFixture.Create();
-            input.Build(platforms: ["linux/amd64"], singleManifest: true, labels: (_, labels) =>
+            input.Build(platforms: [platform], singleManifest: fault is not ("image-index-schema" or "image-index-schema-missing" or "image-index-schema-type" or "image-index-valid"), labels: (_, labels) =>
             {
                 labels.Remove("io.hvo.skymonitor.state-contracts");
                 labels["io.hvo.skymonitor.component"] = fault == "component" ? "CameraAgent" : "LogicHost";
@@ -212,11 +346,56 @@ public sealed class LogicHostCandidateTests
                     _ => metadata.ToJsonString()
                 };
                 if (fault == "metadata-absent") labels.Remove("io.hvo.skymonitor.logichost-release");
+                if (fault == "label-bound") labels["io.hvo.skymonitor.logichost-release"] = metadata.ToJsonString().PadRight(16 * 1024 + 1);
             });
             var entries = ReadEntries(input.ImageArchive);
-            var (manifest, config, _) = input.Platforms["linux/amd64"];
+            var (manifest, config, _) = input.Platforms[platform];
             ImageId = config;
+            var imageDigest = string.IsNullOrEmpty(input.IndexDigest) ? manifest : input.IndexDigest;
             var layout = JsonNode.Parse(entries["index.json"])!;
+            if (fault == "entries-at-limit")
+            {
+                var expanded = JsonNode.Parse(entries["blobs/sha256/" + manifest[7..]])!;
+                // Six existing file entries, plus 4090 distinct additional layer blobs: exactly 4096 entries.
+                for (var index = 0; index < 4090; index++)
+                {
+                    var bytes = Encoding.ASCII.GetBytes("extra-layer-" + index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    var digest = "sha256:" + Hash(bytes);
+                    entries["blobs/sha256/" + digest[7..]] = bytes;
+                    expanded["layers"]!.AsArray().Add(new JsonObject
+                    {
+                        ["mediaType"] = "application/vnd.oci.image.layer.v1.tar+gzip",
+                        ["digest"] = digest,
+                        ["size"] = bytes.Length
+                    });
+                }
+                var manifestBytes = Bytes(expanded);
+                entries.Remove("blobs/sha256/" + manifest[7..]);
+                manifest = imageDigest = "sha256:" + Hash(manifestBytes);
+                entries["blobs/sha256/" + manifest[7..]] = manifestBytes;
+                layout["manifests"]![0]!["digest"] = manifest;
+                layout["manifests"]![0]!["size"] = manifestBytes.Length;
+            }
+            if (fault is "layout-schema" or "layout-schema-missing" or "layout-schema-type")
+            {
+                if (fault == "layout-schema-missing") layout.AsObject().Remove("schemaVersion");
+                else layout["schemaVersion"] = fault == "layout-schema-type" ? JsonValue.Create("2") : JsonValue.Create(999);
+            }
+            if (fault is "manifest-schema" or "manifest-schema-missing" or "manifest-schema-type" or "image-index-schema" or "image-index-schema-missing" or "image-index-schema-type")
+            {
+                var subject = fault.StartsWith("manifest-", StringComparison.Ordinal) ? manifest : imageDigest;
+                var invalid = JsonNode.Parse(entries["blobs/sha256/" + subject[7..]])!;
+                if (fault.EndsWith("-missing", StringComparison.Ordinal)) invalid.AsObject().Remove("schemaVersion");
+                else invalid["schemaVersion"] = fault.EndsWith("-type", StringComparison.Ordinal) ? JsonValue.Create("2") : JsonValue.Create(999);
+                var bytes = Bytes(invalid);
+                var changed = "sha256:" + Hash(bytes);
+                entries.Remove("blobs/sha256/" + subject[7..]);
+                entries["blobs/sha256/" + changed[7..]] = bytes;
+                imageDigest = changed;
+                if (fault.StartsWith("manifest-", StringComparison.Ordinal)) manifest = changed;
+                layout["manifests"]![0]!["digest"] = changed;
+                layout["manifests"]![0]!["size"] = bytes.Length;
+            }
             layout["manifests"]![0]!["annotations"] = new JsonObject
             {
                 ["io.containerd.image.name"] = Repository + ":" + OciReleaseFixture.Version,
@@ -227,17 +406,18 @@ public sealed class LogicHostCandidateTests
             {
                 ["Config"] = "blobs/sha256/" + config[7..],
                 ["RepoTags"] = new JsonArray(Repository + ":" + OciReleaseFixture.Version),
-                ["Layers"] = new JsonArray("blobs/sha256/" + input.Platforms["linux/amd64"].Layer[7..])
+                ["Layers"] = new JsonArray([.. JsonNode.Parse(entries["blobs/sha256/" + manifest[7..]])!["layers"]!.AsArray()
+                    .Select(static layer => (JsonNode)("blobs/sha256/" + ((string)layer!["digest"]!)[7..]))])
             }));
             if (fault == "platform")
                 entries["blobs/sha256/" + config[7..]] = Encoding.UTF8.GetBytes("{\"os\":\"linux\",\"architecture\":\"arm64\"}");
-            if (fault == "blob") entries["blobs/sha256/" + input.Platforms["linux/amd64"].Layer[7..]] = "altered"u8.ToArray();
-            using (var file = File.Create(Path.Combine(Root, ArchiveName)))
+            if (fault == "blob") Array.Fill(entries["blobs/sha256/" + input.Platforms[platform].Layer[7..]], (byte)'x');
+            using (var file = File.Create(Path.Combine(Root, archiveName)))
             using (var tar = new TarWriter(file, TarEntryFormat.Ustar))
             {
                 foreach (var (name, bytes) in entries)
                     Write(tar, name, bytes);
-                if (fault == "link") tar.WriteEntry(new UstarTarEntry(TarEntryType.SymbolicLink, "unexpected") { LinkName = "/etc/passwd" });
+                if (fault == "link") tar.WriteEntry(new UstarTarEntry(TarEntryType.SymbolicLink, "oci-layout") { LinkName = "/etc/passwd" });
                 if (fault == "traversal") Write(tar, "../escape", "x"u8.ToArray());
                 if (fault == "duplicate") Write(tar, "index.json", entries["index.json"]);
                 if (fault == "entries")
@@ -247,10 +427,10 @@ public sealed class LogicHostCandidateTests
                 }
             }
             File.WriteAllText(Path.Combine(Root, "THIRD-PARTY-NOTICES.md"), "Fixture notices; no published trust.");
-            var assets = new JsonArray(Asset(ArchiveName, "image-archive", "linux-x64"), Asset("THIRD-PARTY-NOTICES.md", "notices", null));
+            var assets = new JsonArray(Asset(archiveName, "image-archive", platform == "linux/amd64" ? "linux-x64" : "linux-arm64"), Asset("THIRD-PARTY-NOTICES.md", "notices", null));
             var archive = assets[0]!.DeepClone().AsObject();
             archive.Remove("kind");
-            archive["platform"] = "linux/amd64";
+            archive["platform"] = platform;
             archive["manifestDigest"] = manifest;
             archive["configDigest"] = config;
             Document = new JsonObject
@@ -269,9 +449,9 @@ public sealed class LogicHostCandidateTests
                     {
                         ["repository"] = Repository,
                         ["tag"] = OciReleaseFixture.Version,
-                        ["digest"] = manifest,
-                        ["reference"] = Repository + ":" + OciReleaseFixture.Version + "@" + manifest,
-                        ["platforms"] = new JsonArray("linux/amd64"),
+                        ["digest"] = imageDigest,
+                        ["reference"] = Repository + ":" + OciReleaseFixture.Version + "@" + imageDigest,
+                        ["platforms"] = new JsonArray(platform),
                         ["offlineArchives"] = new JsonArray(archive)
                     }
                 },

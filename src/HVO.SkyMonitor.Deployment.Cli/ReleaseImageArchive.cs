@@ -125,6 +125,7 @@ internal static class ReleaseImageArchive
         long? imageSize;
         using (var layout = ReleaseJson.Parse(Entry("index.json", "OCI layout index"), $"the offline archive {archive.Name}'s OCI layout index"))
         {
+            RequireLogicHostSchema2(layout.RootElement, component, "OCI layout index", Refusal);
             OnlyFields(layout.RootElement, "OCI layout index", Refusal, "schemaVersion", "mediaType", "manifests");
             var top = Single(layout.RootElement, "manifests") ?? throw Refusal("its OCI layout does not name exactly one image");
             OnlyFields(top, "OCI layout index's image", Refusal, "mediaType", "digest", "size", "annotations");
@@ -157,6 +158,7 @@ internal static class ReleaseImageArchive
         if (!singlePlatform)
         {
             using var index = ReleaseJson.Parse(Blob(image.Digest, imageSize, "image index"), $"the offline archive {archive.Name}'s image index");
+            RequireLogicHostSchema2(index.RootElement, component, "image index", Refusal);
             if (index.RootElement.ValueKind != JsonValueKind.Object ||
                 !index.RootElement.TryGetProperty("manifests", out var manifests) || manifests.ValueKind != JsonValueKind.Array)
             {
@@ -189,6 +191,7 @@ internal static class ReleaseImageArchive
         using (var manifest = ReleaseJson.Parse(Blob(archive.ManifestDigest, manifestSize, $"{archive.Platform} manifest"), $"the offline archive {archive.Name}'s {archive.Platform} manifest"))
         {
             var root = manifest.RootElement;
+            RequireLogicHostSchema2(root, component, "platform manifest", Refusal);
             OnlyFields(root, $"{archive.Platform} manifest", Refusal, "schemaVersion", "mediaType", "config", "layers", "annotations");
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("config", out var config) ||
                 config.ValueKind != JsonValueKind.Object || Text(config, "digest") != archive.ConfigDigest)
@@ -308,7 +311,7 @@ internal static class ReleaseImageArchive
             {
                 if (maximumEntries is { } maximum && seen.Count >= maximum)
                 {
-                    throw new InstallerException("The LogicHost offline archive exceeds its 4096-entry bound.");
+                    throw new InstallerException($"The offline archive exceeds its {maximum}-entry bound.");
                 }
                 var entryName = CanonicalName(entry)
                                 ?? throw new InstallerException(
@@ -420,6 +423,17 @@ internal static class ReleaseImageArchive
                     : "whose name it will not print";
                 throw refusal($"its {what} has a field {field}, which the installer does not accept");
             }
+        }
+    }
+
+    private static void RequireLogicHostSchema2(
+        JsonElement element, string component, string what, Func<string, InstallerException> refusal)
+    {
+        if (component == "LogicHost" && (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty("schemaVersion", out var schema) || schema.ValueKind != JsonValueKind.Number ||
+            !schema.TryGetInt32(out var version) || version != 2))
+        {
+            throw refusal($"its {what} must declare supported OCI schemaVersion 2");
         }
     }
 

@@ -287,7 +287,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
             {
                 throw Invalid($"offline archive {index} is not for one of the image's platforms, once");
             }
-            var name = $"{imageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
+            var name = OfflineArchive.NameFor(version, platform, imageName);
             if (Text(archive, "name") != name)
             {
                 throw Invalid($"offline archive {index} for {platform} is not named {name}");
@@ -475,7 +475,7 @@ internal sealed partial record ReleaseManifest(string Version, IReadOnlyList<Upg
 }
 
 /// <summary>
-/// The CameraAgent image a release names (<c>images.skymonitor-cameraagent</c>): its repository, the release's version
+/// The component image a release names (<c>images.cameraAgent</c> or <c>images.logicHost</c>): its repository, the release's version
 /// as its tag, and the digest of the image index over its platforms, which is what Docker pulls.
 /// </summary>
 internal sealed record ReleaseImage(
@@ -496,7 +496,7 @@ internal sealed record ReleaseImage(
 }
 
 /// <summary>
-/// A release's offline archive of the CameraAgent image for one platform: what <c>docker image load</c> reads in place
+/// A release's offline archive of a component image for one platform: what <c>docker image load</c> reads in place
 /// of a pull. It holds the release's image index, that platform's manifest, its config and its layers.
 /// </summary>
 internal sealed record OfflineArchive(
@@ -507,9 +507,9 @@ internal sealed record OfflineArchive(
     string ManifestDigest,
     string ConfigDigest)
 {
-    /// <summary>The archive's name for a version and platform: skymonitor-cameraagent-1.2.0-linux-arm64.oci.tar.</summary>
-    public static string NameFor(string version, string platform)
-        => $"{ReleaseManifest.CameraAgentImageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
+    /// <summary>The archive's name for a component, version and platform; existing callers default to CameraAgent.</summary>
+    public static string NameFor(string version, string platform, string imageName = ReleaseManifest.CameraAgentImageName)
+        => $"{imageName}-{version}-{platform.Replace('/', '-')}.oci.tar";
 }
 
 /// <summary>A file a release has besides release.json and SHA256SUMS, with its size and SHA-256.</summary>
