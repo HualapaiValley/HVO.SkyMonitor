@@ -29,7 +29,8 @@ public sealed partial class LifecycleContractTests
             Phase = boundary == "phase" ? LifecycleOperationPhase.Restoring : boundary == "completed"
                 ? LifecycleOperationPhase.Completed : boundary == "unmutated" ? LifecycleOperationPhase.Prepared : LifecycleOperationPhase.CandidateVerified,
             Status = boundary == "completed" ? InstallationStatus.Completed : InstallationStatus.Running,
-            MutationStarted = boundary is not ("completed" or "unmutated"), CandidateImage = candidate
+            MutationStarted = boundary is not ("completed" or "unmutated"),
+            CandidateImage = candidate
         }, CancellationToken.None);
         await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath,
             fixture.Manifest with { Image = matchingImage ? candidate : candidate with { ImageId = "sha256:" + new string('7', 64) } },
@@ -176,7 +177,9 @@ public sealed partial class LifecycleContractTests
                             DeploymentJsonContext.Default.InstanceManifest, CancellationToken.None);
                         await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
                         {
-                            Phase = LifecycleOperationPhase.Completed, Status = InstallationStatus.Completed, MutationStarted = false
+                            Phase = LifecycleOperationPhase.Completed,
+                            Status = InstallationStatus.Completed,
+                            MutationStarted = false
                         }, CancellationToken.None);
                         deployment = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
                     }
