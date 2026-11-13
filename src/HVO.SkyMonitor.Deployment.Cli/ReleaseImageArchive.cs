@@ -91,7 +91,8 @@ internal static class ReleaseImageArchive
         {
             wanted.Add(BlobPrefix + Hex(image.Digest));
         }
-        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted, cancellationToken).ConfigureAwait(false);
+        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted, cancellationToken,
+            maximumEntries: component == "LogicHost" ? 4096 : null).ConfigureAwait(false);
         InstallerException Refusal(string reason)
             => new($"The offline archive {archive.Name} is not the image release {release.Tag} names: {reason}.");
         byte[] Entry(string name, string what)
@@ -294,7 +295,8 @@ internal static class ReleaseImageArchive
         Stream stream,
         string name,
         HashSet<string> wanted,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? maximumEntries)
     {
         var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         var blobs = new Dictionary<string, BlobContent>(StringComparer.Ordinal);
@@ -304,6 +306,10 @@ internal static class ReleaseImageArchive
             await using var reader = new TarReader(stream, leaveOpen: true);
             while (await reader.GetNextEntryAsync(copyData: false, cancellationToken).ConfigureAwait(false) is { } entry)
             {
+                if (maximumEntries is { } maximum && seen.Count >= maximum)
+                {
+                    throw new InstallerException("The LogicHost offline archive exceeds its 4096-entry bound.");
+                }
                 var entryName = CanonicalName(entry)
                                 ?? throw new InstallerException(
                                     $"The offline archive {name} holds an entry named {Printable(entry.Name)}, which is not the canonical spelling of a path.");

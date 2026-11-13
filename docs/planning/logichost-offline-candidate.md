@@ -66,7 +66,7 @@ cover exactly every asset plus release.json. Unlisted inputs, directories,
 symbolic links and multiply-linked files refuse. Linked directory ancestors
 also refuse. Candidate assets total at most 128 GiB; release.json is at most
 1 MiB, SHA256SUMS 64 KiB, component metadata 16 Ki characters and individual OCI
-metadata entries 4 MiB. Layers are hashed as streams rather than retained.
+metadata entries 4 MiB. LogicHost archives contain at most 4096 entries. Layers are hashed as streams rather than retained.
 
 The image index, platform manifest, configuration/image ID, every layer and
 Docker-classic manifest must describe the same image. Version, source revision,

@@ -153,6 +153,14 @@ public sealed class LogicHostCandidateTests
     }
 
     [TestMethod]
+    public async Task Verify_ExcessiveArchiveEntries_RefusesBeforeKeepingUnboundedMetadata()
+    {
+        using var fixture = new CandidateFixture("entries");
+        var error = await Assert.ThrowsExactlyAsync<InstallerException>(() => LogicHostCandidate.VerifyAsync(fixture.Root, CancellationToken.None));
+        StringAssert.Contains(error.Message, "4096-entry bound", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task Verify_CancelledRequest_StopsWithoutChangingInputs()
     {
         using var fixture = new CandidateFixture();
@@ -160,6 +168,8 @@ public sealed class LogicHostCandidateTests
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => LogicHostCandidate.VerifyAsync(fixture.Root, cancellation.Token));
+        var retried = await LogicHostCandidate.VerifyAsync(fixture.Root, CancellationToken.None);
+        Assert.AreEqual(OciReleaseFixture.Version, retried.Version);
         CollectionAssert.AreEqual(before, fixture.Snapshot());
     }
 
@@ -230,6 +240,11 @@ public sealed class LogicHostCandidateTests
                 if (fault == "link") tar.WriteEntry(new UstarTarEntry(TarEntryType.SymbolicLink, "unexpected") { LinkName = "/etc/passwd" });
                 if (fault == "traversal") Write(tar, "../escape", "x"u8.ToArray());
                 if (fault == "duplicate") Write(tar, "index.json", entries["index.json"]);
+                if (fault == "entries")
+                {
+                    for (var index = 0; index < 4096; index++)
+                        Write(tar, "blobs/sha256/" + index.ToString("x64", System.Globalization.CultureInfo.InvariantCulture), []);
+                }
             }
             File.WriteAllText(Path.Combine(Root, "THIRD-PARTY-NOTICES.md"), "Fixture notices; no published trust.");
             var assets = new JsonArray(Asset(ArchiveName, "image-archive", "linux-x64"), Asset("THIRD-PARTY-NOTICES.md", "notices", null));
