@@ -9,6 +9,25 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class CaptureProcessingHealthCheckTests
 {
     [TestMethod]
+    public async Task SupersededRevisionGuidancePrecedesHistoricalStorageSkips()
+    {
+        var state = new CaptureProcessingState();
+        state.SetStoragePolicySkipped(2);
+        state.SetActiveRevisionSuperseded("old-revision");
+        var check = new CaptureProcessingHealthCheck(state);
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        Assert.AreEqual(HealthStatus.Degraded, result.Status);
+        StringAssert.Contains(result.Description!, "activate a compatible revision", StringComparison.Ordinal);
+        Assert.AreEqual("old-revision", result.Data["SupersededActiveRevisionId"]);
+        Assert.AreEqual(2L, result.Data["StoragePolicySkippedCount"]);
+
+        state.SetActiveRevisionSuperseded(null);
+        var recovered = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        StringAssert.Contains(recovered.Description!, "new compatible work can continue", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public async Task TerminalAttributionComesOnlyFromDurableStandardLaneEvidence()
     {
         var state = new CaptureProcessingState();
