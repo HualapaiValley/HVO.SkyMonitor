@@ -15,6 +15,7 @@ public sealed class CustomScriptTerminationTests
         var exited = false;
         var kills = 0;
         var termination = new CustomScriptTermination(() => exited, () => kills++);
+        termination.Verified();
         var drain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task<string> ResultAsync()
         {
@@ -52,14 +53,59 @@ public sealed class CustomScriptTerminationTests
     [DataRow("exited", "output-limit")]
     [DataRow("cancelled", "cancelled")]
     [DataRow("timeout", "timeout")]
-    [DataRow("launch-failed", "output-limit")]
-    public void ExcessBytesRemainAFailureUnlessLiveCancellationOrTimeoutWasLatchedFirst(string cause, string expected)
+    [DataRow("launch-failed", "launch-failed")]
+    public void ExcessBytesRemainAFailureUnlessALiveCancellationTimeoutOrLaunchFailureWasLatchedFirst(string cause, string expected)
     {
         var termination = new CustomScriptTermination(() => false, static () => { });
+        // A launch failure is latched before budget verification; the other causes model a running script.
+        if (cause != "launch-failed") termination.Verified();
         if (cause == "exited") termination.Exited();
         else termination.Stop(cause);
         termination.Exited();
         Assert.AreEqual(expected, termination.Status(0, outputLimitExceeded: true));
     }
 
+    /// <summary>
+    /// Before the kernel reports this launch's budgets, no policy has been written and no script has run, so an exit
+    /// belongs to the launcher, whatever its code and output (#1768 S-L3, S-L5).
+    /// </summary>
+    [TestMethod]
+    [DataRow(0)]
+    [DataRow(1)]
+    [DataRow(125)]
+    public void AnExitBeforeBudgetVerificationIsALaunchFailure(int exitCode)
+    {
+        var termination = new CustomScriptTermination(static () => true, static () => Assert.Fail("An exited launcher is not killed."));
+        // The verification loop observes the exit and requests a launch failure.
+        termination.Stop("launch-failed");
+        termination.Exited();
+        Assert.AreEqual("launch-failed", termination.Status(exitCode));
+        Assert.AreEqual("launch-failed", termination.Status(exitCode, outputLimitExceeded: true));
+    }
+
+    [TestMethod]
+    [DataRow(0, "completed")]
+    [DataRow(17, "process-failed")]
+    public void AnExitAfterBudgetVerificationFollowsTheExitCode(int exitCode, string expected)
+    {
+        var termination = new CustomScriptTermination(static () => true, static () => Assert.Fail("An exited script is not killed."));
+        termination.Verified();
+        termination.Exited();
+        Assert.AreEqual(expected, termination.Status(exitCode));
+    }
+
+    [TestMethod]
+    [DataRow(false, "launch-failed")]
+    [DataRow(true, "process-failed")]
+    public async Task SettlementStopsAnUndecidedLiveTreeUnderItsPhaseLabel(bool verified, string expected)
+    {
+        var exited = false;
+        var kills = 0;
+        var termination = new CustomScriptTermination(() => exited, () => { kills++; exited = true; });
+        if (verified) termination.Verified();
+        await termination.SettleAsync().ConfigureAwait(false);
+        termination.Exited();
+        Assert.AreEqual(1, kills);
+        Assert.AreEqual(expected, termination.Status(137));
+    }
 }
