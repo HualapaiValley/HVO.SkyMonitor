@@ -15,6 +15,23 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class AutomationScriptControlsTests
 {
     [TestMethod]
+    [DataRow("script.sandbox-tools-required", "Custom scripts require sandbox tools that are not installed on this host.")]
+    [DataRow("script.disabled", "Custom scripts are disabled in this CameraAgent's startup configuration.")]
+    public void UnavailableScriptBannerUsesAnOperatorSentence(string code, string sentence)
+    {
+        var state = LocalAutomationOperatorState.Empty with
+        {
+            Registry = [new(LocalAutomationTaskKind.CustomScript, "Script", [LocalAutomationTriggerKind.Periodic], [], false, code)]
+        };
+        using var context = Context(new AutomationsPageTests.AutomationUiService(state));
+        var cut = context.Render<AutomationsPage>();
+        cut.WaitForElement("#automation-create[disabled]");
+        Assert.AreEqual(sentence, cut.Find("#automation-create-reason").TextContent.Trim());
+        Assert.Contains("No automation task is available.", cut.Markup, StringComparison.Ordinal);
+        Assert.DoesNotContain(code, cut.Markup, StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
     public async Task PageDefinitionConfirmationExplainsPendingWithdrawal(bool disable)
@@ -165,11 +182,15 @@ public sealed class AutomationScriptControlsTests
         await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
         await fixture.Store.SaveAsync(ScriptControlsFixture.Save(), default).ConfigureAwait(false);
         fixture.Stub.Available = false;
+        fixture.Stub.UnavailableReason = "script.sandbox-tools-required";
         using var context = Context(fixture.Service);
         var cut = context.Render<AutomationsPage>();
         cut.WaitForElement("#automation-edit-script");
         Assert.IsTrue(cut.Find("[data-script-action=run-now]").HasAttribute("disabled"));
-        Assert.Contains("Unavailable", cut.Find("#automation-definition-script").TextContent, StringComparison.Ordinal);
+        var card = cut.Find("#automation-definition-script").TextContent;
+        Assert.Contains("Unavailable", card, StringComparison.Ordinal);
+        Assert.Contains("Custom scripts require sandbox tools that are not installed on this host.", card, StringComparison.Ordinal);
+        Assert.DoesNotContain("script.sandbox-tools-required", card, StringComparison.Ordinal);
         await cut.Find("#automation-create").ClickAsync(new()).ConfigureAwait(false);
         Assert.IsFalse(cut.FindAll("#automation-task option").Any(item => item.GetAttribute("value") == "CustomScript"));
         Assert.IsEmpty(cut.FindAll("#automation-script-step"));

@@ -2701,7 +2701,7 @@ operation and are not deleted automatically.
 **Processing manifest ledgers (Refs #1766).** Processing schema 8 upgrades atomically to
 schema 9 at startup. Optional input/output counts move out of the frozen-plan BLOB
 into a bounded scalar table, preserving primary plan bytes and retained run evidence.
-The raw journal stays at schema 15. The image's `minimum-compatible-revision` boundary advances to the schema-9
+That change left the raw journal at schema 15 (the later schema-16 change has its own raw-ingress labels). The image's `minimum-compatible-revision` boundary advances to the schema-9
 implementation, so an upgrade from the preceding image selects the existing paired
 SQLite checkpoint before candidate startup. The named state contract remains
 `cameraagent-state-v2`. An interrupted migration can retry
@@ -2979,9 +2979,13 @@ procedure; never delete the ledger/evidence to force adoption. An agent that
 predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
-The integrated reader boundary is
-`4293871b7c4cf38ce0e0e4ea969aa9a6de057eea` (the combined row-MAC/environmental-schema and processing-ledger reader), declared by the image's
-`minimum-compatible-revision`. Updated agents and installers read both legacy
+The image's combined row-MAC, environmental-schema, processing-ledger and local-automation-schema reader boundary is
+`bc5ca7489c4090c299c416309519ab72da4a8cdb`, declared by the image's
+`minimum-compatible-revision`. This advances beyond the processing-only boundary
+`4293871b7c4cf38ce0e0e4ea969aa9a6de057eea` in development/v1 `38320d3a` so that
+upgrading from that automation-schema-3 reader still takes a paired pre-upgrade
+checkpoint before automation schema 4 is opened. Processing schema 9 and its
+checkpoint/rollback contract remain in force. Updated agents and installers read both legacy
 Data Protection row proofs and new MAC proofs. The per-ledger random MAC secret
 is protected in metadata; nonce/key/digest/kind/generation and the authenticated
 set commitment remain bound. A full background scrub rewrites legacy rows in

@@ -13,6 +13,8 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
@@ -311,10 +313,16 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         foreach (bool? valid in new bool?[] { null, false })
         {
             var store = new RecordingStore();
-            using var app = CreateApp(store);
+            var logs = new RejectionLogs();
+            using var app = CreateApp(store, logs);
             var response = await PostAsync(app, name, payload, routeValues: new Dictionary<string, object?>
             { ["definitionId"] = "script" }, antiforgeryValid: valid).ConfigureAwait(false);
             Assert.AreEqual(400, response.Status, $"{name}, feature valid = {valid}");
+            using var problem = System.Text.Json.JsonDocument.Parse(response.Body);
+            Assert.AreEqual("automation.antiforgery-invalid", problem.RootElement.GetProperty("reasonCode").GetString());
+            var rejection = logs.Messages.Single(message => message.Id == 7431);
+            Assert.AreEqual("CameraAgent automation command rejected: automation.antiforgery-invalid.", rejection.Text);
+            Assert.DoesNotContain("registered.digest", rejection.Text, StringComparison.Ordinal);
             Assert.IsEmpty(store.SaveRequests);
             Assert.IsEmpty(store.RemoveRequests);
             Assert.IsEmpty(store.BackfillRequests);
@@ -322,9 +330,10 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         }
     }
 
-    private static WebApplication CreateApp(ILocalAutomationStore store)
+    private static WebApplication CreateApp(ILocalAutomationStore store, ILoggerProvider? logs = null)
     {
         var builder = WebApplication.CreateBuilder();
+        if (logs is not null) builder.Logging.AddProvider(logs);
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton<LocalAutomationOffSweepWorker>();
         builder.Services.AddSingleton<LocalAutomationScriptCommands>();
@@ -408,6 +417,20 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         context.Response.Body = body;
         await endpoint.RequestDelegate!(context).ConfigureAwait(false);
         return (context.Response.StatusCode, Encoding.UTF8.GetString(body.ToArray()));
+    }
+
+    private sealed class RejectionLogs : ILoggerProvider
+    {
+        internal ConcurrentQueue<(int Id, string Text)> Messages { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new Recorder(Messages);
+        public void Dispose() { }
+        private sealed class Recorder(ConcurrentQueue<(int Id, string Text)> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => messages.Enqueue((eventId.Id, formatter(state, exception)));
+        }
     }
 
     private sealed class AntiforgeryFeature(bool valid) : IAntiforgeryValidationFeature

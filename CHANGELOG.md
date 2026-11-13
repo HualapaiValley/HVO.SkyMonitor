@@ -16,6 +16,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. A distinct reader boundary requires a paired pre-upgrade checkpoint even from processing-schema-9 images that still use automation schema 3; rollback restores that checkpoint for the previous reader. Refs #1768
+
+- CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
+
 - Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Qualified one-second retained results keep their identities across restart, replay and viewer reads; on upgraded development prereleases, all historical accepted (mapped) retained astrometry products above one second that carry uncertainty, including products that already withheld covariance for another reason, become `Unavailable / retained-evidence-invalid-or-unavailable` with no mapping or calculators, and replay and restore fail closed. Refs #1179
 
 - CameraAgent development lifecycle workers detect interrupted rollback publication explicitly, pick up later installs without restarting, and retain recovery progress across probe transport failures with distinct diagnostics. Refs #1818
@@ -88,6 +92,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Security
 
+- CameraAgent enforces antiforgery validation on session automation save, removal, backfill and retry commands, and reports rejected tokens with a safe reason code and diagnostic log. Refs #1768
+
 - Move the CameraAgent and LogicHost runtime images to ASP.NET Core 10.0.14, a security release addressing CVE-2026-111497, CVE-2026-70197, CVE-2026-102870 and CVE-2026-114148. SDK 10.0.402 and its bundled .NET runtime remain at 10.0.13. #1667
 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
@@ -100,7 +106,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
 
-- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
+- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Installed hosts need sandbox prerequisites that the installer and runtime images do not yet provision. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
 - Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
 - CameraAgent can generate immutable daily summaries of sunrise-to-sunrise captures, with representative previews, sampled coverage, exclusions and product lineage in Products, Calendar and Observing Day. Opening an existing nightly catalog upgrades schema 2 to 3 in place; installer upgrades checkpoint it for paired rollback. #1713
 - Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386

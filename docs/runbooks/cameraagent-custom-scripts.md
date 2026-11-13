@@ -63,7 +63,9 @@ text or a host path. Registrations are snapshotted at startup; changing any
 covered field creates a new target. Old definitions/occurrences are unavailable
 until deliberately revised, rather than reinterpreted. Definition revision and
 occurrence/run hashes retain that identity through the existing journal. The
-SQLite schema and hashing of existing task kinds are unchanged. Older binaries
+hashing of existing task kinds is unchanged. The local automation store migrates
+schema 3 to 4 for script-stop attribution; adoption checkpoints the paired state,
+and rollback restores that checkpoint for the previous reader. Older binaries
 cannot read the appended enum value in retained revisions: downgrade after use
 is unsupported, even if the current definition is removed.
 
@@ -94,6 +96,13 @@ labels, numeric exit/count metadata, and **Stop this run** for queued or running
 Stop names the exact retained run and definition revision, including after the
 definition is edited or removed, and acknowledges queued withdrawal only after durable settlement as `Skipped`, with no start
 time or invented process result. For a claimed run it waits for process/result drain.
+The first accepted stop request records its authenticated actor, exact run/revision,
+request time and fixed cause `operator-stop-requested` in the retained SQLite
+`automation_script_stops` audit. Concurrent requests and retries preserve that first
+record, including after reopening. This is request attribution, not a claim that
+cancellation beat natural completion; terminal process evidence remains independent.
+Audit rows expire with their retained runs. Schema 3 upgrades atomically to schema 4
+by adding this audit; earlier binaries cannot read schema 4.
 It does not disable the schedule, affect built-in tasks, or undo prior effects.
 Disabling or editing a definition withdraws all its queued attempts as `Skipped` in
 the same durable transition. Re-enabling never revives them. Removal retains the
@@ -196,7 +205,9 @@ no capture/object-store/publication authority. Future publication requires its
 own confinement, validation, identity and authorization design.
 
 Runtime is 1–300 seconds (30 default). Combined stdout/stderr production is
-limited to 256 bytes–1 MiB (64 KiB default); crossing it terminates execution.
+controlled by a termination threshold of 256 bytes–1 MiB (64 KiB default), not a
+byte cap. Crossing it requests process-tree termination. Reads and tree/pipe drain
+continue, so recorded byte counts can exceed the threshold; they are not capped.
 Two fixed 4 KiB buffers drain/discard the streams. Raw output retention is
 **zero bytes**, including launch failures, so diagnostic output cannot become
 operator history/log text. Only fixed outcome labels, exit code and byte counts
@@ -226,20 +237,35 @@ The worker retains execution authority through cancellation and actual drain.
 Admission rotates after the last dispatched off-sweep definition. Even when scripts
 are due on every poll (including runtime/interval/poll mismatches), later reserved
 refresh tasks progress after capacity returns; a lexical-first script cannot
-monopolize every new slot. Other tasks and acquisition keep their failure boundaries.
+monopolize every new slot. Other tasks and acquisition keep their failure boundaries. A compiled architecture
+gate rejects capture/acquisition, raw-ingress, scheduling and module dependencies
+from the script implementation and off-sweep worker, including nested/generated
+types. Together with bounded off-sweep execution and the runner's sweep-isolation
+tests, this pins isolation from acquisition without a hardware timing claim.
 
 The journal records definition revision/target digest, occurrence/run identity,
 scheduled/start/end instants and terminal outcome. Detail contains
 `script.completed`, `script.timeout`, `script.output-limit` or
 `script.launch-failed`, `script.isolation-unavailable` or `script.cancelled`, exit
 status and stdout/stderr counts. `script.process-failed` identifies a nonzero script or
-post-launch setup exit without pretending the script completed successfully; raw diagnostic output remains deliberately discarded. Nonzero exit,
+post-launch setup exit without pretending the script completed successfully; raw diagnostic output remains deliberately discarded.
+A combined byte count above `OutputBytes` is `script.output-limit` even if the
+process exits naturally before drain observes the excess. A live cancellation or
+timeout latched first keeps its own cause. Nonzero exit,
 timeout, capacity/launch failure and output excess are failures. Host shutdown
 cancellation kills the process tree, waits for process exit and pipe drain,
 then records an `Interrupted` terminal result with the real exit code, stream
 counts and injected-clock completion time. The runner retains execution authority
 through a five-second cancellation-independent journal write before propagating
-cancellation. A delayed restart preserves that result. Abrupt host death still
+cancellation. This fixed grace period limits cooperative journal cancellation after
+the process has drained; it is not a script runtime allowance or a hard storage
+wall-clock deadline. SQLite's separate busy timeout also applies, and a synchronous
+busy wait can defer observation of cancellation. Extending the grace period cannot
+make unavailable storage durable. If the write fails or exceeds the grace period, the
+claimed row remains for restart reconciliation as `Interrupted`; the exact drained
+exit/count metadata may be unavailable. Operators must restore writable storage
+and restart before relying on further execution. The bound is intentionally not
+operator-configurable, to keep shutdown behavior predictable. A delayed restart preserves that result. Abrupt host death still
 uses the existing restart reconciliation when no orderly result is available.
 If an already claimed script is cancelled before launch, the runner durably
 records `script.cancelled-before-start`, no exit code, zero stream counts and the

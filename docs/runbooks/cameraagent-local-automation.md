@@ -83,18 +83,25 @@ definable here.
 `<raw-ingress-root>/.automation/local-automations.db`, a dedicated SQLite database
 with WAL journaling, `synchronous = FULL`, and `PRAGMA user_version` pinned to the
 contract's schema version. The drift guard counts schema objects, which cannot see a
-column change, so any column change bumps the schema version (currently 3) and a database written by
-an earlier build is refused rather than opened. Startup verifies the version, the exact schema object
-count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt
-database rather than migrating it. Every open re-asserts that write-ahead logging is
-actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
+column change, so any column change bumps the schema version (currently 4). Startup atomically
+migrates the supported schema-3 predecessor by adding the retained script-stop audit table;
+other older schemas are refused. Startup verifies the version, the exact schema object
+count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
+The image declares writes 4 and reads 3 to 4. Its distinct combined-reader boundary
+`bc5ca7489c4090c299c416309519ab72da4a8cdb` advances beyond the processing-only boundary
+in development/v1 `38320d3a`; adoption from that schema-3 automation reader also requires
+a paired checkpoint before startup. Rollback restores that checkpoint, including schema 3,
+for the previous reader.
+Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.
 
 The store is a separate file on purpose. The raw ingress journal pins its own exact
 schema version and object count and refuses a database it does not recognize, so
 adding automation tables there would make an installer rollback to a baseline image
 fail to start. A baseline image never opens this file; a rollback leaves it in place
-and a roll-forward finds the same definitions and run history.
+and a roll-forward finds the same definitions and run history. A previous binary that
+already reads this database but cannot read schema 4 requires the paired pre-upgrade
+checkpoint, including the database and its matching protected state.
 
 Tables:
 
@@ -102,6 +109,7 @@ Tables:
 - `automation_definition_revisions` — every recorded revision, including the removal.
 - `automation_commands` — the idempotency ledger.
 - `automation_runs` — the run-history journal.
+- `automation_script_stops` — the first accepted script-stop actor, run/revision, time and cause; retained with its run.
 - `automation_progress` — the last fired occurrence and the last observed capture sequence.
 
 ## Concurrency, Idempotency, And Retention

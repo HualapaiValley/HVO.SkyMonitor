@@ -104,21 +104,34 @@ public sealed partial class SqliteLocalAutomationStore
                     status = LocalAutomationCommandStatus.Conflict;
                     reason = LocalAutomationContract.ExpectedVersionConflictReasonCode;
                 }
-                else if (run.Outcome == LocalAutomationRunOutcome.Running)
+                else if (run.Outcome is LocalAutomationRunOutcome.Running or LocalAutomationRunOutcome.Queued)
                 {
-                    status = LocalAutomationCommandStatus.Conflict;
-                    reason = LocalAutomationScriptCommands.StopUnavailableReason;
-                }
-                else if (run.Outcome == LocalAutomationRunOutcome.Queued)
-                {
+                    // Persist request attribution before cancellation/withdrawal. One row per exact
+                    // attempt makes concurrent stops and terminal replays preserve the first actor.
                     await ExecuteAsync(connection, transaction, """
-                        UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now,
-                            detail = 'The owner stopped this prepared script occurrence before it started.'
-                        WHERE definition_id = $id AND run_key = $key AND outcome = 'Queued';
-                        """, cancellationToken, ("$now", ToUnixMilliseconds(Now())),
-                        ("$id", request.DefinitionId), ("$key", request.RunKey)).ConfigureAwait(false);
-                    status = LocalAutomationCommandStatus.Applied;
-                    reason = null;
+                        INSERT INTO automation_script_stops(run_key, revision_sha256, definition_version,
+                            actor, cause, requested_unix_ms)
+                        VALUES ($key, $revision, $version, $actor, 'operator-stop-requested', $now)
+                        ON CONFLICT(run_key) DO NOTHING;
+                        """, cancellationToken, ("$key", run.RunKey), ("$revision", run.RevisionSha256),
+                        ("$version", occurrence.DefinitionVersion), ("$actor", request.Actor),
+                        ("$now", ToUnixMilliseconds(Now()))).ConfigureAwait(false);
+                    if (run.Outcome == LocalAutomationRunOutcome.Running)
+                    {
+                        status = LocalAutomationCommandStatus.Conflict;
+                        reason = LocalAutomationScriptCommands.StopUnavailableReason;
+                    }
+                    else
+                    {
+                        await ExecuteAsync(connection, transaction, """
+                            UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now,
+                                detail = 'The owner stopped this prepared script occurrence before it started.'
+                            WHERE definition_id = $id AND run_key = $key AND outcome = 'Queued';
+                            """, cancellationToken, ("$now", ToUnixMilliseconds(Now())),
+                            ("$id", request.DefinitionId), ("$key", request.RunKey)).ConfigureAwait(false);
+                        status = LocalAutomationCommandStatus.Applied;
+                        reason = null;
+                    }
                 }
                 else
                 {

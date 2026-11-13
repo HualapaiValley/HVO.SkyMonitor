@@ -146,6 +146,24 @@ public sealed partial class CustomScriptSandboxIntegrationTests
     }
 
     [TestMethod]
+    public async Task BurstOutputThenNaturalSuccessIsAlwaysAnOutputLimitFailure()
+    {
+        var script = CustomScriptTaskAdapterTests.Script("""
+            block=xxxxxxxxxxxxxxxx
+            while [ "${#block}" -lt 4096 ]; do block=$block$block; done
+            printf '%s' "$block"
+            exit 0
+            """);
+        script.OutputBytes = 256;
+        for (var attempt = 0; attempt < 40; attempt++)
+        {
+            var result = await LinuxCustomScriptSandbox.ExecuteAsync(script, default).ConfigureAwait(false);
+            Assert.IsGreaterThan((long)script.OutputBytes, result.StdoutBytes + result.StderrBytes, $"Attempt {attempt}");
+            Assert.AreEqual("output-limit", result.Status, $"A finite burst cannot become success during drain; attempt {attempt}, exit {result.ExitCode}.");
+        }
+    }
+
+    [TestMethod]
     public async Task ScratchCapacityIsSharedAcrossFilesAndNothingIsPublished()
     {
         var script = CustomScriptTaskAdapterTests.Script("""
@@ -230,7 +248,7 @@ public sealed partial class CustomScriptSandboxIntegrationTests
         Directory.CreateDirectory(root);
         var clock = new MutableTimeProvider(DateTimeOffset.Parse("2026-11-08T10:00:00Z", System.Globalization.CultureInfo.InvariantCulture));
         var script = CustomScriptTaskAdapterTests.Script("printf 'do-not-record'; exit 17");
-        var adapter = CustomScriptTaskAdapterTests.Adapter(script);
+        var adapter = new CountingScriptAdapter(CustomScriptTaskAdapterTests.Adapter(script));
         using var registry = new PeriodicRegistryHarness(clock, [adapter]);
         var captures = new StubCaptureSequenceSource();
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root });
@@ -254,6 +272,7 @@ public sealed partial class CustomScriptSandboxIntegrationTests
                 await worker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
                 var run = (await store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
                 Assert.AreEqual(LocalAutomationRunOutcome.Failed, run.Outcome);
+                Assert.AreEqual(1, adapter.Executions);
                 Assert.IsNotNull(run.StartedAtUtc);
                 Assert.IsNotNull(run.CompletedAtUtc);
                 Assert.IsTrue(run.Occurrence!.IsValid());
@@ -266,12 +285,20 @@ public sealed partial class CustomScriptSandboxIntegrationTests
                     .ConfigureAwait(false));
             }
             using var restarted = NewStore();
+            using var restartedWorker = new LocalAutomationOffSweepWorker();
+            using var restartedRunner = new LocalAutomationRunnerService(restarted, registry.Registry, captures, options, clock,
+                NullLogger<LocalAutomationRunnerService>.Instance, offSweepWorker: restartedWorker);
             await restarted.InitializeAsync(default).ConfigureAwait(false);
             var runs = (await restarted.GetStateAsync(default).ConfigureAwait(false)).Runs;
             var retained = runs.Single(run => run.RunKey == runKey);
             Assert.AreEqual(runKey, retained.RunKey);
             Assert.AreEqual(LocalAutomationRunOutcome.Failed, retained.Outcome);
             Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, runs.Single(run => run.RunKey == "script-interrupted").Outcome);
+            await restartedRunner.SweepAsync(default).ConfigureAwait(false);
+            await restartedWorker.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+            Assert.AreEqual(1, adapter.Executions, "A post-restart sweep must not invoke the script adapter again.");
+            CollectionAssert.AreEqual(runs.ToArray(), (await restarted.GetStateAsync(default).ConfigureAwait(false)).Runs.ToArray(),
+                "A post-restart sweep cannot replay the failed or reconciled script occurrence.");
         }
         finally
         {
@@ -281,7 +308,7 @@ public sealed partial class CustomScriptSandboxIntegrationTests
     }
 
     [TestMethod]
-    public async Task AbruptLauncherDeathCannotLeaveAnExecutingChild()
+    public async Task LauncherDeathDrainsItsRedirectedPipes()
     {
         var script = CustomScriptTaskAdapterTests.Script("printf 'ready\\n'; exec sleep 199.1137");
         using var process = new Process { StartInfo = LinuxCustomScriptSandbox.BuildStartInfo(script) };
@@ -581,6 +608,22 @@ public sealed partial class CustomScriptSandboxIntegrationTests
         {
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, true);
+        }
+    }
+
+    private sealed class CountingScriptAdapter(CustomScriptTaskAdapter inner) : ILocalAutomationPeriodicTaskAdapter
+    {
+        private int _executions;
+        internal int Executions => Volatile.Read(ref _executions);
+        public LocalAutomationTaskKind TaskKind => inner.TaskKind;
+        public bool SupportsRunNow => inner.SupportsRunNow;
+        public bool RunsOffSweep => inner.RunsOffSweep;
+        public LocalAutomationTaskDescriptor Describe() => inner.Describe();
+        public LocalAutomationRegistryRejection? Validate(LocalAutomationDefinition definition) => inner.Validate(definition);
+        public ValueTask<LocalAutomationExecution> ExecuteAsync(LocalAutomationOccurrence occurrence, CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref _executions);
+            return inner.ExecuteAsync(occurrence, cancellationToken);
         }
     }
 

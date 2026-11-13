@@ -189,7 +189,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         => Descriptor(_taskKindInput)?.SupportedSourceWindows ?? [];
 
     private string RegistryUnavailableReason => _automation?.Registry
-        .Select(static descriptor => descriptor.UnavailableReason)
+        .Select(OperatorUnavailableReason)
         .FirstOrDefault(static reason => !string.IsNullOrWhiteSpace(reason))
         ?? "No registered automation task is available on this CameraAgent.";
 
@@ -926,7 +926,7 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
         if (descriptor is not { Available: true } || !Targets().Contains(_targetInput!.Trim(), StringComparer.Ordinal) ||
             !CompatibleTriggers().Contains(_triggerKindInput))
         {
-            SetCommandMessage(descriptor?.UnavailableReason ?? "Select an available registered task, target and trigger.", error: true);
+            SetCommandMessage(OperatorUnavailableReason(descriptor) ?? "Select an available registered task, target and trigger.", error: true);
             return false;
         }
         return TryParseInterval(out _);
@@ -1063,12 +1063,28 @@ public sealed partial class AutomationsPage : ComponentBase, IAsyncDisposable
     private LocalAutomationTaskDescriptor? Descriptor(LocalAutomationTaskKind kind)
         => _automation?.Registry.FirstOrDefault(descriptor => descriptor.TaskKind == kind);
 
+    private static string? OperatorUnavailableReason(LocalAutomationTaskDescriptor? descriptor)
+        => descriptor is { TaskKind: LocalAutomationTaskKind.CustomScript, Available: false }
+            ? ScriptUnavailableSentence(descriptor.UnavailableReason)
+            : descriptor?.UnavailableReason;
+
+    private static string ScriptUnavailableSentence(string? reason) => reason switch
+    {
+        "script.disabled" => "Custom scripts are disabled in this CameraAgent's startup configuration.",
+        "script.owner-authorization-required" => "The host owner must authorize custom scripts in startup configuration.",
+        "script.binding-invalid" or "script.registration-invalid" or "script.registration-duplicate" =>
+            "The custom script registrations are invalid. Ask the host owner to review startup configuration.",
+        "script.sandbox-tools-required" => "Custom scripts require sandbox tools that are not installed on this host.",
+        "script.sandbox-architecture-unqualified" => "Custom scripts are unavailable on this host architecture.",
+        _ => "The custom script sandbox is unavailable. Ask the host owner to check its prerequisites and availability diagnostics."
+    };
+
     private string? DefinitionUnavailableReason(LocalAutomationDefinition definition)
     {
         var descriptor = Descriptor(definition.TaskKind);
         if (descriptor is not { Available: true })
         {
-            return descriptor?.UnavailableReason ?? "This task is not registered on this CameraAgent.";
+            return OperatorUnavailableReason(descriptor) ?? "This task is not registered on this CameraAgent.";
         }
         if (!descriptor.Targets.Contains(definition.TaskTarget, StringComparer.Ordinal))
         {
