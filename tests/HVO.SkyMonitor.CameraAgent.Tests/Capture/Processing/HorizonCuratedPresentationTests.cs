@@ -21,6 +21,70 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class HorizonCuratedPresentationTests
 {
     [TestMethod]
+    public async Task IndependentDeepSkyLayerKeepsStarPayloadAndArchivedGeometrySeparate()
+    {
+        var fixture = await FixtureAsync("clear").ConfigureAwait(false);
+        using var services = Services(fixture);
+        string? starIdentity = null;
+        string? deepSkyIdentity = null;
+        foreach (var replay in new[] { false, true })
+        {
+            var context = Context(fixture, replay);
+            var step = new ScenePresentationLayerCaptureProcessingStep(new("layer", "ScenePresentationLayer", 1),
+                new() { IncludeDeepSkyLayer = true, DeepSkyLabels = false, DeepSkyOutlines = false }, services);
+            Assert.HasCount(5, step.Outputs);
+            await step.ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+            var products = context.ProcessingOutcomes.SelectMany(static outcome => outcome.Products).ToArray();
+            var stars = products.Single(static product => product.Variant == "scene-annotation-layer-v1");
+            var deepSky = products.Single(static product => product.Variant == "scene-deep-sky-v1");
+            var starPayload = PresentationLayerPayloadJson.Parse(stars.Payload).Payload!;
+            var payload = PresentationLayerPayloadJson.Parse(deepSky.Payload).Payload!;
+            Assert.IsFalse(starPayload.TextBlocks.SelectMany(static block => block.Lines).Contains(PresentationDeepSkyLayerProducer.Legend));
+            Assert.IsTrue(payload.TextBlocks.SelectMany(static block => block.Lines).Contains(PresentationDeepSkyLayerProducer.Legend));
+            Assert.HasCount(1, payload.TextBlocks, "Labels are disabled, while the scientific explanation remains.");
+            Assert.AreEqual(fixture.Scene.SceneIdentitySha256, payload.SourceIdentitySha256);
+            if (starIdentity is not null) Assert.AreEqual(starIdentity, stars.OutputIdentitySha256);
+            if (deepSkyIdentity is not null) Assert.AreEqual(deepSkyIdentity, deepSky.OutputIdentitySha256);
+            starIdentity = stars.OutputIdentitySha256;
+            deepSkyIdentity = deepSky.OutputIdentitySha256;
+            Assert.IsTrue(context.Artifacts!.Raw.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
+
+            var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context,
+                context.GetDependencyProducts().Single(static product => ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion)));
+            context.BeginNode("environment", []);
+            LayeredPresentationCaptureProcessing.Add(context, PresentationProcessingProducts.CreateLayerProduct(
+                PresentationLayerPayloadJson.Create(fixture.Scene.SceneIdentitySha256, 484, 304), "environment-layer-v1", [source], "fixture-v1"));
+            context.BeginNode("manifest", ["preview", "presentation", "environment"]);
+            var manifestOptions = ProcessingNodeOptionsCodec.Encode(OverlayManifestOptionDescriptors.Descriptor,
+                JsonSerializer.SerializeToElement(new { basePreviewVariant = "preview-v1" }),
+                new Dictionary<string, ProcessingOptionValue> { ["includeDeepSkyLayer"] = ProcessingOptionValue.FromToggle(true) });
+            Assert.IsTrue(manifestOptions.IsValid, "The typed manifest editor must expose deep-sky retention.");
+            await new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 2),
+                manifestOptions.Options!.Value.Deserialize<OverlayManifestProcessingStepOptions>(JsonSerializerOptions.Web)!)
+                .ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+            var manifest = LayeredPresentationJson.ParseManifest(context.ProcessingProducts[^1].Payload).Document!;
+            Assert.HasCount(6, manifest.Layers);
+            Assert.AreEqual(CaptureProcessingContext.CreateArtifactId(deepSky.OutputIdentitySha256),
+                manifest.Layers.Single(static layer => layer.LayerKind == "scene-deep-sky").SourceProduct.ArtifactId);
+            foreach (var visible in new[] { true, false })
+            {
+                context.BeginNode(visible ? "visible" : "hidden", ["preview", "manifest", "presentation", "environment"]);
+                await new PresentationMaterializerCaptureProcessingStep(new("materializer", "PresentationMaterializer", 3),
+                    new()
+                    {
+                        BasePreviewVariant = "preview-v1",
+                        OutputVariant = visible ? "deep-visible" : "deep-hidden",
+                        EnabledLayerKinds = [visible ? "scene-deep-sky" : "environment"]
+                    })
+                    .ProcessAsync(context, CancellationToken.None).ConfigureAwait(false);
+                Assert.AreEqual(visible, context.ProcessingProducts[^1].Payload.Span.IndexOfAnyExcept((byte)0) >= 0,
+                    "The retained manifest and real compositor must support the independent deep-sky selection.");
+            }
+            Assert.IsTrue(context.Artifacts.Raw.Frame.PixelData.Span.IndexOfAnyExcept((byte)0) < 0);
+        }
+    }
+
+    [TestMethod]
     [DataRow("ScenePresentationLayer", "blocked")]
     [DataRow("ScenePresentationLayer", "unknown")]
     [DataRow("ScenePresentationLayer", "incompatible")]

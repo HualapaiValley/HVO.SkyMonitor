@@ -104,7 +104,7 @@ Every release carries assets with these names and kinds:
 | `hvo-<product>-<rid>` | `cli` | The runtime client, when the product has one |
 | `install.sh` | `install-script` | The entry point, with the release version baked in |
 | `<image>-<version>-linux-<arch>.oci.tar` | `image-archive` | An offline image archive per architecture |
-| `<catalog version>.bundle.tar.gz` | `catalog` | A data package the release is tested with, under its own version (section 1): SkyMonitor's approved star catalog, today `hyg-v4.2-p3-s2-r1.bundle.tar.gz` |
+| `<catalog version>.bundle.tar.gz` | `catalog` | An independently versioned data package (section 1): the default HYG 4.2 star bundle and `openngc-v20260501-p6-s5-r1.bundle.tar.gz` for deep-sky objects. HYG 4.4 remains held for separate approval. Star and deep-sky selections use independent catalog lifecycle commands |
 | `THIRD-PARTY-NOTICES.md` | `notices` | The third-party notices of what the release ships, the installer's bundled packages among them (SkyMonitor, #1317) |
 | `release.json` | | The machine-readable release manifest |
 | `SHA256SUMS` | | Covers every asset |

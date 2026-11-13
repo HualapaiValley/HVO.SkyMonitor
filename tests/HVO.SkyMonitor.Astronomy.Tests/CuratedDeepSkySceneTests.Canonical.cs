@@ -154,7 +154,7 @@ public sealed partial class CuratedDeepSkySceneTests
                 return;
             }
             Assert.AreEqual(JsonTypeInfoKind.Object, info.Kind, type.FullName);
-            Assert.AreEqual(typeof(ProjectedSceneV1).Assembly, type.Assembly, type.FullName);
+            Assert.IsTrue(type.Assembly == typeof(ProjectedSceneV1).Assembly || type == typeof(CatalogSnapshotIdentity), type.FullName);
             Assert.IsTrue(type.IsSealed || type.IsValueType, type.FullName);
             foreach (var property in info.Properties.Where(static property => property.Get is not null)) Visit(property.PropertyType);
         }

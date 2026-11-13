@@ -42,7 +42,8 @@ internal sealed record InstallationVerificationExpectation(
     string DeploymentLocationSha256,
     HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile ReplayProfile,
     HVO.SkyMonitor.Deployment.Contracts.CatalogInstallationIdentity Catalog,
-    bool AllowCompletedPasswordReplacement = false);
+    bool AllowCompletedPasswordReplacement = false,
+    CatalogInstallationIdentity? DeepSkyCatalog = null);
 
 internal sealed class OwnerBootstrapClient(
     Uri baseAddress,
@@ -168,6 +169,14 @@ internal sealed class OwnerBootstrapClient(
                       Lower(value, "databaseSha256") == expectation.Catalog.DatabaseSha256 &&
                       value.GetProperty("databaseLength").GetInt64() == expectation.Catalog.DatabaseLength &&
                       value.GetProperty("rowCount").GetInt64() == expectation.Catalog.RowCount;
+        var hasDeepSky = value.TryGetProperty("deepSkyCatalog", out var deepSky) && deepSky.ValueKind != JsonValueKind.Null;
+        matches &= expectation.DeepSkyCatalog is { } selectedDeepSky
+            ? hasDeepSky && deepSky.GetProperty("catalogId").GetString() == selectedDeepSky.CatalogId &&
+              deepSky.GetProperty("packageVersion").GetString() == selectedDeepSky.PackageVersion &&
+              deepSky.GetProperty("schemaVersion").GetString() == selectedDeepSky.SchemaVersion &&
+              deepSky.GetProperty("preprocessingVersion").GetString() == selectedDeepSky.PreprocessingVersion &&
+              Lower(deepSky, "databaseSha256") == selectedDeepSky.DatabaseSha256
+            : !hasDeepSky;
         if (!matches)
         {
             throw new InstallerException("CameraAgent reported installation identities that differ from the installer manifest.");

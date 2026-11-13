@@ -61,7 +61,28 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
         services.AddSingleton(static serviceProvider =>
             serviceProvider.GetRequiredService<CatalogSnapshotResult>().Catalog);
         services.AddSingleton<ICelestialCatalog>(static serviceProvider =>
-            serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
+        {
+            var stars = serviceProvider.GetRequiredService<SqliteCelestialCatalog>();
+            var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+            if (stars.Options.ExpectedSchemaVersion == "5")
+                throw new InvalidOperationException("The star selection cannot be a standalone deep-sky catalog.");
+            var enabled = configuration["DeepSkyCatalog:Enabled"];
+            if (enabled is not null && !bool.TryParse(enabled, out _))
+                throw new InvalidOperationException("DeepSkyCatalog:Enabled must be true or false.");
+            if (!string.Equals(enabled, "true", StringComparison.OrdinalIgnoreCase)) return stars;
+            var root = configuration["DeepSkyCatalog:Root"];
+            var id = configuration["DeepSkyCatalog:RequiredCatalogId"];
+            if (string.IsNullOrWhiteSpace(root) || string.IsNullOrWhiteSpace(id))
+                throw new InvalidOperationException("An enabled deep-sky catalog requires its own root and catalog ID.");
+            var snapshot = CatalogSnapshotResolver.Resolve(new(root, id)
+            {
+                ExpectedPackageKind = ParseRequiredPackageKind(configuration["DeepSkyCatalog:RequiredPackageKind"]),
+                ExpectedPackageVersion = configuration["DeepSkyCatalog:RequiredPackageVersion"]
+            });
+            if (snapshot.SchemaVersion != "5" || snapshot.Catalog.DeepSky is null || stars.Options.ExpectedSchemaVersion == "5")
+                throw new InvalidOperationException("Independent selection requires a star snapshot and a standalone deep-sky snapshot.");
+            return new InstalledCatalogPair(stars, snapshot);
+        });
         services.AddSingleton<IHipparcosCatalog>(static serviceProvider =>
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
         services.AddSingleton<IAstrometricCatalogSource>(static serviceProvider =>
@@ -71,7 +92,7 @@ public static partial class InstalledCelestialCatalogServiceCollectionExtensions
         services.AddSingleton<ICelestialCatalogDetailsSource>(static serviceProvider =>
             serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
         services.AddSingleton<IDeepSkyCatalogSource>(static serviceProvider =>
-            serviceProvider.GetRequiredService<SqliteCelestialCatalog>());
+            (IDeepSkyCatalogSource)serviceProvider.GetRequiredService<ICelestialCatalog>());
         services.AddSingleton<ICelestialObjectSearch>(static serviceProvider => new CelestialObjectSearch(
             serviceProvider.GetRequiredService<ICelestialCatalogDetailsSource>(),
             serviceProvider.GetRequiredService<IDeepSkyCatalogSource>()));

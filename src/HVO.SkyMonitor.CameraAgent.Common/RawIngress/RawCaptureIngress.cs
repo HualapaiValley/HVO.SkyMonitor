@@ -384,7 +384,7 @@ internal sealed partial class RawCaptureIngress :
         var paths = _files.GetPaths(RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, frame), ids.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
         var published = File.Exists(paths.SidecarAbsolutePath);
-        string? revisionId = null;
+        var revisionId = frame.Metadata.Scene?.CaptureGraphRevisionId;
         if (published)
         {
             var parsed = CaptureContractJson.ParseManifest(
@@ -395,6 +395,8 @@ internal sealed partial class RawCaptureIngress :
                 manifest.Descriptor.Capture.AgentId != configuration.AgentId ||
                 manifest.RelativeArtifactPath != paths.PayloadRelativePath)
                 throw new RawIngressConflictException("Existing immutable sidecar differs from the capture identity.");
+            if (revisionId is not null && revisionId != manifest.CaptureGraphRevisionId)
+                throw new RawIngressConflictException("Captured scene graph differs from the already published graph binding.");
             revisionId = manifest.CaptureGraphRevisionId;
         }
         var revision = await _graphOperations.SelectLiveRevisionAsync(

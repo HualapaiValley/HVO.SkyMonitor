@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
@@ -10,6 +11,44 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class ProcessingGraphOperationsTests
 {
+    [TestMethod]
+    public async Task OpenNgcQueryFollowsValidatedGraphActivationAndRollback()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-openngc-options");
+        try
+        {
+            using var provider = CreateProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var config = PhysicalQueryConfiguration();
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var source = new HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky.VirtualSkyGraphSelectionProvider(operations, enabled: true);
+            var original = await source.ReadAsync(config, CancellationToken.None).ConfigureAwait(false);
+            var edited = config.Pipeline with
+            {
+                Steps = [config.Pipeline.Steps[0] with
+                { Options = JsonSerializer.SerializeToElement(new { deepSkyEnabled = true, deepSkyNgc = false, deepSkyIc = false, deepSkyMaximumMagnitude = 8 }) }]
+            };
+            var draft = await operations.CreateRevisionAsync("deep sky", "2", edited, "create-deep", "test", null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(original!.RevisionId, (await source.ReadAsync(config, CancellationToken.None).ConfigureAwait(false))!.RevisionId);
+            await operations.ValidateRevisionAsync(draft.RevisionId, "validate-deep", "test", null, CancellationToken.None).ConfigureAwait(false);
+            var active = await operations.ActivateRevisionAsync(draft.RevisionId, initial.StateVersion, "activate-deep", "test", null, CancellationToken.None).ConfigureAwait(false);
+            var selected = await source.ReadAsync(config, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(draft.RevisionId, selected!.RevisionId);
+            Assert.IsTrue(selected.Pipeline.Steps[0].Options!.Value.GetProperty("deepSkyEnabled").GetBoolean());
+            var submission = CreateSubmission(0, CameraPixelFormat.Mono16, DateTimeOffset.UnixEpoch.AddDays(1));
+            var frame = submission.Result.Frame!;
+            var capturedScene = new SceneProvenance("scene", "rig", "HYG", "fixture", new string('a', 64), "Perspective", "p1", "a1", "s1",
+                CaptureGraphRevisionId: initial.ActiveRevisionId);
+            submission = submission with { Result = submission.Result with { Frame = frame with { Metadata = frame.Metadata with { Scene = capturedScene } } } };
+            var binding = await provider.GetRequiredService<IRawCaptureIngress>().PrepareGraphBindingAsync(config, submission, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(initial.ActiveRevisionId, binding!.Revision.State.RevisionId, "An exposure already rendered under a graph keeps that immutable revision after activation changes.");
+            await operations.RollbackRevisionAsync(initial.ActiveRevisionId, active.StateVersion, "rollback-deep", "test", null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(original.RevisionId, (await source.ReadAsync(config, CancellationToken.None).ConfigureAwait(false))!.RevisionId);
+        }
+        finally { DeletePhysicalQueryRoot(root); }
+    }
+
     [TestMethod]
     public void ProjectedSceneDescriptorMatchesRegisteredVersionAndRuntimeDefaultsWithoutChangingPlanIdentity()
     {

@@ -19,6 +19,9 @@ public sealed partial class LifecycleContractTests
         var previous = CameraAgentSnapshotRollbackExceptionTests.ReadSchemaThreeImageLabels();
         var candidate = CameraAgentSnapshotRollbackExceptionTests.ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        // Isolate the environmental checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in CameraAgentSnapshotRollbackExceptionTests.UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
         if (revertBoundary) candidate[boundary] = previous[boundary];
         if (alignRawBoundary)
         {

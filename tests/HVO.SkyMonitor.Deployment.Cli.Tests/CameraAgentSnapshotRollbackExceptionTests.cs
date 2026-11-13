@@ -19,6 +19,16 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
 {
     private const string Store = "raw/journal/raw-ingress.db";
     private const string RawIngressSchema = "io.hvo.skymonitor.raw-ingress-schema";
+    private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
+    private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
+
+    /// <summary>
+    /// The reader-capability labels a boundary test copies from the frozen release so that only the boundary under test
+    /// and the raw-ingress transition remain. The raw-ingress schema and migration labels stay at the candidate's values:
+    /// they are asserted to select checkpointing independently of the boundary under test.
+    /// </summary>
+    internal static IEnumerable<string> UnrelatedReaderCapabilityLabels => CameraAgentImageLabels.StateBoundaryLabels
+        .Where(static label => label is not (MinimumCompatibleRevision or RawIngressSchema or RawIngressMigration));
 
     [TestMethod]
     public void EveryDeclaredException_IsALabelChangeTheInstallerSnapshotsFor()
@@ -74,6 +84,9 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var previous = ReadSchemaThreeImageLabels();
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        // Isolate the environmental checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
         if (revertBoundary) candidate[boundary] = previous[boundary];
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-environment-boundary-" + Guid.NewGuid().ToString("N")),
             Guid.NewGuid(), "catalog");
@@ -119,6 +132,9 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         Assert.AreEqual("4293871b7c4cf38ce0e0e4ea969aa9a6de057eea", candidate[boundary]);
         Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
         CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
+        // Isolate the processing-ledger checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
         if (revertBoundary) candidate[boundary] = previous[boundary];
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-manifest-boundary-" + Guid.NewGuid().ToString("N")), Guid.NewGuid(), "catalog");
         var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(previous));

@@ -70,6 +70,7 @@ internal static class CameraAgentStateResetManager
             throw new InstallerException(
                 $"The reset must run as the installed runtime identity {manifest.RuntimeUid}:{manifest.RuntimeGid}.");
         }
+        EnsureDeepSkyDisabled(manifest);
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Uninstalled)
         {
             throw new InstallerException(
@@ -81,6 +82,9 @@ internal static class CameraAgentStateResetManager
             Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
         using var instanceLock = OperationLock.Acquire(
             Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+
+        // Recheck under the deployment locks before any state can be withdrawn or deleted.
+        EnsureDeepSkyDisabled(await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false));
 
         var docker = new DockerClient(processRunner);
         await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
@@ -179,6 +183,18 @@ internal static class CameraAgentStateResetManager
     private static string NextCommand(Guid instanceId) => string.Create(
         CultureInfo.InvariantCulture,
         $"{InstallerProgram.Current} cameraagent install --instance-id {instanceId:D} <same immutable inputs>");
+
+    private static void EnsureDeepSkyDisabled(InstanceManifest manifest)
+    {
+        if (manifest.DeepSkyCatalog is not null)
+        {
+            var restore = manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
+                ? $"First run '{InstallerProgram.Current} cameraagent reinstall --instance-id {manifest.InstanceId:D}' to start the preserved instance. "
+                : string.Empty;
+            throw InstallerException.Refused(
+                $"An active deep-sky selection blocks CameraAgent state reset. {restore}While installed, run '{InstallerProgram.Current} catalog select --instance-id {manifest.InstanceId:D} --catalog-family deep-sky --catalog-version disabled'. Then uninstall, reset and reinstall, upgrade to a compatible image, and reselect OpenNGC.");
+        }
+    }
 
     private static IReadOnlyList<string> PreservedPaths(InstallationPaths paths) =>
     [

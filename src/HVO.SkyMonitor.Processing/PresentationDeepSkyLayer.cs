@@ -17,7 +17,10 @@ public sealed record PresentationDeepSkyStyleV1(
     bool LabelCatalogObjects = true,
     int MinimumGlyphRadius = 7,
     PresentationColor? Color = null,
-    int LegendBaselinePixels = 4);
+    int LegendBaselinePixels = 4,
+    bool DrawOutlines = true,
+    int LineThickness = 2,
+    PresentationFontFaceV3 LabelFace = PresentationFontFaceV3.MonoRegular);
 
 /// <summary>What the deep-sky layer drew for one object.</summary>
 public enum PresentationDeepSkyDrawing
@@ -77,7 +80,6 @@ public static class PresentationDeepSkyLayerProducer
     /// <summary>The largest symbolic glyph radius; a supported known extent uses a footprint instead.</summary>
     public const int MaximumGlyphRadius = 512;
 
-    private const int Thickness = 2;
     private static readonly PresentationColor DefaultColor = new(255, 196, 120);
     private static readonly PresentationStrokeV2 GeometryStroke = new(6, 4, 900_000);
     private static readonly PresentationStrokeV2 UnknownExtentStroke = new(2, 3, 900_000);
@@ -100,7 +102,7 @@ public static class PresentationDeepSkyLayerProducer
         if (style.MaximumLabels is < 0 or > 24 ||
             style.MaximumLabelCharacters is < 0 or > PresentationLayerPayloadV1.MaximumLineCharacters ||
             style.LabelScale is < 1 or > 8 || style.MinimumGlyphRadius is < 2 or > 32 ||
-            style.LegendBaselinePixels is < 0 or > 4096 ||
+            style.LegendBaselinePixels is < 0 or > 4096 || style.LineThickness is < 1 or > 8 || !Enum.IsDefined(style.LabelFace) ||
             maximumPrimitives is < CaptionPrimitives or > MaximumPrimitives)
             throw new ArgumentOutOfRangeException(nameof(style));
         var width = outputWidth ?? scene.ImageTransform.OutputWidthPixels;
@@ -154,7 +156,7 @@ public static class PresentationDeepSkyLayerProducer
             var anchor = item.Pixel ?? default;
             var clearance = 0d;
             ResolvedFootprintBounds? bounds = null;
-            if (item.Representation == DeepSkyRepresentation.Footprint && footprints.TryGetValue(item.Id, out var footprint) &&
+            if (style.DrawOutlines && item.Representation == DeepSkyRepresentation.Footprint && footprints.TryGetValue(item.Id, out var footprint) &&
                 TryAdd(Polylines(footprint.Parts), GeometryStroke))
             {
                 drawing = PresentationDeepSkyDrawing.Footprint;
@@ -188,7 +190,7 @@ public static class PresentationDeepSkyLayerProducer
         {
             var labelSize = Math.Min(112_000, 9_000 * scale);
             // A regular face in the layer colour keeps catalog names apart from the bold measured-star names.
-            var appearance = new PresentationTextAppearanceV3(new(PresentationFontFaceV3.MonoRegular,
+            var appearance = new PresentationTextAppearanceV3(new(style.LabelFace,
                 labelSize, labelSize / 25, color, new(3, 8, 14), 950_000, 5_000));
             using var font = PresentationFont.Create(appearance.Body);
             var reserved = ReservedCorners(width, height);
@@ -257,9 +259,9 @@ public static class PresentationDeepSkyLayerProducer
                     var to = points[index % points.Length];
                     var dx = to.X - from.X;
                     var dy = to.Y - from.Y;
-                    added.Add(new(from, to, Thickness, color,
+                    added.Add(new(from, to, style.LineThickness, color,
                         stroke with { DashOffsetPixels = Math.Round(offset, 3, MidpointRounding.AwayFromZero) }));
-                    cost += (Math.Abs(dx) + Math.Abs(dy) + 1) * Thickness;
+                    cost += (Math.Abs(dx) + Math.Abs(dy) + 1) * style.LineThickness;
                     offset = (offset + Math.Sqrt(dx * dx + dy * dy)) % period;
                 }
             }
