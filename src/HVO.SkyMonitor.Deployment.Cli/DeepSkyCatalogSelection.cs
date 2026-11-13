@@ -43,8 +43,33 @@ internal static class DeepSkyCatalogSelection
             throw new InstallerException("The requested deep-sky selection is already active.");
         var operation = await CameraAgentLifecycleManager.BeginAsync(request, paths, request.Operation!.Value, manifest, cancellationToken)
             .ConfigureAwait(false);
-        return await TransitionAsync(request, paths, manifest, result, compose, docker, lifecycleClientFactory,
+        return await TransitionSettlingRefusalAsync(request, paths, manifest, result, compose, docker, lifecycleClientFactory,
             ownerClientFactory, lifecycleToken, verificationToken, candidate, operation, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Runs <see cref="TransitionAsync"/> for an operation <see cref="CameraAgentLifecycleManager.BeginAsync"/> journaled,
+    /// settling a refusal before any mutation the way the star catalog path does (#1824 L4).
+    /// </summary>
+    internal static async Task<LifecycleResult> TransitionSettlingRefusalAsync(
+        LifecycleRequest request, InstallationPaths paths, InstanceManifest manifest, InstallationResult result,
+        ComposeFiles compose, DockerClient docker, Func<Uri, ICameraAgentLifecycleClient>? lifecycleClientFactory,
+        Func<Uri, IOwnerBootstrapClient>? ownerClientFactory, string lifecycleToken, string verificationToken,
+        CatalogInstallationIdentity? candidate, LifecycleOperationState operation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await TransitionAsync(request, paths, manifest, result, compose, docker, lifecycleClientFactory,
+                ownerClientFactory, lifecycleToken, verificationToken, candidate, operation, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!request.DryRun && exception is not OperationCanceledException)
+        {
+            // A deep-sky selection refused between its journal entry and its mutation record is settled as terminal,
+            // as a star catalog selection is: nothing was touched, so nothing may report itself running and fence
+            // runtime control. Settlement leaves a mutated or already-failed operation to its own recovery path.
+            await CameraAgentLifecycleManager.SettleRefusedOperationAsync(paths, operation, exception).ConfigureAwait(false);
+            throw;
+        }
     }
 
     // Candidate validation belongs to SelectAsync; the state transition is independently exercised with disposable roots.
