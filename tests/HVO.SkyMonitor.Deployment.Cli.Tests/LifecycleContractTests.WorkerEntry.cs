@@ -296,7 +296,8 @@ public sealed partial class LifecycleContractTests
         var reloaded = new InstallerControlJournal(path);
         await reloaded.LoadAsync(CancellationToken.None);
         Assert.IsFalse(reloaded.Receipts.Single().IsTerminal);
-        Assert.IsEmpty(reloaded.Unpublished);
+        CollectionAssert.AreEqual(new[] { original.Request.OperationId },
+            reloaded.Unpublished.Select(receipt => receipt.Request.OperationId).ToArray());
         Assert.IsEmpty(reloaded.Refused);
     }
 
@@ -356,7 +357,8 @@ public sealed partial class LifecycleContractTests
         var reloaded = new InstallerControlJournal(path);
         await reloaded.LoadAsync(CancellationToken.None);
         Assert.IsFalse(reloaded.Receipts.Single().IsTerminal);
-        Assert.IsEmpty(reloaded.Unpublished);
+        CollectionAssert.AreEqual(new[] { original.Request.OperationId },
+            reloaded.Unpublished.Select(receipt => receipt.Request.OperationId).ToArray());
         Assert.IsEmpty(reloaded.Refused);
     }
 
