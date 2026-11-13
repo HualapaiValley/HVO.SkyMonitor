@@ -215,8 +215,19 @@ case leave both journals intact and complete these steps:
    `--once` if no worker is running. Once the recovery command releases
    `deployment.lock`, the worker may settle retained receipts during a **Running /
    Committed** reinstall or rollback with a verified paused boundary. It cannot
-   start new runtime-control work while that deployment is incomplete, and no
-   earlier deployment phase receives this exception.
+   start new runtime-control work while that deployment is incomplete. Before
+   commit, settlement is also allowed for incomplete reinstall or rollback when
+   an authenticated, initialized CameraAgent reports a nonempty process identity
+   different from the receipt's recorded original identity **and a confirmed durable
+   Paused capture state**. This includes a
+   reinstall whose manifest still says Uninstalled and rollback's Restoring
+   phase after exact rollback also fails. A missing original identity, the same
+   process, an uninitialized process, Running, or PauseRequested does not grant
+   this exception. A worker crash after publishing Draining but before persisting
+   its native pause can leave a Running replacement fenced only by the receipt;
+   terminalizing it would reopen capture during incomplete deployment recovery.
+   Leave that receipt nonterminal and use the container-stop/reinstall recovery
+   route below to establish the deployment's durable pause before settlement.
 2. Check that the retained control receipt is terminal and published. The existing
    conditional settlement preserves request/audit history and does not replay a
    stop. A returned process has a new identity, so the old process's pre-stop
@@ -226,6 +237,55 @@ case leave both journals intact and complete these steps:
 3. Rerun the **same** reinstall or rollback command with `--resume`. Its committed
    retry verifies the recovered instance, resumes through the normal native
    authority and completes the deployment journal without another image start.
+   For a precommit failure, correct the reported underlying failure first, then
+   use the same command with `--resume`; its existing phase checks determine
+   which deployment steps must be retried. A worker started while the manifest
+   says Uninstalled refreshes the retained identity under deployment authority;
+   after reinstall completes it accepts new runtime-control requests without a
+   restart. Changes to its runtime account or listener still require a restart.
+
+If reinstall cannot reach commit and the worker cannot prove a different
+initialized **Paused** process (or the installed tooling predates this recovery path),
+an operator can stop **only the affected instance's container**, then retry the
+same reinstall command with `--resume`. Determine its name from the instance ID
+(`hvo-skymonitor-` followed by the instance GUID without hyphens):
+
+```bash
+docker stop hvo-skymonitor-<instance-guid-without-hyphens>
+# Repeat the original reinstall invocation, retaining its options, with --resume.
+```
+
+Stopping the container prevents capture; it does not clear either journal.
+The offline gate can then admit the reinstall retry. Once the replacement
+process returns, run the worker as above and retry `--resume` if the retained
+projection still refuses the final resume. Do not use this workaround to skip
+rollback's original-image/authenticated preconditions; if those cannot be met,
+use the preserve-by-default uninstall/restore/reinstall route described above.
+
+A rollback interrupted between publishing its candidate manifest and installation
+result can retain mismatched image records. When these match the same retained
+CandidateVerified rollback transaction, the worker refuses startup with
+`lifecycle.rollback-partial-commit`, explicitly retaining the runtime-control
+fence. This is an interrupted publication, not arbitrary identity corruption;
+the reachable-agent retry gate can also refuse the pending receipt. An
+already-running worker can still settle retained receipts across this matching
+transaction after its initialized, different replacement process is durably
+Paused; new runtime work stays refused until rollback resume completes.
+If an already-running worker settles and publishes the retained receipt, rerun
+the same rollback command with `--resume`. If worker startup instead refuses with
+`lifecycle.rollback-partial-commit`, retain both journals and escalate for
+transaction-aware recovery. Do not edit records to force correlation. Unrelated
+identity mismatches keep their strict refusal.
+
+Worker startup takes `deployment.lock` for a consistent identity read. If an
+installer holds it, startup fails promptly as busy; retry starting the worker
+after that installer command exits. A running worker retains its polling retries.
+
+A required returned-process probe that times out, loses transport, or receives an
+HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed.
+Diagnostics distinguish `recovery=probe-timeout`, `recovery=transport-unavailable`
+and `recovery=probe-refused status=<code>` from heartbeat or publication failures.
+The next poll retries the retained recovery; caller cancellation still stops the worker.
 
 Do not edit or delete either journal. Definite quarantined refusals still require
 reconciliation; they never qualify for the offline exception.
@@ -240,7 +300,7 @@ and later polls use the same owned-pause settlement. A busy deployment lock leav
 a journal-owned interrupted operation pending and retries on a later poll; it is
 not classified as an orphan or terminalized without attempting safe restore.
 Interrupted installer deployment work must be recovered before starting another
-runtime lifecycle. The committed-recovery exception above permits retained-receipt
+runtime lifecycle. The recovery exceptions above permit retained-receipt
 settlement only, not another lifecycle request. Failures and cancellation preserve accepted capture/artifact
 records, pause intent and the journal. Corrupt, unsupported or linked state is
 refused rather than silently reset.

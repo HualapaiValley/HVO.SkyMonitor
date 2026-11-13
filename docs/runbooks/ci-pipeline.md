@@ -38,10 +38,13 @@ line container and required method names. Merger-excluded `$` class names,
 misplaced records and duplicate containers fail rather than supply completeness.
 Class filenames must be plain paths beneath this checkout's `src/`, or genuine
 assembly-relative/project-root names; out-of-tree paths and `./`, `//`, `../` or
-backslash aliases fail. Unexpected executable sources outside the Release PDB
+backslash aliases fail. Each raw report must contain one `sources` container with
+roots equal to this checkout's `src/` or `src/<package>/` (an empty source list
+is valid only for a classless report); a rewritten
+root fails before merging, including on the last parsed report. Unexpected executable sources outside the Release PDB
 inventory also fail. After merging, the wrapper requires a successful verbose
 parse receipt for every expected input and rejects logged read errors even if
-the tool exits zero. This catches loss of a redundant contributor too. Legitimate
+the tool exits zero. This detects a missing parse receipt or logged read error for a redundant contributor; receipts alone do not prove its hits survived merging. Legitimate
 classless reports from projects with no included assemblies are accepted. Each report must match its
 TRX attachment and project, the included assemblies present in that project's
 Release output, and every executable source file in those assemblies' portable
@@ -197,14 +200,35 @@ handoff evidence records current timings. Separate host samples are not a
 controlled incremental comparison and establish no coverage speedup. Observe
 hosted timing and memory alongside the existing workload budget.
 
+Read-only hosted evidence for run [42920048484](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/42920048484)
+records restore 10 s, build 382 s, Unit 550 s and coverage 50 s: 992 s of the
+1,080 s workload budget, leaving 88 s before checkout/setup overhead. This
+contended sample is distinct from the local totals above. The 1,080 s budget,
+22-minute hard timeout and unconditional coverage regressions are retained;
+Roy selected additional or relocated self-hosted runner capacity in t421s2656.
+Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
+and `gh-runner-06` each have 8 vCPU and are the only runners carrying
+`hvo-skymonitor-build`. Build and Unit selects exactly
+`[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
+selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
+budget and 22-minute hard timeout unchanged while collecting new timings.
+Workflow rollback returns this job to `[self-hosted, linux, x64, hvo-skymonitor]`;
+Atlas retains `ROLLBACK.md` for the runner-side procedure.
+A later [run 43086895061, attempt 1](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43086895061/attempts/1)
+reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
+timestamps; coverage never started. This demonstrates workload-budget pressure
+outside the coverage self-tests, so making those tests conditional cannot by
+itself prevent that timeout. Refs #1747.
+
 ## Development v1 Preflight Budget
 
-**Development v1 / Preflight** has a four-minute (240-second) job timeout,
-per the owner decision in #1365. This supersedes the three-minute (180-second)
-budget retained by #1333 when the secret-scanner contract became conditional.
-PR #1364 took 173 seconds with the contract selected; the new budget provides
-67 seconds of headroom for that measured run. Ordinary PRs remain near one minute.
-All checks, their order and selection rules, job names and required-check names
+**Development v1 / Preflight** has a six-minute (360-second) job timeout for
+all events (Refs #1747). This supersedes the four-minute PR budget from #1365
+and retains the six-minute push/queue budget. PR #1811 run 43293828104,
+attempt 3, exceeded the four-minute cap: CI control contracts took 118 seconds,
+the secret-scanner contract took 86 seconds, and release-script tests were
+cancelled after 18 seconds. Six minutes gives that combined workload another
+120 seconds to finish with margin. All required checks and selection rules
 remain unchanged.
 
 ## Promotion ancestry prerequisite
@@ -249,8 +273,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 16503 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 1378 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 16764 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | 1425 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -805,7 +829,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16503`, `Integration=1378`, `Manual=307`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16764`, `Integration=1425`, `Manual=307`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 

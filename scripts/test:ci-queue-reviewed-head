@@ -40,6 +40,10 @@ if path not in endpoints:
     print("unknown API path: " + str(path), file=sys.stderr)
     sys.exit(2)
 response = endpoints[path]
+if "sequence" in response:
+    with open(os.environ["FAKE_GH_CALLS"]) as calls:
+        count = sum(path in json.loads(line) for line in calls) - 1
+    response = response["sequence"][min(count, len(response["sequence"]) - 1)]
 pages = response["pages"] if paginate else response["pages"][:1]
 for index, page in enumerate(pages):
     if index == response.get("fail_page"):
@@ -75,6 +79,7 @@ def pull(number=42, head=HEAD):
 
 def fixture():
     return {
+        endpoint("git/ref/heads/development/v1"): {"pages": [{"object": {"sha": BASE}}]},
         endpoint(f"git/commits/{GROUP}"): {"pages": [{"parents": [{"sha": BASE}, {"sha": HEAD}]}]},
         endpoint("pulls/42"): {"pages": [pull()]},
         statuses(): {"pages": [[status(10)], []]},
@@ -86,9 +91,9 @@ def chain(entries):
     previous = BASE
     for index in range(entries):
         last = index == entries - 1
-        sha = GROUP if last else str(index + 1) * 40
-        head = HEAD if last else str(index + 4) * 40
-        number = 42 if last else index + 40
+        sha = GROUP if last else f"{index + 1:040x}"
+        head = HEAD if last else (str(index + 4) * 40 if index < 6 else f"{index + 1000:040x}")
+        number = 42 if last else index + (40 if index < 2 else 100)
         record = pull(number, head)
         result[endpoint(f"git/commits/{sha}")] = {
             "pages": [{"parents": [{"sha": previous}, {"sha": head}]}]}
@@ -121,7 +126,7 @@ class QueueReviewedHead(unittest.TestCase):
             BASE_REF="refs/heads/development/v1", BASE_SHA=BASE, ALLOWED_SETTERS="RoySalisbury",
         )
         env.update(env_overrides)
-        return subprocess.run([str(gate)], env=env, capture_output=True, text=True, timeout=15)
+        return subprocess.run([str(gate)], env=env, capture_output=True, text=True, timeout=90)
 
     def with_statuses(self, *pages):
         data = fixture()
@@ -138,7 +143,7 @@ class QueueReviewedHead(unittest.TestCase):
     def test_reviewed_head_passes_and_uses_git_commit_endpoint(self):
         self.assertPass(self.run_gate())
         calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
-        self.assertEqual(calls[0][1], endpoint(f"git/commits/{GROUP}"))
+        self.assertIn(endpoint(f"git/commits/{GROUP}"), [call[1] for call in calls])
 
     def test_fake_api_exact_paths_jq_and_pagination(self):
         self.run_gate()
@@ -243,18 +248,92 @@ class QueueReviewedHead(unittest.TestCase):
                 broken[endpoint("pulls/40")]["pages"][0]["head"]["sha"] = "f" * 40
                 self.assertFail(self.run_gate(broken), "is not the queued head")
 
-    def test_chain_resolution_must_be_unique_and_reach_trusted_base(self):
+    def test_chain_resolution_accepts_shared_heads_and_reaches_trusted_base(self):
         data = chain(2)
         path = endpoint(f"commits/{'4' * 40}/pulls?per_page=100")
-        for records in ([], [pull(40, "4" * 40), pull(41, "4" * 40)]):
+        for records in ([],):
             broken = copy.deepcopy(data)
             broken[path]["pages"] = [records]
-            self.assertFail(self.run_gate(broken), "exactly one open PR")
-        self.assertFail(self.run_gate(BASE_SHA="e" * 40), "cannot read merge group commit")
-        self.assertFail(self.run_gate(BASE_SHA=GROUP), "no queued PRs")
+            self.assertFail(self.run_gate(broken), "has no matching open PR")
+        shared = copy.deepcopy(data)
+        shared[path]["pages"] = [[pull(40, "4" * 40), pull(41, "4" * 40)]]
+        self.assertPass(self.run_gate(shared))
+        beyond = fixture()
+        beyond[endpoint("git/ref/heads/development/v1")]["pages"][0]["object"]["sha"] = "e" * 40
+        self.assertFail(self.run_gate(beyond), "cannot read merge group commit")
+        empty = fixture()
+        empty[endpoint("git/ref/heads/development/v1")]["pages"][0]["object"]["sha"] = GROUP
+        self.assertFail(self.run_gate(empty), "no queued PRs")
         broken = fixture()
         broken[endpoint(f"git/commits/{GROUP}")]["pages"][0]["parents"][0]["sha"] = GROUP
         self.assertFail(self.run_gate(broken), "cycle")
+
+    def test_missing_environment_fails(self):
+        for key in ("REPOSITORY", "HEAD_REF", "GROUP_SHA", "BASE_REF", "BASE_SHA", "ALLOWED_SETTERS"):
+            with self.subTest(key=key):
+                self.assertFail(self.run_gate(**{key: ""}), key + " is required")
+
+    def test_association_filters_and_paging(self):
+        data = chain(2)
+        path = endpoint(f"commits/{'4' * 40}/pulls?per_page=100")
+        for field, value in (("state", "closed"), ("head", "e" * 40),
+                             ("branch", "main"), ("repo", "another/repo")):
+            record = pull(40, "4" * 40)
+            if field == "state": record["state"] = value
+            elif field == "head": record["head"]["sha"] = value
+            else: record["base"]["ref" if field == "branch" else "repo"] = value if field == "branch" else {"full_name": value}
+            broken = copy.deepcopy(data)
+            broken[path]["pages"] = [[record], []]
+            self.assertFail(self.run_gate(broken), "has no matching open PR")
+        data[path]["pages"] = [[dict(pull(99, "4" * 40), state="closed") for _ in range(100)], [pull(40, "4" * 40)]]
+        self.assertPass(self.run_gate(data))
+        data[path]["fail_page"] = 1
+        self.assertFail(self.run_gate(data), "cannot resolve queued head")
+
+    def test_base_refresh_handles_merged_earlier_entry(self):
+        for at_read in (1, 2):
+            data = chain(2)
+            path = endpoint("git/ref/heads/development/v1")
+            old = {"pages": [{"object": {"sha": BASE}}]}
+            new = {"pages": [{"object": {"sha": f"{1:040x}"}}]}
+            data[path] = {"sequence": [old] * at_read + [new]}
+            data[endpoint(f"commits/{'4' * 40}/pulls?per_page=100")]["pages"] = [[], []]
+            self.assertPass(self.run_gate(data))
+        data = fixture()
+        data[endpoint("git/ref/heads/development/v1")]["fail_page"] = 0
+        self.assertFail(self.run_gate(data), "cannot refresh trusted base")
+        data[endpoint("git/ref/heads/development/v1")] = {"pages": [{"object": {"sha": "short"}}]}
+        self.assertFail(self.run_gate(data), "malformed refreshed base SHA")
+
+    def test_entry_limit_mutation_control(self):
+        # Seed at 99 to expose the off-by-one with two real API entries; the
+        # full 100/101 fixture separately proves the production initial value.
+        source = GATE.read_text().replace("count=0", "count=99")
+        gate = self.dir / "limit-gate"
+        gate.write_text(source)
+        gate.chmod(0o700)
+        self.assertFail(self.run_gate(chain(2), gate=gate), "exceeds 100 entries")
+        self.assertIn("count < 100", source)
+        gate.write_text(source.replace("count < 100", "count <= 100"))
+        self.assertPass(self.run_gate(chain(2), gate=gate))
+        print("Killed gate mutation: 100-entry off-by-one")
+
+    def test_closed_earlier_pull_refreshes_base(self):
+        data = chain(2)
+        data[endpoint("pulls/40")]["pages"][0]["state"] = "closed"
+        old = {"pages": [{"object": {"sha": BASE}}]}
+        new = {"pages": [{"object": {"sha": f"{1:040x}"}}]}
+        data[endpoint("git/ref/heads/development/v1")] = {"sequence": [old, old, new]}
+        self.assertPass(self.run_gate(data))
+
+    def test_status_array_and_positive_integral_ids(self):
+        for page in ({}, {"id": 10}, {"record": status(10)}, [status(0)], [status(-1)], [status(1.5)], [status("10")]):
+            with self.subTest(page=page):
+                self.assertFail(self.run_gate(self.with_statuses(page)), "cannot read commit statuses")
+
+    def test_entry_limit_boundary(self):
+        self.assertPass(self.run_gate(chain(100)))
+        self.assertFail(self.run_gate(chain(101)), "exceeds 100 entries")
 
     def test_malformed_inputs_fail(self):
         for env, message in (({"HEAD_REF": "refs/heads/feature"}, "unexpected merge group ref"),
@@ -283,6 +362,25 @@ class QueueReviewedHead(unittest.TestCase):
             ("lexical id ordering", "-k1,1nr", "-k1,1r", self.with_statuses([status(9), status(10, "failure")])),
             ("substring creator match", '"$creator" == "$login"', '"$creator" == *"$login"*',
              self.with_statuses([status(10, login="RoySalisbury2")])),
+        )
+        association = endpoint(f"commits/{'4' * 40}/pulls?per_page=100")
+        for field, before in (("state", r'.state == \"open\"'), ("head", r'.head.sha == \"${queued_head}\"')):
+            data = chain(2)
+            record = data[association]["pages"][0][0]
+            if field == "state": record["state"] = "closed"
+            else: record["head"]["sha"] = "e" * 40
+            mutations += ((f"association {field} filter removed", before, "true", data),)
+        not_open = fixture()
+        not_open[endpoint("pulls/42")]["pages"][0]["state"] = "closed"
+        changed_head = fixture()
+        changed_head[endpoint("pulls/42")]["pages"][0]["head"]["sha"] = GROUP
+        changed_head[statuses(GROUP)] = {"pages": [[status(10)]]}
+        mutations += (
+            ("open-state validation removed", '[[ "$pr_state" == "open" ]]', '[[ true ]]', not_open),
+            ("exact-head validation removed", '[[ "$pr_head" == "$queued_head" ]]', '[[ true ]]', changed_head),
+            ("positive status id removed", '(.id > 0)', 'true', self.with_statuses([status(0)])),
+            ("status array guard removed", r'type != \"array\"', 'false', self.with_statuses({"record": status(10)})),
+            ("status integral id removed", '(.id == (.id | floor))', 'true', self.with_statuses([status(1.5)])),
         )
         source = GATE.read_text()
         for name, before, after, data in mutations:

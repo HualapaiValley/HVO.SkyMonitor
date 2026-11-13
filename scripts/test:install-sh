@@ -915,6 +915,16 @@ test_online_sha256sums_without_one_catalog_starts_nothing() {
   assert_installer_did_not_run
 }
 
+test_online_two_catalog_families_select_only_the_star_bundle() {
+  sed -n "s/  ${CATALOG}.tar.gz$/  openngc-v20260501-p6-s5-r1.bundle.tar.gz/p" "${WORK}/release/SHA256SUMS" >"${WORK}/another"
+  cat "${WORK}/another" >>"${WORK}/release/SHA256SUMS"
+  install_sh -- cameraagent install
+
+  assert_status 0
+  assert_not_called "openngc-v20260501-p6-s5-r1.bundle.tar.gz"
+  assert_called "${CATALOG}.tar.gz"
+}
+
 test_online_sha256sums_with_two_catalogs_starts_nothing() {
   sed -n "s/  ${CATALOG}.tar.gz$/  hyg-v4.4-p1-s1-r1.bundle.tar.gz/p" "${WORK}/release/SHA256SUMS" >"${WORK}/another"
   cat "${WORK}/another" >>"${WORK}/release/SHA256SUMS"

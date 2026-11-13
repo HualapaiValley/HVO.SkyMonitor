@@ -8,6 +8,29 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CaptureScalarOptionsEditorTests
 {
     [TestMethod]
+    public void OpenNgcControlsSaveANewRevisionWithoutChangingTheSource()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context, "ProjectedScene", """{"future":[1e+02],"deepSkyEnabled":false}""");
+        var original = service.RevisionDetail!.Pipeline.Steps[0].Options!.Value.GetRawText();
+        var cut = context.Render<ProcessingGraphEditorPage>();
+        cut.Find("#node-options-0-deepSkyEnabled").Change(true);
+        cut.Find("#node-options-0-deepSkyNgc").Change(false);
+        cut.Find("#node-options-0-deepSkyIc").Change(false);
+        cut.Find("#node-options-0-deepSkyMaximumMagnitude").Change("8");
+        cut.Find("#node-options-0-deepSkyMinimumSizeArcminutes").Change("1");
+        cut.Find("form").Submit();
+        cut.Find("button.btn-primary").Click();
+        var options = service.Created.Single().Pipeline.Steps[0].Options!.Value;
+        Assert.IsTrue(options.GetProperty("deepSkyEnabled").GetBoolean());
+        Assert.IsFalse(options.GetProperty("deepSkyNgc").GetBoolean());
+        Assert.IsFalse(options.GetProperty("deepSkyIc").GetBoolean());
+        Assert.AreEqual(8, options.GetProperty("deepSkyMaximumMagnitude").GetDouble());
+        Assert.AreEqual(original, service.RevisionDetail.Pipeline.Steps[0].Options!.Value.GetRawText());
+        Assert.IsEmpty(service.Commands, "Saving alone cannot activate a new query.");
+    }
+
+    [TestMethod]
     public void ProjectedScenePanelEditsOnlyQueryScalarsAndExportsAccessibleFixture()
     {
         using var context = new BunitContext();
@@ -16,7 +39,7 @@ public sealed partial class CaptureScalarOptionsEditorTests
         context.Services.GetRequiredService<NavigationManager>().NavigateTo("/operations/pipeline/graphs/new?section=projected-scene#projected-scene");
         var cut = context.Render<ProcessingGraphEditorPage>();
         var panel = cut.Find("#projected-scene[aria-label='Projected scene query']");
-        Assert.HasCount(4, panel.QuerySelectorAll("input"));
+        Assert.HasCount(13, panel.QuerySelectorAll("input"));
         foreach (var field in new[] { "maximumMagnitude", "maximumResults", "includeConstellationEndpointStars" })
         {
             var id = "node-options-0-" + field;

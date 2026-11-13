@@ -38,7 +38,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.raw-ingress-schema"]);
-        Assert.AreEqual(RawIngressV13Schema.RecoveryMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
+        Assert.AreEqual(RawIngressV13Schema.EnvironmentalFenceMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
     }
 
     [TestMethod]
@@ -67,9 +67,9 @@ public sealed class CameraAgentStateCompatibilityLabelTests
 
         var declared = int.Parse(labels["io.hvo.skymonitor.catalog-manifest-version"], CultureInfo.InvariantCulture);
         Assert.AreEqual(CatalogSnapshotResolver.SupportedManifestVersion, declared);
-        Assert.AreEqual("hvo-approved-catalogs-v2", labels["io.hvo.skymonitor.catalog-contract"]);
+        Assert.AreEqual("hvo-approved-catalogs-v3", labels["io.hvo.skymonitor.catalog-contract"]);
         Assert.AreEqual(
-            ApprovedCatalogSpecifications.Get("hyg-v44-openngc-production").ManifestVersion,
+            ApprovedCatalogSpecifications.Get("openngc-production").ManifestVersion,
             declared);
         Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v42-production").ManifestVersion <= declared);
         Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion <= declared);

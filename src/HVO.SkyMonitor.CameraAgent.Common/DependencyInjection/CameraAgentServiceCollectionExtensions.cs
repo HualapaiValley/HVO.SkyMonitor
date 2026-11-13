@@ -174,6 +174,9 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IProjectedSceneStagingReader>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<IProjectedSceneStagingReconciler>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<CaptureProjectedSceneStager>();
+        services.AddSingleton<IVirtualSkyGraphSelection>(provider => new VirtualSkyGraphSelectionProvider(
+            provider.GetRequiredService<ProcessingGraphOperationsCoordinator>(),
+            (provider.GetRequiredService<ICelestialCatalog>() as IDeepSkyCatalogSource)?.DeepSky?.Semantics.SnapshotIdentity is not null));
         services.AddSingleton<IConstellationTopology>(StandardConstellationTopology.CreateD3Celestial());
         services.AddSingleton<IAnnotationSceneProvider>(provider => new AnnotationSceneProvider(
             () => provider.GetService<ICelestialCatalog>(),

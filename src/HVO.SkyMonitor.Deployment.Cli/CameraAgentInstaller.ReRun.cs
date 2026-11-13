@@ -465,6 +465,13 @@ internal sealed partial class CameraAgentInstaller
         if (!IsValid(image, request.ReplayProfile))
             throw new InstallerException("The CameraAgent image does not declare the required current configuration and catalog contracts.");
         EnsureImageSupportsCatalog(image, catalog.CatalogId);
+        if (manifest.DeepSkyCatalog is { } deepSky)
+        {
+            EnsureImageSupportsCatalog(image, deepSky.CatalogId);
+            CatalogLifecycleManager.ValidateInstalled(paths, deepSky);
+        }
+        await CameraAgentLifecycleManager.ValidateDeepSkySelectionSettingAsync(paths, manifest.DeepSkyCatalog, null, cancellationToken)
+            .ConfigureAwait(false);
         // A re-run keeps the image, so newer defaults are adopted only by an instance whose running image already runs
         // them; otherwise nothing changes, and the operator upgrades the image first (Refs #1779, Refs #1777).
         var requiredImageGeneration = CameraConfigurationDefaults.RequiredImageGeneration(adopted);
@@ -505,7 +512,7 @@ internal sealed partial class CameraAgentInstaller
         var recorded = ComposeDeployment.Render(
             request, paths, instanceId, applicationIdentity, uid, gid, image.ImageId, catalog.PackageVersion, result.PasswordFile,
             verificationToken, lifecycleControlToken, passwordAuthorityEnabled: false, manifest.Resources,
-            defaults: recognized.Generation);
+            defaults: recognized.Generation, deepSkyCatalog: manifest.DeepSkyCatalog);
         var filesMatch = ComposeDeployment.Matches(recorded, paths, instanceId, uid, gid);
         var model = filesMatch
             ? ComposeDeployment.ComputeSha256((await docker.ComposeAsync(
@@ -523,7 +530,8 @@ internal sealed partial class CameraAgentInstaller
         var candidateResult = CreateInstalledResult(
             request, paths, instanceId, manifest.InstallationId, applicationIdentity, uid, gid, result.PasswordFile, recorded.Files,
             result.ComposeModelSha256, catalog, image, daemon, "owner-password-change-required", result.OwnerPasswordIsDefault,
-            result.CompletedUtc);
+            result.CompletedUtc) with
+        { DeepSkyCatalog = manifest.DeepSkyCatalog };
         if ((resultConfigurationStale ? candidateResult with { ConfigurationSha256 = result.ConfigurationSha256 } : candidateResult) != result)
         {
             throw new InstallerException("The completed installation differs from its retained result.");
@@ -807,7 +815,7 @@ internal sealed partial class CameraAgentInstaller
                 instance.LifecycleControlToken,
                 passwordAuthorityEnabled: false,
                 limits,
-                defaults: generation);
+                defaults: generation, deepSkyCatalog: recorded.DeepSkyCatalog);
             if (forward)
             {
                 StepCompleted("rerun-files-written");
@@ -836,7 +844,8 @@ internal sealed partial class CameraAgentInstaller
         CancellationToken cancellationToken)
     {
         await owner.WaitForHealthAsync(ProductionCatalog.Get(instance.Catalog.CatalogId), cancellationToken).ConfigureAwait(false);
-        await docker.VerifyContainerAsync(compose, instance.Paths, instance.Image, uid, gid, cancellationToken).ConfigureAwait(false);
+        await docker.VerifyContainerAsync(compose, instance.Paths, instance.Image, uid, gid, cancellationToken,
+            instance.Manifest.DeepSkyCatalog?.InstallRoot).ConfigureAwait(false);
         await owner.VerifyInstallationAsync(
                 instance.VerificationToken,
                 new InstallationVerificationExpectation(
@@ -851,7 +860,7 @@ internal sealed partial class CameraAgentInstaller
                     instance.Manifest.DeploymentLocationSha256,
                     (ContractReplayProfile)request.ReplayProfile,
                     instance.Catalog,
-                    AllowCompletedPasswordReplacement: true),
+                    AllowCompletedPasswordReplacement: true, DeepSkyCatalog: instance.Manifest.DeepSkyCatalog),
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -916,7 +925,7 @@ internal sealed partial class CameraAgentInstaller
     /// installer's newer configuration defaults, which rewrite camera-module.json, recreate the container and update the
     /// manifest and the result, each named (Refs #1779); and whatever no longer matches the records, which the re-run puts back.
     /// </summary>
-    private static DeploymentPlan ReRunPlan(CompletedInstance instance, DeploymentPlanAction? recordAction = null)
+    internal static DeploymentPlan ReRunPlan(CompletedInstance instance, DeploymentPlanAction? recordAction = null)
     {
         var paths = instance.Paths;
         var manifest = instance.Manifest;

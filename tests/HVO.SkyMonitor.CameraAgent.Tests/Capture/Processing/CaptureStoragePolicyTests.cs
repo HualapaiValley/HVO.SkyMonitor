@@ -47,13 +47,23 @@ public sealed class CaptureStoragePolicyTests
     }
 
     [TestMethod]
-    public void MissingNodesAndNonEquivalentLinuxPathsRemainRejected()
+    public void MissingNodesAndNonEquivalentPathsRemainRejected()
     {
         var profile = Pipeline("/tmp/storage-policy", "preview");
-        foreach (var root in new[] { "/tmp/STORAGE-policy", "/tmp/storage-policy\\child", "/tmp/other-storage" })
+        foreach (var root in new[] { "/tmp/storage-policy\\child", "/tmp/other-storage" })
             Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(Pipeline(root, "preview"), profile));
-        Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(
-            Pipeline("/tmp/storage-policy\\child", "preview"), Pipeline("/tmp/storage-policy/child", "preview")));
+        if (OperatingSystem.IsWindows())
+        {
+            CaptureStoragePolicy.EnsureMatchesProfile(Pipeline("/tmp/STORAGE-policy", "preview"), profile);
+            CaptureStoragePolicy.EnsureMatchesProfile(
+                Pipeline("/tmp/storage-policy\\child", "preview"), Pipeline("/tmp/storage-policy/child", "preview"));
+        }
+        else
+        {
+            Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(Pipeline("/tmp/STORAGE-policy", "preview"), profile));
+            Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(
+                Pipeline("/tmp/storage-policy\\child", "preview"), Pipeline("/tmp/storage-policy/child", "preview")));
+        }
         var missing = Assert.ThrowsExactly<ValidationException>(() => CaptureStoragePolicy.EnsureMatchesProfile(profile, null));
         Assert.AreEqual("StorageNode", missing.ValidationResult!.MemberNames.Single());
         CaptureStoragePolicy.EnsureMatchesProfile(profile with { Steps = [profile.Steps[0] with { Enabled = false }] }, null);

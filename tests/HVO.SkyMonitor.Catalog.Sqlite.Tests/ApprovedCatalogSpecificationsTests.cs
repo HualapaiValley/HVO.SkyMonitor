@@ -16,7 +16,7 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
 {
     private const string ResourceName = "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json";
     private const string ComposedCatalogId = "hyg-v44-openngc-production";
-    private static readonly string[] ApprovedCatalogIds = ["hyg-v42-production", ComposedCatalogId, "hyg-v44-production"];
+    private static readonly string[] ApprovedCatalogIds = ["hyg-v42-production", ComposedCatalogId, "hyg-v44-production", "openngc-production"];
     private static readonly string[] DisputedDuplicateSubjects = ["M102->NGC5457"];
 
     [TestMethod]
@@ -85,9 +85,9 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
         Assert.AreEqual("5", composed.PreprocessingVersion);
         Assert.AreEqual(stars.Database.RowCount, composed.Database.RowCount, "RowCount remains the star count.");
         Assert.AreEqual(stars.Source, composed.Source);
-        Assert.AreEqual("hyg-v44-production", composition.Stars.CatalogId);
-        Assert.IsTrue(stars.IsPackageVersion(composition.Stars.PackageVersion));
-        Assert.AreEqual(stars.Database.Sha256, composition.Stars.Database.Sha256);
+        Assert.AreEqual("hyg-v44-production", composition.Stars!.CatalogId);
+        Assert.IsTrue(stars.IsPackageVersion(composition.Stars!.PackageVersion));
+        Assert.AreEqual(stars.Database.Sha256, composition.Stars!.Database.Sha256);
         Assert.AreEqual(
             new CatalogDeepSkyCounts(13_371, 65_822, 10, 182, 359, 441, 90_861), composition.DeepSkyCounts);
         Assert.AreEqual("36cb178a0f69dba8bfc03a99c10512831edf1c6b", composition.DeepSky.Commit);
@@ -164,10 +164,10 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
             (composed, "OUTLINE_POINT_COUNT", Invariant(composition.DeepSkyCounts.OutlinePointCount)),
             (composed, "LICENSE_FILE", specification.License.File.RelativePath),
             (composed, "ATTRIBUTION_FILE", specification.License.Attribution.RelativePath),
-            (stars, "CATALOG_ID", composition.Stars.CatalogId),
-            (stars, "DATABASE_SHA256", composition.Stars.Database.Sha256),
-            (stars, "DATABASE_LENGTH", Invariant(composition.Stars.Database.Length)),
-            (stars, "EXPECTED_ROWS", Invariant(composition.Stars.Database.RowCount)),
+            (stars, "CATALOG_ID", composition.Stars!.CatalogId),
+            (stars, "DATABASE_SHA256", composition.Stars!.Database.Sha256),
+            (stars, "DATABASE_LENGTH", Invariant(composition.Stars!.Database.Length)),
+            (stars, "EXPECTED_ROWS", Invariant(composition.Stars!.Database.RowCount)),
             (openNgc, "NAME", deepSky.Name),
             (openNgc, "VERSION", deepSky.Version),
             (openNgc, "COMMIT", deepSky.Commit),
@@ -194,8 +194,8 @@ internal sealed partial class ApprovedCatalogSpecificationsTests
         }
         Assert.AreEqual(2, deepSky.Inputs.Count);
         Assert.IsTrue(
-            ApprovedCatalogSpecifications.Get(composition.Stars.CatalogId).IsPackageVersion(stars["PACKAGE_VERSION"]));
-        Assert.AreEqual(composition.Stars.PackageVersion, stars["PACKAGE_VERSION"]);
+            ApprovedCatalogSpecifications.Get(composition.Stars!.CatalogId).IsPackageVersion(stars["PACKAGE_VERSION"]));
+        Assert.AreEqual(composition.Stars!.PackageVersion, stars["PACKAGE_VERSION"]);
         CollectionAssert.AreEqual(
             composition.Transformations
                 .Select(static item => $"{item.Id}|{Invariant(item.Count)}|{string.Join(';', item.Subjects)}")

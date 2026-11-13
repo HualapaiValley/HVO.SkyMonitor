@@ -1322,12 +1322,13 @@ records `raw-evidence-written-off` as its terminal disposition.
 The next admission attempt reinitializes ingress; other unresolved evidence
 failures continue to refuse captures. No release deletes or rewrites raw data.
 
-Audited recovery requires raw-journal version 15. A canonical v13 or v14 journal
-upgrades transactionally through the declared `canonical-v13-v14-to-v15`
-transition. The image must declare schema 15 and that
-migration. Older readers cannot preserve these dispositions, so installer
-preflight refuses rollback to an image declaring an earlier raw-journal version;
-the earlier runtime also refuses the v15 journal. Select a compatible image
+The image declares raw-journal version 16, including audited recovery and
+capture-specific environmental evidence. A canonical v13, v14 or v15 journal
+upgrades transactionally through the declared `canonical-v13-v14-v15-to-v16`
+transition. The image must declare schema 16 and that migration. Older readers
+cannot preserve this evidence, so installer preflight refuses rollback to an
+image declaring an earlier raw-journal version; the earlier runtime also refuses
+the v16 journal. Select a compatible image
 instead of deleting or resetting evidence to force a rollback.
 
 A Named active revision compiled by the earlier version cannot run any live work.
@@ -2047,6 +2048,24 @@ Preserved: `instance-manifest.json`, `application-identity.json`, the whole `con
 `config/secrets`, `config/owner-bootstrap`, `config/lifecycle-control`, `config/installation-verification`,
 and `config/compose`, plus `<product-root>/catalogs`, `<product-root>/operations`, and instance backups.
 
+The shared catalog files remain in place. Reinstallation selects the star catalog from the original
+`--catalog-bundle` input, so a later star selection can be replaced.
+
+An active deep-sky selection refuses `reset-state`, including `--dry-run`, before any runtime state is
+deleted or installation state is rewound. If the instance is already uninstalled, first run
+`hvo-sky-install cameraagent reinstall --instance-id <uuid>` to start it from its preserved state. While
+installed, run `hvo-sky-install catalog select --instance-id <uuid> --catalog-family deep-sky --catalog-version disabled`.
+This explicit target disables the family independently of previous-selection history; ordinary catalog
+rollback still returns to the previous selection. Then uninstall, run `cameraagent reset-state`, and run
+`hvo-sky-install cameraagent install --instance-id <uuid> <same immutable inputs>` with the original
+install inputs. Upgrade to an image that supports the independent deep-sky catalog and reselect OpenNGC. This
+ordering preserves a usable reinstall path when the original install image predates the new catalog contract.
+
+Pending installs left by an older reset can still retain an active OpenNGC selection. Both `install --plan`
+and the install run validate that snapshot and the requested image's reader support before configuration
+writes. A valid retained selection keeps its mount, settings and installation-result identity; a missing or
+incompatible snapshot stops admission.
+
 The operator settings file `state/identity/appsettings.local.json` shares the Identity mount but is operator
 configuration, not runtime state, so the reset carries it across the deletion. It is read before anything is
 deleted, kept as `operations/cameraagent-<uuid>.state-reset-<operation-uuid>.appsettings.local.json` until it
@@ -2151,7 +2170,7 @@ migration, and the upgrade then snapshots the small databases before the candida
 
 The check runs after the state preflight, so an incompatible persisted state is reported first, and before the
 drain and any Compose change. The journal's `stateMigration` names every difference, for example
-`io.hvo.skymonitor.raw-ingress-schema installed 14, candidate 15`. The contract-identity labels (`component`,
+`io.hvo.skymonitor.raw-ingress-schema installed 15, candidate 16`. The contract-identity labels (`component`,
 `configuration-contract`, `catalog-contract`, `replay-runner-contract`) are not state: a mismatch there is refused.
 `configuration-defaults` is not state either, and an upgrade does not compare it: it declares the newest installer
 configuration-default generation the image runs, which a re-run requires before it adopts newer defaults (see
@@ -3202,8 +3221,18 @@ does not name. It never changes a selection. Package versions are unique across
 lineages, so `--catalog-version` names exactly one root. A `select` that changes
 the catalog ID rewrites `Catalog__RequiredCatalogId` and the `HVO_CATALOG_ROOT`
 mount and reauthenticates the Compose model. A current image declares
-`hvo-approved-catalogs-v2` and can select HYG 4.2, HYG 4.4 and
-`hyg-v44-openngc-production`. An image declaring `hvo-approved-catalogs-v1` can
+`hvo-approved-catalogs-v3` (manifest reader 4) and can select HYG 4.2, HYG 4.4,
+retained `hyg-v44-openngc-production`, and independent `openngc-production`.
+The release default remains HYG 4.2; HYG 4.4 requires separate adoption approval.
+An image declaring `hvo-approved-catalogs-v2` reads the older HYG/composed lineages
+but refuses the standalone deep-sky package. OpenNGC has its own selected/previous
+identity and read-only mount: install its bundle with `catalog install`, select
+`openngc-v20260501-p6-s5-r1` with `catalog select --instance-id UUID --catalog-version VERSION`,
+and restore its previous selection with `catalog rollback --instance-id UUID --catalog-family deep-sky`.
+To disable the family independently of previous-selection history, run
+`hvo-sky-install catalog select --instance-id UUID --catalog-family deep-sky --catalog-version disabled`.
+Changing this family preserves the selected star package. Both families' selected,
+previous, backup, historical and interrupted-operation references protect collection. An image declaring `hvo-approved-catalogs-v1` can
 select the two HYG lineages and refuses the composed catalog. An unknown
 catalog-contract label is refused. Cross-lineage selection retires the retained image
 rollback and pins the previous identity as a historical reference. `rollback`

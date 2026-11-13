@@ -69,7 +69,7 @@ else
     </div>
 
     <section class="ops-panel ops-grid" aria-labelledby="software-packages-heading">
-        <header class="ops-panel-heading"><div><h2 id="software-packages-heading">Installed celestial packages</h2><p>Rollback changes the selected identity; it never edits or replaces a published SQLite snapshot.</p></div><span>1 selected</span></header>
+        <header class="ops-panel-heading"><div><h2 id="software-packages-heading">Installed celestial packages</h2><p>Rollback changes the selected identity; it never edits or replaces a published SQLite snapshot.</p></div><span>@(software.DeepSkyCatalog is null ? "1 selected" : "2 independently selected")</span></header>
         <div class="ops-table-wrap">
             <table class="ops-table software-packages">
                 <thead><tr><th scope="col">Catalog ID</th><th scope="col">Package</th><th scope="col">State</th><th scope="col">Rows</th><th scope="col">Retained packages</th></tr></thead>
@@ -81,6 +81,16 @@ else
                         <td>@Number(catalog.RowCount)</td>
                         <td>Listed and selected with <code>hvo-sky-install catalog select</code></td>
                     </tr>
+                    @if (software.DeepSkyCatalog is { } deepSkyCatalog)
+                    {
+                        <tr class="current-row" data-deep-sky-catalog="@deepSkyCatalog.CatalogId">
+                            <td><strong>@deepSkyCatalog.CatalogId</strong></td>
+                            <td>OpenNGC @deepSkyCatalog.CatalogVersion / @deepSkyCatalog.SnapshotVersion</td>
+                            <td><span class="state-chip success">Selected independently</span></td>
+                            <td>@Number(deepSkyCatalog.RowCount) deep-sky objects</td>
+                            <td><code>hvo-sky-install catalog rollback --catalog-family deep-sky</code><br /><small>CC BY-SA 4.0 · Mattia Verga / OpenNGC</small><br /><code title="sha256:@deepSkyCatalog.DatabaseSha256">@ShortChecksum(deepSkyCatalog.DatabaseSha256)</code></td>
+                        </tr>
+                    }
                 </tbody>
             </table>
         </div>

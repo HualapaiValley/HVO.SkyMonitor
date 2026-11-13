@@ -53,17 +53,25 @@ unavailable. Job IDs, names and reusable-workflow `uses` values come from parsed
 YAML nodes; the canonical source view must agree on job boundaries, locations and
 field values. Quoted or flow syntax cannot hide a producer from the parse.
 
-The local Ubuntu 24.04 host was checked with Python 3 and PyYAML 6.0.1. Install
-`python3-yaml` for local system Python if needed. Hosted `ubuntu-24.04` images
-[include yamllint](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md),
-[installed with pipx](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-pipx-packages.sh);
-[PyYAML is a yamllint dependency](https://github.com/adrienverge/yamllint/blob/master/pyproject.toml).
-The image's [Python setup](https://github.com/actions/runner-images/blob/main/images/ubuntu/scripts/build/install-python.sh)
-sets `PIPX_HOME=/opt/pipx`. The contract first probes `python3`, then the Python in
-`${PIPX_HOME:-/opt/pipx}/venvs/yamllint`. It reports the selected interpreter and
-parser version. Tests cover the hosted fallback and refusal when neither parser
-is available. This availability check uses the published hosted-image build;
-no hosted CI run was dispatched for this correction.
+Hosted Preflight installs PyYAML 6.0.2 from the hash-pinned CPython 3.12 Linux
+x64 wheel in `scripts/ci/pyyaml-requirements.txt`, using `--require-hashes`,
+`--only-binary` and `--no-deps`. Its private target directory is exported on
+`PYTHONPATH` before the contract runs. Local developers may use `python3-yaml`
+or the yamllint pipx fallback; the contract reports its interpreter and parser
+version and tests refusal when neither is available.
+
+The workflow contract compares the complete queue-gate source with its approved
+fixture, including workflow/job defaults, environment and container settings.
+All workflows and job overrides reject `checks: write`, `statuses: write` and
+`write-all`; workflow tokens cannot publish an alternate required check/status.
+Job properties must use known lowercase keys. Workflow discovery includes
+hidden files and case-insensitive `.yml`/`.yaml` extensions. Both lint steps enumerate with NUL delimiters, pass
+an explicit file array to actionlint and reject an empty list;
+actionlint's default discovery omits uppercase extensions. The contract exercises
+invalid hidden and uppercase workflow files against pinned actionlint 1.7.12.
+Local runs can set `HVO_ACTIONLINT_BIN` to that binary; CI uses the binary already
+installed by the lint step. Missing or mismatched versions reject the contract
+rather than skip its behavioral regressions.
 
 ### Merge queue
 
@@ -75,21 +83,22 @@ requires `Development v1 / Preflight`, `Development v1 / Build and Unit` and
 who enqueues.
 
 Both v1 checks are wired for `merge_group`, which tests the combined changes of
-the queued PR and entries ahead of it. Preflight has six minutes for queue events
-because their classifier selects full mode; PR/push Preflight retains four
-minutes. This changes the timeout, not the qualification profile.
+the queued PR and entries ahead of it. Preflight has six minutes for all events; push/queue events select full classifier mode. This changes the timeout, not the qualification profile.
 
 The queue's temporary commit has no operator review status. The
 `merge-queue-reviewed-head.yml` job checks out the **fresh `development/v1` tip**
 and runs that trusted copy of `scripts/ci:queue-reviewed-head`. A missing checkout
 or script fails the job; it never falls back to the queued tree. The gate
 therefore always runs the script as it stands on the trusted branch.
-The gate walks first parents from the group SHA to the checked-out tip, requiring
+The gate refreshes the destination tip through the read-only ref API on each
+iteration and walks first parents from the group SHA to that tip, requiring
 exactly two parents per entry (at most 100). Every second parent must equal an
 open PR's current head targeting this repository's `development/v1`; fork PRs are
-supported using statuses in the base repository. Each head's numeric newest
+supported using statuses in the base repository. One or more matching PR
+associations are accepted for earlier entries with a shared head. An earlier
+entry merging during traversal stops the walk at the refreshed trusted tip. Each head's numeric newest
 `hvo/reviewed-head` status, across all API pages, must be `success` from exactly
-`RoySalisbury`. Unsupported topology, ambiguous PR association, a changed PR head,
+`RoySalisbury`. Unsupported topology, no matching PR association, a changed PR head,
 an unreadable page, or a base that advanced beyond the group fails closed.
 On PRs, `hvo/reviewed-head` remains the operator's commit status.
 
@@ -101,8 +110,21 @@ explicitly includes changes ahead of a PR. We therefore do **not** treat event
 `base_sha` as a trust root. The supported topology assumes GitHub's MERGE mode
 forms a two-parent chain ending at the actual destination tip, and verifies that
 chain at runtime, on every live group. Offline two- and three-entry fixtures
-cover this assumption, and a group of any other shape fails closed. A stale group
-must be rebuilt against the new destination tip.
+cover this assumption, and a group of any other shape fails closed. A group whose chain does not reach the refreshed destination tip must be rebuilt.
+A main-to-development/v1 back-merge cannot be an earlier non-head entry unless
+GitHub associates its exact head with an open PR on this destination; it fails
+closed when that association is absent. Use a single-entry group or rebuild the group.
+
+Changes to the workflow/script environment interface require two phases: first
+land a trusted-base script that accepts both the old and new inputs without
+weakening validation; then change the queued workflow caller. Retire the old
+interface only after groups using it have drained. A caller-only change cannot
+assume its matching script has reached the trusted branch.
+
+The [settings snapshot and cutover/rollback checklist](runbooks/development-v1-merge-queue.md)
+record the operated policy. The required `hvo/reviewed-head` source stays **any
+source** while the operator status and GitHub Actions queue job share that name;
+only a separately approved external App migration can pin an integration id.
 
 **Remaining trust boundary:** the workflow file itself still comes from the
 queued commit. Trusted script checkout and the all-workflow unique-name contract

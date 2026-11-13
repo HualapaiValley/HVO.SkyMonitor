@@ -6,13 +6,15 @@ public sealed partial class LifecycleContractTests
 {
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(LifecycleOperationKind.Reinstall, false, false, true)]
+    [DataRow(LifecycleOperationKind.Rollback, false, false, true)]
     [DataRow(LifecycleOperationKind.Reinstall, false, false)]
     [DataRow(LifecycleOperationKind.Reinstall, true, false)]
     [DataRow(LifecycleOperationKind.Rollback, false, false)]
     [DataRow(LifecycleOperationKind.Reinstall, false, true)]
     [DataRow(LifecycleOperationKind.Rollback, false, true)]
     public async Task CommittedOfflineRecoveryHandsRetainedControlToTheWorkerThenCompletesResume(
-        LifecycleOperationKind kind, bool uninstallFirst, bool terminal)
+        LifecycleOperationKind kind, bool uninstallFirst, bool terminal, bool precommit = false)
     {
         using var fixture = await LifecycleFixture.CreateAsync(kind == LifecycleOperationKind.Reinstall && !uninstallFirst
             ? InstanceLifecycleCondition.Uninstalled : InstanceLifecycleCondition.Installed);
@@ -36,7 +38,11 @@ public sealed partial class LifecycleContractTests
         });
         var preserved = await File.ReadAllBytesAsync(path);
         var returned = new RetainedControlProjection(original);
-        var lifecycle = new FencedDeploymentLifecycle(ordinary, returned);
+        var lifecycle = new FencedDeploymentLifecycle(ordinary, returned)
+        {
+            FailDrain = precommit && kind == LifecycleOperationKind.Reinstall,
+            FailConfirm = precommit && kind == LifecycleOperationKind.Rollback
+        };
         fixture.Runner.Reboot(fixture.Runner.ActiveImageId, wasRunning: false);
         if (uninstallFirst)
             Assert.AreEqual("completed", (await CameraAgentLifecycleManager.ExecuteAsync(
@@ -46,9 +52,11 @@ public sealed partial class LifecycleContractTests
         var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
             fixture.Request(kind), runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None));
-        StringAssert.Contains(failure.ToString(), "409", StringComparison.Ordinal);
+        StringAssert.Contains(failure.ToString(), precommit && kind == LifecycleOperationKind.Reinstall ? "injected drain" : "409", StringComparison.Ordinal);
         var committed = await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None);
-        Assert.AreEqual(LifecycleOperationPhase.Committed, committed!.Phase);
+        Assert.AreEqual(precommit ? kind == LifecycleOperationKind.Reinstall
+            ? LifecycleOperationPhase.Prepared : LifecycleOperationPhase.Restoring
+            : LifecycleOperationPhase.Committed, committed!.Phase);
         Assert.AreEqual(InstallationStatus.Running, committed.Status);
         Assert.IsTrue(committed.MutationStarted);
         CollectionAssert.AreEqual(preserved, await File.ReadAllBytesAsync(path));
@@ -56,8 +64,10 @@ public sealed partial class LifecycleContractTests
         await new InstallerControlWorker(returned, journal,
             token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, token),
             TimeProvider.System, busy.Add,
-            acquireInterruptedRecovery: token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(
-                fixture.Paths, token, settleCommittedRecovery: true)).PollAsync(CancellationToken.None);
+            acquireInterruptedRecovery: (receipt, token) => CameraAgentLifecycleManager.AcquireInterruptedControlAsync(
+                fixture.Paths, precommit && kind == LifecycleOperationKind.Reinstall
+                    ? InstanceLifecycleCondition.Uninstalled : InstanceLifecycleCondition.Installed,
+                receipt, returned, token)).PollAsync(CancellationToken.None);
         Assert.IsTrue(journal.Receipts.Single().IsTerminal, string.Join("; ", busy));
         Assert.IsEmpty(journal.Unpublished);
         Assert.IsEmpty(journal.Refused);
@@ -68,7 +78,7 @@ public sealed partial class LifecycleContractTests
             fixture.Runner, _ => lifecycle, _ => new FakeOwnerClient(fixture.ApplicationIdentity),
             fixture.Uid, fixture.Gid, CancellationToken.None);
         Assert.AreEqual("completed", result.Outcome);
-        Assert.AreEqual(starts, fixture.Runner.ComposeUpCount, "Committed retry must not restart the image again.");
+        if (!precommit) Assert.AreEqual(starts, fixture.Runner.ComposeUpCount, "Committed retry must not restart the image again.");
         Assert.AreEqual(InstallationStatus.Completed,
             (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!.Status);
     }
@@ -113,18 +123,25 @@ public sealed partial class LifecycleContractTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task CommittedRecoverySettlementCannotStartAnotherQueuedRuntimeLifecycle()
+    [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Committed)]
+    [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Prepared)]
+    [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring)]
+    public async Task CommittedRecoverySettlementCannotStartAnotherQueuedRuntimeLifecycle(
+        LifecycleOperationKind kind, LifecycleOperationPhase phase)
     {
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
-        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Reinstall),
-            fixture.Paths, LifecycleOperationKind.Reinstall, fixture.Manifest, CancellationToken.None);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(kind),
+            fixture.Paths, kind, fixture.Manifest, CancellationToken.None);
         await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
         {
-            Phase = LifecycleOperationPhase.Committed,
+            Phase = phase,
+            CandidateImage = kind == LifecycleOperationKind.Rollback ? fixture.Manifest.Image : null,
             MutationStarted = true,
             PostMutationContinuity = new("Paused", 1, 42, 0, 0, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow)
         }, CancellationToken.None);
         var (journal, _, retained) = await PendingControlAsync(fixture, terminal: false);
+        retained = retained with { OriginalProcessId = Guid.NewGuid(), ResumeAfterVerification = true };
+        await journal.SaveAsync(retained);
         var next = retained with
         {
             Request = retained.Request with { OperationId = Guid.NewGuid() },
@@ -134,8 +151,8 @@ public sealed partial class LifecycleContractTests
         var returned = new RetainedControlProjection(retained) { NextQueued = next };
         await new InstallerControlWorker(returned, journal,
             token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, token), TimeProvider.System, _ => { },
-            acquireInterruptedRecovery: token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(
-                fixture.Paths, token, settleCommittedRecovery: true)).PollAsync(CancellationToken.None);
+            acquireInterruptedRecovery: (receipt, token) => CameraAgentLifecycleManager.AcquireInterruptedControlAsync(
+                fixture.Paths, InstanceLifecycleCondition.Installed, receipt, returned, token)).PollAsync(CancellationToken.None);
         Assert.IsTrue(journal.Receipts.Single(item => item.Request.OperationId == retained.Request.OperationId).IsTerminal);
         var rejected = journal.Receipts.Single(item => item.Request.OperationId == next.Request.OperationId);
         Assert.AreEqual(CameraAgentControlPhase.Failed, rejected.Phase);
@@ -143,10 +160,160 @@ public sealed partial class LifecycleContractTests
         Assert.IsEmpty(journal.Unpublished);
     }
 
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Prepared, true, true, true)]
+    [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring, true, true, true)]
+    [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.CandidateVerified, true, true, true)]
+    [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Prepared, false, true, false)]
+    [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring, true, false, false)]
+    [DataRow(LifecycleOperationKind.Upgrade, LifecycleOperationPhase.Restoring, true, true, false)]
+    [DataRow(LifecycleOperationKind.Uninstall, LifecycleOperationPhase.Prepared, true, true, false)]
+    [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Prepared, true, true, false, false, false)]
+    [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring, true, true, false, true, true)]
+    [DataRow(LifecycleOperationKind.Reinstall, LifecycleOperationPhase.Prepared, true, true, false, true, false, "Running")]
+    [DataRow(LifecycleOperationKind.Rollback, LifecycleOperationPhase.Restoring, true, true, false, true, false, "PauseRequested")]
+    [DataRow(LifecycleOperationKind.Upgrade, LifecycleOperationPhase.Restoring, true, true, false, true, false, "Paused", InstanceLifecycleCondition.Installed)]
+    [DataRow(LifecycleOperationKind.Uninstall, LifecycleOperationPhase.Prepared, true, true, false, true, false, "Paused", InstanceLifecycleCondition.Installed)]
+    public async Task PrecommitSettlementRequiresADifferentInitializedProcess(
+        LifecycleOperationKind kind, LifecycleOperationPhase phase, bool different, bool initialized, bool allowed,
+        bool originalKnown = true, bool emptyCurrent = false, string captureState = "Paused",
+        InstanceLifecycleCondition condition = InstanceLifecycleCondition.Uninstalled)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(kind), fixture.Paths, kind,
+            fixture.Manifest, CancellationToken.None);
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+        {
+            Phase = phase,
+            MutationStarted = phase != LifecycleOperationPhase.Prepared,
+            CandidateImage = kind is LifecycleOperationKind.Rollback or LifecycleOperationKind.Upgrade ? fixture.Manifest.Image : null
+        }, CancellationToken.None);
+        var (journal, _, original) = await PendingControlAsync(fixture, terminal: false);
+        original = original with { OriginalProcessId = originalKnown ? Guid.NewGuid() : null, ResumeAfterVerification = true };
+        await journal.SaveAsync(original);
+        var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var returned = new RetainedControlProjection(original)
+        {
+            Process = emptyCurrent ? Guid.Empty : different ? Guid.NewGuid() : original.OriginalProcessId!.Value,
+            Initialized = initialized,
+            CaptureState = captureState
+        };
+        var messages = new List<string>();
+        await new InstallerControlWorker(returned, journal,
+            token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, token),
+            TimeProvider.System, messages.Add,
+            acquireInterruptedRecovery: (receipt, token) => CameraAgentLifecycleManager.AcquireInterruptedControlAsync(
+                fixture.Paths, condition, receipt, returned, token)).PollAsync(CancellationToken.None);
+        Assert.AreEqual(allowed, journal.Receipts.Single().IsTerminal, string.Join("; ", messages));
+        Assert.AreEqual(!allowed, returned.Held);
+        Assert.IsEmpty(journal.Refused);
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        Assert.IsTrue(File.Exists(fixture.Paths.LifecycleStatePath));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(LifecycleOperationKind.Reinstall, "timeout")]
+    [DataRow(LifecycleOperationKind.Rollback, "timeout")]
+    [DataRow(LifecycleOperationKind.Reinstall, "refusal")]
+    [DataRow(LifecycleOperationKind.Rollback, "refusal")]
+    [DataRow(LifecycleOperationKind.Reinstall, "transport")]
+    [DataRow(LifecycleOperationKind.Rollback, "transport")]
+    public async Task RefusedDeploymentSettlementNeverProbesTheProcess(LifecycleOperationKind kind, string failure)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(kind), fixture.Paths, kind,
+            fixture.Manifest, CancellationToken.None);
+        await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
+        {
+            Status = InstallationStatus.Failed,
+            FailureCode = CameraAgentLifecycleManager.RefusedFailureCode,
+            FailureMessage = "refused before mutation",
+            MutationStarted = false
+        }, CancellationToken.None);
+        var before = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var calls = 0;
+        using var lease = await CameraAgentLifecycleManager.AcquireControlDeploymentAsync(
+            fixture.Paths, CancellationToken.None, returnedProcess: _ =>
+            {
+                calls++;
+                return failure switch
+                {
+                    "timeout" => throw new TaskCanceledException("probe timeout"),
+                    "refusal" => throw new InstallerControlRefusalException(409),
+                    _ => throw new HttpRequestException("probe transport")
+                };
+            });
+        Assert.AreEqual(0, calls);
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("timeout", "probe-timeout")]
+    [DataRow("transport", "transport-unavailable")]
+    [DataRow("refusal", "probe-refused status=409")]
+    public async Task RequiredRecoveryProbeFailureKeepsEvidenceAndContinuesPolling(string fault, string diagnostic)
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        var operation = await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Reinstall),
+            fixture.Paths, LifecycleOperationKind.Reinstall, fixture.Manifest, CancellationToken.None);
+        var (journal, path, original) = await PendingControlAsync(fixture, terminal: false);
+        original = original with { OriginalProcessId = Guid.NewGuid() };
+        await journal.SaveAsync(original);
+        var before = await File.ReadAllBytesAsync(path);
+        var deployment = await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath);
+        var returned = new RetainedControlProjection(original) { ProbeFault = fault };
+        var messages = new List<string>();
+        var worker = new InstallerControlWorker(returned, journal,
+            token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, token),
+            TimeProvider.System, messages.Add,
+            acquireInterruptedRecovery: (receipt, token) => CameraAgentLifecycleManager.AcquireInterruptedControlAsync(
+                fixture.Paths, InstanceLifecycleCondition.Installed, receipt, returned, token));
+        await worker.PollAsync(CancellationToken.None);
+        Assert.AreEqual(2, returned.Exchanges, "A failed required probe must still allow the poll heartbeat.");
+        CollectionAssert.AreEqual(before, await File.ReadAllBytesAsync(path));
+        CollectionAssert.AreEqual(deployment, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
+        Assert.AreEqual("stage=lifecycle-worker recovery=" + diagnostic, messages.Single());
+        Assert.IsEmpty(journal.Refused);
+        Assert.IsTrue(returned.Held);
+        await worker.PollAsync(CancellationToken.None);
+        Assert.IsTrue(journal.Receipts.Single().IsTerminal, "A later healthy poll must retry settlement.");
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task RequiredRecoveryProbeDoesNotSwallowCallerCancellation()
+    {
+        using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed);
+        await CameraAgentLifecycleManager.BeginAsync(fixture.Request(LifecycleOperationKind.Reinstall), fixture.Paths,
+            LifecycleOperationKind.Reinstall, fixture.Manifest, CancellationToken.None);
+        var (journal, _, original) = await PendingControlAsync(fixture, terminal: false);
+        using var stop = new CancellationTokenSource();
+        var returned = new RetainedControlProjection(original);
+        var worker = new InstallerControlWorker(returned, journal,
+            token => CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, token),
+            TimeProvider.System, _ => Assert.Fail("Caller cancellation must propagate."),
+            acquireInterruptedRecovery: async (_, token) => { await stop.CancelAsync(); throw new OperationCanceledException(token); });
+        await Assert.ThrowsAsync<OperationCanceledException>(() => worker.PollAsync(stop.Token));
+        Assert.AreEqual(0, returned.Exchanges);
+    }
+
     private sealed class FencedDeploymentLifecycle(FakeLifecycleClient inner, RetainedControlProjection projection) : ICameraAgentLifecycleClient
     {
-        public Task<LifecycleContinuity> PauseAndDrainAsync(Guid id, string token, CancellationToken ct) => inner.PauseAndDrainAsync(id, token, ct);
-        public Task<LifecycleContinuity> ConfirmDrainedAsync(string token, CancellationToken ct) => inner.ConfirmDrainedAsync(token, ct);
+        internal bool FailDrain;
+        internal bool FailConfirm;
+        public Task<LifecycleContinuity> PauseAndDrainAsync(Guid id, string token, CancellationToken ct)
+        {
+            if (FailDrain) { FailDrain = false; throw new InstallerException("injected drain failure"); }
+            return inner.PauseAndDrainAsync(id, token, ct);
+        }
+        public Task<LifecycleContinuity> ConfirmDrainedAsync(string token, CancellationToken ct)
+        {
+            if (FailConfirm) { FailConfirm = false; throw new InstallerException("injected confirm failure"); }
+            return inner.ConfirmDrainedAsync(token, ct);
+        }
         public Task<LifecycleContinuity> ReadContinuityAsync(string token, CancellationToken ct) => inner.ReadContinuityAsync(token, ct);
         public Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid id, Guid command, long version, string token, CancellationToken ct) =>
             inner.ResumeRecoveryAsync(id, command, version, token, ct);
@@ -158,17 +325,29 @@ public sealed partial class LifecycleContractTests
     private sealed class RetainedControlProjection(CameraAgentControlReceipt original) : IInstallerControlClient
     {
         internal bool Held = true;
+        internal string? ProbeFault;
+        internal int Exchanges;
         internal CameraAgentControlReceipt? NextQueued;
-        private readonly Guid _returnedProcess = Guid.NewGuid();
+        internal Guid Process = Guid.NewGuid();
+        internal bool Initialized = true;
+        internal string CaptureState = "Paused";
         public Task<CameraAgentControlSnapshot> ExchangeAsync(CameraAgentControlReceipt? receipt, CancellationToken ct)
         {
+            Exchanges++;
+            if (ProbeFault is { } fault)
+            {
+                ProbeFault = null;
+                if (fault == "timeout") throw new TaskCanceledException("probe timeout");
+                if (fault == "refusal") throw new InstallerControlRefusalException(409);
+                throw new HttpRequestException("probe transport");
+            }
             if (receipt?.IsTerminal == true)
             {
                 if (receipt.Request.OperationId == original.Request.OperationId) Held = false;
                 else if (NextQueued?.Request.OperationId == receipt.Request.OperationId) NextQueued = receipt;
             }
-            return Task.FromResult(new CameraAgentControlSnapshot(Held ? original : NextQueued, false, _returnedProcess,
-                "Paused", 2, true, true, true));
+            return Task.FromResult(new CameraAgentControlSnapshot(Held ? original : NextQueued, false, Process,
+                CaptureState, 2, Initialized, true, true));
         }
         public Task<LifecycleContinuity> DrainAsync(CameraAgentControlRequest request, CancellationToken ct) => throw new AssertFailedException("Settlement must not drain.");
         public Task RestartAsync(CameraAgentControlReceipt receipt, CancellationToken ct) => throw new AssertFailedException("Settlement must not restart.");

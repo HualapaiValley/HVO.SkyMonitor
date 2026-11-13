@@ -468,6 +468,7 @@ public class Program
                 OwnerBootstrapStateReader ownerBootstrapStateReader,
                 HVO.SkyMonitor.CameraAgent.Common.Configuration.ICameraAgentConfigurationLoader configurationLoader,
                 HVO.SkyMonitor.Catalog.Sqlite.CatalogSnapshotResult catalog,
+                HVO.SkyMonitor.Astronomy.ICelestialCatalog selectedCatalog,
                 IOptions<HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions> options,
                 CancellationToken cancellationToken) =>
             {
@@ -522,7 +523,8 @@ public class Program
                     preprocessingVersion = catalog.PreprocessingVersion,
                     databaseSha256 = catalog.DatabaseSha256,
                     databaseLength = catalog.DatabaseLength,
-                    rowCount = catalog.RowCount
+                    rowCount = catalog.RowCount,
+                    deepSkyCatalog = (selectedCatalog as HVO.SkyMonitor.Astronomy.IDeepSkyCatalogSource)?.DeepSky?.Semantics.SnapshotIdentity
                 });
             })
             .AllowAnonymous();

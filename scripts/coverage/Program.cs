@@ -308,6 +308,7 @@ static XDocument ReadCoverageReport(string report, IReadOnlyDictionary<string, T
     if (allowEmpty)
     {
         CoverageInputFormat.Validate(document, report);
+        CoverageInputFormat.ValidateSourceRoots(document, report, repositoryRoot);
     }
 
     var classes = document.Descendants("class").ToArray();
