@@ -28,6 +28,8 @@ public sealed partial class UpgradePreflightTests
     [DataRow(16, 15, false, MigrationRemediation)]
     [DataRow(16, 12, false, ResetRemediation)]
     [DataRow(14, 12, false, ResetRemediation)]
+    [DataRow(13, 12, false, ResetRemediation)]
+    [DataRow(13, 14, false, ResetRemediation)]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public void RawIngressRemediationFitsTheJournalAgainstTheImagesDeclaredMigration(
         int expected, int observed, bool declareMigration, string remediation)
@@ -101,7 +103,12 @@ public sealed partial class UpgradePreflightTests
             "The oldest journal the image reads is the oldest its declared migration converts.");
         Assert.AreEqual(schema, rawIngress.GetProperty("reads").GetProperty("max").GetInt64());
         foreach (var (target, row) in CameraAgentStatePreflight.RawIngressMigrations)
+        {
             Assert.IsTrue(row.MinimumSource < target, $"Schema {target} must migrate from an older schema.");
+            for (var version = row.MinimumSource; version <= target; version++)
+                Assert.IsTrue(CameraAgentStatePreflight.RawIngressCanonicalShapes.ContainsKey(version),
+                    $"Schema {version} can be verified for schema {target} but has no canonical-shape check.");
+        }
     }
 
     private static string DeclaredMigration(int expected) => expected switch

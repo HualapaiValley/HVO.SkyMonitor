@@ -84,10 +84,6 @@ internal static class CameraAgentImageContract
         };
 }
 
-/// <summary>
-/// The persisted-state boundaries a candidate CameraAgent image declares through its OCI labels.
-/// A boundary the image does not declare cannot be checked and is reported rather than assumed compatible.
-/// </summary>
 /// <summary>A raw-ingress schema's declared migration: the oldest source schema it converts and its contract.</summary>
 internal sealed record RawIngressMigration(long MinimumSource, string Contract)
 {
@@ -95,6 +91,10 @@ internal sealed record RawIngressMigration(long MinimumSource, string Contract)
     public bool Migrates(long observed, long expected) => observed >= MinimumSource && observed < expected;
 }
 
+/// <summary>
+/// The persisted-state boundaries a candidate CameraAgent image declares through its OCI labels.
+/// A boundary the image does not declare cannot be checked and is reported rather than assumed compatible.
+/// </summary>
 internal sealed record CameraAgentStateRequirements(
     string? StateContract,
     string? MinimumCompatibleRevision,
@@ -124,9 +124,10 @@ internal static class CameraAgentStatePreflight
     public const int SchemaVersion = DeploymentSchemaVersions.StatePreflightReport;
 
     /// <summary>
-    /// The raw-ingress schemas this installer verifies as canonical, each with the oldest schema its declared migration
-    /// converts and that migration's contract. The canonical-eligibility check and the remediation a blocking finding
-    /// names both read this table, so a schema bump that adds a row updates both (#1823).
+    /// The raw-ingress schemas this installer verifies, each with the oldest schema its declared migration converts and
+    /// that migration's contract. The eligibility check (which journals are verified, and under which migration) and the
+    /// remediation a blocking finding names both read this table (#1823). How a journal's shape is verified is chosen
+    /// per observed schema by <see cref="RawIngressCanonicalShapes"/>, which a new row must also extend.
     /// </summary>
     internal static IReadOnlyDictionary<long, RawIngressMigration> RawIngressMigrations { get; } =
         new Dictionary<long, RawIngressMigration>
@@ -134,6 +135,19 @@ internal static class CameraAgentStatePreflight
             [14] = new(13, RawIngressV13Schema.MigrationContract),
             [15] = new(13, RawIngressV13Schema.RecoveryMigrationContract),
             [16] = new(13, RawIngressV13Schema.EnvironmentalFenceMigrationContract),
+        };
+
+    /// <summary>
+    /// The canonical-shape check for each raw-ingress schema a verified journal can be at. A schema without an entry is
+    /// never canonical, so adding a migration row without deciding how its journals are verified fails closed.
+    /// </summary>
+    internal static IReadOnlyDictionary<long, Func<SqliteConnection, bool>> RawIngressCanonicalShapes { get; } =
+        new Dictionary<long, Func<SqliteConnection, bool>>
+        {
+            [13] = RawIngressV13Schema.IsCanonical,
+            [14] = RawIngressV13Schema.IsCanonicalV14,
+            [15] = RawIngressV13Schema.IsCanonicalV14,
+            [16] = RawIngressV13Schema.IsCanonicalV14,
         };
 
     internal const string RawIngressDriftRemediation =
@@ -520,9 +534,8 @@ internal static class CameraAgentStatePreflight
                  (declared.Migrates(observed, expected) && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
                   requirements.RawIngressMigration == declared.Contract)))
             {
-                canonical = observed is 14 or 15 or 16
-                    ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
-                    : RawIngressV13Schema.IsCanonical(database.Connection);
+                canonical = RawIngressCanonicalShapes.TryGetValue(observed, out var isCanonicalShape) &&
+                            isCanonicalShape(database.Connection);
                 if (canonical)
                 {
                     using var integrity = database.Connection.CreateCommand();
