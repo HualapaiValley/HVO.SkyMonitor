@@ -53,6 +53,8 @@ data deletion. Keep original products as evidence; future long-exposure
 qualification/reprocessing remains under Refs #1179. Duration uses exact UTC
 endpoints with no tolerance above one second.
 
+On development prereleases (not stable 0.9.0), a pre-upgrade long-exposure product with `available` uncertainty still queued in a CameraAgent outbox is rejected by LogicHost ingest with HTTP 400 and quarantined by CameraAgent as `http-400`, a terminal outcome with no retry loop or blocked outbox.
+
 The configured astrometry node is optional. Its existing worker policy degrades
 an exception to a terminal optional-node outcome in live execution; replay
 retries only up to the configured replay attempt limit, then records optional

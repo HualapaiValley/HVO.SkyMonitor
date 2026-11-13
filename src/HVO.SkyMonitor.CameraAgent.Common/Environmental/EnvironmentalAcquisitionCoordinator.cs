@@ -271,8 +271,10 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             async Task SettleFirstAsync(EnvironmentalAcquisitionReceipt first)
             {
                 settlementAttempted = true;
+                acquisition.BeginStorage();
                 try { await CompleteCaptureReceiptAsync(commands, claim, first).ConfigureAwait(false); }
                 catch (Exception exception) { settlementError = exception; }
+                finally { acquisition.EndStorage(); }
             }
             EnvironmentalAcquisitionReceipt receipt;
             try
@@ -317,7 +319,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         {
             try
             {
-                await commands.CompleteOnDemandAsync(_root, claim.Key, claim.LeaseToken, receipt, deadline.Token).ConfigureAwait(false);
+                await EnvironmentalCaptureStorageWork.RunAsync(() => commands.CompleteOnDemandAsync(
+                    _root, claim.Key, claim.LeaseToken, receipt, deadline.Token), deadline.Token).ConfigureAwait(false);
                 return;
             }
             catch (IOException) when (attempt < 2)

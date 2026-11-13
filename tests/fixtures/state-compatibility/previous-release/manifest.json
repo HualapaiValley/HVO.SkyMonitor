@@ -129,6 +129,16 @@
         "io.hvo.skymonitor.state-contracts": "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}"
       },
       "reason": "Processing schema 8 migrates atomically to schema 9 for bounded scalar manifest ledgers. The minimum-compatible-revision boundary selects the paired checkpoint before candidate startup; older binaries use that checkpoint during rollback. Frozen SQL images remain unchanged. Refs #1766"
+    },
+    {
+      "location": "raw/journal/raw-ingress.db",
+      "objects": [
+        "pragma:user_version"
+      ],
+      "stateBoundaryLabel": "io.hvo.skymonitor.raw-ingress-schema",
+      "previousValue": "15",
+      "candidateValue": "16",
+      "reason": "Schema 16 preserves capture-specific environmental unavailable evidence that earlier readers do not understand. Processing-schema changes are declared separately; frozen SQL images remain unchanged and downgrade restores the paired checkpoint. Refs #1735"
     }
   ]
 }
