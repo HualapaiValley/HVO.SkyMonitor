@@ -240,8 +240,9 @@ case leave both journals intact and complete these steps:
    For a precommit failure, correct the reported underlying failure first, then
    use the same command with `--resume`; its existing phase checks determine
    which deployment steps must be retried. A worker started while the manifest
-   says Uninstalled stays settlement-only for that worker run; restart it after
-   reinstall completes before submitting new runtime-control requests.
+   says Uninstalled refreshes the retained identity under deployment authority;
+   after reinstall completes it accepts new runtime-control requests without a
+   restart. Changes to its runtime account or listener still require a restart.
 
 If reinstall cannot reach commit and the worker cannot prove a different
 initialized **Paused** process (or the installed tooling predates this recovery path),
@@ -262,11 +263,19 @@ rollback's original-image/authenticated preconditions; if those cannot be met,
 use the preserve-by-default uninstall/restore/reinstall route described above.
 
 A rollback interrupted between publishing its candidate manifest and installation
-result can retain mismatched image records. The production worker currently
-refuses startup at this partial commit even though the retained transaction may
-be valid; the reachable-agent retry gate can also refuse the pending receipt.
-Retain all evidence and escalate for transaction-aware recovery rather than
-editing records to force correlation.
+result can retain mismatched image records. When these match the same retained
+CandidateVerified rollback transaction, the worker refuses startup with
+`lifecycle.rollback-partial-commit`, explicitly retaining the runtime-control
+fence. This is an interrupted publication, not arbitrary identity corruption;
+the reachable-agent retry gate can also refuse the pending receipt. Retain both
+journals and escalate for transaction-aware recovery rather than editing records
+to force correlation. Unrelated identity mismatches keep their strict refusal.
+
+A required returned-process probe that times out, loses transport, or receives an
+HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed.
+Diagnostics distinguish `recovery=probe-timeout`, `recovery=transport-unavailable`
+and `recovery=probe-refused status=<code>` from heartbeat or publication failures.
+The next poll retries the retained recovery; caller cancellation still stops the worker.
 
 Do not edit or delete either journal. Definite quarantined refusals still require
 reconciliation; they never qualify for the offline exception.
