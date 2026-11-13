@@ -148,12 +148,42 @@ interval or classifying a valid frequency-mode packet as malformed. Configure `B
 the exposure; its association is Missing. No image-derived SQM measure is added.
 The retained integration interval describes the measurement. Optional pre-exposure
 association currently uses validity/freshness, so a sample ending just before
-capture can describe that capture without claiming temporal overlap. A versioned
-interval/gap policy and physical timing validation remain tracked in [#1735](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1735).
-`BeforeCaptureWaitMilliseconds` bounds device acquisition. Durable attempt
-settlement can add storage latency; using an expired acquisition token for that
-settlement would allow old failed-source evidence to reappear. A strict total
-capture deadline with a durable capture fence is also tracked in #1735.
+capture can describe that capture without claiming temporal overlap. The in-code
+`sqm-validity-interval-diagnostics-v1` policy names the maximum preceding gap as
+one existing per-reading validity window, with the existing freshness check
+applied separately. No second time limit changes selection: stale-but-valid
+readings remain Stale, and readings whose validity ends at or before exposure
+start remain Missing. Configured windows and retained sample times remain the
+authority, including when the integration is longer than the validity window.
+When an `environment.associate` activity is sampled, a new association reports an
+`environment.association.interval` event with its status, actual sample interval,
+integration duration, maximum preceding gap and `policy_version`. A sample ending at or before
+exposure start is `preceding` with its nonnegative gap; touching half-open
+intervals have zero gap and do not overlap. Intersecting sample/exposure intervals
+are `overlapping`. A retained zero-duration point inside the exposure is
+`instantaneous`. Unselected evidence is `unavailable`, without an invented
+interval; an older selected reading without an integration is `interval-unknown`.
+Non-SQM readings receive no SQM interval event. Retained associations are returned
+unchanged without backfilling or reinterpreting their diagnostics.
+
+The version is surfaced only in the sampled activity event. Association records have no free-form
+diagnostic metadata slot, and sample metadata is typed. Source provenance has
+free-form parameters, but they determine source identity: placing an association
+diagnostic version there could split one source into competing identities and
+change selection. Persisting this version in a non-identity diagnostic slot
+needs a separately authorized schema or persisted-format decision. That item and
+physical timing validation remain tracked in Refs #1735.
+`BeforeCaptureWaitMilliseconds` bounds the device read and, when positive, the
+caller's whole optional wait for claim admission and receipt settlement. Values
+above 2000 ms are rejected. A shorter wait expiry leaves acquisition Pending;
+it does not fence an in-flight sensor read. The shared two-second writer deadline
+or preparation queue refusal returns a capture-specific unavailable marker for
+before-capture sources. Settlement retains its independent bounded grace token.
+The existing zero-wait setting still permits queued acquisition after its durable
+claim is admitted; claim admission itself has the same two-second bound.
+Physical SQM timing qualification remains held. Persisted diagnostic-policy
+versioning remains a known limit under Roy's decision in Refs #1735.
+
 
 ## Online weather
 
@@ -257,10 +287,59 @@ The optional `cycleEvidence.acquisitionAttemptId` correlates that request with t
 raw capture. It is omitted for legacy captures, preserving their serialized form.
 No attempt is attributed to a capture by its timestamp or by the latest source row.
 
+Before-capture reservations retry SQLite busy/locked failures at most three times,
+waiting 100 milliseconds between attempts and honoring host cancellation. Each
+retry retains the same acquisition identity. Other errors and identity conflicts
+propagate before acquisition is queued. Exhaustion can refuse the capture cycle;
+a two-second admission timeout or a full preparation queue instead produces an
+explicit unavailable result.
+
+A dedicated hosted preparation reader owns the potentially blocking SQLite claim
+and refused-queue settlement work. Native claim and receipt writes run on dedicated
+threads awaited by these bounded workers, so SQLite busy waits do not occupy the
+shared worker pool that delivers the capture deadline. Both the preparation queue and the acquisition
+queue are bounded by the existing `QueueCapacity`; each has one reader. Deadline
+expiry stops waiting on that owned work. It cannot create a new untracked writer
+or cancel known-result settlement with an expired device budget. Host shutdown
+cancels preparation, drains queued requests and remains responsible for workers;
+startup settles any interrupted capture claims through the existing recovery path.
+
+`cycleEvidence.environmentalUnavailable: true` is immutable capture evidence,
+omitted when false to preserve existing capture bytes. Raw admission stores it in
+`raw_captures.manifest_json` in the same transaction as the capture and lane work.
+There is no separate environmental-store write that can be lost after admission.
+The association reader checks the committed capture marker before binding or
+reading environmental receipts; its before-capture sources stay unavailable even
+if a late receipt or later poll succeeds. New evidence also retains
+`cycleEvidence.environmentalBeforeCaptureSources`, the capture-time source ID
+snapshot, so a later trigger configuration cannot remove that fence. Periodic
+sources retain their normal association, and the after-capture hook still records
+the capture regime. The marker is capture-specific and cannot suppress future captures. Existing completed
+associations remain immutable. A pre-commit interruption admits neither the row
+nor its marker; raw-ingress recovery publishes the original sidecar evidence.
+
+Raw-ingress schema 16 is a reader boundary for this evidence. Canonical schemas
+13, 14 and 15 upgrade transactionally, with existing capture bytes retained.
+The image declares writes 16 / reads 13–16 and
+`canonical-v13-v14-v15-to-v16`; installer preflight verifies canonical source
+schemas, integrity and foreign keys before permitting that declared conversion.
+The changed raw-ingress boundary is an existing installer checkpoint trigger;
+older schema readers refuse 16 rather than silently discarding the marker.
+Downgrade requires the paired pre-upgrade checkpoint. No instance is upgraded or
+deployed by this software-only work.
+
 A busy request follows the exact in-flight read: success leaves that capture
 available, while failure/missing/timeout fences its older readings. With any
-before-capture budget, queued work may finish after exposure starts; a positive
-budget bounds the caller's wait and the eventual device read, not queue admission.
+before-capture budget, queued work may finish after exposure starts. A positive
+`BeforeCaptureWaitMilliseconds` bounds the caller's entire wait for preparation
+and completion and the eventual device read; valid values are 0–2000 ms. Zero
+skips the optional completion wait. A shorter configured wait leaves work Pending
+and follows the original in-flight read. The shared two-second storage deadline
+covers claim admission and requested settlement; only its expiry during storage
+work, or preparation queue refusal, writes the raw-admission unavailable marker.
+That marker fences only the capture-time before-capture source IDs retained in
+the manifest (configured before-capture sources for older markers); periodic sources keep
+their ordinary association behavior.
 Pending work defers the association lane without consuming failure attempts or
 repeating after-capture reads. Queue refusal records an explicit unavailable result.
 Known capture results settle before unrelated coalesced work drains, including
@@ -292,12 +371,14 @@ snapshot-rollback exception records the actual schema-3 image labels from
 `5f5d253dd38308b8e62be9a1e32194dd675d0b60`. Frozen previous-release SQL images
 stay unchanged.
 
-An unassociated capture whose entire receipt set has expired or is missing reports
-unavailable evidence, even if other associations still pin old facts. Completed
+An unassociated capture whose entire receipt set has expired reports unavailable
+evidence, even if other associations still pin old facts. If a shorter caller wait
+admits raw evidence before any preparation claim exists, association stays Pending
+until the shared preparation deadline and then fences the retained source IDs.
+No missing preparation can make its earlier successful readings eligible. Completed
 associations remain immutable. Association binds retained tokens to raw capture
 IDs; explicit legacy capture IDs remain readable and anonymous legacy history is
-never guessed into a capture. The SQM interval/gap
-policy and a strict total deadline under SQLite contention remain in Refs #1735.
+never guessed into a capture. Persisted SQM diagnostic versioning remains a known limit in Refs #1735.
 
 Coalesced triggers accepted during a bounded before-capture acquisition move to a
 bounded deferred queue drained by the same hosted acquisition service. Queue

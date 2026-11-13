@@ -52,6 +52,8 @@ internal static class CameraAgentImageContract
     /// The catalog contract a current image declares. Registry version 2 approves the stars-only lineages and the
     /// composed HYG 4.4 + OpenNGC lineage. The image's catalog-manifest-version label is the highest manifest it reads.
     /// </summary>
+    public const string IndependentCatalogContract = "hvo-approved-catalogs-v3";
+
     public const string ComposedCatalogContract = "hvo-approved-catalogs-v2";
 
     /// <summary>
@@ -68,13 +70,14 @@ internal static class CameraAgentImageContract
     public static IReadOnlyList<string> RegistryV1CatalogIds { get; } = ["hyg-v42-production", "hyg-v44-production"];
 
     public static bool IsKnownCatalogContract(string? catalogContract)
-        => catalogContract is ComposedCatalogContract or CatalogContract or LegacyCatalogContract;
+        => catalogContract is IndependentCatalogContract or ComposedCatalogContract or CatalogContract or LegacyCatalogContract;
 
     /// <summary>True when an image declaring <paramref name="catalogContract"/> can resolve <paramref name="catalogId"/>.</summary>
     public static bool SupportsCatalog(string? catalogContract, string? catalogId)
         => catalogContract switch
         {
-            ComposedCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out _),
+            IndependentCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out _),
+            ComposedCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out var specification) && specification.ManifestVersion <= 3,
             CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
             LegacyCatalogContract => catalogId == ProductionCatalog.DefaultCatalogId,
             _ => false
@@ -482,13 +485,15 @@ internal static class CameraAgentStatePreflight
         {
             using var database = ReadOnlyDatabase.Open(databasePath);
             (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
-            if ((observed == 14 && expected == 14) || (observed == 15 && expected == 15) ||
+            if ((observed == 14 && expected == 14) || (observed == 15 && expected == 15) || (observed == 16 && expected == 16) ||
                 (observed == 13 && expected == 14 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
                  requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract) ||
                 (observed is 13 or 14 && expected == 15 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.RecoveryMigrationContract))
+                 requirements.RawIngressMigration == RawIngressV13Schema.RecoveryMigrationContract) ||
+                (observed is 13 or 14 or 15 && expected == 16 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
+                 requirements.RawIngressMigration == RawIngressV13Schema.EnvironmentalFenceMigrationContract))
             {
-                canonical = observed is 14 or 15
+                canonical = observed is 14 or 15 or 16
                     ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
                     : RawIngressV13Schema.IsCanonical(database.Connection);
                 if (canonical)
@@ -516,7 +521,7 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if ((observed == expected && expected is not (14 or 15)) || (observed == 0 && schemaObjects == 0) || canonical)
+        if ((observed == expected && expected is not (14 or 15 or 16)) || (observed == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }

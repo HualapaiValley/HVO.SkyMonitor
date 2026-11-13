@@ -144,6 +144,6 @@ internal static class ProductionCatalog
             specification.License.Identifier,
             specification.License.File.RelativePath,
             specification.License.Attribution.RelativePath,
-            specification.Topology.Identity,
-            specification.Topology.Sha256);
+            specification.Topology?.Identity ?? string.Empty,
+            specification.Topology?.Sha256 ?? string.Empty);
 }

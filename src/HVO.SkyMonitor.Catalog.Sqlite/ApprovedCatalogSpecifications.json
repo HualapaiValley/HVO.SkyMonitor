@@ -1,5 +1,5 @@
 {
-  "registryVersion": 2,
+  "registryVersion": 3,
   "specifications": [
     {
       "catalogId": "hyg-v42-production",
@@ -201,6 +201,234 @@
             "rowCount": 119613
           }
         },
+        {
+          "role": "deep-sky",
+          "name": "OpenNGC",
+          "version": "v20260501",
+          "commit": "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
+          "projectUrl": "https://github.com/mattiaverga/OpenNGC",
+          "license": "CC BY-SA 4.0",
+          "inputs": [
+            {
+              "relativePath": "database_files/NGC.csv",
+              "sha256": "840fe0c9ee1332e551b2e722a0e92726cd7b157914a3d2177602832aadd3aa9e",
+              "length": 3876288,
+              "rowCount": 13969
+            },
+            {
+              "relativePath": "database_files/addendum.csv",
+              "sha256": "1d8f0914e643ada325a5a94d88d8fefad6a4937a2f77cc34f21483af22b11983",
+              "length": 17484,
+              "rowCount": 64
+            }
+          ],
+          "outlines": {
+            "relativePath": "outlines/objects",
+            "fileCount": 379,
+            "listingSha256": "f8db977ecb1ecd2f7c9156f570bacddce5316b601c3a92e4a530ab6bc0d5de1f",
+            "pointCount": 102239
+          }
+        }
+      ],
+      "transformations": [
+        {
+          "id": "position-angle-180-to-0",
+          "count": 44,
+          "subjects": []
+        },
+        {
+          "id": "duplicate-resolved",
+          "count": 651,
+          "subjects": []
+        },
+        {
+          "id": "duplicate-disputed",
+          "count": 1,
+          "subjects": [
+            "M102->NGC5457"
+          ]
+        },
+        {
+          "id": "duplicate-tombstoned",
+          "count": 0,
+          "subjects": []
+        },
+        {
+          "id": "nonexistent-tombstoned",
+          "count": 10,
+          "subjects": [
+            "IC0067",
+            "IC0068",
+            "IC1064",
+            "IC1326",
+            "IC1642",
+            "IC2688",
+            "IC2915",
+            "IC3398",
+            "IC5112",
+            "NGC0412"
+          ]
+        },
+        {
+          "id": "caldwell-identifier-normalised",
+          "count": 105,
+          "subjects": []
+        },
+        {
+          "id": "hipparcos-identifier-normalised",
+          "count": 23,
+          "subjects": []
+        },
+        {
+          "id": "sh2-identifier-dropped",
+          "count": 1,
+          "subjects": [
+            "C009:SH 2-155"
+          ]
+        },
+        {
+          "id": "live-cross-reference-skipped",
+          "count": 6,
+          "subjects": [
+            "NGC0554A->NGC0554",
+            "NGC0704B->NGC0704",
+            "NGC0755->NGC0764",
+            "NGC6838->NGC6839",
+            "NGC7368->IC1459",
+            "NGC7418->IC1459"
+          ]
+        },
+        {
+          "id": "list-token-trimmed",
+          "count": 16,
+          "subjects": []
+        },
+        {
+          "id": "empty-list-token-dropped",
+          "count": 1,
+          "subjects": [
+            "UGC04305:identifiers"
+          ]
+        },
+        {
+          "id": "bare-prefix-identifier-dropped",
+          "count": 3,
+          "subjects": [
+            "NGC0234:HD",
+            "NGC7437:HD",
+            "NGC7659:HD"
+          ]
+        },
+        {
+          "id": "duplicate-row-identifier-dropped",
+          "count": 1,
+          "subjects": [
+            "IC0117:TYC 4682-651-1"
+          ]
+        },
+        {
+          "id": "alias-precedence-collapsed",
+          "count": 14,
+          "subjects": []
+        },
+        {
+          "id": "outline-stem-caldwell-padding",
+          "count": 1,
+          "subjects": [
+            "C9->C009"
+          ]
+        },
+        {
+          "id": "outline-stem-messier",
+          "count": 1,
+          "subjects": [
+            "M045->Mel022"
+          ]
+        },
+        {
+          "id": "outline-regional-stem-dropped",
+          "count": 11,
+          "subjects": [
+            "Antlia",
+            "Cepheus",
+            "CoronaAustralis",
+            "Cygnus",
+            "LBN1032",
+            "LBN1037",
+            "LMC",
+            "Orion",
+            "Puppis",
+            "Scorpion",
+            "Vela"
+          ]
+        },
+        {
+          "id": "outline-consecutive-duplicate-removed",
+          "count": 588,
+          "subjects": []
+        }
+      ]
+    },
+    {
+      "catalogId": "openngc-production",
+      "packageLineage": "openngc-production-p6-s5",
+      "packageVersionPrefix": "openngc-v20260501-p6-s5-r",
+      "manifestVersion": 4,
+      "catalog": {
+        "name": "OpenNGC v20260501",
+        "version": "v20260501"
+      },
+      "source": {
+        "projectUrl": "https://github.com/mattiaverga/OpenNGC",
+        "downloadUrl": "https://raw.githubusercontent.com/mattiaverga/OpenNGC/36cb178a0f69dba8bfc03a99c10512831edf1c6b/database_files/NGC.csv",
+        "oid": "840fe0c9ee1332e551b2e722a0e92726cd7b157914a3d2177602832aadd3aa9e",
+        "compressed": {
+          "sha256": "840fe0c9ee1332e551b2e722a0e92726cd7b157914a3d2177602832aadd3aa9e",
+          "length": 3876288
+        },
+        "decompressed": {
+          "sha256": "840fe0c9ee1332e551b2e722a0e92726cd7b157914a3d2177602832aadd3aa9e",
+          "length": 3876288
+        }
+      },
+      "schemaVersion": "5",
+      "preprocessingVersion": "6",
+      "serializer": {
+        "name": "sqlite3",
+        "version": "3.45.1"
+      },
+      "database": {
+        "relativePath": "openngc.sqlite",
+        "sha256": "f98dee575f92d3684321c575b4526673af6b133a6cb865da5fd4f19c060ece39",
+        "length": 7086080,
+        "rowCount": 13371,
+        "solCount": 0,
+        "requiredColumn": "messier_number",
+        "deepSky": {
+          "objectCount": 13371,
+          "aliasCount": 65822,
+          "tombstoneCount": 10,
+          "outlineObjectCount": 182,
+          "outlineSetCount": 359,
+          "outlineRingCount": 441,
+          "outlinePointCount": 90861
+        }
+      },
+      "license": {
+        "identifier": "CC BY-SA 4.0",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+        "file": {
+          "relativePath": "LICENSE-OPENNGC.md",
+          "sha256": "7ff72fb2626b78a755e8adf18903f582d32fa3d766da99cf2847c23316f876fb",
+          "length": 660
+        },
+        "attribution": {
+          "relativePath": "ATTRIBUTION-OPENNGC.md",
+          "sha256": "da6bb73edac425f214b26cbed5785308fa214d40677ce06afe3475bab8d3336f",
+          "length": 1278
+        }
+      },
+      "components": [
         {
           "role": "deep-sky",
           "name": "OpenNGC",

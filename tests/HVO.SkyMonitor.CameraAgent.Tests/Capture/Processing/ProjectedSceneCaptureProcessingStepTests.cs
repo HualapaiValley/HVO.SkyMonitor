@@ -554,9 +554,10 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage(bool curated)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task PhysicalStageProjectedProductAndAnnotationCalculateSceneExactlyOnceWithExactLineage(bool curated, bool independent)
     {
         var root = CreateRoot();
         try
@@ -571,7 +572,8 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 Pipeline = new CapturePipelineConfig(
                 [
                     new CaptureProcessingStepConfig("ProjectedScene", Options: JsonSerializer.SerializeToElement(
-                        new ProjectedSceneCaptureProcessingStepOptions { CuratedAnnotations = curated ? new(Enabled: true) : null }), DependsOn: ["$raw"])
+                        new ProjectedSceneCaptureProcessingStepOptions { CuratedAnnotations = curated ? new(Enabled: true) : null,
+                            DeepSkyEnabled = independent, DeepSkyNgc = false, DeepSkyIc = false }), DependsOn: ["$raw"])
                 ])
             };
             var startedUtc = new DateTimeOffset(2026, 1, 2, 3, 4, 5, TimeSpan.Zero);
@@ -580,12 +582,13 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             var catalog = new MetadataCatalog([
                 new CelestialCatalogObject("zenith", "Zenith", rightAscensionHours, 0, 0)
             ]);
-            if (curated)
+            if (curated || independent)
             {
                 var semantics = new DeepSkySemantics("OpenNGC", "v20260501", "36cb178a0f69dba8bfc03a99c10512831edf1c6b",
                     new Uri("https://github.com/mattiaverga/OpenNGC"), "CC BY-SA 4.0", "equatorial-j2000-icrs-aligned",
                     "J2000.0", "arcminute", "degrees-north-through-east-0-inclusive-to-180-exclusive",
-                    "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote");
+                    "1-widest-2-standard-3-narrowest", "b-mag-per-square-arcsecond-within-25-mag-isophote",
+                    independent ? new("openngc-fixture", "openngc-fixture-1", "5", "6", new string('A', 64)) : null);
                 var item = new DeepSkyObject("NGC0224", "NGC 224", "M31", "G", rightAscensionHours, 0, "And",
                     null, null, null, null, null, null, null, 31, null, null, null);
                 catalog.DeepSky = new DeepSkyCatalog(semantics, [item],
@@ -621,6 +624,14 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
             await projectedStep.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
 
             var sceneProduct = fixture.Context.ProcessingOutcomes.Single().Products.Single();
+            if (independent)
+            {
+                var retained = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene!;
+                Assert.AreEqual(catalog.DeepSky!.Semantics.SnapshotIdentity, retained.DeepSky!.CatalogIdentity);
+                Assert.AreEqual(retained.DeepSky.CatalogIdentity, stagedSubmission.Result.Frame!.Metadata.Scene!.DeepSkyCatalog);
+                Assert.AreEqual(ProjectedDeepSky.QueryAlgorithmVersion, retained.DeepSky.AlgorithmVersion);
+                Assert.AreEqual("NGC0224", retained.DeepSky.Objects.Single().CatalogObjectId);
+            }
             fixture.Context.RegisterProcessingProduct(sceneProduct);
             fixture.Context.BeginNode("preview", ["$raw"]);
             var previewFrame = new CameraFrame(
@@ -674,7 +685,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                     CaptureProcessingContext.CreateArtifactId(sceneProduct.OutputIdentitySha256)
                 },
                 annotationProduct.SourceArtifactIds.ToArray());
-            if (curated)
+            if (curated || independent)
             {
                 Assert.AreEqual(ProjectedSceneV1.DeepSkySchemaVersion, sceneProduct.SchemaVersion);
                 var retained = ProjectedSceneJson.Parse(sceneProduct.Payload).Scene!;

@@ -196,12 +196,13 @@ services:
         bool passwordAuthorityEnabled,
         ContainerResourceLimits? resources,
         InstallationPaths? outputPaths = null,
-        CameraConfigurationGeneration? defaults = null)
+        CameraConfigurationGeneration? defaults = null,
+        CatalogInstallationIdentity? deepSkyCatalog = null)
     {
         outputPaths ??= paths;
         var rendering = Render(
             request, paths, instanceId, applicationIdentity, uid, gid, immutableImage, catalogPackageVersion, passwordFile,
-            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths, defaults);
+            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths, defaults, deepSkyCatalog);
         var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
         var secretsRoot = Path.Combine(outputPaths.ConfigRoot, "secrets");
         foreach (var path in new[]
@@ -284,7 +285,8 @@ services:
         bool passwordAuthorityEnabled,
         ContainerResourceLimits? resources,
         InstallationPaths? outputPaths = null,
-        CameraConfigurationGeneration? defaults = null)
+        CameraConfigurationGeneration? defaults = null,
+        CatalogInstallationIdentity? deepSkyCatalog = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(paths);
@@ -369,6 +371,17 @@ services:
             $"HVO_PASSWORD_FILE={passwordFile}",
             string.Empty
         });
+        if (deepSkyCatalog is not null)
+        {
+            const string starMount = "      - ${HVO_CATALOG_ROOT:?catalog root required}:/app/catalog:ro\n";
+            template = template.Replace(starMount, starMount + DeepSkyCatalogSelection.Mount, StringComparison.Ordinal);
+            environment = environment.TrimEnd('\n') + $"\nHVO_DEEP_SKY_CATALOG_ROOT={deepSkyCatalog.InstallRoot}\n";
+            settings["DeepSkyCatalog__Enabled"] = "true";
+            settings["DeepSkyCatalog__Root"] = "/app/deep-sky-catalog";
+            settings["DeepSkyCatalog__RequiredCatalogId"] = deepSkyCatalog.CatalogId;
+            settings["DeepSkyCatalog__RequiredPackageKind"] = "Production";
+            settings["DeepSkyCatalog__RequiredPackageVersion"] = deepSkyCatalog.PackageVersion;
+        }
         return new ComposeRendering(
             new ComposeFiles(
                 Path.Combine(composeRoot, "compose.yml"),

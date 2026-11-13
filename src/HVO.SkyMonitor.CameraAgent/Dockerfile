@@ -134,19 +134,17 @@ COPY --from=build /app/replay-runner /app/replay-runner
 #
 # catalog-manifest-version is the highest catalog manifest this image reads. Preflight
 # accepts a selected catalog from manifest 2 through that label. catalog-contract
-# hvo-approved-catalogs-v2 resolves every lineage in the embedded registry, including
+# hvo-approved-catalogs-v3 resolves every lineage in the embedded registry, including
 # the composed OpenNGC catalog, and still resolves the manifest 2 HYG catalogs. An
 # image that omits the manifest label is held to manifest 2 only.
 #
 # The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
-# and includes environmental schema 4 (Refs #1778), nightly schema 3 (Refs #1713),
-# and local automation schema 4 (Refs #1768). Paired protected state
+# and includes environmental schema 4 (Refs #1778) and nightly schema 3 (#1713). Paired protected state
 # is snapshotted with the databases before adoption so an older-reader rollback
-# receives its pre-upgrade history. The combined reader advances beyond the processing-only
-# predecessor at development/v1 38320d3a, so that schema-3 automation reader also checkpoints.
-# Its change makes existing installers checkpoint the paired databases before store conversion;
-# rollback restores that checkpoint rather than handing converted stores to older readers.
-# The same boundary also selects the paired checkpoint for processing schema 9.
+# receives its pre-upgrade history.
+# Its change makes existing installers checkpoint the paired databases before the schema-2 conversion;
+# rollback restores that checkpoint rather than handing schema 3 to a schema-2 binary.
+# The minimum-compatible-revision boundary also selects the paired checkpoint for processing schema 9.
 # Refs #1766. Earlier processing readers require the retained checkpoint.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
@@ -164,14 +162,14 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
       io.hvo.skymonitor.minimum-compatible-revision="bc5ca7489c4090c299c416309519ab72da4a8cdb" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
-      io.hvo.skymonitor.raw-ingress-schema="15" \
-      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-to-v15" \
-      io.hvo.skymonitor.catalog-manifest-version="3" \
+      io.hvo.skymonitor.raw-ingress-schema="16" \
+      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-to-v16" \
+      io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
-      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v2" \
+      io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v3" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
-      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
+      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":16,\"reads\":{\"min\":13,\"max\":16}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
       org.opencontainers.image.version="${HVO_VERSION}" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
       org.opencontainers.image.created="${HVO_CREATED}"

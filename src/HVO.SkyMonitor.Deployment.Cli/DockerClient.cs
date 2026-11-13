@@ -643,7 +643,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         ImageInstallationIdentity imageIdentity,
         uint uid,
         uint gid,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedDeepSkyRoot = null)
     {
         var expectedCatalog = paths.CatalogRoot;
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
@@ -674,6 +675,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 ["identity-mount"] = mounts.Any(mount => MountMatches(
                     mount, Path.Combine(paths.StateRoot, "identity"), "/app/App_Data", writable: true))
             };
+            if (expectedDeepSkyRoot is not null)
+                checks["deep-sky-catalog-mount"] = mounts.Any(mount => MountMatches(mount, expectedDeepSkyRoot, "/app/deep-sky-catalog", writable: false));
             if (compose.ReplayRunnerContainerName is not null)
             {
                 checks["replay-socket-mount"] = mounts.Any(mount => MountMatches(

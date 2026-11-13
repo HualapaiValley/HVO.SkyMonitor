@@ -60,6 +60,21 @@ internal static class CoverageInputFormat
         }
     }
 
+    internal static void ValidateSourceRoots(XDocument document, string report, string repositoryRoot)
+    {
+        var sourceRoot = Path.Combine(repositoryRoot, "src");
+        var allowed = document.Descendants("package").Select(package => sourceRoot + "/" + (string?)package.Attribute("name"))
+            .Append(sourceRoot).ToHashSet(StringComparer.Ordinal);
+        var containers = document.Root!.Elements("sources").ToArray();
+        var sources = containers.SelectMany(static container => container.Elements("source")).ToArray();
+        if (containers.Length != 1 || (sources.Length == 0 && document.Descendants("class").Any()) ||
+            document.Descendants("source").Count() != sources.Length || sources.Any(source =>
+                !allowed.Contains(source.Value.EndsWith('/') ? source.Value[..^1] : source.Value)))
+        {
+            throw new InvalidDataException($"Report '{report}' has invalid coverage source roots; expected one sources container with roots '{sourceRoot}/' or '{sourceRoot}/<package>/'. Restore genuine Coverlet roots before merging.");
+        }
+    }
+
     internal static string SourcePath(string repositoryRoot, string owner, string filename)
     {
         if (string.IsNullOrWhiteSpace(filename) || filename.Contains('\\', StringComparison.Ordinal) ||

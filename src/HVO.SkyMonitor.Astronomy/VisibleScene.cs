@@ -300,7 +300,7 @@ public sealed class VisibleScene
         if (ResolvedFootprints.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject))
             throw new InvalidOperationException("Deep-sky footprints come only from the deep-sky collection.");
         var (section, footprints) = DeepSkySceneProjector.Project(this, catalog, selection);
-        if (section.Objects.Count == 0) return this;
+        if (section.Objects.Count == 0 && selection.Query is null) return this;
         return new(Request, Objects, Segments, ComputationProvenance, ResolvedFootprints.Concat(footprints), selection, section);
     }
 

@@ -147,6 +147,9 @@ internal static class CatalogLifecycleManager
         string verificationToken,
         CancellationToken cancellationToken)
     {
+        if (request.CatalogFamily == "deep-sky" || request.CatalogVersion is { } version && ProductionCatalog.ForPackageVersion(version).ManifestVersion == 4)
+            return await DeepSkyCatalogSelection.SelectAsync(request, paths, manifest, installationResult, compose, docker,
+                lifecycleClientFactory, ownerClientFactory, lifecycleControlToken, verificationToken, cancellationToken).ConfigureAwait(false);
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
             throw new InstallerException("Catalog selection requires an installed instance.");
         var rollback = request.Operation == LifecycleOperationKind.CatalogRollback;
@@ -518,8 +521,8 @@ internal static class CatalogLifecycleManager
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
                 catalog,
-                AllowCompletedPasswordReplacement: true), cancellationToken).ConfigureAwait(false);
-        await docker.VerifyContainerAsync(compose, paths, manifest.Image, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken)
+                AllowCompletedPasswordReplacement: true, DeepSkyCatalog: manifest.DeepSkyCatalog), cancellationToken).ConfigureAwait(false);
+        await docker.VerifyContainerAsync(compose, paths, manifest.Image, manifest.RuntimeUid, manifest.RuntimeGid, cancellationToken, manifest.DeepSkyCatalog?.InstallRoot)
             .ConfigureAwait(false);
     }
 
@@ -806,10 +809,12 @@ internal static class CatalogLifecycleManager
                     if (manifest.InstanceId != directoryInstanceId || manifest.ProductRoot != paths.ProductRoot ||
                         manifest.ConfigRoot != Path.Combine(instanceRoot, "config") || manifest.StateRoot != Path.Combine(instanceRoot, "state"))
                         throw new InstallerException("Catalog garbage collection found a path-uncorrelated CameraAgent manifest.");
-                    if (manifest.Catalog.PackageVersion == version || manifest.PreviousCatalog?.PackageVersion == version) return true;
-                    var selectedPath = Path.Combine(manifest.ConfigRoot, "secrets", "Catalog__RequiredPackageVersion");
-                    if (File.Exists(selectedPath))
+                    if (manifest.Catalog.PackageVersion == version || manifest.PreviousCatalog?.PackageVersion == version ||
+                        manifest.DeepSkyCatalog?.PackageVersion == version || manifest.PreviousDeepSkyCatalog?.PackageVersion == version) return true;
+                    foreach (var selectionSetting in new[] { "Catalog__RequiredPackageVersion", "DeepSkyCatalog__RequiredPackageVersion" })
                     {
+                        var selectedPath = Path.Combine(manifest.ConfigRoot, "secrets", selectionSetting);
+                        if (!File.Exists(selectedPath)) continue;
                         using var selected = SafeFileSystem.OpenOwnerFileRead(selectedPath);
                         using var reader = new StreamReader(selected);
                         if ((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).TrimEnd('\r', '\n') == version) return true;
@@ -830,7 +835,7 @@ internal static class CatalogLifecycleManager
                 var backup = await CameraAgentLifecycleManager.DeserializeRetainedAsync(
                     stream, DeploymentJsonContext.Default.InstanceBackupManifest,
                     "backup manifest", cancellationToken).ConfigureAwait(false);
-                if (backup.Catalog.PackageVersion == version) return true;
+                if (backup.Catalog.PackageVersion == version || backup.DeepSkyCatalog?.PackageVersion == version) return true;
             }
         }
         foreach (var path in Directory.EnumerateFiles(paths.OperationsRoot, "cameraagent-*.lifecycle.json", SearchOption.TopDirectoryOnly))
@@ -839,7 +844,8 @@ internal static class CatalogLifecycleManager
                 ?? throw new InstallerException("A retained lifecycle operation is empty.");
             // A refused selection is terminal and never selected its candidate, so it holds no reference.
             if (operation.Status != InstallationStatus.Completed && !CameraAgentLifecycleManager.IsRefused(operation) &&
-                (operation.OriginalCatalog?.PackageVersion == version || operation.CandidateCatalog?.PackageVersion == version))
+                (operation.OriginalCatalog?.PackageVersion == version || operation.CandidateCatalog?.PackageVersion == version ||
+                 operation.OriginalDeepSkyCatalog?.PackageVersion == version || operation.CandidateDeepSkyCatalog?.PackageVersion == version))
             {
                 return true;
             }
@@ -859,7 +865,7 @@ internal static class CatalogLifecycleManager
         return manifest;
     }
 
-    private static void ValidateInstalled(InstallationPaths paths, CatalogInstallationIdentity identity)
+    internal static void ValidateInstalled(InstallationPaths paths, CatalogInstallationIdentity identity)
     {
         // Every installed version is validated within its own approved catalog's side-by-side root.
         paths = paths.WithCatalog(ProductionCatalog.Get(identity.CatalogId).CatalogId);
@@ -930,7 +936,7 @@ internal static class CatalogLifecycleManager
         return Convert.ToHexStringLower(aggregate.GetHashAndReset());
     }
 
-    private static async Task<CatalogInstallationIdentity> ReadInstalledIdentityAsync(
+    internal static async Task<CatalogInstallationIdentity> ReadInstalledIdentityAsync(
         InstallationPaths paths,
         string version,
         CancellationToken cancellationToken)
@@ -993,5 +999,6 @@ internal static class CatalogLifecycleManager
             manifest is null ? null : true,
             [paths.CatalogRoot, paths.OperationsRoot],
             null,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        { DeepSkyCatalog = manifest?.DeepSkyCatalog };
 }

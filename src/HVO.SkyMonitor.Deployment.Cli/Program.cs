@@ -399,6 +399,7 @@ internal static class Program
         if (result.InstanceId is not null) await Console.Out.WriteLineAsync($"Instance: {result.InstanceId:D} / {result.LifecycleCondition}").ConfigureAwait(false);
         if (result.Image is not null) await Console.Out.WriteLineAsync($"Image: {result.Image.ImageId}").ConfigureAwait(false);
         if (result.Catalog is not null) await Console.Out.WriteLineAsync($"Catalog: {result.Catalog.CatalogId} / {result.Catalog.PackageVersion}").ConfigureAwait(false);
+        if (result.DeepSkyCatalog is not null) await Console.Out.WriteLineAsync($"Deep-sky catalog: {result.DeepSkyCatalog.CatalogId} / {result.DeepSkyCatalog.PackageVersion}").ConfigureAwait(false);
         if (result.Running is not null) await Console.Out.WriteLineAsync($"Runtime: running={result.Running}; healthy={result.Healthy}").ConfigureAwait(false);
         foreach (var path in result.PreservedPaths) await Console.Out.WriteLineAsync($"Preserved: {path}").ConfigureAwait(false);
         if (result.ResumeCommand is not null) await Console.Out.WriteLineAsync($"Resume: {result.ResumeCommand}").ConfigureAwait(false);

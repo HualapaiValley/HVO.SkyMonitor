@@ -102,7 +102,7 @@ internal sealed record SystemSoftwareView(
     string RuntimeIdentifier,
     DateTimeOffset StartedUtc,
     TimeSpan Uptime,
-    SystemCatalogView Catalog);
+    SystemCatalogView Catalog, SystemCatalogView? DeepSkyCatalog = null);
 
 internal enum SystemControlReceiptKind
 {
@@ -162,7 +162,7 @@ internal sealed class CameraAgentSystemUiService(
     TimeProvider timeProvider,
     ILogger<CameraAgentSystemUiService> logger,
     IClockSyncMonitor? clockMonitor = null,
-    CameraAgentControlStore? controls = null, SqliteLocalAutomationStore? automations = null) : ICameraAgentSystemUiService
+    CameraAgentControlStore? controls = null, SqliteLocalAutomationStore? automations = null, HVO.SkyMonitor.Astronomy.ICelestialCatalog? selectedCatalog = null) : ICameraAgentSystemUiService
 {
     internal const int MaxReceipts = 25;
     internal static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(15);
@@ -274,7 +274,12 @@ internal sealed class CameraAgentSystemUiService(
                     catalog.PreprocessingVersion,
                     catalog.RowCount,
                     catalog.DatabaseLength,
-                    catalog.DatabaseSha256)));
+                    catalog.DatabaseSha256),
+                selectedCatalog is InstalledCatalogPair pair ? new SystemCatalogView(
+                    pair.DeepSkySnapshot.CatalogId, pair.DeepSkySnapshot.CatalogVersion, pair.DeepSkySnapshot.PackageKind.ToString(),
+                    pair.DeepSkySnapshot.SnapshotVersion, pair.DeepSkySnapshot.ManifestVersion, pair.DeepSkySnapshot.SchemaVersion,
+                    pair.DeepSkySnapshot.PreprocessingVersion, pair.DeepSkySnapshot.RowCount, pair.DeepSkySnapshot.DatabaseLength,
+                    pair.DeepSkySnapshot.DatabaseSha256) : null));
         }
         catch (Exception exception)
         {

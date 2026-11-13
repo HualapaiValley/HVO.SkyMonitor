@@ -93,7 +93,7 @@ public sealed class CameraAgentStateContractsLabelTests
         long[] opened =
         [
             SqliteRawCaptureJournal.PreviousSchemaVersion, SqliteRawCaptureJournal.PreviousRecoverySchemaVersion,
-            SqliteRawCaptureJournal.CurrentSchemaVersion
+            SqliteRawCaptureJournal.PreviousEvidenceSchemaVersion, SqliteRawCaptureJournal.CurrentSchemaVersion
         ];
         Assert.AreEqual(SqliteRawCaptureJournal.CurrentSchemaVersion, rawIngress.Writes);
         CollectionAssert.AreEqual(

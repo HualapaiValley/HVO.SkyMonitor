@@ -10,11 +10,25 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
 ### Fixed
 
 - CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. A distinct reader boundary requires a paired pre-upgrade checkpoint even from processing-schema-9 images that still use automation schema 3; rollback restores that checkpoint for the previous reader. Refs #1768
 
 - CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
+
+- Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Qualified one-second retained results keep their identities across restart, replay and viewer reads; on upgraded development prereleases, all historical accepted (mapped) retained astrometry products above one second that carry uncertainty, including products that already withheld covariance for another reason, become `Unavailable / retained-evidence-invalid-or-unavailable` with no mapping or calculators, and replay and restore fail closed. Refs #1179
+
+- CameraAgent development lifecycle workers detect interrupted rollback publication explicitly, pick up later installs without restarting, and retain recovery progress across probe transport failures with distinct diagnostics. Refs #1818
+
+- CameraAgent preserves configured environmental waits under a two-second storage cap, retains before-capture source fences through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 protects this evidence. BeforeCaptureWaitMilliseconds now accepts 0–2000 ms; larger values are refused at startup. Refs #1735
+
+- CameraAgent rollback and reinstall can settle interrupted runtime control after a durably paused replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
+
+- CameraAgent processing health prioritizes replacing superseded active graph revisions over historical Storage-skip guidance, and outbox delivery preserves canonical root path casing on Windows. Refs #1809
 
 - CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
 
@@ -85,6 +99,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
 
 ### Added
+
+- CameraAgent can select and roll back OpenNGC independently of its star catalog, configure NGC/Messier/IC queries, and show a separate expected deep-sky layer with labels, approximate outlines and styling. Releases include the licensed OpenNGC bundle alongside approved HYG 4.2; HYG 4.4 remains an explicit selection pending release approval. An explicit disabled target clears the deep-sky selection independently of rollback history. Reset refuses active deep-sky selections before deleting state and names the reinstall/disable commands; plans and resumed installs validate any retained selection and preserve its mount, settings and installation identity. Deep-sky transitions resume capture after completed owner onboarding, including interrupted-operation recovery. Refs #1388
 
 - Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, linked-product verification errors name the report date and product id for a later retry, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
 

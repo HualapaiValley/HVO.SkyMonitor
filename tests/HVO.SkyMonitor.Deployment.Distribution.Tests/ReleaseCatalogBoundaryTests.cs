@@ -9,6 +9,26 @@ namespace HVO.SkyMonitor.Deployment.Distribution.Tests;
 public sealed class ReleaseCatalogBoundaryTests
 {
     [TestMethod]
+    public async Task StandaloneOpenNgcReleaseAssetCarriesItsOwnVersionAndNotices()
+    {
+        var bundle = Environment.GetEnvironmentVariable("HVO_OPENNGC_CATALOG_BUNDLE");
+        if (string.IsNullOrEmpty(bundle)) Assert.Inconclusive("Set HVO_OPENNGC_CATALOG_BUNDLE for temporary public-source packaging evidence.");
+        using var fixture = OciReleaseFixture.Create();
+        var output = Path.Combine(fixture.Root, "deep-sky-release");
+        Assert.AreEqual(0, await Program.Main(fixture.Arguments(output, "--deep-sky-catalog-bundle", bundle)));
+        using var release = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(output, "release.json")));
+        var asset = release.RootElement.GetProperty("assets").EnumerateArray().Single(static item => item.GetProperty("kind").GetString() == "catalog");
+        Assert.AreEqual("openngc-v20260501-p6-s5-r1.bundle.tar.gz", asset.GetProperty("name").GetString());
+        Assert.AreEqual(4, asset.GetProperty("files").EnumerateObject().Count());
+        Assert.IsTrue(asset.GetProperty("files").TryGetProperty("LICENSE-OPENNGC.md", out _));
+        Assert.IsTrue(asset.GetProperty("files").TryGetProperty("ATTRIBUTION-OPENNGC.md", out _));
+        Assert.IsTrue(asset.GetProperty("files").TryGetProperty("openngc.sqlite", out _));
+        var refused = Path.Combine(fixture.Root, "wrong-family");
+        Assert.AreEqual(1, await Program.Main(fixture.Arguments(refused, "--catalog-bundle", bundle)));
+        Assert.IsFalse(Directory.Exists(refused));
+    }
+
+    [TestMethod]
     [DataRow(0)]
     [DataRow(32)]
     public void CatalogManifestReadHonorsTheByteBoundAndNeverReadsPastOneExtraByte(int extraBytes)
