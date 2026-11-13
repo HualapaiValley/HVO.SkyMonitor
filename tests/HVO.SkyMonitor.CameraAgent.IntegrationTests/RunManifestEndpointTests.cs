@@ -1,7 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
-using System.Text;
-using System.Text.Json.Nodes;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -92,9 +90,9 @@ public sealed partial class RunManifestEndpointTests
             Assert.IsFalse(text.Contains(forbidden, StringComparison.OrdinalIgnoreCase), forbidden);
     }
     [TestMethod]
-    [DataRow("high")]
-    [DataRow("low")]
-    public async Task InvalidUnicodeCountKeysReturnCorruptEvidenceWithoutBreakingDetailAndRecover(string variant)
+    [DataRow("Inputs")]
+    [DataRow("Outputs")]
+    public async Task CorruptCountLedgerRefusesOnlyManifestAndRecovers(string ledgerKind)
     {
         using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
         var operations = scope.ServiceProvider.GetRequiredService<IProcessingGraphOperations>();
@@ -122,20 +120,20 @@ public sealed partial class RunManifestEndpointTests
         var ordinary = await client.GetStringAsync(new Uri(path, UriKind.Relative)).ConfigureAwait(false);
         using var db = new SqliteConnection($"Data Source={Path.Combine(AssemblyHooks.Fixture.StorageRoot, "journal", "raw-ingress.db")};Pooling=False");
         await db.OpenAsync().ConfigureAwait(false);
+        var original = await ReadManifestLedgerRowsAsync(db, detail.Execution.ExecutionId, ledgerKind).ConfigureAwait(false);
+        Assert.IsTrue(original.Length > 1, "The completed execution must retain its ledger header and typed count rows.");
+        var header = original.Single(static row => row.NodeId.Length == 0);
+        Assert.AreEqual("Recorded", header.EvidenceStatus);
         using var command = db.CreateCommand();
-        command.CommandText = "SELECT frozen_plan_json FROM processing_executions WHERE execution_id=$id;";
         command.Parameters.AddWithValue("$id", detail.Execution.ExecutionId.ToString("N"));
-        var original = (byte[])(await command.ExecuteScalarAsync().ConfigureAwait(false))!;
+        command.Parameters.AddWithValue("$kind", ledgerKind);
         try
         {
-            var primary = JsonNode.Parse(original)!.AsObject();
-            primary.Remove("committedOutputCounts");
-            var json = primary.ToJsonString();
-            var counts = variant == "high" ? "{\"\\uD800\":1}" : "{\"\\uDC00\":1}";
-            var damaged = Encoding.UTF8.GetBytes(json[..^1] + ",\"committedOutputCounts\":" + counts + "}");
-            command.CommandText = "UPDATE processing_executions SET frozen_plan_json=$json WHERE execution_id=$id;";
-            command.Parameters.AddWithValue("$json", damaged);
+            // Schema 9 reads the independent ledger, not optional counters in the frozen plan JSON.
+            command.CommandText = "UPDATE processing_execution_manifest_counts SET evidence_status='Corrupt' WHERE execution_id=$id AND ledger_kind=$kind AND node_id='';";
             Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+            var corrupt = original.Select(static row => row.NodeId.Length == 0 ? row with { EvidenceStatus = "Corrupt" } : row).ToArray();
+            CollectionAssert.AreEqual(corrupt, await ReadManifestLedgerRowsAsync(db, detail.Execution.ExecutionId, ledgerKind).ConfigureAwait(false));
             using var refused = await client.GetAsync(new Uri(path + "/manifest", UriKind.Relative)).ConfigureAwait(false);
             Assert.AreEqual(HttpStatusCode.Conflict, refused.StatusCode);
             using var problem = JsonDocument.Parse(await refused.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
@@ -145,13 +143,29 @@ public sealed partial class RunManifestEndpointTests
         }
         finally
         {
-            command.CommandText = "UPDATE processing_executions SET frozen_plan_json=$json WHERE execution_id=$id;";
-            command.Parameters["$json"].Value = original;
+            command.CommandText = "UPDATE processing_execution_manifest_counts SET evidence_status=$status WHERE execution_id=$id AND ledger_kind=$kind AND node_id='';";
+            command.Parameters.AddWithValue("$status", header.EvidenceStatus);
             Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
         }
+        CollectionAssert.AreEqual(original, await ReadManifestLedgerRowsAsync(db, detail.Execution.ExecutionId, ledgerKind).ConfigureAwait(false));
         using var recovered = await client.GetAsync(new Uri(path + "/manifest", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, recovered.StatusCode);
         CollectionAssert.AreEqual(expected, await recovered.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
     }
+
+    private static async Task<ManifestLedgerRow[]> ReadManifestLedgerRowsAsync(SqliteConnection connection, Guid executionId, string ledgerKind)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT node_id, evidence_count, evidence_status FROM processing_execution_manifest_counts WHERE execution_id=$id AND ledger_kind=$kind ORDER BY node_id;";
+        command.Parameters.AddWithValue("$id", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$kind", ledgerKind);
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        var rows = new List<ManifestLedgerRow>();
+        while (await reader.ReadAsync().ConfigureAwait(false))
+            rows.Add(new(reader.GetString(0), await reader.IsDBNullAsync(1).ConfigureAwait(false) ? null : reader.GetInt64(1), reader.GetString(2)));
+        return [.. rows];
+    }
+
+    private sealed record ManifestLedgerRow(string NodeId, long? EvidenceCount, string EvidenceStatus);
 
 }
