@@ -274,7 +274,10 @@ snapshot. A successful same-period sunrise-day keogram or star-trail run also
 re-evaluates already-published summaries using their retained occurrences, so
 links do not depend on automation order. Unchanged still retries repeat this
 check, allowing recovery after an interrupted refresh; a failed refresh makes
-that run fail with a retry note while preserving the last good summary. Hourly
+that run fail with a retry note while preserving the last good summary. If the
+report date cannot be listed (including the 1,024-product bound), maintenance is
+skipped with an explicit history note and the still run keeps its own successful
+outcome. The listing still fails closed; no truncated summary is generated. Hourly
 products and other retained periods do not trigger this refresh. This does not
 create a summary unless its own automation has already published one.
 Only retained summaries whose pinned preset still matches current NightlyProducts
@@ -285,7 +288,9 @@ retained occurrences even if their automation was subsequently disabled or delet
 Disabling automation prevents new scheduled occurrences, not link maintenance of
 its published summaries; refresh neither schedules a run nor changes a definition.
 The triggering still run's history reports summary publications, reuse and unchanged
-evaluations separately from its still-product counts.
+evaluations separately from its still-product counts, including work completed
+before a later summary refresh fails. A retry reports only that attempt's work;
+already-completed refreshes are verified as unchanged or reused after restart.
 
 The host-neutral Processing producer emits `hvo-daily-summary-v1`: canonical JSON
 in `recipe.descriptor.options.parameters` of the checksummed provenance document,

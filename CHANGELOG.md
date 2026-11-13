@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Successful sunrise-day still generation now records skipped summary maintenance when the date cannot be listed, and a later summary refresh failure retains counts of refreshes already completed in automation history. Refs #1764
+
 - A custom script whose kill fails (for example under a policy that denies the signal) no longer terminates CameraAgent or fails the stop request. The kill is retried once and the run is recorded as failed with `script.kill-failed`, also when an operator or host stop asked for it. A launcher or sandbox setup exit before the budget check is now `script.launch-failed`, even when it printed past the output limit. Refs #1768
 
 - An OpenNGC deep-sky selection refused before anything changed (for example when CameraAgent rejects the lifecycle state read) is now recorded as a refused operation, as a star catalog selection already is, instead of staying "running" and blocking runtime control until another lifecycle command completes. Refs #1824
