@@ -18,6 +18,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Qualified one-second retained results keep their identities across restart, replay and viewer reads; on upgraded development prereleases, all historical accepted (mapped) retained astrometry products above one second that carry uncertainty, including products that already withheld covariance for another reason, become `Unavailable / retained-evidence-invalid-or-unavailable` with no mapping or calculators, and replay and restore fail closed. Refs #1179
 
+- CameraAgent development lifecycle workers detect interrupted rollback publication explicitly, pick up later installs without restarting, and retain recovery progress across probe transport failures with distinct diagnostics. Refs #1818
+
 - CameraAgent preserves configured environmental waits under a two-second storage cap, retains before-capture source fences through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 protects this evidence. BeforeCaptureWaitMilliseconds now accepts 0–2000 ms; larger values are refused at startup. Refs #1735
 
 - CameraAgent rollback and reinstall can settle interrupted runtime control after a durably paused replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
