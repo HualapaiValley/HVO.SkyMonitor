@@ -34,12 +34,16 @@ public sealed class EnvironmentalAcquisitionRecoveryIntegrationTests
             var original = new EnvironmentalAssociationService(store, store, Configure(["local", "provider"]), TimeProvider.System, acquisitionStates: store);
             var capture = Guid.NewGuid();
             var first = (await original.AssociateAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null, [local.Value.Kind], CancellationToken.None).ConfigureAwait(false))[0];
-            var changed = new EnvironmentalAssociationService(store, store, Configure(["provider", "local"]), TimeProvider.System, acquisitionStates: store);
+            var retainedBytes = JsonSerializer.SerializeToUtf8Bytes((await store.ReadAssociationsAsync(root, capture,
+                CancellationToken.None).ConfigureAwait(false)).Single());
+            using var restarted = new SqliteEnvironmentalObservationOutbox();
+            var changed = new EnvironmentalAssociationService(restarted, restarted, Configure(["provider", "local"]), TimeProvider.System, acquisitionStates: restarted);
             var recovered = await changed.ReadCompletedAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null, [local.Value.Kind], CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(recovered);
             Assert.AreEqual(first.AssociationIdentitySha256, recovered[0].AssociationIdentitySha256);
             var retry = (await changed.AssociateAsync(capture, 1, Epoch, Epoch.AddSeconds(1), null, [local.Value.Kind], CancellationToken.None).ConfigureAwait(false))[0];
             Assert.AreEqual(first.AssociationIdentitySha256, retry.AssociationIdentitySha256);
+            CollectionAssert.AreEqual(retainedBytes, JsonSerializer.SerializeToUtf8Bytes(retry));
             Assert.HasCount(1, await store.ReadAssociationsAsync(root, capture, CancellationToken.None).ConfigureAwait(false));
             var next = (await changed.AssociateAsync(Guid.NewGuid(), 2, Epoch, Epoch.AddSeconds(1), null, [local.Value.Kind], CancellationToken.None).ConfigureAwait(false))[0];
             Assert.AreEqual("provider", (await store.ReadLocalDetailAsync(root, next.SelectedRecordId!.Value, CancellationToken.None).ConfigureAwait(false))!.Fact.Source.SourceId);

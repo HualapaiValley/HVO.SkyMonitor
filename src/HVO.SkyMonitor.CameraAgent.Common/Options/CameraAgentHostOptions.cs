@@ -983,8 +983,8 @@ public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
     [Range(100, 120_000)]
     public int SourceTimeoutMilliseconds { get; init; } = 5_000;
 
-    /// <summary>Device-acquisition budget; durable attempt settlement can add storage latency.</summary>
-    [Range(0, 5_000)]
+    /// <summary>Optional caller wait and device budget (0 disables the optional wait); shared storage admission has a two-second hard cap.</summary>
+    [Range(0, 2_000)]
     public int BeforeCaptureWaitMilliseconds { get; init; } = 250;
 
     [Range(1, 1_000_000)]

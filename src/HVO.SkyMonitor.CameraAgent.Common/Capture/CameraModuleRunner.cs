@@ -419,6 +419,8 @@ internal sealed class CameraModuleRunner
             {
                 MonotonicStartJitter = monotonicStartJitter,
                 AcquisitionAttemptId = environmentalAcquisition?.Id,
+                EnvironmentalUnavailable = environmentalAcquisition?.Unavailable == true,
+                EnvironmentalBeforeCaptureSources = environmentalAcquisition?.BeforeCaptureSources,
                 ScheduleAdmission = scheduleGrant?.Evidence
             };
 

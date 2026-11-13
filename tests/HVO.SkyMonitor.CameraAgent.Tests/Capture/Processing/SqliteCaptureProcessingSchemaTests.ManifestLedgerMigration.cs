@@ -26,7 +26,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
         Assert.AreEqual(9L, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
-        Assert.AreEqual(15L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
         Assert.AreEqual(variant == "corruptInputs" ? "Corrupt" : variant == "oversizedInputs" ? "ExceedsBounds" : "Recorded",
             await LedgerStateAsync(verify, "Inputs").ConfigureAwait(false));
