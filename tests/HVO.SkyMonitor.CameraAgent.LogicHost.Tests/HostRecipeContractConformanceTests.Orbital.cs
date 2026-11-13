@@ -25,7 +25,8 @@ public sealed partial class HostRecipeContractConformanceTests
     public async Task FrozenOrbitalControlReproducesCommittedGolden(string name)
     {
         var item = PrepareOrbital(name);
-        var result = await item.Executor.ExecuteAsync(item.Fixture.Request(), TestContext.CancellationToken);
+        var result = await item.Executor.ExecuteAsync(item.Fixture.Request() with
+        { InputArtifactId = item.Fixture.Raw.ArtifactId }, TestContext.CancellationToken);
         await AssertOrbitalGolden(item, result);
     }
 
@@ -350,8 +351,10 @@ public sealed partial class HostRecipeContractConformanceTests
         if (edge)
         {
             var raw = CreateOrbitalEdgeSource(item.Fixture, descriptor, bytes, exact: true);
+            Assert.AreEqual(bytes, raw.Payload, "The shipped binding must retain the caller's payload memory.");
             return await new CameraAgentRecipeExecutionAdapter(item.Executor).ExecuteAsync(
-                item.Fixture.Request(raw) with { Options = options ?? request.Options }, cancellation);
+                item.Fixture.Request(raw) with
+                { Options = options ?? request.Options, InputArtifactId = raw.ArtifactId }, cancellation);
         }
 #endif
         return await new LogicHostRecipeExecutionAdapter(item.Executor).ExecuteDescriptorExactAsync(
@@ -471,6 +474,7 @@ public sealed partial class HostRecipeContractConformanceTests
             {
                 var source = Assert.ContainsSingle(request.Inputs);
                 var descriptor = input.Plan.Descriptor;
+                Assert.AreEqual(source.ArtifactId, request.InputArtifactId);
                 Assert.AreEqual(descriptor.Capture.CaptureId, source.CaptureId);
                 Assert.AreEqual(descriptor.Capture.CaptureSequence, source.CaptureSequence);
                 Assert.AreEqual(descriptor.Artifact.ArtifactId, source.ArtifactId);

@@ -77,8 +77,28 @@ interactions have explicit cases above. Durable publication, crash recovery and
 reference retention are N/A to this in-process seam and stay with accepted #1641
 and its owners. Physical accuracy, full population/cadence and hardware operation
 are outside the authorized slice. No unchanged numerical/population campaign or
-new performance qualification is asserted. The central opt-in adds a record and
-single-element array; retained raw memory is passed through without a pixel copy.
+new performance qualification is asserted. The central opt-in adds bounded
+record/array wrappers; retained raw memory is passed through without a pixel copy.
+The edge binding assertion verifies retained caller payload memory, and the
+recording executor verifies the shipped primary artifact ID before execution.
+
+The final candidate adopts only the existing #1764 owner's fixture correction
+`be45083351d373d9b97551e077587eb5aaa06062`, with its source commit recorded by
+`cherry-pick -x`. The summary-feature ancestor is excluded. The recipient's
+CameraAgent HTTP Integration inventory remains 72 cases, with zero category
+delta. Original two-row failures remain retained separately from corrected
+recipient results. The dependency changes no production or scientific contract.
+
+Final evidence composes the broad gate produced at
+`eddf65fb5c320ab2ee6584bf5deda118be846bff` with affected checks on the integrated
+candidate. The canonical 23-slot coverage matrix replaces only combined Unit,
+LogicHost Unit and CameraAgent HTTP Integration with final-head collections;
+20 unchanged slots retain their actual producing SHA and source identity.
+The complete inventory remains Unit 16,885 and Integration 1,428, with every
+applicability skip recorded separately. The original missing-browser run is
+retained; after the pinned CI browser installation, all 42 acceptance Integration
+cases passed on the broad-gate head. Unaffected suites are not relabeled as
+reruns on the integrated head.
 
 ## Validation and immutable evidence
 
