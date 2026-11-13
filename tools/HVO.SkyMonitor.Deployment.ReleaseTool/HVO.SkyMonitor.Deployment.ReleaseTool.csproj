@@ -13,6 +13,13 @@
          note the installer prints. -->
     <Compile Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\UpgradeNoteText.cs" Link="Shared/UpgradeNoteText.cs" />
     <Compile Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\ProductVersion.cs" Link="Shared/ProductVersion.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/ReleaseManifest.cs" Link="Shared/ReleaseManifest.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/ReleaseChecksums.cs" Link="Shared/ReleaseChecksums.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/ReleaseJson.cs" Link="Shared/ReleaseJson.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/ReleaseImageArchive.cs" Link="Shared/ReleaseImageArchive.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/CameraAgentImageLabels.cs" Link="Shared/CameraAgentImageLabels.cs" />
+    <Compile Include="../../src/HVO.SkyMonitor.Deployment.Cli/InstallerException.cs" Link="Shared/InstallerException.cs" />
+
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HVO.SkyMonitor.Deployment.Distribution.Tests" />
