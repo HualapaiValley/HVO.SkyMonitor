@@ -166,6 +166,11 @@ Every release carries assets with these names and kinds:
     only integration pre-releases, so this choice changes the product that has no released readers. A component's key
     also outlives a rename of its image.
   - **Today:** both products use these keys. SkyMonitor's `release.json` names `images.cameraAgent` (#1359, #1364).
+- **LogicHost reader-first preparation** (#1242). Schema 1 additionally supports `images.logicHost` and
+  `componentMetadata.logicHost` for a local identity candidate. The bounded central declaration is repeated in the
+  image's `io.hvo.skymonitor.logichost-release` label. The [candidate format](planning/logichost-offline-candidate.md)
+  defines the exact fields, checks and remaining bundle/trust gates. This additive reader support enables no publication
+  or installation, and does not change the CameraAgent reader or release writer.
 - **Upgrade-note text** follows one terminal-safety rule. The tool that writes `release.json` applies it, and so does
   the installer that reads it. CRLF is normalized to LF first. After that, a note is
   refused if it holds a Unicode control character (Cc) other than LF and TAB, a format character (Cf), a line or

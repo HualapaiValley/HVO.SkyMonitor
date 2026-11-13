@@ -64,6 +64,20 @@ internal static class ReleaseImageArchive
         OfflineArchive archive,
         CancellationToken cancellationToken)
     {
+        var labels = await ReadLabelsAsync(stream, release, image, archive, "CameraAgent", cancellationToken).ConfigureAwait(false);
+        return CameraAgentImageLabels.Identity(
+            "archive", archive.ConfigDigest, archive.ConfigDigest, archive.Platform["linux/".Length..], archive.Sha256, labels);
+    }
+
+    /// <summary>Verifies the central image without interpreting CameraAgent state fields.</summary>
+    public static Task<JsonElement> ReadLogicHostLabelsAsync(
+        Stream stream, ReleaseManifest release, ReleaseImage image, OfflineArchive archive, CancellationToken cancellationToken)
+        => ReadLabelsAsync(stream, release, image, archive, "LogicHost", cancellationToken);
+
+    private static async Task<JsonElement> ReadLabelsAsync(
+        Stream stream, ReleaseManifest release, ReleaseImage image, OfflineArchive archive, string component,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(release);
         ArgumentNullException.ThrowIfNull(image);
@@ -251,14 +265,12 @@ internal static class ReleaseImageArchive
                      runtime.TryGetProperty("Labels", out var labelValues)
             ? labelValues
             : default;
-        var identity = CameraAgentImageLabels.Identity(
-            "archive", archive.ConfigDigest, archive.ConfigDigest, archive.Platform["linux/".Length..], archive.Sha256, labels);
         var created = ReleaseManifest.FormatCreated(release.Created);
-        if (identity.Component != "CameraAgent" || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version") != release.Version ||
-            identity.SourceRevision != release.Commit || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.created") != created)
+        if (Text(labels, "io.hvo.skymonitor.component") != component || Text(labels, "org.opencontainers.image.version") != release.Version ||
+            Text(labels, "org.opencontainers.image.revision") != release.Commit || Text(labels, "org.opencontainers.image.created") != created)
         {
             throw new InstallerException(
-                $"The offline archive {archive.Name} holds an image that is not labelled as CameraAgent {release.Version} from " +
+                $"The offline archive {archive.Name} holds an image that is not labelled as {component} {release.Version} from " +
                 $"commit {release.Commit}, created {created}, as release {release.Tag} requires.");
         }
 
@@ -269,7 +281,7 @@ internal static class ReleaseImageArchive
         {
             throw Refusal($"it holds {unused}, which its image does not use");
         }
-        return identity;
+        return labels.Clone();
     }
 
     /// <summary>
