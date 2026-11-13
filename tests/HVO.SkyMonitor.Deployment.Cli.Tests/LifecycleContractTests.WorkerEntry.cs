@@ -247,7 +247,9 @@ public sealed partial class LifecycleContractTests
         var candidate = fixture.Manifest.Image with { ImageId = "sha256:" + new string('9', 64) };
         await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
         {
-            Phase = LifecycleOperationPhase.CandidateVerified, MutationStarted = true, CandidateImage = candidate
+            Phase = LifecycleOperationPhase.CandidateVerified,
+            MutationStarted = true,
+            CandidateImage = candidate
         }, CancellationToken.None);
         var (journal, path, original) = await PendingControlAsync(fixture, terminal: false);
         original = original with { OriginalProcessId = Guid.NewGuid(), ResumeAfterVerification = true };
@@ -267,7 +269,8 @@ public sealed partial class LifecycleContractTests
                     InstanceId = mismatch == "instance" ? Guid.NewGuid() : fixture.InstanceId,
                     Kind = mismatch == "kind" ? LifecycleOperationKind.Upgrade : LifecycleOperationKind.Rollback,
                     Phase = mismatch == "phase" ? LifecycleOperationPhase.Restoring : LifecycleOperationPhase.CandidateVerified,
-                    MutationStarted = true, CandidateImage = candidate
+                    MutationStarted = true,
+                    CandidateImage = candidate
                 }, CancellationToken.None);
                 await SafeFileSystem.WriteJsonAtomicAsync(fixture.Paths.ManifestPath,
                     fixture.Manifest with { Image = mismatch == "image" ? candidate with { ImageId = "sha256:" + new string('7', 64) } : candidate },
@@ -319,7 +322,8 @@ public sealed partial class LifecycleContractTests
             fixture.Paths, LifecycleOperationKind.Rollback, fixture.Manifest, CancellationToken.None);
         await CameraAgentLifecycleManager.RecordAsync(fixture.Paths, operation with
         {
-            Phase = LifecycleOperationPhase.Prepared, MutationStarted = false
+            Phase = LifecycleOperationPhase.Prepared,
+            MutationStarted = false
         }, CancellationToken.None);
         var (journal, path, original) = await PendingControlAsync(fixture, terminal: false);
         original = original with { OriginalProcessId = Guid.NewGuid(), ResumeAfterVerification = true };
