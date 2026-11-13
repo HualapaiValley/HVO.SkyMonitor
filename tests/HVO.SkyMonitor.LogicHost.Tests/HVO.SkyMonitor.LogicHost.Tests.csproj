@@ -53,4 +53,21 @@
   <PropertyGroup>
     <NoWarn>$(NoWarn);CA1515;CA1707;CA2007;CA1861;CA1307;CA1859</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Reuse the accepted #1640 fixture source and frozen bytes without a test-project reference. -->
+    <Compile Include="../HVO.SkyMonitor.Processing.Tests/CaptureOrbitalPredictionFixtures.cs" Link="Fixtures/CaptureOrbitalPredictionFixtures.cs" />
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HostRecipeContractConformanceTests.Orbital.cs" Link="Services/HostRecipeContractConformanceTests.Orbital.cs" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/manifest.json" Link="Fixtures/Nominal/snapshot/manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/six-facts/records.json" Link="Fixtures/Nominal/snapshot/records.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/manifest.json" Link="Fixtures/Nominal/two-starlinks/manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/snapshots/two-starlinks/records.json" Link="Fixtures/Nominal/two-starlinks/records.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/predicted-2026.finals2000A" Link="Fixtures/Nominal/predicted-2026.finals2000A" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/time/leap-seconds.list" Link="Fixtures/Nominal/leap-seconds.list" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/iss/track-03.json" Link="Fixtures/Nominal/iss/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/processing/capture-orbital-iss-v1.json" Link="Fixtures/capture-orbital-iss-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/starlink-56838/track-03.json" Link="Fixtures/Nominal/starlink-56838/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/processing/capture-orbital-starlink-56838-v1.json" Link="Fixtures/capture-orbital-starlink-56838-v1.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/orbital-prediction-v1/virtual-camera/tracks/starlink-65283/track-03.json" Link="Fixtures/Nominal/starlink-65283/track-03.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/processing/capture-orbital-starlink-65283-v1.json" Link="Fixtures/capture-orbital-starlink-65283-v1.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
