@@ -48,7 +48,7 @@ public sealed record AstrometricConventionIdentity(DateTimeOffset ExposureStartU
 public sealed record AstrometricUncertaintyOptions(double SystematicPixelSigma = 0, double CommonModePixelSigma = 0, double ModelValidityAlpha = 1e-3,
     int MinimumFittingStars = 12, int MinimumHeldOutStars = 4, double MaximumConditionNumber = 1e6, int MaximumIterations = 12)
 {
-    public const string EstimatorVersion = "astrometric-frame-uncertainty-v1";
+    public const string EstimatorVersion = "astrometric-frame-uncertainty-v2";
 
     [JsonIgnore]
     public string IdentitySha256 => AstrometricIdentity.Hash(new { schema = EstimatorVersion, options = this with { } });
@@ -251,6 +251,10 @@ public static class AstrometricUncertaintyEstimator
 
         if (!assessment.HasMeasuredMapping)
             return Withhold("assessment-not-accepted", "Only an accepted measured mapping has an uncertainty; this assessment carries none.");
+        // Long-exposure held-out coverage failed even on frames passing the residual gates. Neither a good fit
+        // nor a larger declared floor qualifies those exposures; preserve the mapping but publish no covariance.
+        if (!IsExposureQualified(frame.ExposureEndUtc - frame.ExposureStartUtc))
+            return Withhold("exposure-not-qualified", "Astrometric covariance is unsupported for exposures longer than one second; use a qualified short exposure until long-exposure uncertainty is requalified.");
         var scale = assessment.Parameters!.FocalScale;
         if (Math.Abs(scale - solverOptions.MinimumFocalScale) <= 1e-9 * Math.Max(1, scale) || Math.Abs(scale - solverOptions.MaximumFocalScale) <= 1e-9 * Math.Max(1, scale))
             return Withhold("focal-scale-at-search-bound", "The accepted focal scale sits on its declared search bound, so it is constrained rather than measured; widen the search or recalibrate.");
@@ -313,6 +317,8 @@ public static class AstrometricUncertaintyEstimator
             estimate, centroid, conditional, systematic, shared, total, validity);
     }
 
+    internal static bool IsExposureQualified(TimeSpan duration) => duration.Ticks is >= 0 and <= TimeSpan.TicksPerSecond;
+
     internal static string MeasurementIdentity(IEnumerable<AstrometricDetection> detections, IEnumerable<AstrometricPixelCovariance> covariances)
     {
         var measured = detections.OrderBy(d => d.Index).ToArray();
@@ -337,7 +343,8 @@ public static class AstrometricUncertaintyEstimator
     {
         ArgumentNullException.ThrowIfNull(a); ArgumentNullException.ThrowIfNull(b); ArgumentNullException.ThrowIfNull(calibration);
         foreach (var frame in new[] { a, b })
-            if (frame.SharedCalibration.Status != Available || frame.SharedCalibration.CalibrationCovarianceIdentitySha256 != calibration.IdentitySha256 ||
+            if (!frame.IsAvailable || !IsExposureQualified(frame.Conventions.ExposureEndUtc - frame.Conventions.ExposureStartUtc) ||
+                frame.SharedCalibration.Status != Available || frame.SharedCalibration.CalibrationCovarianceIdentitySha256 != calibration.IdentitySha256 ||
                 frame.SharedCalibration.Sensitivity is null)
                 throw new ArgumentException("Both frames must carry an available shared-calibration component for this exact calibration covariance.");
         var k = calibration.Covariance.Parameters.Count; var c = calibration.Covariance.Values;

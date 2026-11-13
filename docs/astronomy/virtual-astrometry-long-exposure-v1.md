@@ -1069,15 +1069,31 @@ makes no physical claim. Support stands only for a cell that passes in both `fin
 | other v2 families | 20 s, 60 s | — | Not qualified for long exposure |
 
 **Consumer constraints**, first for #1169 (registered stacking):
-- **Covariance.** Treat astrometric covariance above 1 s as unsupported, even when the estimator marks it
-  `available`. At 60 s the estimator released overconfident intervals, so its validity gate is not sufficient.
+- **Covariance.** Treat astrometric covariance above 1 s as unsupported. The historical v1 estimator could mark
+  it `available`: at 60 s it released overconfident intervals, so its residual validity gate is not sufficient.
+  The v2 shared estimator now enforces `exposure-not-qualified` above 1 s and withholds every covariance
+  component. Retained-evidence validation rejects available long-exposure results, including historical ones.
 - **Reference time.** Bind the solve and every cross-frame mapping to the exposure midpoint, not the `CameraFrame`
   timestamp. A start-UTC binding is accepted silently and shifts the ground pose by 0.036° at 20 s and 0.109° at
   60 s.
 
 Neither constraint blocks #1168, which changes no product code.
-[#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) tracks requalifying long-exposure uncertainty
-and every limit in this table.
+[#1179](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1179) remains open for statistical requalification.
+Its [first bounded slice](../validation/issue-1179-exposure-withholding.md) implements the release gate without
+changing the historical evidence or the supported mapping rows above. There is no new long-exposure
+uncertainty claim and no evaluation-set tuning.
+
+### Explicit non-goals of the exposure-withholding slice
+
+| Gap | Current disposition |
+| --- | --- |
+| Equidistant 20/60 s and rectilinear 20 s uncertainty | Unsupported; all covariance withheld by the shared estimator. A new frozen tuning and independent held-out campaign is deferred |
+| Rectilinear 6 mm full-frame 60 s temporal budget | Non-goal; existing renderer refusal and ROI-only mapping support remain |
+| Mono cloud readout | Non-goal; existing initialize refusal remains |
+| Stereographic and equidistant ROI+2×2 ambiguity | Non-goal; ambiguous acquisition continues to reject, with no broader acquisition claim |
+| Product-depth and bright-background rejection rates | Non-goal; existing fail-closed envelope remains |
+| Equidistant 60 s CFA trail length | Non-goal; trail-length metadata remains unsupported |
+| Other long-exposure families, gains and physical accuracy | Non-goals; no new qualification |
 
 ## Observations
 

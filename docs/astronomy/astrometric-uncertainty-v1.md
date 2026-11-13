@@ -16,7 +16,7 @@ facts. It builds on the [shared astrometry library](shared-astrometry-v1.md).
 
 - **`HVO.SkyMonitor.Astronomy`**
   - Owns the estimator: `AstrometricUncertaintyEstimator.Estimate` and `CrossCovariance`, with
-    `AstrometricUncertaintyOptions` (`astrometric-frame-uncertainty-v1`) and the result
+    `AstrometricUncertaintyOptions` (estimator `astrometric-frame-uncertainty-v2`) and the result
     `AstrometricFrameUncertainty` (schema `astrometric-frame-uncertainty-v1`).
   - Owns the shared-calibration input `AstrometricCalibrationCovariance` (`astrometric-calibration-covariance-v1`).
   - Owns the clock-facts contract `AstrometricClockFacts`, which is host-neutral.
@@ -123,6 +123,34 @@ The estimator rejects incompatible reuse rather than propagating it:
 - associations that do not match the assessment's association identity
 - a shared calibration whose readout view is not exactly the frame's calibration
 - a readout declaration that is inconsistent or does not produce the frame calibration's image size
+
+## Exposure release policy (Refs #1179)
+
+The v2 estimator withholds every covariance component for an accepted mapping
+whose authoritative `ExposureEndUtc - ExposureStartUtc` exceeds one second,
+with reason `exposure-not-qualified`. There is no tuning option to bypass this
+gate. A good residual fit or a supplied session covariance cannot qualify an
+unsupported exposure. The mapping and its exposure midpoint remain usable
+within their own qualified envelope. Clock facts remain separately reported.
+
+The [long-exposure held-out evidence](virtual-astrometry-long-exposure-v1.md#held-out-astrometric-uncertainty)
+failed withholding and coverage, including overconfident released log-focal-scale
+intervals at 60 s. This release restriction enforces that existing envelope; it
+does not requalify long exposures. Durations at or below one second retain the
+same numerical path, subject to all existing validity gates; only the previously
+qualified profiles carry a qualification claim.
+
+The result JSON schema remains v1 because its shape is unchanged. The estimator
+version in the options hash changes to v2, changing options/result identities and
+the Processing recipe's algorithm identity even at one second. Retained evidence
+validation rejects available long-exposure results, including historical v1
+results, so consumers cannot promote old overconfident covariance. Recompute
+under v2 to retain an explicit withheld result. Existing one-second native
+evidence remains structurally readable; input-bound validation still requires
+the exact estimator settings identity that produced it.
+
+The [frozen slice plan and validation](../validation/issue-1179-exposure-withholding.md)
+records the baseline comparison and remaining work.
 
 ## Clock policy
 
