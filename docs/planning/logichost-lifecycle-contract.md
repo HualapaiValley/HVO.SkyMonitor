@@ -108,6 +108,11 @@ and certificate checks as described by split-host preflight.
 
 ## Release Inputs and Artifact Identity
 
+The [first #1242 slice](logichost-offline-candidate.md) adds explicit LogicHost
+image/declaration readers and read-only local identity verification. It does not
+complete the required production bundle below; #1242 remains open for assembly,
+SBOM/scan/provenance, full catalog and offline-dependency verification.
+
 The following is the **required information model**, not a schema accepted by
 today's verifier. The implementation story must add LogicHost component/image
 and state declarations to the install contract's release.json model, define

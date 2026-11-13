@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
 ### Fixed
 
 - Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Qualified one-second retained results keep their identities across restart, replay and viewer reads; on upgraded development prereleases, all historical retained astrometry products above one second, including products that already withheld covariance for another reason, become `Unavailable / retained-evidence-invalid-or-unavailable` with no mapping or calculators, and replay and restore fail closed. Refs #1179
