@@ -396,6 +396,70 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    [DataRow("without-attempt", false)]
+    [DataRow("empty", false)]
+    [DataRow("too-many", false)]
+    [DataRow("null", false)]
+    [DataRow("blank", false)]
+    [DataRow("too-long", false)]
+    [DataRow("duplicate", false)]
+    [DataRow("valid", true)]
+    [DataRow("max-length", true)]
+    public void BeforeCaptureSourceSnapshotHasBoundedDistinctIdentities(string scenario, bool valid)
+    {
+        IReadOnlyList<string> sources = scenario switch
+        {
+            "empty" => [],
+            "too-many" => Enumerable.Range(0, 129).Select(number => number.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray(),
+            "null" => [null!],
+            "blank" => [" "],
+            "too-long" => [new string('a', 129)],
+            "duplicate" => ["sqm", "sqm"],
+            "max-length" => [new string('a', 128)],
+            _ => ["sqm"]
+        };
+        var manifest = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                CycleEvidence = CreateCycleEvidence(manifest.Descriptor) with
+                {
+                    AcquisitionAttemptId = scenario == "without-attempt" ? null : Guid.NewGuid(),
+                    EnvironmentalBeforeCaptureSources = sources
+                }
+            }
+        };
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
+        Assert.AreEqual(valid, parsed.IsValid);
+        if (!valid) Assert.AreEqual("descriptor.cycleEvidence.environmentalBeforeCaptureSources", parsed.Validation.FieldPath);
+    }
+
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public void EnvironmentalUnavailableRequiresANonEmptyAcquisitionAttempt(bool hasAttempt, bool validAttempt)
+    {
+        var manifest = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        manifest = manifest with
+        {
+            Descriptor = manifest.Descriptor with
+            {
+                CycleEvidence = CreateCycleEvidence(manifest.Descriptor) with
+                {
+                    EnvironmentalUnavailable = true,
+                    AcquisitionAttemptId = hasAttempt ? validAttempt ? Guid.NewGuid() : Guid.Empty : null
+                }
+            }
+        };
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(manifest));
+        Assert.AreEqual(validAttempt, parsed.IsValid);
+        if (!validAttempt)
+            Assert.AreEqual("descriptor.cycleEvidence.acquisitionAttemptId", parsed.Validation.FieldPath);
+    }
+
+    [TestMethod]
     public void ParseManifest_WithNumericCycleEvidenceEnums_ReturnsInvalidJson()
     {
         var manifest = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);

@@ -17,6 +17,46 @@ public sealed partial class EnvironmentalAcquisitionService(
     ILogger<EnvironmentalAcquisitionService> logger) : BackgroundService
 {
     private long _queueDepth;
+    private readonly Channel<(EnvironmentalCaptureAcquisition Acquisition, Func<CancellationToken, Task> Prepare)> _capturePreparations =
+        Channel.CreateBounded<(EnvironmentalCaptureAcquisition, Func<CancellationToken, Task>)>(
+            new BoundedChannelOptions(options.Value.EnvironmentalAcquisition.QueueCapacity)
+            { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait, AllowSynchronousContinuations = false });
+
+    internal bool TryPrepareCapture(EnvironmentalCaptureAcquisition acquisition, Func<CancellationToken, Task> prepare)
+        => _capturePreparations.Writer.TryWrite((acquisition, prepare));
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The hosted worker owns preparation writes and reports their exact error to the admission caller.")]
+    private async Task DrainCapturePreparationsAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await foreach (var item in _capturePreparations.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    stoppingToken.ThrowIfCancellationRequested();
+                    await item.Prepare(stoppingToken).ConfigureAwait(false);
+                    item.Acquisition.Admission.TrySetResult(null);
+                }
+                catch (Exception exception)
+                {
+                    item.Acquisition.Admission.TrySetResult(exception);
+                    item.Acquisition.Completion.TrySetResult();
+                    AcquisitionFailed(logger, "Multiple", "BeforeCapture", "Failed", "capture-admission-unavailable", exception);
+                }
+            }
+        }
+        finally
+        {
+            _capturePreparations.Writer.TryComplete();
+            while (_capturePreparations.Reader.TryRead(out var abandoned))
+            {
+                abandoned.Acquisition.Admission.TrySetResult(new OperationCanceledException(stoppingToken));
+                abandoned.Acquisition.Completion.TrySetResult();
+            }
+        }
+    }
     private readonly Channel<EnvironmentalTriggerRequest> _requests = Channel.CreateBounded<EnvironmentalTriggerRequest>(
         new BoundedChannelOptions(options.Value.EnvironmentalAcquisition.QueueCapacity)
         {
@@ -53,6 +93,7 @@ public sealed partial class EnvironmentalAcquisitionService(
             .Where(static source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.Periodic))
             .Select(source => RunPeriodicAsync(source, stoppingToken));
         return Task.WhenAll(periodic
+            .Append(Task.Run(() => DrainCapturePreparationsAsync(stoppingToken), CancellationToken.None))
             .Append(DrainRequestsAsync(stoppingToken))
             .Append(DrainDeferredAsync(stoppingToken))
             .Append(RunRetentionAsync(stoppingToken)));

@@ -28,7 +28,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
         fixture.Device.Release(2, fail: true);
         await acquisition.Completion.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
         var raw = await RawCaptureIngressTests.PersistEnvironmentalCaptureAsync(fixture.Root, acquisition.Id, Epoch).ConfigureAwait(false);
-        await fixture.Store.BindCaptureAcquisitionAsync(fixture.Root, acquisition.Id, raw.Manifest.Descriptor.Capture.CaptureId,
+        _ = await fixture.Store.ReadCaptureAvailabilityAsync(fixture.Root, raw.Manifest.Descriptor.Capture.CaptureId, acquisition.Id,
             CancellationToken.None).ConfigureAwait(false);
         fixture.Clock.Now = Epoch.AddSeconds(10);
         var poll = fixture.Coordinator.AcquireSourceAsync("sqm", EnvironmentalAcquisitionTrigger.Periodic, fixture.Clock.Now).AsTask();
@@ -178,7 +178,7 @@ public sealed partial class EnvironmentalCaptureFailureTests
                 await store.CompleteOnDemandAsync(root, key, claim.LeaseToken,
                     new(source.Id, EnvironmentalAcquisitionTrigger.BeforeCapture, EnvironmentalAcquisitionDisposition.Failed,
                         "scripted", null, clock.Now, clock.Now), CancellationToken.None).ConfigureAwait(false);
-                await store.BindCaptureAcquisitionAsync(root, scope, capture, CancellationToken.None).ConfigureAwait(false);
+                _ = await store.ReadCaptureAvailabilityAsync(root, capture, scope, CancellationToken.None).ConfigureAwait(false);
                 if (rawJournalPresent) await AddRetentionRawCaptureAsync(root, capture, Encoding.UTF8.GetBytes("{}")).ConfigureAwait(false);
                 foreach (var trigger in new[] { EnvironmentalAcquisitionTrigger.AfterCapture, EnvironmentalAcquisitionTrigger.EveryNthCapture,
                     EnvironmentalAcquisitionTrigger.RegimeChange })

@@ -509,7 +509,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
 | `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 15, reads 13 to 15. `io.hvo.skymonitor.raw-ingress-schema` 15 and `raw-ingress-migration` `canonical-v13-v14-to-v15` also declare it |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 16, reads 13 to 16. `io.hvo.skymonitor.raw-ingress-schema` 16 and `raw-ingress-migration` `canonical-v13-v14-v15-to-v16` also declare it |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
 | `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4 |
