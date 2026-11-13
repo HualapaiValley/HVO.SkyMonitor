@@ -10,6 +10,10 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ## [Unreleased]
 
+### Added
+
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
 ### Fixed
 
 - CameraAgent development lifecycle workers detect interrupted rollback publication explicitly, pick up later installs without restarting, and retain recovery progress across probe transport failures with distinct diagnostics. Refs #1818
