@@ -64,7 +64,8 @@ internal static class LinuxCustomScriptSandbox
         using var launchFailure = new CancellationTokenSource();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token, outputLimit.Token, launchFailure.Token);
         using var process = new Process { StartInfo = BuildStartInfo(script) };
-        var termination = new CustomScriptTermination(() => process.HasExited, Kill);
+        // The termination latch owns every kill failure: none escapes a cancellation callback or timer thread.
+        var termination = new CustomScriptTermination(() => process.HasExited, () => process.Kill(entireProcessTree: true));
         var launched = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var reaped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         // PDEATHSIG is tied to the forking thread, not merely the .NET process. Keep it alive.
@@ -109,8 +110,9 @@ internal static class LinuxCustomScriptSandbox
         finally
         {
             // The PID namespace init dies with its parent; exiting it kills even detached descendants.
+            // Settlement retries a failed callback kill once and stops an undecided live tree under its phase's label.
             // Keep the worker/authority until exit and both redirected pipes have really drained.
-            if (!process.HasExited) termination.Stop("launch-failed");
+            await termination.SettleAsync().ConfigureAwait(false);
             await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
             await input.ConfigureAwait(false);
             await Task.WhenAll(stdout, stderr).ConfigureAwait(false);
@@ -142,7 +144,12 @@ internal static class LinuxCustomScriptSandbox
                 // No untrusted content enters stdin until the kernel reports this launch's exact budgets.
                 for (var attempt = 0; attempt < 200 && !process.HasExited; attempt++)
                 {
-                    if (HasVerifiedBudget(process.Id, unit)) { verified = true; break; }
+                    if (HasVerifiedBudget(process.Id, unit))
+                    {
+                        verified = true;
+                        termination.Verified();
+                        break;
+                    }
                     await Task.Delay(TimeSpan.FromMilliseconds(10), stop.Token).ConfigureAwait(false);
                 }
                 if (!verified)
@@ -160,13 +167,6 @@ internal static class LinuxCustomScriptSandbox
                 try { process.StandardInput.Close(); }
                 catch (IOException) { /* An early exit can close stdin before the writer flushes. */ }
             }
-        }
-
-        void Kill()
-        {
-            try { process.Kill(entireProcessTree: true); }
-            catch (InvalidOperationException) when (process.HasExited) { }
-            catch (Win32Exception) when (process.HasExited) { }
         }
     }
 

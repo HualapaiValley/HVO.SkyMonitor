@@ -140,16 +140,41 @@ public sealed class ArchitectureBoundaryTests
     public void CustomScriptsAndOffSweepWorkerReferenceNoCaptureOrAcquisitionServices()
     {
         var result = CompiledDependencyChecker.Check(ProductionAssembly(Repository.Value.Projects[CameraAgentCommon]),
-            type => type.Type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts", StringComparison.Ordinal)
-                || type.Type.Name.StartsWith("LocalAutomationOffSweepWorker", StringComparison.Ordinal),
-            type => type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common", StringComparison.Ordinal)
-                && (new[] { "Capture", "Acquisition", "RawIngress", "Scheduling", "Modules" }.Any(word =>
-                    type.Namespace.Split('.').Contains(word, StringComparer.Ordinal)
-                    || type.Name.Contains(word, StringComparison.Ordinal))));
+            CustomScriptOrOffSweepOwner, CompiledDependencyChecker.CaptureOrAcquisition);
         Assert.IsTrue(result.SelectedTypes.Any(type => type.Type.Name == "CustomScriptTaskAdapter"));
         Assert.IsTrue(result.SelectedTypes.Any(type => type.Type.Name == "LocalAutomationOffSweepWorker"));
         Assert.IsEmpty(result.Violations, string.Join(Environment.NewLine, result.Violations));
     }
+
+    /// <summary>
+    /// The rule above covers acquisition types in every assembly, not only CameraAgent.Common (#1768 S-L4). The
+    /// control's AgentCore and replay dependencies avoid the rule's words, so only the boundary itself rejects them.
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void CustomScriptAcquisitionRuleRejectsDependenciesOutsideCameraAgentCommon()
+    {
+        var result = CompiledDependencyChecker.Check(typeof(ArchitectureBoundaryTests).Assembly.Location,
+            type => CustomScriptOrOffSweepOwner(type) && type.Type.Name == "ScriptBoundaryDependencyControl",
+            CompiledDependencyChecker.CaptureOrAcquisition);
+        Assert.AreEqual(1, result.TypesChecked);
+        foreach (var name in new[] { "HVO.SkyMonitor.AgentCore.RigTarget", "HVO.SkyMonitor.CameraAgent.Modules.Zwo.SensorTarget",
+            "HVO.SkyMonitor.CameraAgent.Replay.ReplayTarget", "HVO.SkyMonitor.Imaging.Acquisition.ExposureTarget",
+            "HVO.SkyMonitor.Astronomy.CaptureWindowTarget" })
+        {
+            Assert.IsTrue(result.Violations.Any(v => v.EndsWith(":" + name, StringComparison.Ordinal)), name);
+            TestContext.WriteLine($"Acquisition control rejected: {name}");
+        }
+        Assert.HasCount(5, result.Violations, string.Join(Environment.NewLine, result.Violations));
+        // Only the top-level canonical digest helper is exempt; the rest of AgentCore stays forbidden.
+        Assert.IsFalse(CompiledDependencyChecker.CaptureOrAcquisition(new(AgentCore, AgentCore, "CaptureContractJson")));
+        Assert.IsTrue(CompiledDependencyChecker.CaptureOrAcquisition(new(AgentCore, AgentCore, "CaptureContractJson+Nested")));
+        Assert.IsTrue(CompiledDependencyChecker.CaptureOrAcquisition(new(AgentCore, AgentCore, "CameraFrame")));
+    }
+
+    private static bool CustomScriptOrOffSweepOwner(CompiledDependencyChecker.OwnedType type) =>
+        type.Type.Namespace.StartsWith("HVO.SkyMonitor.CameraAgent.Common.Automation.Scripts", StringComparison.Ordinal)
+        || type.Type.Name.StartsWith("LocalAutomationOffSweepWorker", StringComparison.Ordinal);
 
     [TestMethod]
     [TestCategory("Unit")]
