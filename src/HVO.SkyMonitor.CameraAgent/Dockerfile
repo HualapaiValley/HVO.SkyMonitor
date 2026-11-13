@@ -139,12 +139,14 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # image that omits the manifest label is held to manifest 2 only.
 #
 # The minimum-compatible-revision boundary identifies the sealed-history and row-MAC reader (Refs #1041),
-# and includes environmental schema 4 (Refs #1778) and nightly schema 3 (#1713). Paired protected state
+# and includes environmental schema 4 (Refs #1778), nightly schema 3 (Refs #1713),
+# and local automation schema 4 (Refs #1768). Paired protected state
 # is snapshotted with the databases before adoption so an older-reader rollback
-# receives its pre-upgrade history.
-# Its change makes existing installers checkpoint the paired databases before the schema-2 conversion;
-# rollback restores that checkpoint rather than handing schema 3 to a schema-2 binary.
-# The minimum-compatible-revision boundary also selects the paired checkpoint for processing schema 9.
+# receives its pre-upgrade history. The combined reader advances beyond the processing-only
+# predecessor at development/v1 38320d3a, so that schema-3 automation reader also checkpoints.
+# Its change makes existing installers checkpoint the paired databases before store conversion;
+# rollback restores that checkpoint rather than handing converted stores to older readers.
+# The same boundary also selects the paired checkpoint for processing schema 9.
 # Refs #1766. Earlier processing readers require the retained checkpoint.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,

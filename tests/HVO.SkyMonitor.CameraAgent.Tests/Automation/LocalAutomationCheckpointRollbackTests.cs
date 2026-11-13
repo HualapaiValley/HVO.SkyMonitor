@@ -38,12 +38,28 @@ public sealed class LocalAutomationCheckpointRollbackTests
                 "Fixtures", "automation-schema3-processing9-image-labels.json")).ConfigureAwait(false));
             Assert.AreEqual("38320d3a4745327b7d5c1d28b6ffcf3485e084a7", labelsFixture.RootElement.GetProperty("sourceRevision").GetString());
             var previousLabels = labelsFixture.RootElement.GetProperty("imageLabels");
+            var candidateLabels = CameraAgentStateCompatibilityLabelTests.ReadImageLabels();
             var installed = InstallerLabels.Identity("registry", "base", $"sha256:{new string('1', 64)}", "amd64", null, previousLabels);
             var candidate = InstallerLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
-                JsonSerializer.SerializeToElement(CameraAgentStateCompatibilityLabelTests.ReadImageLabels()));
+                JsonSerializer.SerializeToElement(candidateLabels));
             var changes = InstallerMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility, candidate,
                 Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
-            Assert.HasCount(1, changes, "A current-base upgrade must select the checkpoint before opening the schema-3 automation store.");
+            const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+            var previousValues = previousLabels.EnumerateObject()
+                .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
+            var boundaryChanges = changes.Where(static change =>
+                change.StartsWith(boundary + " installed ", StringComparison.Ordinal)).ToArray();
+            Assert.HasCount(1, boundaryChanges, "A current-base upgrade must select the checkpoint before opening the schema-3 automation store.");
+            StringAssert.StartsWith(boundaryChanges[0],
+                $"{boundary} installed {previousValues[boundary]}, candidate {candidateLabels[boundary]}", StringComparison.Ordinal);
+            // The frozen 38320d3a image also predates later raw-ingress and catalog-manifest boundaries, each of which
+            // independently selects the same checkpoint. Exactly the state-boundary labels that differ must be declared,
+            // once each: a missing automation boundary, a missing independent transition or an unexpected change fails.
+            var expectedLabels = InstallerLabels.StateBoundaryLabels
+                .Where(label => previousValues[label] != candidateLabels[label]).Order(StringComparer.Ordinal).ToArray();
+            var declaredLabels = changes.Select(static change => change[..change.IndexOf(' ', StringComparison.Ordinal)])
+                .Order(StringComparer.Ordinal).ToArray();
+            CollectionAssert.AreEqual(expectedLabels, declaredLabels, string.Join("; ", changes));
 
             var raw = Path.Combine(paths.StateRoot, "raw");
             var database = Path.Combine(raw, ".automation", "local-automations.db");

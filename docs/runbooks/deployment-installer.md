@@ -2701,7 +2701,7 @@ operation and are not deleted automatically.
 **Processing manifest ledgers (Refs #1766).** Processing schema 8 upgrades atomically to
 schema 9 at startup. Optional input/output counts move out of the frozen-plan BLOB
 into a bounded scalar table, preserving primary plan bytes and retained run evidence.
-The raw journal stays at schema 15. The image's `minimum-compatible-revision` boundary advances to the schema-9
+That change left the raw journal at schema 15 (the later schema-16 change has its own raw-ingress labels). The image's `minimum-compatible-revision` boundary advances to the schema-9
 implementation, so an upgrade from the preceding image selects the existing paired
 SQLite checkpoint before candidate startup. The named state contract remains
 `cameraagent-state-v2`. An interrupted migration can retry
