@@ -336,7 +336,8 @@ public static class CatalogSnapshotResolver
                 manifest.Topology.ConstellationCount);
             ValidateConstant("topology.segmentCount", expected.Topology.SegmentCount, manifest.Topology.SegmentCount);
         }
-        // The manifest versions match, and exactly the version-3 specifications and manifests have a composition.
+        // The manifest versions match, and exactly the version-3 (composed) specifications and manifests have a
+        // composition; stars-only version 2 and standalone deep-sky version 4 have none.
         if (expected.Composition is { } composition)
         {
             composition.RequireSameAs(manifest.Composition!);

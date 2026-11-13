@@ -164,8 +164,10 @@ one root. A selection that crosses lineages does all of the following:
 - pins the previously selected identity as a historical reference, so garbage
   collection cannot delete it while a frame still names it.
 
-A current image declares `hvo-approved-catalogs-v2`, which resolves HYG 4.2,
-HYG 4.4 and the composed OpenNGC lineage. An image that declares
+A current image declares `hvo-approved-catalogs-v3`, which resolves HYG 4.2,
+HYG 4.4, the composed OpenNGC lineage and the standalone OpenNGC deep-sky
+lineage. An image that declares `hvo-approved-catalogs-v2` resolves the first
+three. An image that declares
 `hvo-approved-catalogs-v1` resolves the two HYG lineages and refuses the composed
 catalog. An older image that only knows HYG 4.2 refuses a HYG 4.4 selection. Cross-lineage
 selection retires the retained image rollback because that rollback environment

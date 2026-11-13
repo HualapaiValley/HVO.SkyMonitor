@@ -49,11 +49,16 @@ internal static class CameraAgentImageContract
 {
     public const string Component = "CameraAgent";
     /// <summary>
-    /// The catalog contract a current image declares. Registry version 2 approves the stars-only lineages and the
-    /// composed HYG 4.4 + OpenNGC lineage. The image's catalog-manifest-version label is the highest manifest it reads.
+    /// The catalog contract a current image declares. Registry version 3 approves the stars-only lineages, the
+    /// composed HYG 4.4 + OpenNGC lineage (manifest 3) and the standalone OpenNGC deep-sky lineage (manifest 4). The
+    /// image's catalog-manifest-version label is the highest manifest it reads.
     /// </summary>
     public const string IndependentCatalogContract = "hvo-approved-catalogs-v3";
 
+    /// <summary>
+    /// The catalog contract of an image that embeds registry version 2: the stars-only lineages and the composed
+    /// HYG 4.4 + OpenNGC lineage, every manifest up to version 3.
+    /// </summary>
     public const string ComposedCatalogContract = "hvo-approved-catalogs-v2";
 
     /// <summary>

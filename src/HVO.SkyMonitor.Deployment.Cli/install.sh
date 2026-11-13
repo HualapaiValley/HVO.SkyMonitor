@@ -725,7 +725,8 @@ EOF
     if [ -n "${deploys}" ] && ! ${names_image}; then
       files+=("${image}-${release_version}-linux-${arch}.oci.tar")
     fi
-    # An install's catalog is the one archive SHA256SUMS lists as <catalog version>.bundle.tar.gz.
+    # An install's catalog is the one star archive SHA256SUMS lists as <catalog version>.bundle.tar.gz; the standalone
+    # openngc-* deep-sky archive is selected after installation, not handed to install.
     if [ "${deploys}" = install ] && ! ${names_catalog} && [ -f "${from}/SHA256SUMS" ]; then
       catalog=$(catalog_asset "${from}/SHA256SUMS")
       case "${catalog}" in

@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- A CameraAgent state reset refused by an active OpenNGC deep-sky selection now names the exact recovery commands (`cameraagent uninstall`, `cameraagent reset-state … --confirm-instance-id`, then `cameraagent install` with the same inputs) instead of an ambiguous "reset and reinstall". The installer and catalog guides now describe the current `hvo-approved-catalogs-v3` / manifest-4 contract and the separate OpenNGC archive. Refs #1824
+
 - CameraAgent upgrade preflight names the right remedy for a blocked raw-ingress journal again: drift repair or a healthy backup for a schema-16 journal, migration preconditions for an older schema-13/14/15 journal, and the archive-and-reset procedure only for unsupported journals. Since the schema-16 image, every such finding had advised a reset. #1823
 
 - CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. A distinct reader boundary requires a paired pre-upgrade checkpoint even from processing-schema-9 images that still use automation schema 3; rollback restores that checkpoint for the previous reader. Refs #1768

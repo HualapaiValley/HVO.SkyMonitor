@@ -172,8 +172,9 @@ already given:
   answering is only noted. An unsynchronised clock (`timedatectl`) is noted;
 - with `--from`, the folder is one only you and root can change and holds, each yours or root's and writable by no one
   else, the installer for this machine, `SHA256SUMS`, `release.json` and, for an install or
-  an upgrade, the offline image archive for this machine and, for an install, the one catalog archive `SHA256SUMS`
-  lists. Otherwise, for an install or an upgrade, ghcr.io answers;
+  an upgrade, the offline image archive for this machine and, for an install, the star catalog archive: the one
+  `<catalog version>.bundle.tar.gz` that `SHA256SUMS` lists other than the standalone `openngc-*` deep-sky archive,
+  which is selected separately after installation. Otherwise, for an install or an upgrade, ghcr.io answers;
 - for an install (`cameraagent install`, or no command) or an upgrade: Docker answers you and is 20.10 or later with
   Compose v2; `docker info` reports `MemoryLimit`, `CPUCfsQuota` and `PidsLimit` as `true` and at least 2 CPUs; and
   Docker's `DockerRootDir` has 3 GB free. Online, `docker buildx` is 0.8 or later, which the installer uses to read the

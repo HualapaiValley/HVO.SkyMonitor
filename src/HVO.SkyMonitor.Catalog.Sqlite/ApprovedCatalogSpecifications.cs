@@ -43,8 +43,9 @@ public sealed record ApprovedCatalogTopology(
 
 /// <summary>
 /// One reviewed, source-controlled catalog specification. A package manifest is accepted only when it matches
-/// the specification its catalog ID names; a manifest can never approve itself. A manifest-version-3 specification
-/// also names its <see cref="Composition"/>; earlier versions have none.
+/// the specification its catalog ID names; a manifest can never approve itself. A manifest-version-3 (composed)
+/// specification also names its <see cref="Composition"/>; stars-only version 2 and standalone deep-sky version 4
+/// specifications have none.
 /// </summary>
 public sealed record ApprovedCatalogSpecification(
     string CatalogId,
