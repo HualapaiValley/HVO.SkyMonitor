@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent upgrade preflight names the right remedy for a blocked raw-ingress journal again: drift repair or a healthy backup for a schema-16 journal, migration preconditions for an older schema-13/14/15 journal, and the archive-and-reset procedure only for unsupported journals. Since the schema-16 image, every such finding had advised a reset. #1823
+
 - CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. A distinct reader boundary requires a paired pre-upgrade checkpoint even from processing-schema-9 images that still use automation schema 3; rollback restores that checkpoint for the previous reader. Refs #1768
 
 - CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
