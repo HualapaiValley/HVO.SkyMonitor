@@ -91,8 +91,8 @@ internal static class ReleaseImageArchive
         {
             wanted.Add(BlobPrefix + Hex(image.Digest));
         }
-        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted, cancellationToken,
-            maximumEntries: component == "LogicHost" ? 4096 : null).ConfigureAwait(false);
+        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted,
+            component == "LogicHost" ? 4096 : null, cancellationToken).ConfigureAwait(false);
         InstallerException Refusal(string reason)
             => new($"The offline archive {archive.Name} is not the image release {release.Tag} names: {reason}.");
         byte[] Entry(string name, string what)
@@ -295,8 +295,8 @@ internal static class ReleaseImageArchive
         Stream stream,
         string name,
         HashSet<string> wanted,
-        CancellationToken cancellationToken,
-        int? maximumEntries)
+        int? maximumEntries,
+        CancellationToken cancellationToken)
     {
         var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         var blobs = new Dictionary<string, BlobContent>(StringComparer.Ordinal);
