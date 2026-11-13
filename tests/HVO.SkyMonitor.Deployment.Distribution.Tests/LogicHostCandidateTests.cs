@@ -162,7 +162,8 @@ public sealed class LogicHostCandidateTests
             "metadata" => "exactly the supported bounded fields",
             "metadata-duplicate" => "same property twice",
             "metadata-absent" => "omits its bounded LogicHost",
-            "platform" or "blob" => "not the blob",
+            "platform" => "configuration is not for linux/amd64",
+            "blob" => "not the blob",
             "link" => "something other than a file",
             "traversal" => "not the canonical spelling",
             _ => "holds index.json twice"
@@ -195,6 +196,18 @@ public sealed class LogicHostCandidateTests
             "large" => "exceeds its size bound",
             _ => "not valid JSON"
         });
+    }
+
+    [TestMethod]
+    [DataRow("index-extra-platform")]
+    [DataRow("index-unknown-platform")]
+    [DataRow("index-duplicate-platform")]
+    public async Task Verify_IndexPlatformsMustMatchTheReleaseDeclarations(string fault)
+    {
+        ArgumentNullException.ThrowIfNull(fault);
+        using var fixture = new CandidateFixture(fault);
+        var failure = await Assert.ThrowsExactlyAsync<InstallerException>(() => LogicHostCandidate.VerifyAsync(fixture.Root, CancellationToken.None));
+        StringAssert.Contains(failure.Message, "platforms must match the release declarations", StringComparison.Ordinal);
     }
 
     [TestMethod]
@@ -350,9 +363,47 @@ public sealed class LogicHostCandidateTests
             });
             var entries = ReadEntries(input.ImageArchive);
             var (manifest, config, _) = input.Platforms[platform];
-            ImageId = config;
             var imageDigest = string.IsNullOrEmpty(input.IndexDigest) ? manifest : input.IndexDigest;
             var layout = JsonNode.Parse(entries["index.json"])!;
+            if (fault == "platform")
+            {
+                var configuration = JsonNode.Parse(entries["blobs/sha256/" + config[7..]])!;
+                configuration["architecture"] = "arm64";
+                var configurationBytes = Bytes(configuration);
+                entries.Remove("blobs/sha256/" + config[7..]);
+                config = "sha256:" + Hash(configurationBytes);
+                entries["blobs/sha256/" + config[7..]] = configurationBytes;
+                var platformManifest = JsonNode.Parse(entries["blobs/sha256/" + manifest[7..]])!;
+                platformManifest["config"]!["digest"] = config;
+                platformManifest["config"]!["size"] = configurationBytes.Length;
+                var manifestBytes = Bytes(platformManifest);
+                entries.Remove("blobs/sha256/" + manifest[7..]);
+                manifest = imageDigest = "sha256:" + Hash(manifestBytes);
+                entries["blobs/sha256/" + manifest[7..]] = manifestBytes;
+                layout["manifests"]![0]!["digest"] = manifest;
+                layout["manifests"]![0]!["size"] = manifestBytes.Length;
+            }
+            if (fault is "index-extra-platform" or "index-unknown-platform" or "index-duplicate-platform")
+            {
+                var descriptor = layout["manifests"]![0]!.DeepClone();
+                descriptor["platform"] = new JsonObject { ["os"] = "linux", ["architecture"] = "amd64" };
+                var extra = descriptor.DeepClone();
+                extra["platform"]!["architecture"] = fault == "index-extra-platform" ? "arm64" : "amd64";
+                if (fault == "index-unknown-platform") extra.AsObject().Remove("platform");
+                var expandedIndex = new JsonObject
+                {
+                    ["schemaVersion"] = 2,
+                    ["mediaType"] = OciReleaseFixture.IndexMediaType,
+                    ["manifests"] = new JsonArray(descriptor, extra)
+                };
+                var bytes = Bytes(expandedIndex);
+                imageDigest = "sha256:" + Hash(bytes);
+                entries["blobs/sha256/" + imageDigest[7..]] = bytes;
+                layout["manifests"]![0]!["digest"] = imageDigest;
+                layout["manifests"]![0]!["size"] = bytes.Length;
+                layout["manifests"]![0]!["mediaType"] = OciReleaseFixture.IndexMediaType;
+            }
+            ImageId = config;
             if (fault == "entries-at-limit")
             {
                 var expanded = JsonNode.Parse(entries["blobs/sha256/" + manifest[7..]])!;
@@ -409,8 +460,6 @@ public sealed class LogicHostCandidateTests
                 ["Layers"] = new JsonArray([.. JsonNode.Parse(entries["blobs/sha256/" + manifest[7..]])!["layers"]!.AsArray()
                     .Select(static layer => (JsonNode)("blobs/sha256/" + ((string)layer!["digest"]!)[7..]))])
             }));
-            if (fault == "platform")
-                entries["blobs/sha256/" + config[7..]] = Encoding.UTF8.GetBytes("{\"os\":\"linux\",\"architecture\":\"arm64\"}");
             if (fault == "blob") Array.Fill(entries["blobs/sha256/" + input.Platforms[platform].Layer[7..]], (byte)'x');
             using (var file = File.Create(Path.Combine(Root, archiveName)))
             using (var tar = new TarWriter(file, TarEntryFormat.Ustar))

@@ -173,6 +173,15 @@ internal static class ReleaseImageArchive
                     OnlyFields(entryPlatform, "image index entry's platform", Refusal, "architecture", "os", "variant");
                 }
             }
+            if (component == "LogicHost" &&
+                (manifests.GetArrayLength() != image.Platforms.Count ||
+                 !manifests.EnumerateArray().Select(entry => entry.ValueKind == JsonValueKind.Object &&
+                         entry.TryGetProperty("platform", out var declared) && declared.ValueKind == JsonValueKind.Object
+                             ? $"{Text(declared, "os")}/{Text(declared, "architecture")}" : null)
+                     .Order(StringComparer.Ordinal).SequenceEqual(image.Platforms.Order(StringComparer.Ordinal), StringComparer.Ordinal)))
+            {
+                throw Refusal("its image index platforms must match the release declarations exactly");
+            }
             var matching = manifests.EnumerateArray()
                 .Where(entry => entry.ValueKind == JsonValueKind.Object &&
                                 entry.TryGetProperty("platform", out var platform) && platform.ValueKind == JsonValueKind.Object &&
