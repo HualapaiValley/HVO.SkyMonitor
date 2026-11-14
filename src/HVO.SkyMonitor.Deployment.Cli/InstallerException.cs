@@ -33,6 +33,12 @@ internal sealed class InstallerException : Exception
     /// </summary>
     public bool IsRefusal { get; private init; }
 
+    /// <summary>The running lifecycle worker must be restarted to refresh its cached identity.</summary>
+    internal bool IsWorkerRestartRequired { get; private init; }
+
+    internal static InstallerException WorkerRestartRequired() => new("Restart the lifecycle worker after its runtime identity, listener or credential changes.")
+    { IsRefusal = true, IsWorkerRestartRequired = true };
+
     /// <summary>A refusal: the installer will not do what was asked here, and nothing was changed.</summary>
     public static InstallerException Refused(string message) => new(message) { IsRefusal = true };
 

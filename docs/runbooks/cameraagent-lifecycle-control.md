@@ -84,6 +84,11 @@ while the transport responds. Idle heartbeats do not write durable state or eval
      Running nor Paused.
    - **Failed** `lifecycle.installer-busy`: another installer deployment
      operation held the deployment lock when the worker would have claimed it.
+   - **Failed** `lifecycle.restart-required`: the worker's cached listener,
+     credential or runtime identity differs from the retained installation. Stop
+     and restart the lifecycle worker as the recorded runtime account, then submit
+     a new request. If startup refuses, retain the records and investigate the
+     reported identity or credential mismatch; do not edit the records.
 
    On either side of the pause, check capture state before resuming:
    - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: an
@@ -286,6 +291,10 @@ HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed
 Diagnostics distinguish `recovery=probe-timeout`, `recovery=transport-unavailable`
 and `recovery=probe-refused status=<code>` from heartbeat or publication failures.
 The next poll retries the retained recovery; caller cancellation still stops the worker.
+If recovery reports `recovery=restart-required`, the receipt remains pending. Stop
+and restart the lifecycle worker as the recorded runtime account so it reloads the
+listener, credential and identity; retain the journals for settlement. If startup
+refuses, investigate the reported mismatch without editing the retained records.
 
 Do not edit or delete either journal. Definite quarantined refusals still require
 reconciliation; they never qualify for the offline exception.

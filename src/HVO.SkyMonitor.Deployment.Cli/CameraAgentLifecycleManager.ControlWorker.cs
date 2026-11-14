@@ -149,10 +149,11 @@ internal sealed partial class CameraAgentLifecycleManager
         async Task<InstanceLifecycleCondition> ReadConditionCoreAsync(bool allowPartialRollback, CancellationToken cancellation)
         {
             var (current, _) = await ReadWorkerIdentityAsync(paths, request.InstanceId, cancellation, allowPartialRollback).ConfigureAwait(false);
-            ValidateLifecycleControlToken(current, token);
+            if (current.LifecycleControlTokenSha256 != ComposeDeployment.ComputeSha256(token))
+                throw InstallerException.WorkerRestartRequired();
             if (current.InstallationId != manifest.InstallationId || current.ApplicationIdentity != manifest.ApplicationIdentity || current.RuntimeUid != manifest.RuntimeUid ||
                 current.RuntimeGid != manifest.RuntimeGid || current.BindAddress != manifest.BindAddress || current.Port != manifest.Port)
-                throw InstallerException.Refused("Restart the lifecycle worker after its runtime identity or listener changes.");
+                throw InstallerException.WorkerRestartRequired();
             return current.LifecycleCondition;
         }
         async Task<IDisposable> AcquireDeploymentAsync(CancellationToken cancellation)
