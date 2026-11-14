@@ -13,8 +13,8 @@ public enum GpsSignalState
 }
 
 /// <summary>
-/// Fake-only GPS diagnostics. ArrivalOffset is NMEA UTC minus sentence receipt time, including unknown serial
-/// latency; it is not a precision clock measurement. PPS reports availability only, with no UTC association.
+/// Fake-only GPS diagnostics. ArrivalOffset ages NMEA UTC monotonically against the current host wall clock,
+/// including unknown serial latency; it is not a precision clock measurement. PPS reports availability only, with no UTC association.
 /// </summary>
 public sealed record GpsTimeStatus(
     GpsSignalState State,
@@ -31,6 +31,23 @@ public sealed record GpsTimeStatus(
 }
 
 /// <summary>
+/// Caller-declared inclusive UTC bounds for an in-process fake workload. They neither trust host UTC nor select
+/// the reference or uncertainty policy for a production receiver.
+/// </summary>
+public sealed class GpsUtcWindow
+{
+    public GpsUtcWindow(DateTimeOffset earliestUtc, DateTimeOffset latestUtc)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(latestUtc, earliestUtc);
+        EarliestUtc = earliestUtc;
+        LatestUtc = latestUtc;
+    }
+
+    public DateTimeOffset EarliestUtc { get; }
+    public DateTimeOffset LatestUtc { get; }
+}
+
+/// <summary>
 /// Bounded, cancellable in-process NMEA reader for scripted streams; never registered in production or opens a path.
 /// Supports checksummed RMC (dated UTC and validity) and GGA (fix quality and satellite count), GP/GN talkers.
 /// Known limits requiring Roy's decision: PPS source and edge; which NMEA UTC second an edge marks;
@@ -39,9 +56,10 @@ public sealed record GpsTimeStatus(
 /// Callers own streams, which must honor ReadAsync cancellation; reads are serialized. Partial lines are discarded
 /// through LF even across rounds or interleaved sources. Weak per-stream framing state does not retain caller-owned
 /// streams; continuation assumes forward reads (use a new stream for a new script). Status/edge observation is safe
-/// during a read. Freshness uses monotonic time, not wall-clock age.
+/// during a read. Freshness uses monotonic time, not wall-clock age. A scripted UTC window is required for a
+/// diagnostic fix; absent or out-of-window dated evidence is NoFix. This is not a production reference policy.
 /// </summary>
-public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
+public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWindow = null) : IDisposable
 {
     public const int MaximumSentenceLength = 82;
     public const int MaximumBytesPerRead = 4096;
@@ -53,14 +71,13 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
     private readonly Lock _gate = new();
     private readonly ConditionalWeakTable<Stream, LineFraming> _framing = new();
     private DateTimeOffset? _utc, _lastSentence, _lastPps;
-    private TimeSpan? _arrivalOffset;
     private long? _rmcTimestamp, _ggaTimestamp, _ppsTimestamp;
     private int? _quality, _satellites;
     private bool _validFix, _unavailable;
 
     /// <summary>
     /// Consumes at most 4096 bytes within two seconds, including waiting for another read. EOF ends this scripted
-    /// round; IOException marks the source unavailable and invalidates prior evidence. Caller cancellation propagates.
+    /// round; expected transport failures mark the source unavailable and invalidate prior evidence. Caller cancellation propagates.
     /// An internally timed-out round retains only completed valid sentences, subject to normal expiry.
     /// </summary>
     public async Task ReadAsync(Stream source, CancellationToken cancellationToken)
@@ -113,14 +130,15 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
         }
-        catch (IOException)
+        catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException or
+            ObjectDisposedException || exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             lock (_gate)
             {
                 _unavailable = true;
                 _utc = _lastSentence = _lastPps = null;
                 _rmcTimestamp = _ggaTimestamp = _ppsTimestamp = null;
-                _arrivalOffset = null;
                 _quality = _satellites = null;
                 _validFix = false;
             }
@@ -159,7 +177,8 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
                 : !fresh ? GpsSignalState.Stale
                 : !_validFix || (Fresh(_ggaTimestamp) && _quality == 0) ? GpsSignalState.NoFix : GpsSignalState.Available;
             return new GpsTimeStatus(state, _utc, _lastSentence,
-                state == GpsSignalState.Available ? _arrivalOffset : null,
+                state == GpsSignalState.Available
+                    ? _utc - _time.GetUtcNow() + _time.GetElapsedTime(_rmcTimestamp!.Value) : null,
                 Fresh(_ggaTimestamp) ? _quality : null, Fresh(_ggaTimestamp) ? _satellites : null,
                 _ppsTimestamp is null ? GpsSignalState.Missing
                     : Fresh(_ppsTimestamp) ? GpsSignalState.Available : GpsSignalState.Stale, _lastPps);
@@ -210,8 +229,9 @@ public sealed class GpsTimeReader(TimeProvider timeProvider) : IDisposable
                 _utc = utc;
                 _lastSentence = _time.GetUtcNow();
                 _rmcTimestamp = _time.GetTimestamp();
-                _validFix = fields[2] == "A";
-                _arrivalOffset = _validFix ? utc - _lastSentence : null;
+                // A fake script must supply its own UTC bounds; the host wall clock is not a trusted reference.
+                _validFix = fields[2] == "A" && (fields.Length <= 12 || fields[12] is "A" or "D" or "P" or "R" or "F") &&
+                    utcWindow is not null && utc >= utcWindow.EarliestUtc && utc <= utcWindow.LatestUtc;
                 _unavailable = false;
             }
         }
