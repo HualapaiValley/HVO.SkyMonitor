@@ -9,14 +9,226 @@ output does not by itself authorize an extra full-workflow dispatch for a v1 PR.
 Whole-repository ShellCheck remains in Quality; exhaustive category discovery
 remains in Build. Both are intentionally absent from the short workflow.
 
+## Development v1 Per-file Coverage
+
+**Development v1 / Build and Unit** enforces the canonical risk-file line and
+branch floors from `scripts/coverage/baseline.json`, using the same pinned
+ReportGenerator merge and `scripts/coverage/Program.cs` evaluator as the local
+canonical gate. The inputs differ: v1 includes ProcessingRunner.Tests and four
+supplemental Unit projects, with no Integration slots; it does not reproduce the
+canonical slot set. No threshold is copied into the workflow. Preflight also runs
+`scripts/coverage:policy`: PRs cannot lower any aggregate/component floor, remove
+a file floor, widen tolerance, or add an arbitrary v1 local-only path.
+
+The existing complete Docker-disabled Unit selection collects coverage once.
+`scripts/coverage:development-v1 --settings OUTPUT` copies
+`tests/coverage.runsettings`, derives its assembly Include filter from existing
+canonical floor paths, and sets `SingleHit=true`. Floors measure whether each
+line/branch was hit; repeated hit counts add no evidence and make hot Unit loops
+more expensive. All other collector settings, including canonical test-assembly,
+TestSupport, migration, build-output and attribute exclusions remain intact.
+This avoids instrumenting host assemblies whose coverage is not measured by this
+profile. The generated settings are retained with the raw reports. The merge
+requires one GUID-directory report per Unit-bearing project's category inventory;
+it excludes TRX attachment copies and never searches outside the fresh run root.
+Every input is parsed and checked before ReportGenerator runs: that tool can log
+a malformed input, omit it and still exit zero. Raw records must occupy the
+canonical `coverage/packages/package/classes/class` tree, with one class/method
+line container and required method names. Merger-excluded `$` class names,
+misplaced records and duplicate containers fail rather than supply completeness.
+Class filenames must be plain paths beneath this checkout's `src/`, or genuine
+assembly-relative/project-root names; out-of-tree paths and `./`, `//`, `../` or
+backslash aliases fail. Each raw report must contain one `sources` container with
+roots equal to this checkout's `src/` or `src/<package>/` (an empty source list
+is valid only for a classless report); a rewritten
+root fails before merging, including on the last parsed report. Unexpected executable sources outside the Release PDB
+inventory also fail. After merging, the wrapper requires a successful verbose
+parse receipt for every expected input and rejects logged read errors even if
+the tool exits zero. This detects a missing parse receipt or logged read error for a redundant contributor; receipts alone do not prove its hits survived merging. Legitimate
+classless reports from projects with no included assemblies are accepted. Each report must match its
+TRX attachment and project, the included assemblies present in that project's
+Release output, and every executable source file in those assemblies' portable
+PDBs, plus every ordinary compiled class in each executable source. Portable
+PDBs must match their DLL debug identifiers, and excluded method source sections
+also exclude nested generated code. PDB checks independently require ordinary
+and unambiguous async/iterator statement spans, including continuation lines.
+
+All 27 floored files additionally have a reviewed line and branch inventory in
+`scripts/coverage/development-v1-lines.json`. It binds each source SHA-256, the
+pinned SDK/collector versions and canonical settings hash to the exact line set
+emitted by genuine complete Unit collection, plus each emitted line's branch
+denominator and condition IDs. Branch markers and count syntax must also be
+accepted by the pinned merger; whitespace markers or unparseable count suffixes
+fail before merging. Both class-level **and method-level** line sets
+and per-line branch structure must match in every contributing report. Removing
+a line, rewriting a measured branch line as `branch=false`, shrinking its branch
+total, deleting a condition or omitting its branch marker fails even when both
+representations, TRX copies and declared counts are changed consistently.
+Genuinely branchless lines and collector-omitted points remain valid according to the reviewed inventory. This
+covers generated/overlapping lines that PDB checks cannot require universally:
+genuine `ProcessingRecipeExecutor.cs:44` is absent from the pinned emitted set,
+while measured line52 is required. The final evaluator independently compares
+its actual per-file line set and summed branch total at each line against the same pin, after ReportGenerator
+normalization/grouping. Missing lines, added padding and branch loss/additions
+fail even if raw records passed validation. The pin defines the evaluated
+denominator; runtime input cannot enlarge or shrink it. Hit/covered values remain
+collector assertions, and no file floor or percentage changes.
+
+Method records contribute to the pinned ReportGenerator merge: it can restore a
+class-level line from a surviving method record. They are structurally validated
+before merging, and both representations must be complete independently. The
+shared evaluator measures the resulting merged class-level lines. Report-level
+`lines-valid` is also checked for consistency; it is not the independent source
+of completeness. Non-floored sources retain PDB source/ordinary-class checks.
+Root `branches-valid` can include branches not mapped to emitted lines in genuine
+Coverlet output, so it is not equated with their sum. Per-line branch denominators
+and condition identities come from the independent pin. Hit counts and covered
+branch values remain trusted collector assertions, not authenticated or
+reconstructed from IL; copied TRX attachment hashes bind identity only.
+
+A source, active floor, SDK, collector or settings change that invalidates the
+pinned inventory fails with a regeneration remedy. After reviewing a fresh,
+complete genuine Unit collection, explicitly regenerate and review the artifact:
+
+```bash
+./scripts/coverage:line-inventory "$evidence_root/unit" scripts/coverage/development-v1-lines.json
+git diff -- scripts/coverage/development-v1-lines.json
+```
+
+This is a maintenance command, never a CI step. CI must not regenerate its
+expected inventory from inputs it is about to validate. The generator rejects
+missing contributors and differing class/method or per-contributor line sets
+or branch structure, including explicit branch markers; review must establish
+genuine collection provenance and preserve all thresholds.
+Keep generated settings and original reports with that evidence. Unsupported
+collector exclusions/options and active `tools/` floors fail explicitly until the
+inventory model supports them; ReleaseTool's catalog-dependent skip is unchanged.
+All new checks remain in Build and Unit's coverage stage, with no Preflight work.
+
+An enforced file missing from
+the reports, present without executable line data, or declaring branches without
+their counts **fails**. Explicitly branchless lines remain valid. Both evaluator
+profiles reject missing/empty enforced-file data and missing declared branch
+counts. TRX/build-inventory binding runs during v1's pre-merge validation.
+Failure output names the path, observed line/branch percentages,
+floors, and the remedy: restore collection or add tests, then rerun the gate.
+For the default canonical profile, signed Int32 hit-count wrap from the pinned
+ReportGenerator merger is treated as covered. V1's SingleHit inputs reject
+negative counts. Malformed XML and missing/invalid fields fail in both profiles.
+
+The following scope limits leave every numeric floor unchanged:
+
+- Full-suite aggregate floors and additional/higher component file floors remain
+  local/full-qualification checks, calibrated to their exact coverage slot sets.
+  Shared coverage includes Astronomy Integration tests; the CameraAgent,
+  LogicHost and combined lanes include their owning Integration suites. Delivery
+  uses Unit tests with the production catalog bundle provisioned. V1 supplies
+  neither those complete slot sets nor the catalog prerequisite and claims no
+  aggregate qualification from its partial assembly coverage.
+- ReleaseTool `Program.cs` remains local/full-qualification-only because v1 does
+  not provision `HVO_PRODUCTION_CATALOG_BUNDLE` for its catalog-gated Unit tests.
+  Its `developmentV1LocalOnlyReason` lives beside its unchanged 50% line/35%
+  branch floors in the canonical baseline. Every v1 evaluation prints `SKIP`, the
+  path, floors and prerequisite. The default canonical gate still enforces it.
+  See the reproduced catalog-absent limitation in
+  [catalog-f7-1188](../validation/catalog-f7-1188.md) and
+  [issue-1644-candidate](../validation/issue-1644-candidate.md).
+- Only the three retired paths pinned in `scripts/coverage/policy.json` may have
+  absent sources: `ArtifactUploadManifest.cs`, `DistributionCatalogAcquirer.cs`
+  and `DistributionVerifier.cs`. Their skips name that policy. Any other missing
+  enforced source, including a rename/move, fails settings generation, the shared
+  evaluator and coverage policy on PR, push and merge-group events. Moving a file
+  requires reviewing its floor mapping; absence never implies retirement.
+  Coverage policy rejects changes to the three-entry retired list unless its
+  executable allowlist is also changed and reviewed; JSON edits alone cannot
+  exempt a renamed file.
+- Roy's [#1739 per-PR exception](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1739#issuecomment-6734050237)
+  is recorded in that PR's discussion, not a repository exception registry.
+  `InstallerControlWorker`, `InstallerControlJournal` and
+  `CameraAgentSystemUiService` have no canonical per-file floor; this gate adds
+  none and creates no general 85% new-file rule or permanent waiver.
+
+Reproduce the short profile with a private, short, owner-only `TMPDIR` (installer
+Unix socket fixtures need the short path), and a fresh results directory:
+
+```bash
+(
+set -euo pipefail
+evidence_root="$(mktemp -d /tmp/hvo-coverage-evidence.XXXXXXXX)"
+coverage_tmp="$(mktemp -d /tmp/cf.XXXXXX)"
+chmod 700 "$evidence_root" "$coverage_tmp"
+export evidence_root TMPDIR="$coverage_tmp"
+export DOTNET_CLI_USE_MSBUILD_SERVER=0 MSBUILDDISABLENODEREUSE=1 UseSharedCompilation=false
+trap 'rm -rf "$coverage_tmp"' EXIT
+flock -o /tmp/hvo-heavy-gate.lock bash -euo pipefail <<'BASH'
+dotnet tool restore
+dotnet restore HVO.SkyMonitor.v9.slnx --disable-build-servers
+dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release --disable-build-servers -p:UseSharedCompilation=false -warnaserror
+./scripts/coverage:development-v1 --settings "$evidence_root/coverage.runsettings"
+DOCKER_HOST=unix:///tmp/hvo-no-docker.sock dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter "TestCategory=Unit" --settings "$evidence_root/coverage.runsettings" --collect:"XPlat Code Coverage" --results-directory "$evidence_root/unit" --logger trx
+./scripts/test:coverage-development-v1
+./scripts/coverage:development-v1 "$evidence_root/unit" "$evidence_root/coverage"
+BASH
+printf 'Retained coverage evidence: %s\n' "$evidence_root"
+)
+```
+
+`scripts/test:coverage-development-v1` runs behavioral tests against the actual
+evaluator and complete merge wrapper, including line/branch violations,
+missing branch counters, malformed reports, moved sources, missing/empty data,
+and the catalog-dependent path under both profiles. The workflow contract's mutation
+controls protect collection, enforcement, evidence, and existing PR/merge-group
+triggers. Coverage shares the existing 1080-second workload deadline and appears
+as a fourth timed stage in the `hvo-development-v1-ci-v5` evidence manifest;
+failed runs retain generated settings, raw/merged XML, report paths and timings.
+The existing Build and Unit check reports failure on non-draft PRs, v1 pushes and
+`merge_group/checks_requested`; drafts retain Preflight only. Required check names
+and ruleset 26838822 need no change. No new check, permission, catalog provision,
+Integration selection, workflow dispatch or repository setting is introduced.
+
+Earlier independent review measured about 44.5 seconds added to Unit collection
+with SingleHit, with peak RSS increasing from about 0.8 GB to 2.6 GB and artifacts
+growing about 18 MB. More recent local build/Unit/coverage totals were about
+628 seconds on 6ac31137 and 662 seconds on its local target merge: above the
+600-second target, within the 1080-second workload deadline. The coverage stage
+took about 48–51 seconds, including about 38 seconds of regression self-tests
+on every applicable event. These supersede the older 20.3-second stage sample.
+The self-tests now reuse their already compiled private fixture helper for fault
+cases, while still executing the wrapper, validation and pinned merger; the
+positive build path and real 21-project coverage run remain uncached. Candidate
+handoff evidence records current timings. Separate host samples are not a
+controlled incremental comparison and establish no coverage speedup. Observe
+hosted timing and memory alongside the existing workload budget.
+
+Read-only hosted evidence for run [42920048484](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/42920048484)
+records restore 10 s, build 382 s, Unit 550 s and coverage 50 s: 992 s of the
+1,080 s workload budget, leaving 88 s before checkout/setup overhead. This
+contended sample is distinct from the local totals above. The 1,080 s budget,
+22-minute hard timeout and unconditional coverage regressions are retained;
+Roy selected additional or relocated self-hosted runner capacity in t421s2656.
+Atlas completed that work on 2026-11-12 at 9:04–9:05 AM PST: `gh-runner-05`
+and `gh-runner-06` each have 8 vCPU and are the only runners carrying
+`hvo-skymonitor-build`. Build and Unit selects exactly
+`[self-hosted, linux, x64, hvo-skymonitor-build]`; runners 01–04 and other job
+selectors are unchanged. Capacity delivery is ready. Keep the 1,080 s soft
+budget and 22-minute hard timeout unchanged while collecting new timings.
+Workflow rollback returns this job to `[self-hosted, linux, x64, hvo-skymonitor]`;
+Atlas retains `ROLLBACK.md` for the runner-side procedure.
+A later [run 43086895061, attempt 1](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43086895061/attempts/1)
+reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
+timestamps; coverage never started. This demonstrates workload-budget pressure
+outside the coverage self-tests, so making those tests conditional cannot by
+itself prevent that timeout. Refs #1747.
+
 ## Development v1 Preflight Budget
 
-**Development v1 / Preflight** has a four-minute (240-second) job timeout,
-per the owner decision in #1365. This supersedes the three-minute (180-second)
-budget retained by #1333 when the secret-scanner contract became conditional.
-PR #1364 took 173 seconds with the contract selected; the new budget provides
-67 seconds of headroom for that measured run. Ordinary PRs remain near one minute.
-All checks, their order and selection rules, job names and required-check names
+**Development v1 / Preflight** has a six-minute (360-second) job timeout for
+all events (Refs #1747). This supersedes the four-minute PR budget from #1365
+and retains the six-minute push/queue budget. PR #1811 run 43293828104,
+attempt 3, exceeded the four-minute cap: CI control contracts took 118 seconds,
+the secret-scanner contract took 86 seconds, and release-script tests were
+cancelled after 18 seconds. Six minutes gives that combined workload another
+120 seconds to finish with margin. All required checks and selection rules
 remain unchanged.
 
 ## Promotion ancestry prerequisite
@@ -56,13 +268,14 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | Check | Enforced behavior |
 | --- | --- |
 | **Change Classification** | Fail-closed selection of the full matrix for pushes and behavior-affecting pull requests or reduced mode for explicitly allowlisted documentation/developer-environment pull requests. |
-| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact. Skipped in classified reduced mode. |
+| **Catalog Contracts** | Full-mode hosted build and smoke validation of the exact HYG v42 production catalog contracts, retained as a one-day workflow artifact, followed by the offline HYG 4.2 reproducibility regression on the input that build fetched and verified (see [Catalog Reproducibility](#catalog-reproducibility)). Skipped in classified reduced mode. |
+| **Catalog Reproducibility** | Full-mode hosted rebuild of the three catalog test fixtures and of the approved HYG 4.4 and OpenNGC catalogs from their pinned, verified inputs, under both SQLite `secure_delete` connection defaults. Runs when the classifier's `catalog_recipe` output selects it; otherwise its planned `skipped` result is required. |
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 14862 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 1006 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
-| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 32 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
+| **Unit Tests** | 16947 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 35-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | 1433 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
 | **Coverage Policy** | Schema validation of every aggregate and component coverage baseline plus rejection of any pull request that lowers a baseline rate, raises its tolerance, or drops a baseline file floor relative to the merge target. Runs for every full-mode head. |
@@ -76,8 +289,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 
 Each test invocation owns a category/project-specific result directory and TRX name. Coverage rejects any report count other than the expected 23, preventing missing or overwritten evidence.
 
-Change Classification, Catalog Contracts, Quality, Coverage Policy, and Required
-CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
+Change Classification, Catalog Contracts, Catalog Reproducibility, Quality,
+Coverage Policy, and Required CI run on pinned `ubuntu-24.04` hosted runners. Deployment Contracts, Build, Unit
 Tests, Integration Tests, Architecture & Publish, both migration checks, every
 component lane, Coverage, and Coverage Badges remain on the labeled self-hosted
 runners and also require `hvo-qualification`. Two x64 runners stay without that
@@ -110,6 +323,84 @@ output selects it. On a PR that output is `true` when the change touches `script
 `scripts/ci:classify`). Deleting one of those paths selects it too. Pushes, missing commits, empty ranges, failed or
 malformed diffs, missing or non-regular tree entries, missing outputs and classifier-step failures all run it: only a
 successful, explicit `false` skips it. It takes a few seconds.
+
+## Catalog Reproducibility
+
+Two full-qualification jobs hold the approved catalog bytes to their recipes (Refs #1701, Refs #1773, Refs #1774). Neither
+regression runs in the `development/v1` profile.
+
+**Catalog Contracts** runs for every full-mode head. After it has built the HYG 4.2 contracts it runs
+`scripts/catalog/test-hyg-v42-reproducibility.sh` on `build/hyg_v42.csv.gz`, the compressed input that build fetched
+and verified, so the regression downloads nothing. It builds HYG 4.2 four more times, twice with the incoming SQLite
+`secure_delete` connection default forced OFF and twice with it forced ON, and requires the approved database hash and
+byte-identical bundle files each time. It runs before the contracts are uploaded.
+
+**Catalog Reproducibility** is a separate job, so that the jobs waiting for the contracts artifact do not wait for it
+and a failure in it is reported on its own. Its steps run in this order:
+
+1. `scripts/catalog/test-sqlite-identity.sh`, the offline test of the identity line described below.
+2. `scripts/catalog/test-fixture-reproducibility.sh`, which runs every `tests/fixtures/catalog/build-fixture*.sh`
+   recipe with `secure_delete` forced OFF and then ON. Each recipe must pass its own `sha256sum --check` and rebuild the
+   committed database byte for byte. The recipes run in a scratch copy of the fixture directory; the checkout is not
+   written.
+3. `scripts/catalog/fetch-hyg-v44-openngc-inputs.sh`, the only step that uses the network. It fetches the HYG 4.4
+   compressed input from its pinned URL and OpenNGC at its pinned commit, and publishes them only after verifying them:
+   the HYG input, `NGC.csv` and `addendum.csv` by length and SHA-256, and the outline directory by its exact set of 379
+   regular files and the SHA-256 of each against the committed listing, which is itself checked by length and SHA-256.
+   A mismatch fails the step and leaves no input directory behind.
+4. `scripts/catalog/test-fetch-hyg-v44-openngc-inputs.sh`, which replays those verified bytes, damaged one way at a
+   time, through stand-ins for `curl` and `git`, and requires the fetch to refuse each one and publish nothing.
+5. `scripts/catalog/test-hyg-v44-reproducibility.sh` on the fetched inputs: four clean HYG 4.4 and OpenNGC builds, two
+   per connection default, each passing the pinned validators and comparing byte for byte with the first.
+
+The two offline steps come first, so an upstream outage cannot hide a fixture result.
+
+The job runs when the plan is full mode and the classifier's `catalog_recipe` output is `true`. On a pull request that
+output is `true` when the change adds, modifies, deletes or renames a path under `scripts/catalog/` or
+`tests/fixtures/catalog/`, at any depth. Nothing else selects it on a pull request: not the `scripts/catalog:*` entry
+points, not the catalog adapter's sources, and not the job's own wiring in `ci.yml`, `scripts/ci:classify` or
+`scripts/ci:require`. Pushes to `main` and `release/**`, manual dispatches and the release workflow's qualification
+call always select it, and so do missing commits, empty ranges, failed or malformed diffs and missing or non-regular
+tree entries. A reduced-mode plan never runs it, including one that names the allowlisted
+`tests/fixtures/catalog/SOURCE.md`. `Required CI` requires the job to be `success` exactly when a full-mode plan
+selects it and `skipped` otherwise, and rejects a non-pull-request plan that does not select it.
+
+### SQLite identity line
+
+Every catalog builder (`build-hyg-v42.sh`, `build-hyg-v44.sh` and `build-hyg-v44-openngc.sh`) prints one line before
+it fetches, verifies or builds anything, and before its version gate can reject the tool. The line comes from
+`hyg_print_sqlite_identity` in `scripts/catalog/catalog-common.sh`:
+
+```text
+catalog sqlite3: path=/usr/bin/sqlite3 version="3.45.1 2024-01-30 16:01:20 e876e51a…alt1 (64-bit)" sha256=<64 hex digits> secure_delete=1
+```
+
+It names the resolved `sqlite3` executable, its `--version` line, the SHA-256 of that executable, and the
+`PRAGMA secure_delete` value a new connection starts with. When `PATH` reaches the executable through a symbolic link,
+as it does for the isolated CLI from `install-sqlite-3.45.1.sh`, the line also carries `via=` with the `PATH` entry. A
+`sqlite3` that cannot be identified fails the build.
+
+Because the builders print it, every job that builds a catalog records the tool in its log without wiring of its own:
+Catalog Contracts, the ARM64 advisory's catalog job, and the release and pre-release asset builds, which reach
+`build-hyg-v42.sh` through `scripts/release:assets`. Both callers send the builder's output to stderr, so the line
+survives the `>/dev/null` on the Catalog Contracts build step. A runner-image change that replaces the CLI therefore
+shows as a different line rather than having to be inferred.
+
+Two limits apply when reading the line:
+
+- The SHA-256 covers the `sqlite3` executable only. Ubuntu's CLI loads `libsqlite3.so.0`, so a change confined to
+  that library shows in the version line's source ID and in the `secure_delete` value, not in the hash.
+- The reproducibility regressions run the builders through a wrapper that forces the connection default. Their
+  builder lines name the wrapper and the forced value. The HYG 4.4 and fixture regressions print the wrapped tool's
+  own line first; for HYG 4.2 the Catalog Contracts build step has already printed it.
+
+### Runtime
+
+Measured on `hvo-dev-02` on 2026-11-11 with Ubuntu's `sqlite3` 3.45.1, while other work was running on the host:
+the HYG 4.2 regression added to Catalog Contracts took 9 seconds, and the Catalog Reproducibility steps took under
+4 minutes together, nearly all of it the HYG 4.4 and OpenNGC regression. Catalog Contracts keeps its 10-minute
+timeout. Catalog Reproducibility has a 20-minute timeout. Neither job has run on a hosted runner yet; record its
+duration from the first full-qualification run and adjust only if that run needs it.
 
 ## Secret Scan
 
@@ -538,7 +829,7 @@ updates, recovery, decommissioning, and promotion criteria are maintained in
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=14862`, `Integration=1006`, `Manual=295`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=16947`, `Integration=1433`, `Manual=307`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 
@@ -758,7 +1049,7 @@ variables and suppresses the resolved output because future configuration may
 contain secrets. It does not set up .NET, restore/format the solution, build
 catalog artifacts, or run the package audit for paths excluded from
 application/package behavior. It
-intentionally skips Catalog Contracts, Build, Unit Tests, Integration Tests,
+intentionally skips Catalog Contracts, Catalog Reproducibility, Build, Unit Tests, Integration Tests,
 Architecture & Publish, Coverage Policy, both migration checks, every component
 lane, and Coverage. Reduced mode is the only plan in which the never-component-scoped
 gates do not run, because no executable contract is affected. Documentation-only reduced pull requests also skip
@@ -960,6 +1251,11 @@ The complete matrix additionally runs Unit Tests, Integration Tests, and the
 aggregate Coverage rollup, which every component plan skips in favour of its
 lanes.
 
+[Catalog Reproducibility](#catalog-reproducibility) is selected independently of
+those columns: a change under `scripts/catalog/**` or `tests/fixtures/catalog/**`
+runs it, as does every row that fails closed and every push or manual dispatch.
+No other row does.
+
 Inspect the exact plan for any two commits without pushing:
 
 ```bash
@@ -982,12 +1278,10 @@ it returned `mode=full complete=true deployment=false` over 14 paths and would
 have named Unit Tests, which owns the test-category audit, on the first head
 instead of the eighth.
 
-`scripts/ci:require` uses `declare -A` and needs Bash 4 or newer, and
-`scripts/ci:shell-syntax` requires Bash 5.1 and refuses to run under anything
-older rather than reporting a pass it did not perform. The macOS system Bash is
-3.2, so invoke the Homebrew Bash explicitly there. `scripts/pr:dispatch-review`,
-which `scripts/test:pr-review-tools` exercises, additionally requires `flock`,
-which macOS does not ship; install it with `brew install flock`.
+`scripts/ci:require` uses `declare -A`; run the Linux gates with Bash 5.1 or
+newer and util-linux `flock`. `scripts/ci:shell-syntax` refuses older Bash rather
+than reporting a pass it did not perform. The former dispatch-only Mac advisory
+workflow has been retired under the Linux-only build contract.
 
 `scripts/ci:shellcheck` enforces ShellCheck 0.9.0 `--severity=warning` over exactly
 the set `scripts/ci:shell-syntax --list0` derives, downloading and

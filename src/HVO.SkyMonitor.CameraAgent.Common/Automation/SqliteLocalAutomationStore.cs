@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
@@ -23,8 +24,16 @@ public sealed record LocalAutomationRunnerEntry(
 /// <summary>The durable owner of local automation definitions and their run-history journal.</summary>
 public interface ILocalAutomationStore
 {
+    /// <summary>Only a matched durable installer request may retain completion ownership across process lifetimes.</summary>
+    ValueTask<bool> HasInstallerLifecycleIntentAsync(string runKey, CancellationToken cancellationToken) => ValueTask.FromResult(false);
+
     /// <summary>Creates or validates the store and settles runs interrupted by a stop.</summary>
     ValueTask InitializeAsync(CancellationToken cancellationToken);
+
+    /// <summary>Retained daily still generation attempts for a bounded library scan.</summary>
+    ValueTask<IReadOnlyList<NightlyProducts.NightlyProductGenerationAttempt>> ListNightlyProductRunsAsync(
+        NightlyProducts.NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ValueTask.FromResult<IReadOnlyList<NightlyProducts.NightlyProductGenerationAttempt>>([]);
 
     /// <summary>The complete operator projection, including the registry and the next-run calendar.</summary>
     ValueTask<LocalAutomationOperatorState> GetStateAsync(CancellationToken cancellationToken);
@@ -60,6 +69,11 @@ public interface ILocalAutomationStore
         string detail,
         CancellationToken cancellationToken);
 
+    /// <summary>Settles an already-drained cancellation using its actual end time.</summary>
+    ValueTask CompleteDrainedRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        DateTimeOffset completedAtUtc, CancellationToken cancellationToken)
+        => CompleteRunAsync(runKey, outcome, detail, cancellationToken);
+
     /// <summary>Records one already-terminal run, such as a window missed while the host was stopped.</summary>
     ValueTask RecordTerminalRunAsync(
         LocalAutomationRunnerEntry entry,
@@ -94,7 +108,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
 {
     private const string DirectoryName = ".automation";
     private const string FileName = "local-automations.db";
-    private const int ExpectedSchemaObjectCount = 8;
+    private const int ExpectedSchemaObjectCount = 9;
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -102,6 +116,17 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         Converters = { new JsonStringEnumConverter() }
     };
+
+    private const string ScriptStopAuditSchemaSql = """
+        CREATE TABLE automation_script_stops (
+            run_key TEXT PRIMARY KEY REFERENCES automation_runs(run_key) ON DELETE CASCADE,
+            revision_sha256 TEXT NOT NULL CHECK (length(revision_sha256) = 64),
+            definition_version INTEGER NOT NULL CHECK (definition_version > 0),
+            actor TEXT NOT NULL CHECK (length(actor) BETWEEN 1 AND 256),
+            cause TEXT NOT NULL CHECK (cause = 'operator-stop-requested'),
+            requested_unix_ms INTEGER NOT NULL
+        ) STRICT;
+        """;
 
     private static readonly string SchemaSql = $"""
         CREATE TABLE IF NOT EXISTS automation_definitions (
@@ -180,6 +205,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<SqliteLocalAutomationStore> _logger;
     private readonly LocalAutomationTelemetry? _telemetry;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The DI container owns the lifecycle intent store.")]
+    private readonly CameraAgentControlStore? _lifecycleControls;
     private readonly CameraAgentHostOptions _options;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed",
         Justification = "The lifetime authority invokes _gate.Dispose only after every admitted execution lease drains.")]
@@ -199,7 +226,8 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         TimeProvider timeProvider,
         ILogger<SqliteLocalAutomationStore> logger,
         LocalAutomationTelemetry? telemetry = null,
-        LocalAutomationWindowPlanner? windowPlanner = null)
+        LocalAutomationWindowPlanner? windowPlanner = null,
+        CameraAgentControlStore? lifecycleControls = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _registry = registry;
@@ -210,6 +238,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         _telemetry = telemetry;
         _authority = new LocalAutomationExecutionAuthority(_gate.Dispose);
         _windowPlanner = windowPlanner;
+        _lifecycleControls = lifecycleControls;
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -221,6 +250,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: true, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -242,6 +272,12 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         {
             return;
         }
+        // A claimed run may have crashed before its adapter durably submitted installer intent.
+        // Only a matched durable intent delegates recovery; task kind alone would strand that claim.
+        var delegatedRuns = settleInterruptedRuns && _lifecycleControls is not null
+            ? (await _lifecycleControls.ReadAsync(cancellationToken).ConfigureAwait(false)).Receipts
+                .Select(item => item.Request.AutomationRunKey).OfType<string>().Distinct(StringComparer.Ordinal).ToArray()
+            : [];
         using var transaction = BeginImmediate(connection);
         var version = await ReadUserVersionAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (version > LocalAutomationContract.CurrentSchemaVersion)
@@ -264,11 +300,23 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                     + "before starting this CameraAgent.");
             }
             await ExecuteAsync(connection, transaction, SchemaSql, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, ScriptStopAuditSchemaSql, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(
                 connection,
                 transaction,
                 $"PRAGMA user_version = {LocalAutomationContract.CurrentSchemaVersion};",
                 cancellationToken).ConfigureAwait(false);
+        }
+        else if (version == 3)
+        {
+            // Only the known predecessor is a supported forward input. Do not bless a drifted store.
+            var predecessorObjects = await ScalarLongAsync(connection, transaction,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", cancellationToken).ConfigureAwait(false);
+            if (predecessorObjects != 8)
+                throw new InvalidDataException("Local automation SQLite schema is incomplete or drifted.");
+            await ExecuteAsync(connection, transaction, ScriptStopAuditSchemaSql, cancellationToken).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction,
+                $"PRAGMA user_version = {LocalAutomationContract.CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
         }
         else if (version != LocalAutomationContract.CurrentSchemaVersion)
         {
@@ -304,10 +352,13 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 SET outcome = 'Interrupted',
                     completed_unix_ms = $now,
                     detail = 'The CameraAgent stopped while this run was claimed.'
-                WHERE outcome = 'Running' AND claimant <> $claimant;
+                WHERE outcome = 'Running' AND claimant <> $claimant
+                  AND NOT (COALESCE(json_extract(occurrence_json, '$.definition.taskKind'), '') = 'ScheduledCameraAgentRestart'
+                    AND run_key IN (SELECT value FROM json_each($delegated)));
                 """,
                 cancellationToken,
-                ("$now", ToUnixMilliseconds(Now())), ("$claimant", _claimant)).ConfigureAwait(false);
+                ("$now", ToUnixMilliseconds(Now())), ("$claimant", _claimant),
+                ("$delegated", JsonSerializer.Serialize(delegatedRuns, SerializerOptions))).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         _schemaReady = true;
@@ -327,6 +378,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
             var observed = await ReadCaptureSequenceIfNeededAsync(connection, cancellationToken)
                 .ConfigureAwait(false);
             using var transaction = BeginRead(connection);
@@ -407,6 +459,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             await EnsureSchemaAsync(connection, settleInterruptedRuns: false, cancellationToken)
                 .ConfigureAwait(false);
+            await ReconcileInstallerLifecycleAsync(connection, cancellationToken).ConfigureAwait(false);
             using var transaction = BeginRead(connection);
             var progress = await ReadProgressAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             var definitions = await ReadDefinitionsAsync(connection, transaction, cancellationToken)
@@ -536,12 +589,13 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         }
     }
 
-    public async ValueTask CompleteRunAsync(
-        string runKey,
-        LocalAutomationRunOutcome outcome,
-        string detail,
-        CancellationToken cancellationToken)
+    public ValueTask CompleteRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        CancellationToken cancellationToken) => CompleteDrainedRunAsync(runKey, outcome, detail, Now(), cancellationToken);
+
+    public async ValueTask CompleteDrainedRunAsync(string runKey, LocalAutomationRunOutcome outcome, string detail,
+        DateTimeOffset completedAtUtc, CancellationToken cancellationToken)
     {
+        if (completedAtUtc.Offset != TimeSpan.Zero) throw new ArgumentException("Completion must be UTC.", nameof(completedAtUtc));
         using var operation = RetainOperationAuthority(allowDrainingCompletion: true);
         ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
         ArgumentNullException.ThrowIfNull(detail);
@@ -567,7 +621,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 cancellationToken,
                 ("$outcome", outcome.ToString()),
                 ("$detail", Bound(detail)),
-                ("$now", ToUnixMilliseconds(Now())),
+                ("$now", ToUnixMilliseconds(completedAtUtc)),
                 ("$key", runKey),
                 ("$claimant", _claimant)).ConfigureAwait(false);
             if (settled == 0)
@@ -801,6 +855,18 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
             ("$id", request.DefinitionId)).ConfigureAwait(false);
         var version = Math.Max(currentVersion, revisionCeiling) + 1;
         var now = ToUnixMilliseconds(Now());
+        // This mutation withdraws pending authorization, not the immutable execution identity.
+        // Explicit retries may retain an older occurrence until a subsequent mutation withdraws them.
+        if (existing is not null)
+        {
+            await ExecuteAsync(connection, transaction, """
+                UPDATE automation_runs SET outcome = 'Skipped', completed_unix_ms = $now, detail = $detail
+                WHERE definition_id = $id AND outcome = 'Queued';
+                """, cancellationToken, ("$now", now), ("$id", definition.DefinitionId),
+                ("$detail", !existing.Definition.Enabled || !definition.Enabled
+                    ? "The definition was disabled before this prepared occurrence started."
+                    : "The definition was edited before this prepared occurrence started.")).ConfigureAwait(false);
+        }
         await ExecuteAsync(
             connection,
             transaction,
@@ -1207,6 +1273,11 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         var runs = await ReadRunsAsync(
             connection, transaction, LocalAutomationContract.MaximumProjectedRuns, cancellationToken)
             .ConfigureAwait(false);
+        // Each live definition permits one running and at most 32 queued occurrences. Include the
+        // whole bounded set so pending controls cannot disappear behind newer terminal history.
+        var activeRuns = await ReadRunsAsync(connection, transaction,
+            LocalAutomationContract.MaximumDefinitions * (MaximumQueuedOccurrencesPerDefinition + 1),
+            cancellationToken, activeOnly: true).ConfigureAwait(false);
         var storeVersion = await ScalarLongAsync(
             connection, transaction,
             "SELECT COALESCE(MAX(sequence), 0) FROM automation_definition_revisions;", cancellationToken)
@@ -1272,6 +1343,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                 .Take(LocalAutomationContract.MaximumProjectedCalendarEntries)],
             runs)
         {
+            ActiveRuns = activeRuns,
             RunningRunCount = checked((int)await ScalarLongAsync(connection, transaction,
                 "SELECT COUNT(*) FROM automation_runs WHERE outcome = 'Running';", cancellationToken).ConfigureAwait(false)),
             QueuedRunCount = checked((int)await ScalarLongAsync(connection, transaction,
@@ -1361,7 +1433,7 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
         SqliteConnection connection,
         SqliteTransaction transaction,
         int maximumCount,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, bool activeOnly = false)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
@@ -1370,10 +1442,12 @@ public sealed partial class SqliteLocalAutomationStore : ILocalAutomationStore, 
                    started_unix_ms, completed_unix_ms, outcome, detail, observed_capture_sequence,
                    occurrence_json, attempt, occurrence_id, preparation_json
             FROM automation_runs
+            WHERE ($activeOnly = 0 OR outcome IN ('Queued', 'Running'))
             ORDER BY sequence DESC
             LIMIT $limit;
             """;
         command.Parameters.AddWithValue("$limit", maximumCount);
+        command.Parameters.AddWithValue("$activeOnly", activeOnly ? 1 : 0);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var results = new List<LocalAutomationRun>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

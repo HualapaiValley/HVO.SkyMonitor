@@ -53,7 +53,39 @@ public sealed class VirtualSkyPipelineTests
         [FrameArtifactRole.Raw, FrameArtifactRole.Calibrated, FrameArtifactRole.Combined, FrameArtifactRole.Preview, FrameArtifactRole.AnnotatedPreview];
     private static readonly string[] ExpectedPreviewVariants = ["calibrated-display", "default"];
 #endif
+#if COMBINED_INTEGRATION_TESTS
+    private static CameraAgentIntegrationFixture? _fixture;
+
+    private static CameraAgentIntegrationFixture Fixture => _fixture
+        ?? throw new InvalidOperationException("The configured-pipeline fixture has not been initialized.");
+
+    [ClassInitialize]
+    public static async Task InitializeFixtureAsync(TestContext _)
+    {
+        // The assembly fixture keeps acquiring while unrelated tests run. Its queued captures can predate this
+        // test's listeners by more than the readiness budget, so this class owns a fresh fixture. Refs #1740
+        var fixture = new CameraAgentIntegrationFixture();
+        try
+        {
+            await fixture.InitializeAsync().ConfigureAwait(false);
+            _fixture = fixture;
+        }
+        catch
+        {
+            fixture.Dispose();
+            throw;
+        }
+    }
+
+    [ClassCleanup]
+    public static void CleanupFixture()
+    {
+        _fixture?.Dispose();
+        _fixture = null;
+    }
+#else
     private static CameraAgentIntegrationFixture Fixture => AssemblyHooks.Fixture;
+#endif
 
 #if !COMBINED_INTEGRATION_TESTS
     [TestMethod]
@@ -391,8 +423,10 @@ public sealed class VirtualSkyPipelineTests
             SerializerOptions)!;
         Assert.AreEqual(transientDefinition.ComputeCanonicalScenarioId(), transientProvenance.ScenarioId);
         Assert.AreEqual(transientDefinition.ComputeParametersSha256(), transientProvenance.ParametersSha256);
-        Assert.IsTrue(
-            (raw.TimestampUtc - transientProvenance.IntegrationStartUtc).Duration() <= TimeSpan.FromMilliseconds(1));
+        var virtualExposure = raw.Metadata.Scene.VirtualExposure;
+        Assert.IsNotNull(virtualExposure);
+        Assert.IsTrue(virtualExposure.IsValid(raw.Metadata.Exposure));
+        Assert.AreEqual(virtualExposure.ScenarioStartUtc, transientProvenance.IntegrationStartUtc);
         Assert.AreEqual(
             transientProvenance.IntegrationStartUtc + raw.Metadata.Exposure,
             transientProvenance.IntegrationEndUtc);
@@ -426,6 +460,12 @@ public sealed class VirtualSkyPipelineTests
                 File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json")))))
             .Where(static item => item.Parsed.IsValid && item.Parsed.Document!.Manifest is not null)
             .ToArray();
+        var retainedRaw = manifests.Select(static item => item.Parsed.Document!.Manifest!)
+            .FirstOrDefault(item => item.Descriptor.Artifact.Role == FrameArtifactRole.Raw &&
+                item.Descriptor.Timing.ExposureStartedUtc == raw.TimestampUtc);
+        Assert.IsNotNull(retainedRaw, "The coherent raw snapshot must retain its acquisition timestamp.");
+        Assert.AreEqual(virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds(),
+            retainedRaw.Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds());
         var defaultPreview = manifests
             .Where(item =>
                 item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview &&

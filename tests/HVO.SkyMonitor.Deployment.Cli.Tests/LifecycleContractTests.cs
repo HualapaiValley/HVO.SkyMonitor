@@ -3659,13 +3659,20 @@ public sealed partial class LifecycleContractTests
                                 ["8080/tcp"] = new[] { new { HostIp = "127.0.0.1", HostPort = WrongPort ? "9999" : "5130" } }
                             }
                         },
-                        Mounts = mounts
+                        Mounts = mounts.Concat(DeepSkyMounts(paths!)).ToArray()
                     }
                 }), string.Empty));
             }
             if (arguments is ["container", "inspect", _, ..])
                 return Task.FromResult(new ProcessResult(1, string.Empty, $"Error response from daemon: No such container: {arguments[2]}"));
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+        }
+
+        private static IEnumerable<object> DeepSkyMounts(InstallationPaths currentPaths)
+        {
+            var environment = File.ReadAllLines(Path.Combine(currentPaths.ConfigRoot, "compose", "instance.env"));
+            var source = environment.SingleOrDefault(static line => line.StartsWith("HVO_DEEP_SKY_CATALOG_ROOT=", StringComparison.Ordinal));
+            return source is null ? [] : [new { Type = "bind", Source = source["HVO_DEEP_SKY_CATALOG_ROOT=".Length..], Destination = "/app/deep-sky-catalog", RW = false }];
         }
 
         private int infoCallCount;
@@ -3749,21 +3756,49 @@ public sealed partial class LifecycleContractTests
 
     private sealed class FakeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
     {
+        public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         public bool RejectNextVerification { get; set; }
         public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
         public Queue<string> VerificationStates { get; } = new();
 
+        /// <summary>When set, readiness fails unless the caller passed <c>--allow-quarantined-readiness</c>.</summary>
+        public bool RequireQuarantinedReadiness { get; set; }
+
+        public int QuarantinedReadinessCalls { get; private set; }
+
+        public bool QuarantinedReadinessSeen { get; private set; }
+
         public Task WaitForHealthAsync(
-            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null) => Task.CompletedTask;
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
+        {
+            QuarantinedReadinessCalls++;
+            QuarantinedReadinessSeen = allowQuarantinedReadiness;
+            if (RequireQuarantinedReadiness && !allowQuarantinedReadiness)
+            {
+                throw new InstallerException("CameraAgent health did not become ready: processing-lane quarantine");
+            }
+            return Task.CompletedTask;
+        }
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");
         public Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken)
             => Task.FromResult(CurrentOwnerBootstrapState);
+        public Task<string> ReadInstallationStateAsync(
+            string verificationToken, InstallationVerificationExpectation expectation, CancellationToken cancellationToken)
+        {
+            // Model the current instance separately from queued candidate/restart verification outcomes.
+            Assert.AreEqual(expectedAgentId.ToString("D"), expectation.AgentId);
+            return Task.FromResult(CurrentOwnerBootstrapState);
+        }
         public Task<string> VerifyInstallationAsync(
             string verificationToken,
             InstallationVerificationExpectation expectation,
             CancellationToken cancellationToken)
         {
+            InspectVerification?.Invoke(expectation);
             if (RejectNextVerification)
             {
                 RejectNextVerification = false;

@@ -39,7 +39,9 @@ public sealed partial class InstallerFlowTests
 
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity()
+    [DataRow(null)]
+    [DataRow("ControlledNight")]
+    public async Task InstallAsync_FreshThenCompletedRerun_PreservesEveryIdentity(string? illuminationMode)
     {
         // Deliberately environment-gated. These contracts install a real catalog bundle, which is
         // too large to check in, so the CI Unit lane restores it from the hyg-v42-contracts artifact
@@ -64,11 +66,20 @@ public sealed partial class InstallerFlowTests
             ProductRoot = root,
             CatalogBundle = bundle,
             ImageReference = imageId,
+            IlluminationMode = illuminationMode,
             Port = SelectFreePort()
         };
         var runner = new InstallerProcessRunner(imageId, root, request.InstanceId.Value);
         var probe = new RecordingPortProbe();
-        var owner = new InstallerOwnerClient();
+        var owner = new InstallerOwnerClient
+        {
+            InspectVerification = expectation =>
+            {
+                using var bound = JsonDocument.Parse(File.ReadAllText(Path.Combine(root, "cameraagents",
+                    request.InstanceId.Value.ToString("D"), "config", "camera-module.json")));
+                Assert.AreEqual(IlluminationModeTests.CanonicalSha256(bound.RootElement), expectation.ConfigurationSha256);
+            }
+        };
         try
         {
             var first = await CameraAgentInstaller.InstallAsync(
@@ -80,6 +91,18 @@ public sealed partial class InstallerFlowTests
                 CancellationToken.None,
                 portAvailabilityProbe: probe.Probe);
             Assert.IsTrue(first.OwnerPasswordIsDefault);
+            using (var boundConfiguration = JsonDocument.Parse(await File.ReadAllTextAsync(
+                       Path.Combine(first.ConfigRoot, "camera-module.json"))))
+            {
+                Assert.AreEqual(first.ConfigurationSha256, IlluminationModeTests.CanonicalSha256(boundConfiguration.RootElement));
+                var options = boundConfiguration.RootElement.GetProperty("module").GetProperty("options");
+                Assert.AreEqual(illuminationMode, options.TryGetProperty("illuminationMode", out var mode) ? mode.GetString() : null);
+                var boundManifest = await CameraAgentLifecycleManager.ReadManifestAsync(
+                    Path.Combine(first.InstanceRoot, "instance-manifest.json"), CancellationToken.None);
+                Assert.AreEqual(first.ConfigurationSha256, boundManifest.ConfigurationSha256);
+                Assert.AreEqual(first.RigProfileSha256, boundManifest.RigProfileSha256);
+                Assert.AreEqual(first.ScheduleSha256, boundManifest.ScheduleSha256);
+            }
             CollectionAssert.AreEqual(DefaultPasswordReadTwice, owner.Passwords);
             owner.CurrentInstallationState = "owner-ready";
             var passwordSha256 = await SafeFileSystem.ComputeSha256Async(first.PasswordFile, CancellationToken.None);
@@ -192,6 +215,16 @@ public sealed partial class InstallerFlowTests
             StringAssert.Contains(resultDrift.Message, "retained result", StringComparison.Ordinal);
             Assert.AreEqual(2, runner.ComposeUpCount);
             await File.WriteAllTextAsync(resultPath, legacyInProcessResultJson);
+
+            var changedMode = request with { IlluminationMode = "SolarDriven" };
+            var rejected = await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                changedMode, runner, _ => owner, RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: probe.Probe));
+            // A lighting change is a request-driven difference: refused and named, never a generic failure (Refs #1779).
+            Assert.IsTrue(rejected.IsRefusal);
+            StringAssert.Contains(rejected.Message, $"--illumination-mode ({illuminationMode ?? "omitted"}, not SolarDriven)", StringComparison.Ordinal);
+            Assert.AreEqual(legacyInProcessManifestJson, await File.ReadAllTextAsync(manifestPath));
+            Assert.AreEqual(2, runner.ComposeUpCount);
 
             var unsupportedState = JsonNode.Parse(await File.ReadAllTextAsync(statePath))?.AsObject()
                 ?? throw new AssertFailedException("The retained state was not valid JSON.");
@@ -1549,8 +1582,10 @@ public sealed partial class InstallerFlowTests
 
     private sealed class InstallerOwnerClient : IOwnerBootstrapClient
     {
+        public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
         private int stateReadCount;
         public string CurrentInstallationState { get; set; } = "owner-password-change-required";
+        public bool OwnerAlreadySeeded { get; init; }
         public string ExpectedOwnerEmail { get; init; } = "owner@example.test";
         public List<string> Passwords { get; } = [];
 
@@ -1558,7 +1593,10 @@ public sealed partial class InstallerFlowTests
         public int Verifications { get; private set; }
 
         public Task WaitForHealthAsync(
-            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;
@@ -1571,7 +1609,7 @@ public sealed partial class InstallerFlowTests
             Assert.AreEqual(ExpectedOwnerEmail, ownerEmail);
             Assert.IsGreaterThanOrEqualTo(8, password.Length);
             Passwords.Add(password);
-            return Task.FromResult(stateReadCount++ == 0
+            return Task.FromResult(!OwnerAlreadySeeded && stateReadCount++ == 0
                 ? "owner-temporary-password"
                 : "owner-password-change-required");
         }
@@ -1586,6 +1624,7 @@ public sealed partial class InstallerFlowTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Verifications++;
+            InspectVerification?.Invoke(expectation);
             Assert.AreEqual("hyg-v42-production", expectation.Catalog.CatalogId);
             Assert.AreEqual(64, expectation.ConfigurationSha256.Length);
             Assert.AreEqual(HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile.InProcess, expectation.ReplayProfile);
@@ -1609,6 +1648,14 @@ public sealed partial class InstallerFlowTests
 
         /// <summary>The Compose file the last <c>compose up</c> started the instance from: the limits it now runs with.</summary>
         public string? LastComposeUp { get; private set; }
+
+        public string? LastComposeUpEnvironment { get; private set; }
+
+        /// <summary>The camera configuration the last <c>compose up</c> started the instance with, as the file then held it.</summary>
+        public string? LastComposeUpConfiguration { get; private set; }
+
+        /// <summary>The arguments of every <c>compose up</c> that succeeded, in order.</summary>
+        public List<IReadOnlyList<string>> ComposeUps { get; } = [];
 
         /// <summary>
         /// The number the failing <c>compose up</c> would have: that one fails as Docker fails one it cannot complete, and
@@ -1776,12 +1823,7 @@ public sealed partial class InstallerFlowTests
                             }
                         },
                         HostConfig = Limits(),
-                        Mounts = new[]
-                        {
-                            new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
-                            new { Source = catalog, Destination = "/app/catalog", RW = false },
-                            new { Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
-                        }
+                        Mounts = StartedMounts(instanceRoot, catalog)
                     }
                 }));
             }
@@ -1800,6 +1842,7 @@ public sealed partial class InstallerFlowTests
                     return Task.FromResult(new ProcessResult(1, string.Empty, "Error response from daemon: cannot recreate the container"));
                 }
                 ComposeUpCount++;
+                ComposeUps.Add([.. arguments]);
                 var file = arguments.ToList().IndexOf("--file");
                 return file >= 0 ? UpAsync(arguments[file + 1], cancellationToken) : Success(string.Empty);
             }
@@ -1826,9 +1869,27 @@ public sealed partial class InstallerFlowTests
         private static async Task<ProcessResult> RenderAsync(string composeFile, CancellationToken cancellationToken)
             => new(0, await File.ReadAllTextAsync(composeFile, cancellationToken), string.Empty);
 
+        private object[] StartedMounts(string instanceRoot, string catalog)
+        {
+            var mounts = new List<object>
+            {
+                new { Source = Path.Combine(instanceRoot, "config", "camera-module.json"), Destination = "/app/cameraagent.deploy.json", RW = false },
+                new { Source = catalog, Destination = "/app/catalog", RW = false },
+                new { Source = Path.Combine(instanceRoot, "state", "identity"), Destination = "/app/App_Data", RW = true }
+            };
+            const string prefix = "HVO_DEEP_SKY_CATALOG_ROOT=";
+            if (LastComposeUp?.Contains(DeepSkyCatalogSelection.Mount, StringComparison.Ordinal) == true &&
+                LastComposeUpEnvironment?.Split('\n').SingleOrDefault(static line => line.StartsWith(prefix, StringComparison.Ordinal)) is { } root)
+                mounts.Add(new { Source = root[prefix.Length..], Destination = "/app/deep-sky-catalog", RW = false });
+            return [.. mounts];
+        }
+
         private async Task<ProcessResult> UpAsync(string composeFile, CancellationToken cancellationToken)
         {
             LastComposeUp = await File.ReadAllTextAsync(composeFile, cancellationToken);
+            LastComposeUpEnvironment = await File.ReadAllTextAsync(Path.Combine(Path.GetDirectoryName(composeFile)!, "instance.env"), cancellationToken);
+            var configuration = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(composeFile)!)!, "camera-module.json");
+            LastComposeUpConfiguration = File.Exists(configuration) ? await File.ReadAllTextAsync(configuration, cancellationToken) : null;
             return new ProcessResult(0, string.Empty, string.Empty);
         }
 
@@ -1847,7 +1908,10 @@ public sealed partial class InstallerFlowTests
         private int stateCount;
 
         public Task WaitForHealthAsync(
-            ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+            ApprovedCatalogContract expectedCatalog,
+            CancellationToken cancellationToken,
+            TimeSpan? timeout = null,
+            bool allowQuarantinedReadiness = false)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.CompletedTask;

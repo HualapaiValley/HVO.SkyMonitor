@@ -29,6 +29,52 @@ A valid filter with zero matching records has the explicit `NoMatches` outcome.
 Its fixed UI description states matching zero and selected zero in this snapshot,
 without treating the request as invalid or claiming global absence.
 
+## Solar context in selected pass details
+
+Each resolved start, peak and end anchor shows the Sun's geometric altitude at
+the original pass observer and exact anchor UTC. The display reuses the installed
+`IPlanetEphemeris` and shared `SolarAltitudeClassifier`, and names the ephemeris
+model version. Day means Sun altitude at or above 0°, night means at or below
+−18°, and twilight is the interval between. These are display conventions, not
+capture-policy thresholds or satellite-visibility decisions. Refraction,
+observer-height horizon dip and custom obstructions are not applied.
+
+Only declared anchors inside the retained arc's connected segments are evaluated.
+Missing ephemerides or invalid/unavailable positions display Unknown; unresolved
+anchors retain their existing unresolved status. At most three offline ephemeris
+evaluations run when the selected arc/context changes. Path, label and rig-preview
+toggles reuse the same result. The retained orbital product, its illumination,
+track geometry and exposure products are unchanged.
+
+Sky darkness does not show whether a satellite is sunlit, bright, detected or
+optically visible. Moon context, cloud observations, Earth-shadow modelling,
+measured association and complete cadence/physical qualification remain
+separately retained work. The bounded software evidence and
+issue disposition are in [the solar-context validation note](../validation/satellite-planning-solar-context.md).
+
+## Site horizon in selected pass arcs
+
+When the active rig carries a versioned installation horizon profile, the arc of
+a selected pass is evaluated against it. The planner binds the profile to the
+pass observer, the retained deployment location and the rig's geometry and
+calibration, and applies the angular test that star overlays and capture
+satellite tracks use. Samples, and the segments joining them, that are
+obstructed, lie over unknown terrain or cannot be matched to that geometry are
+omitted, so the drawn path splits there. The planner says that the site horizon
+was applied.
+
+This is display eligibility, not a visibility or detection claim. The retained
+orbital product keeps every original sample. Unknown terrain is never treated as
+clear sky. A rig without an active profile keeps the geometric-horizon behaviour
+and asserts nothing about obstructions. The solar altitudes above stay geometric
+and do not use the profile.
+
+Profiles are entered, previewed and explicitly activated on Camera & Rig. The
+angular model, its bounds and the eligibility rules are in
+[the rig installation horizon contract](../contracts/horizon-obstruction-v1.md),
+and the virtual acceptance evidence is in
+[the horizon-obstruction validation note](../validation/horizon-obstruction-1394.md).
+
 ## Local time inputs
 
 `AddCameraAgentSatellitePlanning(configuration)` provides the consumer seam in

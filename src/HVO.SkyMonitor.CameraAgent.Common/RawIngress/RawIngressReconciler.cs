@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -71,7 +72,7 @@ internal sealed class RawIngressReconciler(
             var temporaryPath = Resolve(cleanup.Value);
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
                 SyncDirectory(Path.GetDirectoryName(temporaryPath)!);
             }
             await _journal.CompleteReconciliationAsync(cleanup.Key, cancellationToken).ConfigureAwait(false);
@@ -93,7 +94,7 @@ internal sealed class RawIngressReconciler(
             var evidenceKey = $"temp:{Guid.NewGuid():N}";
             await _journal.PlanCleanupAsync(
                 evidenceKey, relative, bytes, cancellationToken).ConfigureAwait(false);
-            File.Delete(temporaryPath);
+            RetainedFileMutations.Delete(temporaryPath);
             SyncDirectory(Path.GetDirectoryName(temporaryPath)!);
             await _journal.CompleteReconciliationAsync(evidenceKey, cancellationToken).ConfigureAwait(false);
             cleaned++;
@@ -519,7 +520,7 @@ internal sealed class RawIngressReconciler(
                 {
                     throw new InvalidDataException("Planned raw ingress quarantine has both source and destination evidence.");
                 }
-                File.Move(sourcePath, destinationPath, overwrite: false);
+                RetainedFileMutations.Move(sourcePath, destinationPath, overwrite: false);
             }
             else if (!File.Exists(destinationPath))
             {

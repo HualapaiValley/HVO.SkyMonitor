@@ -300,7 +300,7 @@ public sealed class VisibleScene
         if (ResolvedFootprints.Any(static item => item.SourceKind == ResolvedFootprintSourceKind.DeepSkyObject))
             throw new InvalidOperationException("Deep-sky footprints come only from the deep-sky collection.");
         var (section, footprints) = DeepSkySceneProjector.Project(this, catalog, selection);
-        if (section.Objects.Count == 0) return this;
+        if (section.Objects.Count == 0 && selection.Query is null) return this;
         return new(Request, Objects, Segments, ComputationProvenance, ResolvedFootprints.Concat(footprints), selection, section);
     }
 
@@ -388,9 +388,22 @@ public sealed class VisibleSceneBuilder
     /// Queries all magnitude candidates, performs exact horizon and projection
     /// rejection, then applies the visible-result limit deterministically.
     /// </summary>
-    public async ValueTask<VisibleScene> BuildAsync(
-        VisibleSceneRequest request,
-        CancellationToken cancellationToken = default)
+    public ValueTask<VisibleScene> BuildAsync(VisibleSceneRequest request, CancellationToken cancellationToken = default)
+        => BuildCoreAsync(request, null, cancellationToken);
+
+    /// <summary>Applies installation eligibility before the deterministic star limit, retaining the normal candidate bounds.</summary>
+    public ValueTask<VisibleScene> BuildWithHorizonAsync(VisibleSceneRequest request,
+        HorizonObstructionEvaluator horizon, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(horizon);
+        if (horizon.Projection != request.Projection || horizon.Observer != request.Observer)
+            throw new ArgumentException("The horizon does not describe the requested observer and projection.", nameof(horizon));
+        return BuildCoreAsync(request, horizon, cancellationToken);
+    }
+
+    private async ValueTask<VisibleScene> BuildCoreAsync(VisibleSceneRequest request,
+        HorizonObstructionEvaluator? horizon, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         var catalogPreprocessingVersion = "unspecified";
@@ -448,7 +461,8 @@ public sealed class VisibleSceneBuilder
                 item.Magnitude,
                 item.ColorIndex,
                 item.HipparcosId);
-            if (projected is not null)
+            if (projected is not null && (horizon is null ||
+                horizon.Evaluate(projected.GeometricHorizontal) == HorizonObstructionEligibility.Clear))
             {
                 visible.Add(projected);
             }
@@ -475,7 +489,8 @@ public sealed class VisibleSceneBuilder
                     request, projector, basis, endpoint.Id, endpoint.DisplayName, CelestialObjectKind.Star,
                     new EquatorialPoint(endpoint.RightAscensionHours, endpoint.DeclinationDegrees),
                     endpoint.Magnitude, endpoint.ColorIndex, endpoint.HipparcosId);
-                if (projected is not null)
+                if (projected is not null && (horizon is null ||
+                horizon.Evaluate(projected.GeometricHorizontal) == HorizonObstructionEligibility.Clear))
                 {
                     selected.Add(projected);
                     selectedIds.Add(projected.Id);
@@ -494,7 +509,8 @@ public sealed class VisibleSceneBuilder
                 request, projector, basis,
                 $"solar-system:{body}", body.ToString(),
                 CelestialObjectKind.SolarSystemBody, position.EquatorialJ2000, position.VisualMagnitude, null, null);
-            if (projected is not null)
+            if (projected is not null && (horizon is null ||
+                horizon.Evaluate(projected.GeometricHorizontal) == HorizonObstructionEligibility.Clear))
             {
                 selected.Add(projected);
             }

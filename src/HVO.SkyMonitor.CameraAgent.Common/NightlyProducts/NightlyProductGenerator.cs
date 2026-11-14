@@ -10,6 +10,8 @@ using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
@@ -55,7 +57,7 @@ internal sealed record NightlyProductRunReport(
 /// recipe identity and publication, so unchanged retries verify and reuse the same output files. A window exceeding
 /// <see cref="NightlyProductOptions.MaximumSegmentsPerRun"/> recipe executions is rejected before source restoration.
 /// </summary>
-internal sealed class NightlyProductGenerator : IDisposable
+internal sealed partial class NightlyProductGenerator : IDisposable
 {
     internal const string KeogramSegmentVariant = "still-keogram-part-v2";
     internal const string KeogramFinalVariant = "still-keogram-final-v2";
@@ -73,6 +75,7 @@ internal sealed class NightlyProductGenerator : IDisposable
     private readonly IPlanetEphemeris _ephemeris;
     private readonly Func<IDeploymentLocationStore?> _locationStore;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger<NightlyProductGenerator> _logger;
     private readonly ProcessingRecipeExecutor _executor = new();
     private readonly SemaphoreSlim _run = new(1, 1);
 
@@ -83,7 +86,8 @@ internal sealed class NightlyProductGenerator : IDisposable
         SqliteNightlyProductStore store,
         IPlanetEphemeris ephemeris,
         Func<IDeploymentLocationStore?> locationStore,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ILogger<NightlyProductGenerator>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
@@ -93,6 +97,7 @@ internal sealed class NightlyProductGenerator : IDisposable
         _ephemeris = ephemeris;
         _locationStore = locationStore;
         _timeProvider = timeProvider;
+        _logger = logger ?? NullLogger<NightlyProductGenerator>.Instance;
     }
 
     public void Dispose() => _run.Dispose();
@@ -103,7 +108,8 @@ internal sealed class NightlyProductGenerator : IDisposable
         await _run.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await RunCoreAsync(occurrence, cancellationToken).ConfigureAwait(false);
+            var report = await RunCoreAsync(occurrence, cancellationToken).ConfigureAwait(false);
+            return await RefreshDailySummariesAsync(occurrence, report, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -119,10 +125,12 @@ internal sealed class NightlyProductGenerator : IDisposable
         {
             throw new ArgumentException("A still producer requires a valid retained source-window occurrence.", nameof(occurrence));
         }
-        var expectedSelection = kind == NightlyProductKind.Keogram ? LocalAutomationSourceSelection.AllActualSources
+        var expectedSelection = kind != NightlyProductKind.StarTrail ? LocalAutomationSourceSelection.AllActualSources
             : LocalAutomationSourceSelection.DarkNightActualSources;
         if (sourceWindow.Policy.Selection != expectedSelection)
             throw new ArgumentException("The source selection does not match the still product kind.", nameof(occurrence));
+        if (kind == NightlyProductKind.DailySummary && sourceWindow.Policy.Kind != LocalAutomationSourceWindowKind.SunriseDay)
+            throw new ArgumentException("Daily summaries require a whole sunrise day.", nameof(occurrence));
         var options = _options.NightlyProducts;
         if (!options.Enabled || !NightlyProductPreset.Matches(occurrence.Definition.TaskTarget, kind, options))
         {
@@ -203,6 +211,12 @@ internal sealed class NightlyProductGenerator : IDisposable
                     NightlyProductWindowDisposition.Rejected, "nightly.source-byte-bound", candidateCount, [],
                     admission.Exclusions, cancellationToken).ConfigureAwait(false);
             }
+            if (context.Kind == NightlyProductKind.DailySummary)
+            {
+                await EvaluateDailySummaryAsync(context, window, candidateCount, admission, cancellationToken).ConfigureAwait(false);
+                return false;
+            }
+
             if (admission.Admitted.Count == 0)
             {
                 return await RecordUnlessUnchangedAsync(

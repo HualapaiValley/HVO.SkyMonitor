@@ -19,6 +19,38 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
 {
     private const string Store = "raw/journal/raw-ingress.db";
     private const string RawIngressSchema = "io.hvo.skymonitor.raw-ingress-schema";
+    private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
+    private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
+
+    /// <summary>
+    /// The reader-capability labels a boundary test copies from the frozen release so that only the boundary under test
+    /// and the raw-ingress transition remain. The raw-ingress schema and migration labels stay at the candidate's values:
+    /// they are asserted to select checkpointing independently of the boundary under test.
+    /// </summary>
+    internal static IEnumerable<string> UnrelatedReaderCapabilityLabels => CameraAgentImageLabels.StateBoundaryLabels
+        .Where(static label => label is not (MinimumCompatibleRevision or RawIngressSchema or RawIngressMigration));
+
+    /// <summary>
+    /// Asserts that the declared changes are exactly the expected minimum-compatible-revision changes plus one change for
+    /// each raw-ingress label (schema, migration) on which the frozen predecessor differs from the candidate, and returns
+    /// the boundary changes. The raw transitions select checkpointing independently, so they are counted rather than
+    /// isolated away, and an extra or missing change of either kind fails.
+    /// </summary>
+    private static string[] AssertBoundaryAndRawIngressChanges(IReadOnlyList<string> changes,
+        Dictionary<string, string> previous, Dictionary<string, string> candidate, int expectedBoundaryChanges,
+        string context)
+    {
+        var boundaryChanges = changes.Where(static change =>
+            change.StartsWith(MinimumCompatibleRevision + " installed ", StringComparison.Ordinal)).ToArray();
+        var expectedRawChanges = new[] { RawIngressSchema, RawIngressMigration }.Count(label => previous[label] != candidate[label]);
+        var rawChanges = changes.Count(static change =>
+            change.StartsWith(RawIngressSchema + " installed ", StringComparison.Ordinal) ||
+            change.StartsWith(RawIngressMigration + " installed ", StringComparison.Ordinal));
+        Assert.AreEqual(expectedBoundaryChanges, boundaryChanges.Length, context);
+        Assert.AreEqual(expectedRawChanges, rawChanges, context);
+        Assert.AreEqual(expectedBoundaryChanges + expectedRawChanges, changes.Count, context);
+        return boundaryChanges;
+    }
 
     [TestMethod]
     public void EveryDeclaredException_IsALabelChangeTheInstallerSnapshotsFor()
@@ -32,10 +64,10 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     [TestMethod]
-    [DataRow(RawIngressSchema, null, null, null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
+    [DataRow(RawIngressSchema, "16", "16", null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
     [DataRow("io.hvo.skymonitor.component", "CameraAgent-previous", "CameraAgent-previous", null, "does not make the installer take a snapshot", DisplayName = "a label the installer does not compare")]
     [DataRow(RawIngressSchema, "14", "13", null, "not the one the frozen release declares", DisplayName = "a previous value the frozen release does not declare")]
-    [DataRow(RawIngressSchema, "14", "14", "16", "not the one this release declares", DisplayName = "a candidate value this release does not declare")]
+    [DataRow(RawIngressSchema, "14", "14", "undeclared", "not the one this release declares", DisplayName = "a candidate value this release does not declare")]
     public void AnExceptionWithoutARealBoundaryChange_IsRefused(
         string label, string? frozenValue, string? previousValue, string? candidateValue, string expected)
     {
@@ -49,6 +81,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
 
         var errors = Validate(fixture, candidate);
 
+        Assert.HasCount(1, errors, string.Join("; ", errors));
         Assert.IsTrue(errors.Any(error => error.Contains(expected, StringComparison.Ordinal)), string.Join("; ", errors));
     }
 
@@ -65,6 +98,167 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         Assert.IsEmpty(Validate(fixture, candidate));
     }
 
+    [TestMethod]
+    [DataRow(false, 1)]
+    [DataRow(true, 0)]
+    public void SchemaThreeEnvironmentalUpgradeDeclaresTheCheckpointBoundary(bool revertBoundary, int expectedMigrations)
+    {
+        var previous = ReadSchemaThreeImageLabels();
+        var candidate = ReadDockerfileLabels();
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        // Isolate the environmental checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
+        if (revertBoundary) candidate[boundary] = previous[boundary];
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-environment-boundary-" + Guid.NewGuid().ToString("N")),
+            Guid.NewGuid(), "catalog");
+        var installedIdentity = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var candidateIdentity = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installedIdentity, installedIdentity.UpgradeCompatibility,
+            candidateIdentity, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        Console.WriteLine($"Declared environmental migrations: {changes.Count}; checkpoint required: {changes.Count > 0}.");
+        var environmentalChanges = changes.Where(change => change.StartsWith(boundary + " installed ", StringComparison.Ordinal)).ToArray();
+        Assert.AreEqual(expectedMigrations, environmentalChanges.Length);
+        Assert.AreEqual(2 + expectedMigrations, changes.Count,
+            "The raw schema and migration labels independently select checkpointing even when the environmental boundary is unchanged.");
+        foreach (var rawBoundary in new[] { RawIngressSchema, "io.hvo.skymonitor.raw-ingress-migration" })
+            Assert.IsTrue(changes.Any(change => change.StartsWith(rawBoundary + " installed ", StringComparison.Ordinal)));
+        if (!revertBoundary)
+        {
+            StringAssert.StartsWith(environmentalChanges.Single(), boundary + " installed " + previous[boundary] + ", candidate ", StringComparison.Ordinal);
+            var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
+                item!["location"]!.GetValue<string>() == "raw/.environment/environmental-observation-outbox.db")!;
+            Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
+            Assert.AreEqual(previous[boundary], exception["previousValue"]!.GetValue<string>());
+            Assert.AreEqual(candidate[boundary], exception["candidateValue"]!.GetValue<string>());
+            CollectionAssert.AreEquivalent(previous.ToArray(), exception["previousImageLabels"]!.AsObject()
+                .ToDictionary(static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal).ToArray());
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false, 1)]
+    [DataRow(true, 0)]
+    public void SchemaThreeLocalAutomationUpgradeDeclaresTheCheckpointBoundary(bool revertBoundary, int expectedMigrations)
+    {
+        var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
+            item!["location"]!.GetValue<string>() == "raw/.automation/local-automations.db")!;
+        var previous = exception["previousImageLabels"]!.AsObject()
+            .ToDictionary(static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal);
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        using var contract = JsonDocument.Parse(previous["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(3, contract.RootElement.GetProperty("localAutomations").GetProperty("writes").GetInt32());
+        Assert.AreEqual("d3f35d22ee02e56290f7bd06da491df21b715134", exception["previousImageRevision"]!.GetValue<string>());
+        var candidate = ReadDockerfileLabels();
+        // Isolate the local-automation checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
+        if (revertBoundary) candidate[boundary] = previous[boundary];
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-script-boundary-" + Guid.NewGuid().ToString("N")),
+            Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
+            target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        var boundaryChanges = AssertBoundaryAndRawIngressChanges(changes, previous, candidate, expectedMigrations,
+            string.Join("; ", changes));
+        if (!revertBoundary)
+        {
+            Assert.AreEqual(previous[boundary], exception["previousValue"]!.GetValue<string>());
+            Assert.AreEqual(candidate[boundary], exception["candidateValue"]!.GetValue<string>());
+            StringAssert.StartsWith(boundaryChanges.Single(), boundary + " installed ", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false, 1)]
+    [DataRow(true, 0)]
+    public void ManifestLedgerUpgradeDeclaresTheCheckpointBoundary(bool revertBoundary, int expectedMigrations)
+    {
+        var exception = LoadFixture()["snapshotRollbackExceptions"]!.AsArray().Single(item =>
+            item!["location"]!.GetValue<string>() == Store &&
+            item["stateBoundaryLabel"]!.GetValue<string>() == "io.hvo.skymonitor.minimum-compatible-revision")!;
+        var previous = exception["previousImageLabels"]!.AsObject().ToDictionary(
+            static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal);
+        var candidate = ReadDockerfileLabels();
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
+        Assert.AreEqual("bc5ca7489c4090c299c416309519ab72da4a8cdb", candidate[boundary]);
+        Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
+        CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
+        // Isolate the processing-ledger checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
+        if (revertBoundary) candidate[boundary] = previous[boundary];
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-manifest-boundary-" + Guid.NewGuid().ToString("N")), Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null, JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility, target,
+            Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        var ledgerChanges = changes.Where(change => change.StartsWith(boundary + " installed ", StringComparison.Ordinal)).ToArray();
+        Assert.AreEqual(expectedMigrations, ledgerChanges.Length);
+        Assert.AreEqual(2 + expectedMigrations, changes.Count,
+            "The independent raw schema and migration transitions still require a checkpoint.");
+        foreach (var rawBoundary in new[] { RawIngressSchema, "io.hvo.skymonitor.raw-ingress-migration" })
+            Assert.IsTrue(changes.Any(change => change.StartsWith(rawBoundary + " installed ", StringComparison.Ordinal)));
+        if (!revertBoundary) StringAssert.StartsWith(ledgerChanges.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("automation-schema3-processing9", "candidate", 3, 1)]
+    [DataRow("automation-schema3-processing9", "reuse-installed-boundary", 3, 0)]
+    [DataRow("automation-schema3-processing9", "same-candidate", 3, 0)]
+    [DataRow("automation-schema4-processing8", "candidate", 4, 1)]
+    public void CombinedReaderUpgradeDeclaresEachPredecessorsCheckpoint(
+        string fixtureName, string comparison, int previousAutomationSchema, int expectedMigrations)
+    {
+        using var fixture = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
+            "Fixtures", fixtureName + "-image-labels.json")));
+        var previous = fixture.RootElement.GetProperty("imageLabels").EnumerateObject()
+            .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
+        using var previousContracts = JsonDocument.Parse(previous["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(previousAutomationSchema, previousContracts.RootElement.GetProperty("localAutomations").GetProperty("writes").GetInt32());
+        var candidate = ReadDockerfileLabels();
+        using var candidateContracts = JsonDocument.Parse(candidate["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(4, candidateContracts.RootElement.GetProperty("localAutomations").GetProperty("writes").GetInt32());
+        const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
+        // Isolate the combined-reader checkpoint trigger from unrelated reader-capability upgrades.
+        foreach (var label in UnrelatedReaderCapabilityLabels)
+            candidate[label] = previous[label];
+        if (comparison == "reuse-installed-boundary") candidate[boundary] = previous[boundary];
+        if (comparison == "same-candidate") previous = new(candidate, StringComparer.Ordinal);
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), "hvo-combined-boundary-" + Guid.NewGuid().ToString("N")),
+            Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        // No raw journal can supply an unrelated migration signal and hide a missing image boundary.
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
+            target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        var boundaryChanges = AssertBoundaryAndRawIngressChanges(changes, previous, candidate, expectedMigrations,
+            $"{fixtureName} -> {comparison}: {string.Join("; ", changes)}");
+        if (expectedMigrations > 0)
+            StringAssert.StartsWith(boundaryChanges.Single(), boundary + " installed " + previous[boundary] + ", candidate " + candidate[boundary], StringComparison.Ordinal);
+    }
+
+    internal static Dictionary<string, string> ReadSchemaThreeImageLabels()
+    {
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory,
+            "Fixtures", "environmental-schema3-image-labels.json")));
+        Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", document.RootElement.GetProperty("sourceRevision").GetString());
+        var labels = document.RootElement.GetProperty("imageLabels").EnumerateObject()
+            .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
+        using var contracts = JsonDocument.Parse(labels["io.hvo.skymonitor.state-contracts"]);
+        Assert.AreEqual(3, contracts.RootElement.GetProperty("environmentalOutbox").GetProperty("writes").GetInt32());
+        Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", labels["io.hvo.skymonitor.minimum-compatible-revision"]);
+        return labels;
+    }
+
     /// <summary>Every reason a declared exception would not make the installer snapshot the stores.</summary>
     internal static List<string> Validate(JsonObject fixture, IReadOnlyDictionary<string, string> candidateLabels)
     {
@@ -76,22 +270,25 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             .ToHashSet(StringComparer.Ordinal);
         var root = Path.Combine(Path.GetTempPath(), $"hvo-exception-{Guid.NewGuid():N}");
         var paths = InstallationPaths.Create(root, Guid.NewGuid(), "catalog");
-        var installed = CameraAgentImageLabels.Identity(
-            "registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(frozen));
         var candidate = CameraAgentImageLabels.Identity(
             "registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null, JsonSerializer.SerializeToElement(candidateLabels));
-        // No persisted journal: only the declared boundaries decide.
-        var changes = CameraAgentStateMigration.DeclaredChanges(
-            paths, installed, installed.UpgradeCompatibility, candidate, Path.Combine(root, "absent", "raw-ingress.db"));
         foreach (var exception in fixture["snapshotRollbackExceptions"]!.AsArray())
         {
-            var location = exception!["location"]!.GetValue<string>();
+            var previous = exception!["previousImageLabels"] is JsonObject labels
+                ? labels.ToDictionary(static label => label.Key, static label => label.Value!.GetValue<string>(), StringComparer.Ordinal)
+                : frozen;
+            var installed = CameraAgentImageLabels.Identity(
+                "registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null, JsonSerializer.SerializeToElement(previous));
+            // No persisted journal: only this exception's actual installed-image boundaries decide.
+            var changes = CameraAgentStateMigration.DeclaredChanges(
+                paths, installed, installed.UpgradeCompatibility, candidate, Path.Combine(root, "absent", "raw-ingress.db"));
+            var location = exception["location"]!.GetValue<string>();
             var label = exception["stateBoundaryLabel"]!.GetValue<string>();
             var previousValue = exception["previousValue"]?.GetValue<string>();
             var candidateValue = exception["candidateValue"]?.GetValue<string>();
             if (!locations.Contains(location))
                 errors.Add($"{location}: not a previous-release store");
-            if (!string.Equals(frozen.GetValueOrDefault(label), previousValue, StringComparison.Ordinal))
+            if (!string.Equals(previous.GetValueOrDefault(label), previousValue, StringComparison.Ordinal))
                 errors.Add($"{location} {label}: previous value '{previousValue}' is not the one the frozen release declares");
             if (!string.Equals(candidateLabels.GetValueOrDefault(label), candidateValue, StringComparison.Ordinal))
                 errors.Add($"{location} {label}: candidate value '{candidateValue}' is not the one this release declares");
@@ -102,7 +299,14 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     private static void Declare(JsonObject fixture, string label, string previousValue, string candidateValue)
-        => fixture["snapshotRollbackExceptions"]!.AsArray().Add(new JsonObject
+    {
+        var exceptions = fixture["snapshotRollbackExceptions"]!.AsArray();
+        // Isolate the synthetic raw-store boundary under test from the real raw-schema transition.
+        for (var index = exceptions.Count - 1; index >= 0; index--)
+            if (exceptions[index]!["location"]!.GetValue<string>() == Store &&
+                exceptions[index]!["stateBoundaryLabel"]!.GetValue<string>() == RawIngressSchema)
+                exceptions.RemoveAt(index);
+        exceptions.Add(new JsonObject
         {
             ["location"] = Store,
             ["objects"] = new JsonArray("table:processing_outputs"),
@@ -110,12 +314,13 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             ["previousValue"] = previousValue,
             ["candidateValue"] = candidateValue
         });
+    }
 
     private static JsonObject LoadFixture()
         => JsonNode.Parse(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "previous-release", "manifest.json")))!.AsObject();
 
     /// <summary>The labels this release's CameraAgent image declares.</summary>
-    private static Dictionary<string, string> ReadDockerfileLabels()
+    internal static Dictionary<string, string> ReadDockerfileLabels()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HVO.SkyMonitor.v9.slnx")))
@@ -124,9 +329,9 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found."),
             "src", "HVO.SkyMonitor.CameraAgent", "Dockerfile"));
         var labels = Regex.Matches(
-                dockerfile, "^\\s*(?:LABEL\\s+)?(io\\.hvo\\.skymonitor\\.[a-z-]+)=\"([^\"]*)\"",
+                dockerfile, "^\\s*(?:LABEL\\s+)?(io\\.hvo\\.skymonitor\\.[a-z-]+)=\"((?:[^\"\\\\]|\\\\.)*)\"",
                 RegexOptions.Multiline | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(5))
-            .ToDictionary(static match => match.Groups[1].Value, static match => match.Groups[2].Value, StringComparer.Ordinal);
+            .ToDictionary(static match => match.Groups[1].Value, static match => JsonSerializer.Deserialize<string>("\"" + match.Groups[2].Value + "\"")!, StringComparer.Ordinal);
         Assert.IsGreaterThanOrEqualTo(8, labels.Count, $"expected the full CameraAgent label set; found {labels.Count}");
         return labels;
     }

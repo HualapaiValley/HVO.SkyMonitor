@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.Tests/Capture/Processing/AuxiliaryRunManifestEvidenceFixture.cs" Link="Infrastructure/AuxiliaryRunManifestEvidenceFixture.cs" />
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.Tests/NightlyProducts/NightlyProductTestSupport.cs" Link="Infrastructure/NightlyProductTestSupport.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +24,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../../src/HVO.SkyMonitor.CameraAgent/Components/Pages/ObservingDayTimeline.razor.css" Link="Fixtures/ObservingDayTimeline.razor.css" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../src/HVO.SkyMonitor.CameraAgent/Components/Pages/ObservingDayPage.razor.css" Link="Fixtures/ObservingDayPage.razor.css" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\catalog\hyg-v42-bright-stars.sqlite" Link="Fixtures\hyg-v42-bright-stars.sqlite">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -35,7 +35,8 @@ Options:
   --prebuilt-image <file>      Use a combined, digest-verified OCI archive instead of building the image.
   --builder <name>             The buildx builder to build the image with. Default: the current one.
   --image-repository <repo>    Default: ghcr.io/hualapaivalley/skymonitor-cameraagent.
-  --catalog-bundle <folder>    The approved catalog bundle. Default: build HYG 4.2 with scripts/catalog/build-hyg-v42.sh --fetch.
+  --catalog-bundle <folder>    The approved catalog bundle. Default: build approved HYG 4.2.
+  --deep-sky-catalog-bundle <folder>  The independent OpenNGC bundle. Default: build pinned public OpenNGC.
   --install-script <file>      Attach this install.sh.
   --allow-dirty                Build a modified checkout (local experiments only; the release workflow never passes it).
 USAGE
@@ -48,7 +49,7 @@ fail() {
 }
 
 version="" output="" image_oci="" commit="" created="" platforms="linux/amd64,linux/arm64" builder=""
-repository="ghcr.io/hualapaivalley/skymonitor-cameraagent" catalog_bundle="" install_script="" allow_dirty=0 prebuilt_image=""
+repository="ghcr.io/hualapaivalley/skymonitor-cameraagent" catalog_bundle="" deep_sky_catalog_bundle="" install_script="" allow_dirty=0 prebuilt_image=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) version="${2:-}"; shift 2 ;;
@@ -61,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --builder) builder="${2:-}"; shift 2 ;;
         --image-repository) repository="${2:-}"; shift 2 ;;
         --catalog-bundle) catalog_bundle="${2:-}"; shift 2 ;;
+        --deep-sky-catalog-bundle) deep_sky_catalog_bundle="${2:-}"; shift 2 ;;
         --install-script) install_script="${2:-}"; shift 2 ;;
         --allow-dirty) allow_dirty=1; shift ;;
         -h | --help) usage ;;
@@ -76,6 +78,7 @@ identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
 [[ ! -e "$output" ]] || fail "$output already exists."
 [[ ! -e "$image_oci" || "$prebuilt_image" == "$image_oci" ]] || fail "$image_oci already exists."
 [[ -z "$prebuilt_image" || -f "$prebuilt_image" ]] || fail "--prebuilt-image $prebuilt_image is not a file."
+[[ -z "$deep_sky_catalog_bundle" || -d "$deep_sky_catalog_bundle" ]] || fail "the deep-sky catalog bundle is not a folder."
 [[ -z "$catalog_bundle" || -d "$catalog_bundle" ]] || fail "--catalog-bundle $catalog_bundle is not a folder."
 [[ -z "$install_script" || -f "$install_script" ]] || fail "--install-script $install_script is not a file."
 case "$platforms" in
@@ -190,6 +193,12 @@ if [[ -z "$catalog_bundle" ]]; then
     catalog_bundle="${bundles[0]}"
 fi
 
+if [[ -z "$deep_sky_catalog_bundle" ]]; then
+    ./scripts/catalog/fetch-openngc-inputs.sh "$work/openngc-inputs" >&2
+    ./scripts/catalog/build-openngc.sh --openngc-source "$work/openngc-inputs" "$work/openngc-build" >&2
+    deep_sky_catalog_bundle="$work/openngc-build/openngc-v20260501-p6-s5-r1.bundle"
+fi
+
 tool_arguments=(
     create-release
     --version "$version"
@@ -203,6 +212,7 @@ tool_arguments=(
     --cli-linux-x64 "$work/cli-linux-x64/HVO.SkyMonitor.CameraAgent.Cli"
     --cli-linux-arm64 "$work/cli-linux-arm64/HVO.SkyMonitor.CameraAgent.Cli"
     --catalog-bundle "$catalog_bundle"
+    --deep-sky-catalog-bundle "$deep_sky_catalog_bundle"
     --notices THIRD-PARTY-NOTICES.md
     --output "$output"
 )

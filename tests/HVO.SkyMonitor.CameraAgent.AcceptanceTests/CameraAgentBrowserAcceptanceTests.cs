@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -1305,6 +1306,23 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         foreach (var width in new[] { 1440, 390, 320 })
         {
             await page.SetViewportSizeAsync(width, width == 1440 ? 900 : 844).ConfigureAwait(false);
+            // Chromium can resolve SetViewportSize before the responsive navigation
+            // finishes laying out. Keep the no-overflow assertion after a bounded wait.
+            await page.WaitForFunctionAsync(
+                """
+                () => {
+                    const root = document.documentElement;
+                    const signature = `${innerWidth}:${root.clientWidth}:${root.scrollWidth}`;
+                    const now = performance.now();
+                    const previous = window.__hvoRunViewport;
+                    if (!previous || previous.signature !== signature) {
+                        window.__hvoRunViewport = { signature, since: now };
+                        return false;
+                    }
+                    return root.scrollWidth <= root.clientWidth + 1 && now - previous.since >= 200;
+                }
+                """,
+                options: new() { Timeout = DefaultTimeoutMilliseconds }).ConfigureAwait(false);
             Assert.IsFalse(await page.EvaluateAsync<bool>(
                 "() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1").ConfigureAwait(false),
                 $"Pipeline run overflowed at {width}px.");
@@ -1436,17 +1454,22 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 1).ConfigureAwait(false);
 
-        // Calendar: the current night carries the seeded captures and links into the filtered archive.
+        // Calendar opens the selected observing day; that day's capture action preserves the exact archive bounds.
         await page.GotoAsync("/archive/calendar").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Observing calendar", Level = 1 })).ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".night").First).ConfigureAwait(false);
-        var populated = page.Locator(".night:not(.night--empty)").First;
+        await VisibleAsync(page.Locator(".calendar-day").First).ConfigureAwait(false);
+        var populated = page.Locator(".calendar-day:not(.calendar-day--empty)").First;
         await VisibleAsync(populated).ConfigureAwait(false);
-        var capturesLink = populated.GetByRole(AriaRole.Link, new() { Name = "Open captures" });
-        var dayUrl = await capturesLink.GetAttributeAsync("href").ConfigureAwait(false);
+        var dayLink = populated.Locator(".calendar-day__link");
+        var dayUrl = await dayLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(dayUrl);
-        StringAssert.StartsWith(dayUrl, "/gallery?from=", StringComparison.Ordinal);
+        StringAssert.StartsWith(dayUrl, "/archive/day/", StringComparison.Ordinal);
         await AssertPageStructureAsync(page, "/archive/calendar").ConfigureAwait(false);
+        await dayLink.ClickAsync().ConfigureAwait(false);
+        await page.WaitForURLAsync(url => new Uri(url).AbsolutePath.StartsWith("/archive/day/", StringComparison.Ordinal)).ConfigureAwait(false);
+        var capturesLink = page.Locator(".day-actions a[href^='/gallery?from=']");
+        await VisibleAsync(capturesLink).ConfigureAwait(false);
+        StringAssert.StartsWith((await capturesLink.GetAttributeAsync("href").ConfigureAwait(false))!, "/gallery?from=", StringComparison.Ordinal);
         await capturesLink.ClickAsync().ConfigureAwait(false);
         await page.WaitForURLAsync(url => new Uri(url).AbsolutePath == "/gallery" && new Uri(url).Query.Contains("from=", StringComparison.Ordinal)).ConfigureAwait(false);
         await VisibleAsync(page.Locator(".capture-card").First).ConfigureAwait(false);
@@ -1481,7 +1504,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         // Candidates: the list accepts the calendar range and never claims event authority.
         await page.GotoAsync("/transients?from=2000-01-01T00:00:00&to=2000-01-02T00:00:00").ConfigureAwait(false);
         await VisibleAsync(page.Locator(".range-state")).ConfigureAwait(false);
-        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Transient candidates", Level = 1 })).ConfigureAwait(false);
+        await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Detected events", Level = 1 })).ConfigureAwait(false);
         var candidateText = await page.Locator("main").InnerTextAsync().ConfigureAwait(false);
         foreach (var forbidden in new[] { "ground track", "impact location", "validated event" })
         {
@@ -2155,65 +2178,66 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-definitions")).ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#automation-calendar")).ConfigureAwait(false);
-        await VisibleAsync(page.Locator("#automation-runs")).ConfigureAwait(false);
+        await VisibleAsync(page.GetByText("Capture Schedule remains separate.", new() { Exact = true })).ConfigureAwait(false);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Schedule", Exact = true }).ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#automation-schedule")).ConfigureAwait(false);
+        StringAssert.Contains(await page.Locator("#automation-schedule").InnerTextAsync().ConfigureAwait(false),
+            "Only registered task types run; arbitrary commands are never accepted", StringComparison.Ordinal);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Run history", Exact = true }).ClickAsync().ConfigureAwait(false);
+        StringAssert.Contains(await page.Locator("#automation-runs").InnerTextAsync().ConfigureAwait(false),
+            "No automation run has been recorded", StringComparison.Ordinal);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Definitions", Exact = true }).ClickAsync().ConfigureAwait(false);
 
-        // Only registered targets and triggers can be chosen; the editor never accepts free text for one.
-        Assert.AreEqual(
-            "SELECT",
-            await page.Locator("#automation-target").EvaluateAsync<string>("node => node.tagName")
-                .ConfigureAwait(false));
-        Assert.AreEqual(
-            "SELECT",
-            await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName")
-                .ConfigureAwait(false));
+        var store = host.Services.GetRequiredService<ILocalAutomationStore>();
+        var unavailable = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Registry
+            .Single(item => item.TaskKind == LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition);
+        Assert.IsFalse(unavailable.Available, "The original fixture must keep environmental acquisition disabled.");
+        Assert.IsEmpty(unavailable.Targets);
+        StringAssert.Contains(unavailable.UnavailableReason!,
+            "Environmental acquisition is disabled", StringComparison.Ordinal);
 
-        // The two trigger vocabularies on this page are disambiguated for the operator.
-        StringAssert.Contains(
-            await page.Locator("article[aria-labelledby='automation-triggers']").InnerTextAsync()
-                .ConfigureAwait(false),
-            "their own separate trigger vocabulary",
-            StringComparison.Ordinal);
-
-        // This fixture disables environmental acquisition, so the closed registry publishes no target.
-        // The section must say so and refuse, rather than raising a confirmation for a command the store
-        // would reject. Recording a definition end to end is proved where a target exists, by the bUnit
-        // page tests, the endpoint tests, and the owner-authorization integration test.
-        var definitions = page.Locator("article[aria-labelledby='automation-definitions']");
-        StringAssert.Contains(
-            await definitions.InnerTextAsync().ConfigureAwait(false),
-            "Environmental acquisition is disabled in this CameraAgent's startup configuration",
-            StringComparison.Ordinal);
-        Assert.AreEqual(
-            1,
-            await page.Locator("#automation-target option").CountAsync().ConfigureAwait(false),
+        var create = page.Locator("#automation-create");
+        Assert.IsFalse(await create.IsDisabledAsync().ConfigureAwait(false),
+            "This fixture has other available tasks, so Create must stay enabled.");
+        await create.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#automation-id")).ConfigureAwait(false);
+        var task = page.Locator("#automation-task");
+        var environmentalOption = task.Locator("option[value='EnvironmentalOnDemandAcquisition']");
+        // Check the native option property; Playwright's enabled matcher misclassifies this option.
+        await Assertions.Expect(environmentalOption).ToHaveJSPropertyAsync("disabled", true).ConfigureAwait(false);
+        // A client can tamper with a disabled option; server validation must still reject it.
+        await environmentalOption.EvaluateAsync("option => option.disabled = false").ConfigureAwait(false);
+        await task.SelectOptionAsync(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition)).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => !document.querySelector('#automation-id').readOnly && document.querySelector('#automation-target option')?.value === ''").ConfigureAwait(false);
+        Assert.AreEqual("SELECT", await page.Locator("#automation-target").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
+        Assert.AreEqual("SELECT", await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
+        Assert.AreEqual(1, await page.Locator("#automation-target option").CountAsync().ConfigureAwait(false),
             "An unavailable task must offer no target to choose.");
-
         await page.Locator("#automation-id").FillAsync("browser-acceptance").ConfigureAwait(false);
         await page.Locator("#automation-name").FillAsync("Browser acceptance").ConfigureAwait(false);
         await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
-        await page.Locator("p.automation-error").WaitForAsync().ConfigureAwait(false);
-        Assert.AreEqual(
-            0,
-            await page.Locator("dialog.confirmation-panel").CountAsync().ConfigureAwait(false),
-            "No confirmation may be raised for a command that cannot be recorded.");
-        StringAssert.Contains(
-            await page.Locator("p.automation-error").InnerTextAsync().ConfigureAwait(false),
-            "Select a registered task target",
-            StringComparison.Ordinal);
-
-        // Nothing durable was recorded.
+        var error = page.Locator(".automation-dialog-message[role='alert']");
+        await VisibleAsync(error).ConfigureAwait(false);
+        var message = await error.InnerTextAsync().ConfigureAwait(false);
+        StringAssert.Contains(message, "Select a registered task target", StringComparison.Ordinal);
+        // A forged nonempty target must reach and show the specific unavailable-task reason too.
+        await page.Locator("#automation-target").EvaluateAsync("select => select.add(new Option('forged', 'forged'))").ConfigureAwait(false);
+        await page.Locator("#automation-target").SelectOptionAsync("forged").ConfigureAwait(false);
+        await page.Locator("#automation-save").ClickAsync().ConfigureAwait(false);
+        await Assertions.Expect(error).ToContainTextAsync(unavailable.UnavailableReason!).ConfigureAwait(false);
+        Assert.AreEqual(0, await page.Locator("#automation-confirm").CountAsync().ConfigureAwait(false),
+            "No confirmation may be raised for an unavailable/unregistered target.");
+        var rejected = await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.IsEmpty(rejected.Definitions);
+        Assert.IsEmpty(rejected.Runs);
         await page.ReloadAsync().ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-definitions")).ConfigureAwait(false);
-        StringAssert.Contains(
-            await definitions.InnerTextAsync().ConfigureAwait(false),
-            "No local automation is defined",
-            StringComparison.Ordinal);
-        StringAssert.Contains(
-            await page.Locator("article[aria-labelledby='automation-runs']").InnerTextAsync()
-                .ConfigureAwait(false),
-            "No automation run has been recorded",
-            StringComparison.Ordinal);
+        StringAssert.Contains(await page.Locator("#automation-definitions").InnerTextAsync().ConfigureAwait(false),
+            "No local automation is defined", StringComparison.Ordinal);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Run history", Exact = true }).ClickAsync().ConfigureAwait(false);
+        StringAssert.Contains(await page.Locator("#automation-runs").InnerTextAsync().ConfigureAwait(false),
+            "No automation run has been recorded", StringComparison.Ordinal);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
@@ -2244,64 +2268,59 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
             .ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-definitions")).ConfigureAwait(false);
-        StringAssert.Contains(
-            await page.Locator("#automation-target").InnerTextAsync().ConfigureAwait(false),
-            CameraAgentKestrelFixture.EnvironmentalSourceId,
-            StringComparison.Ordinal);
-
+        await page.Locator("#automation-create").ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#automation-id")).ConfigureAwait(false);
+        await page.Locator("#automation-task").SelectOptionAsync(nameof(LocalAutomationTaskKind.EnvironmentalOnDemandAcquisition)).ConfigureAwait(false);
+        var target = page.Locator("#automation-target");
+        StringAssert.Contains(await target.InnerTextAsync().ConfigureAwait(false),
+            CameraAgentKestrelFixture.EnvironmentalSourceId, StringComparison.Ordinal);
+        Assert.AreEqual("SELECT", await target.EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
+        Assert.AreEqual("SELECT", await page.Locator("#automation-trigger").EvaluateAsync<string>("node => node.tagName").ConfigureAwait(false));
         await page.Locator("#automation-id").FillAsync("browser-acceptance").ConfigureAwait(false);
         await page.Locator("#automation-name").FillAsync("Browser acceptance").ConfigureAwait(false);
         await page.Locator("#automation-reason").FillAsync("browser acceptance evidence").ConfigureAwait(false);
-        await page.Locator("#automation-target")
-            .SelectOptionAsync(CameraAgentKestrelFixture.EnvironmentalSourceId).ConfigureAwait(false);
-
+        await target.SelectOptionAsync(CameraAgentKestrelFixture.EnvironmentalSourceId).ConfigureAwait(false);
+        var store = host.Services.GetRequiredService<ILocalAutomationStore>();
         var save = page.Locator("#automation-save");
-        var dialog = page.Locator("dialog.confirmation-panel");
-        await OpenDialogAsync(save, dialog).ConfigureAwait(false);
+        var dialog = page.Locator("dialog.automation-dialog");
+        await save.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#automation-confirm")).ConfigureAwait(false);
         Assert.IsTrue(await page.EvaluateAsync<bool>(
-            "() => document.querySelector('dialog.confirmation-panel')?.contains(document.activeElement) === true")
-            .ConfigureAwait(false), "Opening the confirmation must move focus inside it.");
-        StringAssert.Contains(
-            await dialog.InnerTextAsync().ConfigureAwait(false),
-            "immutable revision",
-            StringComparison.Ordinal);
-
-        // Escape is guarded, so it cancels through the component and returns focus to the trigger.
+            "() => document.querySelector('dialog.automation-dialog')?.contains(document.activeElement) === true").ConfigureAwait(false),
+            "Opening the confirmation must move focus inside it.");
+        StringAssert.Contains(await dialog.InnerTextAsync().ConfigureAwait(false), "immutable revision", StringComparison.Ordinal);
+        Assert.IsEmpty((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions,
+            "Review cannot write the definition.");
         await page.Keyboard.PressAsync("Escape").ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden })
-            .ConfigureAwait(false);
-        Assert.AreEqual(
-            "automation-save",
-            await page.EvaluateAsync<string>("() => document.activeElement?.id || ''").ConfigureAwait(false));
-
-        // Confirming records a durable revision the operator can then see survive a reload.
-        await OpenDialogAsync(save, dialog).ConfigureAwait(false);
-        await dialog.Locator(".btn-primary").ClickAsync().ConfigureAwait(false);
-        await dialog.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Hidden })
-            .ConfigureAwait(false);
+        await page.Locator("#automation-confirm").WaitForAsync(new() { State = WaitForSelectorState.Detached }).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.activeElement?.id === 'automation-save'").ConfigureAwait(false);
+        Assert.AreEqual("browser-acceptance", await page.Locator("#automation-id").InputValueAsync().ConfigureAwait(false));
+        Assert.IsEmpty((await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions,
+            "Escape returns to the editor without recording anything.");
+        await save.ClickAsync().ConfigureAwait(false);
+        await VisibleAsync(page.Locator("#automation-confirm")).ConfigureAwait(false);
+        await page.Locator("#automation-confirm").ClickAsync().ConfigureAwait(false);
+        await dialog.WaitForAsync(new() { State = WaitForSelectorState.Detached }).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-remove-browser-acceptance")).ConfigureAwait(false);
-
         await page.ReloadAsync().ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(page.Locator("#automation-definitions")).ConfigureAwait(false);
-        var recorded = await page.Locator("article[aria-labelledby='automation-definitions']").InnerTextAsync()
-            .ConfigureAwait(false);
-        StringAssert.Contains(recorded, "browser-acceptance", StringComparison.Ordinal);
-        StringAssert.Contains(recorded, "Recorded revisions", StringComparison.Ordinal);
-
-        // The retained revision history is collapsed by default; expanding it shows the recorded reason.
+        StringAssert.Contains(await page.Locator("#automation-definitions").InnerTextAsync().ConfigureAwait(false),
+            "Browser acceptance", StringComparison.Ordinal);
+        Assert.AreEqual("Remove browser-acceptance", await page.Locator("#automation-remove-browser-acceptance").GetAttributeAsync("aria-label").ConfigureAwait(false));
         var history = page.Locator("details.revision-history");
         await VisibleAsync(history).ConfigureAwait(false);
-        await CollapsibleSection.EnsureOpenAsync(history, page.Locator("details.revision-history table"))
-            .ConfigureAwait(false);
-        StringAssert.Contains(
-            await history.InnerTextAsync().ConfigureAwait(false),
-            "browser acceptance evidence",
-            StringComparison.Ordinal);
-        StringAssert.Contains(
-            await page.Locator("article[aria-labelledby='automation-calendar']").InnerTextAsync()
-                .ConfigureAwait(false),
-            "Browser acceptance",
-            StringComparison.Ordinal);
+        await CollapsibleSection.EnsureOpenAsync(history, history.Locator("ol")).ConfigureAwait(false);
+        StringAssert.Contains(await history.InnerTextAsync().ConfigureAwait(false), "Revision 1", StringComparison.Ordinal);
+        StringAssert.Contains(await history.InnerTextAsync().ConfigureAwait(false), "browser acceptance evidence", StringComparison.Ordinal);
+        var recorded = (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Definitions.Single();
+        Assert.AreEqual(1, recorded.Version);
+        Assert.AreEqual("browser-acceptance", recorded.Definition.DefinitionId);
+        Assert.AreEqual(CameraAgentKestrelFixture.EnvironmentalSourceId, recorded.Definition.TaskTarget);
+        Assert.AreEqual("browser acceptance evidence", recorded.History.Single().Reason);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Schedule", Exact = true }).ClickAsync().ConfigureAwait(false);
+        StringAssert.Contains(await page.Locator("#automation-schedule").InnerTextAsync().ConfigureAwait(false),
+            "Browser acceptance", StringComparison.Ordinal);
         await diagnostics.CompleteAsync().ConfigureAwait(false);
     }
 
@@ -2765,7 +2784,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         var page = await context.NewPageAsync().ConfigureAwait(false);
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
 
-        // Draft: name and revision, one node of a registered type, preview, and the diagram's keyboard path.
+        // VirtualSky captures require their canonical scene node; keep that guard in the keyboard draft.
+        // Draft: name and revision, registered nodes, preview, and the diagram's keyboard path.
         await page.GotoAsync("/operations/pipeline/graphs/new").ConfigureAwait(false);
         await VisibleAsync(page.GetByRole(AriaRole.Heading, new() { Name = "Draft graph", Level = 1 })).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
@@ -2773,12 +2793,17 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.Keyboard.TypeAsync("keyboard-graph").ConfigureAwait(false);
         await TabToAsync(page, "input", "Revision label").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("1").ConfigureAwait(false);
+        await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
+        await page.Keyboard.TypeAsync("ProjectedScene").ConfigureAwait(false);
+        await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
+        await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
+        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
         // Pick the preview step by typeahead on the focused select, then add it.
         await TabToAsync(page, "select", "New node type").ConfigureAwait(false);
         await page.Keyboard.TypeAsync("Preview").ConfigureAwait(false);
         await TabToAsync(page, "button", "Add node").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
-        await VisibleAsync(page.Locator(".node-row").First).ConfigureAwait(false);
+        await page.WaitForFunctionAsync("() => document.querySelectorAll('.node-row').length === 2").ConfigureAwait(false);
         await TabToAsync(page, "button", "Preview plan").ConfigureAwait(false);
         await page.Keyboard.PressAsync("Enter").ConfigureAwait(false);
         var diagram = page.Locator("svg[role='group']");
@@ -2940,7 +2965,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
                   (element.tagName === 'IMG' ? element.getAttribute('alt') : '') ||
                   element.textContent || descendantAlt || '').trim();
               };
-              return [...document.querySelectorAll('a[href], button, img')]
+              // Explicit empty alt makes an image decorative; its enclosing named link carries the action.
+              return [...document.querySelectorAll('a[href], button, img:not([alt=""])')]
                 .filter(element => element.getClientRects().length > 0)
                 .every(element => Boolean(name(element)));
             }

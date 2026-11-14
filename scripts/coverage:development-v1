@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "$#" -ne 2 ]]; then
+  echo 'Usage: scripts/coverage:development-v1 --settings <output.runsettings>' >&2
+  echo '       scripts/coverage:development-v1 <fresh-unit-results-directory> <coverage-output-directory>' >&2
+  exit 2
+fi
+
+if [[ "$1" == --settings ]]; then
+  # Keep the canonical exclusions, but instrument only assemblies owning an
+  # active canonical file floor. Host instrumentation cannot affect those
+  # files' measurements and would add work to thousands of Unit cases.
+  python3 - "$repo_root" "$2" <<'PY'
+import json
+import pathlib
+import sys
+import xml.etree.ElementTree as ET
+
+root, output = map(pathlib.Path, sys.argv[1:])
+baseline = json.loads((root / "scripts/coverage/baseline.json").read_text())
+retired = set(json.loads((root / "scripts/coverage/policy.json").read_text())["retiredSourcePaths"])
+assemblies = set()
+for path, floor in baseline["files"].items():
+    source = root / path if path.startswith("tools/") else root / "src" / path
+    if not source.is_file():
+        if path not in retired:
+            raise SystemExit(f"Required source path {path} is missing and is not a pinned retired path; review its move and floor mapping")
+        continue
+    reason = floor.get("developmentV1LocalOnlyReason")
+    if reason is not None:
+        if not isinstance(reason, str) or not reason.strip():
+            raise SystemExit(f"Invalid developmentV1LocalOnlyReason: {path}")
+        continue
+    if path.startswith("tools/"):
+        raise SystemExit(f"Development v1 inventory supports active src/ floor owners only; extend the DLL/PDB inventory before enforcing tools/ floor {path}")
+    assemblies.add(path.split("/")[0])
+if not assemblies:
+    raise SystemExit("Development v1 has no measurable per-file coverage assemblies")
+settings = ET.parse(root / "tests/coverage.runsettings")
+includes = settings.findall(".//DataCollector[@friendlyName='XPlat Code Coverage']/Configuration/Include")
+if len(includes) != 1:
+    raise SystemExit("Expected one canonical XPlat Include setting")
+includes[0].text = ",".join(f"[{assembly}]*" for assembly in sorted(assemblies))
+configuration = settings.find(".//DataCollector[@friendlyName='XPlat Code Coverage']/Configuration")
+single_hits = configuration.findall("SingleHit")
+if len(single_hits) > 1:
+    raise SystemExit("Expected at most one canonical SingleHit setting")
+single_hit = single_hits[0] if single_hits else ET.SubElement(configuration, "SingleHit")
+# Floors depend on whether a line/branch was hit, never on hit frequency.
+single_hit.text = "true"
+output.parent.mkdir(parents=True, exist_ok=True)
+settings.write(output, encoding="utf-8", xml_declaration=True)
+print(f"Development v1 instruments {len(assemblies)} canonical floor assemblies: {includes[0].text}")
+PY
+  exit 0
+fi
+
+results_dir="$1"
+target_dir="$2"
+shopt -s nullglob
+# GUID originals only: TRX also copies attachments under a deeper In/ tree.
+# The caller supplies the fresh root owned by this one Unit invocation.
+reports=("$results_dir"/*/coverage.cobertura.xml)
+expected_reports="$(jq -se '[.[] | select(.Unit > 0)] | length' "$repo_root"/tests/*/test-categories.json)"
+if (( expected_reports == 0 || ${#reports[@]} != expected_reports )); then
+  printf 'Missing or extra Unit coverage data: expected %s reports (one per Unit-bearing project), found %s in %s. Rerun the complete Unit selection with the generated settings and XPlat collection in a fresh directory.\n' \
+    "$expected_reports" "${#reports[@]}" "$results_dir" >&2
+  exit 1
+fi
+
+mkdir -p "$target_dir"
+printf '%s\n' "${reports[@]}" > "$target_dir/reports.txt"
+printf 'Merging %s fresh Unit reports for canonical per-file enforcement.\n' "${#reports[@]}"
+# ReportGenerator can log an XML error, omit that input and still exit zero.
+# Validate every report and declared branch counter before the merge loses it.
+dotnet run --project "$repo_root/scripts/coverage/HVO.SkyMonitor.CoverageGate.csproj" --disable-build-servers -p:UseSharedCompilation=false -- \
+  --development-v1 --validate-reports --unit-results "$results_dir" "$repo_root/scripts/coverage/baseline.json" "${reports[@]}"
+if ! dotnet reportgenerator \
+  "-reports:$(IFS=';'; echo "${reports[*]}")" \
+  "-targetdir:$target_dir" \
+  '-reporttypes:TextSummary;Cobertura' '-verbosity:Verbose' 2>&1 | tee "$target_dir/merge.log"; then
+  echo 'ReportGenerator failed; restore complete valid Unit reports and rerun the gate.' >&2
+  exit 1
+fi
+# A redundant malformed contributor can disappear without changing the final
+# denominator. Require a successful parse receipt for every expected input and
+# reject logged read errors even when the pinned tool returns zero.
+python3 - "$target_dir/merge.log" "${reports[@]}" <<'PYMERGE'
+from collections import Counter
+import pathlib
+import re
+import sys
+
+log = pathlib.Path(sys.argv[1]).read_text()
+errors = [line for line in log.splitlines() if re.search(r"^(?:\S+:\s+)?(?:error|fatal)\b", line, re.IGNORECASE)]
+parsed = re.findall(r"Finished parsing '(.*)' \d+/\d+\s*$", log, re.MULTILINE)
+expected = Counter(str(pathlib.Path(path).resolve()) for path in sys.argv[2:])
+actual = Counter(str(pathlib.Path(path).resolve()) for path in parsed)
+if errors or actual != expected:
+    raise SystemExit("ReportGenerator input integrity failed: " +
+                     f"errors={errors}; missing={list((expected-actual).elements())}; " +
+                     f"unexpected={list((actual-expected).elements())}. Restore intact reports; every Unit input must be read.")
+print(f"Verified ReportGenerator parsed all {sum(expected.values())} expected Unit reports without read errors.")
+PYMERGE
+"$repo_root/scripts/coverage:enforce" --development-v1 --merged "$target_dir/Cobertura.xml"

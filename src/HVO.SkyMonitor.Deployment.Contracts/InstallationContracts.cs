@@ -218,7 +218,10 @@ public sealed record InstanceManifest(
     string? PreviousComposeModelSha256 = null,
     CameraAgentReplayProfile ReplayProfile = CameraAgentReplayProfile.InProcess,
     ContainerResourceLimits? Resources = null,
-    LifecycleStateSnapshot? PreviousStateSnapshot = null);
+    LifecycleStateSnapshot? PreviousStateSnapshot = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? DeepSkyCatalog = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? PreviousDeepSkyCatalog = null,
+    bool HasPreviousDeepSkySelection = false);
 
 public sealed record LifecycleOperationState(
     int SchemaVersion,
@@ -250,7 +253,10 @@ public sealed record LifecycleOperationState(
     DateTimeOffset? StateSnapshotRestoredUtc = null,
     LifecycleStateSnapshot? RetainedStateSnapshot = null,
     IReadOnlyList<StateCounterFloor>? StateCounterFloors = null,
-    StateRestorePlan? StateRestorePlan = null);
+    StateRestorePlan? StateRestorePlan = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? OriginalDeepSkyCatalog = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? CandidateDeepSkyCatalog = null,
+    bool DeepSkyTransition = false);
 
 /// <summary>
 /// What a snapshot restore covers, journaled before it replaces any store so that an interrupted retry still knows it:
@@ -297,7 +303,8 @@ public sealed record StateSnapshotManifest(
     Guid OperationId,
     DateTimeOffset CreatedUtc,
     ImageInstallationIdentity Image,
-    IReadOnlyList<StateSnapshotDatabase> Databases);
+    IReadOnlyList<StateSnapshotDatabase> Databases,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<StateSnapshotFile>? ProtectedFiles = null);
 
 /// <summary>
 /// One store in a <see cref="StateSnapshotManifest"/>. A store absent when the snapshot was taken is recorded as
@@ -312,6 +319,9 @@ public sealed record StateSnapshotDatabase(
     long UserVersion,
     string? SchemaSha256,
     IReadOnlyList<StateSnapshotTableCount> Tables);
+
+/// <summary>One opaque protected-state file, paired with the SQLite snapshot; absence is explicit.</summary>
+public sealed record StateSnapshotFile(string RelativePath, bool Present, string? SnapshotFile, long Length, string? Sha256);
 
 public sealed record StateSnapshotTableCount(string Name, long Rows);
 
@@ -351,7 +361,8 @@ public sealed record InstanceBackupManifest(
     ImageInstallationIdentity Image,
     IReadOnlyList<BackupFileIdentity> Files,
     string ArchiveSha256,
-    long ArchiveLength);
+    long ArchiveLength,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogInstallationIdentity? DeepSkyCatalog = null);
 
 public sealed record LifecycleResult(
     int SchemaVersion,
@@ -379,6 +390,9 @@ public sealed record LifecycleResult(
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LifecycleUpgradeNotes? UpgradeNotes { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CatalogInstallationIdentity? DeepSkyCatalog { get; init; }
 
     /// <summary>
     /// What the operation did, or with <c>--plan</c> would do, item by item. Omitted by commands that report no plan.
@@ -553,6 +567,9 @@ public sealed record InstallationResult(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     IReadOnlyList<InstallationWarning>? Warnings = null)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CatalogInstallationIdentity? DeepSkyCatalog { get; init; }
+
     /// <summary>
     /// What this invocation created, changed or left unchanged, or with <c>--plan</c> would. Like
     /// <see cref="Warnings"/> it describes one invocation, so the retained result never carries it. A second run with the

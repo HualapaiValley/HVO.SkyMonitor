@@ -616,7 +616,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var initial = await operations.EnsureConfiguredBasicAsync(config, CancellationToken.None).ConfigureAwait(false);
             var catalog = new PhysicalSceneCatalog();
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog,
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog,
                 provider.GetRequiredService<IProjectedSceneStore>(), stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var moduleDisposal = module.ConfigureAwait(false);
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);

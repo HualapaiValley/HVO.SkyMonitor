@@ -24,6 +24,47 @@ public sealed class MeasuredAstrometryRecipeTests
     }
 
     [TestMethod]
+    [DataRow(20d)]
+    [DataRow(60d)]
+    public async Task LongExposureRetainsMeasuredMappingButWithholdsUnqualifiedCovariance(double seconds)
+    {
+        // This geometric fixture checks policy propagation, not long-exposure sensor-pixel qualification.
+        var f = await MeasuredAstrometryFixture.CreateAtAsync(0, seconds).ConfigureAwait(false);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(f.Request()).ConfigureAwait(false);
+        var solution = Solution(outcome);
+        Assert.IsTrue(solution.Assessment.HasMeasuredMapping, solution.Assessment.Reason);
+        Assert.AreEqual(f.Context.Frame.MidpointUtc, solution.Assessment.Frame.MidpointUtc);
+        Assert.AreEqual("exposure-not-qualified", solution.UncertaintyReasonCode);
+        var u = solution.Uncertainty!;
+        Assert.IsFalse(u.IsAvailable);
+        Assert.IsTrue(new[] { u.ConditionalFit, u.Systematic, u.SharedCalibration.Pose, u.Total }
+            .All(c => c.Status == "withheld" && c.ReasonCode == "exposure-not-qualified" && c.Covariance is null));
+        var bytes = MeasuredAstrometryJson.Serialize(solution);
+        CollectionAssert.AreEqual(bytes, MeasuredAstrometryJson.Serialize(MeasuredAstrometryJson.Parse(bytes)));
+        var product = outcome.Products.Single();
+        Assert.IsTrue(BuiltInProcessingRecipes.ProductPayloadMatchesContract(f.Request(),
+            BuiltInProcessingRecipes.CreateProductContract(f.Request(), product.Recipe), bytes, solution.SolutionIdentitySha256,
+            product.Recipe.IdentitySha256, product.Algorithms));
+    }
+
+    [TestMethod]
+    public async Task OneSecondLegacyProductRetainsAlgorithmIdentityAndRestoresWithoutRefitting()
+    {
+        var f = await Fixture.Value.ConfigureAwait(false);
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(f.Request()).ConfigureAwait(false);
+        var solution = Solution(outcome);
+        var product = outcome.Products.Single();
+        Assert.AreEqual("astrometric-frame-uncertainty-v1", product.Algorithms.Single(a => a.Name == "astrometric-uncertainty").Version);
+        var options = new AstrometricUncertaintyOptions();
+        Assert.AreEqual(options.IdentitySha256, solution.Uncertainty!.OptionsIdentitySha256);
+        var restored = RetainedAstrometryProducts.Restore(f.Request(), product.Payload);
+        Assert.AreEqual(product.OutputIdentitySha256, restored.OutputIdentitySha256);
+        Assert.AreEqual(solution.SolutionIdentitySha256, RetainedAstrometryProducts.Verify(f.Request(), restored).SolutionIdentitySha256);
+        CollectionAssert.AreEqual(product.Payload.ToArray(), restored.Payload.ToArray());
+        CollectionAssert.AreEqual(product.Algorithms.ToArray(), restored.Algorithms.ToArray());
+    }
+
+    [TestMethod]
     public async Task RenderedMeasuredInputAcceptsAndMatchesNativeSolverWithoutTruthOrNewAssociation()
     {
         var f = await Fixture.Value.ConfigureAwait(false);

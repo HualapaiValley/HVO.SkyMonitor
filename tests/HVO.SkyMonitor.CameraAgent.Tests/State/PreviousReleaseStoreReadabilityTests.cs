@@ -132,10 +132,11 @@ public sealed class PreviousReleaseStoreReadabilityTests
                 continue;
             }
             using var expected = new TemporaryStore(previous.Dump(location));
+            var actual = CameraAgentStateStoreHarness.ReadSchema(path);
             foreach (var difference in CameraAgentStateStoreHarness.Differences(
-                         CameraAgentStateStoreHarness.ReadSchema(expected.Path), CameraAgentStateStoreHarness.ReadSchema(path)))
+                         CameraAgentStateStoreHarness.ReadSchema(expected.Path), actual))
             {
-                if (!previous.IsDeclaredException(location, difference)) unreadable.Add($"{location} {difference}");
+                if (!previous.IsDeclaredException(location, difference, actual.GetValueOrDefault(difference))) unreadable.Add($"{location} {difference}");
             }
         }
         return unreadable;
@@ -159,11 +160,11 @@ public sealed class PreviousReleaseStoreReadabilityTests
         private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
         private readonly string directory;
         private readonly Dictionary<string, string> dumps;
-        private readonly List<(string Location, HashSet<string> Objects, string Label)> exceptions;
+        private readonly List<(string Location, HashSet<string> Objects, string Label, string? CandidateValue)> exceptions;
 
         private PreviousRelease(
             string directory, IReadOnlyList<string> storageRoots, Dictionary<string, string> dumps,
-            List<(string, HashSet<string>, string)> exceptions)
+            List<(string, HashSet<string>, string, string?)> exceptions)
         {
             this.directory = directory;
             StorageRoots = storageRoots;
@@ -177,8 +178,12 @@ public sealed class PreviousReleaseStoreReadabilityTests
 
         public string Dump(string location) => File.ReadAllText(Path.Combine(directory, dumps[location]));
 
-        public bool IsDeclaredException(string location, string objectKey)
-            => exceptions.Any(exception => exception.Location == location && exception.Objects.Contains(objectKey));
+        public bool IsDeclaredException(string location, string objectKey, string? actualValue)
+            => exceptions.Any(exception => exception.Location == location && exception.Objects.Contains(objectKey) &&
+                // The numeric raw schema exception authorizes exactly its declared version, not arbitrary later versions.
+                // Existing revision-bound exceptions retain their separately declared object scope.
+                (objectKey != "pragma:user_version" || exception.Label != "io.hvo.skymonitor.raw-ingress-schema" ||
+                    string.Equals(actualValue, exception.CandidateValue, StringComparison.Ordinal)));
 
         public static PreviousRelease Load()
         {
@@ -193,7 +198,7 @@ public sealed class PreviousReleaseStoreReadabilityTests
             var previousLabels = root.GetProperty("imageLabels").EnumerateObject()
                 .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
             var currentLabels = HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateCompatibilityLabelTests.ReadImageLabels();
-            var exceptions = new List<(string, HashSet<string>, string)>();
+            var exceptions = new List<(string, HashSet<string>, string, string?)>();
             foreach (var exception in root.GetProperty("snapshotRollbackExceptions").EnumerateArray())
             {
                 var location = exception.GetProperty("location").GetString()!;
@@ -203,13 +208,16 @@ public sealed class PreviousReleaseStoreReadabilityTests
                 // An exception is bound to the label values the two releases actually declare; whether that change
                 // makes the installer take a snapshot is proved by the installer's own comparison in Deployment.Cli.Tests.
                 Assert.IsTrue(dumps.ContainsKey(location), $"Exception names '{location}', which is not a previous-release store.");
-                Assert.AreEqual(previousLabels.GetValueOrDefault(label), previousValue,
+                var installedLabels = exception.TryGetProperty("previousImageLabels", out var installed)
+                    ? installed.EnumerateObject().ToDictionary(static entry => entry.Name, static entry => entry.Value.GetString()!, StringComparer.Ordinal)
+                    : previousLabels;
+                Assert.AreEqual(installedLabels.GetValueOrDefault(label), previousValue,
                     $"Exception for '{location}' names a previous '{label}' the frozen release does not declare.");
                 Assert.AreEqual(currentLabels.GetValueOrDefault(label), candidateValue,
                     $"Exception for '{location}' names a '{label}' this release's Dockerfile does not declare.");
                 exceptions.Add((location,
                     exception.GetProperty("objects").EnumerateArray().Select(static item => item.GetString()!).ToHashSet(StringComparer.Ordinal),
-                    label));
+                    label, candidateValue));
             }
             return new PreviousRelease(
                 directory,

@@ -229,6 +229,7 @@ internal sealed class CameraModuleRunner
             previousStartUtc = moduleCallStartedUtc;
             var request = new CaptureRequest(effectiveSchedule.RequestedStartUtc, targetInterval, captureMode, nextSetpoint);
             CaptureResult? result;
+            EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
             using var cycleActivity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-cycle");
             cycleActivity?.SetTag("cadence.mode", cadenceMode.ToString());
             cycleActivity?.SetTag("start.reason", effectiveSchedule.StartReason.ToString());
@@ -236,7 +237,7 @@ internal sealed class CameraModuleRunner
             {
                 if (_environmentalTriggers is not null)
                 {
-                    await _environmentalTriggers.BeforeCaptureAsync(moduleCallStartedUtc, cancellationToken)
+                    environmentalAcquisition = await _environmentalTriggers.BeforeCaptureAsync(moduleCallStartedUtc, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 result = await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false);
@@ -417,6 +418,9 @@ internal sealed class CameraModuleRunner
                 ingressHandoffStartedUtc)
             {
                 MonotonicStartJitter = monotonicStartJitter,
+                AcquisitionAttemptId = environmentalAcquisition?.Id,
+                EnvironmentalUnavailable = environmentalAcquisition?.Unavailable == true,
+                EnvironmentalBeforeCaptureSources = environmentalAcquisition?.BeforeCaptureSources,
                 ScheduleAdmission = scheduleGrant?.Evidence
             };
 

@@ -210,7 +210,7 @@ public sealed class ArchivePagesTests
             var summary = cut.Find(".calendar-summary").TextContent;
             StringAssert.Contains(summary, "Nights with nightly products2", StringComparison.Ordinal);
             StringAssert.Contains(summary,
-                "2 star trail · 0 keogram; time-lapse not yet generated. 2 nights have evaluations under another source period, not counted",
+                "2 star trail · 0 keogram · 0 daily summary; time-lapse not yet generated. 2 nights have evaluations under another source period, not counted",
                 StringComparison.Ordinal);
             Assert.IsFalse(cut.Markup.Contains("Nightly products hidden", StringComparison.Ordinal));
         });
@@ -296,6 +296,7 @@ public sealed class ArchivePagesTests
         var windowEnd = day.StartUtc.AddHours(17);
         var candidate = new CameraAgentTransientOperatorCandidate(
             Guid.NewGuid(), Guid.NewGuid(), "Extracted", "None", "CausalRetained", day.StartUtc.AddHours(9), day.StartUtc.AddHours(9), "Retained", "Pending", "Pending", "Pending");
+        var olderCandidate = candidate with { CandidateId = Guid.NewGuid(), CreatedUtc = candidate.CreatedUtc.AddMinutes(-1) };
         var dayService = new TestObservingDayUiService
         {
             Handler = (date, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(new(
@@ -303,7 +304,7 @@ public sealed class ArchivePagesTests
                 exposures,
                 TimeSpan.FromSeconds(60),
                 new CameraAgentObservingDayScheduleView([(windowStart, windowEnd)], windowEnd - windowStart, TimeSpan.FromMinutes(3), false),
-                [candidate],
+                [candidate, olderCandidate],
                 false,
                 [],
                 representative,
@@ -331,8 +332,14 @@ public sealed class ArchivePagesTests
             Assert.HasCount(1, cut.FindAll(".timeline-bar--schedule"));
             // Three captures five minutes apart with one-minute bins do not merge.
             Assert.HasCount(3, cut.FindAll(".timeline-bar--captures"));
-            Assert.HasCount(1, cut.FindAll(".timeline-marker"));
-            Assert.AreEqual("Candidate recorded 21:00", cut.Find(".timeline-marker").GetAttribute("title"));
+            Assert.HasCount(2, cut.FindAll(".timeline-marker"));
+            Assert.AreEqual("Candidate recorded 21:00", cut.FindAll(".timeline-marker")[0].GetAttribute("title"));
+            Assert.AreEqual("/archive/day/2026-07-21?calendar=" + day.CalendarVersion + "#day-candidates",
+                cut.Find(".night-timeline__note a").GetAttribute("href"));
+            Assert.AreEqual("-1", cut.Find("#day-candidates").GetAttribute("tabindex"));
+            var listLinks = cut.FindAll("#day-candidates .candidate-list a");
+            CollectionAssert.AreEqual(new[] { candidate, olderCandidate }.Select(item => $"/transients/{item.CandidateId:D}").ToArray(),
+                listLinks.Select(link => link.GetAttribute("href")).ToArray());
             Assert.HasCount(7, cut.FindAll(".timeline-hours span"));
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "21 Jul", StringComparison.Ordinal);
             StringAssert.Contains(cut.Find(".night-timeline__range").TextContent, "22 Jul", StringComparison.Ordinal);
@@ -348,6 +355,65 @@ public sealed class ArchivePagesTests
             Assert.AreEqual("/gallery?from=2026-07-21T19:00:00.000&to=2026-07-22T18:59:59.999", cut.Find(".day-actions a").GetAttribute("href"));
         });
         Assert.IsEmpty(Nightly(context).Days);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public void ObservingDay_NavigationDoesNotOfferThePreviousDaysEvidenceWhileLoading(bool nextReadFails)
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        var firstDate = new DateOnly(2026, 7, 21);
+        var nextDate = firstDate.AddDays(1);
+        var firstDay = Phoenix.Resolve(firstDate);
+        var nextDay = Phoenix.Resolve(nextDate);
+        var nextRead = new TaskCompletionSource<OperatorUiResult<CameraAgentObservingDayView>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        static CameraAgentObservingDayView View(ObservingDay day) => new(
+            new CameraAgentGalleryCalendarDay(day, 3, 1, day.StartUtc, day.StartUtc),
+            [], TimeSpan.FromSeconds(60), null, [], false, [], null, null, null);
+        context.Services.AddSingleton<ICameraAgentObservingDayUiService>(new TestObservingDayUiService
+        {
+            Handler = (date, _) => date == firstDate
+                ? ValueTask.FromResult(OperatorUiResult<CameraAgentObservingDayView>.Success(View(firstDay)))
+                : new(nextRead.Task)
+        });
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-07-21"));
+        Assert.AreEqual(ArchiveCalendarPage.CapturesUrl(firstDay), cut.Find(".day-actions a[href^='/gallery']").GetAttribute("href"));
+        Assert.AreEqual(ArchiveCalendarPage.CandidatesUrl(firstDay), cut.Find(".day-actions a[href^='/transients']").GetAttribute("href"));
+
+        cut.Render(parameters => parameters.Add(page => page.DateText, "2026-07-22"));
+        try
+        {
+            cut.WaitForAssertion(() =>
+            {
+                StringAssert.Contains(cut.Find("h1").TextContent, "22 July 2026", StringComparison.Ordinal);
+                StringAssert.Contains(cut.Markup, "Loading observing day", StringComparison.Ordinal);
+                Assert.IsEmpty(cut.FindAll(".day-actions a[href^='/gallery'], .day-actions a[href^='/transients']"),
+                    "A new date must not offer evidence from the previous date.");
+                Assert.IsFalse(cut.Find(".day-lead").TextContent.Contains("21 Jul 2026", StringComparison.Ordinal));
+            });
+        }
+        finally
+        {
+            nextRead.SetResult(nextReadFails
+                ? OperatorUiResult<CameraAgentObservingDayView>.Failure(OperatorUiResultKind.Unavailable, "Day read failed.")
+                : OperatorUiResult<CameraAgentObservingDayView>.Success(View(nextDay)));
+        }
+
+        cut.WaitForAssertion(() =>
+        {
+            if (nextReadFails)
+            {
+                StringAssert.Contains(cut.Find(".page-state--error").TextContent, "Day read failed.", StringComparison.Ordinal);
+                Assert.IsEmpty(cut.FindAll(".day-actions a[href^='/gallery'], .day-actions a[href^='/transients']"));
+            }
+            else
+            {
+                Assert.AreEqual(ArchiveCalendarPage.CapturesUrl(nextDay), cut.Find(".day-actions a[href^='/gallery']").GetAttribute("href"));
+                Assert.AreEqual(ArchiveCalendarPage.CandidatesUrl(nextDay), cut.Find(".day-actions a[href^='/transients']").GetAttribute("href"));
+            }
+        });
     }
 
     [TestMethod]
@@ -408,7 +474,8 @@ public sealed class ArchivePagesTests
 
             var timeLapse = cut.Find("[data-product-kind='time-lapse']");
             StringAssert.Contains(timeLapse.ClassName, "product-slot--sample", StringComparison.Ordinal);
-            StringAssert.Contains(timeLapse.TextContent, "Not yet generated", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "Time-lapse state could not be read.", StringComparison.Ordinal);
+            StringAssert.Contains(timeLapse.TextContent, "State unavailable", StringComparison.Ordinal);
             StringAssert.Contains(timeLapse.TextContent, "it was not generated from this night", StringComparison.Ordinal);
             Assert.AreEqual(ObservingDayPage.TimeLapseTileId, timeLapse.QuerySelector("button.product-slot__media")!.Id);
             // The sample is fetched only once its viewer is opened.
@@ -588,7 +655,7 @@ public sealed class ArchivePagesTests
             StringAssert.StartsWith(ObservingDayPage.OtherPeriodLabel(period), "Site nightly-other version 2 (", StringComparison.Ordinal);
             StringAssert.Contains(ObservingDayPage.OtherPeriodLabel(period), "America/Denver), 2026-10-01 ", StringComparison.Ordinal);
             var facts = note.QuerySelectorAll("li li").Select(static item => item.TextContent.Trim()).ToArray();
-            Assert.HasCount(2, facts);
+            Assert.HasCount(3, facts);
             StringAssert.StartsWith(facts[0], "Star trail: nightly star trail produced · Product detail", StringComparison.Ordinal);
             Assert.AreEqual("Keogram: no nightly keogram evaluation; 1 of 1 hourly keograms produced", facts[1]);
             Assert.AreEqual(NightlyProductLinks.Detail(otherProduct.ProductId), note.QuerySelector("a")!.GetAttribute("href"));
@@ -631,6 +698,90 @@ public sealed class ArchivePagesTests
                 "Nightly product status unavailable. Nightly products are temporarily unavailable.", StringComparison.Ordinal);
             Assert.IsNotNull(unavailable.Find(".day-facts"));
         });
+    }
+
+    [TestMethod]
+    public void DailySummaryCalendarAndDayKeepPartialAndNotProducedStates()
+    {
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
+        var product = NightlyDayFixture.Product(occurrence, NightlyProductKind.DailySummary);
+        var produced = NightlyDayFixture.Produced(occurrence, product, candidates: 2, admitted: 1);
+        produced = produced with { Status = produced.Status with { ReasonCode = NightlyProductContract.PartialSummaryReasonCode } };
+        var day = new NightlyProductDay(NightlyDayFixture.Date, [produced], [product]);
+        var card = ObservingDayPage.Card(day, NightlyProductKind.DailySummary, occurrence.SourceWindow!.ReportingPeriod, false);
+        Assert.AreEqual(ArchiveCalendarPage.NightlyBadgeState.Partial, card.Badge.State);
+        Assert.AreEqual(product.ProductId, card.Product!.ProductId);
+        Assert.AreEqual("D", card.Badge.Letter);
+        var missing = NightlyDayFixture.Without(occurrence, NightlyProductKind.DailySummary,
+            NightlyProductWindowDisposition.NoSources, candidates: 0);
+        var noProduct = ObservingDayPage.Card(new(NightlyDayFixture.Date, [missing], []), NightlyProductKind.DailySummary,
+            occurrence.SourceWindow.ReportingPeriod, false);
+        Assert.AreEqual(ArchiveCalendarPage.NightlyBadgeState.NotProduced, noProduct.Badge.State);
+        Assert.IsNull(noProduct.Product);
+    }
+
+    [TestMethod]
+    public void ObservingDay_DailySummaryWithoutSourcesNamesPreviewsRatherThanSegmentWindows()
+    {
+        using var context = new BunitContext();
+        Configure(context);
+        context.Services.AddSingleton<TimeProvider>(new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 0, 0, 0, TimeSpan.Zero)));
+        ConfigureFixtureDay(context);
+        Nightly(context).DayHandler = date => OperatorUiResult<CameraAgentNightlyDayView>.Success(new(new NightlyProductDay(date,
+        [
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.DailySummary), NightlyProductKind.DailySummary,
+                NightlyProductWindowDisposition.NoSources, candidates: 0),
+            NightlyDayFixture.Without(NightlyDayFixture.Daily(NightlyProductKind.Keogram), NightlyProductKind.Keogram,
+                NightlyProductWindowDisposition.NoSources, candidates: 0)
+        ], []), null));
+
+        var cut = context.Render<ObservingDayPage>(parameters => parameters.Add(page => page.DateText, "2026-10-01"));
+
+        cut.WaitForAssertion(() =>
+        {
+            var summary = cut.Find("[data-product-kind='daily summary']");
+            Assert.AreEqual("unavailable not-produced", summary.GetAttribute("data-nightly-state"));
+            StringAssert.Contains(summary.TextContent, "The period was evaluated: no retained preview was admitted.", StringComparison.Ordinal);
+            // A daily summary admits previews of the whole period; it has no segment windows to name.
+            Assert.DoesNotContain("segment", summary.TextContent, StringComparison.OrdinalIgnoreCase);
+            StringAssert.Contains(summary.QuerySelector(".hvo-chip")!.TextContent, "Not produced", StringComparison.Ordinal);
+            // The same disposition on a keogram keeps the segment-window wording.
+            StringAssert.Contains(cut.Find("[data-product-kind='keogram']").TextContent,
+                "The period was evaluated: no segment window admitted a frame.", StringComparison.Ordinal);
+        });
+    }
+
+    [TestMethod]
+    public void DailySummaryOutcomeChangesOnlyTheNoSourcesWording()
+    {
+        var occurrence = NightlyDayFixture.Daily(NightlyProductKind.DailySummary);
+        NightlyProductWindowStatus Status(NightlyProductKind kind, NightlyProductWindowDisposition disposition, string? reason = null) =>
+            NightlyDayFixture.Without(occurrence, kind, disposition, candidates: 0, reason).Status;
+
+        Assert.AreEqual("no retained preview was admitted",
+            ObservingDayPage.Outcome(Status(NightlyProductKind.DailySummary, NightlyProductWindowDisposition.NoSources)));
+        foreach (var kind in new[] { NightlyProductKind.Keogram, NightlyProductKind.StarTrail })
+        {
+            Assert.AreEqual("no segment window admitted a frame",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.NoSources)));
+        }
+        // Every other disposition reads the same for every kind.
+        foreach (var kind in Enum.GetValues<NightlyProductKind>())
+        {
+            Assert.AreEqual("rejected (nightly.rig-mismatch)",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.Rejected, "nightly.rig-mismatch")));
+            Assert.AreEqual("rejected (no reason recorded)",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.Rejected)));
+            Assert.AreEqual("no current product is recorded",
+                ObservingDayPage.Outcome(Status(kind, NightlyProductWindowDisposition.Produced)));
+        }
+
+        // Another retained period of the date describes its daily summary the same way.
+        var missing = NightlyDayFixture.Without(occurrence, NightlyProductKind.DailySummary,
+            NightlyProductWindowDisposition.NoSources, candidates: 0);
+        Assert.AreEqual("nightly daily summary not produced, no retained preview was admitted",
+            ObservingDayPage.OtherPeriodFacts(new(NightlyDayFixture.Date, [missing], []), occurrence.SourceWindow!.ReportingPeriod,
+                NightlyProductKind.DailySummary));
     }
 
     private static void ConfigureFixtureDay(BunitContext context)

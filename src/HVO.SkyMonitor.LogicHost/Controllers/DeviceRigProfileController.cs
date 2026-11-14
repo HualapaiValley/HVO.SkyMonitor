@@ -52,15 +52,11 @@ internal sealed class DeviceRigProfileController(
                 Status = StatusCodes.Status401Unauthorized
             });
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            logger.LogWarning(ex, "Rig profile payload is not valid JSON for {DeviceId}", request.DeviceId);
-            return BadRequest(new ProblemDetails
-            {
-                Title = "Rig profile payload invalid",
-                Detail = "RigConfigJson must be valid JSON.",
-                Status = StatusCodes.Status400BadRequest
-            });
+            logger.LogWarning("Rig profile payload invalid for {DeviceId}", request.DeviceId);
+            ModelState.AddModelError(nameof(request.RigConfigJson), "RigConfigJson must contain a valid camera rig configuration.");
+            return ValidationProblem(statusCode: StatusCodes.Status400BadRequest, modelStateDictionary: ModelState);
         }
     }
 

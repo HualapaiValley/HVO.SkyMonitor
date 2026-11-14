@@ -1,4 +1,8 @@
 using System.Security.Claims;
+using HVO.SkyMonitor.Common.Security;
+using Microsoft.AspNetCore.Identity;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -21,7 +25,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CameraAgentSystemUiServiceTests
+public sealed partial class CameraAgentSystemUiServiceTests
 {
     private static readonly DateTimeOffset Start = new(2026, 9, 30, 12, 0, 0, TimeSpan.Zero);
 
@@ -355,10 +359,11 @@ public sealed class CameraAgentSystemUiServiceTests
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "hvo-system-ui", Guid.NewGuid().ToString("N"));
         private readonly CaptureControlTelemetry _telemetry = new();
+        internal string Root => _root;
 
         internal Mock<IRawCaptureIngress> Ingress { get; } = new();
 
-        internal Fixture(bool centralEnabled = true, bool authorized = true, IClockSyncMonitor? clockMonitor = null)
+        internal Fixture(bool centralEnabled = true, bool authorized = true, IClockSyncMonitor? clockMonitor = null, bool lifecycle = false, bool canMutate = true)
         {
             Directory.CreateDirectory(_root);
             var options = Options.Create(new CameraAgentHostOptions
@@ -374,15 +379,19 @@ public sealed class CameraAgentSystemUiServiceTests
             ingress.Setup(value => value.InitializeAsync(It.IsAny<CancellationToken>()))
                 .Returns((CancellationToken token) => new ValueTask(new SqliteRawCaptureJournal(
                     Path.Combine(_root, "journal", "raw-ingress.db"), 1).InitializeAsync(token)));
-            Coordinator = new CaptureAdmissionCoordinator(ingress.Object, options, Clock, _telemetry);
+            Controls = lifecycle ? new CameraAgentControlStore(options, Clock) : null;
+            Coordinator = new CaptureAdmissionCoordinator(ingress.Object, options, Clock, _telemetry, lifecycleControls: Controls);
             Schedule = new SqliteCaptureScheduleStore(ingress.Object, options, Clock);
-            var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner"),
+                new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)], IdentityConstants.ApplicationScheme));
             var authentication = new Mock<AuthenticationStateProvider>();
             authentication.Setup(value => value.GetAuthenticationStateAsync())
                 .ReturnsAsync(new AuthenticationState(principal));
             var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
             authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
                 .ReturnsAsync(authorized ? AuthorizationResult.Success() : AuthorizationResult.Failed());
+            authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsMutateV1))
+                .ReturnsAsync(authorized && canMutate ? AuthorizationResult.Success() : AuthorizationResult.Failed());
             Service = new CameraAgentSystemUiService(
                 authentication.Object,
                 authorization.Object,
@@ -395,7 +404,7 @@ public sealed class CameraAgentSystemUiServiceTests
                 options,
                 Clock,
                 NullLogger<CameraAgentSystemUiService>.Instance,
-                clockMonitor);
+                clockMonitor, Controls);
         }
 
         internal SettableTimeProvider Clock { get; } = new(Start);
@@ -405,6 +414,8 @@ public sealed class CameraAgentSystemUiServiceTests
         internal CaptureAdmissionCoordinator Coordinator { get; }
 
         internal SqliteCaptureScheduleStore Schedule { get; }
+
+        internal CameraAgentControlStore? Controls { get; }
 
         internal CameraAgentSystemUiService Service { get; }
 
@@ -426,6 +437,7 @@ public sealed class CameraAgentSystemUiServiceTests
             Schedule.Dispose();
             Coordinator.Dispose();
             _telemetry.Dispose();
+            Controls?.Dispose();
             Directory.Delete(_root, recursive: true);
         }
 

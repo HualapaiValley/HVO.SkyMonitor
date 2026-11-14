@@ -12,6 +12,136 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
+### Fixed
+
+- Successful sunrise-day still generation now records skipped summary maintenance when the date cannot be listed, and a later summary refresh failure retains counts of refreshes already completed in automation history. Refs #1764
+
+- A custom script whose kill fails (for example under a policy that denies the signal) no longer terminates CameraAgent or fails the stop request. The kill is retried once and the run is recorded as failed with `script.kill-failed`, also when an operator or host stop asked for it. A launcher or sandbox setup exit before the budget check is now `script.launch-failed`, even when it printed past the output limit. Refs #1768
+
+- An OpenNGC deep-sky selection refused before anything changed (for example when CameraAgent rejects the lifecycle state read) is now recorded as a refused operation, as a star catalog selection already is, instead of staying "running" and blocking runtime control until another lifecycle command completes. Refs #1824
+
+- A CameraAgent state reset refused by an active OpenNGC deep-sky selection now names the exact recovery commands (`cameraagent uninstall`, `cameraagent reset-state … --confirm-instance-id`, then `cameraagent install` with the same inputs) instead of an ambiguous "reset and reinstall". The installer and catalog guides now describe the current `hvo-approved-catalogs-v3` / manifest-4 contract and the separate OpenNGC archive. Refs #1824
+
+- CameraAgent upgrade preflight names the right remedy for a blocked raw-ingress journal again: drift repair or a healthy backup for a schema-16 journal, migration preconditions for an older schema-13/14/15 journal, and the archive-and-reset procedure only for unsupported journals. Since the schema-16 image, every such finding had advised a reset. #1823
+
+- CameraAgent upgrades the local automation store from schema 3 to 4 for script-stop attribution. A distinct reader boundary requires a paired pre-upgrade checkpoint even from processing-schema-9 images that still use automation schema 3; rollback restores that checkpoint for the previous reader. Refs #1768
+
+- CameraAgent preserves script termination causes during delayed output drain, records the first stop requester against the retained run revision, and explains unavailable script sandboxes in operator language. Refs #1768
+
+- Astrometric mappings from exposures longer than one second now withhold all uncertainty components with an explicit unsupported-exposure reason; retained evidence cannot release previously unqualified covariance. Qualified one-second retained results keep their identities across restart, replay and viewer reads; on upgraded development prereleases, all historical accepted (mapped) retained astrometry products above one second that carry uncertainty, including products that already withheld covariance for another reason, become `Unavailable / retained-evidence-invalid-or-unavailable` with no mapping or calculators, and replay and restore fail closed. Refs #1179
+
+- CameraAgent development lifecycle workers detect interrupted rollback publication explicitly, pick up later installs without restarting, and retain recovery progress across probe transport failures with distinct diagnostics. Refs #1818
+
+- CameraAgent preserves configured environmental waits under a two-second storage cap, retains before-capture source fences through restart, and reports SQM intervals without changing selection. Raw-ingress schema 16 protects this evidence. BeforeCaptureWaitMilliseconds now accepts 0–2000 ms; larger values are refused at startup. Refs #1735
+
+- CameraAgent rollback and reinstall can settle interrupted runtime control after a durably paused replacement process returns before commit; the recovery runbook includes the manual container-stop route. Refs #1813
+
+- CameraAgent processing health prioritizes replacing superseded active graph revisions over historical Storage-skip guidance, and outbox delivery preserves canonical root path casing on Windows. Refs #1809
+
+- CameraAgent run manifests accept slash-containing node IDs, keep ordinary output ordinals dense, and store counts separately. Startup migrates processing schema 8 to 9 using a paired checkpoint; rolling back to an older image requires that checkpoint. Refs #1766
+
+- CameraAgent retries interrupted pre-restart recovery through pending pauses, renews drain leases, and fences manual focus and calibration capture without retaining refused unstarted work. Deployment transitions require settled control evidence, with fresh liveness checks and worker settlement for offline recovery while retaining pending receipts. Refs #1746
+
+- Equivalent CameraAgent Storage root spellings now coordinate capture, retention and upload work consistently, preserve time-lapse/satellite retention holds, and share disk-pressure reporting. Refs #1763
+
+- CameraAgent reports retained Storage-policy skips in processing health, names differing Storage fields without exposing paths, and gives actionable node-option preflight guidance and mixed-gain help. Refs #1763
+
+- Historical database-only restores refuse before planning or replacing stores when surviving authenticated location history requires a missing retained-integrity ledger, or when authority paths are malformed or uninspectable. Genuine unsealed legacy history remains compatible. Refs #1041
+
+- A tamper found by the recent startup check now forces full byte verification before lifecycle readiness can recover. Complete-archive restore discards its staged clean checkpoint so preserved timestamps cannot inherit incremental trust. Refs #1041
+
+- Protected installation verification uses writer-maintained integrity checkpoints. Startup checks a bounded recent capture window before serving health and recovery; full history qualification and capture recovery run in the background. Lifecycle operations refuse pending or invalid history within the existing 120-second budget. Clean restarts reuse authenticated unchanged-file metadata; full scrubs detect out-of-band tampering before the original daily deadline. Deferred configuration failures report unhealthy capture readiness and retry briefly; ordinary polls coalesce work. Managed pruning, missing-ledger refusal and paired upgrade/rollback recovery preserve retained evidence. Refs #1041
+- LogicHost rejects invalid uploaded rig horizons with a sanitized HTTP 400 validation response. Refs #1745
+
+- CameraAgent renders metadata corners on previews without a projected scene, image circle, or cardinal overlays instead of failing with a null-reference error. Refs #1789
+
+- CameraAgent preserves each capture’s environmental acquisition result across later polls and shutdown, defers pending associations without stopping capture, and expires complete receipt sets through bounded retention batches while preserving legacy capture failure evidence. It also reports active IR rain during sensor drying and omits irrelevant station-distance placeholders for local devices. The environmental schema upgrade selects a paired recovery checkpoint before startup. Refs #1778
+
+- Observing Day says that no retained preview was admitted, rather than naming segment windows, for a daily summary without sources. Product detail shows a daily summary's recorded event count. The automation wizard names the rejected source period and the period a daily-summary target needs. Adding an item to a graph option list selects an unused choice, and is disabled with its reason once every choice is selected. Refs #1781
+- A lone retained capture stays visible on the Observing Day timeline. Products Library shows a still product's recorded result when its run finished while the page was being read, and reports hourly segment progress for a queued daily time-lapse instead of "Not started". A cancelled lifecycle receipt names who cancelled by actor label and shows the time in site time. Refs #1781
+
+- CameraAgent withdraws queued automation attempts when their definition is disabled or edited, and lets owners stop a queued script run without changing its schedule. Explicit historical retries keep their retained execution identity. Refs #1782
+
+- Cancelling a claimed System control drain now ends its receipt Cancelled (`drain.cancelled-paused`) instead of Succeeded when the cancellation is recorded before the drain completes; a drain that reaches its two-minute bound still ends `drain.timeout`. The receipt records who cancelled, when and why, and capture stays paused until explicitly resumed. A completed drain whose final state the installer cannot read or record now ends Failed instead of Succeeded, and when the installer is interrupted or cannot write its journal right after a drain or just before a restart, a restarted worker now settles the receipt instead of having it refused. Refs #1775
+
+- HYG 4.2 catalog builds and catalog fixture recipes reproduce the approved checksums independently of SQLite's secure-deletion default, including the isolated SQLite 3.45.1 CLI. Refs #1773
+
+- The Observing Day viewer of a daily summary now reports its admitted previews out of their candidates and its representative exposure, as Product Detail does, instead of calling them "segment products" and "Total integration". Star-trail and keogram viewers are unchanged. Refs #1780
+
+- System control explains the current reason Drain is unavailable and removes the unavailable description when Drain is enabled. Refs #1776
+
+- Re-running an existing CameraAgent install with a newer installer no longer stops with exit 1 when the installer's configuration defaults changed: the first re-run adopts the cloud assessment steps, lists `camera-module.json` (`pipeline: 11 → 13 steps (adds CloudAssessment, CloudPresentation)`) and the container recreate in its plan, and needs a running image that declares `io.hvo.skymonitor.configuration-defaults` `installer-defaults-2`; otherwise, and for a changed `--illumination-mode` or a hand-edited `camera-module.json`, the re-run is refused with exit 3 and changes nothing. Refs #1779
+
+- Cloud assessment now reports "environment missing" instead of failing when environmental acquisition is enabled with no rain-state source configured. Refs #1777
+
+- Annotated previews with metadata corners, and frame-facts layers, now show a selected environmental reading that has no configured source as MISSING instead of failing on every capture, for example the default corner readings on an NWS-only or sky-quality-meter-only CameraAgent. Refs #1784
+
+- Observing Day keeps sparse capture bands proportional and within the selected period, preserves unavailable quality lanes, identifies the most recent candidate history shown, and shows a failed representative preview without substituting another image. Product cards stack on phones; timeline glyph targets avoid intercepting neighbouring markers and link to equivalent 44px candidate-list controls on the selected day and calendar, with keyboard focus. #1016
+
+- CameraAgent installs can explicitly select VirtualSky illumination with `--illumination-mode` or the `illuminationMode` answers member, including `ControlledNight`, while retaining matching canonical configuration and manifest identities. #1706
+
+- Installer quarantine-readiness refusals now identify required backlog pressure, including captures queued behind a quarantined head and the default seven-day age horizon; recovery guidance preserves fail-closed admission. Backup abort also preserves a partial whose publication record was written before a crash. #1705
+- Upgrade notes identify custom cloud/environment-only graphs and early 0.9.1 pre-release scene graphs whose producer plans are superseded, preserve revision/replay recovery steps, and distinguish current host and ProcessingRunner runtime versions. #1697
+- Observing Day reports whether time-lapse generation is disabled, no video was requested, or the time-lapse state could not be read, while keeping configured samples clearly separate from the night's products. #1709
+
+- CameraAgent overlay configuration links reach the scene controls when the graph also combines frames, and Observing Day hides the previous day's capture and event links while another date loads. #1389
+
+- VirtualSky waits for each requested exposure before publishing a frame, retains the complete acquisition interval, cancels interrupted exposures cleanly, and excludes exposure time from processing-latency metrics. #1707
+
+- HYG 4.4 and OpenNGC catalog builds reproduce the approved checksums with the pinned SQLite source build as well as Ubuntu's packaged SQLite. #1701
+
+- CameraAgent backup, upgrade and rollback can accept a proven required standard processing-lane quarantine with `--allow-quarantined-readiness`. Per-cause health evidence keeps required pressure, worker/claim/state failures and unrelated terminal outcomes refused; older images lacking that evidence fail closed. Operational failures remain visible across backlog refreshes until the matching operation succeeds. #1700
+
+- Quarantine readiness evaluates required-lane pressure from pending, leased and retry-wait work, excluding quarantined rows and their persisted admission pressure. A quarantined capture's age or a refused capture admission no longer prevents the explicit readiness exception; genuine backlog pressure is still refused. #1700
+
+- Incomplete CameraAgent backups can be resumed or abandoned without restoring instance data. Abort retains restart protection when partial deletion fails, refuses already-published archives even before the journal advances, and keeps the journal until cleanup and restart succeed. Host-limit admission and retained warnings still precede mutation; an archive is committed only when its checksum verifies. #1700
+
+- CameraAgent satellite capture accepts real capture-cycle evidence that omits null solar regime and metering facts, and an owner can acknowledge a processing-lane quarantine of a still-valid raw capture so admission and health recover without rewriting that capture. #1388
+
+### Security
+
+- CameraAgent enforces antiforgery validation on session automation save, removal, backfill and retry commands, and reports rejected tokens with a safe reason code and diagnostic log. Refs #1768
+
+- Move the CameraAgent and LogicHost runtime images to ASP.NET Core 10.0.14, a security release addressing CVE-2026-111497, CVE-2026-70197, CVE-2026-102870 and CVE-2026-114148. SDK 10.0.402 and its bundled .NET runtime remain at 10.0.13. #1667
+
+- CameraAgent refuses an anonymous Prometheus scrape at `/metrics`. A scrape requires the ready site owner's session or an operations-read API key sent only in the `Authorization` header. `/alive` and `/health` stay available without signing in.
+
+### Added
+
+- CameraAgent can select and roll back OpenNGC independently of its star catalog, configure NGC/Messier/IC queries, and show a separate expected deep-sky layer with labels, approximate outlines and styling. Releases include the licensed OpenNGC bundle alongside approved HYG 4.2; HYG 4.4 remains an explicit selection pending release approval. An explicit disabled target clears the deep-sky selection independently of rollback history. Reset refuses active deep-sky selections before deleting state and names the reinstall/disable commands; plans and resumed installs validate any retained selection and preserve its mount, settings and installation identity. Deep-sky transitions resume capture after completed owner onboarding, including interrupted-operation recovery. Refs #1388
+
+- Daily summaries refresh immutable keogram and star-trail links after same-period still automation, report refresh results in automation history, and recover interrupted refreshes on retry. Daily summary details explain their sunrise-day coverage basis, calendar badges identify excluded sources, same-page links stay on the current route, the video library retains published outputs while generation is off, linked-product verification errors name the report date and product id for a later retry, and CameraAgent preflight points to each incompatible finding's remediation. Refs #1764
+
+- Catalog build scripts print the `sqlite3` they are about to use (its path, version, SHA-256 and `secure_delete` default) before building, so release, pre-release and CI logs record which SQLite built each catalog. Refs #1774
+
+- CameraAgent can register digest-pinned operator scripts behind an explicit owner opt-in and a restricted Linux sandbox, with a static interpreter, closed inherited descriptors, content-free scope logging, enforced syscall and CPU/memory/process limits, isolated environments, bounded scratch/output/runtime, fair scheduling, durable cancellation outcomes, an availability-gated registration wizard, confirmed run-now and per-running-script stop/history controls that stop the exact attempt, including retries. Installed hosts need sandbox prerequisites that the installer and runtime images do not yet provision. Unqualified architectures, including ARM64, fail closed. Session automation commands require a valid antiforgery token; authorized owner ReadWrite API keys use their existing credential policy. #1137
+- Configure existing mixed-gain rolling-window settings through a validated graph panel while retaining recipe and normalization bindings. #1386
+- CameraAgent can generate immutable daily summaries of sunrise-to-sunrise captures, with representative previews, sampled coverage, exclusions and product lineage in Products, Calendar and Observing Day. Opening an existing nightly catalog upgrades schema 2 to 3 in place; installer upgrades checkpoint it for paired rollback. #1713
+- Configure measured-analysis and capture-satellite scalars and reconcile graph Storage settings with the active capture profile; divergent Storage policies are rejected. #1386
+- CameraAgent System control can request a confirmed, reasoned graceful drain when an independent installer lifecycle worker is registered. Scheduled restarts respect capture windows, restore only the latest owned pause on pre-stop failure or interruption, retry recovery after deployment contention, keep pending stops fenced after cancellation, and retain audited installer-owned verification receipts, including terminal failure when CameraAgent never returns. #1711
+- Camera & Rig supports versioned manual site horizons with preview and explicit activation.
+  Satellite predictions, star/constellation and curated deep-sky overlays, and transient detection
+  share obstruction and unknown-terrain eligibility; archived captures retain their profile.
+  Capture-time location history, full footprint edges and reviewed editor state are preserved.
+  Rig changes and invalid drafts show per-revision revalidation status without hiding the catalog.
+  Central validation requires review for horizon evidence. Identical transient windows reuse bounded detector masks. #1394
+
+- Configure a local weather-station adapter with deterministic simulated devices, explicit sensor/freshness failures and primary station readings retained alongside IR inputs; failed acquisitions cannot reuse an old value. Physical station qualification remains held. #1089
+- Configure a sky-facing infrared/rain adapter with versioned cloud-cover lineage, ordered input delivery, recoverable dead letters for undeliverable inputs and drying-state handling; simulated clouds retain Simulated provenance. Journal failures identify storage, and explicit delivery discard survives restart. Physical sensor qualification remains held. #1090
+- Configure an SQM adapter with capture association, integration intervals, explicit frequency-mode unavailability and sensor-temperature metadata preserved through LogicHost. Physical meter qualification remains held. #1091
+- Configure pinned NWS and confirmed HVO weather profiles with imported provenance, bounded conditional HTTP, rate-limit backoff, source priority and visible age/source labels; mixed-origin headers preserve room for seven readings. #1092
+- Products Library shows queued and running star trails, keograms and daily time-lapses from their durable generation records, enables the Running filter, and identifies interrupted or retrying work with its recorded start time and source window. #1714
+
+- New VirtualSky CameraAgent profiles include optional cloud assessment and retained cloud layers, enabled only after compatible clear-reference evidence produces quantified coverage. Missing references keep cloud controls unavailable without blocking capture or preview. #1004
+
+- CameraAgent Automations guides registered product tasks through hourly or sunrise-day source selection, settle allowance and exact next-run previews, supports editing their versioned source-window definitions, and identifies retired targets or unsupported settings with repair guidance. Upcoming runs remain visible when retired definitions fill the stored calendar preview, and source-selection errors identify accepted choices. #1133
+- Download bounded, versioned pipeline run manifests with retained plan identities, node attempts, artifact checksums and lineage; retained cloud references, conditional outputs and new failed runs remain downloadable. Older runs show a disabled download when their original output history cannot be proven complete; real metadata deletion and corrupt optional evidence have specific reasons while the journal stays readable. Malformed manifest bookkeeping does not roll back completed work; provably complete older failed runs remain downloadable, while ambiguous retry/skip/failure history is refused. Corrupt auxiliary source descriptors disable only the download with the corrupt-evidence reason. Unstarted or interrupted nodes keep failed, expired and cancelled runs downloadable; outputless nodes refuse downloads if retention removed their frozen historical inputs. Corruption in one optional count ledger no longer prevents the other from recording retained evidence; removing the corrupt member recovers downloads when the history is complete. Provably complete older outputless windows remain downloadable; ambiguous or partially retained historical windows are refused. The empty run-actions menu is removed. #1715
+
+- Satellite pass details show geometric Sun altitude and day, twilight or night context at the original start, peak and end, with explicit unknowns and separate satellite-visibility limits. #1393
+- Edit legacy Annotation constellation selections, corner fact lines and environmental kinds in graph drafts, with bounded validation and explicit activation. #1386
+
 - Choose existing retained environmental observation kinds in the Environment graph panel, with truthful defaults, explicit empty selection, association-policy validation, activation and rollback. #1663
 
 - Current and archived sky images show their retained astrometry, compatible measured association and residual layers, and capture-bound pixel/sky calculators without changing rig calibration. (#1644)
@@ -33,7 +163,13 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
-- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.154.0 packages. Runtime images and SDK-bundled runtimes remain at 10.0.13; runtime upgrades require #1667/#1668 and a separate coordinated SDK update. #1683 #1669
+- Skip Storage-incompatible standard processing while retaining raw and committed capture-time scene evidence for explicit replay; optional scene failures leave capture admission open, configured-basic refreshes without a false health alarm, and divergent Named graph commands return HTTP 409 policy guidance. #1386
+
+- The companion ProcessingRunner update moves its `runtime-deps` base to 10.0.14 as an OS-layer update only. The self-contained runner's .NET runtime remains at 10.0.13 because SDK 10.0.402 is unchanged; adopting the .NET 10.0.14 runtime security fixes requires a coordinated SDK update. #1668
+
+- CameraAgent images declare approved-catalog contract `hvo-approved-catalogs-v2` and catalog manifest version 3. An upgraded instance keeps a verified manifest 2 HYG catalog, and can install and select the verified HYG 4.4 + OpenNGC manifest 3 catalog. Curated deep-sky expected positions stay off until `curatedAnnotations` is enabled. Checksums and manifests stay required. #1388
+
+- Update .NET NuGet package pins to 10.0.14 and keep SkiaSharp image processing on matching managed/native 4.155.0 packages. #1683 #1669; Refs #1750
 
 - Split-host preflight now runs through `hvo-sky-install preflight`, preserving inventory, read-only probes and retained manifest/evidence behavior. The existing deployment script forwards the command. (#1593)
 
@@ -420,7 +556,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
   any other version is refused. A build given no version is its development build, `0.9.0-dev`:
   `hvo-sky-install --version` prints `0.9.0-dev+<commit>` rather than `0.0.0-dev+<commit>`, and a development
   CameraAgent image's version label is empty. (#1310)
-- Container builds and local development use .NET SDK 10.0.402, and .NET runtime base images use 10.0.13. (#1336, #1337)
+- Container builds and local development use .NET SDK 10.0.402, which bundles .NET runtime 10.0.13. (#1336, #1337)
 - OpenTelemetry 1.20.0 corrects HTTP 5xx error tags and reduces routine OTLP exporter HTTP log noise. (#1339)
 - A CameraAgent image names its version and commit, `<version>+<commit>`, in four places: the System > Software page,
   the startup log line, telemetry `service.version`, and the `org.opencontainers.image.version` image label. That label

@@ -58,6 +58,70 @@ public sealed class RateLimiterLifetimeTests
             "disposed test hosts must not remain rooted by rate-limiter timers");
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public void ShutdownAttemptsEveryLimiterAndAggregatesFailures()
+    {
+        var firstError = new InvalidOperationException("first-disposal-failure");
+        var lastError = new IOException("last-disposal-failure");
+        var first = new DisposalLimiter(firstError);
+        var middle = new DisposalLimiter(null);
+        var last = new DisposalLimiter(lastError);
+        var head = new MiddlewareNode(first);
+        var tail = new MiddlewareNode(last);
+        head.Next = new MiddlewareNode(middle) { Next = tail.Invoke }.Invoke;
+        tail.Next = head.Invoke;
+        using var lifetime = new RateLimiterLifetime();
+        lifetime.Capture(head.Invoke);
+        var dispose = lifetime.Dispose;
+        dispose.Should().Throw<AggregateException>().Which.InnerExceptions.Should().Contain(firstError).And.Contain(lastError).And.HaveCount(2);
+        first.Attempts.Should().Be(1);
+        middle.Attempts.Should().Be(1);
+        last.Attempts.Should().Be(1);
+        lifetime.CapturedCount.Should().Be(0);
+        lifetime.Dispose();
+        first.Attempts.Should().Be(1);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(1024, false)]
+    [DataRow(1025, true)]
+    public void CaptureHonorsTargetBoundAndTerminatesCycles(int targetCount, bool exceedsBound)
+    {
+        using var limiter = CreateLimiter();
+        var nodes = Enumerable.Range(0, targetCount).Select(_ => new MiddlewareNode(limiter)).ToArray();
+        for (var index = 0; index < nodes.Length; index++) nodes[index].Next = nodes[(index + 1) % nodes.Length].Invoke;
+        using var lifetime = new RateLimiterLifetime();
+        var capture = () => lifetime.Capture(nodes[0].Invoke);
+        if (exceedsBound) capture.Should().Throw<InvalidOperationException>().WithMessage("*inspection bound*");
+        else capture.Should().NotThrow();
+        lifetime.CapturedCount.Should().Be(1);
+        limiter.AttemptAcquire(new DefaultHttpContext()).IsAcquired.Should().BeTrue();
+        lifetime.Dispose();
+        var acquire = () => limiter.AttemptAcquire(new DefaultHttpContext());
+        acquire.Should().Throw<ObjectDisposedException>();
+    }
+
+    private sealed class DisposalLimiter(Exception? failure) : PartitionedRateLimiter<HttpContext>
+    {
+        internal int Attempts { get; private set; }
+        public override RateLimiterStatistics? GetStatistics(HttpContext resource) => null;
+        protected override RateLimitLease AttemptAcquireCore(HttpContext resource, int permitCount) => throw new NotSupportedException();
+        protected override ValueTask<RateLimitLease> AcquireAsyncCore(HttpContext resource, int permitCount, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            try
+            {
+                if (!disposing) return;
+                Attempts++;
+                if (failure is not null) throw failure;
+            }
+            finally { base.Dispose(disposing); }
+        }
+    }
+
     private static PartitionedRateLimiter<HttpContext> CreateLimiter() =>
         PartitionedRateLimiter.Create<HttpContext, string>(_ => RateLimitPartition.GetNoLimiter("test"));
 

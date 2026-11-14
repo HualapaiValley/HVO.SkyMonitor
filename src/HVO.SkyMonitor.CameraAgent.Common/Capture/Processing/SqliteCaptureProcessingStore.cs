@@ -184,11 +184,12 @@ internal sealed record CaptureProcessingOperationalState(
     DateTimeOffset? OldestReplayPendingUtc,
     long ReplayPendingBytes,
     long ReplayLeasedCount,
-    long ReplayAbandonedCount);
+    long ReplayAbandonedCount,
+    long StoragePolicySkippedCount);
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
-    internal const int CurrentSchemaVersion = 8;
+    internal const int CurrentSchemaVersion = 9;
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
@@ -247,6 +248,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         LIMIT $maximum_candidates;
         """;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private static readonly string LegacySchema8Sql = CreateLegacySchema8Sql();
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
     private static readonly string LegacySchema6Sql = CreateLegacySchema6Sql();
     private static readonly string LegacySchema7Sql = CreateLegacySchema7Sql();
@@ -256,6 +258,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         new(CreateCanonicalSchema5Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema6Definitions =
         new(CreateCanonicalSchema6Definitions);
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema8Definitions =
+        new(CreateCanonicalSchema8Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema7Definitions =
         new(CreateCanonicalSchema7Definitions);
     private readonly string _root;
@@ -281,6 +285,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal static string LegacySchema5SqlForTests => LegacySchema5Sql;
     internal static string LegacySchema6SqlForTests => LegacySchema6Sql;
     internal static string LegacySchema7SqlForTests => LegacySchema7Sql;
+    internal static string LegacySchema8SqlForTests => LegacySchema8Sql;
 
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
 
@@ -331,7 +336,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             var migrateSchema5 = !initializeSchema && inspection.ProcessingVersion == 5;
             var migrateSchema6 = !initializeSchema && inspection.ProcessingVersion == 6;
             var migrateSchema7 = !initializeSchema && inspection.ProcessingVersion == 7;
-            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 &&
+            var migrateSchema8 = !initializeSchema && inspection.ProcessingVersion == 8;
+            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 && !migrateSchema8 &&
                 inspection.ProcessingVersion != CurrentSchemaVersion)
             {
                 var version = inspection.ProcessingVersion ?? 0;
@@ -372,6 +378,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning restore CA1849
                 await ValidateSchema5Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema5Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -382,6 +389,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning restore CA1849
                 await ValidateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -392,7 +400,28 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning restore CA1849
                 await ValidateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (migrateSchema8)
+            {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                _faultInjector.Inject(CaptureProcessingFaultPoint.AfterSchemaTransactionBegan, "schema");
+                await ValidateSchema8Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                using (var marker = connection.CreateCommand())
+                {
+                    marker.Transaction = transaction;
+                    marker.CommandText = "DROP TABLE capture_processing_schema;";
+                    await marker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken,
+                    "CREATE TABLE capture_processing_schema(", "INSERT INTO capture_processing_schema(").ConfigureAwait(false);
+                await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
             else
@@ -693,7 +722,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     /// <summary>
     /// Returns why the capture's standard processing was abandoned, or <see langword="null"/> while that work can
-    /// still produce outputs. Abandoned standard work never commits a scene, so a scene-dependent consumer stops waiting.
+    /// still produce outputs. A Storage-policy skip can commit its capture-time scene before abandoning the remaining
+    /// nodes. Consumers must check committed scene evidence first; abandonment means no further outputs can arrive.
     /// </summary>
     internal async ValueTask<string?> ReadAbandonedStandardWorkReasonAsync(
         Guid captureId,
@@ -2535,11 +2565,18 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SUM(CASE WHEN work.state = 'retry_wait' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN work.state = 'quarantined' THEN 1 ELSE 0 END),
                 MIN(CASE WHEN work.state IN ('pending', 'leased', 'retry_wait') THEN raw.exposure_started_unix_ms END),
-                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END)
+                SUM(CASE WHEN work.state = 'leased' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN work.state = 'abandoned' AND work.updated_unix_ms >= $storage_skip_since AND work.failure_reason IN
+                    ($storage_mismatch_reason, $scene_unavailable_reason) THEN 1 ELSE 0 END)
             FROM capture_lane_work AS work
             JOIN raw_captures AS raw ON raw.raw_capture_row_id = work.raw_capture_row_id
             WHERE work.lane_name = 'standard';
             """;
+        // Journal history can outlive raw retention. Warn for a bounded day after the durable abandonment,
+        // without requiring operators to delete evidence or altering the original execution to clear health.
+        command.Parameters.AddWithValue("$storage_mismatch_reason", CaptureStoragePolicy.LiveMismatchLaneReason);
+        command.Parameters.AddWithValue("$scene_unavailable_reason", CaptureStoragePolicy.SceneUnavailableLaneReason);
+        command.Parameters.AddWithValue("$storage_skip_since", _timeProvider.GetUtcNow().AddDays(-1).ToUnixTimeMilliseconds());
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         var pending = await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(0);
@@ -2549,6 +2586,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ? (DateTimeOffset?)null
             : DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(3));
         var leased = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(4);
+        var storagePolicySkipped = await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? 0 : reader.GetInt64(5);
         await reader.DisposeAsync().ConfigureAwait(false);
         using var replay = connection.CreateCommand();
         // A replay abandoned because this version no longer builds its frozen plan is final but not a failure: it
@@ -2584,7 +2622,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             : replayReader.GetInt64(6);
         return new CaptureProcessingOperationalState(
             pending, leased, retry, terminal, oldest, replayPending, replayRetry, replayTerminal, replayOldest,
-            replayPendingBytes, replayLeased, replayAbandoned);
+            replayPendingBytes, replayLeased, replayAbandoned, storagePolicySkipped);
     }
 
     private async ValueTask<bool> InsertOutputAsync(
@@ -3049,7 +3087,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
             actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
         {
-            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 8 definition.");
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 9 definition.");
         }
     }
 
@@ -3087,13 +3125,45 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>
-    /// Schema 7 is the current schema without the node attempt execution route, so the legacy definition is derived
-    /// from the canonical constant by removing exactly the column the migration adds. Deriving it keeps a single
-    /// authored copy of every other table; a separately written copy would drift silently.
+    /// Schema 8 is the current schema without the independent manifest ledger table.
+    /// Derive it from the canonical definition so unchanged objects cannot drift.
     /// </summary>
-    private static string CreateLegacySchema7Sql()
+    private static string CreateLegacySchema8Sql()
     {
         var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(static statement => !statement.StartsWith(ManifestLedgerTablePrefix, StringComparison.Ordinal))
+            .Select(static statement => statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
+                    statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
+                ? statement.Replace("version = 9", "version = 8", StringComparison.Ordinal)
+                    .Replace("VALUES (1, 9)", "VALUES (1, 8)", StringComparison.Ordinal)
+                : statement);
+        return string.Join(";\n", statements) + ";";
+    }
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal legacy schema constant is executed.")]
+    private static Dictionary<string, string> CreateCanonicalSchema8Definitions()
+    {
+        using var connection = new SqliteConnection("Data Source=:memory:");
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = LegacySchema8Sql;
+        command.ExecuteNonQuery();
+        return ReadSchemaDefinitions(connection);
+    }
+
+    private static async ValueTask ValidateSchema8Async(SqliteConnection connection,
+        SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+        if (CanonicalSchema8Definitions.Value.Any(expected =>
+                !actual.TryGetValue(expected.Key, out var definition) || definition != expected.Value) ||
+            actual.Keys.Any(name => !CanonicalSchema8Definitions.Value.ContainsKey(name)))
+            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 8 definition.");
+    }
+
+    private static string CreateLegacySchema7Sql()
+    {
+        var statements = LegacySchema8Sql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Select(static statement =>
                 statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
                 statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
@@ -3124,7 +3194,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     private static string CreateLegacySchema6Sql()
     {
-        var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var statements = LegacySchema8Sql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(static statement =>
                 !statement.StartsWith("CREATE TABLE processing_graph_delivery_", StringComparison.Ordinal) &&
                 !statement.StartsWith("CREATE INDEX ix_processing_graph_delivery_", StringComparison.Ordinal) &&
@@ -3155,7 +3225,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             "CREATE INDEX ix_processing_output_sources_artifact",
             "CREATE INDEX ix_processing_node_inputs_artifact"
         };
-        var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        var statements = LegacySchema8Sql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(statement => selectedPrefixes.Any(prefix => statement.StartsWith(prefix, StringComparison.Ordinal)))
             .Select(statement =>
             {
@@ -3406,7 +3476,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             command.CommandText = statement + ";";
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        // A schema 6 database reaches schema 8 in one step, so it needs the attempt-table rebuild schema 7
+        // A schema 6 database reaches schema 9 in one step, so it needs the attempt-table rebuild schema 7
         // introduces as well. Without it the marker would advance while the execution route column stayed
         // absent, and the validation that follows this migration in the same transaction would reject it.
         await RebuildNodeAttemptsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
@@ -3629,9 +3699,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 8)
+            version INTEGER NOT NULL CHECK(version = 9)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 8);
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 9);
         CREATE TABLE processing_graph_revisions(
             revision_id TEXT PRIMARY KEY CHECK(length(revision_id) = 64),
             graph_name TEXT NOT NULL CHECK(length(graph_name) BETWEEN 1 AND 128),
@@ -3756,6 +3826,18 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             completed_unix_ms INTEGER NULL,
             PRIMARY KEY(execution_id, node_id),
             FOREIGN KEY(execution_id) REFERENCES processing_executions(execution_id) ON DELETE CASCADE
+        ) STRICT;
+        CREATE TABLE processing_execution_manifest_counts(
+            execution_id TEXT NOT NULL,
+            ledger_kind TEXT NOT NULL CHECK(ledger_kind IN ('Inputs', 'Outputs')),
+            node_id TEXT NOT NULL CHECK(length(node_id) BETWEEN 0 AND 128),
+            evidence_count INTEGER NULL,
+            evidence_status TEXT NOT NULL CHECK(evidence_status IN ('Recorded', 'Corrupt', 'ExceedsBounds')),
+            PRIMARY KEY(execution_id, ledger_kind, node_id),
+            FOREIGN KEY(execution_id) REFERENCES processing_executions(execution_id) ON DELETE CASCADE,
+            CHECK((node_id = '' AND evidence_count IS NULL) OR
+                  (node_id <> '' AND evidence_status = 'Recorded' AND evidence_count IS NOT NULL AND evidence_count >= 0 AND
+                   ((ledger_kind = 'Inputs' AND evidence_count <= 512) OR (ledger_kind = 'Outputs' AND evidence_count <= 128))))
         ) STRICT;
         CREATE TABLE processing_node_attempts(
             execution_id TEXT NOT NULL CHECK(length(execution_id) = 32),

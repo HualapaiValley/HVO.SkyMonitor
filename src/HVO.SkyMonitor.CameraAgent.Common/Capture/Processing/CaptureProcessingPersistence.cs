@@ -454,7 +454,7 @@ internal sealed partial class CaptureProcessingPersistence(
                 if (diagnostic.QuarantineRelativePath is { } quarantine)
                 {
                     var path = ResolveSafePath(quarantine);
-                    if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+                    if (Directory.Exists(path)) RetainedFileMutations.DeleteDirectory(path, recursive: true);
                     RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
                 }
                 await _store.DeleteDiagnosticAsync(diagnostic.DiagnosticId, cancellationToken).ConfigureAwait(false);
@@ -1292,7 +1292,7 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
             }
         }
     }

@@ -983,7 +983,8 @@ public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
     [Range(100, 120_000)]
     public int SourceTimeoutMilliseconds { get; init; } = 5_000;
 
-    [Range(0, 5_000)]
+    /// <summary>Optional caller wait and device budget (0 disables the optional wait); shared storage admission has a two-second hard cap.</summary>
+    [Range(0, 2_000)]
     public int BeforeCaptureWaitMilliseconds { get; init; } = 250;
 
     [Range(1, 1_000_000)]
@@ -1000,6 +1001,10 @@ public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
 
     public IReadOnlyList<EnvironmentalSourceConfiguration> Sources { get; init; } = [];
 
+    /// <summary>Explicit per-kind source ordering for real weather selection. Empty preserves the legacy virtual policy.</summary>
+    public IReadOnlyList<string> WeatherSourcePriority { get; init; } = [];
+
+
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         if (!Enabled && Sources.Count > 0)
@@ -1014,6 +1019,10 @@ public sealed class EnvironmentalAcquisitionOptions : IValidatableObject
                 "Enabled environmental acquisition requires at least one source.",
                 [nameof(Enabled), nameof(Sources)]);
         }
+        if (WeatherSourcePriority.Count > 128 || WeatherSourcePriority.Distinct(StringComparer.Ordinal).Count() != WeatherSourcePriority.Count ||
+            WeatherSourcePriority.Any(id => !Sources.Any(source => source is not null && source.Id == id)) ||
+            Sources.Any(source => source is not null && source.Type == "OnlineWeather") && WeatherSourcePriority.Count == 0)
+            yield return new ValidationResult("Online weather requires an explicit configured source priority order.", [nameof(WeatherSourcePriority)]);
         if (Sources.Count > 128)
         {
             yield return new ValidationResult("At most 128 environmental sources may be configured.", [nameof(Sources)]);
@@ -1078,6 +1087,8 @@ public sealed class EnvironmentalSourceConfiguration : IValidatableObject
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (Id.StartsWith("__weather-provider-", StringComparison.Ordinal))
+            yield return new ValidationResult("The environmental source identifier uses a reserved provider-schedule namespace.", [nameof(Id)]);
         if (Id != Id.Trim() || Type != Type.Trim() || RigId is not null && RigId != RigId.Trim())
         {
             yield return new ValidationResult("Environmental source identities must be trimmed.");

@@ -53,7 +53,7 @@ Use a dedicated native Linux ARM64 host with:
 - active cooling and stable power;
 - a native ARM64 Docker daemon;
 - the SDK pinned by `global.json`, Git, Bash 5.1 or newer, `curl`, `file`,
-  `cc`, `jq`, `readelf`, exactly SQLite 3.45.1, and standard GNU utilities; and
+  `cc`, `jq`, `python3`, `readelf`, exactly SQLite 3.45.1, and standard GNU utilities; and
 - no production application state, camera access, interactive credentials,
   passwordless sudo, or unrelated workloads.
 

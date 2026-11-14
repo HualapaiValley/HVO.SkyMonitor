@@ -353,7 +353,7 @@ public sealed class DeepCatalogSelectionTests
     {
         var truth = AstrometricTestFixture.Truth(); var calibration = AstrometricTestFixture.Calibration(truth);
         var detections = AstrometricTestFixture.Centroids(AstrometricTestFixture.Catalog(), truth, AstrometricTestFixture.Utc);
-        var result = AstrometricSolver.Solve(AstrometricTestFixture.Frame(AstrometricTestFixture.Utc), calibration, catalog, detections, Deep);
+        var result = AstrometricSolver.Solve(AstrometricTestFixture.Frame(AstrometricTestFixture.Utc, seconds: 1), calibration, catalog, detections, Deep);
         Assert.IsTrue(result.Assessment.HasMeasuredMapping, result.Assessment.Reason);
         return new(catalog, calibration, detections, result);
     }

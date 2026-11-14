@@ -154,6 +154,34 @@ public sealed class CentralTransientMaskFactoryTests
         Assert.IsNull(await fixture.Factory.CreateAsync([fixture.Source, second], options, CancellationToken.None));
     }
 
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task HorizonProfileRefusesCentralMaskEvidenceInsteadOfTreatingTerrainAsClear(bool swept, bool unknown)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var rig = JsonSerializer.Deserialize<CameraRigConfig>(fixture.Frame.DeviceRigProfile!.ConfigJson)!;
+        var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "central-horizon", 1, "installation",
+            HorizonObstructionProfile.ComputeSiteIdentitySha256(0, 0, 1000, fixture.Source.Descriptor.Location),
+            HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig), HorizonObstructionSource.Synthetic, 90,
+            unknown ? [] : [new(0, 90), new(90, 90), new(180, 90), new(270, 90)]);
+        rig = rig with { HorizonObstruction = profile };
+        var sha = RigProjectionContextFactory.CreateProfileHashSha256(rig);
+        fixture.Frame.DeviceRigProfile.ConfigJson = JsonSerializer.Serialize(rig);
+        fixture.Frame.DeviceRigProfile.ProfileSha256 = sha;
+        fixture.Frame.Profiles.Single(p => p.Kind == CentralProfileKind.Rig).Sha256 = sha;
+        await fixture.Db.SaveChangesAsync();
+        var source = fixture.Source with
+        {
+            Descriptor = fixture.Source.Descriptor with
+            { Profiles = fixture.Source.Descriptor.Profiles with { Rig = new("rig", rig.ProfileVersion, sha) } }
+        };
+        Assert.IsNull(await fixture.Factory.CreateAsync([source],
+            new CentralTransientOptions { ExposureIntegratedStarMask = swept }.CreateExecutionOptions(), CancellationToken.None));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required ApplicationDbContext Db { get; init; }

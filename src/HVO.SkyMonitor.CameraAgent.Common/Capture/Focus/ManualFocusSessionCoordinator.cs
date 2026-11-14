@@ -104,7 +104,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
         Justification = "The safety-timeout source is owned by the session, which is disposed when it is replaced or the coordinator is disposed.")]
-    public Task<ManualFocusSessionSnapshot> StartAsync(
+    public async Task<ManualFocusSessionSnapshot> StartAsync(
         ManualFocusSessionRequest request,
         string actor,
         CancellationToken cancellationToken)
@@ -120,6 +120,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
         {
             throw new ManualFocusSessionValidationException("The safety timeout is outside the allowed range.");
         }
+        await _source.EnsureAdmissionAvailableAsync(cancellationToken).ConfigureAwait(false);
         var availability = _source.GetAvailability();
         if (!availability.Available)
         {
@@ -155,7 +156,7 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
             {
                 LogSessionStarted(_logger, session.Id, actor, request.Settings.Exposure, request.Settings.Gain, position);
             }
-            return Task.FromResult(session.ToSnapshot());
+            return session.ToSnapshot();
         }
     }
 
@@ -425,6 +426,16 @@ public sealed partial class ManualFocusSessionCoordinator : IHostedService, IDis
                     {
                         preview = null!;
                         failure = ManualFocusReasonCodes.SampleDeadlineExceeded;
+                    }
+                    catch (CaptureControlConflictException exception)
+                    {
+                        endState = ManualFocusSessionState.Faulted;
+                        endReason = ManualFocusReasonCodes.AdmissionUnavailable;
+                        lock (_sync)
+                        {
+                            session.LastFailure = exception.Message;
+                        }
+                        break;
                     }
                     catch (ManualFocusSessionUnavailableException exception)
                     {

@@ -6340,6 +6340,10 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .HasColumnType("nvarchar(128)")
                         .UseCollation("Latin1_General_100_BIN2");
 
+                    b.Property<string>("SampleMetadataJson")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
                     b.Property<string>("SchemaVersion")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -6415,6 +6419,8 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         {
                             t.HasCheckConstraint("CK_EnvironmentalObservations_ObservedInterval", "([ObservedFromUtc] IS NULL AND [ObservedThroughUtc] IS NULL) OR ([ObservedFromUtc] IS NOT NULL AND [ObservedThroughUtc] IS NOT NULL AND [ObservedFromUtc] <= [ObservedThroughUtc])");
 
+                            t.HasCheckConstraint("CK_EnvironmentalObservations_SampleMetadata", "[SampleMetadataJson] IS NULL OR ISJSON([SampleMetadataJson]) = 1");
+
                             t.HasCheckConstraint("CK_EnvironmentalObservations_SubmittedValue", "([SubmittedNumericValue] IS NULL AND [SubmittedUnit] IS NULL) OR ([SubmittedNumericValue] IS NOT NULL AND [SubmittedUnit] IS NOT NULL)");
 
                             t.HasCheckConstraint("CK_EnvironmentalObservations_Uncertainty", "[Uncertainty] IS NULL OR [Uncertainty] >= 0");
@@ -6446,6 +6452,11 @@ namespace HVO.SkyMonitor.LogicHost.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<bool>("IsLineageInput")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
 
                     b.Property<string>("Kind")
                         .IsRequired()

@@ -105,6 +105,7 @@ internal sealed partial class CameraAgentLifecycleManager
             if (!Directory.Exists(paths.OperationsRoot)) throw new InstallerException("No matching interrupted purge operation exists.");
             using var interruptedPurgeLock = OperationLock.Acquire(
                 Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
+            await EnsureControlSettledAsync(paths, cancellationToken).ConfigureAwait(false);
             return await ResumeInterruptedPurgeAsync(
                     request, paths, new DockerClient(processRunner), processRunner, cancellationToken)
                 .ConfigureAwait(false);
@@ -139,6 +140,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     ResumableCatalogSelectionVersion(request, retainedOperation), cancellationToken)
                 .ConfigureAwait(false);
         }
+        await ValidateDeepSkySelectionSettingAsync(paths, manifest.DeepSkyCatalog, retainedOperation, cancellationToken).ConfigureAwait(false);
         if (RequiresInstallationVerification(request.Operation))
         {
             installationVerificationToken = await ReadInstallationVerificationTokenAsync(paths, manifest, cancellationToken)
@@ -216,6 +218,8 @@ internal sealed partial class CameraAgentLifecycleManager
             using var instanceLock = request.DryRun
                 ? OperationLock.AcquireExisting(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
                 : OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+            if (request.Operation is not null)
+                await EnsureControlSettledAsync(paths, cancellationToken, request.Operation, docker).ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             manifest = await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false);
             paths = paths.WithCatalog(manifest.Catalog.CatalogId);
@@ -233,6 +237,7 @@ internal sealed partial class CameraAgentLifecycleManager
                         ResumableCatalogSelectionVersion(request, retainedOperation), cancellationToken)
                     .ConfigureAwait(false);
             }
+            await ValidateDeepSkySelectionSettingAsync(paths, manifest.DeepSkyCatalog, retainedOperation, cancellationToken).ConfigureAwait(false);
             if (RequiresInstallationVerification(request.Operation))
             {
                 installationVerificationToken = await ReadInstallationVerificationTokenAsync(paths, manifest, cancellationToken)
@@ -455,7 +460,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var expectedOwner = operation.ExpectedOwnerBootstrapState ?? installationResult.OwnerBootstrapState;
         var verifiedOwner = await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installationResult,
             manifest.Image, verificationToken, uid, gid, cancellationToken, expectedOwner,
-            allowCompletedPasswordReplacement: expectedOwner == "owner-password-change-required").ConfigureAwait(false);
+            allowCompletedPasswordReplacement: expectedOwner == "owner-password-change-required",
+            allowQuarantinedReadiness: request.AllowQuarantinedReadiness).ConfigureAwait(false);
         var lifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
         var continuity = await lifecycle.ReadContinuityAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false);
         var paused = continuity.CaptureState == "Paused" && continuity.CaptureVersion == boundary.CaptureVersion;
@@ -586,7 +592,7 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         // A release candidate was checked, and a registry image pulled, before the locks (AdmitBeforeWritingAsync).
         var operation = await BeginAsync(request, paths, rollback ? LifecycleOperationKind.Rollback : LifecycleOperationKind.Upgrade,
-            manifest, cancellationToken).ConfigureAwait(false);
+            manifest, cancellationToken, docker).ConfigureAwait(false);
         try
         {
             // A rollback going ahead without a limit Docker cannot enforce logs it with the operation before anything
@@ -667,7 +673,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 verificationToken, uid, gid, cancellationToken,
                 committedExpectedOwnerState ?? installationResult.OwnerBootstrapState,
                 allowCompletedPasswordReplacement:
-                    committedExpectedOwnerState is null or "owner-password-change-required")
+                    committedExpectedOwnerState is null or "owner-password-change-required",
+                allowQuarantinedReadiness: request.AllowQuarantinedReadiness)
                 .ConfigureAwait(false);
             if (verifiedOwnerState != committedExpectedOwnerState)
             {
@@ -739,6 +746,7 @@ internal sealed partial class CameraAgentLifecycleManager
             throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
         }
         CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
+        if (manifest.DeepSkyCatalog is { } deepSky) CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, deepSky.CatalogId);
         if (!rollback && !CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
         {
             throw InstallerException.Refused(
@@ -847,7 +855,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var expectedOwnerState = operation.ExpectedOwnerBootstrapState;
         if (!operation.MutationStarted)
         {
-            var currentOwnerState = await owner.ReadInstallationStateAsync(verificationToken, cancellationToken)
+            var currentOwnerState = await owner.ReadInstallationStateAsync(
+                verificationToken, CurrentInstallationExpectation(manifest, installationResult), cancellationToken)
                 .ConfigureAwait(false);
             if (expectedOwnerState is null)
             {
@@ -974,7 +983,8 @@ internal sealed partial class CameraAgentLifecycleManager
             await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, cancellationToken).ConfigureAwait(false);
             var restoredOwnerState = await VerifyCandidateAsync(
                 owner, docker, compose, paths, manifest, installationResult, manifest.Image,
-                verificationToken, uid, gid, cancellationToken, expectedOwnerState, allowOwnerStateProgression)
+                verificationToken, uid, gid, cancellationToken, expectedOwnerState, allowOwnerStateProgression,
+                allowQuarantinedReadiness: request.AllowQuarantinedReadiness)
                 .ConfigureAwait(false);
             if (restoredOwnerState != expectedOwnerState)
             {
@@ -1070,7 +1080,8 @@ internal sealed partial class CameraAgentLifecycleManager
             await StartOnThisHostAsync(docker, candidateCompose, hostLimits, operationRoot, cancellationToken).ConfigureAwait(false);
             var verifiedOwnerState = await VerifyCandidateAsync(
                 owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
-                cancellationToken, expectedOwnerState, allowOwnerStateProgression).ConfigureAwait(false);
+                cancellationToken, expectedOwnerState, allowOwnerStateProgression,
+                allowQuarantinedReadiness: request.AllowQuarantinedReadiness).ConfigureAwait(false);
             expectedOwnerState = verifiedOwnerState;
             allowOwnerStateProgression = allowLegacyOwnerStateProgression ||
                                          expectedOwnerState == "owner-password-change-required";
@@ -1085,7 +1096,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 .ConfigureAwait(false);
             verifiedOwnerState = await VerifyCandidateAsync(
                 owner, docker, candidateCompose, paths, manifest, installationResult, candidate, verificationToken, uid, gid,
-                cancellationToken, expectedOwnerState, allowOwnerStateProgression).ConfigureAwait(false);
+                cancellationToken, expectedOwnerState, allowOwnerStateProgression,
+                allowQuarantinedReadiness: request.AllowQuarantinedReadiness).ConfigureAwait(false);
             if (verifiedOwnerState != expectedOwnerState)
             {
                 expectedOwnerState = verifiedOwnerState;
@@ -1229,7 +1241,8 @@ internal sealed partial class CameraAgentLifecycleManager
                     await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, recovery.Token).ConfigureAwait(false);
                     var restoredOwnerState = await VerifyCandidateAsync(
                         owner, docker, compose, paths, manifest, installationResult, manifest.Image,
-                        verificationToken, uid, gid, recovery.Token, expectedOwnerState, allowOwnerStateProgression)
+                        verificationToken, uid, gid, recovery.Token, expectedOwnerState, allowOwnerStateProgression,
+                        allowQuarantinedReadiness: request.AllowQuarantinedReadiness)
                         .ConfigureAwait(false);
                     if (restoredOwnerState != expectedOwnerState)
                     {
@@ -1291,6 +1304,8 @@ internal sealed partial class CameraAgentLifecycleManager
         TextWriter error,
         CancellationToken cancellationToken)
     {
+        await CameraAgentStateSnapshot.RecoverLegacyBoundaryAuthorityAsync(paths, manifest.InstanceId,
+            operation, snapshot, cancellationToken).ConfigureAwait(false);
         await CameraAgentStateSnapshot.ShowWarningAsync(snapshot, json, error).ConfigureAwait(false);
         operation = await RestoreStoresAsync(paths, manifest, operation, snapshot, json, error, cancellationToken).ConfigureAwait(false);
         return await RecordAsync(paths, operation with { StateSnapshotRestoredUtc = DateTimeOffset.UtcNow }, cancellationToken)
@@ -1409,7 +1424,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     .ConfigureAwait(false);
             }
         }
-        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Uninstall, manifest, cancellationToken)
+        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Uninstall, manifest, cancellationToken, docker)
             .ConfigureAwait(false);
         if (request.DryRun)
         {
@@ -1440,7 +1455,7 @@ internal sealed partial class CameraAgentLifecycleManager
             LastLifecycleOperationId = operation.OperationId,
             UpdatedUtc = DateTimeOffset.UtcNow
         };
-        await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
+        await PinCatalogsAsync(paths, manifest, operation.OperationId, cancellationToken)
             .ConfigureAwait(false);
         await SafeFileSystem.WriteJsonAtomicAsync(paths.ManifestPath, committed, DeploymentJsonContext.Default.InstanceManifest, cancellationToken)
             .ConfigureAwait(false);
@@ -1493,7 +1508,7 @@ internal sealed partial class CameraAgentLifecycleManager
             }
             throw InstallerException.Refused("Reinstall requires a preserved uninstalled instance.");
         }
-        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Reinstall, manifest, cancellationToken)
+        var operation = await BeginAsync(request, paths, LifecycleOperationKind.Reinstall, manifest, cancellationToken, docker)
             .ConfigureAwait(false);
         if (request.DryRun)
         {
@@ -1566,7 +1581,7 @@ internal sealed partial class CameraAgentLifecycleManager
         // committed purge is a different tree that this operation never authenticated.
         if (operation.Phase == LifecycleOperationPhase.Committed)
             throw new InstallerException("The retained purge already committed its deletion; it cannot adopt an instance root that reappeared.");
-        await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operation.OperationId, cancellationToken)
+        await PinCatalogsAsync(paths, manifest, operation.OperationId, cancellationToken)
             .ConfigureAwait(false);
         var parent = Directory.GetParent(paths.InstanceRoot)?.FullName
             ?? throw new InstallerException("The instance root has no authenticated parent.");
@@ -1677,6 +1692,15 @@ internal sealed partial class CameraAgentLifecycleManager
             DateTimeOffset.UtcNow);
     }
 
+    private static InstallationVerificationExpectation CurrentInstallationExpectation(
+        InstanceManifest manifest, InstallationResult result)
+        => new(
+            manifest.ApplicationIdentity.ToString("D"), manifest.OwnerEmail, result.OwnerBootstrapState,
+            manifest.ConfigurationSha256, manifest.RigProfileSha256, manifest.ScheduleSha256,
+            manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
+            manifest.ReplayProfile, manifest.Catalog, AllowCompletedPasswordReplacement: true,
+            DeepSkyCatalog: manifest.DeepSkyCatalog);
+
     private static async Task<string> VerifyCandidateAsync(
         IOwnerBootstrapClient owner,
         DockerClient docker,
@@ -1690,9 +1714,12 @@ internal sealed partial class CameraAgentLifecycleManager
         uint gid,
         CancellationToken cancellationToken,
         string? ownerBootstrapState = null,
-        bool allowCompletedPasswordReplacement = true)
+        bool allowCompletedPasswordReplacement = true,
+        bool allowQuarantinedReadiness = false)
     {
-        await owner.WaitForHealthAsync(ProductionCatalog.Get(manifest.Catalog.CatalogId), cancellationToken).ConfigureAwait(false);
+        await owner.WaitForHealthAsync(
+            ProductionCatalog.Get(manifest.Catalog.CatalogId), cancellationToken,
+            allowQuarantinedReadiness: allowQuarantinedReadiness).ConfigureAwait(false);
         var verifiedOwnerState = await owner.VerifyInstallationAsync(
             verificationToken,
             new InstallationVerificationExpectation(
@@ -1701,9 +1728,9 @@ internal sealed partial class CameraAgentLifecycleManager
                 manifest.DeploymentLocationId, manifest.DeploymentLocationVersion, manifest.DeploymentLocationSha256,
                 manifest.ReplayProfile,
                 manifest.Catalog,
-                allowCompletedPasswordReplacement),
+                allowCompletedPasswordReplacement, manifest.DeepSkyCatalog),
             cancellationToken).ConfigureAwait(false);
-        await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken).ConfigureAwait(false);
+        await docker.VerifyContainerAsync(compose, paths, image, uid, gid, cancellationToken, manifest.DeepSkyCatalog?.InstallRoot).ConfigureAwait(false);
         return verifiedOwnerState;
     }
 
@@ -1784,6 +1811,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 throw new InstallerException("The candidate image does not declare the required CameraAgent configuration and catalog contracts.");
             }
             CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, manifest.Catalog.CatalogId);
+            if (manifest.DeepSkyCatalog is { } deepSky) CameraAgentInstaller.EnsureImageSupportsCatalog(candidate, deepSky.CatalogId);
             if (!CameraAgentStateContract.IsCurrent(candidate.UpgradeCompatibility))
             {
                 throw new InstallerException(
@@ -1825,8 +1853,10 @@ internal sealed partial class CameraAgentLifecycleManager
         InstallationPaths paths,
         LifecycleOperationKind kind,
         InstanceManifest manifest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DockerClient? docker = null)
     {
+        await EnsureControlSettledAsync(paths, cancellationToken, kind, docker).ConfigureAwait(false);
         // A plan meets the same journal gates as the command, and writes nothing (#1315).
         var resumed = await AdmitAsync(request, paths, kind, manifest, cancellationToken).ConfigureAwait(false);
         if (request.DryRun)
@@ -1843,7 +1873,7 @@ internal sealed partial class CameraAgentLifecycleManager
                 now,
                 now,
                 manifest.Image,
-                OriginalCatalog: manifest.Catalog);
+                OriginalCatalog: manifest.Catalog, OriginalDeepSkyCatalog: manifest.DeepSkyCatalog);
         }
         if (resumed is not null) return resumed;
         var state = new LifecycleOperationState(
@@ -1857,13 +1887,14 @@ internal sealed partial class CameraAgentLifecycleManager
             DateTimeOffset.UtcNow,
             DateTimeOffset.UtcNow,
             manifest.Image,
-            OriginalCatalog: manifest.Catalog);
+            OriginalCatalog: manifest.Catalog, OriginalDeepSkyCatalog: manifest.DeepSkyCatalog);
         return await RecordAsync(paths, state, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// The journal gates every lifecycle command and its plan pass before anything changes, reading the journal only.
-    /// Returns the retained operation a <c>--resume</c> continues, or <see langword="null"/> for a fresh operation.
+    /// Returns the retained operation a <c>--resume</c> continues or <c>--abort</c> settles, or <see langword="null"/>
+    /// for a fresh operation.
     /// </summary>
     private static async Task<LifecycleOperationState?> AdmitAsync(
         LifecycleRequest request,
@@ -1873,6 +1904,16 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+        // Abort settles the retained journal itself, but admission still needs its recorded restart boundary.
+        if (request.Abort)
+        {
+            if (kind != LifecycleOperationKind.Backup)
+            {
+                throw new InstallUsageException("--abort applies only to cameraagent backup.");
+            }
+
+            return BackupToAbort(request, manifest, existing);
+        }
         var hash = request.ComputeRequestSha256();
         // A refused operation is terminal: it mutated nothing, so it neither blocks a new operation nor offers
         // anything to resume. Any other incomplete record whose mutation flag is clear is unmutated by construction
@@ -1883,6 +1924,7 @@ internal sealed partial class CameraAgentLifecycleManager
         if (existing?.RestoreResumeCommandId is not null && !IsRestored(existing))
             throw InstallerException.Refused("Restore-only recovery has started; resume it with --restore-only and the same --operation-id.");
         if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing) && !IsRestored(existing) &&
+            !IsAbandonedBackup(existing) &&
             (existing.MutationStarted || request.Resume))
         {
             if (!request.Resume) throw InstallerException.Refused("An incomplete lifecycle operation exists; rerun the same command with --resume.");
@@ -1932,6 +1974,22 @@ internal sealed partial class CameraAgentLifecycleManager
 
     internal static bool IsRefused(LifecycleOperationState state)
         => state is { Status: InstallationStatus.Failed, FailureCode: RefusedFailureCode, MutationStarted: false };
+
+    /// <summary>
+    /// A backup the operator aborted, or a resume that found the recovery had already discarded the partial. It no
+    /// longer blocks another command and there is nothing for <c>--resume</c> to finish.
+    /// </summary>
+    private static bool IsAbandonedBackup(LifecycleOperationState state)
+        => state is
+        {
+            Kind: LifecycleOperationKind.Backup,
+            Status: InstallationStatus.Failed,
+            MutationStarted: false,
+            FailureCode: AbandonedBackupCode or MissingPartialBackupCode
+        };
+
+    internal const string AbandonedBackupCode = "backup-aborted";
+    internal const string MissingPartialBackupCode = "backup-partial-missing";
 
     private static bool IsRestored(LifecycleOperationState state)
         => state is { Status: InstallationStatus.Failed, Phase: LifecycleOperationPhase.Restored, MutationStarted: false };
@@ -2024,6 +2082,9 @@ internal sealed partial class CameraAgentLifecycleManager
             value.CandidateImage is not null &&
             !IsCanonicalImage(value.CandidateImage, "cameraagent-install-v1", value.CandidateImage.Architecture) ||
             value.CandidateCatalog is not null && !IsValidCatalog(value.CandidateCatalog) ||
+            value.OriginalDeepSkyCatalog is not null && !IsValidCatalog(value.OriginalDeepSkyCatalog) ||
+            value.CandidateDeepSkyCatalog is not null && !IsValidCatalog(value.CandidateDeepSkyCatalog) ||
+            value.DeepSkyTransition && value.Kind is not (LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback) ||
             value.Phase == LifecycleOperationPhase.Planned ||
             value.Status == InstallationStatus.Completed && value.Phase != LifecycleOperationPhase.Completed ||
             value.Phase == LifecycleOperationPhase.Completed && value.Status != InstallationStatus.Completed ||
@@ -2353,7 +2414,7 @@ internal sealed partial class CameraAgentLifecycleManager
             !IsSha256(result.ScheduleSha256) || !HasValue(result.RigProfileName) ||
             !HasValue(result.RigProfileVersion) || !HasValue(result.ScheduleSchemaVersion) ||
             !HasValue(result.ScheduleState) || !IsSha256(result.ComposeModelSha256) ||
-            !IsValidCatalog(result.Catalog) ||
+            !IsValidCatalog(result.Catalog) || !ValidDeepSky(result.DeepSkyCatalog, result.ProductRoot) ||
             result.Catalog.InstallRoot != Path.Combine(result.ProductRoot, "catalogs", result.Catalog.CatalogId) ||
             !IsCanonicalImage(
                 result.Image,
@@ -2381,7 +2442,8 @@ internal sealed partial class CameraAgentLifecycleManager
         var result = await ReadResultAsync(resultPath, cancellationToken).ConfigureAwait(false);
         EnsureCorrelated(paths, operation.InstanceId!.Value, manifest, result, allowTransactionalDrift: false);
         if (manifest.Image != operation.OriginalImage || result.Image != operation.OriginalImage ||
-            manifest.Catalog != operation.OriginalCatalog || result.Catalog != operation.OriginalCatalog)
+            manifest.Catalog != operation.OriginalCatalog || result.Catalog != operation.OriginalCatalog ||
+            manifest.DeepSkyCatalog != operation.OriginalDeepSkyCatalog || result.DeepSkyCatalog != operation.OriginalDeepSkyCatalog)
         {
             throw new InstallerException("The retained lifecycle recovery records do not match the original operation identities.");
         }
@@ -2487,6 +2549,8 @@ internal sealed partial class CameraAgentLifecycleManager
             !HasValue(manifest.RigProfileVersion) || !HasValue(manifest.ScheduleSchemaVersion) ||
             !HasValue(manifest.ScheduleState) || !IsSha256(manifest.InstallationVerificationTokenSha256) ||
             !IsSha256(manifest.ComposeModelSha256) || !IsValidCatalog(manifest.Catalog) ||
+            !ValidDeepSky(manifest.DeepSkyCatalog, manifest.ProductRoot) || !ValidDeepSky(manifest.PreviousDeepSkyCatalog, manifest.ProductRoot) ||
+            manifest.DeepSkyCatalog is not null && !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.DeepSkyCatalog.CatalogId) ||
             manifest.Resources is not null && !CameraAgentContainerResources.IsValid(manifest.Resources) ||
             !CameraAgentImageContract.SupportsCatalog(manifest.Image?.CatalogContract, manifest.Catalog.CatalogId) ||
             manifest.Catalog.InstallRoot != Path.Combine(manifest.ProductRoot, "catalogs", manifest.Catalog.CatalogId) ||
@@ -2543,7 +2607,7 @@ internal sealed partial class CameraAgentLifecycleManager
             manifest.DeploymentLocationId != $"installer-{instanceId:D}" || manifest.DockerDaemon != result.DockerDaemon ||
             (!allowTransactionalDrift &&
              (manifest.ComposeModelSha256 != result.ComposeModelSha256 ||
-              manifest.Image != result.Image || manifest.Catalog != result.Catalog)))
+              manifest.Image != result.Image || manifest.Catalog != result.Catalog || manifest.DeepSkyCatalog != result.DeepSkyCatalog)))
         {
             throw new InstallerException("The retained instance identities do not correlate.");
         }
@@ -2579,7 +2643,11 @@ internal sealed partial class CameraAgentLifecycleManager
               (manifest.Catalog == operation.OriginalCatalog || manifest.Catalog == operation.CandidateCatalog) &&
               (result.Catalog == operation.OriginalCatalog || result.Catalog == operation.CandidateCatalog)
             : manifest.Catalog == operation.OriginalCatalog && result.Catalog == operation.OriginalCatalog;
-        if (!imagesCorrelate || !catalogsCorrelate)
+        var deepSkyCorrelates = operation.DeepSkyTransition
+            ? (manifest.DeepSkyCatalog == operation.OriginalDeepSkyCatalog || manifest.DeepSkyCatalog == operation.CandidateDeepSkyCatalog) &&
+              (result.DeepSkyCatalog == operation.OriginalDeepSkyCatalog || result.DeepSkyCatalog == operation.CandidateDeepSkyCatalog)
+            : manifest.DeepSkyCatalog == operation.OriginalDeepSkyCatalog && result.DeepSkyCatalog == operation.OriginalDeepSkyCatalog;
+        if (!imagesCorrelate || !catalogsCorrelate || !deepSkyCorrelates)
             throw new InstallerException("The retained transactional identities do not match the lifecycle operation.");
     }
 
@@ -2640,6 +2708,44 @@ internal sealed partial class CameraAgentLifecycleManager
     private static bool IsValidCatalog(CatalogInstallationIdentity? value)
         => ProductionCatalog.IsPinned(value) &&
            HasValue(value.InstallRoot) && IsSha256(value.ManifestSha256) && value.Source == "local-offline";
+
+    internal static async Task ValidateDeepSkySelectionSettingAsync(InstallationPaths paths, CatalogInstallationIdentity? selected,
+        LifecycleOperationState? retained, CancellationToken cancellationToken)
+    {
+        if (retained is { DeepSkyTransition: true, MutationStarted: true }) return;
+        var root = Path.Combine(paths.ConfigRoot, "secrets");
+        var enabledPath = Path.Combine(root, "DeepSkyCatalog__Enabled");
+        if (selected is null)
+        {
+            if (!File.Exists(enabledPath)) return;
+            using var source = SafeFileSystem.OpenOwnerFileRead(enabledPath);
+            using var reader = new StreamReader(source);
+            if ((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).TrimEnd('\r', '\n') != "false")
+                throw new InstallerException("The deep-sky configuration differs from the retained independent selection.");
+            return;
+        }
+        foreach (var (key, expected) in new[] { ("Enabled", "true"), ("Root", "/app/deep-sky-catalog"),
+                     ("RequiredCatalogId", selected.CatalogId), ("RequiredPackageKind", "Production"), ("RequiredPackageVersion", selected.PackageVersion) })
+        {
+            var path = Path.Combine(root, "DeepSkyCatalog__" + key);
+            if (!File.Exists(path)) throw new InstallerException("The deep-sky selection configuration is incomplete.");
+            using var source = SafeFileSystem.OpenOwnerFileRead(path);
+            using var reader = new StreamReader(source);
+            if ((await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).TrimEnd('\r', '\n') != expected)
+                throw new InstallerException("The deep-sky configuration differs from the retained independent selection.");
+        }
+    }
+
+    internal static async Task PinCatalogsAsync(InstallationPaths paths, InstanceManifest manifest, Guid operationId, CancellationToken cancellationToken)
+    {
+        await CatalogReferenceStore.PinHistoricalAsync(paths, manifest.Catalog, operationId, cancellationToken).ConfigureAwait(false);
+        if (manifest.DeepSkyCatalog is { } deepSky)
+            await CatalogReferenceStore.PinHistoricalAsync(paths.WithCatalog(deepSky.CatalogId), deepSky, operationId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool ValidDeepSky(CatalogInstallationIdentity? catalog, string productRoot) => catalog is null ||
+        IsValidCatalog(catalog) && ProductionCatalog.Get(catalog.CatalogId).ManifestVersion == 4 &&
+        catalog.InstallRoot == Path.Combine(productRoot, "catalogs", catalog.CatalogId);
 
     internal static void ValidateCanonicalCatalog(InstallationPaths paths, CatalogInstallationIdentity value)
     {
@@ -2823,7 +2929,8 @@ internal sealed partial class CameraAgentLifecycleManager
             manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled
                 ? $"{InstallerProgram.Current} cameraagent reinstall --instance-id {manifest.InstanceId:D}"
                 : null,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        { DeepSkyCatalog = manifest.DeepSkyCatalog };
 
     private static async Task<LifecycleResult> ListAsync(string productRoot, CancellationToken cancellationToken)
     {

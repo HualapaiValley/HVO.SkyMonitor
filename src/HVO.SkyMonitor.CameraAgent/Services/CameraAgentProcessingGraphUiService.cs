@@ -151,7 +151,10 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
     CameraAgentProcessingExecutionSummary Execution,
     string SharedPlanIdentitySha256,
     string LocalPlanIdentitySha256,
-    IReadOnlyList<CameraAgentProcessingNodeView> Nodes);
+    IReadOnlyList<CameraAgentProcessingNodeView> Nodes)
+{
+    public string? ManifestUnavailableReason { get; init; } = CameraAgentRunManifest.MissingReason;
+}
 
 /// <summary>A stored graph revision with its immutable definition and the plan it compiles to today.</summary>
 internal sealed record CameraAgentProcessingGraphRevisionDetail(
@@ -262,9 +265,28 @@ internal sealed class CameraAgentProcessingGraphUiService(
         CancellationToken cancellationToken)
         => ReadAsync(async token =>
         {
-            var detail = await operations.ReadExecutionDetailAsync(executionId, token).ConfigureAwait(false);
-            return detail is null ? null : CameraAgentProcessingExecutionProjection.Detail(detail, timeProvider.GetUtcNow());
+            // One read supplies the journal and the evidence the manifest alone needs. The page never performs the
+            // manifest read or builds its payload to decide whether the download can be offered.
+            var read = await operations.ReadExecutionDetailWithRunManifestAsync(executionId, token).ConfigureAwait(false);
+            if (read is null) return null;
+            return CameraAgentProcessingExecutionProjection.Detail(read.Detail, timeProvider.GetUtcNow()) with
+            {
+                ManifestUnavailableReason = ManifestUnavailableReason(read)
+            };
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional manifest evidence cannot conceal the primary execution journal; failures have a fixed public reason.")]
+    private static string? ManifestUnavailableReason(ProcessingGraphExecutionDetailWithRunManifest read)
+    {
+        try
+        {
+            return CameraAgentRunManifest.UnavailableReason(read);
+        }
+        catch (Exception)
+        {
+            return CameraAgentRunManifest.TemporarilyUnavailableReason;
+        }
+    }
 
     public ValueTask<OperatorUiResult<CameraAgentLiveRunLink>> GetLiveExecutionIdAsync(Guid captureId, CancellationToken cancellationToken)
         => ReadAsync(async token => await operations.ReadLiveExecutionIdAsync(captureId, token).ConfigureAwait(false) is { } id
@@ -322,6 +344,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
             }
             var configuration = scheduleRuntime?.Snapshot?.Configuration
                 ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            CaptureStoragePolicy.EnsureMatchesProfile(pipeline, configuration.Pipeline);
             return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -331,7 +354,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
         catch (Exception exception)
         {
             logger.LogInformation(exception, "CameraAgent processing graph preview rejected.");
-            return (null, EnvironmentalPolicyFailure(exception) ?? (exception is InvalidOperationException invalid
+            return (null, LocalPolicyFailure(exception) ?? (exception is InvalidOperationException invalid
                 ? CameraAgentPipelineOperatorProjection.SanitizeValidationFailure(invalid)
                 : "The graph definition is invalid for this CameraAgent."));
         }
@@ -371,6 +394,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         => exception is ValidationException && exception.Message.Contains("outside the configured association policy", StringComparison.Ordinal)
             ? "Selected environmental observations are outside the configured association policy. Choose configured kinds or an empty selection; selecting a kind does not enable a sensor or provider."
             : null;
+
+    private static string? LocalPolicyFailure(Exception exception)
+        => exception is ValidationException && exception.Message == CaptureStoragePolicy.RejectionMessage
+            ? CaptureStoragePolicy.DescribeMismatch((ValidationException)exception) : EnvironmentalPolicyFailure(exception);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
@@ -437,10 +464,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.NotFound, "The graph revision was not found.");
         }
-        catch (ValidationException exception) when (EnvironmentalPolicyFailure(exception) is not null)
+        catch (ValidationException exception) when (LocalPolicyFailure(exception) is not null)
         {
             logger.LogInformation(exception, "CameraAgent processing graph UI mutation rejected.");
-            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, EnvironmentalPolicyFailure(exception)!);
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, LocalPolicyFailure(exception)!);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or InvalidDataException)
         {

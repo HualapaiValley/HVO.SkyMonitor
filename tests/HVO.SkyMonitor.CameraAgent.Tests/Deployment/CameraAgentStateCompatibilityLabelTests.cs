@@ -15,7 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Deployment;
 [TestCategory("Unit")]
 public sealed class CameraAgentStateCompatibilityLabelTests
 {
-    private const string MinimumCompatibleRevision = "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f";
+    private const string MinimumCompatibleRevision = "bc5ca7489c4090c299c416309519ab72da4a8cdb";
 
     [TestMethod]
     public void Dockerfile_DeclaresTheDurableStateContractInsteadOfUnboundedBackwardCompatibility()
@@ -38,7 +38,7 @@ public sealed class CameraAgentStateCompatibilityLabelTests
         Assert.AreEqual(
             SqliteRawCaptureJournal.CurrentSchemaVersion.ToString(CultureInfo.InvariantCulture),
             labels["io.hvo.skymonitor.raw-ingress-schema"]);
-        Assert.AreEqual(RawIngressV13Schema.RecoveryMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
+        Assert.AreEqual(RawIngressV13Schema.EnvironmentalFenceMigrationContract, labels["io.hvo.skymonitor.raw-ingress-migration"]);
     }
 
     [TestMethod]
@@ -65,13 +65,14 @@ public sealed class CameraAgentStateCompatibilityLabelTests
     {
         var labels = ReadImageLabels();
 
+        var declared = int.Parse(labels["io.hvo.skymonitor.catalog-manifest-version"], CultureInfo.InvariantCulture);
+        Assert.AreEqual(CatalogSnapshotResolver.SupportedManifestVersion, declared);
+        Assert.AreEqual("hvo-approved-catalogs-v3", labels["io.hvo.skymonitor.catalog-contract"]);
         Assert.AreEqual(
-            ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion.ToString(CultureInfo.InvariantCulture),
-            labels["io.hvo.skymonitor.catalog-manifest-version"]);
-        Assert.AreEqual("hvo-approved-catalogs-v1", labels["io.hvo.skymonitor.catalog-contract"]);
-        Assert.AreEqual(
-            ApprovedCatalogSpecifications.Get("hyg-v42-production").ManifestVersion.ToString(CultureInfo.InvariantCulture),
-            labels["io.hvo.skymonitor.catalog-manifest-version"]);
+            ApprovedCatalogSpecifications.Get("openngc-production").ManifestVersion,
+            declared);
+        Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v42-production").ManifestVersion <= declared);
+        Assert.IsTrue(ApprovedCatalogSpecifications.Get("hyg-v44-production").ManifestVersion <= declared);
     }
 
     internal static Dictionary<string, string> ReadImageLabels()

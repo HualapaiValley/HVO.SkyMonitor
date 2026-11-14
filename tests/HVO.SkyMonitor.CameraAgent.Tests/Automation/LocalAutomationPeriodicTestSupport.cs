@@ -36,6 +36,8 @@ internal sealed class FakePeriodicTaskAdapter(
 
     public bool SupportsRunNow { get; set; } = true;
 
+    public bool RunsOffSweep { get; set; }
+
     public List<LocalAutomationOccurrence> Executed { get; } = [];
 
     public Func<LocalAutomationOccurrence, CancellationToken, ValueTask<LocalAutomationExecution>>? Executor { get; set; }

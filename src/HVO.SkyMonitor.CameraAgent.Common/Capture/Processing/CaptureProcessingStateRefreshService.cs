@@ -16,6 +16,7 @@ internal sealed class CaptureProcessingStateRefreshService(
 {
     private readonly ILogger _logger = logger ?? NullLogger<CaptureProcessingStateRefreshService>.Instance;
     private string? _reportedSupersededRevision;
+    private string? _reportedStoragePolicyMismatchRevision;
 
     internal async ValueTask RunOnceAsync(CancellationToken cancellationToken)
     {
@@ -40,11 +41,25 @@ internal sealed class CaptureProcessingStateRefreshService(
             durable.ReplayPendingBytes,
             durable.ReplayAbandonedCount);
         state.SetProcessingEvidence(inventory.MissingCount, inventory.QuarantinedCount);
+        state.SetStoragePolicySkipped(durable.StoragePolicySkippedCount);
         if (graphOperations is not null)
         {
             ObserveActiveRevision(
                 await graphOperations.FindSupersededActiveRevisionAsync(cancellationToken).ConfigureAwait(false));
+            ObserveActiveStoragePolicy(
+                await graphOperations.FindActiveStoragePolicyMismatchAsync(cancellationToken).ConfigureAwait(false));
         }
+    }
+
+    private void ObserveActiveStoragePolicy(string? revisionId)
+    {
+        state.SetActiveStoragePolicyMismatch(revisionId);
+        if (string.Equals(_reportedStoragePolicyMismatchRevision, revisionId, StringComparison.Ordinal)) return;
+        if (revisionId is not null)
+            _logger.ProcessingActiveStoragePolicyMismatch(revisionId);
+        else
+            _logger.ProcessingActiveStoragePolicyMismatchCleared(_reportedStoragePolicyMismatchRevision!);
+        _reportedStoragePolicyMismatchRevision = revisionId;
     }
 
     // A superseded active revision is reported once per transition rather than per abandoned capture.

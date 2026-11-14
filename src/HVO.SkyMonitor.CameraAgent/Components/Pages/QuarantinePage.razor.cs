@@ -248,17 +248,23 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
 
     private string ListTitle => _page?.Kind == "RawEvidence"
         ? "Raw evidence quarantine and audited releases"
+        : _page?.Kind == "ProcessingLane"
+        ? "Processing lane quarantine and acknowledgement"
         : _page?.Kind == "Environmental"
         ? "Environmental quarantine and terminal records"
         : _page?.Kind == "TransientRuntime"
             ? "Transient runtime quarantine"
             : $"Artifact quarantine and retry / {_page?.StorageAlias ?? "no configured storage"}";
 
-    private string ActionLabel => _pending?.Item.Kind == "RawEvidence"
+    private string ActionLabel => _pending?.Item.Kind == "ProcessingLane"
+        ? "Acknowledge"
+        : _pending?.Item.Kind == "RawEvidence"
         ? _pending.Action == OutboxOperationAction.Abandon ? "Write off" : "Revalidate"
         : _pending?.Action.ToString() ?? string.Empty;
 
-    private string ConfirmationDescription => _pending?.Item.Kind == "RawEvidence"
+    private string ConfirmationDescription => _pending?.Item.Kind == "ProcessingLane"
+        ? "Acknowledgement abandons this standard-lane quarantine and records the actor, reason and time. The raw capture, its bytes and the failed execution history stay unchanged. Evidence-invalid quarantines are not listed here."
+        : _pending?.Item.Kind == "RawEvidence"
         ? _pending.Action == OutboxOperationAction.Abandon
             ? "Write-off records an audited terminal loss decision and stops pending capture lanes. All raw files remain preserved; capture identity cannot be reused."
             : "Revalidation checks recovered raw files against the original committed manifest and checksum. Evidence-failed standard work stays terminal; other eligible lanes may retry. Recovered raw stays preserved for explicitly requested archived replay, without deletion or rewriting."
@@ -304,7 +310,9 @@ public sealed partial class QuarantinePage : ComponentBase, IAsyncDisposable
     ];
 
     private IReadOnlyList<(string Code, string Label)> ReasonCodes =>
-        _pending?.Item.Kind == "RawEvidence"
+        _pending?.Item.Kind == "ProcessingLane"
+            ? [("processing-failure-acknowledged", "Processing failure acknowledged")]
+            : _pending?.Item.Kind == "RawEvidence"
             ? _pending.Action == OutboxOperationAction.Replay
                 ? [("evidence-restored", "Evidence restored")]
                 : [("irrecoverable-evidence", "Irrecoverable evidence"), ("operator-approved-loss", "Operator-approved loss")]

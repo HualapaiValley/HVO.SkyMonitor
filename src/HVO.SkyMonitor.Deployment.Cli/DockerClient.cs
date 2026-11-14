@@ -26,6 +26,9 @@ internal sealed class DockerClient(IProcessRunner processRunner)
 
     internal sealed record ContainerRuntimeIdentity(bool Exists, bool Running, bool Healthy, string? ImageId)
     {
+        // Ephemeral Docker observation: only an explicit failed /alive check proves a running host unavailable.
+        internal string? LivenessStatus { get; init; }
+
         /// <summary>
         /// The CPU, memory and PID limits Docker enforces on the container, as its <c>HostConfig</c> reports them, or
         /// <see langword="null"/> when it reports none of them. Docker reports an unset limit as zero.
@@ -481,6 +484,22 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             false);
     }
 
+    /// <summary>
+    /// The value of the label <paramref name="name"/> the image Docker holds as <paramref name="reference"/> carries, or
+    /// <see langword="null"/> when it carries none. Only reads; an image Docker cannot inspect is a failure.
+    /// </summary>
+    public async Task<string?> ReadImageLabelAsync(string reference, string name, CancellationToken cancellationToken)
+    {
+        var inspected = await TryInspectImageAsync(reference, cancellationToken).ConfigureAwait(false)
+            ?? throw new InstallerException($"Docker could not inspect the CameraAgent image '{reference}'.");
+        using var document = JsonDocument.Parse(inspected.StandardOutput);
+        return document.RootElement.ValueKind == JsonValueKind.Array && document.RootElement.GetArrayLength() == 1 &&
+               document.RootElement[0].TryGetProperty("Config", out var config) &&
+               config.ValueKind == JsonValueKind.Object && config.TryGetProperty("Labels", out var labels)
+            ? CameraAgentImageLabels.Label(labels, name)
+            : null;
+    }
+
     private async Task<ProcessResult?> TryInspectImageAsync(string reference, CancellationToken cancellationToken)
     {
         var result = await RunDockerRawAsync(["image", "inspect", reference], cancellationToken).ConfigureAwait(false);
@@ -624,7 +643,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
         ImageInstallationIdentity imageIdentity,
         uint uid,
         uint gid,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? expectedDeepSkyRoot = null)
     {
         var expectedCatalog = paths.CatalogRoot;
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(2);
@@ -655,6 +675,8 @@ internal sealed class DockerClient(IProcessRunner processRunner)
                 ["identity-mount"] = mounts.Any(mount => MountMatches(
                     mount, Path.Combine(paths.StateRoot, "identity"), "/app/App_Data", writable: true))
             };
+            if (expectedDeepSkyRoot is not null)
+                checks["deep-sky-catalog-mount"] = mounts.Any(mount => MountMatches(mount, expectedDeepSkyRoot, "/app/deep-sky-catalog", writable: false));
             if (compose.ReplayRunnerContainerName is not null)
             {
                 checks["replay-socket-mount"] = mounts.Any(mount => MountMatches(
@@ -781,8 +803,25 @@ internal sealed class DockerClient(IProcessRunner processRunner)
             healthy,
             container.GetProperty("Image").GetString())
         {
-            Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null
+            Limits = container.TryGetProperty("HostConfig", out var host) ? ReadLimits(host) : null,
+            LivenessStatus = state.TryGetProperty("Health", out var observedHealth)
+                ? observedHealth.GetProperty("Status").GetString() : null
         };
+    }
+
+    /// <summary>Probe the fixed container-local liveness endpoint; cached Docker health never proves current unreachability.</summary>
+    internal async Task<bool> IsContainerAliveNowAsync(string containerName, CancellationToken cancellationToken)
+    {
+        var probe = await RunDockerRawAsync(["exec", containerName, "curl", "--noproxy", "*", "--silent", "--show-error",
+            "--max-time", "5", "--output", "/dev/null", "--write-out", "%{http_code}", "http://127.0.0.1:8080/alive"],
+            cancellationToken).ConfigureAwait(false);
+        var status = probe.StandardOutput.Trim();
+        // Any HTTP reply proves reachability, including authentication/readiness refusals. Only curl's explicit
+        // connection failure or bounded no-response timeout can authorize the offline recovery exception.
+        if (int.TryParse(status, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture,
+                out var response) && response is >= 100 and <= 599) return true;
+        if (status == "000" && probe.ExitCode is 7 or 28) return false;
+        throw new InstallerException("The current CameraAgent liveness probe could not establish reachability; retain pending control evidence.");
     }
 
     public async Task EnsureNoInstanceReferencesAsync(

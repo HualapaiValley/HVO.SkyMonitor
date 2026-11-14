@@ -1,4 +1,10 @@
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using System.Diagnostics;
+using Microsoft.Data.Sqlite;
+using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Common.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
+using HVO.SkyMonitor.Common.Security;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -22,6 +28,16 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 /// </summary>
 internal interface ICameraAgentSystemUiService
 {
+    ValueTask<OperatorUiResult<CameraAgentControlView>> GetLifecycleAsync(CancellationToken cancellationToken) =>
+        ValueTask.FromResult(OperatorUiResult<CameraAgentControlView>.Success(new(false, [])));
+
+    ValueTask<OperatorUiResult<CameraAgentControlReceipt>> RequestDrainAsync(Guid operationId, long expectedVersion,
+        string reason, CancellationToken cancellationToken) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentControlReceipt>.Failure(OperatorUiResultKind.Unavailable, "The installer lifecycle worker is unavailable."));
+
+    ValueTask<OperatorUiResult<bool>> CancelLifecycleAsync(Guid operationId, CancellationToken cancellationToken, string reason = "Operator requested lifecycle cancellation") =>
+        ValueTask.FromResult(OperatorUiResult<bool>.Failure(OperatorUiResultKind.Unavailable, "The installer lifecycle worker is unavailable."));
+
     ValueTask<OperatorUiResult<SystemHealthView>> GetHealthAsync(CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<SystemSoftwareView>> GetSoftwareAsync(CancellationToken cancellationToken);
@@ -86,7 +102,7 @@ internal sealed record SystemSoftwareView(
     string RuntimeIdentifier,
     DateTimeOffset StartedUtc,
     TimeSpan Uptime,
-    SystemCatalogView Catalog);
+    SystemCatalogView Catalog, SystemCatalogView? DeepSkyCatalog = null);
 
 internal enum SystemControlReceiptKind
 {
@@ -94,7 +110,9 @@ internal enum SystemControlReceiptKind
     ResumeCapture,
     OverrideCreated,
     OverrideConsumed,
-    OverrideCleared
+    OverrideCleared,
+    Drain,
+    ScheduledRestart
 }
 
 internal enum SystemControlActor
@@ -108,8 +126,18 @@ internal enum SystemControlOutcome
 {
     Applied,
     NoChange,
-    Pending
+    Pending,
+    Failed,
+    Cancelled,
+    Skipped
 }
+
+/// <summary>
+/// Who cancelled a lifecycle operation, when and why. The actor is the same fixed class every other receipt actor
+/// carries, never the account identifier the journal records, and the instant stays UTC for the page to show in
+/// site time.
+/// </summary>
+internal sealed record SystemControlCancellation(SystemControlActor Actor, DateTimeOffset Utc, string Reason);
 
 internal sealed record SystemControlReceipt(
     DateTimeOffset OccurredUtc,
@@ -119,7 +147,9 @@ internal sealed record SystemControlReceipt(
     SystemControlOutcome Outcome,
     CaptureScheduleOverrideMode? OverrideMode,
     DateTimeOffset? OverrideStartUtc,
-    DateTimeOffset? OverrideEndUtc);
+    DateTimeOffset? OverrideEndUtc,
+    string? Detail = null,
+    SystemControlCancellation? Cancellation = null);
 
 internal sealed class CameraAgentSystemUiService(
     AuthenticationStateProvider authenticationStateProvider,
@@ -131,7 +161,8 @@ internal sealed class CameraAgentSystemUiService(
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
     ILogger<CameraAgentSystemUiService> logger,
-    IClockSyncMonitor? clockMonitor = null) : ICameraAgentSystemUiService
+    IClockSyncMonitor? clockMonitor = null,
+    CameraAgentControlStore? controls = null, SqliteLocalAutomationStore? automations = null, HVO.SkyMonitor.Astronomy.ICelestialCatalog? selectedCatalog = null) : ICameraAgentSystemUiService
 {
     internal const int MaxReceipts = 25;
     internal static readonly TimeSpan HealthTimeout = TimeSpan.FromSeconds(15);
@@ -243,7 +274,12 @@ internal sealed class CameraAgentSystemUiService(
                     catalog.PreprocessingVersion,
                     catalog.RowCount,
                     catalog.DatabaseLength,
-                    catalog.DatabaseSha256)));
+                    catalog.DatabaseSha256),
+                selectedCatalog is InstalledCatalogPair pair ? new SystemCatalogView(
+                    pair.DeepSkySnapshot.CatalogId, pair.DeepSkySnapshot.CatalogVersion, pair.DeepSkySnapshot.PackageKind.ToString(),
+                    pair.DeepSkySnapshot.SnapshotVersion, pair.DeepSkySnapshot.ManifestVersion, pair.DeepSkySnapshot.SchemaVersion,
+                    pair.DeepSkySnapshot.PreprocessingVersion, pair.DeepSkySnapshot.RowCount, pair.DeepSkySnapshot.DatabaseLength,
+                    pair.DeepSkySnapshot.DatabaseSha256) : null));
         }
         catch (Exception exception)
         {
@@ -268,6 +304,7 @@ internal sealed class CameraAgentSystemUiService(
             var commands = await captureControl.GetRecentCommandsAsync(bounded, cancellationToken).ConfigureAwait(false);
             var overrides = await scheduleStore.GetRecentOverrideEventsAsync(bounded, cancellationToken)
                 .ConfigureAwait(false);
+            var lifecycle = controls is null ? new CameraAgentControlView(false, []) : await controls.ReadAsync(cancellationToken).ConfigureAwait(false);
             IReadOnlyList<SystemControlReceipt> receipts = commands
                 .Select(static command => new SystemControlReceipt(
                     command.CompletedUtc ?? command.RequestedUtc,
@@ -296,6 +333,16 @@ internal sealed class CameraAgentSystemUiService(
                     item.Mode,
                     item.StartUtc,
                     item.EndUtc)))
+                .Concat(lifecycle.Receipts.Select(static item => new SystemControlReceipt(item.Events[^1].Utc,
+                    item.Request.Kind == CameraAgentControlKind.Drain ? SystemControlReceiptKind.Drain : SystemControlReceiptKind.ScheduledRestart,
+                    MapActor(item.Request.Actor), item.Request.Reason, item.Phase switch
+                    {
+                        CameraAgentControlPhase.Succeeded => SystemControlOutcome.Applied,
+                        CameraAgentControlPhase.Failed => SystemControlOutcome.Failed,
+                        CameraAgentControlPhase.Cancelled => SystemControlOutcome.Cancelled,
+                        CameraAgentControlPhase.Skipped => SystemControlOutcome.Skipped,
+                        _ => SystemControlOutcome.Pending
+                    }, null, null, null, LifecycleDetail(item), LifecycleCancellation(item))))
                 .OrderByDescending(static receipt => receipt.OccurredUtc)
                 .Take(bounded)
                 .ToArray();
@@ -312,10 +359,96 @@ internal sealed class CameraAgentSystemUiService(
         }
     }
 
+    public async ValueTask<OperatorUiResult<CameraAgentControlView>> GetLifecycleAsync(CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync().ConfigureAwait(false)) return Denied<CameraAgentControlView>();
+        if (controls is null) return OperatorUiResult<CameraAgentControlView>.Success(new(false, []));
+        try
+        {
+            var view = await controls.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var principal = (await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false)).User;
+            var canMutate = (await authorizationService.AuthorizeAsync(principal,
+                CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false)).Succeeded;
+            return OperatorUiResult<CameraAgentControlView>.Success(view with { Available = view.Available && canMutate });
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or UnauthorizedAccessException)
+        {
+            return Unavailable<CameraAgentControlView>("Installer lifecycle state could not be read.");
+        }
+    }
+
+    public async ValueTask<OperatorUiResult<CameraAgentControlReceipt>> RequestDrainAsync(Guid operationId, long expectedVersion,
+        string reason, CancellationToken cancellationToken)
+    {
+        var principal = (await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false)).User;
+        if (!(await authorizationService.AuthorizeAsync(principal, CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .ConfigureAwait(false)).Succeeded || CameraAgentCredentialAccess.GetOwnerId(principal) is not { Length: > 0 } actor)
+            return Denied<CameraAgentControlReceipt>();
+        if (controls is null) return Unavailable<CameraAgentControlReceipt>("The installer lifecycle worker is unavailable.");
+        try
+        {
+            var request = new CameraAgentControlRequest(operationId, CameraAgentControlKind.Drain, actor, reason.Trim(),
+                expectedVersion, timeProvider.GetUtcNow());
+            var existing = await controls.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (!existing.Receipts.Any(item => item.Request.OperationId == operationId) &&
+                (!captureControl.Snapshot.IsInitialized || captureControl.Snapshot.Version != expectedVersion ||
+                    captureControl.Snapshot.State is not (CaptureAdmissionState.Running or CaptureAdmissionState.Paused)))
+                return OperatorUiResult<CameraAgentControlReceipt>.Failure(OperatorUiResultKind.Conflict, "Capture state changed. Refresh and confirm again.");
+            return OperatorUiResult<CameraAgentControlReceipt>.Success(await controls.SubmitAsync(request, cancellationToken).ConfigureAwait(false));
+        }
+        catch (ArgumentException) { return OperatorUiResult<CameraAgentControlReceipt>.Failure(OperatorUiResultKind.Invalid, "A reason of 1 to 512 printable characters is required."); }
+        catch (InvalidOperationException) { return OperatorUiResult<CameraAgentControlReceipt>.Failure(OperatorUiResultKind.Conflict, "The installer worker is unavailable or another lifecycle operation is pending."); }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or UnauthorizedAccessException)
+        { return Unavailable<CameraAgentControlReceipt>("Installer lifecycle intent could not be recorded. Refresh before retrying."); }
+    }
+
+    public async ValueTask<OperatorUiResult<bool>> CancelLifecycleAsync(Guid operationId, CancellationToken cancellationToken, string reason = "Operator requested lifecycle cancellation")
+    {
+        var principal = (await authenticationStateProvider.GetAuthenticationStateAsync().ConfigureAwait(false)).User;
+        if (!(await authorizationService.AuthorizeAsync(principal, CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .ConfigureAwait(false)).Succeeded) return Denied<bool>();
+        if (controls is null) return Unavailable<bool>("The installer lifecycle worker is unavailable.");
+        try
+        {
+            var actor = CameraAgentCredentialAccess.GetOwnerId(principal);
+            if (string.IsNullOrWhiteSpace(actor)) return Denied<bool>();
+            await controls.CancelAsync(operationId, cancellationToken, actor, reason.Trim()).ConfigureAwait(false);
+            var receipt = (await controls.ReadAsync(cancellationToken).ConfigureAwait(false)).Receipts
+                .FirstOrDefault(item => item.Request.OperationId == operationId);
+            if (receipt is { IsTerminal: true } && automations is not null)
+                await automations.CompleteInstallerLifecycleAsync(receipt, cancellationToken).ConfigureAwait(false);
+            return OperatorUiResult<bool>.Success(true);
+        }
+        catch (ArgumentException) { return OperatorUiResult<bool>.Failure(OperatorUiResultKind.Invalid, "A cancellation reason of 1 to 512 printable characters is required."); }
+        catch (SqliteException)
+        { return Unavailable<bool>("Lifecycle cancellation was recorded, but automation history could not be updated. Refresh to reconcile history."); }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or UnauthorizedAccessException)
+        { return Unavailable<bool>("Lifecycle cancellation could not be recorded. Refresh before retrying."); }
+    }
+
+    /// <summary>The cancellation of a lifecycle receipt, with its recorded actor mapped as every other actor is.</summary>
+    internal static SystemControlCancellation? LifecycleCancellation(CameraAgentControlReceipt receipt)
+        => receipt.Cancellation is { } cancelled ? new(MapActor(cancelled.Actor), cancelled.Utc, cancelled.Reason) : null;
+
+    /// <summary>What a lifecycle receipt's phase means. A cancellation is carried apart, by <see cref="LifecycleCancellation"/>.</summary>
+    internal static string LifecycleDetail(CameraAgentControlReceipt receipt) => receipt.Phase switch
+    {
+        CameraAgentControlPhase.Queued => "Waiting for the installer worker.",
+        CameraAgentControlPhase.Draining => "Stopping acquisition and settling accepted processing and delivery.",
+        CameraAgentControlPhase.Restarting => "Installer requested a supervised CameraAgent restart.",
+        CameraAgentControlPhase.Verifying => "Installer is waiting for a new process and verifying durable continuity.",
+        CameraAgentControlPhase.Succeeded when receipt.Request.Kind == CameraAgentControlKind.Drain => "Drained; capture remains paused until explicitly resumed.",
+        CameraAgentControlPhase.Succeeded => receipt.ResumeAfterVerification ? "Restart verified; prior running state restored." : "Restart verified; prior paused state preserved.",
+        CameraAgentControlPhase.Skipped => "Restart skipped: capture window or supervisor requirements were not met.",
+        _ when receipt.ResumeConfirmed && !receipt.RestartMayHaveOccurred => "Restart was not issued; prior running state restored. " + receipt.Events[^1].Code,
+        _ when receipt.ResumeRequested => "Resume was not confirmed; capture was paused before this failure receipt was published. " + receipt.Events[^1].Code,
+        _ => "Lifecycle did not complete. No automatic resume was issued; check capture state and the installer receipt. " + receipt.Events[^1].Code
+    };
+
     internal static SystemControlActor MapActor(string actor)
         => actor.StartsWith("installer-lifecycle:", StringComparison.Ordinal)
             ? SystemControlActor.Installer
-            : string.Equals(actor, "system", StringComparison.Ordinal)
+            : (actor.StartsWith("automation:", StringComparison.Ordinal) || string.Equals(actor, "system", StringComparison.Ordinal))
                 ? SystemControlActor.System
                 : SystemControlActor.LocalOwner;
 

@@ -6,6 +6,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
     branches: [development/v1]
+  # The merge queue tests each queued PR on a temporary merge_group commit built
+  # on the latest base; both required checks must report there too.
+  merge_group:
+    types: [checks_requested]
+    branches: [development/v1]
 
 permissions:
   contents: read
@@ -22,7 +27,7 @@ jobs:
   preflight:
     name: Development v1 / Preflight
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 6
     steps:
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,11 +53,23 @@ jobs:
             '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8' \
             "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" .github/workflows/*.yml
+          find .github/workflows -type f \( -iname '*.yml' -o -iname '*.yaml' \) -print0 > "$RUNNER_TEMP/actionlint-workflows.list"
+          mapfile -d '' -t workflows < "$RUNNER_TEMP/actionlint-workflows.list"
+          ((${#workflows[@]} > 0)) || { echo 'No workflow files found for actionlint.' >&2; exit 1; }
+          "$RUNNER_TEMP/actionlint" "${workflows[@]}"
+
+      - name: Install pinned workflow YAML parser
+        run: |
+          python3 -m pip install --require-hashes --only-binary=:all: --no-deps \
+            --target "$RUNNER_TEMP/hvo-pyyaml" -r scripts/ci/pyyaml-requirements.txt
+          printf 'PYTHONPATH=%s\n' "$RUNNER_TEMP/hvo-pyyaml" >> "$GITHUB_ENV"
 
       # Offline and cheap enough to run on every draft/push (#1345).
       - name: Check Dockerfile base images
         run: ./scripts/ci:base-images
+
+      - name: Check managed and native SkiaSharp alignment
+        run: ./scripts/test:skiasharp-pins
 
       - name: Check CI control contracts
         run: |
@@ -61,6 +78,12 @@ jobs:
           ./scripts/test:coordination-guard
           ./scripts/test:pr-review-tools
           ./scripts/test:development-v1-ci
+
+      - name: Check coverage policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"
 
       # tests/cli/ansi-to-svg.py, which draws the terminal programs' screens, and scripts/docs:terminal-screenshots, which
       # replaces docs/images/terminal with them (#1317).
@@ -102,8 +125,8 @@ jobs:
   build-unit:
     name: Development v1 / Build and Unit
     needs: preflight
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
-    runs-on: [self-hosted, linux, x64, hvo-skymonitor]
+    if: github.event_name == 'push' || github.event_name == 'merge_group' || github.event.pull_request.draft == false
+    runs-on: [self-hosted, linux, x64, hvo-skymonitor-build]
     timeout-minutes: 22
     steps:
       - name: Record workload start
@@ -124,7 +147,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 
@@ -158,6 +181,7 @@ jobs:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
           HVO_TERMINAL_RENDERS_DIR: ${{ runner.temp }}/development-v1/terminal-renders
         run: |
+          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
           ((remaining > 0)) || exit 124
           /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/unit.time" \
@@ -166,8 +190,25 @@ jobs:
               --no-build \
               --configuration Release \
               --filter "TestCategory=Unit" \
+              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \
+              --collect:"XPlat Code Coverage" \
               --results-directory "$DEV_V1_EVIDENCE_ROOT/unit" \
               --logger trx
+
+      - name: Enforce canonical per-file coverage floors
+        id: coverage
+        run: |
+          remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
+          ((remaining > 0)) || exit 124
+          # The timed child expands the exported evidence directory.
+          # shellcheck disable=SC2016
+          /usr/bin/time -v -o "$DEV_V1_EVIDENCE_ROOT/timing/coverage.time" \
+            timeout --signal=TERM --kill-after=30s "${remaining}s" \
+            bash -euo pipefail -c '
+              dotnet tool restore
+              ./scripts/test:coverage-development-v1
+              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"
+            '
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
       - name: Draw terminal screenshots
@@ -182,6 +223,7 @@ jobs:
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           UNIT_OUTCOME: ${{ steps.unit.outcome }}
+          COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
         run: |
           read_metric() {
             local file="$1" label="$2"
@@ -200,7 +242,7 @@ jobs:
           completed_at="$(date +%s)"
           trx_count="$(find "$DEV_V1_EVIDENCE_ROOT/unit" -name '*.trx' -type f | wc -l)"
           jq -n \
-            --arg schema hvo-development-v1-ci-v4 \
+            --arg schema hvo-development-v1-ci-v5 \
             --arg headSha "$GITHUB_SHA" \
             --arg event "$GITHUB_EVENT_NAME" \
             --arg sdkVersion "$(dotnet --version 2>/dev/null || true)" \
@@ -209,7 +251,8 @@ jobs:
             --argjson restore "$(stage_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
-            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
+            --argjson coverage "$(stage_json coverage "$COVERAGE_OUTCOME")" \
+            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 

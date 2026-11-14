@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Common.Security;
@@ -8,9 +9,10 @@ using Microsoft.Net.Http.Headers;
 namespace HVO.SkyMonitor.CameraAgent.Authentication;
 
 /// <summary>
-/// Authenticates an owner-created API key on the operations API. A key is accepted only as
-/// <c>Authorization: Bearer hvo_sky_…</c> and only under <see cref="OperationsPath"/>; anywhere else, including the web
-/// UI, account and key management, and the internal endpoints, the header is ignored and the browser session decides.
+/// Authenticates an owner-created API key on the operations API and the Prometheus scrape. A key is accepted only as
+/// <c>Authorization: Bearer hvo_sky_…</c> and only under <see cref="OperationsPath"/> or
+/// <see cref="CameraAgentMetricsEndpoint.Path"/>; anywhere else, including the web UI, account and key management,
+/// and the internal endpoints, the header is ignored and the browser session decides. A key in the URL is ignored.
 /// </summary>
 /// <remarks>
 /// <para>A presented key decides the request on its own: any session cookie on the same request is ignored, so a key
@@ -25,7 +27,7 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
     RequestDelegate next,
     ILogger<CameraAgentApiKeyAuthenticationMiddleware> logger)
 {
-    /// <summary>The only path under which an API key authenticates.</summary>
+    /// <summary>The operations API prefix. The metrics scrape is the other exact path that accepts a key.</summary>
     internal const string OperationsPath = "/api/v1/operations";
 
     private const string BearerScheme = "Bearer";
@@ -37,8 +39,7 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
         IUserClaimsPrincipalFactory<ApplicationUser> principalFactory,
         CameraAgentOperatorTelemetry telemetry)
     {
-        if (!context.Request.Path.StartsWithSegments(OperationsPath, StringComparison.OrdinalIgnoreCase) ||
-            !PresentsApiKey(context.Request))
+        if (!IsApiKeyPath(context.Request.Path) || !PresentsApiKey(context.Request))
         {
             await next(context).ConfigureAwait(false);
             return;
@@ -74,6 +75,10 @@ internal sealed partial class CameraAgentApiKeyAuthenticationMiddleware(
 
         await next(context).ConfigureAwait(false);
     }
+
+    private static bool IsApiKeyPath(PathString path)
+        => path.StartsWithSegments(OperationsPath, StringComparison.OrdinalIgnoreCase) ||
+           CameraAgentMetricsEndpoint.IsScrapePath(path);
 
     /// <summary>
     /// The literal key prefix at the start of an Authorization value or after a non-token character presents a key,

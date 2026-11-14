@@ -70,6 +70,7 @@ internal static class CameraAgentStateResetManager
             throw new InstallerException(
                 $"The reset must run as the installed runtime identity {manifest.RuntimeUid}:{manifest.RuntimeGid}.");
         }
+        EnsureDeepSkyDisabled(manifest);
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Uninstalled)
         {
             throw new InstallerException(
@@ -81,6 +82,9 @@ internal static class CameraAgentStateResetManager
             Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken);
         using var instanceLock = OperationLock.Acquire(
             Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken);
+
+        // Recheck under the deployment locks before any state can be withdrawn or deleted.
+        EnsureDeepSkyDisabled(await ReadManifestAsync(paths.ManifestPath, cancellationToken).ConfigureAwait(false));
 
         var docker = new DockerClient(processRunner);
         await docker.PreflightAsync(cancellationToken).ConfigureAwait(false);
@@ -179,6 +183,28 @@ internal static class CameraAgentStateResetManager
     private static string NextCommand(Guid instanceId) => string.Create(
         CultureInfo.InvariantCulture,
         $"{InstallerProgram.Current} cameraagent install --instance-id {instanceId:D} <same immutable inputs>");
+
+    private static void EnsureDeepSkyDisabled(InstanceManifest manifest)
+    {
+        if (manifest.DeepSkyCatalog is not null)
+        {
+            throw InstallerException.Refused(DeepSkyResetRefusal(
+                manifest.InstanceId, manifest.LifecycleCondition == InstanceLifecycleCondition.Uninstalled));
+        }
+    }
+
+    /// <summary>The refusal a reset gives while a deep-sky selection is active, naming the commands that recover.</summary>
+    internal static string DeepSkyResetRefusal(Guid instanceId, bool uninstalled)
+    {
+        var restore = uninstalled
+            ? $"First run '{InstallerProgram.Current} cameraagent reinstall --instance-id {instanceId:D}' to start the preserved instance. "
+            : string.Empty;
+        var program = InstallerProgram.Current;
+        return $"An active deep-sky selection blocks CameraAgent state reset. {restore}While installed, run '{program} catalog select --instance-id {instanceId:D} --catalog-family deep-sky --catalog-version disabled'. " +
+               $"Then run '{program} cameraagent uninstall --instance-id {instanceId:D}', '{program} cameraagent reset-state --instance-id {instanceId:D} --confirm-instance-id {instanceId:D}' " +
+               $"and '{program} cameraagent install --instance-id {instanceId:D} <same immutable inputs>' with the original install inputs. " +
+               "Then upgrade to an image that supports the independent deep-sky catalog and reselect OpenNGC.";
+    }
 
     private static IReadOnlyList<string> PreservedPaths(InstallationPaths paths) =>
     [

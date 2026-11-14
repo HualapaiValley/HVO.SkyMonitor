@@ -195,12 +195,14 @@ services:
         string lifecycleControlToken,
         bool passwordAuthorityEnabled,
         ContainerResourceLimits? resources,
-        InstallationPaths? outputPaths = null)
+        InstallationPaths? outputPaths = null,
+        CameraConfigurationGeneration? defaults = null,
+        CatalogInstallationIdentity? deepSkyCatalog = null)
     {
         outputPaths ??= paths;
         var rendering = Render(
             request, paths, instanceId, applicationIdentity, uid, gid, immutableImage, catalogPackageVersion, passwordFile,
-            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths);
+            installationVerificationToken, lifecycleControlToken, passwordAuthorityEnabled, resources, outputPaths, defaults, deepSkyCatalog);
         var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
         var secretsRoot = Path.Combine(outputPaths.ConfigRoot, "secrets");
         foreach (var path in new[]
@@ -264,7 +266,9 @@ services:
     /// <summary>
     /// The files <see cref="Write"/> would write, computed without touching the disk: what a plan, and the check that
     /// an installed instance's files are still those its records describe, read instead of rendering into a
-    /// temporary directory (#1315).
+    /// temporary directory (Refs #1315). The camera configuration is that of configuration-default generation
+    /// <paramref name="defaults"/>, by default the installer's current one; a re-run renders an instance's files with the
+    /// generation that wrote them, or the one it adopts (Refs #1779).
     /// </summary>
     public static ComposeRendering Render(
         InstallRequest request,
@@ -280,7 +284,9 @@ services:
         string lifecycleControlToken,
         bool passwordAuthorityEnabled,
         ContainerResourceLimits? resources,
-        InstallationPaths? outputPaths = null)
+        InstallationPaths? outputPaths = null,
+        CameraConfigurationGeneration? defaults = null,
+        CatalogInstallationIdentity? deepSkyCatalog = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(paths);
@@ -292,7 +298,7 @@ services:
         var compactId = instanceId.ToString("N");
         var composeRoot = Path.Combine(outputPaths.ConfigRoot, "compose");
 
-        var configuration = CameraConfiguration.Generate(request, applicationIdentity);
+        var configuration = (defaults ?? CameraConfigurationDefaults.Current).Generate(request, applicationIdentity);
         var settings = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["CameraAgent__ConfigFilePath"] = "/app/cameraagent.deploy.json",
@@ -365,6 +371,17 @@ services:
             $"HVO_PASSWORD_FILE={passwordFile}",
             string.Empty
         });
+        if (deepSkyCatalog is not null)
+        {
+            const string starMount = "      - ${HVO_CATALOG_ROOT:?catalog root required}:/app/catalog:ro\n";
+            template = template.Replace(starMount, starMount + DeepSkyCatalogSelection.Mount, StringComparison.Ordinal);
+            environment = environment.TrimEnd('\n') + $"\nHVO_DEEP_SKY_CATALOG_ROOT={deepSkyCatalog.InstallRoot}\n";
+            settings["DeepSkyCatalog__Enabled"] = "true";
+            settings["DeepSkyCatalog__Root"] = "/app/deep-sky-catalog";
+            settings["DeepSkyCatalog__RequiredCatalogId"] = deepSkyCatalog.CatalogId;
+            settings["DeepSkyCatalog__RequiredPackageKind"] = "Production";
+            settings["DeepSkyCatalog__RequiredPackageVersion"] = deepSkyCatalog.PackageVersion;
+        }
         return new ComposeRendering(
             new ComposeFiles(
                 Path.Combine(composeRoot, "compose.yml"),

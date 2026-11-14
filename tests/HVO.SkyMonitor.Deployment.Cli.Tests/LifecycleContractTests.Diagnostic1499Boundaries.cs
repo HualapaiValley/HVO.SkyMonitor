@@ -46,6 +46,18 @@ public sealed partial class LifecycleContractTests
     }
 
     [TestMethod]
+    public void Diagnostic1499_ControlWorkerDiagnosticsUseSharedOutputFormatting()
+    {
+        var message = CameraAgentLifecycleManager.FormatControlWorkerDiagnostic(
+            "stage=lifecycle-worker\toperation=probe token=\"a " + Diagnostic1499Secret + " b\"\nforged-line");
+        Assert.IsFalse(message.Contains(Diagnostic1499Secret, StringComparison.Ordinal));
+        Assert.IsFalse(message.Any(char.IsControl), message);
+        StringAssert.Contains(message, "stage=lifecycle-worker", StringComparison.Ordinal);
+        StringAssert.Contains(message, "\\t", StringComparison.Ordinal);
+        Assert.IsFalse(message.Contains("forged-line", StringComparison.Ordinal), "The shared diagnostic contract emits only the first line.");
+    }
+
+    [TestMethod]
     public async Task Diagnostic1499_OutputAndMarkerBoundariesAreClosed()
     {
         var root = new DirectoryInfo(AppContext.BaseDirectory);
@@ -55,7 +67,8 @@ public sealed partial class LifecycleContractTests
         string[] formattedOwners =
         [
             "CameraAgentStateSnapshot.cs", "CameraAgentLifecycleManager.Backup.cs", "CameraAgentLifecycleManager.Restore.cs",
-            "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs", "BackupVault.cs", "InstallerException.cs"
+            "BackupArchive.cs", "BackupInventory.cs", "RestoredCredentials.cs", "BackupVault.cs", "InstallerException.cs",
+            "CameraConfigurationRefusals.cs"
         ];
         var sourceFiles = Directory.GetFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
             .Where(file => !Path.GetRelativePath(sourceRoot, file).Split(Path.DirectorySeparatorChar).Any(part => part is "obj" or "bin"));
@@ -86,6 +99,7 @@ public sealed partial class LifecycleContractTests
                         expression.StartsWith("HostPrerequisites.Render(report)", StringComparison.Ordinal) ||
                         expression.StartsWith("exception.Usage", StringComparison.Ordinal) ||
                         expression.Contains("CameraAgentStateDiagnostics.Message(warning.Message)", StringComparison.Ordinal),
+                    "CameraAgentLifecycleManager.ControlWorker.cs" => expression.StartsWith("FormatControlWorkerDiagnostic(message)", StringComparison.Ordinal), // Hostile diagnostic probe above.
                     "CameraAgentInstaller.cs" => expression.StartsWith("HostPrerequisites.Render(report)", StringComparison.Ordinal),
                     "CameraAgentStatePreflight.cs" => expression.StartsWith("Render(report)", StringComparison.Ordinal),
                     "InstallWizardRunner.cs" => expression.Contains("CameraAgentStateDiagnostics.Message(exception.Message)", StringComparison.Ordinal) ||

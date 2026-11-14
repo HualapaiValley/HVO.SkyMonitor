@@ -88,7 +88,7 @@ public sealed class FullDayStillProductQualificationTests
             var rate = StellarSkyBackgroundModel.Resolve(night, altitude);
             var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(Math.Clamp(2500 / rate, .000001, 20)), 0, null, null);
             var rendered = Configuration(utc);
-            await using var module = new VirtualSkyCameraModule(new NightlyClock(utc), snapshot.Catalog, new ProjectedSceneStore());
+            await using var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(utc, true), snapshot.Catalog, new ProjectedSceneStore());
             await module.InitializeAsync(rendered, CancellationToken.None);
             var frame = (await module.CaptureAsync(new(utc, TimeSpan.FromMinutes(1), CaptureMode.Still, setpoint), CancellationToken.None)).Frame!;
             var receipt = await ingress.AcceptAsync(rendered, Submission(utc, setpoint, frame), CancellationToken.None);

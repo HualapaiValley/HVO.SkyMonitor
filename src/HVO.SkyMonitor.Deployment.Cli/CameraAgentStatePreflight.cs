@@ -49,8 +49,20 @@ internal static class CameraAgentImageContract
 {
     public const string Component = "CameraAgent";
     /// <summary>
-    /// The catalog contract a current image declares: the image embeds version 1 of the approved catalog registry
-    /// (issue #521), so it can resolve every catalog that registry version approves.
+    /// The catalog contract a current image declares. Registry version 3 approves the stars-only lineages, the
+    /// composed HYG 4.4 + OpenNGC lineage (manifest 3) and the standalone OpenNGC deep-sky lineage (manifest 4). The
+    /// image's catalog-manifest-version label is the highest manifest it reads.
+    /// </summary>
+    public const string IndependentCatalogContract = "hvo-approved-catalogs-v3";
+
+    /// <summary>
+    /// The catalog contract of an image that embeds registry version 2: the stars-only lineages and the composed
+    /// HYG 4.4 + OpenNGC lineage, every manifest up to version 3.
+    /// </summary>
+    public const string ComposedCatalogContract = "hvo-approved-catalogs-v2";
+
+    /// <summary>
+    /// The catalog contract of an image that embeds registry version 1 (issue #521): HYG 4.2 and HYG 4.4 only.
     /// </summary>
     public const string CatalogContract = "hvo-approved-catalogs-v1";
 
@@ -63,16 +75,25 @@ internal static class CameraAgentImageContract
     public static IReadOnlyList<string> RegistryV1CatalogIds { get; } = ["hyg-v42-production", "hyg-v44-production"];
 
     public static bool IsKnownCatalogContract(string? catalogContract)
-        => catalogContract is CatalogContract or LegacyCatalogContract;
+        => catalogContract is IndependentCatalogContract or ComposedCatalogContract or CatalogContract or LegacyCatalogContract;
 
     /// <summary>True when an image declaring <paramref name="catalogContract"/> can resolve <paramref name="catalogId"/>.</summary>
     public static bool SupportsCatalog(string? catalogContract, string? catalogId)
         => catalogContract switch
         {
+            IndependentCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out _),
+            ComposedCatalogContract => catalogId is not null && ProductionCatalog.Specifications.TryGet(catalogId, out var specification) && specification.ManifestVersion <= 3,
             CatalogContract => catalogId is not null && RegistryV1CatalogIds.Contains(catalogId, StringComparer.Ordinal),
             LegacyCatalogContract => catalogId == ProductionCatalog.DefaultCatalogId,
             _ => false
         };
+}
+
+/// <summary>A raw-ingress schema's declared migration: the oldest source schema it converts and its contract.</summary>
+internal sealed record RawIngressMigration(long MinimumSource, string Contract)
+{
+    /// <summary>Whether this migration converts a journal at <paramref name="observed"/> to <paramref name="expected"/>.</summary>
+    public bool Migrates(long observed, long expected) => observed >= MinimumSource && observed < expected;
 }
 
 /// <summary>
@@ -106,6 +127,42 @@ internal sealed record CameraAgentStateRequirements(
 internal static class CameraAgentStatePreflight
 {
     public const int SchemaVersion = DeploymentSchemaVersions.StatePreflightReport;
+
+    /// <summary>
+    /// The raw-ingress schemas this installer verifies, each with the oldest schema its declared migration converts and
+    /// that migration's contract. The eligibility check (which journals are verified, and under which migration) and the
+    /// remediation a blocking finding names both read this table (#1823). How a journal's shape is verified is chosen
+    /// per observed schema by <see cref="RawIngressCanonicalShapes"/>, which a new row must also extend.
+    /// </summary>
+    internal static IReadOnlyDictionary<long, RawIngressMigration> RawIngressMigrations { get; } =
+        new Dictionary<long, RawIngressMigration>
+        {
+            [14] = new(13, RawIngressV13Schema.MigrationContract),
+            [15] = new(13, RawIngressV13Schema.RecoveryMigrationContract),
+            [16] = new(13, RawIngressV13Schema.EnvironmentalFenceMigrationContract),
+        };
+
+    /// <summary>
+    /// The canonical-shape check for each raw-ingress schema a verified journal can be at. A schema without an entry is
+    /// never canonical, so adding a migration row without deciding how its journals are verified fails closed.
+    /// </summary>
+    internal static IReadOnlyDictionary<long, Func<SqliteConnection, bool>> RawIngressCanonicalShapes { get; } =
+        new Dictionary<long, Func<SqliteConnection, bool>>
+        {
+            [13] = RawIngressV13Schema.IsCanonical,
+            [14] = RawIngressV13Schema.IsCanonicalV14,
+            [15] = RawIngressV13Schema.IsCanonicalV14,
+            [16] = RawIngressV13Schema.IsCanonicalV14,
+        };
+
+    internal const string RawIngressDriftRemediation =
+        "The raw journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup.";
+
+    internal const string RawIngressMigrationRemediation =
+        "The earlier raw journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before this image can migrate it; resolve drift or restore a healthy canonical backup.";
+
+    internal const string RawIngressResetRemediation =
+        "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading.";
 
     /// <summary>
     /// Runs after the main database has been copied for inspection and before its recovery files are. That is
@@ -217,7 +274,7 @@ internal static class CameraAgentStatePreflight
         var codes = string.Join(", ", report.Findings.Where(static finding => finding.Blocking)
             .Select(static finding => finding.Code).Distinct(StringComparer.Ordinal));
         throw InstallerException.Refused(
-            $"CameraAgent state preflight rejected this deployment before startup ({codes}). Minimum compatible revision {report.MinimumCompatibleRevision ?? "unknown"}; complete the CameraAgent-only reset or state-disposition procedure{(persist ? $" and see {reportPath}" : string.Empty)}.");
+            $"CameraAgent state preflight rejected this deployment before startup ({codes}). Candidate minimum compatible revision: {report.MinimumCompatibleRevision ?? "unknown"}; review each blocking finding and its remediation{(persist ? $" and see {reportPath}" : string.Empty)}.");
     }
 
     /// <summary>A diagnostic-only view; persisted preflight evidence keeps its measured values.</summary>
@@ -256,8 +313,15 @@ internal static class CameraAgentStatePreflight
             $"Candidate state contract: {report.CandidateStateContract}; installed: {report.InstalledStateContract}.");
         if (report.MinimumCompatibleRevision is { Length: > 0 } minimum)
         {
-            builder.AppendLine(CultureInfo.InvariantCulture,
-                $"Minimum compatible CameraAgent revision: {minimum}. Earlier state requires an explicit reset or state-disposition procedure.");
+            if (report.Compatible)
+            {
+                builder.AppendLine(CultureInfo.InvariantCulture, $"Candidate state-boundary revision: {minimum}.");
+            }
+            else
+            {
+                builder.AppendLine(CultureInfo.InvariantCulture,
+                    $"Minimum compatible CameraAgent revision: {minimum}. Review the blocking findings below and follow their listed remediation.");
+            }
         }
         foreach (var finding in report.Findings)
         {
@@ -355,16 +419,42 @@ internal static class CameraAgentStatePreflight
                 "Reinstall the approved catalog bundle; the selected catalog manifest cannot be read."));
             return;
         }
-        // The catalog library also reads composed manifests, but an undeclared legacy image keeps its stars-only
-        // version-2 boundary. Composed image adoption requires a separately declared image contract.
-        var expectedManifestVersion = requirements.CatalogManifestVersion ?? CatalogSnapshotResolver.MinimumSupportedManifestVersion;
-        if (manifest.Value.ManifestVersion != expectedManifestVersion)
+        // An omitted label keeps the stars-only version-2 boundary. A declared label is the highest manifest that
+        // image reads, so a current image declaring version 3 still accepts an installed manifest 2 HYG catalog.
+        // Anything older than the runtime minimum, or newer than the label, is refused. Checksums stay with install
+        // and selection; this boundary is only the manifest version and catalog identity.
+        var minimumManifestVersion = CatalogSnapshotResolver.MinimumSupportedManifestVersion;
+        var declaredManifestVersion = requirements.CatalogManifestVersion;
+        var observedManifestVersion = manifest.Value.ManifestVersion;
+        string expectedManifest;
+        bool manifestAccepted;
+        if (declaredManifestVersion is null || declaredManifestVersion < minimumManifestVersion)
         {
+            var exactBoundary = declaredManifestVersion ?? minimumManifestVersion;
+            expectedManifest = exactBoundary.ToString(CultureInfo.InvariantCulture);
+            manifestAccepted = observedManifestVersion == exactBoundary;
+        }
+        else
+        {
+            manifestAccepted = observedManifestVersion >= minimumManifestVersion &&
+                               observedManifestVersion <= declaredManifestVersion;
+            expectedManifest = declaredManifestVersion == minimumManifestVersion
+                ? minimumManifestVersion.ToString(CultureInfo.InvariantCulture)
+                : string.Create(CultureInfo.InvariantCulture, $"{minimumManifestVersion} through {declaredManifestVersion}");
+        }
+        if (!manifestAccepted)
+        {
+            var ranged = declaredManifestVersion is >= CatalogSnapshotResolver.MinimumSupportedManifestVersion &&
+                         declaredManifestVersion != CatalogSnapshotResolver.MinimumSupportedManifestVersion;
             findings.Add(new CameraAgentStatePreflightFinding(
                 "catalog-manifest-version", boundary, Blocking: true, manifestPath,
-                manifest.Value.ManifestVersion.ToString(CultureInfo.InvariantCulture),
-                expectedManifestVersion.ToString(CultureInfo.InvariantCulture),
-                "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
+                observedManifestVersion.ToString(CultureInfo.InvariantCulture),
+                expectedManifest,
+                ranged
+                    ? string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"Select an installed catalog whose manifest version is from {minimumManifestVersion} through {declaredManifestVersion}, then rerun the deployment.")
+                    : "Select an installed catalog whose manifest version matches the candidate image, then rerun the deployment."));
         }
         // The paths are bound to the instance's selected catalog, whose side-by-side root is named by its ID.
         var selectedCatalogId = Path.GetFileName(paths.CatalogRoot);
@@ -439,19 +529,18 @@ internal static class CameraAgentStatePreflight
         long observed;
         long schemaObjects;
         bool canonical = false;
+        var migration = RawIngressMigrations.GetValueOrDefault(expected);
         try
         {
             using var database = ReadOnlyDatabase.Open(databasePath);
             (observed, schemaObjects) = ReadRawIngressSchema(database.Connection);
-            if ((observed == 14 && expected == 14) || (observed == 15 && expected == 15) ||
-                (observed == 13 && expected == 14 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.MigrationContract) ||
-                (observed is 13 or 14 && expected == 15 && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
-                 requirements.RawIngressMigration == RawIngressV13Schema.RecoveryMigrationContract))
+            if (migration is { } declared &&
+                (observed == expected ||
+                 (declared.Migrates(observed, expected) && contractPolicy == CameraAgentStateContractPolicy.RequireCurrent &&
+                  requirements.RawIngressMigration == declared.Contract)))
             {
-                canonical = observed is 14 or 15
-                    ? RawIngressV13Schema.IsCanonicalV14(database.Connection)
-                    : RawIngressV13Schema.IsCanonical(database.Connection);
+                canonical = RawIngressCanonicalShapes.TryGetValue(observed, out var isCanonicalShape) &&
+                            isCanonicalShape(database.Connection);
                 if (canonical)
                 {
                     using var integrity = database.Connection.CreateCommand();
@@ -477,19 +566,26 @@ internal static class CameraAgentStatePreflight
 
         // SqliteRawCaptureJournal initializes a database whose user_version is 0 with no schema objects, so that
         // state is compatible rather than an unsupported schema.
-        if ((observed == expected && expected is not (14 or 15)) || (observed == 0 && schemaObjects == 0) || canonical)
+        if ((observed == expected && migration is null) || (observed == 0 && schemaObjects == 0) || canonical)
         {
             return;
         }
         findings.Add(new CameraAgentStatePreflightFinding(
             "raw-ingress-schema", boundary, Blocking: true, databasePath,
             observed.ToString(CultureInfo.InvariantCulture), expected.ToString(CultureInfo.InvariantCulture),
-            observed == expected && expected is 14 or 15
-                ? "The raw journal must have the canonical schema and pass integrity and foreign-key checks; resolve drift or restore a healthy canonical backup."
-                : observed is 13 or 14 && expected is 14 or 15
-                ? "The earlier raw journal must have a canonical schema, pass integrity and foreign-key checks, and have an explicit migration declaration before this image can migrate it; resolve drift or restore a healthy canonical backup."
-                : "Archive the raw-ingress database and complete the CameraAgent-only reset procedure before upgrading."));
+            RawIngressRemediation(observed, expected, migration)));
     }
+
+    /// <summary>
+    /// The remediation for a blocking raw-ingress finding: repair drift or restore a backup for a journal already at a
+    /// schema this installer verifies; satisfy the migration preconditions for an older journal the image's migration
+    /// converts; otherwise archive and reset.
+    /// </summary>
+    private static string RawIngressRemediation(long observed, long expected, RawIngressMigration? migration)
+        => migration is not { } declared ? RawIngressResetRemediation
+            : observed == expected ? RawIngressDriftRemediation
+            : declared.Migrates(observed, expected) ? RawIngressMigrationRemediation
+            : RawIngressResetRemediation;
 
     private static void EvaluateBindSources(
         List<CameraAgentStatePreflightFinding> findings,

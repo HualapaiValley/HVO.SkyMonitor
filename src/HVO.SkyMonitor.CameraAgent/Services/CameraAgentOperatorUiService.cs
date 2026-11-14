@@ -384,6 +384,7 @@ internal sealed class CameraAgentOperatorUiService(
     RawIngressState? rawIngressState = null,
     CaptureProcessingState? captureProcessingState = null,
     IRawEvidenceOperations? rawEvidenceOperations = null,
+    IProcessingLaneQuarantineOperations? processingLaneQuarantine = null,
     ICameraAgentProcessingCompletion? processingCompletion = null,
     CurrentSkyRefreshSetting? currentSkyRefresh = null,
     ICameraAgentRetainedAstrometryService? retainedAstrometry = null) : ICameraAgentOperatorUiService
@@ -533,7 +534,8 @@ internal sealed class CameraAgentOperatorUiService(
             !string.Equals(kind, "Artifact", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "Environmental", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(kind, "TransientRuntime", StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase))
+            !string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(kind, "ProcessingLane", StringComparison.OrdinalIgnoreCase))
         {
             return OperatorUiResult<OperatorOutboxPage>.Failure(
                 OperatorUiResultKind.Invalid,
@@ -542,6 +544,31 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "ProcessingLane", StringComparison.OrdinalIgnoreCase))
+            {
+                long? laneCursor = null;
+                if (processingLaneQuarantine is null || !string.IsNullOrWhiteSpace(storageAlias) ||
+                    cursor is not null && !tokens.TryReadProcessingLaneCursor(cursor, out laneCursor))
+                {
+                    return OperatorUiResult<OperatorOutboxPage>.Failure(
+                        OperatorUiResultKind.Invalid, "The processing lane quarantine query is invalid.");
+                }
+                var lanePage = await processingLaneQuarantine.ReadPageAsync(pageSize, laneCursor, cancellationToken)
+                    .ConfigureAwait(false);
+                return OperatorUiResult<OperatorOutboxPage>.Success(new("ProcessingLane", [], null,
+                    lanePage.Items.Select(item => new OperatorOutboxItem(
+                        "ProcessingLane", "Quarantined", null, "Standard lane", item.AttemptCount, item.PayloadBytes,
+                        item.LatestAudit?.OccurredUtc ?? item.CreatedUtc,
+                        OutboxOperationsReasonCodes.Sanitize(item.Target.FailureReason),
+                        null, tokens.ProtectProcessingLaneAction(item.Target), item.CreatedUtc,
+                        AuditSummary: item.LatestAudit is null ? null :
+                            $"{item.LatestAudit.Reason}; actor {item.LatestAudit.Actor}; {item.LatestAudit.OccurredUtc:O}",
+                        AgentId: item.AgentId, CaptureId: item.Target.CaptureId, ArtifactId: item.ArtifactId,
+                        CaptureSequence: item.CaptureSequence, WorkId: item.Target.WorkId,
+                        ManifestSha256: item.Target.ManifestSha256)).ToArray(),
+                    lanePage.NextCursor is null ? null : tokens.ProtectProcessingLaneCursor(lanePage.NextCursor.Value)));
+            }
+
             if (string.Equals(kind, "RawEvidence", StringComparison.OrdinalIgnoreCase))
             {
                 long? rawCursor = null;
@@ -1501,6 +1528,21 @@ internal sealed class CameraAgentOperatorUiService(
 
         try
         {
+            if (string.Equals(kind, "ProcessingLane", StringComparison.Ordinal) && processingLaneQuarantine is not null)
+            {
+                if (action != OutboxOperationAction.Abandon ||
+                    reasonCode != IProcessingLaneQuarantineOperations.ReasonCode ||
+                    !tokens.TryReadProcessingLaneAction(actionToken, out var laneTarget) || laneTarget is null)
+                {
+                    return NotFound<OperatorCommandReceipt>("The processing lane acknowledgement expired or is no longer available.");
+                }
+                var laneReceipt = await processingLaneQuarantine.AcknowledgeAsync(
+                    laneTarget, idempotencyKey, actor, reasonCode, cancellationToken).ConfigureAwait(false);
+                return OperatorUiResult<OperatorCommandReceipt>.Success(new(
+                    "Acknowledge processing lane quarantine",
+                    laneReceipt.Duplicate ? "Duplicate receipt" : "Applied",
+                    "Acknowledged", null, laneReceipt.Audit.OccurredUtc));
+            }
             if (string.Equals(kind, "RawEvidence", StringComparison.Ordinal) && rawEvidenceOperations is not null)
             {
                 var rawAction = action == OutboxOperationAction.Replay ? RawEvidenceReleaseAction.Revalidate : RawEvidenceReleaseAction.WriteOff;

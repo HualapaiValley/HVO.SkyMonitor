@@ -1,0 +1,7 @@
+{
+  "retiredSourcePaths": [
+    "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
+    "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
+  ]
+}

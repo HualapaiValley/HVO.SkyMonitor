@@ -919,7 +919,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 new Dictionary<string, string?> { ["CameraAgent:RawIngressRoot"] = root }).Build());
             using var provider = services.BuildServiceProvider();
             var sceneStore = provider.GetRequiredService<IProjectedSceneStore>();
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, sceneStore,
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, sceneStore,
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
             var setpoint = new CaptureSetpoint(
@@ -1030,7 +1030,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             Module = new CameraModuleDescriptor("VirtualSky", options)
         };
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         async Task<CameraFrame> Capture(TimeSpan exposure)
         {
@@ -1495,7 +1495,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             Module = new CameraModuleDescriptor("VirtualSky", options.RootElement.Clone())
         };
-        var module = CreateModule(FixtureUtc);
+        var clock = new ExposureTestTimeProvider(FixtureUtc, true);
+        var module = CreateModule(FixtureUtc, clock);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         var firstRequestedUtc = FixtureUtc;
         var laterRequestedUtc = FixtureUtc.AddHours(1);
@@ -1520,7 +1521,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.AreEqual(firstRequestedUtc, first.Frame.TimestampUtc);
         Assert.AreEqual(laterRequestedUtc, later.Frame.TimestampUtc);
         Assert.AreEqual(firstRequestedUtc, first.AcquisitionTiming!.ExposureStartedUtc);
-        Assert.AreEqual(laterRequestedUtc, later.AcquisitionTiming!.ExposureStartedUtc);
+        Assert.AreEqual(firstRequestedUtc + first.Frame.Metadata.Exposure, later.AcquisitionTiming!.ExposureStartedUtc);
     }
 
     [TestMethod]
@@ -1957,7 +1958,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var catalog = new ProvenanceCatalog(new CatalogMetadata(
             "validated fixture", "4.2-fixture.1", new Uri("https://example.test/hyg"),
             new string('A', 64), "CC BY-SA 4.0", "1"));
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await module.InitializeAsync(CreateConfig(), CancellationToken.None).ConfigureAwait(false);
 
         var result = await module.CaptureAsync(
@@ -1976,7 +1977,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             new CelestialCatalogObject("24378", "Rigel", rightAscension, 35.347, 0.18, HipparcosId: "24436"),
             new CelestialCatalogObject("25200", "Orion fixture", rightAscension, 30, 0.45, HipparcosId: "25281")
         ]);
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(),
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(),
             StandardConstellationTopology.CreateD3Celestial());
         using var document = System.Text.Json.JsonDocument.Parse("{\"constellationIds\":[\"ORI\"]}");
         var config = CreateConfig() with
@@ -2007,7 +2008,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
         async Task<CaptureResult> CaptureAsync(bool includeEndpoints)
         {
-            var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore(), topology);
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(), topology);
             using var document = System.Text.Json.JsonDocument.Parse($$"""
                 {
                   "maximumMagnitude": 6.5,
@@ -2054,7 +2055,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             [SolarSystemBody.Jupiter] = position
         }, "module-planets-v1");
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             new InMemoryCelestialCatalog([]),
             new ProjectedSceneStore(),
             planetEphemeris: ephemeris);
@@ -2079,7 +2080,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         var staging = new RecordingProjectedSceneStagingStore();
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+            ExposureTestTimeProvider.ForRendering(), CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         var config = CreateConfig() with
         {
             Pipeline = new CapturePipelineConfig(
@@ -2110,7 +2111,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     {
         var noon = new DateTimeOffset(2026, 1, 15, 19, 0, 0, TimeSpan.Zero);
         var staging = new RecordingProjectedSceneStagingStore();
-        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog([]),
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog([]),
             new ProjectedSceneStore(), planetEphemeris: new AstronomyEnginePlanetEphemeris(), stagingStore: staging);
         await using var moduleDisposal = module.ConfigureAwait(false);
         await module.InitializeAsync(CreateConfig(CameraPixelFormat.Mono16, 64, 64) with
@@ -2152,7 +2153,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         using var cancellation = new CancellationTokenSource();
         var staging = new RecordingProjectedSceneStagingStore(() => cancellation.Cancel());
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+            ExposureTestTimeProvider.ForRendering(), CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         var config = CreateConfig() with
         {
             Pipeline = new CapturePipelineConfig(
@@ -2176,7 +2177,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var expected = new IOException("stage-write-failure");
         var staging = new RecordingProjectedSceneStagingStore(stageFailure: expected, deleteFailure: new IOException("cleanup-failure"));
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
+            ExposureTestTimeProvider.ForRendering(), CreateCanonicalStarCatalog(), new ProjectedSceneStore(), stagingStore: staging);
         await module.InitializeAsync(CreateConfig() with
         {
             Pipeline = new CapturePipelineConfig(
@@ -2272,18 +2273,18 @@ public sealed partial class VirtualSkyCameraModuleTests
         CollectionAssert.AreEqual(expected.Frame!.PixelData.ToArray(), result.Frame.PixelData.ToArray());
     }
 
-    private static VirtualSkyCameraModule CreateModule(DateTimeOffset utc)
+    private static VirtualSkyCameraModule CreateModule(DateTimeOffset utc, TimeProvider? clock = null)
     {
         var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(utc, -113.878) / 15d;
         var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("fixture-star", "Fixture Star", rightAscension, 35.347, 0, 0.65)
         ]);
-        return new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        return new VirtualSkyCameraModule(clock ?? ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
     }
 
     private static VirtualSkyCameraModule CreateCanonicalStarModule()
     {
-        return new VirtualSkyCameraModule(TimeProvider.System, CreateCanonicalStarCatalog(), new ProjectedSceneStore());
+        return new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), CreateCanonicalStarCatalog(), new ProjectedSceneStore());
     }
 
     private static InMemoryCelestialCatalog CreateCanonicalStarCatalog()
@@ -2294,7 +2295,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             new CelestialCatalogObject("HIP 27989", "Betelgeuse", 88.792939 / 15, 7.407064, 0.45, 1.5, "27989")
         ]);
 
-    private sealed class RecordingProjectedSceneStagingStore(
+    internal sealed class RecordingProjectedSceneStagingStore(
         Action? staged = null,
         Exception? stageFailure = null,
         Exception? deleteFailure = null) : IProjectedSceneStagingStore

@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Hosting;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -8,7 +10,6 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
-using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -19,7 +20,9 @@ public sealed class FileCameraAgentConfigurationLoader(
     IOptions<CameraAgentHostOptions> options,
     ILogger<FileCameraAgentConfigurationLoader> logger,
     IDeploymentLocationStore? deploymentLocationStore = null,
-    ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null) : ICameraAgentConfigurationLoader
+    ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null,
+    IHostApplicationLifetime? hostLifetime = null,
+    TimeProvider? timeProvider = null) : ICameraAgentConfigurationLoader
 {
     // Opt-in attribution only: no listener means no activities or measurement state.
     internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
@@ -45,8 +48,126 @@ public sealed class FileCameraAgentConfigurationLoader(
     private readonly CameraAgentHostOptions _options = options.Value;
     private readonly ILogger<FileCameraAgentConfigurationLoader> _logger = logger;
     private readonly IDeploymentLocationStore? _deploymentLocationStore = deploymentLocationStore;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+
+    private readonly object _refreshSync = new();
+    private Task<CameraModuleConfig?>? _refresh;
+    private string? _failedRetryKey;
+    private string? _lastConfigurationSha256;
+    private DateTimeOffset _nextRefreshUtc;
 
     public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                var configuration = (await LoadCoreAsync(strictRetainedValidation: false, cancellationToken).ConfigureAwait(false)).Configuration;
+                if (_deploymentLocationStore?.RequiresRetainedIntegrityScrub == true && hostLifetime is not null)
+                {
+                    _ = QueueFullScrub(force: false, hostLifetime.ApplicationStopping);
+                }
+                return configuration;
+            }
+            catch (InstallationVerificationPendingException exception) when (exception.ConfigurationChanged)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (attempt >= 2) throw new InvalidOperationException("Camera agent configuration kept changing during loading.");
+                // Read and validate a new byte snapshot; never reconcile the stale one.
+            }
+        }
+    }
+
+    public async Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+    {
+        var result = hostLifetime is null
+            ? (await LoadCoreAsync(false, cancellationToken, fullScrub: true).ConfigureAwait(false)).Configuration
+            : await QueueFullScrub(force: true, hostLifetime.ApplicationStopping).WaitAsync(cancellationToken).ConfigureAwait(false);
+        return result is not null && _deploymentLocationStore?.RequiresRetainedIntegrityScrub != true
+            ? result : throw new InvalidDataException("Retained integrity requires recovery before qualification.");
+    }
+
+    public bool RetainedIntegrityRecoveryRequired
+    {
+        get { lock (_refreshSync) return _failedRetryKey is not null && _failedRetryKey == RetryKey(); }
+    }
+
+    public async Task RequestRetainedIntegrityScrubAsync(bool force, CancellationToken cancellationToken)
+    {
+        if (!force && _deploymentLocationStore?.RetainedIntegrityRefreshDue != true) return;
+        _ = await QueueFullScrub(force, hostLifetime?.ApplicationStopping ?? cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DrainRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+    {
+        Task<CameraModuleConfig?>? refresh;
+        lock (_refreshSync) refresh = _refresh;
+        if (refresh is not null) _ = await refresh.WaitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<CameraModuleConfig> LoadForInstallationVerificationAsync(CancellationToken cancellationToken)
+        => (await LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false)).Configuration;
+
+    public async Task<InstallationConfigurationSnapshot> LoadInstallationSnapshotAsync(CancellationToken cancellationToken)
+    {
+        try { return await LoadCoreAsync(strictRetainedValidation: true, cancellationToken).ConfigureAwait(false); }
+        catch (InstallationVerificationPendingException exception)
+        {
+            if (exception.RequiresScrub && hostLifetime is not null) _ = QueueFullScrub(force: false, hostLifetime.ApplicationStopping);
+            throw;
+        }
+    }
+
+    private string RetryKey() => string.Concat(_deploymentLocationStore?.RetainedIntegrityRetryKey, ":", _lastConfigurationSha256);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Host-owned qualification observes every failure and exposes only sanitized recovery state.")]
+    private Task<CameraModuleConfig?> QueueFullScrub(bool force, CancellationToken stoppingToken)
+    {
+        lock (_refreshSync)
+        {
+            if (_refresh is { IsCompleted: false }) return _refresh;
+            if (!force && (RetainedIntegrityRecoveryRequired || _timeProvider.GetUtcNow() < _nextRefreshUtc))
+                return Task.FromResult<CameraModuleConfig?>(null);
+            _refresh = Task.Run<CameraModuleConfig?>(async () =>
+            {
+                try
+                {
+                    if (hostLifetime is not null && !hostLifetime.ApplicationStarted.IsCancellationRequested)
+                    {
+                        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        using var registration = hostLifetime.ApplicationStarted.Register(() => started.TrySetResult());
+                        await started.Task.WaitAsync(stoppingToken).ConfigureAwait(false);
+                    }
+                    InstallationConfigurationSnapshot snapshot;
+                    for (var attempt = 0; ; attempt++)
+                    {
+                        try { snapshot = await LoadCoreAsync(false, stoppingToken, fullScrub: true, forceFullScrub: force).ConfigureAwait(false); break; }
+                        catch (InstallationVerificationPendingException exception) when (exception.ConfigurationChanged && attempt < 2)
+                        {
+                            stoppingToken.ThrowIfCancellationRequested();
+                            // A stale scan cannot latch recovery for a newer valid
+                            // input. Re-read that snapshot, with the same finite
+                            // three-attempt bound as an ordinary configuration load.
+                        }
+                    }
+                    lock (_refreshSync) _failedRetryKey = _deploymentLocationStore?.RequiresRetainedIntegrityScrub == true ? RetryKey() : null;
+                    return snapshot.Configuration;
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return null; }
+                catch (Exception)
+                {
+                    lock (_refreshSync) _failedRetryKey = RetryKey();
+                    DeploymentLocationLog.RetainedIntegrityUnqualified(_logger);
+                    return null;
+                }
+                finally { lock (_refreshSync) _nextRefreshUtc = _timeProvider.GetUtcNow().AddSeconds(30); }
+            }, CancellationToken.None);
+            return _refresh;
+        }
+    }
+
+    private async Task<InstallationConfigurationSnapshot> LoadCoreAsync(bool strictRetainedValidation, CancellationToken cancellationToken,
+        bool fullScrub = false, bool forceFullScrub = true)
     {
         using var activity = ActivitySource.StartActivity("configuration.load");
         var path = Path.GetFullPath(_options.ConfigFilePath);
@@ -56,12 +177,16 @@ public sealed class FileCameraAgentConfigurationLoader(
             throw new FileNotFoundException("Camera agent configuration file was not found.", path);
         }
 
-        using var stream = File.OpenRead(path);
+        var snapshotBytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        var snapshotDigest = System.Security.Cryptography.SHA256.HashData(snapshotBytes);
         CameraModuleDocument? document;
+        string configurationSha256;
         using (ActivitySource.StartActivity("configuration.deserialize"))
         {
-            document = await JsonSerializer.DeserializeAsync<CameraModuleDocument>(stream, SerializerOptions, cancellationToken)
-                .ConfigureAwait(false);
+            using var snapshot = JsonDocument.Parse(snapshotBytes);
+            configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(snapshot.RootElement);
+            _lastConfigurationSha256 = configurationSha256;
+            document = snapshot.RootElement.Deserialize<CameraModuleDocument>(SerializerOptions);
         }
 
         if (document is null)
@@ -132,15 +257,23 @@ public sealed class FileCameraAgentConfigurationLoader(
         var validatedSchedule = ValidateConfigCore(config);
         if (_deploymentLocationStore is not null)
         {
-            location = await _deploymentLocationStore.InitializeAsync(locationSeed, cancellationToken).ConfigureAwait(false);
+            bool ConfigurationStillCurrent() => File.Exists(path) &&
+                System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path)).AsSpan().SequenceEqual(snapshotDigest);
+            location = fullScrub
+                ? forceFullScrub
+                    ? await _deploymentLocationStore.FullScrubCurrentAsync(locationSeed, ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false)
+                    : await _deploymentLocationStore.ScrubCurrentAsync(locationSeed, ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false)
+                : await _deploymentLocationStore.LoadCurrentAsync(locationSeed, strictRetainedValidation,
+                    ConfigurationStillCurrent, cancellationToken).ConfigureAwait(false);
             config = config with { DeploymentLocation = location };
             if (config.Schedule is not null)
             {
                 _ = ValidateScheduleCompatibility(config, validatedSchedule);
             }
         }
+        _lastConfigurationSha256 = configurationSha256;
         _logger.ConfigurationLoaded(path);
-        return config;
+        return new InstallationConfigurationSnapshot(config, configurationSha256);
     }
 
     internal static void ValidateConfig(CameraModuleConfig config)

@@ -166,10 +166,17 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             using (var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false))
                 job = await reader.ReadAsync(token).ConfigureAwait(false) ? ReadJob(reader) : null;
             if (job is null) return null;
+            var started = clock.GetUtcNow();
             await ExecuteAsync(connection, transaction, "UPDATE jobs SET state='Working', reason=NULL, updated_ticks=$now, revision=revision+1 WHERE job_id=$id;",
-                token, ("$now", clock.GetUtcNow().UtcTicks), ("$id", job.JobId.ToString("N"))).ConfigureAwait(false);
+                token, ("$now", started.UtcTicks), ("$id", job.JobId.ToString("N"))).ConfigureAwait(false);
             await transaction.CommitAsync(token).ConfigureAwait(false);
-            return job with { State = CameraAgentTimeLapseState.Working, ReasonCode = null, Revision = job.Revision + 1 };
+            return job with
+            {
+                State = CameraAgentTimeLapseState.Working,
+                ReasonCode = null,
+                UpdatedUtc = started,
+                Revision = job.Revision + 1
+            };
         }
         finally { _writes.Release(); }
     }
@@ -267,8 +274,9 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
             if (await HashPathAsync(root.Resolve(name), token).ConfigureAwait(false) != product.Encoding.PayloadSha256 ||
                 new FileInfo(root.Resolve(name)).Length != product.Encoding.PayloadBytes)
                 throw new InvalidDataException("Published video bytes differ from encoder evidence.");
-            await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
-                (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
+            using (DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve("products/" + product.ProductId.ToString("N") + ".json"), Encoding.UTF8.GetBytes(json)))
+                await AtomicPublisher.PublishAsync(root, "products/" + product.ProductId.ToString("N") + ".json", PublishMode.Replace,
+                    (output, cancellationToken) => output.WriteAsync(Encoding.UTF8.GetBytes(json), cancellationToken).AsTask(), token).ConfigureAwait(false);
             using var connection = await OpenAsync(token).ConfigureAwait(false);
             using var transaction = Begin(connection);
             await ExecuteAsync(connection, transaction, """
@@ -385,7 +393,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
 
     public async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(string storageRoot, CancellationToken cancellationToken)
     {
-        if (!string.Equals(Path.GetFullPath(storageRoot), Path.GetFullPath(options.Value.RawIngressRoot), StringComparison.Ordinal)) return [];
+        if (!StorageRootIdentity.AreEqual(storageRoot, options.Value.RawIngressRoot)) return [];
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = Command(connection, null, "SELECT plan_json, plan_sha256 FROM jobs WHERE state IN ('Queued','Working') AND plan_json IS NOT NULL LIMIT 65;");
@@ -404,7 +412,7 @@ internal sealed partial class SqliteTimeLapseStore(IOptions<CameraAgentHostOptio
 
     private PhysicalRoot Root()
     {
-        var basePath = Path.GetFullPath(options.Value.RawIngressRoot);
+        var basePath = StorageRootIdentity.CanonicalPath(options.Value.RawIngressRoot);
         Directory.CreateDirectory(basePath);
         var parent = PhysicalRoot.Open(basePath);
         var directory = parent.Resolve(".time-lapses");

@@ -24,7 +24,10 @@ public sealed record CaptureProcessingSnapshot(
     string? SupersededActiveRevisionId = null,
     long LeasedCount = 0,
     long ReplayLeasedCount = 0,
-    long ReplayAbandonedCount = 0);
+    long ReplayAbandonedCount = 0,
+    long LaneQuarantineTerminalCount = 0,
+    string? StoragePolicyMismatchActiveRevisionId = null,
+    long StoragePolicySkippedCount = 0);
 
 /// <summary>
 /// The outcome of the most recent derived-product reconciliation pass. A failed pass records no counts; its
@@ -46,6 +49,7 @@ public sealed class CaptureProcessingState
     private long _leased;
     private long _retry;
     private long _terminal;
+    private long _laneQuarantineTerminal;
     private long _quarantine;
     private long _missing;
     private DateTimeOffset? _oldest;
@@ -60,6 +64,8 @@ public sealed class CaptureProcessingState
     private long _replayAbandoned;
     private DateTimeOffset? _oldestReplay;
     private string? _supersededActiveRevision;
+    private string? _storagePolicyMismatchActiveRevision;
+    private long _storagePolicySkipped;
 
     public CaptureProcessingSnapshot Snapshot { get { lock (_gate) return Compose(); } }
 
@@ -108,6 +114,9 @@ public sealed class CaptureProcessingState
             _leased = leased;
             _retry = retry;
             _terminal = terminal;
+            // ReadOperationalStateAsync counts terminal work from quarantined standard-lane rows. Graph callbacks
+            // alone do not establish that attribution and must never increase this evidence counter.
+            _laneQuarantineTerminal = terminal;
             _oldest = oldestPendingUtc;
             _durableUnavailable = false;
         }
@@ -135,6 +144,8 @@ public sealed class CaptureProcessingState
         }
     }
     internal void SetActiveRevisionSuperseded(string? revisionId) { lock (_gate) _supersededActiveRevision = revisionId; }
+    internal void SetActiveStoragePolicyMismatch(string? revisionId) { lock (_gate) _storagePolicyMismatchActiveRevision = revisionId; }
+    internal void SetStoragePolicySkipped(long count) { lock (_gate) _storagePolicySkipped = count; }
     internal void SetReconciliationFailure(bool failed) { lock (_gate) _reconciliationFailed = failed; }
     private DerivedProductReconciliationReport? _lastReconciliation;
     public DerivedProductReconciliationReport? LastReconciliation => Volatile.Read(ref _lastReconciliation);
@@ -159,12 +170,15 @@ public sealed class CaptureProcessingState
         if (_replayTerminal > 0) reasons.Add("replay-terminal");
         if (_replayRetry > 0) reasons.Add("replay-retry");
         if (_supersededActiveRevision is not null) reasons.Add("active-revision-superseded");
+        if (_storagePolicyMismatchActiveRevision is not null) reasons.Add("active-storage-policy-mismatch");
+        if (_storagePolicySkipped > 0) reasons.Add("storage-policy-skipped");
         var availability = _terminal > 0 ? CaptureProcessingAvailability.Unhealthy :
             reasons.Count > 0 ? CaptureProcessingAvailability.Degraded : CaptureProcessingAvailability.Healthy;
         return new(availability, _pending, _retry, _terminal,
             reasons.Count == 0 ? "completed" : string.Join(';', reasons), _oldest, DateTimeOffset.UtcNow,
             _quarantine, _missing, _durableUnavailable, _reconciliationFailed,
             _replayPending, _replayRetry, _replayTerminal, _oldestReplay, _replayPendingBytes,
-            _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned);
+            _supersededActiveRevision, _leased, _replayLeased, _replayAbandoned, _laneQuarantineTerminal,
+            _storagePolicyMismatchActiveRevision, _storagePolicySkipped);
     }
 }

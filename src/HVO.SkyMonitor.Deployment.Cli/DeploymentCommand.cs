@@ -176,8 +176,22 @@ internal sealed record LifecycleRequest : DeploymentCommand
     /// excluded from the request hash.
     /// </summary>
     public Guid? ConfirmRemovedOperationId { get; init; }
+
+    /// <summary>
+    /// Accept a processing-lane quarantine as the only unhealthy readiness check during backup, upgrade, and rollback.
+    /// It is an attestation for this run, not an input of the operation, so it is excluded from the request hash and a
+    /// backup journaled before the flag existed still resumes when the flag is supplied.
+    /// </summary>
+    public bool AllowQuarantinedReadiness { get; init; }
+
+    /// <summary>
+    /// Abandon an incomplete <c>cameraagent backup</c> without committing its archive. It is excluded from the request
+    /// hash for the same reason as <see cref="AllowQuarantinedReadiness"/>.
+    /// </summary>
+    public bool Abort { get; init; }
     public string? CatalogBundle { get; init; }
     public string? CatalogVersion { get; init; }
+    public string? CatalogFamily { get; init; }
 
     /// <summary>The name of the backup <c>cameraagent restore</c> puts back, in the product root's backup folder (#1353).</summary>
     public string? Archive { get; init; }
@@ -193,6 +207,11 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public void Validate()
     {
         ProductRootAdmission.Validate(ProductRoot, ProductionProductRoot, AllowTestProductRoot);
+        if (CatalogFamily is not null && (CatalogFamily != "deep-sky" || Operation is not (LifecycleOperationKind.CatalogSelect or LifecycleOperationKind.CatalogRollback)))
+            throw new InstallUsageException("--catalog-family deep-sky applies only to catalog select or rollback.");
+        if (CatalogVersion == DeepSkyCatalogSelection.DisabledVersion &&
+            (Operation != LifecycleOperationKind.CatalogSelect || CatalogFamily != "deep-sky"))
+            throw new InstallUsageException("The disabled target applies only to catalog select --catalog-family deep-sky.");
         if (TargetRelease is not null && Operation != LifecycleOperationKind.Upgrade)
         {
             throw new InstallUsageException("A release's upgrade notes apply only to an upgrade.");
@@ -249,6 +268,15 @@ internal sealed record LifecycleRequest : DeploymentCommand
         {
             throw new InstallUsageException("--confirm-removed-operation-id requires cameraagent purge --resume and a nonempty operation ID.");
         }
+        if (Abort && (Operation != LifecycleOperationKind.Backup || Resume || DryRun))
+        {
+            throw new InstallUsageException("--abort applies only to cameraagent backup, and not together with --resume or --plan.");
+        }
+        if (AllowQuarantinedReadiness && Operation is not (
+                LifecycleOperationKind.Backup or LifecycleOperationKind.Upgrade or LifecycleOperationKind.Rollback))
+        {
+            throw new InstallUsageException("--allow-quarantined-readiness applies only to cameraagent backup, upgrade, and rollback.");
+        }
         ValidateOperationOptions();
     }
 
@@ -274,6 +302,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
             AssetBaseUrl = (string?)null,
             Channel = 0
         });
+        if (CatalogFamily is not null) value += JsonSerializer.Serialize(new { CatalogFamily });
         // The release selection is appended only when it is used, for the same reason.
         if (Release is not null)
         {

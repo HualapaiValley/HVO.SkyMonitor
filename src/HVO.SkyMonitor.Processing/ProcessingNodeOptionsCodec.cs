@@ -79,10 +79,10 @@ public static class ProcessingNodeOptionsCodec
         }
 
         if (RollingCombinationOptionDescriptors.IsDescriptor(descriptor) &&
-            !RollingCombinationOptionDescriptors.IsSameGain(options))
+            !RollingCombinationOptionDescriptors.MatchesRecipe(descriptor, options))
         {
             return new([], [new(ProcessingOptionReasonCodes.NotAllowed, path,
-                "This panel only edits the same-gain rolling mean; recipe and normalization bindings remain opaque.")]);
+                "The rolling-window panel must match the existing recipe. Recipe and normalization bindings cannot be changed here.")]);
         }
         var scopes = ReadScopes(descriptor, options, path, diagnostics);
         var decoded = ImmutableArray.CreateBuilder<ProcessingDecodedOption>(descriptor.Options.Length);
@@ -154,6 +154,8 @@ public static class ProcessingNodeOptionsCodec
             diagnostics.Add(new(ProcessingOptionReasonCodes.NotAllowed, MemberPath(path, "windowSize"),
                 $"Centered windows support at most {ProcessingGraphCompiler.MaximumContractsPerNode} required positions."));
         }
+        if (diagnostics.Count == 0)
+            diagnostics.AddRange(AnnotationOptionDescriptors.ValidateSelections(descriptor, decoded, path));
         if (diagnostics.Count == 0 && descriptor.StepAlias == FrameFactsPresentation.StepAlias &&
             descriptor.StepVersion == FrameFactsPresentation.ProducerVersion)
         {
@@ -270,7 +272,7 @@ public static class ProcessingNodeOptionsCodec
         {
             if (described.Contains(property.Name) && !members.TryAdd(property.Name, property))
                 diagnostics.Add(new(ProcessingOptionReasonCodes.DuplicateMember, MemberPath(path, property.Name),
-                    $"Member '{property.Name}' appears more than once, ignoring case."));
+                    $"Member '{property.Name}' appears more than once, ignoring case. Remove duplicate members from the source JSON before previewing or saving; keep one spelling and the intended value."));
         }
         return members;
     }
@@ -399,7 +401,10 @@ public static class ProcessingNodeOptionsCodec
                 ? new(ProcessingOptionReasonCodes.OutOfRange, MemberPath(path, member.Name),
                     $"Option '{option.Key}' member '{member.Name}' is outside the representable range.")
                 : new(ProcessingOptionReasonCodes.WrongType, MemberPath(path, member.Name),
-                    $"Option '{option.Key}' member '{member.Name}' must be {Describe(kind)}.");
+                    $"Option '{option.Key}' member '{member.Name}' must be {Describe(kind)}." +
+                    (member.Value.ValueKind == JsonValueKind.String && kind is ProcessingOptionKind.WholeNumber or
+                        ProcessingOptionKind.RealNumber or ProcessingOptionKind.NullableWholeNumber or ProcessingOptionKind.NullableRealNumber
+                        ? " Use a JSON number without quotes, or explicitly correct this field in the typed editor before previewing or saving." : string.Empty));
         }
         // Channels and nullable byte overrides must use the producer's unsigned token spelling. Null stays valid
         // for a nullable byte; a signed zero must be rejected and rewritten by an explicit zero edit.

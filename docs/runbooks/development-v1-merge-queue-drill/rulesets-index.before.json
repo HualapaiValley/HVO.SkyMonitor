@@ -1,0 +1,40 @@
+[
+  {
+    "id": 26838822,
+    "name": "development/v1 merge queue",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "HualapaiValley/HVO.SkyMonitor",
+    "enforcement": "active",
+    "node_id": "RRS_lACqUmVwb3NpdG9yec5BRzpczgGZhyY",
+    "_links": {
+      "self": {
+        "href": "https://api.github.com/repos/HualapaiValley/HVO.SkyMonitor/rulesets/26838822"
+      },
+      "html": {
+        "href": "https://github.com/HualapaiValley/HVO.SkyMonitor/rules/26838822"
+      }
+    },
+    "created_at": "2026-11-09T01:44:56.421-07:00",
+    "updated_at": "2026-11-09T01:44:56.556-07:00"
+  },
+  {
+    "id": 25302808,
+    "name": "release tags",
+    "target": "tag",
+    "source_type": "Repository",
+    "source": "HualapaiValley/HVO.SkyMonitor",
+    "enforcement": "active",
+    "node_id": "RRS_lACqUmVwb3NpdG9yec5BRzpczgGCFxg",
+    "_links": {
+      "self": {
+        "href": "https://api.github.com/repos/HualapaiValley/HVO.SkyMonitor/rulesets/25302808"
+      },
+      "html": {
+        "href": "https://github.com/HualapaiValley/HVO.SkyMonitor/rules/25302808"
+      }
+    },
+    "created_at": "2026-10-17T05:54:02.135-07:00",
+    "updated_at": "2026-10-17T05:54:02.171-07:00"
+  }
+]

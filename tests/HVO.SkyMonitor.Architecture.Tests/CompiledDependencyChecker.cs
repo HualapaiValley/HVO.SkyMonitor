@@ -29,6 +29,22 @@ internal static class CompiledDependencyChecker
             "Microsoft.AspNetCore", "Microsoft.EntityFrameworkCore", "Microsoft.Data.Sqlite", "System.Net", "System.IO", "System.Data", "SQLite", "Sqlite" }
         .Any(prefix => Subtree(type.Namespace, prefix) || Subtree(type.Assembly, prefix));
 
+    // #1768 S-L4: the acquisition side wherever it lives. Camera, rig and frame contracts (AgentCore), camera modules,
+    // archived-capture replay, and any HVO namespace segment or type name that names capture-side ownership.
+    private static readonly string[] AcquisitionBoundaries = ["HVO.SkyMonitor.AgentCore", "HVO.SkyMonitor.CameraAgent.Modules",
+        "HVO.SkyMonitor.CameraAgent.Replay", "HVO.SkyMonitor.CameraAgent.ReplayRunner"];
+    private static readonly string[] AcquisitionWords = ["Capture", "Acquisition", "RawIngress", "Scheduling", "Modules"];
+
+    internal static bool CaptureOrAcquisition(TypeName type) => !CanonicalTargetDigest(type)
+        && (AcquisitionBoundaries.Any(prefix => Subtree(type.Namespace, prefix) || Subtree(type.Assembly, prefix))
+            || (Subtree(type.Namespace, "HVO.SkyMonitor") && AcquisitionWords.Any(word =>
+                type.Namespace.Split('.').Contains(word, StringComparer.Ordinal) || type.Name.Contains(word, StringComparison.Ordinal))));
+
+    // A script's target digest is AgentCore's stateless canonical-JSON SHA-256. It carries no capture service, and
+    // re-homing it would change every persisted target, so this one top-level type alone is exempt.
+    private static bool CanonicalTargetDigest(TypeName type) =>
+        type is { Assembly: "HVO.SkyMonitor.AgentCore", Namespace: "HVO.SkyMonitor.AgentCore", Name: "CaptureContractJson" };
+
     private static bool Subtree(string value, string prefix) => value == prefix || value.StartsWith(prefix + ".", StringComparison.Ordinal);
 
     internal static Result Check(string assemblyPath, Func<OwnedType, bool> select, Func<TypeName, bool> forbidden)

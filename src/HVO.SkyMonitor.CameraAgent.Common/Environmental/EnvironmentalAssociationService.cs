@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
@@ -10,11 +11,20 @@ public sealed class EnvironmentalAssociationService(
     ILocalEnvironmentalAssociationStore associations,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
-    EnvironmentalAcquisitionTelemetry? telemetry = null)
+    EnvironmentalAcquisitionTelemetry? telemetry = null,
+    IEnvironmentalAcquisitionStateStore? acquisitionStates = null)
 {
     private const string AlgorithmVersion = "local-environment-association-v1";
     private static readonly string[] SourcePriority = ["Measured", "Imported", "Manual", "Derived", "Simulated"];
     private static readonly string[] QualityPriority = ["Good", "Suspect", "Unknown"];
+
+    internal async ValueTask EnsureCaptureAcquisitionReadyAsync(Guid captureId, Guid? acquisitionAttemptId,
+        CancellationToken cancellationToken)
+    {
+        var availability = await associations.ReadCaptureAvailabilityAsync(
+            options.Value.RawIngressRoot, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false);
+        if (availability.Pending) throw new EnvironmentalCaptureAcquisitionPendingException("Capture acquisition is still pending.");
+    }
 
     public async ValueTask<IReadOnlyList<LocalEnvironmentalCaptureAssociation>> AssociateAsync(
         Guid captureId,
@@ -23,7 +33,8 @@ public sealed class EnvironmentalAssociationService(
         DateTimeOffset exposureThroughUtc,
         string? rigId,
         IReadOnlyList<EnvironmentalObservationKind> kinds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? acquisitionAttemptId = null)
     {
         using var activity = EnvironmentalAcquisitionTelemetry.ActivitySource.StartActivity("environment.associate");
         ValidateRequest(captureId, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, kinds);
@@ -35,11 +46,14 @@ public sealed class EnvironmentalAssociationService(
         }
         var root = options.Value.RawIngressRoot;
         var expectedKinds = kinds.Distinct().Order().ToArray();
-        var policyIdentity = CreatePolicyIdentity(expectedKinds);
-        var persisted = (await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false))
-            .Where(association => string.Equals(
-                association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal))
-            .ToArray();
+        var policyIdentity = PolicyIdentity(expectedKinds);
+        var retained = await associations.ReadAssociationsAsync(root, captureId, cancellationToken).ConfigureAwait(false);
+        var compatible = retained.GroupBy(association => association.PolicyIdentitySha256, StringComparer.Ordinal)
+            .Where(group => group.Select(association => association.Kind).Order().SequenceEqual(expectedKinds)).ToArray();
+        if (compatible.Length > 1) throw new EnvironmentalObservationIdentityConflictException("Multiple retained environmental policies satisfy this capture.");
+        var persisted = compatible.Length == 1 ? compatible[0].ToArray() : retained
+            .Where(association => string.Equals(association.PolicyIdentitySha256, policyIdentity, StringComparison.Ordinal)).ToArray();
+        if (compatible.Length == 1) policyIdentity = compatible[0].Key;
         ValidatePersisted(
             persisted, captureSequence, exposureFromUtc, exposureThroughUtc, rigId, expectedKinds);
         if (persisted.Length == expectedKinds.Length)
@@ -47,11 +61,28 @@ public sealed class EnvironmentalAssociationService(
             return persisted.OrderBy(static association => association.Kind).ToArray();
         }
         var existingKinds = persisted.Select(static association => association.Kind).ToHashSet();
+        var captureAvailability = await associations.ReadCaptureAvailabilityAsync(
+            root, captureId, acquisitionAttemptId, cancellationToken).ConfigureAwait(false);
+        if (captureAvailability.Pending) throw new EnvironmentalCaptureAcquisitionPendingException("Capture acquisition is still pending.");
+        var captureUnavailable = captureAvailability.BeforeCaptureUnavailable
+            ? captureAvailability.UnavailableSources.Concat(options.Value.EnvironmentalAcquisition.Sources
+                .Where(source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.BeforeCapture))
+                .Select(source => source.Id)).Distinct(StringComparer.Ordinal).ToArray()
+            : captureAvailability.UnavailableSources;
         var additions = new List<LocalEnvironmentalCaptureAssociation>(expectedKinds.Length - persisted.Length);
+        var intervalDiagnostics = activity?.IsAllDataRequested == true ? new List<ActivityEvent>() : null;
         foreach (var kind in expectedKinds.Where(kind => !existingKinds.Contains(kind)))
         {
-            var candidates = await observations.ReadLocalCandidatesAsync(
-                root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
+            IReadOnlyList<LocalEnvironmentalObservationRecord> candidates = captureAvailability.EvidenceMissing ? []
+                : await observations.ReadLocalCandidatesAsync(
+                    root, kind, rigId, exposureFromUtc, exposureThroughUtc, 1_000, cancellationToken).ConfigureAwait(false);
+            if (captureUnavailable.Count > 0 || options.Value.EnvironmentalAcquisition.Sources.Any(source => source.Type != "VirtualEnvironment"))
+            {
+                var states = acquisitionStates is null ? [] : await acquisitionStates.ReadSourceStatesAsync(root, cancellationToken).ConfigureAwait(false);
+                states = states.Where(state => !captureAvailability.Sources.Contains(state.SourceId, StringComparer.Ordinal)).ToArray();
+                candidates = EnvironmentalReadingSelection.Select(candidates, options.Value.EnvironmentalAcquisition, states, kind,
+                    exposureFromUtc, exposureThroughUtc, captureUnavailable);
+            }
             var association = CreateAssociation(
                 captureId,
                 captureSequence,
@@ -60,10 +91,13 @@ public sealed class EnvironmentalAssociationService(
                 exposureFromUtc,
                 exposureThroughUtc,
                 policyIdentity,
-                candidates);
+                candidates,
+                intervalDiagnostics);
             additions.Add(association);
         }
         await associations.SaveAssociationSetAsync(root, additions, cancellationToken).ConfigureAwait(false);
+        if (intervalDiagnostics is not null)
+            foreach (var diagnostic in intervalDiagnostics) activity!.AddEvent(diagnostic);
         var completed = persisted.Concat(additions).OrderBy(static association => association.Kind).ToArray();
         foreach (var association in additions)
         {
@@ -105,9 +139,7 @@ public sealed class EnvironmentalAssociationService(
             if (expectedKinds.Except(configuredKinds).Any())
                 throw new EnvironmentalObservationIdentityConflictException(
                     "The requested environmental kinds are not part of the configured association policy.");
-            var configuredPolicyIdentity = CreatePolicyIdentity(configuredKinds);
             candidateSets = candidateSets.Where(group =>
-                string.Equals(group[0].PolicyIdentitySha256, configuredPolicyIdentity, StringComparison.Ordinal) &&
                 group.Select(static association => association.Kind).Order().SequenceEqual(configuredKinds)).ToArray();
         }
         if (candidateSets.Length > 1)
@@ -124,6 +156,33 @@ public sealed class EnvironmentalAssociationService(
             ? persisted.OrderBy(static association => association.Kind).ToArray()
             : null;
     }
+
+    /// <summary>
+    /// The distinct, ordered subset of <paramref name="kinds"/> that <see cref="ReadCompletedAsync"/> accepts under the
+    /// configured association policy. A kind with no configured source has no association to read; presentation callers
+    /// keep it as missing instead of requesting it, which would be rejected as outside the policy. With no configured
+    /// source the policy does not constrain the request. Refs #1784
+    /// </summary>
+    internal static EnvironmentalObservationKind[] SelectConfiguredPolicyKinds(
+        EnvironmentalAcquisitionOptions acquisition,
+        IEnumerable<EnvironmentalObservationKind> kinds)
+    {
+        ArgumentNullException.ThrowIfNull(acquisition);
+        ArgumentNullException.ThrowIfNull(kinds);
+        var requested = kinds.Distinct().Order().ToArray();
+        var configured = acquisition.Sources.Select(static source => source.Kind).ToHashSet();
+        return configured.Count == 0 ? requested : requested.Where(configured.Contains).ToArray();
+    }
+
+    private string PolicyIdentity(IReadOnlyList<EnvironmentalObservationKind> kinds)
+        => options.Value.EnvironmentalAcquisition.WeatherSourcePriority.Count == 0 ? CreatePolicyIdentity(kinds)
+            : CaptureContractJson.ComputeCanonicalJsonSha256(new
+            {
+                Schema = "real-weather-selection-v1",
+                Kinds = kinds,
+                options.Value.EnvironmentalAcquisition.WeatherSourcePriority,
+                OnlineKinds = options.Value.EnvironmentalAcquisition.Sources.Where(source => source.Type == "OnlineWeather").Select(source => source.Kind).Distinct().Order().ToArray()
+            });
 
     private static void ValidateRequest(
         Guid captureId,
@@ -180,7 +239,8 @@ public sealed class EnvironmentalAssociationService(
         DateTimeOffset exposureFromUtc,
         DateTimeOffset exposureThroughUtc,
         string policyIdentity,
-        IReadOnlyList<LocalEnvironmentalObservationRecord> candidates)
+        IReadOnlyList<LocalEnvironmentalObservationRecord> candidates,
+        List<ActivityEvent>? intervalDiagnostics)
     {
         var covering = candidates
             .Where(candidate => candidate.Fact.ValidFromUtc <= exposureFromUtc &&
@@ -239,6 +299,9 @@ public sealed class EnvironmentalAssociationService(
             conflicts = [];
             conflictIdentities = [];
         }
+        if (intervalDiagnostics is not null && SqmAssociationIntervalDiagnostics.Create(captureId, kind, status,
+                selected?.Fact, exposureFromUtc, exposureThroughUtc) is { } diagnostic)
+            intervalDiagnostics.Add(diagnostic);
         var identity = CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
             Schema = AlgorithmVersion,

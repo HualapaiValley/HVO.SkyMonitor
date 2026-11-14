@@ -97,12 +97,18 @@ public sealed record ProcessingGraphExecutionOutputState(
     string Variant,
     string AvailabilityState,
     string? AvailabilityReason,
-    bool Published);
+    bool Published)
+{
+    public string? PayloadSha256 { get; init; }
+    public IReadOnlyList<Guid> SourceArtifactIds { get; init; } = [];
+}
 
 public enum ProcessingGraphExecutionInputKind
 {
     RawCapture,
-    ProcessingOutput
+    ProcessingOutput,
+    AuxiliaryRawCapture,
+    AuxiliaryProcessingOutput
 }
 
 public sealed record ProcessingGraphExecutionInputState(
@@ -140,6 +146,9 @@ public sealed record ProcessingGraphNodeAttemptState(
 public sealed record ProcessingNormalizationInputDiagnostic(
     int WindowPosition, Guid CaptureId, Guid ArtifactId, double Gain, string Disposition, string? ExclusionReason);
 
+public sealed record ProcessingGraphExecutionCalibrationInputState(
+    Guid ArtifactId, string PayloadSha256, string Kind);
+
 public sealed record ProcessingGraphExecutionNodeState(
     string NodeId,
     bool Required,
@@ -158,6 +167,22 @@ public sealed record ProcessingGraphExecutionNodeState(
     public MixedGainDiagnosticsV1? MixedGainDiagnostics { get; init; }
     public string? MixedGainDiagnosticsUnavailableReason { get; init; }
 
+    /// <summary>Safe master identities retained in the execution's frozen normalization plan.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public IReadOnlyList<ProcessingGraphExecutionCalibrationInputState> CalibrationInputs { get; init; } = [];
+
+    /// <summary>Whether the bounded manifest read retained every recorded artifact input binding.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool ArtifactBindingsRetained { get; init; } = true;
+
+    /// <summary>Actual output cardinality recorded atomically at node completion, independent of retention.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int? CommittedOutputCount { get; init; }
+
+    /// <summary>Whether original frozen derived-input history lacks a cardinality/lineage proof.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool InputEvidenceIncomplete { get; init; }
+
     /// <summary>Dependencies frozen with this execution, not today's active graph revision.</summary>
     public IReadOnlyList<ProcessingGraphDependencyDefinition> Dependencies { get; init; } = [];
     public IReadOnlyList<ProcessingGraphProductContract> OutputContracts { get; init; } = [];
@@ -170,7 +195,38 @@ internal sealed record ProcessingGraphTerminalExecution(
 
 public sealed record ProcessingGraphExecutionDetail(
     ProcessingGraphExecutionState Execution,
-    IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes);
+    IReadOnlyList<ProcessingGraphExecutionNodeState> Nodes)
+{
+    /// <summary>Expected node count from the bounded manifest snapshot's frozen plan, when read.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int? FrozenNodeCount { get; init; }
+}
+
+/// <summary>Why the run-manifest evidence of an execution could not be read beside its detail.</summary>
+public enum ProcessingRunManifestEvidenceFailure
+{
+    /// <summary>The evidence was read.</summary>
+    None,
+
+    /// <summary>The retained evidence exceeds the manifest's row or byte bounds.</summary>
+    ExceedsBounds,
+
+    /// <summary>The retained evidence is corrupt.</summary>
+    Corrupt,
+
+    /// <summary>The evidence could not be read this time for another reason.</summary>
+    Unavailable
+}
+
+/// <summary>
+/// An execution's detail and, from the same snapshot, the detail as its run manifest carries it.
+/// <see cref="RunManifest"/> is what <see cref="IProcessingGraphOperations.ReadRunManifestAsync"/> returns for that
+/// snapshot, or null with the reason in <see cref="RunManifestFailure"/> when that evidence could not be read.
+/// </summary>
+public sealed record ProcessingGraphExecutionDetailWithRunManifest(
+    ProcessingGraphExecutionDetail Detail,
+    ProcessingGraphExecutionDetail? RunManifest,
+    ProcessingRunManifestEvidenceFailure RunManifestFailure = ProcessingRunManifestEvidenceFailure.None);
 
 public sealed record ProcessingReplaySubmission(
     Guid CaptureId,
@@ -332,6 +388,21 @@ public interface IProcessingGraphOperations
         CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphExecutionDetail?> ReadExecutionDetailAsync(
+        Guid executionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>Reads a bounded, consistent evidence snapshot without opening diagnostic payloads.</summary>
+    ValueTask<ProcessingGraphExecutionDetail?> ReadRunManifestAsync(
+        Guid executionId,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Reads an execution's detail together with its run-manifest evidence in one snapshot, without reading the
+    /// execution twice. A caller that shows the detail and needs to know whether the manifest can be produced uses
+    /// this rather than <see cref="ReadExecutionDetailAsync"/> followed by <see cref="ReadRunManifestAsync"/>.
+    /// Null means the execution does not exist.
+    /// </summary>
+    ValueTask<ProcessingGraphExecutionDetailWithRunManifest?> ReadExecutionDetailWithRunManifestAsync(
         Guid executionId,
         CancellationToken cancellationToken);
 

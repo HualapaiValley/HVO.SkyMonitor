@@ -142,7 +142,7 @@ public sealed class Issue1055SceneCompactionEvidenceTests
                         DependsOn: ["$raw", "scene", "preview", "annotation"])
                 ], CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
             };
-            var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot!.Catalog,
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot!.Catalog,
                 provider.GetRequiredService<IProjectedSceneStore>(), StandardConstellationTopology.CreateD3Celestial(),
                 stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
             await using var moduleLifetime = module.ConfigureAwait(false);

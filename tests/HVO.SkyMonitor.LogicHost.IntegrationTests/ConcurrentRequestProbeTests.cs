@@ -87,6 +87,38 @@ public sealed class ConcurrentRequestProbeTests
         cancellation.IsCancellationRequested.Should().BeTrue();
     }
 
+    [TestMethod]
+    public async Task ResponseTimeoutIncludesCurrentProgressAndRequestState()
+    {
+        var generationCalls = 1;
+        var verifyCalls = 0;
+        var pending = new TaskCompletionSource<HttpResponseMessage>();
+        var progress = () => $"generationCalls={generationCalls} verifyCalls={verifyCalls}";
+        generationCalls = 5;
+        verifyCalls = 3;
+        var action = () => ConcurrentRequestProbe.WaitForResponseAsync(pending.Task, TimeSpan.Zero, progress);
+        var error = (await action.Should().ThrowAsync<TimeoutException>()
+            .WithMessage("*after generation release*generationCalls=5 verifyCalls=3*WaitingForActivation*")
+            .ConfigureAwait(false)).Which;
+        error.InnerException.Should().BeOfType<TimeoutException>();
+        pending.Task.IsCompleted.Should().BeFalse();
+    }
+
+    [TestMethod]
+    public async Task ResponseWaitPreservesSubjectOutcome()
+    {
+        var original = new TimeoutException("subject-timeout");
+        var failure = () => ConcurrentRequestProbe.WaitForResponseAsync(
+            Task.FromException<HttpResponseMessage>(original), TimeSpan.Zero, () => "progress");
+        (await failure.Should().ThrowAsync<TimeoutException>().ConfigureAwait(false)).Which.Should().BeSameAs(original);
+        var cancelled = () => ConcurrentRequestProbe.WaitForResponseAsync(
+            Task.FromCanceled<HttpResponseMessage>(new CancellationToken(true)), TimeSpan.Zero, () => "progress");
+        await cancelled.Should().ThrowAsync<OperationCanceledException>().ConfigureAwait(false);
+        using var response = new HttpResponseMessage(HttpStatusCode.OK);
+        (await ConcurrentRequestProbe.WaitForResponseAsync(Task.FromResult(response), TimeSpan.Zero, () => "progress")
+            .ConfigureAwait(false)).Should().BeSameAs(response);
+    }
+
     private sealed class DisposalContent() : ByteArrayContent([])
     {
         internal TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

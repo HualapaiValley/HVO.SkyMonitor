@@ -1,4 +1,5 @@
 using System.Globalization;
+using HVO.SkyMonitor.Deployment.Contracts;
 using System.Security.Cryptography;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -10,8 +11,8 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 /// <summary>
 /// System control: the prototype <c>renderControl()</c> composition bound to the durable capture-control
 /// and schedule-override records. Pause and resume are confirmed in a dialog with an optional reason
-/// recorded on the receipt; restart is offered only where a supervisor brings CameraAgent back. Drain,
-/// upgrade and purge have no bounded in-app command, so they stay disabled with the reason.
+/// recorded on the receipt; restart is offered only where a supervisor brings CameraAgent back. Installer-owned
+/// drain requires a registered worker; upgrade and purge remain installer-only operations.
 /// </summary>
 public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 {
@@ -20,8 +21,6 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     private const string TransferReasonPrefix = "transferred from revision ";
     private const string CaptureTriggerId = "control-capture";
     private const string RestartTriggerId = "control-restart";
-    private const string DrainUnavailableReason =
-        "No drain command exists. Pausing acquisition stops new captures while accepted processing and delivery continue.";
     private const string UpgradeUnavailableReason =
         "Upgrade, rollback and reinstall run through the installer: hvo-sky-install cameraagent upgrade, rollback or reinstall.";
     private const string PurgeUnavailableReason =
@@ -30,9 +29,30 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     private CameraAgentOperationsView? _view;
     private IReadOnlyList<SystemControlReceipt>? _receipts;
     private CameraAgentRestartStatus? _restart;
+    private CameraAgentControlView? _lifecycle;
+    private Task _lifecycleRefresh = Task.CompletedTask;
+    private bool CanDrain => _lifecycle?.StopPending != true && _lifecycle?.Available == true && _view is not null &&
+        CaptureState is "Running" or "Paused" && !_lifecycle.Receipts.Any(item => !item.IsTerminal);
+
+    private string? DrainUnavailableReason => _lifecycle?.StopPending == true
+        ? "A restart stop is still pending in this process. Wait for CameraAgent to restart."
+        : _lifecycle?.Receipts.Any(item => !item.IsTerminal) == true
+        ? "An installer lifecycle request is active. Wait for its terminal receipt before requesting another drain."
+        : _lifecycle is null
+        ? "Installer lifecycle availability could not be read. Refresh to try again."
+        : !_lifecycle.Available
+        ? "The authenticated installer lifecycle worker is not registered or its heartbeat expired. Pause and resume remain available."
+        : _view is null
+        ? "The capture state could not be read. Refresh to try again."
+        : CaptureState is not ("Running" or "Paused")
+        ? "Capture must be Running or Paused before requesting a drain."
+        : _submitting
+        ? "A control request is being submitted. Wait for it to finish."
+        : null;
     private PendingControl? _pending;
     private StatusMessage? _message;
     private string _reasonInput = string.Empty;
+    private string _cancelReasonInput = string.Empty;
     private string? _error;
     private string? _receiptsError;
     private string? _commandError;
@@ -55,11 +75,13 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 
     private string CaptureState => _view?.Summary.CaptureControl.Value.State ?? "Unknown";
 
-    private bool CanPause => CaptureState == "Running";
+    private bool LifecycleActive => _lifecycle?.StopPending == true || _lifecycle?.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued) == true;
 
-    private bool CanResume => CaptureState == "Paused";
+    private bool CanPause => CaptureState == "Running" && !LifecycleActive;
 
-    private string? CaptureUnavailableReason => _view is null
+    private bool CanResume => CaptureState == "Paused" && !LifecycleActive;
+
+    private string? CaptureUnavailableReason => LifecycleActive ? "Wait for the installer lifecycle terminal receipt before changing capture admission." : _view is null
         ? "The capture state could not be read. Refresh to try again."
         : CaptureState switch
         {
@@ -69,14 +91,20 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             _ => "Capture control is unavailable on this host.",
         };
 
-    private Banner StateBanner => CaptureState switch
-    {
-        "Running" => new Banner("success", "Capture is not paused.", "The schedule and the other admission checks decide when each exposure starts."),
-        "Paused" => new Banner("warning", "Capture is paused.", "No new exposure starts until capture is resumed. Processing and delivery of accepted work continue."),
-        "PauseRequested" => new Banner("running", "Capture is pausing.", "The current exposure finishes through durable ingress before capture stops."),
-        "Initializing" => new Banner("running", "Capture control is starting.", "Pause and resume become available once the durable state is read."),
-        _ => new Banner("failure", "Capture control is unavailable.", "Pause and resume are disabled; see Health & diagnostics."),
-    };
+    private Banner StateBanner => _lifecycle?.StopPending == true
+        ? new Banner("warning", "A restart stop is still pending in this process.", "Capture admission stays held until this process exits, even after cancellation.")
+        : _lifecycle is { WorkerLeaseExpired: true } && _lifecycle.Receipts.Any(item => !item.IsTerminal)
+        ? new Banner("warning", "Worker lease expired with active request.", "Cancel an unclaimed request here; claimed lifecycle work requires installer recovery. See the lifecycle runbook.")
+        : _lifecycle?.Receipts.Any(item => !item.IsTerminal && item.Phase != CameraAgentControlPhase.Queued) == true
+        ? new Banner("running", "Capture admission is held for installer lifecycle control.", "Accepted work remains durable. Wait for the terminal receipt before resuming.")
+        : CaptureState switch
+        {
+            "Running" => new Banner("success", "Capture is not paused.", "The schedule and the other admission checks decide when each exposure starts."),
+            "Paused" => new Banner("warning", "Capture is paused.", "No new exposure starts until capture is resumed. Processing and delivery of accepted work continue."),
+            "PauseRequested" => new Banner("running", "Capture is pausing.", "The current exposure finishes through durable ingress before capture stops."),
+            "Initializing" => new Banner("running", "Capture control is starting.", "Pause and resume become available once the durable state is read."),
+            _ => new Banner("failure", "Capture control is unavailable.", "Pause and resume are disabled; see Health & diagnostics."),
+        };
 
     private string RestartDetail => _restart switch
     {
@@ -85,7 +113,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         _ => "Restart availability could not be read.",
     };
 
-    private string? RestartUnavailableReason => _restarting
+    private string? RestartUnavailableReason => LifecycleActive || _lifecycle?.Receipts.Any(item => !item.IsTerminal) == true ? "An installer lifecycle operation is in progress." : _restarting
         ? "A restart is already in progress."
         : _restart switch
         {
@@ -95,7 +123,23 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             _ => null,
         };
 
-    protected override Task OnInitializedAsync() => LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        _lifecycleRefresh = RefreshLifecycleAsync();
+    }
+
+    private async Task RefreshLifecycleAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+            while (await timer.WaitForNextTickAsync(_lifetime.Token))
+                if (_lifecycle?.Receipts.Any(item => !item.IsTerminal) == true)
+                    await InvokeAsync(async () => { await LoadAsync(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -138,6 +182,9 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             {
                 return;
             }
+            var lifecycle = await SystemService.GetLifecycleAsync(_lifetime.Token);
+            if (lifecycle.Kind == OperatorUiResultKind.Unauthorized) { DenyAccess(); return; }
+            _lifecycle = lifecycle.IsSuccess ? lifecycle.Value : null;
             var receipts = await SystemService.GetControlReceiptsAsync(CameraAgentSystemUiService.MaxReceipts, _lifetime.Token);
             if (_disposed)
             {
@@ -158,6 +205,9 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             }
             _restart = restart.IsSuccess ? restart.Value : null;
             _restarting |= _restart?.Restarting == true;
+            // Terminal publication can restore pause between the initial summary read and the receipt read.
+            // Read admission after the receipt so the page cannot stop polling with an earlier Running snapshot.
+            if (_lifecycle?.Receipts.Count > 0) await ReadStateAsync();
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -193,6 +243,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         _view = null;
         _receipts = null;
         _restart = null;
+        _lifecycle = null;
         _pending = null;
         _message = null;
         _showDialog = false;
@@ -217,6 +268,49 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             null,
             CaptureTriggerId);
         OpenDialog("control-reason");
+    }
+
+    private void BeginDrain()
+    {
+        if (_submitting || !CanDrain) return;
+        _pending = new PendingControl(ControlKind.Drain, "Request graceful drain?",
+            "The installer stops new acquisition and waits for accepted processing and delivery within a bounded timeout. Capture stays paused afterward; resume is an explicit action.",
+            "Drain", _view!.Summary.CaptureControl.Value.Version, Guid.NewGuid().ToString("D"), null, "control-drain");
+        OpenDialog("control-reason");
+    }
+
+    private async Task DrainAsync(PendingControl pending)
+    {
+        var reason = TrimmedReason();
+        if (string.IsNullOrWhiteSpace(reason) || reason.Length > ReasonMaxLength)
+        {
+            _commandError = "A reason of 1 to 512 characters is required.";
+            return;
+        }
+        if (pending.SentReason is not null && pending.SentReason.Value != reason)
+            pending = pending with { IdempotencyKey = Guid.NewGuid().ToString("D") };
+        _pending = pending with { SentReason = new SentReason(reason) };
+        var result = await SystemService.RequestDrainAsync(Guid.Parse(pending.IdempotencyKey), pending.ExpectedVersion, reason, _lifetime.Token);
+        if (result.Kind == OperatorUiResultKind.Unauthorized) { DenyAccess(); return; }
+        if (!result.IsSuccess) { _commandError = result.Message; return; }
+        CloseDialog();
+        _message = new StatusMessage("running", "Drain accepted by the lifecycle contract.", "Follow installer progress in Recent control receipts; capture remains paused after drain.");
+        await LoadAsync();
+    }
+
+    private async Task CancelLifecycleAsync(Guid operationId)
+    {
+        if (string.IsNullOrWhiteSpace(_cancelReasonInput))
+        {
+            _message = new StatusMessage("warning", "A cancellation reason is required.", "Describe why this lifecycle request should be cancelled.");
+            return;
+        }
+        var result = await SystemService.CancelLifecycleAsync(operationId, _lifetime.Token, _cancelReasonInput.Trim());
+        if (result.IsSuccess) _cancelReasonInput = string.Empty;
+        if (result.Kind == OperatorUiResultKind.Unauthorized) { DenyAccess(); return; }
+        _message = new StatusMessage("warning", result.IsSuccess ? "Cancellation requested." : "Cancellation was not accepted.",
+            result.IsSuccess ? "An unclaimed request is cancelled locally. Claimed work is settled by the installer; an accepted stop remains fenced until the old process exits." : result.Message ?? "Refresh to read installer progress.");
+        await LoadAsync();
     }
 
     private void BeginRestart()
@@ -277,6 +371,10 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
             if (_pending.Kind == ControlKind.Restart)
             {
                 await RestartAsync();
+            }
+            else if (_pending.Kind == ControlKind.Drain)
+            {
+                await DrainAsync(_pending);
             }
             else
             {
@@ -388,6 +486,8 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
 
     internal static string ActionText(SystemControlReceipt receipt) => receipt.Kind switch
     {
+        SystemControlReceiptKind.Drain => "Graceful drain",
+        SystemControlReceiptKind.ScheduledRestart => "Scheduled restart",
         SystemControlReceiptKind.PauseCapture => "Pause acquisition",
         SystemControlReceiptKind.ResumeCapture => "Resume acquisition",
         SystemControlReceiptKind.OverrideCreated => $"{OverrideModeText(receipt.OverrideMode)} override created",
@@ -406,6 +506,12 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         => receipt is { OverrideStartUtc: { } start, OverrideEndUtc: { } end }
             ? $"{FormatReceiptTime(start)} to {FormatReceiptTime(end)}"
             : null;
+
+    // The cancelling actor reads as the Actor column does and the time as the Time column does: a fixed label and
+    // site time, never the recorded account identifier or a raw UTC timestamp.
+    private string? CancellationText(SystemControlCancellation? cancellation) => cancellation is null
+        ? null
+        : $" Cancelled by {ActorText(cancellation.Actor)} at {FormatReceiptTime(cancellation.Utc)}: {cancellation.Reason}.";
 
     internal static string ActorText(SystemControlActor actor) => actor switch
     {
@@ -432,6 +538,9 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     {
         SystemControlOutcome.Applied => new Chip("Completed", "success"),
         SystemControlOutcome.NoChange => new Chip("Already current", "neutral"),
+        SystemControlOutcome.Failed => new Chip("Failed", "failure"),
+        SystemControlOutcome.Cancelled => new Chip("Cancelled", "warning"),
+        SystemControlOutcome.Skipped => new Chip("Skipped", "neutral"),
         _ => new Chip("Pending", "pending"),
     };
 
@@ -444,6 +553,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
     {
         _disposed = true;
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        await _lifecycleRefresh.ConfigureAwait(false);
         _lifetime.Dispose();
         if (_module is not null)
         {
@@ -462,6 +572,7 @@ public sealed partial class ControlPage : SiteTimeComponent, IAsyncDisposable
         Pause,
         Resume,
         Restart,
+        Drain,
     }
 
     /// <summary>The reason a submitted attempt carried; distinguishes "no reason" from "never sent".</summary>

@@ -1,0 +1,517 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Automation;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
+using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging;
+
+namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
+
+[TestClass]
+[TestCategory("Integration")]
+[SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
+[SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned harness owns both disposable services.")]
+[SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "SQL comes only from a frozen repository fixture and a fixed table allowlist.")]
+[SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused integration tests.")]
+public sealed partial class DailySummaryIntegrationTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "hvo-daily-summary-" + Guid.NewGuid().ToString("N"));
+    private readonly InMemoryNightlySourceReader _reader = new();
+
+    public void Dispose() => Directory.Delete(_root, true);
+
+    [TestMethod]
+    [DataRow(NightlyProductKind.StarTrail, false)]
+    [DataRow(NightlyProductKind.StarTrail, true)]
+    [DataRow(NightlyProductKind.Keogram, false)]
+    [DataRow(NightlyProductKind.Keogram, true)]
+    public async Task ChangedPresetSkipsHistoricalSummaryAndRefreshesOnlyExecutableSummary(NightlyProductKind kind, bool currentSummary)
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var historical = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        Guid original;
+        byte[] provenance;
+        using (var initial = Create())
+        {
+            await initial.Generator.RunAsync(historical, CancellationToken.None);
+            original = (await initial.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Windows.Single(record => record.Status.Kind == NightlyProductKind.DailySummary).FinalProduct!.ProductId;
+            provenance = (await initial.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray();
+        }
+        var options = NightlyProductFixture.Options(maximumSegmentSources: 16);
+        var still = NightlyProductFixture.Occurrence(kind, options);
+        var summary = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary, options);
+        using var reconfigured = Create(options: options);
+        Guid? before = null;
+        if (currentSummary)
+        {
+            await reconfigured.Generator.RunAsync(summary, CancellationToken.None);
+            before = (await reconfigured.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Windows.Single(record => record.Status.Occurrence.IdentitySha256 == summary.IdentitySha256).FinalProduct!.ProductId;
+        }
+        foreach (var attempt in Enumerable.Range(0, 2))
+        {
+            var result = await reconfigured.Generator.RunAsync(still, CancellationToken.None);
+            Assert.IsTrue(result.Ready);
+            Assert.AreEqual(0, result.FailedWindows, $"Still attempt {attempt}: {result.Describe()}");
+        }
+        var day = await reconfigured.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None);
+        Assert.AreEqual(original, day.Windows.Single(record => record.Status.Occurrence.IdentitySha256 == historical.IdentitySha256).FinalProduct!.ProductId);
+        CollectionAssert.AreEqual(provenance, (await reconfigured.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+        if (currentSummary)
+        {
+            var refreshed = day.Windows.Single(record => record.Status.Occurrence.IdentitySha256 == summary.IdentitySha256).FinalProduct!.ProductId;
+            Assert.AreNotEqual(before, refreshed);
+            var linked = (await reconfigured.Store.GetPresentationAsync(refreshed, CancellationToken.None))!.DailySummary!.Products.Single();
+            Assert.AreEqual(day.Products.Single(product => product.Kind == kind && product.Scope == NightlyProductScope.Final).ProductId, linked.ProductId);
+        }
+        else
+            Assert.AreEqual(1, day.Windows.Count(record => record.Status.Kind == NightlyProductKind.DailySummary));
+    }
+
+    [TestMethod]
+    [DataRow(NightlyProductKind.StarTrail, false)]
+    [DataRow(NightlyProductKind.StarTrail, true)]
+    [DataRow(NightlyProductKind.Keogram, false)]
+    [DataRow(NightlyProductKind.Keogram, true)]
+    public async Task AutomationOrderRefreshesSummaryWithoutAnExplicitSummaryRetry(NightlyProductKind kind, bool summaryFirst)
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var summary = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        var still = NightlyProductFixture.Occurrence(kind);
+        Guid? original = null;
+        byte[]? originalBytes = null;
+        using (var harness = Create())
+        {
+            var registry = new NightlyProductAutomationTaskRegistry(harness.Generator,
+                NightlyProductFixture.HostOptions(_root, NightlyProductFixture.Options()));
+            if (summaryFirst)
+            {
+                Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await registry.ExecuteAsync(summary, CancellationToken.None)).Outcome);
+                original = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId;
+                originalBytes = (await harness.Store.OpenProvenanceAsync(original.Value, CancellationToken.None))!.Content.ToArray();
+            }
+            var stillExecution = await registry.ExecuteAsync(still, CancellationToken.None);
+            Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, stillExecution.Outcome);
+            if (summaryFirst)
+                StringAssert.Contains(stillExecution.Detail, "Daily summary refresh: 1 published, 0 reused, 0 unchanged.", StringComparison.Ordinal);
+            else
+                Assert.DoesNotContain("Daily summary refresh:", stillExecution.Detail, StringComparison.Ordinal);
+            if (!summaryFirst)
+                Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await registry.ExecuteAsync(summary, CancellationToken.None)).Outcome);
+        }
+        using var restarted = Create();
+        var current = (await restarted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!;
+        var facts = (await restarted.Store.GetPresentationAsync(current.ProductId, CancellationToken.None))!.DailySummary!;
+        var linked = facts.Products.Single();
+        var final = (await restarted.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+            .Single(product => product.Kind == kind && product.Scope == NightlyProductScope.Final);
+        Assert.AreEqual(final.ProductId, linked.ProductId);
+        await restarted.Store.VerifyPublicationAsync(current.ProductId, CancellationToken.None);
+        if (original is { } old)
+        {
+            Assert.AreNotEqual(old, current.ProductId);
+            CollectionAssert.AreEqual(originalBytes!, (await restarted.Store.OpenProvenanceAsync(old, CancellationToken.None))!.Content.ToArray());
+        }
+        var retry = await restarted.Generator.RunAsync(still, CancellationToken.None);
+        StringAssert.Contains(retry.Describe(), "Daily summary refresh: 0 published, 0 reused, 1 unchanged.", StringComparison.Ordinal);
+        Assert.AreEqual(current.ProductId, (await restarted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InterruptedAutomaticRefreshRecoversOnUnchangedStillRetry(bool cancel)
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var summary = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        var still = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
+        Guid original;
+        byte[] provenance;
+        using (var initial = Create())
+        {
+            await initial.Generator.RunAsync(summary, CancellationToken.None);
+            original = (await initial.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId;
+            provenance = (await initial.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray();
+        }
+        using var cancellation = new CancellationTokenSource();
+        using (var interrupted = Create(new FailSecondRestoreReader(_reader, cancellation, cancel)))
+        {
+            if (cancel)
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => await interrupted.Generator.RunAsync(still, cancellation.Token));
+            else
+                Assert.AreEqual(1, (await interrupted.Generator.RunAsync(still, CancellationToken.None)).FailedWindows);
+            Assert.AreEqual(original, (await interrupted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!.ProductId);
+            Assert.IsTrue((await interrupted.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Any(product => product.Kind == NightlyProductKind.StarTrail && product.Scope == NightlyProductScope.Final));
+        }
+        using var recovered = Create();
+        var retry = await recovered.Generator.RunAsync(still, CancellationToken.None);
+        Assert.AreEqual(0, retry.FailedWindows);
+        Assert.AreEqual(0, retry.ProductsPublished, "The still product must be reused.");
+        var current = (await recovered.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!;
+        Assert.AreNotEqual(original, current.ProductId);
+        Assert.AreEqual(1, (await recovered.Store.GetPresentationAsync(current.ProductId, CancellationToken.None))!.DailySummary!.Products.Count);
+        CollectionAssert.AreEqual(provenance, (await recovered.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+    }
+
+    private sealed class FailSecondRestoreReader(INightlyProductSourceReader inner, CancellationTokenSource cancellation, bool cancel)
+        : INightlyProductSourceReader
+    {
+        private int _restores;
+        public ValueTask<IReadOnlyList<NightlyProductCandidate>> ReadCandidatesAsync(string nodeId,
+            DateTimeOffset startUtc, DateTimeOffset endUtc, int maximumCount, Action<string> unsupported,
+            CancellationToken cancellationToken) => inner.ReadCandidatesAsync(nodeId, startUtc, endUtc, maximumCount, unsupported, cancellationToken);
+
+        public async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreAsync(IReadOnlyList<NightlyProductCandidate> candidates,
+            CancellationToken cancellationToken)
+        {
+            if (++_restores == 2)
+            {
+                if (cancel)
+                {
+                    await cancellation.CancelAsync();
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+                throw new IOException("Synthetic summary refresh interruption after still publication.");
+            }
+            return await inner.RestoreAsync(candidates, cancellationToken);
+        }
+    }
+
+    [TestMethod]
+    public async Task CompleteSyntheticDayPublishesOnceAndSurvivesRestartWithExactProvenance()
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        var window = occurrence.SourceWindow!;
+        var count = (int)Math.Ceiling((window.EndUtc - window.StartUtc).TotalMinutes / 5);
+        _reader.Add([.. Enumerable.Range(0, count).Select(index => NightlyProductFixture.Frame(index + 1,
+            window.StartUtc.AddMinutes(index * 5)))]);
+        Guid id;
+        using (var harness = Create())
+        {
+            var registry = new NightlyProductAutomationTaskRegistry(harness.Generator, NightlyProductFixture.HostOptions(_root, NightlyProductFixture.Options()));
+            Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, (await registry.ExecuteAsync(occurrence, CancellationToken.None)).Outcome);
+            var page = await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None);
+            var entry = page.Entries.Single();
+            Assert.AreEqual(NightlyProductLibraryState.Produced, entry.State);
+            id = entry.Product!.ProductId;
+            var presentation = (await harness.Store.GetPresentationAsync(id, CancellationToken.None))!;
+            Assert.AreEqual(count, presentation.LineageFrameCount);
+            Assert.AreEqual(count, presentation.DailySummary!.SampledBins);
+            Assert.IsFalse(presentation.DailySummary.Partial);
+            Assert.IsNull(presentation.DailySummary.EventCount);
+            Assert.AreEqual(1, _reader.Restores, "Only one representative payload is restored.");
+            var provenance = (await harness.Store.OpenProvenanceAsync(id, CancellationToken.None))!;
+            Assert.AreEqual(provenance.ChecksumSha256, Convert.ToHexString(SHA256.HashData(provenance.Content.Span)));
+            var rendition = (await harness.Store.OpenRenditionAsync(id, CancellationToken.None))!;
+            Assert.AreEqual(rendition.ChecksumSha256, Convert.ToHexString(SHA256.HashData(rendition.Content.Span)));
+        }
+        using (var restarted = Create())
+        {
+            var again = await restarted.Generator.RunAsync(occurrence, CancellationToken.None);
+            Assert.AreEqual(1, again.WindowsUnchanged);
+            Assert.AreEqual(0, again.ProductsPublished);
+            Assert.AreEqual(1, _reader.Restores);
+            Assert.IsNotNull(await restarted.Store.GetAsync(id, CancellationToken.None));
+        }
+    }
+
+    [TestMethod]
+    public async Task SparseSummaryKeepsExclusionsProductLinksAndImmutablePriorVersions()
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        var start = occurrence.SourceWindow!.StartUtc;
+        _reader.Add(NightlyProductFixture.Frame(1, start.AddHours(16)),
+            NightlyProductFixture.Frame(2, start.AddHours(17), new string('0', 64)),
+            NightlyProductFixture.Frame(3, occurrence.SourceWindow.EndUtc));
+        using var harness = Create();
+        await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+        var withoutLinks = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single().Product!;
+        await harness.Generator.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail), CancellationToken.None);
+        var linked = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+        Assert.AreEqual(0, linked.ProductsPublished, "The still run already refreshed the summary; an explicit retry must reuse it.");
+        var entry = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary,
+            NightlyProductLibraryState.Partial), CancellationToken.None)).Entries.Single();
+        var oldId = entry.Product!.ProductId;
+        Assert.AreNotEqual(withoutLinks.ProductId, oldId);
+        var presentation = (await harness.Store.GetPresentationAsync(oldId, CancellationToken.None))!;
+        var facts = presentation.DailySummary!;
+        Assert.AreEqual(2, facts.CandidateCount, "The exposure at the exclusive end belongs to the next window.");
+        Assert.AreEqual(1, facts.CaptureCount);
+        Assert.AreEqual(1, facts.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
+        Assert.AreEqual(1, facts.Products.Count);
+        Assert.AreEqual(1, presentation.LineageFrameCount, "Linked product lineage must not double-count captures.");
+        Assert.IsTrue(presentation.Detail.Sources.Any(static source => source.SourceKind == NightlyProductSourceKind.NightlyProduct));
+        var oldBytes = (await harness.Store.OpenProvenanceAsync(oldId, CancellationToken.None))!.Content.ToArray();
+        _reader.Add(NightlyProductFixture.Frame(4, start.AddHours(18)));
+        var changed = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+        Assert.AreEqual(1, changed.ProductsPublished);
+        var next = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+        Assert.AreNotEqual(oldId, next.Product!.ProductId);
+        CollectionAssert.AreEqual(oldBytes, (await harness.Store.OpenProvenanceAsync(oldId, CancellationToken.None))!.Content.ToArray());
+    }
+
+    [TestMethod]
+    public async Task EmptyDayRecordsNotProducedAndCorruptRetryFailsWithoutSubstitution()
+    {
+        using var harness = Create();
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+        var empty = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+        Assert.AreEqual(NightlyProductLibraryState.NotProduced, empty.State);
+        Assert.AreEqual(NightlyProductWindowDisposition.NoSources, empty.Daily!.Status.Disposition);
+        Assert.IsNull(empty.Product);
+        _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10)));
+        await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+        var product = (await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Single();
+        var file = Directory.GetFiles(_root, product.ProductId.ToString("N") + ".jpg", SearchOption.AllDirectories).Single();
+        await File.WriteAllBytesAsync(file, [0, 1, 2]);
+        var retry = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+        Assert.AreEqual(1, retry.FailedWindows);
+        Assert.AreEqual(0, retry.ProductsPublished);
+    }
+
+    [TestMethod]
+    public async Task UnverifiedLinkedProductKeepsSummaryFailClosedAndRetriesWithContext()
+    {
+        _reader.Add(NightlyProductFixture.Frame(11, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var logger = new CapturingNightlyProductLogger();
+        using var harness = Create(logger: logger);
+        var stillOccurrence = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
+        var stillReport = await harness.Generator.RunAsync(stillOccurrence, CancellationToken.None);
+        Assert.IsGreaterThan(0, stillReport.ProductsPublished, stillReport.Describe());
+        var linkedProduct = (await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+            .Single(product => product.Kind == NightlyProductKind.StarTrail && product.Scope == NightlyProductScope.Final);
+        var linkedFile = Directory.GetFiles(_root, linkedProduct.ProductId.ToString("N") + ".jpg", SearchOption.AllDirectories).Single();
+        await File.WriteAllBytesAsync(linkedFile, [0, 1, 2]);
+
+        var summaryOccurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        foreach (var attempt in Enumerable.Range(0, 2))
+        {
+            var report = await harness.Generator.RunAsync(summaryOccurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FailedWindows, $"Attempt {attempt} must remain failed.");
+            Assert.AreEqual(0, report.ProductsPublished);
+            Assert.IsFalse((await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Any(product => product.Kind == NightlyProductKind.DailySummary));
+        }
+
+        Assert.AreEqual(2, logger.Errors.Count);
+        Assert.IsTrue(logger.Errors.All(message => message.Contains(
+            NightlyProductFixture.ObservingDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal)));
+        Assert.IsTrue(logger.Errors.All(message => message.Contains(linkedProduct.ProductId.ToString(), StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task AllExcludedDayRetainsFinalDiagnosticsWithoutProducingAnArtifact()
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10), new string('0', 64)));
+        using (var harness = Create())
+        {
+            var report = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+            Assert.AreEqual(1, report.FinalsRecorded);
+            var day = await harness.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None);
+            var final = day.Daily(NightlyProductKind.DailySummary, occurrence.SourceWindow.ReportingPeriod.IdentitySha256)!;
+            Assert.AreEqual(NightlyProductWindowDisposition.NoSources, final.Status.Disposition);
+            Assert.AreEqual(1, final.Status.CandidateCount);
+            Assert.AreEqual(0, final.Status.AdmittedCount);
+            Assert.AreEqual(1, final.Status.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
+            Assert.IsEmpty(day.Products);
+            var entry = (await harness.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(NightlyProductLibraryState.NotProduced, entry.State);
+            Assert.AreEqual(1, entry.Daily!.Status.CandidateCount);
+            Assert.AreEqual(1, entry.Daily.Status.Exclusions[NightlyProductContract.ExcludedRigReasonCode]);
+            Assert.IsNull(entry.Product);
+        }
+        using var restarted = Create();
+        var retry = await restarted.Generator.RunAsync(occurrence, CancellationToken.None);
+        Assert.AreEqual(1, retry.WindowsUnchanged);
+        Assert.AreEqual(0, retry.ProductsPublished);
+        Assert.AreEqual(0, _reader.Restores);
+    }
+
+    [TestMethod]
+    public async Task SchemaTwoUpgradePreservesPublishedFilesLineagePointersAndImmutability()
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        NightlyProductDetail before;
+        using (var harness = Create())
+        {
+            await harness.Generator.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail), CancellationToken.None);
+            var id = (await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Single(static product => product.Scope == NightlyProductScope.Final).ProductId;
+            before = (await harness.Store.GetAsync(id, CancellationToken.None))!;
+        }
+        var database = Path.Combine(_root, SqliteNightlyProductStore.DirectoryName, SqliteNightlyProductStore.FileName);
+        var source = database + ".source";
+        File.Move(database, source);
+        using (var connection = new SqliteConnection("Data Source=" + database))
+        {
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "nightly-products-schema-v2.sql"));
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = "ATTACH DATABASE $source AS original;";
+            command.Parameters.AddWithValue("$source", source);
+            await command.ExecuteNonQueryAsync();
+            foreach (var table in new[] { "nightly_products", "nightly_product_sources", "nightly_windows", "nightly_window_products" })
+            {
+                command.CommandText = $"INSERT INTO {table} SELECT * FROM original.{table};";
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+        var hashes = Directory.GetFiles(Path.Combine(_root, SqliteNightlyProductStore.ProductDirectoryName), "*", SearchOption.AllDirectories)
+            .ToDictionary(static path => path, static path => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))));
+        using (var upgraded = Create())
+        {
+            var after = (await upgraded.Store.GetAsync(before.Summary.ProductId, CancellationToken.None))!;
+            Assert.AreEqual(before.Summary, after.Summary);
+            CollectionAssert.AreEqual(before.Sources.ToArray(), after.Sources.ToArray());
+            Assert.AreEqual(before.ProvenanceSha256, after.ProvenanceSha256);
+            await upgraded.Store.VerifyPublicationAsync(after.Summary.ProductId, CancellationToken.None);
+            await upgraded.Generator.RunAsync(NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary), CancellationToken.None);
+            Assert.IsTrue((await upgraded.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None))
+                .Any(static product => product.Kind == NightlyProductKind.DailySummary));
+        }
+        foreach (var pair in hashes)
+            Assert.AreEqual(pair.Value, Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(pair.Key))));
+        using var verify = new SqliteConnection("Data Source=" + database);
+        await verify.OpenAsync();
+        using var check = verify.CreateCommand();
+        check.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(3L, await check.ExecuteScalarAsync());
+        check.CommandText = "SELECT COUNT(*) FROM pragma_foreign_key_check;";
+        Assert.AreEqual(0L, await check.ExecuteScalarAsync());
+        check.CommandText = "DELETE FROM nightly_products;";
+        await Assert.ThrowsExactlyAsync<SqliteException>(async () => await check.ExecuteNonQueryAsync());
+    }
+
+    [TestMethod]
+    public async Task InvalidSchemaTwoReferencesRollBackTheEntireConversion()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, SqliteNightlyProductStore.DirectoryName));
+        var database = Path.Combine(_root, SqliteNightlyProductStore.DirectoryName, SqliteNightlyProductStore.FileName);
+        using (var connection = new SqliteConnection("Data Source=" + database))
+        {
+            await connection.OpenAsync();
+            using var command = connection.CreateCommand();
+            command.CommandText = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Fixtures", "nightly-products-schema-v2.sql"));
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = """
+                PRAGMA foreign_keys = OFF;
+                INSERT INTO nightly_product_sources VALUES (
+                    '00000000000000000000000000000001', 0, 'PreviewFrame', '00000000000000000000000000000002',
+                    'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', NULL, 1);
+                """;
+            await command.ExecuteNonQueryAsync();
+        }
+        using (var harness = Create())
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await harness.Store.GetDayAsync(
+                NightlyProductFixture.ObservingDate, CancellationToken.None));
+        using var verify = new SqliteConnection("Data Source=" + database);
+        await verify.OpenAsync();
+        using var check = verify.CreateCommand();
+        check.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(2L, await check.ExecuteScalarAsync());
+        check.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE '%_v3';";
+        Assert.AreEqual(0L, await check.ExecuteScalarAsync());
+        check.CommandText = "SELECT COUNT(*) FROM nightly_product_sources;";
+        Assert.AreEqual(1L, await check.ExecuteScalarAsync());
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InterruptedRefreshPreservesPublishedSummaryAndRecoversAfterRestart(bool cancel)
+    {
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        _reader.Add(NightlyProductFixture.Frame(1, occurrence.SourceWindow!.StartUtc.AddHours(10)));
+        Guid original;
+        byte[] provenance;
+        using (var initial = Create())
+        {
+            await initial.Generator.RunAsync(occurrence, CancellationToken.None);
+            original = (await initial.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None)).Single().ProductId;
+            provenance = (await initial.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray();
+        }
+        _reader.Add(NightlyProductFixture.Frame(2, occurrence.SourceWindow.StartUtc.AddHours(11)));
+        using var cancellation = new CancellationTokenSource();
+        using (var interrupted = Create(new InterruptedReader(_reader, cancellation, cancel)))
+        {
+            if (cancel)
+                await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+                    await interrupted.Generator.RunAsync(occurrence, cancellation.Token));
+            else
+            {
+                var failure = await interrupted.Generator.RunAsync(occurrence, CancellationToken.None);
+                Assert.AreEqual(1, failure.FailedWindows);
+                Assert.AreEqual(0, failure.ProductsPublished);
+            }
+            var retained = (await interrupted.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+            Assert.AreEqual(original, retained.Product!.ProductId, "An interrupted refresh must not retire the last good summary.");
+            CollectionAssert.AreEqual(provenance, (await interrupted.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+        }
+        using var recovered = Create();
+        Assert.AreEqual(1, (await recovered.Generator.RunAsync(occurrence, CancellationToken.None)).ProductsPublished);
+        var latest = (await recovered.Store.ListLibraryAsync(new(12, NightlyProductKind.DailySummary), CancellationToken.None)).Entries.Single();
+        Assert.AreNotEqual(original, latest.Product!.ProductId);
+        Assert.AreEqual(2, (await recovered.Store.GetPresentationAsync(latest.Product.ProductId, CancellationToken.None))!.DailySummary!.CaptureCount);
+        CollectionAssert.AreEqual(provenance, (await recovered.Store.OpenProvenanceAsync(original, CancellationToken.None))!.Content.ToArray());
+    }
+
+    private sealed class InterruptedReader(INightlyProductSourceReader inner, CancellationTokenSource cancellation, bool cancel)
+        : INightlyProductSourceReader
+    {
+        public ValueTask<IReadOnlyList<NightlyProductCandidate>> ReadCandidatesAsync(string nodeId,
+            DateTimeOffset startUtc, DateTimeOffset endUtc, int maximumCount, Action<string> unsupported,
+            CancellationToken cancellationToken) => inner.ReadCandidatesAsync(nodeId, startUtc, endUtc, maximumCount, unsupported, cancellationToken);
+
+        public async ValueTask<IReadOnlyList<ProcessingArtifact>> RestoreAsync(IReadOnlyList<NightlyProductCandidate> candidates,
+            CancellationToken cancellationToken)
+        {
+            if (cancel)
+            {
+                await cancellation.CancelAsync();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            throw new IOException("Synthetic source read failure.");
+        }
+    }
+
+    private Harness Create(INightlyProductSourceReader? reader = null, ILogger<NightlyProductGenerator>? logger = null,
+        NightlyProductOptions? options = null)
+    {
+        Directory.CreateDirectory(_root);
+        var host = NightlyProductFixture.HostOptions(_root, options ?? NightlyProductFixture.Options());
+        var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
+        var store = new SqliteNightlyProductStore(host, clock);
+        var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
+            reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock, logger);
+        return new(store, generator);
+    }
+
+    private sealed record Harness(SqliteNightlyProductStore Store, NightlyProductGenerator Generator) : IDisposable
+    {
+        public void Dispose() { Generator.Dispose(); Store.Dispose(); }
+    }
+
+    private sealed class CapturingNightlyProductLogger : ILogger<NightlyProductGenerator>
+    {
+        internal List<string> Errors { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (IsEnabled(logLevel)) Errors.Add(formatter(state, exception));
+        }
+    }
+}

@@ -260,7 +260,7 @@ public sealed class RetentionBackgroundService(
                     continue;
                 }
 
-                var normalizedRoot = Path.GetFullPath(storageRoot);
+                var normalizedRoot = StorageRootIdentity.CanonicalPath(storageRoot);
                 var retentionDays = Math.Max(1, options.RetentionDays);
 
                 configuredStorage.Add(new StorageRetentionPlan(
@@ -281,16 +281,16 @@ public sealed class RetentionBackgroundService(
         }
 
         var plans = configuredStorage
-            .GroupBy(static plan => Path.TrimEndingDirectorySeparator(plan.StorageRoot), PathComparer)
+            .GroupBy(static plan => StorageRootIdentity.Key(plan.StorageRoot), StringComparer.Ordinal)
             .Select(static group => new StorageRetentionPlan(
-                group.Key,
+                group.First().StorageRoot,
                 group.Max(static plan => plan.RetentionDays),
                 MergePolicies(group.SelectMany(static plan => plan.Policies ?? []))))
             .OrderBy(static plan => plan.StorageRoot, PathComparer)
             .ToList();
         var needsRawRoot = hasDurableOutputs || _rawIngressHolds is not null || _processingHolds is not null;
         var rawRoot = needsRawRoot
-            ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(_hostOptions.RawIngressRoot))
+            ? StorageRootIdentity.CanonicalPath(_hostOptions.RawIngressRoot)
             : null;
         if (hasDurableOutputs && !plans.Any(plan => PathsEqual(plan.StorageRoot, rawRoot!)))
         {
@@ -338,18 +338,16 @@ public sealed class RetentionBackgroundService(
     }
 
     private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            Path.GetFullPath(left),
-            Path.GetFullPath(right),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        => StorageRootIdentity.AreEqual(left, right);
 
     private async Task<PendingArtifacts> ReadPendingArtifactsAsync(
         string storageRoot,
         IRawIngressLifecycleProcessingRetentionHolds? processingHoldsUnderLifecycleLock,
         CancellationToken cancellationToken)
     {
-        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot));
-        var rootPrefix = string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
+        var normalizedRoot = StorageRootIdentity.CanonicalPath(storageRoot);
+        var rootPrefix = Path.EndsInDirectorySeparator(normalizedRoot)
+            ? normalizedRoot : string.Concat(normalizedRoot, Path.DirectorySeparatorChar);
         var paths = new HashSet<string>(PathComparer);
         var artifactIds = new HashSet<Guid>();
         var outboxHolds = await _artifactOutbox.GetRetentionHoldsAsync(normalizedRoot, cancellationToken).ConfigureAwait(false);
@@ -555,7 +553,7 @@ public sealed class RetentionBackgroundService(
                             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
                             if (!pending.AbsolutePaths.Contains(Path.GetFullPath(file)))
                             {
-                                File.Delete(file);
+                                RetainedFileMutations.Delete(file);
                                 deletedFiles++;
                             }
                         }
@@ -566,14 +564,14 @@ public sealed class RetentionBackgroundService(
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!Directory.EnumerateFileSystemEntries(monthDirectory).Any())
                 {
-                    Directory.Delete(monthDirectory, recursive: false);
+                    RetainedFileMutations.DeleteDirectory(monthDirectory, recursive: false);
                 }
             }
 
             cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(yearDirectory).Any())
             {
-                Directory.Delete(yearDirectory, recursive: false);
+                RetainedFileMutations.DeleteDirectory(yearDirectory, recursive: false);
             }
         }
         return deletedFiles;
@@ -609,7 +607,7 @@ public sealed class RetentionBackgroundService(
                 cancellationToken.ThrowIfCancellationRequested();
                 if (retainedLines.Length == 0)
                 {
-                    File.Delete(file);
+                    RetainedFileMutations.Delete(file);
                     FrameIndexIdentityCache.Invalidate(file);
                     deletedFiles++;
                     _logger.IndexFileDeleted(file);
@@ -645,7 +643,7 @@ public sealed class RetentionBackgroundService(
             var lastWrite = File.GetLastWriteTimeUtc(file).Date;
             if (lastWrite <= cutoffDate && !pendingPaths.Contains(Path.GetFullPath(file)))
             {
-                File.Delete(file);
+                RetainedFileMutations.Delete(file);
                 deletedFiles++;
                 _logger.DerivedFileDeleted(file);
             }
@@ -658,7 +656,7 @@ public sealed class RetentionBackgroundService(
             cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
-                Directory.Delete(directory, recursive: false);
+                RetainedFileMutations.DeleteDirectory(directory, recursive: false);
             }
         }
         return deletedFiles;
@@ -672,13 +670,13 @@ public sealed class RetentionBackgroundService(
             cancellationToken.ThrowIfCancellationRequested();
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
-                Directory.Delete(directory);
+                RetainedFileMutations.DeleteDirectory(directory);
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
         if (!Directory.EnumerateFileSystemEntries(root).Any())
         {
-            Directory.Delete(root);
+            RetainedFileMutations.DeleteDirectory(root);
         }
     }
 

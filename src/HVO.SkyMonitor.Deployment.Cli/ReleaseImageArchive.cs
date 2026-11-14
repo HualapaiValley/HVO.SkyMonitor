@@ -64,6 +64,20 @@ internal static class ReleaseImageArchive
         OfflineArchive archive,
         CancellationToken cancellationToken)
     {
+        var labels = await ReadLabelsAsync(stream, release, image, archive, "CameraAgent", cancellationToken).ConfigureAwait(false);
+        return CameraAgentImageLabels.Identity(
+            "archive", archive.ConfigDigest, archive.ConfigDigest, archive.Platform["linux/".Length..], archive.Sha256, labels);
+    }
+
+    /// <summary>Verifies the central image without interpreting CameraAgent state fields.</summary>
+    public static Task<JsonElement> ReadLogicHostLabelsAsync(
+        Stream stream, ReleaseManifest release, ReleaseImage image, OfflineArchive archive, CancellationToken cancellationToken)
+        => ReadLabelsAsync(stream, release, image, archive, "LogicHost", cancellationToken);
+
+    private static async Task<JsonElement> ReadLabelsAsync(
+        Stream stream, ReleaseManifest release, ReleaseImage image, OfflineArchive archive, string component,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(release);
         ArgumentNullException.ThrowIfNull(image);
@@ -77,7 +91,8 @@ internal static class ReleaseImageArchive
         {
             wanted.Add(BlobPrefix + Hex(image.Digest));
         }
-        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted, cancellationToken).ConfigureAwait(false);
+        var (entries, blobs) = await ReadEntriesAsync(stream, archive.Name, wanted,
+            component == "LogicHost" ? 4096 : null, cancellationToken).ConfigureAwait(false);
         InstallerException Refusal(string reason)
             => new($"The offline archive {archive.Name} is not the image release {release.Tag} names: {reason}.");
         byte[] Entry(string name, string what)
@@ -110,6 +125,7 @@ internal static class ReleaseImageArchive
         long? imageSize;
         using (var layout = ReleaseJson.Parse(Entry("index.json", "OCI layout index"), $"the offline archive {archive.Name}'s OCI layout index"))
         {
+            RequireLogicHostSchema2(layout.RootElement, component, "OCI layout index", Refusal);
             OnlyFields(layout.RootElement, "OCI layout index", Refusal, "schemaVersion", "mediaType", "manifests");
             var top = Single(layout.RootElement, "manifests") ?? throw Refusal("its OCI layout does not name exactly one image");
             OnlyFields(top, "OCI layout index's image", Refusal, "mediaType", "digest", "size", "annotations");
@@ -142,6 +158,7 @@ internal static class ReleaseImageArchive
         if (!singlePlatform)
         {
             using var index = ReleaseJson.Parse(Blob(image.Digest, imageSize, "image index"), $"the offline archive {archive.Name}'s image index");
+            RequireLogicHostSchema2(index.RootElement, component, "image index", Refusal);
             if (index.RootElement.ValueKind != JsonValueKind.Object ||
                 !index.RootElement.TryGetProperty("manifests", out var manifests) || manifests.ValueKind != JsonValueKind.Array)
             {
@@ -155,6 +172,15 @@ internal static class ReleaseImageArchive
                 {
                     OnlyFields(entryPlatform, "image index entry's platform", Refusal, "architecture", "os", "variant");
                 }
+            }
+            if (component == "LogicHost" &&
+                (manifests.GetArrayLength() != image.Platforms.Count ||
+                 !manifests.EnumerateArray().Select(entry => entry.ValueKind == JsonValueKind.Object &&
+                         entry.TryGetProperty("platform", out var declared) && declared.ValueKind == JsonValueKind.Object
+                             ? $"{Text(declared, "os")}/{Text(declared, "architecture")}" : null)
+                     .Order(StringComparer.Ordinal).SequenceEqual(image.Platforms.Order(StringComparer.Ordinal), StringComparer.Ordinal)))
+            {
+                throw Refusal("its image index platforms must match the release declarations exactly");
             }
             var matching = manifests.EnumerateArray()
                 .Where(entry => entry.ValueKind == JsonValueKind.Object &&
@@ -174,6 +200,7 @@ internal static class ReleaseImageArchive
         using (var manifest = ReleaseJson.Parse(Blob(archive.ManifestDigest, manifestSize, $"{archive.Platform} manifest"), $"the offline archive {archive.Name}'s {archive.Platform} manifest"))
         {
             var root = manifest.RootElement;
+            RequireLogicHostSchema2(root, component, "platform manifest", Refusal);
             OnlyFields(root, $"{archive.Platform} manifest", Refusal, "schemaVersion", "mediaType", "config", "layers", "annotations");
             if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("config", out var config) ||
                 config.ValueKind != JsonValueKind.Object || Text(config, "digest") != archive.ConfigDigest)
@@ -251,14 +278,12 @@ internal static class ReleaseImageArchive
                      runtime.TryGetProperty("Labels", out var labelValues)
             ? labelValues
             : default;
-        var identity = CameraAgentImageLabels.Identity(
-            "archive", archive.ConfigDigest, archive.ConfigDigest, archive.Platform["linux/".Length..], archive.Sha256, labels);
         var created = ReleaseManifest.FormatCreated(release.Created);
-        if (identity.Component != "CameraAgent" || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.version") != release.Version ||
-            identity.SourceRevision != release.Commit || CameraAgentImageLabels.Label(labels, "org.opencontainers.image.created") != created)
+        if (Text(labels, "io.hvo.skymonitor.component") != component || Text(labels, "org.opencontainers.image.version") != release.Version ||
+            Text(labels, "org.opencontainers.image.revision") != release.Commit || Text(labels, "org.opencontainers.image.created") != created)
         {
             throw new InstallerException(
-                $"The offline archive {archive.Name} holds an image that is not labelled as CameraAgent {release.Version} from " +
+                $"The offline archive {archive.Name} holds an image that is not labelled as {component} {release.Version} from " +
                 $"commit {release.Commit}, created {created}, as release {release.Tag} requires.");
         }
 
@@ -269,7 +294,7 @@ internal static class ReleaseImageArchive
         {
             throw Refusal($"it holds {unused}, which its image does not use");
         }
-        return identity;
+        return labels.Clone();
     }
 
     /// <summary>
@@ -282,6 +307,7 @@ internal static class ReleaseImageArchive
         Stream stream,
         string name,
         HashSet<string> wanted,
+        int? maximumEntries,
         CancellationToken cancellationToken)
     {
         var entries = new Dictionary<string, byte[]>(StringComparer.Ordinal);
@@ -292,6 +318,10 @@ internal static class ReleaseImageArchive
             await using var reader = new TarReader(stream, leaveOpen: true);
             while (await reader.GetNextEntryAsync(copyData: false, cancellationToken).ConfigureAwait(false) is { } entry)
             {
+                if (maximumEntries is { } maximum && seen.Count >= maximum)
+                {
+                    throw new InstallerException($"The offline archive exceeds its {maximum}-entry bound.");
+                }
                 var entryName = CanonicalName(entry)
                                 ?? throw new InstallerException(
                                     $"The offline archive {name} holds an entry named {Printable(entry.Name)}, which is not the canonical spelling of a path.");
@@ -402,6 +432,17 @@ internal static class ReleaseImageArchive
                     : "whose name it will not print";
                 throw refusal($"its {what} has a field {field}, which the installer does not accept");
             }
+        }
+    }
+
+    private static void RequireLogicHostSchema2(
+        JsonElement element, string component, string what, Func<string, InstallerException> refusal)
+    {
+        if (component == "LogicHost" && (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty("schemaVersion", out var schema) || schema.ValueKind != JsonValueKind.Number ||
+            !schema.TryGetInt32(out var version) || version != 2))
+        {
+            throw refusal($"its {what} must declare supported OCI schemaVersion 2");
         }
     }
 

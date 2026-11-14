@@ -1,7 +1,8 @@
-# Same-gain rolling combination
+# Rolling combination
 
 Open the Processing graph editor and draft the active graph. An existing
-`RollingCombination` node using the same-gain rolling mean has controls for
+`RollingCombination` node using the same-gain rolling mean or the existing mixed-gain
+normalized mean has controls for
 enabled state, window size (1–100 trailing, 1–64 centered), trailing or centered
 windows, and optional positive age and integration limits in milliseconds. Fractional milliseconds
 are supported. Blank limits mean unlimited; **Remove limit** explicitly clears
@@ -22,13 +23,17 @@ Age cuts count backwards from the newest selected frame and include the exact
 boundary. Integration cuts include frames while their summed exposure stays
 within the limit; the newest frame is always included even if it alone exceeds
 the limit. These cuts can reduce a ready centered window's combined source set.
-Gain and existing compatibility boundaries still reset the window.
+Same-gain windows still reset at gain changes. Mixed-gain windows retain their
+existing normalization and calibration compatibility rules.
 
 Preview and save a draft, validate it, then explicitly activate it. Saving never
 activates a graph. Roll back to the retained revision to restore its settings;
 old revisions retain their original options and output identities.
 
 OutputVariant, Recipe and normalization bindings are preserved. Mixed-gain nodes
-keep their existing opaque options and have no same-gain controls. This panel
+have a separately versioned panel for the existing mixed-gain recipe. Each execution
+still requires its frozen normalization plan and compatible calibration masters;
+the panel cannot edit retained plans or remove those requirements. Unknown recipe
+versions are not treated as one of these producers. This panel
 does not select recipes or plans, acquire masters, change stacking algorithms,
 or change retention and scheduling. #1386 remains open for remaining editors.

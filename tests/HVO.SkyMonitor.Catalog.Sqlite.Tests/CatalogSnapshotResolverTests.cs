@@ -133,7 +133,7 @@ internal sealed class CatalogSnapshotResolverTests
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
         Assert.AreEqual(
-            "Catalog manifest version 1 is unsupported. This runtime reads versions 2 through 3.", exception.Message);
+            "Catalog manifest version 1 is unsupported. This runtime reads versions 2 through 4.", exception.Message);
     }
 
     [TestMethod]
@@ -169,12 +169,12 @@ internal sealed class CatalogSnapshotResolverTests
     public void ResolveRejectsUnknownManifestVersionExplicitly()
     {
         using var installation = CreateInstallation();
-        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 4));
+        File.WriteAllText(installation.ManifestPath, CreateManifest(installation.DatabasePath, manifestVersion: 5));
 
         var exception = Assert.ThrowsExactly<InvalidDataException>(() => ResolveFixture(installation.Root));
 
         Assert.AreEqual(
-            "Catalog manifest version 4 is unsupported. This runtime reads versions 2 through 3.", exception.Message);
+            "Catalog manifest version 5 is unsupported. This runtime reads versions 2 through 4.", exception.Message);
     }
 
     [TestMethod]
