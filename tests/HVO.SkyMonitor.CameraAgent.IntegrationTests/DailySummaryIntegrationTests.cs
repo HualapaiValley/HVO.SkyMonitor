@@ -17,7 +17,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned harness owns both disposable services.")]
 [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "SQL comes only from a frozen repository fixture and a fixed table allowlist.")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Focused integration tests.")]
-public sealed class DailySummaryIntegrationTests : IDisposable
+public sealed partial class DailySummaryIntegrationTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "hvo-daily-summary-" + Guid.NewGuid().ToString("N"));
     private readonly InMemoryNightlySourceReader _reader = new();

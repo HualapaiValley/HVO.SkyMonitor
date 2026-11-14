@@ -18,7 +18,17 @@ internal sealed partial class NightlyProductGenerator
             window.Policy.Kind != LocalAutomationSourceWindowKind.SunriseDay)
             return report;
 
-        var day = await _store.GetDayAsync(window.ReportingPeriod.ReportDate, cancellationToken).ConfigureAwait(false);
+        NightlyProductDay day;
+        try
+        {
+            day = await _store.GetDayAsync(window.ReportingPeriod.ReportDate, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is InvalidDataException or IOException)
+        {
+            // The still work is already complete. An unreadable listing cannot identify refresh work to retry.
+            var skipped = $"Daily summary refresh skipped: the report date could not be listed ({exception.GetType().Name}).";
+            return report with { Note = report.Note is null ? skipped : report.Note + " " + skipped };
+        }
         var evaluated = 0;
         var published = 0;
         var reused = 0;
@@ -31,16 +41,18 @@ internal sealed partial class NightlyProductGenerator
                 NightlyProductKind.DailySummary, _options.NightlyProducts)))
         {
             var refreshed = await RunCoreAsync(summary.Status.Occurrence, cancellationToken).ConfigureAwait(false);
+            published += refreshed.ProductsPublished;
+            reused += refreshed.ProductsReused;
+            unchanged += refreshed.WindowsUnchanged;
             if (!refreshed.Ready || refreshed.FailedWindows > 0 || refreshed.PendingWindows > 0)
                 return report with
                 {
                     FailedWindows = report.FailedWindows + 1,
-                    Note = "A retained daily summary could not be refreshed; retry this occurrence. " + refreshed.Describe()
+                    Note = string.Create(CultureInfo.InvariantCulture,
+                        $"Daily summary refresh: {published} published, {reused} reused, {unchanged} unchanged. ") +
+                        "A retained daily summary could not be refreshed; retry this occurrence. " + refreshed.Describe()
                 };
             evaluated++;
-            published += refreshed.ProductsPublished;
-            reused += refreshed.ProductsReused;
-            unchanged += refreshed.WindowsUnchanged;
         }
         if (evaluated == 0) return report;
         var note = string.Create(CultureInfo.InvariantCulture,
