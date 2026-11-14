@@ -16,6 +16,33 @@ internal sealed class LogicHostRecipeExecutionAdapter(IProcessingRecipeExecutor 
 {
     private readonly IProcessingRecipeExecutor _executor = executor;
 
+    /// <summary>
+    /// Executes an explicitly supplied capture-bound recipe with the retained descriptor's exact artifact time
+    /// and exposure bounds. Generic reconstruction keeps its observation-based creation and interval semantics.
+    /// </summary>
+    internal ValueTask<ProcessingOutcome> ExecuteDescriptorExactAsync(
+        ReconstructionDescriptor descriptor,
+        ReadOnlyMemory<byte> payload,
+        string recipeName,
+        JsonElement options,
+        ProcessingInputSelector selector,
+        string outputVariant,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var (request, failure) = CreateRequest(
+            [new LogicHostProcessingInput(descriptor, payload)], recipeName, options, selector, outputVariant,
+            null, null, reconstructPayloads: true);
+        if (failure is not null) return ValueTask.FromResult(failure);
+        var source = request!.Inputs[0] with
+        {
+            CreatedUtc = descriptor.Artifact.CreatedUtc,
+            ObservationStartedUtc = descriptor.Timing.ExposureStartedUtc,
+            ObservationEndedUtc = descriptor.Timing.ExposureEndedUtc
+        };
+        return _executor.ExecuteAsync(request with { Inputs = [source] }, cancellationToken);
+    }
+
     internal ValueTask<ProcessingOutcome> ExecuteAsync(
         ReconstructionDescriptor descriptor,
         ReadOnlyMemory<byte> payload,
