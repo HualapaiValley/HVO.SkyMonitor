@@ -34,8 +34,8 @@ Kepler, WebSite, #1016/#1110, #1179 and #1242 ownership is unchanged.
 
 ## Requirement evidence
 
-All tests below belong to `DailySummaryIntegrationTests`; the new cases live in
-`DailySummaryIntegrationTests.Maintenance.cs`. They use synthetic 16×16 Mono8
+The summary requirement tests below belong to `DailySummaryIntegrationTests`;
+the new cases live in `DailySummaryIntegrationTests.Maintenance.cs`. They use synthetic 16×16 Mono8
 frames, the real nightly SQLite/file store, real automation SQLite history,
 `LocalAutomationRunnerService`, and the production nightly task adapter. The
 test registry forwards to that adapter; only unrelated capture input and
@@ -88,10 +88,12 @@ claimed. The overflow limit remains 1,024 and is tested directly, not bypassed.
 Runtime evidence is the actual persisted automation history and converged
 immutable output. No metric, tracing or health contract changes; new metric
 labels, spans and health transitions are N/A. A failed identified refresh
-remains retryable, while an unlistable date cannot turn successful own work into
-an exception failure. Operator detail is checked against its existing 512-byte
-ASCII bound. No browser, network/host configuration or production operation is
-part of this implementation.
+remains retryable, while a date listing that raises `InvalidDataException` or
+`IOException` cannot turn successful own work into an exception failure. Operator
+detail is bounded to 512 UTF-16 code units, with truncation avoiding a split
+surrogate pair; the summary fixture's asserted note text is ASCII, a separate
+property rather than a byte-based storage limit. No browser, network/host
+configuration or production operation is part of this implementation.
 
 Roy's superseding authorization permits the required independent Sol review via
 `codex_cliproxy / gpt-6.1-sol / reasoningEffort=xhigh, serviceTier=priority` and
@@ -99,3 +101,32 @@ Opus via `claude_cliproxy / claude-opus-5-5 / effort=xhigh, fastMode=true`.
 The disabled direct Claude route is excluded. Requested settings and catalog
 availability are not execution evidence; actual model/effort, same-candidate
 completeness and CLEAN verdicts must be recorded before Kepler readiness.
+
+## Final candidate and evidence disposition (2026-11-15)
+
+The fail-first results above retain their stated baseline. The subsequent local
+candidate results, coverage and pre-review status belong to producer
+`0890f61163307591c83249006b3b7e3c244d7f7e`; they are historical evidence,
+not relabeled as executions or coverage produced by the final head.
+The later [final candidate](https://github.com/HualapaiValley/HVO.SkyMonitor/commit/be45083351d373d9b97551e077587eb5aaa06062)
+also corrected `RunManifestEndpointTests.CorruptCountLedgerRefusesOnlyManifestAndRecovers`,
+separate from the summary tests: its Inputs and Outputs rows corrupt and restore
+the schema-9 `processing_execution_manifest_counts` header instead of obsolete
+frozen-plan count JSON.
+
+The [coordinator's supplemental reconciliation](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1834#issuecomment-6867507583)
+reports that the fixture assembly change affected six Unit rows through the
+same-assembly connection-pool guard, and that the candidate's hosted
+[Build and Unit job](https://github.com/HualapaiValley/HVO.SkyMonitor/actions/runs/43516434221/job/132200877421)
+reported 6 passed, 0 failed and 0 skipped for that assembly. These are
+coordinator-attributed results, not independently reproduced here; they
+supplement or replace attribution for those rows, are not added to the older
+totals, and do not make the older coverage candidate-produced.
+
+The [formal convergence record](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1834#issuecomment-6866077741)
+reports Sol and Opus COMPLETE/CLEAN on `be45083351d373d9b97551e077587eb5aaa06062`,
+with their reports in comments. The [merge record](https://github.com/HualapaiValley/HVO.SkyMonitor/pull/1834#issuecomment-6866774541)
+records merge `263f8202434f898e197ec5fe9c9f54b71083dfb5` and queue evidence.
+These records supersede the historical pre-review status above; they do not claim
+a native GitHub approval. The broader exception-policy and original-requirement
+question remains unresolved in [#1842](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1842).
