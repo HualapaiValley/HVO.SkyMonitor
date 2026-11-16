@@ -150,6 +150,21 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         CollectionAssert.AreEqual(expected, await ReadManifestLedgerAsync(connection, executionId).ConfigureAwait(false));
     }
 
+    // The fourth gallery card is an older capture, not necessarily a finished run. A live execution that is still
+    // recording changes its journal, count ledger and manifest underneath exact before-and-after comparisons.
+    private static async Task WaitForCompletedExecutionAsync(CameraAgentKestrelFixture host, Guid executionId)
+    {
+        var operations = host.Services.GetRequiredService<IProcessingGraphOperations>();
+        var deadline = DateTimeOffset.UtcNow.AddMilliseconds(DefaultTimeoutMilliseconds);
+        ProcessingGraphExecutionStatus? status;
+        while ((status = (await operations.ReadExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false))?.Execution.Status)
+            != ProcessingGraphExecutionStatus.Completed)
+        {
+            Assert.IsTrue(DateTimeOffset.UtcNow < deadline, $"The selected live execution did not complete; its status is {status?.ToString() ?? "unknown"}.");
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+    }
+
     private async Task AssertOptionalManifestEvidenceRecoveryAsync(string scenario, string? ledgerKind = null, string? ledgerFault = null)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
@@ -169,6 +184,9 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync(runUrl).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var id = Guid.Parse(new Uri(page.Url).Segments[^1]);
+        await WaitForCompletedExecutionAsync(host, id).ConfigureAwait(false);
+        await page.ReloadAsync().ConfigureAwait(false);
+        await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var api = $"/api/v1/operations/processing-graphs/executions/{id:D}";
         AuxiliaryRunManifestEvidenceFixture? auxiliaryEvidence = null;
         if (scenario == "auxiliary-descriptor")
