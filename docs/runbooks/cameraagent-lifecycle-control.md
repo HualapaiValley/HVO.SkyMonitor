@@ -86,16 +86,16 @@ while the transport responds. Idle heartbeats do not write durable state or eval
      authority for the new request. A held deployment lock is one cause, but
      this code also covers other installer errors or refusals, including an
      Uninstalled instance, an incomplete installer lifecycle operation requiring
-     recovery, and retained manifest/result or transaction drift and correlation
-     mismatches.
+     recovery, retained manifest/result or transaction drift and correlation
+     mismatches, invalid, empty or unsupported retained manifest, result or
+     lifecycle-operation JSON, and a retained lifecycle condition that is neither
+     Installed nor Uninstalled.
      The code alone does not identify which cause occurred. Check for an active
      installer operation and inspect the retained installation and lifecycle
      records before retrying; follow the recovery guidance below for incomplete
-     operations or interrupted rollback publication. Retain the records and
-     escalate unexplained mismatches instead of editing them.
-     During retained receipt recovery, the corresponding worker diagnostic is
-     `recovery=installer-busy`; the receipt remains pending rather than being
-     failed by this diagnostic.
+     operations or interrupted rollback publication. For corrupt, unsupported or
+     linked state, see [receipts and failure recovery](#receipts-and-failure-recovery).
+     Retain the records and escalate unexplained mismatches instead of editing them.
    - **Failed** `lifecycle.restart-required`: the worker's cached listener,
      credential or runtime identity differs from the retained installation. Stop
      and restart the lifecycle worker as the recorded runtime account, then submit
@@ -303,6 +303,9 @@ HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed
 Diagnostics distinguish `recovery=probe-timeout`, `recovery=transport-unavailable`
 and `recovery=probe-refused status=<code>` from heartbeat or publication failures.
 The next poll retries the retained recovery; caller cancellation still stops the worker.
+During retained receipt recovery, the corresponding worker diagnostic is
+`recovery=installer-busy`; the receipt remains pending rather than being
+failed by this diagnostic.
 If recovery reports `recovery=restart-required`, the receipt remains pending. Stop
 and restart the lifecycle worker as the recorded runtime account so it reloads the
 listener, credential and identity; retain the journals for settlement. If startup
