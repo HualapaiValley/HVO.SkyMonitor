@@ -12,13 +12,20 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
 public sealed partial class CameraAgentBrowserAcceptanceTests
 {
+    private const string CorruptLedgerStatus = "corrupt-status";
+    private const string MissingLedgerHeader = "missing-header";
+
+    // Processing schema 9 reads manifest counts from the typed ledger, never from optional counters in the frozen
+    // plan JSON. The table's constraints leave each ledger two corrupt shapes its reader can meet: a header that
+    // records the corruption, and a header that is gone. Legacy JSON notations (deep, negative, lone surrogate)
+    // cannot be stored in typed rows; converting them is covered by the Unit and migration tests.
     [TestMethod]
-    [DataRow("flat")]
-    [DataRow("deep")]
-    [DataRow("unicode-high")]
-    [DataRow("unicode-low")]
-    public Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(string scenario)
-        => AssertOptionalManifestEvidenceRecoveryAsync(scenario);
+    [DataRow("Inputs", CorruptLedgerStatus)]
+    [DataRow("Outputs", CorruptLedgerStatus)]
+    [DataRow("Inputs", MissingLedgerHeader)]
+    [DataRow("Outputs", MissingLedgerHeader)]
+    public Task OptionalManifestCountCorruptionKeepsBrowserJournalReadableAndRecoversAsync(string ledgerKind, string fault)
+        => AssertOptionalManifestEvidenceRecoveryAsync($"{ledgerKind}-ledger-{fault}", ledgerKind, fault);
 
     [TestMethod]
     public Task AuxiliaryManifestDescriptorCorruptionKeepsBrowserJournalReadableAndRecoversAsync()
@@ -97,7 +104,53 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    private async Task AssertOptionalManifestEvidenceRecoveryAsync(string scenario)
+    private sealed record ManifestLedgerRow(string LedgerKind, string NodeId, long? EvidenceCount, string EvidenceStatus);
+
+    private static async Task<ManifestLedgerRow[]> ReadManifestLedgerAsync(SqliteConnection connection, Guid executionId)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT ledger_kind, node_id, evidence_count, evidence_status FROM processing_execution_manifest_counts
+            WHERE execution_id = $execution ORDER BY ledger_kind, node_id;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        var rows = new List<ManifestLedgerRow>();
+        while (await reader.ReadAsync().ConfigureAwait(false))
+            rows.Add(new(reader.GetString(0), reader.GetString(1),
+                await reader.IsDBNullAsync(2).ConfigureAwait(false) ? null : reader.GetInt64(2), reader.GetString(3)));
+        return [.. rows];
+    }
+
+    // Damages or repairs only the selected ledger's header, then proves the complete ledger of both kinds is exactly
+    // the expected rows, so neither step can pass by touching nothing or by disturbing the opposite ledger.
+    private static async Task WriteManifestLedgerHeaderAsync(SqliteConnection connection, Guid executionId,
+        ManifestLedgerRow[] original, string ledgerKind, string fault, bool restore)
+    {
+        var header = original.Single(row => row.LedgerKind == ledgerKind && row.NodeId.Length == 0);
+        Assert.AreEqual("Recorded", header.EvidenceStatus);
+        Assert.IsTrue(original.Any(row => row.LedgerKind == ledgerKind && row.NodeId.Length > 0),
+            "The completed execution must retain typed count rows in the ledger under test.");
+        using var command = connection.CreateCommand();
+        if (fault == CorruptLedgerStatus)
+            command.CommandText = "UPDATE processing_execution_manifest_counts SET evidence_status=$status WHERE execution_id=$execution AND ledger_kind=$kind AND node_id='';";
+        else if (fault != MissingLedgerHeader)
+            throw new ArgumentOutOfRangeException(nameof(fault), fault, "Unknown manifest ledger fault.");
+        else if (restore)
+            command.CommandText = "INSERT INTO processing_execution_manifest_counts(execution_id, ledger_kind, node_id, evidence_count, evidence_status) VALUES ($execution, $kind, '', NULL, $status);";
+        else
+            command.CommandText = "DELETE FROM processing_execution_manifest_counts WHERE execution_id=$execution AND ledger_kind=$kind AND node_id='' AND evidence_status=$status;";
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$kind", ledgerKind);
+        command.Parameters.AddWithValue("$status", restore || fault == MissingLedgerHeader ? header.EvidenceStatus : "Corrupt");
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        var expected = restore ? original
+            : fault == MissingLedgerHeader ? [.. original.Where(row => row != header)]
+            : [.. original.Select(row => row == header ? row with { EvidenceStatus = "Corrupt" } : row)];
+        CollectionAssert.AreEqual(expected, await ReadManifestLedgerAsync(connection, executionId).ConfigureAwait(false));
+    }
+
+    private async Task AssertOptionalManifestEvidenceRecoveryAsync(string scenario, string? ledgerKind = null, string? ledgerFault = null)
     {
         using var playwright = await Playwright.CreateAsync().ConfigureAwait(false);
         await playwright.EnsureLaunchableOrInconclusiveAsync().ConfigureAwait(false);
@@ -141,24 +194,19 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
 
         using var connection = new SqliteConnection($"Data Source={Path.Combine(host.Root, "journal", "raw-ingress.db")};Pooling=False");
         await connection.OpenAsync().ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE processing_executions SET frozen_plan_json =
-                CAST(json_set(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts', json($counts)) AS BLOB)
-            WHERE execution_id = $execution;
-            """;
-        command.Parameters.AddWithValue("$execution", id.ToString("N"));
-        command.Parameters.AddWithValue("$counts", scenario switch
-        {
-            "deep" => new string('[', 70) + "0" + new string(']', 70),
-            "unicode-high" => "{\"\\uD800\":1}",
-            "unicode-low" => "{\"\\uDC00\":1}",
-            _ => "{\"preview\":-1}"
-        });
+        ManifestLedgerRow[] ledger = [];
+        string? journal = null;
         if (auxiliary is not null) await auxiliary.CorruptAsync().ConfigureAwait(false);
-        else Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        else
+        {
+            journal = await (await context.APIRequest.GetAsync(api).ConfigureAwait(false)).TextAsync().ConfigureAwait(false);
+            ledger = await ReadManifestLedgerAsync(connection, id).ConfigureAwait(false);
+            await WriteManifestLedgerHeaderAsync(connection, id, ledger, ledgerKind!, ledgerFault!, restore: false).ConfigureAwait(false);
+        }
         var ordinary = await context.APIRequest.GetAsync(api).ConfigureAwait(false);
         Assert.AreEqual(200, ordinary.Status);
+        // Ordinary detail never depends on the optional ledger rows, so it is the same journal, not merely a readable one.
+        if (journal is not null) Assert.AreEqual(journal, await ordinary.TextAsync().ConfigureAwait(false));
         var refused = await context.APIRequest.GetAsync(api + "/manifest").ConfigureAwait(false);
         Assert.AreEqual(409, refused.Status);
         StringAssert.Contains(await refused.TextAsync().ConfigureAwait(false), CameraAgentRunManifest.CorruptReason, StringComparison.Ordinal);
@@ -169,13 +217,8 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         Assert.AreEqual(CameraAgentRunManifest.CorruptReason, await page.Locator("#manifest-unavailable").InnerTextAsync().ConfigureAwait(false));
         Assert.AreEqual(0, await page.GetByText("The execution could not be read.", new() { Exact = true }).CountAsync().ConfigureAwait(false));
 
-        command.CommandText = """
-            UPDATE processing_executions SET frozen_plan_json =
-                CAST(json_remove(CAST(frozen_plan_json AS TEXT), '$.committedOutputCounts') AS BLOB)
-            WHERE execution_id = $execution;
-            """;
         if (auxiliary is not null) await auxiliary.RestoreReferenceAsync().ConfigureAwait(false);
-        else Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        else await WriteManifestLedgerHeaderAsync(connection, id, ledger, ledgerKind!, ledgerFault!, restore: true).ConfigureAwait(false);
         await page.ReloadAsync().ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await VisibleAsync(downloadLink).ConfigureAwait(false);
