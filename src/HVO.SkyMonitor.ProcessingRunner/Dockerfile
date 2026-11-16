@@ -30,7 +30,7 @@ RUN case "$TARGETARCH" in amd64) rid=linux-x64 ;; arm64) rid=linux-arm64 ;; esac
        -c Release --no-restore --runtime "$rid" --self-contained true -o /app/publish
 
 # Stage 2: Runtime (self-contained publish; runtime-deps only)
-FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.14@sha256:f87d6824cd56fa4ad117d06461e4eb0058f46a159872dbcc4a836a72efdd1bec
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0.15@sha256:9cab4d7d886226d47b5489ef9abf0544e2f109fde11a8acc190217610af26c00
 WORKDIR /app
 COPY --from=build /app/publish .
 
