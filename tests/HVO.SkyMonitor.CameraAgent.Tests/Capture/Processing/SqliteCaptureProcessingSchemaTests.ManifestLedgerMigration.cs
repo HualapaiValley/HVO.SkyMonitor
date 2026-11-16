@@ -156,7 +156,10 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var reader = await ledger.ExecuteReaderAsync().ConfigureAwait(false);
         var actual = new List<(string Kind, string Node, long? Count, string Status)>();
         while (await reader.ReadAsync().ConfigureAwait(false))
-            actual.Add((reader.GetString(0), reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt64(2), reader.GetString(3)));
+        {
+            var count = await reader.IsDBNullAsync(2).ConfigureAwait(false) ? (long?)null : reader.GetInt64(2);
+            actual.Add((reader.GetString(0), reader.GetString(1), count, reader.GetString(3)));
+        }
         var expected = new List<(string Kind, string Node, long? Count, string Status)>
         {
             ("Inputs", "", null, corruptKind == "Inputs" ? "Corrupt" : "Recorded")
