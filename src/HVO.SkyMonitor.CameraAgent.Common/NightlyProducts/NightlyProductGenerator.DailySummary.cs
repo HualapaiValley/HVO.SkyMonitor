@@ -21,7 +21,7 @@ internal sealed partial class NightlyProductGenerator
         NightlyProductDay day;
         try
         {
-            day = await _store.GetDayAsync(window.ReportingPeriod.ReportDate, cancellationToken).ConfigureAwait(false);
+            day = await _readMaintenanceDay(window.ReportingPeriod.ReportDate, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is InvalidDataException or IOException)
         {

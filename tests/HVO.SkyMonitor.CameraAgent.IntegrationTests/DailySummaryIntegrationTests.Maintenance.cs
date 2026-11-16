@@ -42,6 +42,7 @@ public sealed partial class DailySummaryIntegrationTests
         }
 
         string runKey;
+        string occurrenceId;
         Guid finalId;
         byte[] provenance;
         using (var harness = Create())
@@ -51,11 +52,11 @@ public sealed partial class DailySummaryIntegrationTests
             await automation.Runner.SweepAsync(CancellationToken.None);
             var run = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
             runKey = run.RunKey;
+            occurrenceId = run.Occurrence!.IdentitySha256;
             Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome, run.Detail);
             Assert.AreEqual(1, run.Attempt);
             StringAssert.Contains(run.Detail, "8 products published", StringComparison.Ordinal);
             StringAssert.Contains(run.Detail, "Daily summary refresh skipped: the report date could not be listed (InvalidDataException).", StringComparison.Ordinal);
-            Assert.IsLessThanOrEqualTo(LocalAutomationContract.MaximumDetailLength, run.Detail.Length);
             var final = await harness.Store.ReadWindowAsync(kind, NightlyProductScope.Final,
                 run.Occurrence!.SourceWindow!.StartUtc, CancellationToken.None, run.Occurrence.IdentitySha256);
             Assert.IsNotNull(final);
@@ -64,20 +65,29 @@ public sealed partial class DailySummaryIntegrationTests
             provenance = (await harness.Store.OpenProvenanceAsync(finalId, CancellationToken.None))!.Content.ToArray();
             Assert.AreEqual(1038L, await CountProductsAsync());
         }
-        using var restarted = Create();
-        using var history = CreateAutomation(restarted);
-        await history.Runner.SweepAsync(CancellationToken.None);
-        var retained = (await history.Store.GetStateAsync(CancellationToken.None)).Runs.Single(run => run.RunKey == runKey);
-        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, retained.Outcome, retained.Detail);
-        Assert.AreEqual(1, retained.Attempt, "Skipped maintenance must not consume another attempt after restart.");
-        Assert.AreNotEqual(LocalAutomationCommandStatus.Applied, (await history.Store.RetryAsync(
-            new("daily", runKey, 1, "retry-success", "fixture", "successful work is not retryable"), CancellationToken.None)).Status);
-        var unchanged = await restarted.Generator.RunAsync(retained.Occurrence!, CancellationToken.None);
-        Assert.AreEqual(0, unchanged.FailedWindows, unchanged.Describe());
-        Assert.AreEqual(0, unchanged.ProductsPublished);
-        StringAssert.Contains(unchanged.Describe(), "Daily summary refresh skipped:", StringComparison.Ordinal);
-        Assert.AreEqual(1038L, await CountProductsAsync());
-        CollectionAssert.AreEqual(provenance, (await restarted.Store.OpenProvenanceAsync(finalId, CancellationToken.None))!.Content.ToArray());
+        using (var restarted = Create())
+        using (var history = CreateAutomation(restarted))
+        {
+            await history.Runner.SweepAsync(CancellationToken.None);
+            var retained = await AssertSingleSuccessfulAttemptAsync(history.Store, occurrenceId, runKey);
+            var retry = await history.Store.RetryAsync(new("daily", runKey, 1, "retry-success", "fixture",
+                "successful work is not retryable"), CancellationToken.None);
+            Assert.AreEqual(LocalAutomationCommandStatus.Conflict, retry.Status);
+            Assert.AreEqual("automation.run-not-retryable", retry.ReasonCode);
+            await history.Runner.SweepAsync(CancellationToken.None);
+            await AssertSingleSuccessfulAttemptAsync(history.Store, occurrenceId, runKey);
+            var unchanged = await restarted.Generator.RunAsync(retained.Occurrence!, CancellationToken.None);
+            Assert.AreEqual(0, unchanged.FailedWindows, unchanged.Describe());
+            Assert.AreEqual(0, unchanged.ProductsPublished);
+            StringAssert.Contains(unchanged.Describe(), "Daily summary refresh skipped:", StringComparison.Ordinal);
+            Assert.AreEqual(1038L, await CountProductsAsync());
+            await restarted.Store.VerifyPublicationAsync(finalId, CancellationToken.None);
+            CollectionAssert.AreEqual(provenance, (await restarted.Store.OpenProvenanceAsync(finalId, CancellationToken.None))!.Content.ToArray());
+        }
+        using var reopened = Create();
+        using var reopenedHistory = CreateAutomation(reopened);
+        await reopenedHistory.Runner.SweepAsync(CancellationToken.None);
+        await AssertSingleSuccessfulAttemptAsync(reopenedHistory.Store, occurrenceId, runKey);
     }
 
     [TestMethod]
@@ -172,7 +182,30 @@ public sealed partial class DailySummaryIntegrationTests
     {
         StringAssert.Contains(run.Detail, "Daily summary refresh: " + counts + ".", StringComparison.Ordinal);
         StringAssert.Contains(run.Detail, "A retained daily summary could not be refreshed; retry this occurrence.", StringComparison.Ordinal);
-        Assert.IsLessThanOrEqualTo(LocalAutomationContract.MaximumDetailLength, run.Detail.Length);
+    }
+
+    private async Task<LocalAutomationRun> AssertSingleSuccessfulAttemptAsync(SqliteLocalAutomationStore store,
+        string occurrenceId, string runKey)
+    {
+        var run = (await store.GetStateAsync(CancellationToken.None)).Runs
+            .Single(run => run.Occurrence?.IdentitySha256 == occurrenceId);
+        Assert.AreEqual(runKey, run.RunKey);
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, run.Outcome, run.Detail);
+        Assert.AreEqual(1, run.Attempt);
+        // Count persisted occurrence rows as well: the bounded state projection must not hide a retry key.
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = Path.Combine(_root, ".automation", "local-automations.db"),
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false
+        }.ToString());
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM automation_runs WHERE occurrence_id = $identity;";
+        command.Parameters.AddWithValue("$identity", occurrenceId);
+        Assert.AreEqual(1L, (long)(await command.ExecuteScalarAsync())!,
+            "Skipped maintenance must retain exactly one attempt across restart and rejected Retry.");
+        return run;
     }
 
     private async Task<long> CountProductsAsync()

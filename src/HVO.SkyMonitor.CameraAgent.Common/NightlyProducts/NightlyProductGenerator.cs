@@ -72,6 +72,8 @@ internal sealed partial class NightlyProductGenerator : IDisposable
     private readonly ICameraAgentConfigurationAccessor _configuration;
     private readonly INightlyProductSourceReader _sources;
     private readonly SqliteNightlyProductStore _store;
+    private readonly Func<DateOnly, CancellationToken, ValueTask<NightlyProductDay>> _readMaintenanceDay;
+    private readonly Func<NightlyProductWindowStatus, string, IReadOnlyList<Guid>, CancellationToken, ValueTask> _recordWindow;
     private readonly IPlanetEphemeris _ephemeris;
     private readonly Func<IDeploymentLocationStore?> _locationStore;
     private readonly TimeProvider _timeProvider;
@@ -87,13 +89,17 @@ internal sealed partial class NightlyProductGenerator : IDisposable
         IPlanetEphemeris ephemeris,
         Func<IDeploymentLocationStore?> locationStore,
         TimeProvider timeProvider,
-        ILogger<NightlyProductGenerator>? logger = null)
+        ILogger<NightlyProductGenerator>? logger = null,
+        Func<DateOnly, CancellationToken, ValueTask<NightlyProductDay>>? readMaintenanceDay = null,
+        Func<NightlyProductWindowStatus, string, IReadOnlyList<Guid>, CancellationToken, ValueTask>? recordWindow = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
         _configuration = configuration;
         _sources = sources;
         _store = store;
+        _readMaintenanceDay = readMaintenanceDay ?? store.GetDayAsync;
+        _recordWindow = recordWindow ?? store.RecordWindowAsync;
         _ephemeris = ephemeris;
         _locationStore = locationStore;
         _timeProvider = timeProvider;
@@ -764,7 +770,7 @@ internal sealed partial class NightlyProductGenerator : IDisposable
         CancellationToken cancellationToken)
     {
         if (disposition == NightlyProductWindowDisposition.Rejected) context.FailedWindows = 1;
-        await _store.RecordWindowAsync(
+        await _recordWindow(
             new NightlyProductWindowStatus(
                 context.Kind, scope, window.ObservingDate, window.StartUtc, window.EndUtc, disposition, reasonCode,
                 candidateCount, admittedCount, exclusions, context.NowUtc)
