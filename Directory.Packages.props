@@ -71,7 +71,7 @@
     <PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.155.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.macOS" Version="4.155.0" />
     <PackageVersion Include="SkiaSharp.NativeAssets.Win32" Version="4.155.0" />
-    <PackageVersion Include="StackExchange.Redis" Version="3.4.31" />
+    <PackageVersion Include="StackExchange.Redis" Version="3.4.35" />
     <PackageVersion Include="Microsoft.OpenApi" Version="2.12.2" />
     <PackageVersion Include="Microsoft.Playwright.MSTest" Version="1.64.1" />
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.53.3" />
