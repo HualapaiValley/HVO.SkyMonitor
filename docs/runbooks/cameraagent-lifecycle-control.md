@@ -82,8 +82,20 @@ while the transport responds. Idle heartbeats do not write durable state or eval
    - **Failed** `lifecycle.capture-conflict`: capture was not initialized, its
      capture-control version no longer matched the request, or it was neither
      Running nor Paused.
-   - **Failed** `lifecycle.installer-busy`: another installer deployment
-     operation held the deployment lock when the worker would have claimed it.
+   - **Failed** `lifecycle.installer-busy`: the worker could not obtain deployment
+     authority for the new request. A held deployment lock is one cause, but
+     this code also covers other installer errors or refusals, including an
+     Uninstalled instance, an incomplete installer lifecycle operation requiring
+     recovery, and retained manifest/result or transaction drift and correlation
+     mismatches.
+     The code alone does not identify which cause occurred. Check for an active
+     installer operation and inspect the retained installation and lifecycle
+     records before retrying; follow the recovery guidance below for incomplete
+     operations or interrupted rollback publication. Retain the records and
+     escalate unexplained mismatches instead of editing them.
+     During retained receipt recovery, the corresponding worker diagnostic is
+     `recovery=installer-busy`; the receipt remains pending rather than being
+     failed by this diagnostic.
    - **Failed** `lifecycle.restart-required`: the worker's cached listener,
      credential or runtime identity differs from the retained installation. Stop
      and restart the lifecycle worker as the recorded runtime account, then submit
