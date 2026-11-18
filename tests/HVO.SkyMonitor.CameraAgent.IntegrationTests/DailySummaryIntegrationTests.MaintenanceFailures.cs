@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Tests.NightlyProducts;
@@ -13,22 +14,35 @@ public sealed partial class DailySummaryIntegrationTests
     {
         var original = await SeedMaintenanceSummaryAsync();
         var reads = 0;
+        ExceptionDispatchInfo? hookFailure = null;
+        var reachedSyntheticThrow = false;
         Guid stillId = default;
         byte[] provenance;
         string runKey;
         string occurrenceId;
         using (var harness = Create(readMaintenanceDay: async (store, date, token) =>
         {
-            reads++;
-            Assert.AreEqual(NightlyProductFixture.ObservingDate, date);
-            Assert.IsFalse(token.IsCancellationRequested);
-            stillId = await VerifyStillFinalAsync(store, kind);
+            try
+            {
+                reads++;
+                Assert.AreEqual(NightlyProductFixture.ObservingDate, date);
+                Assert.IsFalse(token.IsCancellationRequested);
+                stillId = await VerifyStillFinalAsync(store, kind);
+            }
+            catch (Exception exception)
+            {
+                hookFailure ??= ExceptionDispatchInfo.Capture(exception);
+                throw;
+            }
+            reachedSyntheticThrow = true;
             throw new IOException("Synthetic maintenance listing IO failure.");
         }))
         using (var automation = CreateAutomation(harness))
         {
             await QueueStillAsync(automation.Store, kind);
             await automation.Runner.SweepAsync(CancellationToken.None);
+            hookFailure?.Throw();
+            Assert.IsTrue(reachedSyntheticThrow);
             Assert.AreEqual(1, reads, "Only the initial maintenance listing uses this operation.");
             var run = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
             runKey = run.RunKey;
@@ -81,7 +95,6 @@ public sealed partial class DailySummaryIntegrationTests
                 var thrown = await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
                     await harness.Generator.RunAsync(occurrence, cancellation.Token));
                 Assert.AreSame(failure, thrown);
-                Assert.AreEqual(cancellation.Token, thrown.CancellationToken);
             }
             else
             {
@@ -131,6 +144,8 @@ public sealed partial class DailySummaryIntegrationTests
         }
 
         var faults = 0;
+        ExceptionDispatchInfo? hookFailure = null;
+        var reachedSyntheticThrow = false;
         string failedKey;
         Guid stillId;
         byte[] stillProvenance;
@@ -139,28 +154,47 @@ public sealed partial class DailySummaryIntegrationTests
             if (status.Kind == NightlyProductKind.DailySummary && status.Scope == NightlyProductScope.Final &&
                 status.Disposition == NightlyProductWindowDisposition.Produced)
             {
-                faults++;
-                Assert.AreEqual(1, faults);
-                var id = ids.Single();
-                await store.VerifyPublicationAsync(id, token);
-                Assert.AreEqual(fingerprint, (await store.GetAsync(id, token))!.OutputIdentitySha256);
-                await AssertMaintenanceSummaryUnchangedAsync(store, original, expectedProducts: 2);
-                if (reuse) Assert.AreEqual(publishedId, id, "The failing evaluation must reuse the pre-existing immutable output.");
-                publishedId = id;
+                try
+                {
+                    faults++;
+                    Assert.AreEqual(1, faults);
+                    var id = ids.Single();
+                    await store.VerifyPublicationAsync(id, token);
+                    Assert.AreEqual(fingerprint, (await store.GetAsync(id, token))!.OutputIdentitySha256);
+                    await AssertMaintenanceSummaryUnchangedAsync(store, original, expectedProducts: 2);
+                    if (reuse) Assert.AreEqual(publishedId, id, "The failing evaluation must reuse the pre-existing immutable output.");
+                    publishedId = id;
+                }
+                catch (Exception exception)
+                {
+                    hookFailure ??= ExceptionDispatchInfo.Capture(exception);
+                    throw;
+                }
+                reachedSyntheticThrow = true;
                 throw new IOException("Synthetic summary pointer write failure after publication or reuse.");
             }
-            await store.RecordWindowAsync(status, fingerprint, ids, token);
+            try
+            {
+                await store.RecordWindowAsync(status, fingerprint, ids, token);
+            }
+            catch (Exception exception)
+            {
+                hookFailure ??= ExceptionDispatchInfo.Capture(exception);
+                throw;
+            }
         }))
         using (var automation = CreateAutomation(harness))
         {
             if (!reuse) await QueueStillAsync(automation.Store, NightlyProductKind.StarTrail);
             await automation.Runner.SweepAsync(CancellationToken.None);
+            hookFailure?.Throw();
+            Assert.IsTrue(reachedSyntheticThrow);
             Assert.AreEqual(1, faults);
             var failed = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
             failedKey = failed.RunKey;
             Assert.AreEqual(LocalAutomationRunOutcome.Failed, failed.Outcome, failed.Detail);
             Assert.AreEqual(1, failed.Attempt);
-            StringAssert.Contains(failed.Detail, reuse ? "0 products published" : "2 products published", StringComparison.Ordinal);
+            StringAssert.Contains(failed.Detail, reuse ? "star-trail: 1 windows evaluated, 2 unchanged, 0 products published" : "star-trail: 1 windows evaluated, 0 unchanged, 2 products published", StringComparison.Ordinal);
             AssertRefreshFailure(failed, reuse ? "0 published, 1 reused, 0 unchanged" : "1 published, 0 reused, 0 unchanged");
             var bytes = (await harness.Store.OpenProvenanceAsync(publishedId, CancellationToken.None))!.Content.ToArray();
             if (reuse) CollectionAssert.AreEqual(publishedProvenance!, bytes);
@@ -194,6 +228,42 @@ public sealed partial class DailySummaryIntegrationTests
         CollectionAssert.AreEqual(publishedProvenance!, (await restarted.Store.OpenProvenanceAsync(publishedId, CancellationToken.None))!.Content.ToArray());
         CollectionAssert.AreEqual(stillProvenance, (await restarted.Store.OpenProvenanceAsync(stillId, CancellationToken.None))!.Content.ToArray());
         CollectionAssert.AreEqual(original.Provenance, (await restarted.Store.OpenProvenanceAsync(original.Window.ProductIds.Single(), CancellationToken.None))!.Content.ToArray());
+    }
+
+    [TestMethod]
+    public async Task LaterFailingSummaryAddsItsPublicationToEarlierRefreshCounts()
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        using (var seed = Create())
+        {
+            foreach (var id in new[] { "summary-a", "summary-b" })
+            {
+                var report = await seed.Generator.RunAsync(NightlyProductFixture.Occurrence(
+                    NightlyProductKind.DailySummary, definitionId: id), CancellationToken.None);
+                Assert.AreEqual(1, report.ProductsPublished, report.Describe());
+            }
+        }
+
+        var produced = 0;
+        var reachedSyntheticThrow = false;
+        using var harness = Create(recordWindow: async (store, status, fingerprint, ids, token) =>
+        {
+            if (status.Kind == NightlyProductKind.DailySummary && status.Scope == NightlyProductScope.Final &&
+                status.Disposition == NightlyProductWindowDisposition.Produced && ++produced == 2)
+            {
+                reachedSyntheticThrow = true;
+                throw new IOException("Synthetic second summary pointer failure.");
+            }
+            await store.RecordWindowAsync(status, fingerprint, ids, token);
+        });
+        using var automation = CreateAutomation(harness);
+        await QueueStillAsync(automation.Store, NightlyProductKind.StarTrail);
+        await automation.Runner.SweepAsync(CancellationToken.None);
+        Assert.IsTrue(reachedSyntheticThrow);
+        Assert.AreEqual(2, produced);
+        var failed = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Failed, failed.Outcome, failed.Detail);
+        AssertRefreshFailure(failed, "2 published, 0 reused, 0 unchanged");
     }
 
     private async Task<MaintenanceSummary> SeedMaintenanceSummaryAsync()

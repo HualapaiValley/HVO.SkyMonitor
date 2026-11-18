@@ -294,10 +294,11 @@ Do not take another issue without user authorization.
 
 ## 12. Research and Review Subagent Prompt
 
-Use independent research/review subagents proactively for cross-host,
-persistence-heavy, performance-sensitive, or migration-heavy issues. The
-implementing model remains responsible for verifying and explicitly dispositioning
-every finding under the bounded review protocol.
+Research and review subagent passes are optional and supplemental. They do not
+constitute the required formal review. Formal review begins only after draft checks
+pass on the exact head; t594s3390 removed the pre-draft local formal review.
+The implementing model remains responsible for verifying and explicitly
+dispositioning findings under the bounded review protocol.
 
 ```text
 Research only; do not edit. Follow `.agents/skills/pr-lifecycle/SKILL.md`.
@@ -319,9 +320,9 @@ evidence, uncertainty, and the recommended next action. Acknowledge and report
 each milestone to the owner for the local evidence pack. A PR number,
 review range, and PR acknowledgement are not required.
 
-For every review mode, follow the skill's LOW/HIGH named-reviewer and explicit
-issue-completeness requirements. Provide Base reviewed SHA: <resolved immutable
-SHA> and Head SHA: <SHA>. In initial mode, audit the complete candidate diff
+For every supplemental review mode, use the skill's issue-completeness guidance;
+Kepler obtains the required LOW/HIGH named formal reviews after draft checks pass.
+Provide Base reviewed SHA: <resolved immutable SHA> and Head SHA: <SHA>. In initial mode, audit the complete candidate diff
 against current code, tests, durable formats, architecture boundaries, performance paths,
 logs/telemetry, and dependent issues. In correction mode, review only Base
 reviewed SHA..Head SHA and verify disposition of the preceding findings. Begin

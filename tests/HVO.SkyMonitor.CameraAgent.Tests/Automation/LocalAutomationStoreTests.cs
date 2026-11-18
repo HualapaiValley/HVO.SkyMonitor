@@ -442,7 +442,8 @@ public sealed class LocalAutomationStoreTests
         var retained = (await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
         Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, retained.Outcome);
         Assert.AreEqual(expected, retained.Detail, "Persist exactly the original boundary text or the specified safe prefix.");
-        Assert.IsFalse(char.IsHighSurrogate(retained.Detail[^1]));
+        Assert.IsTrue(detail.StartsWith(retained.Detail, StringComparison.Ordinal));
+        Assert.IsFalse(retained.Detail.Contains('\uFFFD', StringComparison.Ordinal));
     }
 
     [TestMethod]
