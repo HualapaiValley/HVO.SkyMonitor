@@ -1,0 +1,15 @@
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <!-- Trimmed from MSTest's OpenNGC Release output. Retained test IDs, display names and execution IDs. -->
+  <Results>
+    <UnitTestResult executionId="e64f6df8-c5a4-460e-8595-19b6d81a6522" testId="164fb07d-1c32-8ea5-b5d4-1952234c7884" testName="PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification" outcome="Passed" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification" id="164fb07d-1c32-8ea5-b5d4-1952234c7884">
+      <Execution id="e64f6df8-c5a4-460e-8595-19b6d81a6522" />
+      <TestMethod className="HVO.SkyMonitor.Catalog.Sqlite.Tests.IndependentOpenNgcCatalogTests" name="PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification" />
+    </UnitTest>
+  </TestDefinitions>
+  <ResultSummary outcome="Completed">
+    <Counters total="1" executed="1" passed="1" failed="0" notExecuted="0" />
+  </ResultSummary>
+</TestRun>

@@ -39,38 +39,64 @@ run_contracts() {
     trx_assert_executed_and_passed "$trx" "$project" || return 1
     trx_assert_counters_executed_and_passed "$trx" "$project" || return 1
 
-    # Check that the intended methods and all their data rows were discovered.
+    # MSTest puts the Boolean argument in the display name, which is recorded
+    # on both the discovery definition and the result linked by testId.
     python3 - "$trx" "$project" "$@" <<'PY'
 from collections import Counter
 import sys
 import xml.etree.ElementTree as ET
 
 trx, project, *contracts = sys.argv[1:]
-expected = {}
+expected = set()
 for contract in contracts:
-    method, rows = contract.split(":")
-    expected[f"{project}.{method}"] = int(rows)
+    method, _, rows = contract.partition(":")
+    name = method.rsplit(".", 1)[-1]
+    for row in rows.split(","):
+        display = f"{name} ({row})" if row else name
+        expected.add((f"{project}.{method}", display))
 
 run = ET.parse(trx)
-methods = {}
+definitions = {}
 for test in run.findall("./{*}TestDefinitions/{*}UnitTest"):
+    test_id = test.attrib["id"]
+    if test_id in definitions:
+        sys.exit(f"{project}: duplicate testId definition {test_id}")
     method = test.find("./{*}TestMethod")
-    methods[test.attrib["id"]] = f"{method.attrib['className']}.{method.attrib['name']}"
-observed = Counter(methods[result.attrib["testId"]] for result in run.findall("./{*}Results/{*}UnitTestResult"))
-if observed != expected:
-    sys.exit(f"{project}: expected OpenNGC result counts {expected}, observed {dict(observed)}")
-for method, rows in sorted(observed.items()):
-    print(f"{method}: {rows} Passed")
+    qualified = f"{method.attrib['className']}.{method.attrib['name']}"
+    definitions[test_id] = (qualified, test.attrib["name"])
+
+results = run.findall("./{*}Results/{*}UnitTestResult")
+if len(results) != len(run.findall(".//{*}UnitTestResult")):
+    sys.exit(f"{project}: unexpected nested TRX results")
+
+observed = Counter()
+for result in results:
+    test_id = result.attrib["testId"]
+    case = definitions.get(test_id)
+    if case is None:
+        sys.exit(f"{project}: unknown result testId {test_id}")
+    if result.attrib["testName"] != case[1]:
+        sys.exit(f"{project}: result name does not match its testId definition {test_id}")
+    if result.attrib["outcome"] != "Passed":
+        sys.exit(f"{project}: {case[1]} did not pass")
+    observed[case] += 1
+
+missing = expected - observed.keys()
+unexpected = [(case, count) for case, count in observed.items() if case not in expected or count != 1]
+if missing or unexpected:
+    sys.exit(f"{project}: missing OpenNGC cases {sorted(missing)}; unexpected or repeated cases {sorted(unexpected)}")
+for method, display in sorted(expected):
+    print(f"{method.rsplit('.', 1)[0]}.{display}: Passed")
 PY
 }
 
 run_contracts HVO.SkyMonitor.Catalog.Sqlite.Tests catalog-sqlite.trx \
-    IndependentOpenNgcCatalogTests.PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification:1
+    IndependentOpenNgcCatalogTests.PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification
 run_contracts HVO.SkyMonitor.Deployment.Cli.Tests deployment-cli.trx \
-    InstallerFlowTests.InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery:2 \
-    InstallerFlowTests.InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState:2 \
-    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection:2 \
-    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting:1 \
-    InstallerFlowTests.InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite:2 \
-    InstallerFlowTests.InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent:1 \
-    LifecycleContractTests.PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands:1
+    InstallerFlowTests.InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting \
+    InstallerFlowTests.InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent \
+    LifecycleContractTests.PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands
