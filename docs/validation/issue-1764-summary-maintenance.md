@@ -85,11 +85,16 @@ Large-frame throughput, hardware memory/thermal measurements and production
 cadence are N/A because those paths are unchanged; no physical qualification is
 claimed. The overflow limit remains 1,024 and is tested directly, not bypassed.
 
+Issue #1842 adds `MalformedRetainedWindowJsonSkipsMaintenanceAfterSuccessfulStill`:
+real retained exclusions and occurrence JSON corruption is exercised for both still
+kinds, including fail-closed listing, the structured warning, retained history,
+and recovery after the fixture restores the row.
+
 Runtime evidence is the actual persisted automation history and converged
 immutable output. No metric, tracing or health contract changes; new metric
 labels, spans and health transitions are N/A. A failed identified refresh
 remains retryable, while a date listing that raises `InvalidDataException` or
-`IOException` cannot turn successful own work into an exception failure. Operator
+`IOException` cannot turn successful own work into an exception failure. Malformed persisted window exclusions or occurrence JSON is translated to `InvalidDataException` with its `JsonException` preserved; other listing failures are not universally skipped. Operator
 detail is bounded to 512 UTF-16 code units, with truncation avoiding a split
 surrogate pair; the summary fixture's asserted note text is ASCII, a separate
 property rather than a byte-based storage limit. No browser, network/host

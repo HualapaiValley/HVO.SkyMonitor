@@ -890,6 +890,17 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            Dictionary<string, int> exclusions;
+            LocalAutomationOccurrence occurrence;
+            try
+            {
+                exclusions = Deserialize<Dictionary<string, int>>(reader.GetString(10));
+                occurrence = Deserialize<LocalAutomationOccurrence>(reader.GetString(13));
+            }
+            catch (JsonException exception)
+            {
+                throw new InvalidDataException("A persisted nightly window contains malformed JSON.", exception);
+            }
             var status = new NightlyProductWindowStatus(
                 ParseEnum<NightlyProductKind>(reader.GetString(0)),
                 ParseEnum<NightlyProductScope>(reader.GetString(1)),
@@ -901,9 +912,9 @@ internal sealed partial class SqliteNightlyProductStore : INightlyProductCatalog
                 reader.GetInt32(8),
                 reader.GetInt32(9),
                 new SortedDictionary<string, int>(
-                    Deserialize<Dictionary<string, int>>(reader.GetString(10)), StringComparer.Ordinal),
+                    exclusions, StringComparer.Ordinal),
                 DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(11)))
-            { Occurrence = Deserialize<LocalAutomationOccurrence>(reader.GetString(13)) };
+            { Occurrence = occurrence };
             ValidateOccurrence(status.Occurrence, status.ObservingDate, status.WindowStartUtc, status.WindowEndUtc);
             // Pointers are ordered by part explicitly; group_concat order is not part of SQLite's contract.
             var products = await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false)
