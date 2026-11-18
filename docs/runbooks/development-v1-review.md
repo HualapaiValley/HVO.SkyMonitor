@@ -1,6 +1,14 @@
 # Development v1 Review Process
 
-This process applies to feature pull requests targeting `development/v1`. Promotion to `main` is described in [development-v1.md](../development-v1.md). The command-level procedure for one pull request is [pull-request-walkthrough.md](pull-request-walkthrough.md).
+> **Historical record:** The procedure and examples below describe retired review
+> mechanics and are not operating instructions. Follow [AGENTS.md](../../AGENTS.md),
+> the [SkyMonitor profile](../development/policy/skymonitor.md), and the
+> [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md) for current rules.
+> Kepler publishes reviews without head-mutating review commits; agents do not
+> manually delete branches.
+
+This historical process described feature pull requests targeting `development/v1`.
+The related historical example is [pull-request-walkthrough.md](pull-request-walkthrough.md).
 
 The [unified policy and SkyMonitor profile](../development/policy/skymonitor.md)
 govern review timing and retained named-reviewer tiers. Draft Preflight passes on
@@ -40,9 +48,9 @@ See [the short/full check ownership](../development-v1.md#short-checks-and-full-
 | Standard | 1 | 2 | 3 |
 | Deep | 1 | 3 | 4 |
 
-One independent reviewer is sufficient for Standard work. Deep review uses the strongest available independent reviewer and adds a specialist only when the issue requires it.
+Review depth does not replace the required tier reviewers: LOW requires Sol CLEAN; HIGH requires Sol and Opus CLEAN on the same candidate, with at least one Deep review.
 
-Medium findings block by default. The issue owner may explicitly approve deferral only when the behavior is outside current acceptance and a follow-up issue records the source evidence and residual risk. Critical and High findings are never deferred.
+High and Medium findings block and cannot be deferred; Critical maps to High. Lows require linked follow-up tracking through Kepler.
 
 An exceptional focused review is allowed for a CI-discovered code defect, a late security/data-loss defect, or a material base-sync interaction. The reason must be recorded.
 
@@ -207,7 +215,7 @@ Next: mark ready and run Development v1 CI.
 
 ## CI And Merge
 
-If Development v1 CI finds a real code defect, return the PR to draft, add a finding ID, correct it, and obtain a focused exceptional review. An infrastructure failure does not create a code finding and may receive one diagnosed rerun.
+If Development v1 CI finds a real code defect, Kepler returns the PR to draft. Correct it and obtain the full tier’s required CLEAN reviews on the changed head after draft checks pass; a focused exceptional review cannot replace them. An infrastructure failure does not create a code finding and follows the current bounded retry policy.
 
 Merge when review is converged, all conversations are resolved, the current head
 is reviewed and up to date, and required Development v1 checks pass. Follow

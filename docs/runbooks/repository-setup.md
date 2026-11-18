@@ -1,6 +1,13 @@
 # Repository Setup For The HualapaiValley Model
 
-This is the checklist for bringing a repository into the same shape as
+> **Historical record:** This document preserves an older workflow and its
+> commands are not current operating instructions. Follow [AGENTS.md](../../AGENTS.md),
+> the [SkyMonitor profile](../development/policy/skymonitor.md), and the
+> [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md). Kepler alone
+> operates agent PRs; reviews are not published through head-mutating commits,
+> and agents do not manually delete branches.
+
+This was the checklist for bringing a repository into the same shape as
 `HVO.SkyMonitor`: an organization-owned repository with a daily integration
 branch under a fast required check, a stable branch that moves only by gated
 promotion, org-level self-hosted runners, and an independent review identity.
