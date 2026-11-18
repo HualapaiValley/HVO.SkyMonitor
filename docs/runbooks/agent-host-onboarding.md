@@ -8,8 +8,8 @@ protocol. This runbook is the operational checklist that sits under both: the
 concrete steps, in order, with the failures that actually happen when a step is
 skipped.
 
-The **coding owner** implements, validates, obtains independent local review,
-and hands the candidate and evidence to Kepler. Coding threads push only when
+The **coding owner** implements, validates, and hands the candidate and
+evidence to Kepler. Coding threads push only when
 instructed and never create PRs, mark ready, publish `hvo/reviewed-head`, or
 enqueue. Kepler owns the formal PR lifecycle and merge queue.
 
@@ -160,13 +160,13 @@ to decide without seeing the original prompt, and act on his answer yourself.
   and CI. Release explicitly with a resumable handoff on completion or transfer;
   remove `workflow:in-progress` when releasing, without overwriting a competing
   owner's state. A paused owner records whether the claim is retained or released.
-- **Local review and handoff.** Map the original issue requirements to behavior
+- **Evidence and handoff.** Map the original issue requirements to behavior
   and local evidence at the candidate SHA before independent review. Missing
   scope or evidence returns to implementation. Follow the PR lifecycle skill
   for LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN, explicit completeness
   verdicts, and exact-range finding verification. Hand the candidate, mapping,
-  evidence, and local reports to Kepler; push only when instructed. Kepler
-  obtains formal review and operates readiness, the reviewed-head gate, and
+  and evidence to Kepler; push only when instructed. Kepler creates the draft,
+  waits for its checks on the exact head, obtains formal review and operates readiness, the reviewed-head gate, and
   queue admission. Do not take another issue without user authorization.
 - **Report directly.** Send milestones and blockers to the operator and retain
   UTC local evidence, with interim notes during long gates and reviews. Kepler

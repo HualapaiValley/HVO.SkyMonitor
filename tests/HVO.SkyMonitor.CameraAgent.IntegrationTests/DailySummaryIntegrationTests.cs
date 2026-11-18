@@ -484,14 +484,18 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
     }
 
     private Harness Create(INightlyProductSourceReader? reader = null, ILogger<NightlyProductGenerator>? logger = null,
-        NightlyProductOptions? options = null)
+        NightlyProductOptions? options = null,
+        Func<SqliteNightlyProductStore, DateOnly, CancellationToken, ValueTask<NightlyProductDay>>? readMaintenanceDay = null,
+        Func<SqliteNightlyProductStore, NightlyProductWindowStatus, string, IReadOnlyList<Guid>, CancellationToken, ValueTask>? recordWindow = null)
     {
         Directory.CreateDirectory(_root);
         var host = NightlyProductFixture.HostOptions(_root, options ?? NightlyProductFixture.Options());
         var clock = new NightlyClock(NightlyProductFixture.DayEndUtc.AddMinutes(10));
         var store = new SqliteNightlyProductStore(host, clock);
         var generator = new NightlyProductGenerator(host, new FixedConfigurationAccessor(NightlyProductFixture.Configuration()),
-            reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock, logger);
+            reader ?? _reader, store, new AstronomyEnginePlanetEphemeris(), static () => null, clock, logger,
+            readMaintenanceDay is null ? null : (date, token) => readMaintenanceDay(store, date, token),
+            recordWindow is null ? null : (status, fingerprint, ids, token) => recordWindow(store, status, fingerprint, ids, token));
         return new(store, generator);
     }
 
