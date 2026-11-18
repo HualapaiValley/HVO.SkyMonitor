@@ -507,15 +507,18 @@ public sealed partial class DailySummaryIntegrationTests : IDisposable
     private sealed class CapturingNightlyProductLogger : ILogger<NightlyProductGenerator>
     {
         internal List<string> Errors { get; } = [];
+        internal List<(EventId Id, Exception? Exception, IReadOnlyList<KeyValuePair<string, object?>> Fields)> Warnings { get; } = [];
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Error;
+        public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Warning;
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (IsEnabled(logLevel)) Errors.Add(formatter(state, exception));
+            if (logLevel == LogLevel.Error) Errors.Add(formatter(state, exception));
+            if (logLevel == LogLevel.Warning)
+                Warnings.Add((eventId, exception, ((IReadOnlyList<KeyValuePair<string, object?>>)state!).ToArray()));
         }
     }
 }

@@ -184,6 +184,38 @@ public sealed partial class DailySummaryIntegrationTests
         StringAssert.Contains(run.Detail, "A retained daily summary could not be refreshed; retry this occurrence.", StringComparison.Ordinal);
     }
 
+    [TestMethod]
+    public async Task PartialRefreshAppendsToConstructedNoteOnSuccessfulStillReport()
+    {
+        _reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var still = NightlyProductFixture.Occurrence(NightlyProductKind.StarTrail);
+        NightlyProductRunReport stillReport;
+        using (var seed = Create())
+        {
+            stillReport = await seed.Generator.RunAsync(still, CancellationToken.None);
+            Assert.IsTrue(stillReport.Ready);
+            Assert.AreEqual(0, stillReport.FailedWindows, stillReport.Describe());
+            Assert.AreEqual(0, stillReport.PendingWindows, stillReport.Describe());
+            foreach (var id in new[] { "summary-a", "summary-b" })
+            {
+                var summary = await seed.Generator.RunAsync(NightlyProductFixture.Occurrence(
+                    NightlyProductKind.DailySummary, definitionId: id), CancellationToken.None);
+                Assert.AreEqual(1, summary.ProductsPublished, summary.Describe());
+            }
+        }
+        _reader.Add(NightlyProductFixture.Frame(2, NightlyProductFixture.DayStartUtc.AddHours(17)));
+        using var harness = Create(new FailRestoreReader(_reader, 2));
+        // The prefix is constructed: successful stills currently have no natural geometry-unavailable note.
+        const string prefix = "A still-run note from the completed producer.";
+        var result = await harness.Generator.RefreshDailySummariesAsync(still, stillReport with { Note = prefix }, CancellationToken.None);
+        Assert.AreEqual(1, result.FailedWindows, result.Describe());
+        var detail = result.Describe();
+        StringAssert.Contains(detail, prefix, StringComparison.Ordinal);
+        StringAssert.Contains(detail, "Daily summary refresh: 1 published, 0 reused, 0 unchanged.", StringComparison.Ordinal);
+        StringAssert.Contains(detail, "A retained daily summary could not be refreshed; retry this occurrence.", StringComparison.Ordinal);
+        Assert.IsLessThanOrEqualTo(LocalAutomationContract.MaximumDetailLength, detail.Length);
+    }
+
     private async Task<LocalAutomationRun> AssertSingleSuccessfulAttemptAsync(SqliteLocalAutomationStore store,
         string occurrenceId, string runKey)
     {
