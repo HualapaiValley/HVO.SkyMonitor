@@ -89,7 +89,8 @@ internal sealed partial class CameraAgentLifecycleManager
                 { Status: not InstallationStatus.Completed, Kind: LifecycleOperationKind.Reinstall or LifecycleOperationKind.Rollback })
                 throw InstallerException.Refused("An uninstalled instance requires an incomplete reinstall or rollback for settlement.");
             // Already admissible local settlement must not depend on an unnecessary process probe.
-            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) || IsRestored(operation))
+            if (operation is null || operation.Status == InstallationStatus.Completed || IsRefused(operation) || IsRestored(operation) ||
+                IsSettledBackupForControl(operation))
                 return deploymentLock;
             var committedRecovery = settleCommittedRecovery && operation is
             {
@@ -113,6 +114,14 @@ internal sealed partial class CameraAgentLifecycleManager
         }
         catch { deploymentLock.Dispose(); throw; }
     }
+
+    // Failed backup recovery clears mutation only after cleanup and any required restart succeed.
+    private static bool IsSettledBackupForControl(LifecycleOperationState operation) =>
+        IsAbandonedBackup(operation) || operation is
+        {
+            Kind: LifecycleOperationKind.Backup, Phase: LifecycleOperationPhase.Prepared,
+            Status: InstallationStatus.Failed, MutationStarted: false, FailureCode: "lifecycle-failed"
+        };
 
     internal static string FormatControlWorkerDiagnostic(string message) => CameraAgentStateDiagnostics.Message(message);
 
