@@ -14,13 +14,15 @@ public sealed partial class DailySummaryIntegrationTests
     {
         var original = await SeedMaintenanceSummaryAsync();
         var reads = 0;
+        var logger = new CapturingNightlyProductLogger();
+        var listingFailure = new IOException("Synthetic maintenance listing IO failure.");
         ExceptionDispatchInfo? hookFailure = null;
         var reachedSyntheticThrow = false;
         Guid stillId = default;
         byte[] provenance;
         string runKey;
         string occurrenceId;
-        using (var harness = Create(readMaintenanceDay: async (store, date, token) =>
+        using (var harness = Create(logger: logger, readMaintenanceDay: async (store, date, token) =>
         {
             try
             {
@@ -35,7 +37,7 @@ public sealed partial class DailySummaryIntegrationTests
                 throw;
             }
             reachedSyntheticThrow = true;
-            throw new IOException("Synthetic maintenance listing IO failure.");
+            throw listingFailure;
         }))
         using (var automation = CreateAutomation(harness))
         {
@@ -44,12 +46,18 @@ public sealed partial class DailySummaryIntegrationTests
             hookFailure?.Throw();
             Assert.IsTrue(reachedSyntheticThrow);
             Assert.AreEqual(1, reads, "Only the initial maintenance listing uses this operation.");
+            var warning = logger.Warnings.Single();
+            Assert.AreEqual(2, warning.Id.Id);
+            Assert.AreSame(listingFailure, warning.Exception);
+            Assert.AreEqual(NightlyProductFixture.ObservingDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                warning.Fields.Single(field => field.Key == "ReportDate").Value);
             var run = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
             runKey = run.RunKey;
             occurrenceId = run.Occurrence!.IdentitySha256;
             await AssertSingleSuccessfulAttemptAsync(automation.Store, occurrenceId, runKey);
             StringAssert.Contains(run.Detail, "Daily summary refresh skipped: the report date could not be listed (IOException).",
                 StringComparison.Ordinal);
+            Assert.IsLessThanOrEqualTo(512, run.Detail.Length);
             provenance = (await harness.Store.OpenProvenanceAsync(stillId, CancellationToken.None))!.Content.ToArray();
             await AssertMaintenanceSummaryUnchangedAsync(harness.Store, original);
         }

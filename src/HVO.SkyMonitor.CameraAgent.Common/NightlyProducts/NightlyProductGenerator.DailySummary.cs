@@ -10,7 +10,7 @@ internal sealed partial class NightlyProductGenerator
 {
     // Run under the producer semaphore, including unchanged still retries: a crash after the still publication
     // can leave a summary refresh outstanding. Reuse the retained summary occurrence, never today's definition.
-    private async ValueTask<NightlyProductRunReport> RefreshDailySummariesAsync(LocalAutomationOccurrence occurrence,
+    internal async ValueTask<NightlyProductRunReport> RefreshDailySummariesAsync(LocalAutomationOccurrence occurrence,
         NightlyProductRunReport report, CancellationToken cancellationToken)
     {
         if (report.Kind == NightlyProductKind.DailySummary || !report.Ready || report.FailedWindows > 0 ||
@@ -26,6 +26,8 @@ internal sealed partial class NightlyProductGenerator
         catch (Exception exception) when (exception is InvalidDataException or IOException)
         {
             // The still work is already complete. An unreadable listing cannot identify refresh work to retry.
+            LogSkippedSummaryRefresh(_logger, exception,
+                window.ReportingPeriod.ReportDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
             var skipped = $"Daily summary refresh skipped: the report date could not be listed ({exception.GetType().Name}).";
             return report with { Note = report.Note is null ? skipped : report.Note + " " + skipped };
         }
@@ -48,7 +50,7 @@ internal sealed partial class NightlyProductGenerator
                 return report with
                 {
                     FailedWindows = report.FailedWindows + 1,
-                    Note = string.Create(CultureInfo.InvariantCulture,
+                    Note = (report.Note is null ? "" : report.Note + " ") + string.Create(CultureInfo.InvariantCulture,
                         $"Daily summary refresh: {published} published, {reused} reused, {unchanged} unchanged. ") +
                         "A retained daily summary could not be refreshed; retry this occurrence. " + refreshed.Describe()
                 };
@@ -138,4 +140,8 @@ internal sealed partial class NightlyProductGenerator
     [LoggerMessage(EventId = 1, Level = LogLevel.Error,
         Message = "Daily summary for {ReportDate} refused unverified linked product {ProductId}; a later run will retry")]
     private static partial void LogUnverifiedLinkedProduct(ILogger logger, Exception exception, string reportDate, Guid productId);
+
+    [LoggerMessage(EventId = 2, Level = LogLevel.Warning,
+        Message = "Daily summary refresh skipped because report date {ReportDate} could not be listed")]
+    private static partial void LogSkippedSummaryRefresh(ILogger logger, Exception exception, string reportDate);
 }
