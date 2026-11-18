@@ -1,7 +1,7 @@
 {
-  "version": "2026-11-17.1",
-  "policyVersion": "2026-11-17.1",
-  "canonicalSource": "HualapaiValley/HVO.WebSite@226ad95099f8300a8f732c590b7efbf411d2a6c1",
+  "version": "2026-11-17.2",
+  "policyVersion": "2026-11-17.2",
+  "canonicalSource": "HualapaiValley/HVO.WebSite@fcf4df43d857a4e5471d66e81c47eff3a2849639",
   "checksums": "docs/development/policy/snapshot.sha256",
   "files": [
     "docs/development/policy/common.md",

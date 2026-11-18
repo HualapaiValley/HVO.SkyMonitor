@@ -8,7 +8,7 @@ must not redefine its policy inconsistently.
 
 The shared [common policy](docs/development/policy/common.md),
 [SkyMonitor profile](docs/development/policy/skymonitor.md), and
-[harness adapters](docs/development/policy/adapters.md) are version 2026-11-17.1.
+[harness adapters](docs/development/policy/adapters.md) are version 2026-11-17.2.
 Common policy governs designated pilot work, policy text and enforcement changes;
 its six folded rules apply to all agent work. The standing authorized merge
 rule also applies as specified in common policy. The profile records local

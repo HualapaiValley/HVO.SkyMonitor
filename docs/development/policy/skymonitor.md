@@ -1,6 +1,8 @@
-# SkyMonitor adoption profile — 2026-11-17.1
+# SkyMonitor adoption profile — 2026-11-17.2
 
 This profile accompanies [common policy](common.md) and [adapters](adapters.md).
+The portable source is HualapaiValley/HVO.WebSite `main` at
+`fcf4df43d857a4e5471d66e81c47eff3a2849639`.
 Repository settings and refs below were read on 2026-11-18 UTC; live settings
 remain authoritative. This adoption targets `development/v1`, not promotion.
 
@@ -75,9 +77,11 @@ Repository labels include `review:*`, `risk:*` and `workflow:in-progress` /
 
 ## Retained stricter SkyMonitor procedures (Roy t581u)
 
-These transitional procedures remain in force until Roy records a decision to
-retire them or promote them to common, or the next shared-policy version bump,
-whichever comes first. They may not relax common policy:
+Roy originated these procedures in t581u and authorized continuing this work,
+including retaining them through the 2026-11-17.2 version bump, in t594u. They
+remain in force until Roy records a decision to retire them or promote them to
+common, or the next shared-policy version bump, whichever comes first. They may
+not relax common policy:
 
 1. Kepler alone creates agent PRs, including drafts, marks ready, publishes
    `hvo/reviewed-head`, and enqueues. Coding threads perform none of these.
