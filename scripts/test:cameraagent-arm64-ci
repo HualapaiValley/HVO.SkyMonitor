@@ -252,6 +252,9 @@ if [[ $# -ne 1 || ! -d "$BUNDLE" || -L "$BUNDLE" ]]; then
     printf 'Usage: %s PRODUCTION_CATALOG_BUNDLE\n' "${0##*/}" >&2
     exit 2
 fi
+if [[ ! -d "${HVO_OPENNGC_CATALOG_BUNDLE:-}" || -L "${HVO_OPENNGC_CATALOG_BUNDLE:-}" ]]; then
+    fail "HVO_OPENNGC_CATALOG_BUNDLE must name the verified standalone OpenNGC bundle directory"
+fi
 
 for command in cc curl date df docker dotnet du file find findmnt git grep id ip jq lsblk nproc python3 readelf readlink realpath sha256sum sqlite3 stat tar tee timeout wc; do
     require_command "$command"

@@ -50,14 +50,56 @@ jobs:
           ./scripts/catalog/smoke-test.sh
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
           ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null
-          tar -czf "$RUNNER_TEMP/hyg-v42-contracts.tar.gz" -C "$catalog_root" .
+      - name: Build and verify the pinned standalone OpenNGC bundle
+        timeout-minutes: 3
+        run: |
+          started=$SECONDS
+          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"
+          bundle=openngc/openngc-v20260501-p6-s5-r1.bundle
+          ./scripts/catalog/fetch-openngc-inputs.sh "$RUNNER_TEMP/openngc-inputs"
+          ./scripts/catalog/build-openngc.sh --openngc-source "$RUNNER_TEMP/openngc-inputs" "$catalog_root/openngc"
+          cd "$catalog_root"
+          sha256sum "$bundle"/* > openngc.sha256
+          jq -n --arg headSha "$GITHUB_SHA" --arg runId "$GITHUB_RUN_ID" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" --arg architecture "$(uname -m)" \
+            --argjson buildSeconds "$((SECONDS - started))" \
+            --slurpfile manifest "$bundle/manifest.json" \
+            '{headSha:$headSha,runId:$runId,producerAttempt:$attempt,producerArchitecture:$architecture,
+              buildSeconds:$buildSeconds,package:$manifest[0].package.version,source:$manifest[0].source.downloadUrl}' \
+            > openngc-fixture.json
+      - name: Setup .NET from global.json
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Run hosted OpenNGC catalog, installer, and lifecycle contracts
+        id: openngc-contracts
+        timeout-minutes: 5
+        env:
+          HVO_PRODUCTION_CATALOG_BUNDLE: ${{ runner.temp }}/hyg-v42-contracts/build/hyg-v4.2-p3-s2-r1.bundle
+          HVO_OPENNGC_CATALOG_BUNDLE: ${{ runner.temp }}/hyg-v42-contracts/openngc/openngc-v20260501-p6-s5-r1.bundle
+        run: |
+          evidence="$RUNNER_TEMP/openngc-contract-evidence"
+          mkdir -p "$evidence"
+          cp "$RUNNER_TEMP/hyg-v42-contracts/"{openngc-fixture.json,openngc.sha256} "$evidence/"
+          ./scripts/test:openngc-contracts "$evidence"
+      - name: Upload hosted OpenNGC contract evidence
+        if: ${{ !cancelled() && (steps.openngc-contracts.outcome == 'success' || steps.openngc-contracts.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: hosted-openngc-contracts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/openngc-contract-evidence/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Archive exact production catalog contracts
+        run: tar -czf "$RUNNER_TEMP/catalog-contracts.tar.gz" -C "$RUNNER_TEMP/hyg-v42-contracts" .
       - name: Upload exact production catalog contract
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: arm64-hyg-v42-contracts-${{ github.run_id }}
-          path: ${{ runner.temp }}/hyg-v42-contracts.tar.gz
+          name: arm64-catalog-contracts-${{ github.run_id }}
+          path: ${{ runner.temp }}/catalog-contracts.tar.gz
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   cameraagent-arm64:
     name: Native CameraAgent Evidence
@@ -84,14 +126,15 @@ jobs:
       - name: Download exact production catalog contract
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: arm64-hyg-v42-contracts-${{ github.run_id }}
+          name: arm64-catalog-contracts-${{ github.run_id }}
           path: ${{ runner.temp }}/hyg-v42-contract-artifact-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Restore exact production catalog contract
         run: |
           catalog_root="$RUNNER_TEMP/hyg-v42-contracts-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -m 700 "$catalog_root"
-          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/hyg-v42-contracts.tar.gz" -C "$catalog_root"
+          tar -xzf "$RUNNER_TEMP/hyg-v42-contract-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/catalog-contracts.tar.gz" -C "$catalog_root"
           bundle_path="$catalog_root/build/hyg-v4.2-p3-s2-r1.bundle"
+          openngc_bundle="$catalog_root/openngc/openngc-v20260501-p6-s5-r1.bundle"
           # The Deployment.Cli installer and lifecycle contracts skip themselves with
           # Assert.Inconclusive when this bundle is absent, and a skipped MSTest records
           # notExecuted="0" and inconclusive="0" in its TRX, so the job stays green having
@@ -99,7 +142,19 @@ jobs:
           # broken artifact restore turn into a green run that proved nothing.
           test -d "$bundle_path" ||
             { printf 'Catalog bundle missing after restore: %s\n' "$bundle_path" >&2; exit 1; }
-          printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path" >> "$GITHUB_ENV"
+          test -d "$openngc_bundle" ||
+            { printf 'OpenNGC bundle missing after restore: %s\n' "$openngc_bundle" >&2; exit 1; }
+          # A native-only retry can reuse the producer artifact from an earlier attempt of this same run.
+          jq -e --arg head "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
+            '.headSha == $head and .runId == $run' "$catalog_root/openngc-fixture.json" >/dev/null ||
+            { printf 'OpenNGC bundle provenance does not match the workflow run and commit.\n' >&2; exit 1; }
+          (cd "$catalog_root" && sha256sum --check --strict openngc.sha256)
+          cp "$catalog_root/"{openngc-fixture.json,openngc.sha256} \
+            "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/"
+          {
+            printf 'HVO_PRODUCTION_CATALOG_BUNDLE=%s\n' "$bundle_path"
+            printf 'HVO_OPENNGC_CATALOG_BUNDLE=%s\n' "$openngc_bundle"
+          } >> "$GITHUB_ENV"
       - name: Setup .NET from global.json
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:

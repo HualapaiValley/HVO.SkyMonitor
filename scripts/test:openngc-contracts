@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/trx-evidence.sh
+source "$script_dir/lib/trx-evidence.sh"
+
+if [[ $# != 1 || -z "$1" ]]; then
+    printf 'Usage: %s RESULTS_DIRECTORY\n' "${0##*/}" >&2
+    exit 2
+fi
+for variable in HVO_PRODUCTION_CATALOG_BUNDLE HVO_OPENNGC_CATALOG_BUNDLE; do
+    if [[ ! -d "${!variable:-}" || -L "${!variable:-}" ]]; then
+        printf '%s must name a verified catalog bundle directory.\n' "$variable" >&2
+        exit 1
+    fi
+done
+
+results="$(realpath -m -- "$1")"
+mkdir -p -- "$results"
+cd "$script_dir/.."
+
+run_contracts() {
+    local project="$1" trx_name="$2" contract filter=""
+    local trx="$results/$trx_name"
+    shift 2
+    if [[ -e "$trx" || -L "$trx" ]]; then
+        printf 'Evidence file already exists: %s\n' "$trx" >&2
+        return 1
+    fi
+    for contract in "$@"; do
+        filter+="${filter:+|}FullyQualifiedName=$project.${contract%:*}"
+    done
+
+    DOCKER_HOST="unix://$results/docker-must-not-exist.sock" \
+        dotnet test "tests/$project/$project.csproj" --configuration Release -warnaserror \
+        --filter "TestCategory=Unit&($filter)" \
+        --results-directory "$results" --logger "trx;LogFileName=$trx_name"
+    trx_assert_executed_and_passed "$trx" "$project" || return 1
+    trx_assert_counters_executed_and_passed "$trx" "$project" || return 1
+
+    # Check that the intended methods and all their data rows were discovered.
+    python3 - "$trx" "$project" "$@" <<'PY'
+from collections import Counter
+import sys
+import xml.etree.ElementTree as ET
+
+trx, project, *contracts = sys.argv[1:]
+expected = {}
+for contract in contracts:
+    method, rows = contract.split(":")
+    expected[f"{project}.{method}"] = int(rows)
+
+run = ET.parse(trx)
+methods = {}
+for test in run.findall("./{*}TestDefinitions/{*}UnitTest"):
+    method = test.find("./{*}TestMethod")
+    methods[test.attrib["id"]] = f"{method.attrib['className']}.{method.attrib['name']}"
+observed = Counter(methods[result.attrib["testId"]] for result in run.findall("./{*}Results/{*}UnitTestResult"))
+if observed != expected:
+    sys.exit(f"{project}: expected OpenNGC result counts {expected}, observed {dict(observed)}")
+for method, rows in sorted(observed.items()):
+    print(f"{method}: {rows} Passed")
+PY
+}
+
+run_contracts HVO.SkyMonitor.Catalog.Sqlite.Tests catalog-sqlite.trx \
+    IndependentOpenNgcCatalogTests.PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification:1
+run_contracts HVO.SkyMonitor.Deployment.Cli.Tests deployment-cli.trx \
+    InstallerFlowTests.InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery:2 \
+    InstallerFlowTests.InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState:2 \
+    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection:2 \
+    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting:1 \
+    InstallerFlowTests.InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite:2 \
+    InstallerFlowTests.InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent:1 \
+    LifecycleContractTests.PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands:1
