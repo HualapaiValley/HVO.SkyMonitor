@@ -276,7 +276,7 @@ links do not depend on automation order. Unchanged still retries repeat this
 check, allowing recovery after an interrupted refresh; a failed refresh makes
 that run fail with a retry note while preserving the last good summary. If the
 date listing raises `InvalidDataException` or `IOException` (including an exceeded
-1,024-product listing bound), maintenance is skipped and the still run keeps its
+1,024-product listing bound or malformed persisted window exclusions/occurrence JSON), maintenance is skipped and the still run keeps its
 own successful outcome. The history note names the exception type, not its message
 or stack; fuller diagnostics are tracked in [#1832](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1832).
 That successful occurrence is terminal: there is no automatic retry of the skip,

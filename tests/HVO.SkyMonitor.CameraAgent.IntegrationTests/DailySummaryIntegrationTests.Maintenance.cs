@@ -1,3 +1,4 @@
+using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
@@ -10,6 +11,77 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 
 public sealed partial class DailySummaryIntegrationTests
 {
+    [TestMethod]
+    [DataRow(NightlyProductKind.Keogram, "exclusions_json")]
+    [DataRow(NightlyProductKind.Keogram, "occurrence_json")]
+    [DataRow(NightlyProductKind.StarTrail, "exclusions_json")]
+    [DataRow(NightlyProductKind.StarTrail, "occurrence_json")]
+    public async Task MalformedRetainedWindowJsonSkipsMaintenanceAfterSuccessfulStill(NightlyProductKind kind, string column)
+    {
+        var original = await SeedMaintenanceSummaryAsync();
+        var database = Path.Combine(_root, SqliteNightlyProductStore.DirectoryName, SqliteNightlyProductStore.FileName);
+        using var connection = new SqliteConnection("Data Source=" + database);
+        await connection.OpenAsync();
+        using var command = connection.CreateCommand();
+        // The column is selected solely from the fixed DataRow values above.
+        command.CommandText = $"SELECT {column} FROM nightly_windows WHERE kind = $kind AND scope = $scope";
+        command.Parameters.AddWithValue("$kind", NightlyProductKind.DailySummary.ToString());
+        command.Parameters.AddWithValue("$scope", NightlyProductScope.Final.ToString());
+        var validJson = (string)(await command.ExecuteScalarAsync())!;
+        command.CommandText = $"UPDATE nightly_windows SET {column} = $json WHERE kind = $kind AND scope = $scope";
+        command.Parameters.AddWithValue("$json", "{");
+
+        var logger = new CapturingNightlyProductLogger();
+        string runKey;
+        string occurrenceId;
+        Guid stillId;
+        using (var harness = Create(logger: logger, readMaintenanceDay: async (store, date, token) =>
+        {
+            await VerifyStillFinalAsync(store, kind);
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync(token));
+            return await store.GetDayAsync(date, token);
+        }))
+        using (var automation = CreateAutomation(harness))
+        {
+            await QueueStillAsync(automation.Store, kind);
+            await automation.Runner.SweepAsync(CancellationToken.None);
+            var run = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
+            runKey = run.RunKey;
+            occurrenceId = run.Occurrence!.IdentitySha256;
+            await AssertSingleSuccessfulAttemptAsync(automation.Store, occurrenceId, runKey);
+            StringAssert.Contains(run.Detail, "Daily summary refresh skipped: the report date could not be listed (InvalidDataException).", StringComparison.Ordinal);
+            var warning = logger.Warnings.Single();
+            Assert.AreEqual(2, warning.Id.Id);
+            Assert.IsInstanceOfType<InvalidDataException>(warning.Exception);
+            Assert.IsInstanceOfType<JsonException>(warning.Exception.InnerException);
+            Assert.AreEqual(NightlyProductFixture.ObservingDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                warning.Fields.Single(field => field.Key == "ReportDate").Value);
+            var failure = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await harness.Store.GetDayAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+            Assert.IsInstanceOfType<JsonException>(failure.InnerException);
+            var still = await harness.Store.ReadWindowAsync(kind, NightlyProductScope.Final,
+                run.Occurrence.SourceWindow!.StartUtc, CancellationToken.None, occurrenceId);
+            Assert.IsNotNull(still);
+            stillId = still.ProductIds.Single();
+            await harness.Store.VerifyPublicationAsync(stillId, CancellationToken.None);
+            Assert.AreEqual(3L, await CountProductsAsync(), "Only the original summary and the still outputs should exist.");
+        }
+        command.CommandText = $"SELECT {column} FROM nightly_windows WHERE kind = $kind AND scope = $scope";
+        Assert.AreEqual("{", await command.ExecuteScalarAsync(), "Maintenance must not repair the corrupt row.");
+        command.CommandText = $"UPDATE nightly_windows SET {column} = $json WHERE kind = $kind AND scope = $scope";
+        command.Parameters["$json"].Value = validJson;
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync());
+        using var restarted = Create();
+        using var history = CreateAutomation(restarted);
+        var retained = await AssertSingleSuccessfulAttemptAsync(history.Store, occurrenceId, runKey);
+        StringAssert.Contains(retained.Detail, "could not be listed (InvalidDataException)", StringComparison.Ordinal);
+        await AssertMaintenanceSummaryUnchangedAsync(restarted.Store, original);
+        await restarted.Store.VerifyPublicationAsync(stillId, CancellationToken.None);
+        var recovered = await restarted.Generator.RunAsync(retained.Occurrence!, CancellationToken.None);
+        Assert.AreEqual(0, recovered.FailedWindows, recovered.Describe());
+        StringAssert.Contains(recovered.Describe(), "Daily summary refresh: 1 published", StringComparison.Ordinal);
+    }
+
     [TestMethod]
     [DataRow(NightlyProductKind.Keogram)]
     [DataRow(NightlyProductKind.StarTrail)]
