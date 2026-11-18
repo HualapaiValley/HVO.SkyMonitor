@@ -997,6 +997,53 @@ public sealed class CameraCaptureServiceTests
     }
 
     [TestMethod]
+    public async Task StopAsync_InterruptsVirtualExposureWithoutIngressOrStagedArtifacts()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-virtual-exposure-stop-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var clock = new ExposureTestTimeProvider(new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+            var config = Focus.FocusTestModules.Config(width: 64, height: 48);
+            config = config with
+            {
+                Module = new("VirtualSky"),
+                Rig = config.Rig with
+                {
+                    ControlPolicy = new() { ExposureControl = AutomaticControlOwnership.Disabled, GainControl = AutomaticControlOwnership.Disabled },
+                    Pipeline = config.Rig.Pipeline with
+                    { NightExposure = TimeSpan.FromSeconds(20) }
+                },
+                Pipeline = new([new("ProjectedScene", DependsOn: ["$raw"])])
+            };
+            var ingress = new PassthroughRawIngress(root);
+            var distributor = new RecordingDistributor();
+            var staging = new VirtualSkyCameraModuleTests.RecordingProjectedSceneStagingStore();
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress,
+                Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressSqliteBusyTimeoutSeconds = 1 }),
+                clock, telemetry);
+            using var lifetime = new TestHostApplicationLifetime();
+            var module = new VirtualSkyCameraModule(clock, new InMemoryCelestialCatalog([]), new ProjectedSceneStore(),
+                stagingStore: staging);
+            using var service = new CameraCaptureService(new ConfigurationAccessor(config), new ModuleFactory(module),
+                ingress, distributor, clock, new AstronomyEnginePlanetEphemeris(), telemetry, admission,
+                new FleetRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance);
+            await service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            await clock.TimerCreated.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromSeconds(7));
+            await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            Assert.AreEqual(0, ingress.AcceptCount);
+            Assert.AreEqual(0, distributor.EphemeralCount);
+            Assert.AreEqual(0, clock.ActiveTimers);
+            Assert.IsEmpty(staging.Stages);
+            Assert.IsEmpty(staging.DeletedKeys);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
     public async Task StopAsync_CancelsCaptureAndDisposesModule()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-capture-service-{Guid.NewGuid():N}");
@@ -1177,6 +1224,7 @@ public sealed class CameraCaptureServiceTests
 
     private sealed class PassthroughRawIngress(string root) : IRawCaptureIngress
     {
+        public int AcceptCount { get; private set; }
         public async ValueTask InitializeAsync(CancellationToken cancellationToken)
             => await new SqliteRawCaptureJournal(
                 Path.Combine(root, "journal", "raw-ingress.db"), 1)
@@ -1186,7 +1234,10 @@ public sealed class CameraCaptureServiceTests
             CameraModuleConfig configuration,
             CaptureLoopSubmission submission,
             CancellationToken cancellationToken)
-            => ValueTask.FromResult<RawCaptureReceipt?>(null);
+        {
+            AcceptCount++;
+            return ValueTask.FromResult<RawCaptureReceipt?>(null);
+        }
     }
 
     private sealed class GatedCameraModule : ICameraModule

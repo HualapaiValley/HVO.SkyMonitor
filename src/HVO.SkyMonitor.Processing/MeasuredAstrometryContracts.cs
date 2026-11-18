@@ -227,7 +227,8 @@ public static class MeasuredAstrometryJson
             Same(value.MeasuredRecipeIdentitySha256, context.MeasuredRecipeIdentitySha256) &&
             value.Assessment.PreviousAssessmentIdentitySha256 == context.PreviousAccepted?.IdentitySha256 &&
             value.Assessment.Mode == (context.PreviousAccepted is null ? AstrometricSolveMode.Blind : AstrometricSolveMode.Warm) &&
-            (value.Uncertainty is null || value.Uncertainty.OptionsIdentitySha256 == options.Uncertainty!.IdentitySha256 && value.Uncertainty.Clock == context.Clock);
+            (value.Uncertainty is null || value.Uncertainty.OptionsIdentitySha256 ==
+                options.Uncertainty!.IdentityForExposure(context.Frame.ExposureEndUtc - context.Frame.ExposureStartUtc) && value.Uncertainty.Clock == context.Clock);
     }
 
     /// <summary>Reconstructs only an accepted immutable mapping; no fitting or retained-state mutation occurs.</summary>

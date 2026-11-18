@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -312,10 +313,10 @@ public sealed class SettingsFileSiteProfileStore(
         {
             var directory = Path.GetDirectoryName(path)!;
             RawIngressFileStore.EnsureNoSymbolicLinks(Path.GetFullPath(_options.RawIngressRoot), directory);
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
             if (!Directory.EnumerateFileSystemEntries(directory).Any())
             {
-                Directory.Delete(directory);
+                RetainedFileMutations.DeleteDirectory(directory);
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

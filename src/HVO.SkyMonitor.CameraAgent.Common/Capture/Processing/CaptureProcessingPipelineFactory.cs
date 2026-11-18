@@ -1322,7 +1322,14 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static JsonElement SerializeEffectiveOptions(object options, bool omitLegacyEnabled)
     {
         var serialized = CaptureContractJson.SerializeToElement(options);
-        if (!omitLegacyEnabled || serialized.ValueKind is not JsonValueKind.Object)
+        // New optional query/layer controls must not invalidate retained graphs that never enabled them.
+        var omitDeepSky = options switch
+        {
+            ProjectedSceneCaptureProcessingStepOptions query => !query.DeepSkyEnabled,
+            ScenePresentationLayerProcessingStepOptions layer => !layer.IncludeDeepSkyLayer,
+            _ => false
+        };
+        if ((!omitLegacyEnabled && !omitDeepSky) || serialized.ValueKind is not JsonValueKind.Object)
         {
             return serialized;
         }
@@ -1333,10 +1340,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             writer.WriteStartObject();
             foreach (var property in serialized.EnumerateObject())
             {
-                if (!string.Equals(property.Name, "enabled", StringComparison.OrdinalIgnoreCase))
-                {
-                    property.WriteTo(writer);
-                }
+                if (omitLegacyEnabled && string.Equals(property.Name, "enabled", StringComparison.OrdinalIgnoreCase) ||
+                    omitDeepSky && (property.Name.StartsWith("deepSky", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(property.Name, "includeDeepSkyLayer", StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                property.WriteTo(writer);
             }
             writer.WriteEndObject();
         }

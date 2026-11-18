@@ -53,6 +53,7 @@ public sealed class OwnerBootstrapGateMiddlewareTests
             OwnerBootstrapGateMiddleware.ReplacementPath,
             "/Account/Logout",
             "/health",
+            "/metrics",
             "/HVO.SkyMonitor.CameraAgent.styles.css"
         })
         {

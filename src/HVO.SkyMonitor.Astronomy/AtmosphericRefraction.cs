@@ -41,5 +41,25 @@ public static class AtmosphericRefraction
         return geometricAltitudeDegrees + correctionArcMinutes / 60d;
     }
 
+    /// <summary>Inverts apparent altitude over the above-horizon domain; unsupported floor gaps return null.</summary>
+    public static double? RemoveAboveHorizon(double apparentAltitudeDegrees, RefractionOptions options)
+    {
+        options.Validate();
+        if (!double.IsFinite(apparentAltitudeDegrees) || apparentAltitudeDegrees is < 0 or > 90) return null;
+        if (!options.Enabled) return apparentAltitudeDegrees;
+        var floor = Math.Max(0, options.MinimumAltitudeDegrees);
+        if (apparentAltitudeDegrees < floor) return apparentAltitudeDegrees;
+        var low = floor;
+        var high = 90d;
+        if (apparentAltitudeDegrees < Apply(low, options) || apparentAltitudeDegrees > Apply(high, options)) return null;
+        for (var i = 0; i < 48; i++)
+        {
+            var mid = (low + high) / 2;
+            if (Apply(mid, options) < apparentAltitudeDegrees) low = mid;
+            else high = mid;
+        }
+        return (low + high) / 2;
+    }
+
     private static double ToRadians(double degrees) => degrees * Math.PI / 180d;
 }

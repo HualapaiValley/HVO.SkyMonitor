@@ -43,8 +43,9 @@ public sealed record ApprovedCatalogTopology(
 
 /// <summary>
 /// One reviewed, source-controlled catalog specification. A package manifest is accepted only when it matches
-/// the specification its catalog ID names; a manifest can never approve itself. A manifest-version-3 specification
-/// also names its <see cref="Composition"/>; earlier versions have none.
+/// the specification its catalog ID names; a manifest can never approve itself. Manifest-version-3 (composed) and
+/// manifest-version-4 (standalone deep-sky) specifications also name their <see cref="Composition"/>: version 3's
+/// includes the stars component and version 4's omits it. Stars-only version 2 specifications have none.
 /// </summary>
 public sealed record ApprovedCatalogSpecification(
     string CatalogId,
@@ -60,7 +61,7 @@ public sealed record ApprovedCatalogSpecification(
     string SerializerVersion,
     ApprovedCatalogDatabase Database,
     ApprovedCatalogLicense License,
-    ApprovedCatalogTopology Topology,
+    ApprovedCatalogTopology? Topology,
     ApprovedCatalogComposition? Composition = null)
 {
     /// <summary>Gets the exact file names a production snapshot of this specification retains.</summary>
@@ -97,10 +98,10 @@ public sealed record ApprovedCatalogSpecification(
 public static class ApprovedCatalogSpecifications
 {
     /// <summary>
-    /// The embedded registry version. Version 2 (issue #525) adds composed manifest-v3 specifications to the
-    /// version-1 set; a CameraAgent image declares it as <c>hvo-approved-catalogs-v2</c>.
+    /// The embedded registry version. Version 3 adds the independently selectable OpenNGC manifest-v4
+    /// specification; an image declaring <c>hvo-approved-catalogs-v3</c> reads all retained approved lineages.
     /// </summary>
-    public const int RegistryVersion = 2;
+    public const int RegistryVersion = 3;
 
     private const string ResourceName = "HVO.SkyMonitor.Catalog.Sqlite.ApprovedCatalogSpecifications.json";
     private static readonly Lazy<IReadOnlyDictionary<string, ApprovedCatalogSpecification>> Registry =
@@ -183,7 +184,7 @@ public static class ApprovedCatalogSpecifications
         ApprovedCatalogSpecification specification,
         Dictionary<string, ApprovedCatalogSpecification> registry)
     {
-        if (specification.Composition is not { Stars: var stars })
+        if (specification.Composition?.Stars is not { } stars)
         {
             return;
         }
@@ -209,12 +210,14 @@ public static class ApprovedCatalogSpecifications
     {
         var value = CatalogSnapshotResolver.RequireObject(element, "specification");
         var manifestVersion = CatalogSnapshotResolver.RequireInt32(value, "manifestVersion");
-        var composed = manifestVersion == CatalogSnapshotResolver.ComposedManifestVersion;
+        var standalone = manifestVersion == CatalogSnapshotResolver.DeepSkyManifestVersion;
+        var composed = standalone || manifestVersion == CatalogSnapshotResolver.ComposedManifestVersion;
         string[] specificationProperties =
         [
             "catalogId", "packageLineage", "packageVersionPrefix", "manifestVersion", "catalog", "source",
             "schemaVersion", "preprocessingVersion", "serializer", "database", "license", "topology"
         ];
+        if (standalone) specificationProperties = specificationProperties.Where(static name => name != "topology").ToArray();
         string[] databaseProperties = ["relativePath", "sha256", "length", "rowCount", "solCount", "requiredColumn"];
         CatalogSnapshotResolver.RequireExactProperties(value, "specification",
             composed ? [.. specificationProperties, "components", "transformations"] : specificationProperties);
@@ -223,16 +226,16 @@ public static class ApprovedCatalogSpecifications
         var serializer = Object(value, "serializer", "name", "version");
         var database = Object(value, "database", composed ? [.. databaseProperties, "deepSky"] : databaseProperties);
         var license = Object(value, "license", "identifier", "url", "file", "attribution");
-        var topology = Object(value, "topology", "identity", "sha256", "constellationCount", "segmentCount",
+        var topology = standalone ? default : Object(value, "topology", "identity", "sha256", "constellationCount", "segmentCount",
             "unresolvedEndpoints");
 
         var catalogId = String(value, "catalogId");
         CatalogSnapshotResolver.ValidateCatalogId(catalogId);
-        var endpoints = CatalogSnapshotResolver.RequireProperty(topology, "unresolvedEndpoints");
-        if (endpoints.ValueKind != JsonValueKind.Array ||
+        var endpoints = standalone ? default : CatalogSnapshotResolver.RequireProperty(topology, "unresolvedEndpoints");
+        if (!standalone && (endpoints.ValueKind != JsonValueKind.Array ||
             endpoints.EnumerateArray().Any(static item => item.ValueKind != JsonValueKind.String ||
                 !int.TryParse(item.GetString(), System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture, out var hip) || hip <= 0))
+                    System.Globalization.CultureInfo.InvariantCulture, out var hip) || hip <= 0)))
         {
             throw new InvalidDataException("Approved catalog topology endpoints must be positive Hipparcos IDs.");
         }
@@ -266,19 +269,21 @@ public static class ApprovedCatalogSpecifications
                 AbsoluteUri(license, "url"),
                 File(license, "file"),
                 File(license, "attribution")),
-            new ApprovedCatalogTopology(
+            standalone ? null : new ApprovedCatalogTopology(
                 String(topology, "identity"),
                 Sha256(topology, "sha256"),
                 Positive(topology, "constellationCount"),
                 Positive(topology, "segmentCount"),
                 endpoints.EnumerateArray().Select(static item => item.GetString()!)
                     .Order(StringComparer.Ordinal).ToArray()),
-            composed ? ApprovedCatalogComposition.Read(value, database) : null);
+            composed ? ApprovedCatalogComposition.Read(value, database, standalone) : null);
         var supportedLayout = specification.ManifestVersion switch
         {
             CatalogSnapshotResolver.MinimumSupportedManifestVersion => specification.SchemaVersion is "2" or "3",
             CatalogSnapshotResolver.ComposedManifestVersion => specification.SchemaVersion is "4" &&
-                specification.Composition?.Stars.Database.RowCount == specification.Database.RowCount,
+                specification.Composition?.Stars?.Database.RowCount == specification.Database.RowCount,
+            CatalogSnapshotResolver.DeepSkyManifestVersion => specification.SchemaVersion == "5" &&
+                specification.Composition?.Stars is null && specification.Composition?.DeepSkyCounts.ObjectCount == specification.Database.RowCount,
             _ => false
         };
         if (!supportedLayout ||

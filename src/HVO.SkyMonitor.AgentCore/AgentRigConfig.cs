@@ -10,7 +10,12 @@ public sealed record CameraRigConfig(
     PipelineExposureProfile Pipeline,
     CameraControlPolicy? ControlPolicy = null,
     string ProfileVersion = "unversioned",
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SensorReadoutProfile? Readout = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SensorReadoutProfile? Readout = null)
+{
+    /// <summary>Gets the explicitly validated horizon for this installation; old captures retain their revision.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HorizonObstructionProfile? HorizonObstruction { get; init; }
+}
 
 /// <summary>Configured native ROI, binning, output representation, and quantization for one readout mode.</summary>
 public sealed record SensorReadoutProfile(

@@ -17,6 +17,46 @@ public sealed partial class EnvironmentalAcquisitionService(
     ILogger<EnvironmentalAcquisitionService> logger) : BackgroundService
 {
     private long _queueDepth;
+    private readonly Channel<(EnvironmentalCaptureAcquisition Acquisition, Func<CancellationToken, Task> Prepare)> _capturePreparations =
+        Channel.CreateBounded<(EnvironmentalCaptureAcquisition, Func<CancellationToken, Task>)>(
+            new BoundedChannelOptions(options.Value.EnvironmentalAcquisition.QueueCapacity)
+            { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.Wait, AllowSynchronousContinuations = false });
+
+    internal bool TryPrepareCapture(EnvironmentalCaptureAcquisition acquisition, Func<CancellationToken, Task> prepare)
+        => _capturePreparations.Writer.TryWrite((acquisition, prepare));
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The hosted worker owns preparation writes and reports their exact error to the admission caller.")]
+    private async Task DrainCapturePreparationsAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await foreach (var item in _capturePreparations.Reader.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    stoppingToken.ThrowIfCancellationRequested();
+                    await item.Prepare(stoppingToken).ConfigureAwait(false);
+                    item.Acquisition.Admission.TrySetResult(null);
+                }
+                catch (Exception exception)
+                {
+                    item.Acquisition.Admission.TrySetResult(exception);
+                    item.Acquisition.Completion.TrySetResult();
+                    AcquisitionFailed(logger, "Multiple", "BeforeCapture", "Failed", "capture-admission-unavailable", exception);
+                }
+            }
+        }
+        finally
+        {
+            _capturePreparations.Writer.TryComplete();
+            while (_capturePreparations.Reader.TryRead(out var abandoned))
+            {
+                abandoned.Acquisition.Admission.TrySetResult(new OperationCanceledException(stoppingToken));
+                abandoned.Acquisition.Completion.TrySetResult();
+            }
+        }
+    }
     private readonly Channel<EnvironmentalTriggerRequest> _requests = Channel.CreateBounded<EnvironmentalTriggerRequest>(
         new BoundedChannelOptions(options.Value.EnvironmentalAcquisition.QueueCapacity)
         {
@@ -53,33 +93,70 @@ public sealed partial class EnvironmentalAcquisitionService(
             .Where(static source => source.Triggers.Contains(EnvironmentalAcquisitionTrigger.Periodic))
             .Select(source => RunPeriodicAsync(source, stoppingToken));
         return Task.WhenAll(periodic
+            .Append(Task.Run(() => DrainCapturePreparationsAsync(stoppingToken), CancellationToken.None))
             .Append(DrainRequestsAsync(stoppingToken))
+            .Append(DrainDeferredAsync(stoppingToken))
             .Append(RunRetentionAsync(stoppingToken)));
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Deferred coalesced source failures are owned by the hosted worker and cannot stop independent acquisition.")]
+    private async Task DrainDeferredAsync(CancellationToken cancellationToken)
+    {
+        await foreach (var request in coordinator.ReadDeferredAsync(cancellationToken).ConfigureAwait(false))
+        {
+            try
+            {
+                await coordinator.AcquireSourceAsync(request.SourceId, request.Trigger, request.ObservedAtUtc,
+                    request.CaptureSequence, request.CaptureId, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception exception)
+            {
+                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+            }
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "One queued trigger failure must not stop independent environmental acquisition.")]
     private async Task DrainRequestsAsync(CancellationToken cancellationToken)
     {
-        await foreach (var request in _requests.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        try
         {
-            telemetry.SetQueueDepth(Interlocked.Decrement(ref _queueDepth));
-            try
+            await foreach (var request in _requests.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
-                _ = await coordinator.AcquireTriggerAsync(
-                    request.Trigger,
-                    request.ObservedAtUtc,
-                    request.CaptureSequence,
-                    request.CaptureId,
-                    cancellationToken).ConfigureAwait(false);
+                telemetry.SetQueueDepth(Interlocked.Decrement(ref _queueDepth));
+                try
+                {
+                    if (request.CaptureAcquisition is { } acquisition)
+                        await coordinator.AcquireCaptureAsync(acquisition, request.ObservedAtUtc, request.CaptureBudgetMilliseconds,
+                            cancellationToken).ConfigureAwait(false);
+                    else _ = await coordinator.AcquireTriggerAsync(
+                        request.Trigger,
+                        request.ObservedAtUtc,
+                        request.CaptureSequence,
+                        request.CaptureId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+                }
+                finally { request.CaptureAcquisition?.Completion.TrySetResult(); }
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        }
+        finally
+        {
+            _requests.Writer.TryComplete();
+            while (_requests.Reader.TryRead(out var abandoned))
             {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                AcquisitionFailed(logger, "Multiple", request.Trigger.ToString(), "Failed", "unexpected", exception);
+                telemetry.SetQueueDepth(Interlocked.Decrement(ref _queueDepth));
+                abandoned.CaptureAcquisition?.Completion.TrySetResult();
             }
         }
     }
@@ -92,16 +169,12 @@ public sealed partial class EnvironmentalAcquisitionService(
     {
         var now = timeProvider.GetUtcNow();
         var due = CurrentDue(source, now);
-        if (due <= now)
-        {
-            await AcquireAsync(source, due, cancellationToken).ConfigureAwait(false);
-            due = NextDue(source, timeProvider.GetUtcNow());
-        }
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                due = await ResolveDueAsync(source, due, cancellationToken).ConfigureAwait(false);
                 await stateStore.UpdateSourceScheduleAsync(
                     options.Value.RawIngressRoot, source, due, cancellationToken).ConfigureAwait(false);
                 if (journalUnavailable)
@@ -145,18 +218,26 @@ public sealed partial class EnvironmentalAcquisitionService(
             var nextDelay = TimeSpan.FromHours(1);
             try
             {
-                var result = await retentionStore.RetainLocalAsync(
-                    options.Value.RawIngressRoot,
-                    timeProvider.GetUtcNow().AddDays(-configured.RetentionDays),
-                    configured.RetentionBatchSize,
-                    cancellationToken).ConfigureAwait(false);
+                LocalEnvironmentalRetentionResult result;
+                var batches = 0;
+                do
+                {
+                    result = await retentionStore.RetainLocalAsync(
+                        options.Value.RawIngressRoot,
+                        timeProvider.GetUtcNow().AddDays(-configured.RetentionDays),
+                        configured.RetentionBatchSize,
+                        cancellationToken).ConfigureAwait(false);
+                    RetentionCompleted(logger, result.RemovedCount, result.RemovedBytes);
+                    // Each batch releases SQLite's write lock; cap a burst and yield to acquisition.
+                    await Task.Yield();
+                } while (result.BatchLimitReached && ++batches < 16);
+                if (result.BatchLimitReached) nextDelay = TimeSpan.FromSeconds(1);
                 if (journalUnavailable)
                 {
                     JournalRecovered(logger, "retention");
                     journalUnavailable = false;
                 }
                 consecutiveFailures = 0;
-                RetentionCompleted(logger, result.RemovedCount, result.RemovedBytes);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -205,6 +286,23 @@ public sealed partial class EnvironmentalAcquisitionService(
                 "unexpected",
                 exception);
         }
+    }
+
+    private async ValueTask<DateTimeOffset> ResolveDueAsync(EnvironmentalSourceDescriptor source, DateTimeOffset due,
+        CancellationToken cancellationToken)
+    {
+        if (source.Type != "OnlineWeather") return due;
+        var states = await stateStore.ReadSourceStatesAsync(options.Value.RawIngressRoot, cancellationToken).ConfigureAwait(false);
+        var state = states.SingleOrDefault(item => item.SourceId == source.Id);
+        if (state?.NextPollUtc is { } minimum && minimum > due) due = minimum;
+        // Wire spacing is anchored to actual calls. Schedule this kind after its completed poll as well,
+        // so shrinking scheduling latency cannot turn a native-period refresh into a cache-only whole period.
+        if (state?.LastCompletedUtc is { } completed)
+        {
+            var next = completed.AddSeconds(source.PeriodSeconds);
+            if (next > due) due = next;
+        }
+        return due;
     }
 
     private static DateTimeOffset CurrentDue(EnvironmentalSourceDescriptor source, DateTimeOffset now)
@@ -261,4 +359,8 @@ public sealed record EnvironmentalTriggerRequest(
     EnvironmentalAcquisitionTrigger Trigger,
     DateTimeOffset ObservedAtUtc,
     long? CaptureSequence = null,
-    Guid? CaptureId = null);
+    Guid? CaptureId = null)
+{
+    internal EnvironmentalCaptureAcquisition? CaptureAcquisition { get; init; }
+    internal int? CaptureBudgetMilliseconds { get; init; }
+}

@@ -54,7 +54,7 @@ public sealed record ApprovedCatalogTransformation(string Id, long Count, IReadO
 /// </summary>
 public sealed record ApprovedCatalogComposition(
     CatalogDeepSkyCounts DeepSkyCounts,
-    ApprovedCatalogStarsComponent Stars,
+    ApprovedCatalogStarsComponent? Stars,
     ApprovedCatalogDeepSkyComponent DeepSky,
     IReadOnlyList<ApprovedCatalogTransformation> Transformations)
 {
@@ -68,33 +68,36 @@ public sealed record ApprovedCatalogComposition(
     /// <summary>Reads the composition of a registry specification or production manifest strictly.</summary>
     /// <param name="owner">The object holding <c>components</c> and <c>transformations</c>.</param>
     /// <param name="database">The <c>database</c> object holding <c>deepSky</c>.</param>
-    internal static ApprovedCatalogComposition Read(JsonElement owner, JsonElement database)
+    internal static ApprovedCatalogComposition Read(JsonElement owner, JsonElement database, bool standalone = false)
     {
         var deepSkyCounts = ReadDeepSkyCounts(database);
         var components = CatalogSnapshotResolver.RequireProperty(owner, "components");
-        if (components.ValueKind != JsonValueKind.Array || components.GetArrayLength() != 2)
+        if (components.ValueKind != JsonValueKind.Array || components.GetArrayLength() != (standalone ? 1 : 2))
         {
             throw new InvalidDataException("Catalog composition 'components' must list exactly the stars and deep-sky components.");
         }
-        var stars = CatalogSnapshotResolver.RequireObject(components[0], "components[0]");
-        var deepSky = CatalogSnapshotResolver.RequireObject(components[1], "components[1]");
-        CatalogSnapshotResolver.RequireExactProperties(stars, "components[0]",
-            "role", "name", "catalogId", "packageVersion", "database");
+        var stars = standalone ? default : CatalogSnapshotResolver.RequireObject(components[0], "components[0]");
+        var deepSky = CatalogSnapshotResolver.RequireObject(components[standalone ? 0 : 1], "components.deepSky");
+        if (!standalone)
+        {
+            CatalogSnapshotResolver.RequireExactProperties(stars, "components[0]",
+                "role", "name", "catalogId", "packageVersion", "database");
+        }
         CatalogSnapshotResolver.RequireExactProperties(deepSky, "components[1]",
             "role", "name", "version", "commit", "projectUrl", "license", "inputs", "outlines");
-        Role(stars, "stars");
+        if (!standalone) Role(stars, "stars");
         Role(deepSky, "deep-sky");
-        var starsDatabase = Object(stars, "database", "components[0].database", "sha256", "length", "rowCount");
+        var starsDatabase = standalone ? default : Object(stars, "database", "components[0].database", "sha256", "length", "rowCount");
         var outlines = Object(deepSky, "outlines", "components[1].outlines",
             "relativePath", "fileCount", "listingSha256", "pointCount");
-        var starsCatalogId = Text(stars, "catalogId");
-        CatalogSnapshotResolver.ValidateCatalogId(starsCatalogId);
+        var starsCatalogId = standalone ? null : Text(stars, "catalogId");
+        if (starsCatalogId is not null) CatalogSnapshotResolver.ValidateCatalogId(starsCatalogId);
 
         return new ApprovedCatalogComposition(
             deepSkyCounts,
-            new ApprovedCatalogStarsComponent(
+            standalone ? null : new ApprovedCatalogStarsComponent(
                 Text(stars, "name"),
-                starsCatalogId,
+                starsCatalogId!,
                 Text(stars, "packageVersion"),
                 new ApprovedCatalogComponentDatabase(
                     Sha256(starsDatabase, "sha256"),

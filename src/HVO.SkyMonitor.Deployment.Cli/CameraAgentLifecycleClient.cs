@@ -30,7 +30,8 @@ internal sealed record LifecycleContinuity(
     bool CaptureInitialized = true,
     long ReplayPending = 0,
     long ReplayLeased = 0,
-    bool ReplayCatalogIndependent = false);
+    bool ReplayCatalogIndependent = false,
+    bool QueuesObserved = true);
 
 // Time budgets for one lifecycle exchange with a CameraAgent. A command shares
 // the drain deadline with the boundary poll that confirms it, because the
@@ -75,6 +76,16 @@ internal sealed class CameraAgentLifecycleClient(
         var floor = DateTimeOffset.UtcNow + _budgets.ReadTimeout;
         return await WaitForDrainedBoundaryAsync(client, deadline > floor ? deadline : floor, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    internal async Task<LifecycleContinuity> PauseControlAndDrainAsync(Guid operationId, long expectedVersion,
+        string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        var deadline = DateTimeOffset.UtcNow + _budgets.DrainDeadline;
+        await PostCommandAsync(client, "pause", operationId, deadline, cancellationToken,
+            expectedVersion: expectedVersion, commandIdentity: operationId).ConfigureAwait(false);
+        return await WaitForDrainedBoundaryAsync(client, deadline, cancellationToken, requireEmpty: true).ConfigureAwait(false);
     }
 
     // A post-mutation boundary reuses the durable pause that the operation
@@ -129,9 +140,10 @@ internal sealed class CameraAgentLifecycleClient(
         DateTimeOffset deadline,
         CancellationToken cancellationToken,
         Guid? retainedCommandId = null,
-        long? expectedVersion = null)
+        long? expectedVersion = null,
+        Guid? commandIdentity = null)
     {
-        var commandId = retainedCommandId ?? Guid.NewGuid();
+        var commandId = commandIdentity ?? retainedCommandId ?? Guid.NewGuid();
         var payload = new Dictionary<string, object>
         {
             ["operationId"] = commandId,
@@ -224,7 +236,8 @@ internal sealed class CameraAgentLifecycleClient(
     private async Task<LifecycleContinuity> WaitForDrainedBoundaryAsync(
         HttpClient client,
         DateTimeOffset deadline,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireEmpty = false)
     {
         LifecycleContinuity? lastState = null;
         string? lastReadFailure = null;
@@ -274,7 +287,9 @@ internal sealed class CameraAgentLifecycleClient(
                 // inputs at submission and never builds a scene from the mounted catalog, and a host stop returns
                 // in-flight replay to its queue without consuming an attempt.
                 if (state.CaptureState == "Paused" && state.CaptureInitialized && state.RawLeased == 0 && state.LaneLeased == 0 &&
-                    state.ProcessingLeased == 0 && state.OutboxLeased == 0)
+                    state.ProcessingLeased == 0 && state.OutboxLeased == 0 &&
+                    (!requireEmpty || state.QueuesObserved && state.RawPending == 0 && state.LanePending == 0 &&
+                        state.ProcessingPending == 0 && state.OutboxPending == 0))
                 {
                     return state;
                 }
@@ -429,7 +444,17 @@ internal sealed class CameraAgentLifecycleClient(
             replay?.GetProperty("leasedCount").GetInt64() ?? 0,
             // An image that predates the replay guard omits the declaration, so its archived replay may still
             // annotate from whichever catalog is mounted when it runs.
-            root.TryGetProperty("archivedReplayCatalogIndependent", out var independent) && independent.GetBoolean());
+            root.TryGetProperty("archivedReplayCatalogIndependent", out var independent) && independent.GetBoolean(),
+            QueueObserved(root, "rawIngress") && QueueObserved(root, "captureLanes") &&
+            QueueObserved(root, "captureProcessing") && QueueObserved(root, "artifactOutbox"));
+    }
+
+    private static bool QueueObserved(JsonElement root, string name)
+    {
+        var section = root.GetProperty(name);
+        return section.TryGetProperty("freshness", out var freshness) && freshness.GetString() is "fresh" or "disabled" &&
+            section.GetProperty("value").TryGetProperty("availability", out var availability) &&
+            availability.GetString() is "Accepting" or "Healthy" or "Degraded" or "Disabled";
     }
 
     private static JsonElement Value(JsonElement root, string name) => root.GetProperty(name).GetProperty("value");

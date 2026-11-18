@@ -853,7 +853,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private static string LayerGroup(string kind) => kind switch
     {
         "MeasuredTransientTrails" or AstrometricDiagnosticPresentation.AssociationsLayer => "Measured",
-        "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
+        "scene-deep-sky" or "scene-annotation" or "star-annotations" or "scene-constellations" or "constellations" or "scene-cardinals" or "cardinal-directions" => "Sky context",
         _ => "Diagnostics"
     };
 
@@ -886,6 +886,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         OrbitalTrackPresentation.LayerKind => "predicted / exact exposure segment; geometry only, not a detection or visibility claim",
         "scene-annotation" or "star-annotations" => "expected / may include catalog stars, Sun/Moon outlines and curated deep-sky labels/outlines; not measured associations",
         "scene-constellations" or "constellations" => "expected / HYG topology",
+        "scene-deep-sky" => "expected / OpenNGC catalog positions and approximate extents; not measured associations",
         "scene-cardinals" or "cardinal-directions" => "configured rig geometry",
         "scene-image-circle" or "image-circle" => "native sensor coordinates",
         "environment" or "corner-annotations" => "source and coordinate provenance",
@@ -1161,6 +1162,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         "scene-cardinals" or "cardinal-directions" => "Cardinal directions",
         "scene-image-circle" or "image-circle" => "Image geometry",
         "scene-constellations" or "constellations" => "Constellation lines",
+        "scene-deep-sky" => "Deep-sky catalog",
         "environment" or "corner-annotations" => "Frame facts",
         "cloud-mask" => "Measured cloud mask",
         "cloud-labels" => "Measured cloud assessment",

@@ -63,6 +63,8 @@ if [[ $# -ne 0 || -z "$output_argument" || ( -n "$source_file" && "$fetch" == tr
 fi
 
 hyg_require_commands gzip mv realpath sha256sum sqlite3 sync wc
+# Name the tool before anything is fetched or built, and before the version gate can reject it (Refs #1774).
+hyg_print_sqlite_identity
 hyg_check_sqlite_version
 if [[ "$fetch" == true ]]; then
     hyg_require_commands curl
@@ -112,9 +114,14 @@ case "$csv" in
     *$'\n'*|*'"'*) hyg_fail "output path contains a character unsupported by sqlite3 .import" ;;
 esac
 
+# A recipe change that changes output bytes requires a new preprocessing version.
+# A serializer-setting pin that reproduces the approved bytes does not.
 sqlite3 "$database" <<SQL
 .bail on
 PRAGMA page_size = 4096;
+-- The approved bytes were built with secure deletion enabled. Upstream SQLite
+-- defaults it off; Ubuntu enables it at compile time. Pin it before any writes.
+PRAGMA secure_delete = ON;
 PRAGMA journal_mode = DELETE;
 PRAGMA synchronous = OFF;
 PRAGMA user_version = 2;

@@ -49,7 +49,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
     protected override async Task OnInitializedAsync()
     {
         _from = string.IsNullOrWhiteSpace(From) ? null : From.Trim();
-        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest")
+        if (_from is null && Section is "scene-overlay" or "constellations" or "frame-facts" or "weather-cloud-overlay" or "cloud-assessment" or "calibration" or "projected-scene" or "legacy-annotation" or "cloud-layer" or "environment-layer" or "overlay-manifest" or "predicted-satellite-layer")
         {
             var registry = await GraphService.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
             if (registry.Kind == OperatorUiResultKind.Unauthorized)
@@ -188,7 +188,13 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "WeatherCloudOverlay" => "weather-cloud-overlay",
             "CloudAssessment" => "cloud-assessment",
             "Calibration" => "calibration",
+            "RollingCombination" => "rolling-combination",
             "ProjectedScene" => "projected-scene",
+            "MeasuredStellarAssociations" => "measured-stellar-associations",
+            "MeasuredAstrometry" => "measured-astrometry",
+            "CaptureSatelliteTracks" => "capture-satellite-tracks",
+            "CaptureSatelliteLayer" => "predicted-satellite-layer",
+            "Storage" => "artifact-storage",
             "Annotation" => "legacy-annotation",
             "OverlayManifest" => "overlay-manifest",
             "PresentationMaterializer" => "presentation-materializer",

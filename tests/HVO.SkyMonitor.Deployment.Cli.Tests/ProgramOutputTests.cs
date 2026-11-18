@@ -25,6 +25,7 @@ public sealed class ProgramOutputTests
           existing-down
           status
           cameraagent install
+          cameraagent lifecycle-worker
           cameraagent recover-owner
           cameraagent preflight
           cameraagent reset-state
@@ -71,6 +72,7 @@ public sealed class ProgramOutputTests
           --elevation <metres>             The camera's elevation (default 0).
           --time-zone <zone>               The camera's IANA time zone (default UTC).
           --replay-profile <profile>       Where archived replay runs: in-process (default) or local-runner.
+          --illumination-mode <mode>       VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight.
           --cpus <count>                   The container's CPU limit.
           --memory <size>                  The container's memory limit, such as 4g.
           --plan                           Show what the command would change, and change nothing.
@@ -103,6 +105,7 @@ public sealed class ProgramOutputTests
 
         Commands:
           cameraagent install            Install a CameraAgent instance, or change an installed one's container limits.
+          cameraagent lifecycle-worker   Run the independent drain/restart verifier for one installed CameraAgent; no host-power commands.
           cameraagent recover-owner      Give an instance's owner a new temporary password.
           cameraagent preflight          Check, changing nothing, that an instance's state can run its image or --image-ref.
           cameraagent reset-state        Delete an uninstalled instance's local runtime state, keeping its configuration.

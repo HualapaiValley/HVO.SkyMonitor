@@ -129,7 +129,7 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV15AndAcceptsEquivalentLegacyFormatting()
+    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV16AndAcceptsEquivalentLegacyFormatting()
     {
         var root = CreateRoot();
         try
@@ -303,7 +303,7 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_FreshV15StageEventsEnforceUniqueStageKey()
+    public async Task InitializeAsync_FreshV16StageEventsEnforceUniqueStageKey()
     {
         var root = CreateRoot();
         try
@@ -1521,7 +1521,7 @@ public sealed partial class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 16;";
+                command.CommandText = "PRAGMA user_version = 17;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -1544,7 +1544,7 @@ public sealed partial class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(16L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(17L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);

@@ -254,6 +254,7 @@ internal sealed class RawIngressFileStore(
         RawIngressFaultPoint directorySynced,
         CancellationToken cancellationToken)
     {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(finalPath, content);
         var directory = Path.GetDirectoryName(finalPath)!;
         var directoryExisted = Directory.Exists(directory);
         Directory.CreateDirectory(directory);

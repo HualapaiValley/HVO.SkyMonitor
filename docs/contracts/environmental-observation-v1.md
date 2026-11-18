@@ -1,4 +1,4 @@
-# Environmental Observation v1 and v2
+# Environmental Observation v1, v2 and v3
 
 `EnvironmentalObservationV1` is the storage-neutral weather and sky evidence contract owned by
 `HVO.SkyMonitor.Processing`. LogicHost persists the contract in normalized SQL records; the
@@ -103,10 +103,66 @@ reading, or calibration applicability temperature. V1 remains supported and
 continues to reject the v2-only kind; existing v1 canonical hashes do not
 change.
 
-Sky temperature is not defined. Radiative brightness temperature, an IR cloud
-sensor differential, and an inferred equivalent temperature are different
-quantities and must not be mapped to `AirTemperature` or
-`CameraSensorTemperature`.
+`environmental-observation-v3` is an additive concurrent schema for the RM-009
+adapter slice (#1089–#1092). V1 and v2 remain unchanged, including their canonical
+serialization and hash domains. V3 uses separate `*-v3` content/source domains,
+and includes the observation kind in source identity as v2 does. Existing rows
+are never rewritten merely to adopt the new schema.
+
+V3 adds:
+
+- `SkyTemperature` in `DegreesCelsius`, finite and at least -273.15: the apparent
+  radiative brightness temperature reported by a sky-facing IR sensor. It is
+  distinct from ambient air, an image-sensor reading, a temperature differential,
+  and cloud cover. The chosen bridge preserves the device's sky-facing Celsius
+  value; physical calibration and site/model qualification remain held. Cloud
+  cover computed from measured sky and ambient temperatures carries its own
+  `Derived` source and lineage to both committed facts, with the formula version
+  and site thresholds in stable provenance. A v3 computation using simulated
+  inputs remains `Simulated` and may carry that lineage; v1/v2 lineage rules do
+  not change. Synthetic derivation inputs carry `readingRole: "lineage-input"`
+  in source provenance and are retained as evidence, not primary readings for
+  current display, capture association or central correlation.
+- `SeaLevelPressure` in `Pascals`, positive finite: pressure corrected to sea level,
+  including the HVO Davis barometer feed. It never means station pressure.
+- Optional `value.metadata` with `deviceReceivedAtUtc` (UTC producer receipt of a
+  hardware sample) and `sensorTemperatureCelsius` (finite, -100 through 100,
+  sensor diagnostic metadata). SQM integration uses the ordinary observation
+  interval; its sensor temperature is not a separate environmental kind.
+
+New kinds and non-null sample metadata require v3. Null metadata is omitted from
+serialization, preserving old v1/v2 bytes and hashes. Producer device receipt is
+source-authored sample metadata and participates in fact identity; it is distinct
+from LogicHost's receiver-owned `ReceivedAtUtc` excluded from source content.
+LogicHost must durably persist metadata presence and values before acknowledging
+delivery and reconstruct the identical typed value on reads. Derived producer
+identities also bind their lineage, including when a model clips different
+inputs to the same numeric result. Delivery holds local derivatives until their
+input projections are acknowledged; the explicit `environment.lineage-missing`
+conflict reason is retryable without weakening terminal content-conflict handling.
+If an input is terminal, quarantined, discarded or permanently bound to another
+target, local pending derivatives become terminal `lineage-input-undeliverable`.
+They are operator-visible and support explicit replay or abandonment. Input replay
+does not automatically replay derivatives; recover inputs first, then replay the
+derivative, retaining the acknowledgement gate and immutable delivery hashes.
+
+For v3, abandonment retains the existing staged projection link after removing
+its outbox row. This link is durable discard evidence, reported locally as
+`Abandoned`; it is never interpreted as an acknowledgement. Duplicate publication
+and waiting-projection passes do not recreate discarded v3 delivery. Unreferenced
+discarded history may expire through normal retention. No wire or SQLite schema
+change is required; v1/v2 independent-reprojection behavior remains unchanged.
+
+Adapters derive their bounded source version from the algorithm, stable settings,
+and simulated/measured device nature. Moving from a simulator to a physical
+transport or revising cloud thresholds therefore creates a new immutable source
+version while preserving the configured source alias. No old readings are
+relabelled as measured. Each derived v3 fact keeps local qualified lineage; the
+outbox translates referenced identities when enriching the target for central
+delivery, and waits durably if a referenced local fact is not yet present.
+
+See [adapter configuration and physical holds](../runbooks/environmental-source-adapters.md).
+
 
 When normalization converts a submitted numeric value, `SubmittedNumericValue` and
 `SubmittedUnit` are retained together as bounded, opaque producer assertions. LogicHost does not

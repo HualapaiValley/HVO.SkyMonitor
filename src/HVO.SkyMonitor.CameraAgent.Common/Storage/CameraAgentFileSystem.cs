@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Storage.FileSystem;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using Microsoft.Win32.SafeHandles;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -44,6 +45,7 @@ internal static class CameraAgentFileSystem
 
     internal static void PublishPrepared(string root, string temporaryPath, string finalPath, bool overwrite)
     {
+        using var mutation = RetainedIntegrityLedger.BeginPublication(temporaryPath, finalPath);
         try
         {
             AtomicPublisher.PublishPrepared(

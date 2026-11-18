@@ -1,0 +1,21 @@
+import pathlib,subprocess,os,json,hashlib,tarfile,gzip
+repo=pathlib.Path.cwd(); out=repo/'TestResults/issue-1041'; source=out/'diagnostic-baseline-src'
+revision='c31afe4b16be7ed534299dbbdcceabf327d93b60'
+assert not source.exists();source.mkdir()
+archive=out/'baseline-memory-source.tar'
+with archive.open('wb') as f:subprocess.run(['git','archive',revision],stdout=f,check=True)
+with tarfile.open(archive) as f:f.extractall(source,filter='data')
+root=pathlib.Path(os.environ['TMPDIR'])/'gcbase';root.mkdir();reports=root/'exit';reports.mkdir()
+env=os.environ.copy();env['DOCKER_HOST']='unix:///tmp/hvo-no-docker.sock';env.pop('DOCKER_CONTEXT',None);env.pop('HVO_PRODUCTION_CATALOG_BUNDLE',None)
+project=source/'tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj'
+with (out/'baseline-memory-build.log').open('w') as f:r=subprocess.run(['dotnet','build',str(project),'-c','Release','-warnaserror','-nodeReuse:false','-p:UseSharedCompilation=false','-p:SourceRevisionId='+revision],env=env,stdout=f,stderr=subprocess.STDOUT,timeout=600)
+assert r.returncode==0,'Baseline memory build failed; inspect log'
+hook=pathlib.Path(os.environ['TMPDIR'])/'gcdiag/hook/bin/Release/net10.0/hook.dll';assert hook.exists()
+env.update(DOTNET_STARTUP_HOOKS=str(hook),HVO_I41_MEMORY_REPORT_DIR=str(reports),HVO_INSTALLATION_READ_EVIDENCE_DIR=str(root),HVO_ATTRIBUTION_REVISION=revision,DOTNET_PROCESSOR_COUNT='1',DOTNET_GCHeapHardLimit='0x18000000')
+cmd=['taskset','-c',str(min(os.sched_getaffinity(0))),'dotnet','test',str(project),'--no-build','--no-restore','--configuration','Release','--filter','FullyQualifiedName~LargeRetainedCorpusRecordsCurrentEndpointCost','--logger','trx;LogFileName=baseline-memory.trx','--results-directory',str(out/'baseline-memory-diagnostic')]
+with (out/'baseline-memory-diagnostic.log').open('w') as f:r=subprocess.run(cmd,env=env,stdout=f,stderr=subprocess.STDOUT,timeout=900)
+assert r.returncode==0,'Baseline memory test failed; inspect log'
+exits=[json.loads(p.read_text()) for p in reports.glob('*.json')]
+(out/'baseline-memory-exit-results.json').write_text(json.dumps(exits,indent=2))
+for p in exits:print(json.dumps(p),flush=True)
+print('BASELINE MEMORY DIAGNOSTIC PASS',flush=True)

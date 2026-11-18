@@ -10,7 +10,7 @@ public static class PresentationLayerKindSelection
         "scene-annotation", "scene-cardinals", "scene-image-circle", "scene-constellations",
         "cloud-mask", "cloud-labels", "environment",
         "star-annotations", "cardinal-directions", "image-circle", "constellations", "corner-annotations",
-        OrbitalTrackPresentation.LayerKind
+        OrbitalTrackPresentation.LayerKind, "scene-deep-sky"
     ];
 
     public static bool IsSupported(string kind) => Supported.Contains(kind, StringComparer.Ordinal);

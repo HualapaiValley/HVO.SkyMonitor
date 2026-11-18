@@ -12,6 +12,26 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed class SoftwarePageTests
 {
     [TestMethod]
+    public void SoftwareShowsBothIndependentlySelectedCatalogsAndAttribution()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var software = TestSystemUiService.Software();
+        service.SoftwareHandler = _ => ValueTask.FromResult(OperatorUiResult<SystemSoftwareView>.Success(software with
+        {
+            DeepSkyCatalog = new("openngc-production", "v20260501", "Production", "openngc-v20260501-p6-s5-r1", 4, "5", "6", 13371, 7086080, new string('a', 64))
+        }));
+        var cut = context.Render<SoftwarePage>();
+        cut.WaitForAssertion(() => Assert.HasCount(2, cut.FindAll(".software-packages tbody tr")));
+        var row = cut.Find("[data-deep-sky-catalog='openngc-production']");
+        StringAssert.Contains(row.TextContent, "Selected independently", StringComparison.Ordinal);
+        StringAssert.Contains(row.TextContent, "13,371 deep-sky objects", StringComparison.Ordinal);
+        StringAssert.Contains(row.TextContent, "CC BY-SA 4.0", StringComparison.Ordinal);
+        StringAssert.Contains(row.TextContent, "Mattia Verga", StringComparison.Ordinal);
+        Assert.AreEqual("118,218", Fact(cut, "software-catalog-heading", "Star rows"));
+    }
+
+    [TestMethod]
     public void Software_ShowsTheRunningVersionAndTheSelectedCatalog()
     {
         using var context = new BunitContext();

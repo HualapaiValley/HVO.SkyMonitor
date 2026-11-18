@@ -1167,6 +1167,8 @@ expect_assets_refusal() {
     fi
     grep -Fq -- "$message" "$test_root/assets.err" || { cat "$test_root/assets.err" >&2; fail "the asset script refused $* without saying: $message"; }
 }
+# A second data family must not bypass the separate HYG 4.4 adoption hold.
+grep -Fq 'build-hyg-v42.sh --fetch' "$repo_root/scripts/release:assets" || fail "the default release star catalog must remain HYG 4.2 until approved"
 expect_assets_refusal "must be a release version" --version 1.2.0+build --output "$test_root/out" --image-oci "$test_root/out.tar"
 expect_assets_refusal "must be a release version" --version v1.2.0 --output "$test_root/out" --image-oci "$test_root/out.tar"
 expect_assets_refusal "already exists" --version 1.2.0-dev.3 --output "$test_root" --image-oci "$test_root/out.tar"
@@ -1431,6 +1433,11 @@ require("platform: linux-x64" in install and "platform: linux-arm64" in install 
         "the install test does not run on linux-x64 and linux-arm64 alike")
 require("needs: [gate, draft]" in install and "./scripts/test:release-install --release" in install,
         "the install test does not install from the draft")
+require("matrix.runner" not in install and "runner:" not in install and
+        "fromJSON(matrix.platform == 'linux-arm64'" in install and
+        '["self-hosted", "linux", "ARM64", "hvo-skymonitor-arm64"]' in install and
+        '"ubuntu-24.04"' in install,
+        "install runner labels derive only from matrix.platform, keeping JSON out of job labels")
 publish = job("publish")
 require("needs: [gate, draft, install-test]" in publish, "the publish job does not wait for both install tests")
 check = publish.find("./scripts/release:check-environment production-release")

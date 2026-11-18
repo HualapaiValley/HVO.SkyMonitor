@@ -171,7 +171,9 @@ internal sealed class CameraAgentCloudEnvironment(
         {
             return CreateMissingInput(context);
         }
-        if (!options.Value.EnvironmentalAcquisition.Enabled)
+        var acquisition = options.Value.EnvironmentalAcquisition;
+        if (!acquisition.Enabled ||
+            !acquisition.Sources.Any(static source => source.Kind == EnvironmentalObservationKind.RainState))
         {
             return CreateMissingInput(context);
         }

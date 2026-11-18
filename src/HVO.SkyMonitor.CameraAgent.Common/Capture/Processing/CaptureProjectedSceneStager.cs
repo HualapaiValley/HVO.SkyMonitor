@@ -78,7 +78,13 @@ public sealed class CaptureProjectedSceneStager(
             includeConstellationEndpointStars: options.IncludeConstellationEndpointStars);
         var scene = await new VisibleSceneBuilder(catalog, topology, ephemeris)
             .BuildAsync(request, cancellationToken).ConfigureAwait(false);
-        if (options.CuratedAnnotations is { Enabled: true } curated)
+        if (options.DeepSkyEnabled)
+        {
+            var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
+                ?? throw new InvalidOperationException("Deep-sky annotations require an independently selected deep-sky catalog.");
+            scene = scene.WithCuratedDeepSky(deepSky, options.DeepSkySelection().ToSelection());
+        }
+        else if (options.CuratedAnnotations is { Enabled: true } curated)
         {
             var deepSky = (catalog as IDeepSkyCatalogSource)?.DeepSky
                 ?? throw new InvalidOperationException("Curated annotation requires an approved composed catalog.");
@@ -128,7 +134,8 @@ public sealed class CaptureProjectedSceneStager(
             ProjectedSceneStageIdentitySha256: identityDocument.SceneIdentitySha256,
             ProjectedSceneSchemaVersion: scene.ProjectedSceneSchemaVersion,
             CatalogId: catalogId,
-            CatalogPackageVersion: catalogPackageVersion);
+            CatalogPackageVersion: catalogPackageVersion,
+            DeepSkyCatalog: scene.DeepSky?.CatalogIdentity);
         await stagingStore.StageAsync(
             stageKey,
             stageKey,

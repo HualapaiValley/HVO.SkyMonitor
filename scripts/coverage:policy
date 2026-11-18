@@ -11,6 +11,28 @@ cd "$repo_root"
 event_name="${1:-}"
 base_ref="${2:-}"
 
+policy="scripts/coverage/policy.json"
+jq --exit-status '
+  # Expanding the retired list requires an executable policy change and review;
+  # editing policy data alone cannot turn a moved source into a new exemption.
+  (.retiredSourcePaths | sort) == ([
+    "HVO.SkyMonitor.AgentCore/ArtifactUploadManifest.cs",
+    "HVO.SkyMonitor.Deployment.Cli/DistributionCatalogAcquirer.cs",
+    "HVO.SkyMonitor.Deployment.Distribution/DistributionVerifier.cs"
+  ] | sort)
+' "$policy" > /dev/null || {
+  printf 'Malformed retired-source coverage policy: %s\n' "$policy" >&2
+  exit 1
+}
+mapfile -t retired_source_paths < <(jq -r '.retiredSourcePaths[]' "$policy")
+is_retired_source() {
+  local path="$1" retired
+  for retired in "${retired_source_paths[@]}"; do
+    [[ "$path" != "$retired" ]] || return 0
+  done
+  return 1
+}
+
 baselines=(scripts/coverage/baseline.json)
 component_count=0
 while IFS= read -r component; do
@@ -28,6 +50,8 @@ if (( component_count == 0 )); then
   exit 1
 fi
 
+# The only v1 local-only file is the documented catalog-dependent ReleaseTool
+# path. Adding another exclusion requires changing this executable policy.
 for baseline in "${baselines[@]}"; do
   jq --exit-status '
     (.aggregate.line | type == "number" and . > 0 and . <= 1) and
@@ -36,11 +60,36 @@ for baseline in "${baselines[@]}"; do
     (.files | type == "object") and
     all(.files[];
       (.line | type == "number" and . >= 0 and . <= 1) and
-      (.branch | type == "number" and . >= 0 and . <= 1))
+      (.branch | type == "number" and . >= 0 and . <= 1)) and
+    all(.files | to_entries[];
+      (.value | has("developmentV1LocalOnlyReason") | not) or
+      (.key == "tools/HVO.SkyMonitor.Deployment.ReleaseTool/Program.cs" and
+       (.value.developmentV1LocalOnlyReason | type == "string" and test("\\S"))))
   ' "$baseline" > /dev/null || {
     printf 'Coverage baseline is malformed: %s\n' "$baseline" >&2
     exit 1
   }
+done
+
+for retired in "${retired_source_paths[@]}"; do
+  jq --exit-status --arg path "$retired" '.files[$path] != null' scripts/coverage/baseline.json > /dev/null || {
+    printf 'Pinned retired source %s has no canonical coverage floor.\n' "$retired" >&2
+    exit 1
+  }
+done
+
+# Source disappearance is not retirement. Check every baseline on every event,
+# before the PR comparison, so renames cannot remove enforcement in the queue.
+for baseline in "${baselines[@]}"; do
+  while IFS= read -r path; do
+    source_path="$path"
+    [[ "$path" == tools/* ]] || source_path="src/$path"
+    if [[ ! -f "$source_path" ]] && ! is_retired_source "$path"; then
+      printf 'Required source path %s in %s is missing and is not a pinned retired path; restore it or review its move and floor mapping.\n' \
+        "$path" "$baseline" >&2
+      exit 1
+    fi
+  done < <(jq -r '.files | keys[]' "$baseline")
 done
 
 # Every aggregate file floor must also be enforced by the component lane that a

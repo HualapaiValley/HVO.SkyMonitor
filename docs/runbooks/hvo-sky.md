@@ -200,6 +200,15 @@ decides which from the revision numbers CameraAgent reports for the named revisi
 lists the active, the staged and the most recent revisions; a revision it does not list, or one listed without a number,
 is refused with the reason and nothing sent (exit 3), rather than guessed.
 
+When a schedule/capture-profile edit changes Storage, pause acquisition and finish
+in-flight standard processing before applying it. Drain pending standard work too
+if it must finish under the old policy, including retention-only edits. The next
+capture boundary does not migrate already bound processing or old-root uploads.
+Configured-basic refreshes automatically; an active Named graph needs matching
+Storage reconciliation and activation before capture resumes. See
+[Storage and replay recovery](capture-node-options.md) and
+[retention policy changes](cameraagent-retention.md#planned-storage-policy-changes).
+
 ## The terminal interface
 
 `hvo-sky ui` shows the same instance as the commands, on five pages, and makes the same changes with the same checks,

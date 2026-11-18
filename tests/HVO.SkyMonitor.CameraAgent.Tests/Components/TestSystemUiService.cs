@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Deployment.Contracts;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 
@@ -13,6 +14,23 @@ internal sealed class TestSystemUiService : ICameraAgentSystemUiService
 
     internal Func<int, CancellationToken, ValueTask<OperatorUiResult<IReadOnlyList<SystemControlReceipt>>>> ReceiptsHandler { get; set; } =
         (_, _) => ValueTask.FromResult(OperatorUiResult<IReadOnlyList<SystemControlReceipt>>.Success([]));
+
+    internal Func<CancellationToken, ValueTask<OperatorUiResult<CameraAgentControlView>>> LifecycleHandler { get; set; } =
+        _ => ValueTask.FromResult(OperatorUiResult<CameraAgentControlView>.Success(new(false, [])));
+    internal Func<Guid, long, string, CancellationToken, ValueTask<OperatorUiResult<CameraAgentControlReceipt>>>? DrainHandler { get; set; }
+    internal List<(Guid Id, long Version, string Reason)> DrainRequests { get; } = [];
+    internal List<Guid> CancelRequests { get; } = [];
+    public ValueTask<OperatorUiResult<CameraAgentControlView>> GetLifecycleAsync(CancellationToken token) => LifecycleHandler(token);
+    public ValueTask<OperatorUiResult<CameraAgentControlReceipt>> RequestDrainAsync(Guid id, long version, string reason, CancellationToken token)
+    {
+        DrainRequests.Add((id, version, reason));
+        return DrainHandler!(id, version, reason, token);
+    }
+    public ValueTask<OperatorUiResult<bool>> CancelLifecycleAsync(Guid id, CancellationToken token, string reason = "Operator requested lifecycle cancellation")
+    {
+        CancelRequests.Add(id);
+        return ValueTask.FromResult(OperatorUiResult<bool>.Success(true));
+    }
 
     internal int HealthReads { get; private set; }
 

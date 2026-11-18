@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -39,13 +40,13 @@ internal sealed class ProjectedSceneRetentionGuard(
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporary = path + ".tmp";
         RawIngressFileStore.EnsureNoSymbolicLinks(canonicalRoot, temporary);
-        await File.WriteAllBytesAsync(temporary,
+        await RetainedFileMutations.WriteAllBytesAsync(temporary,
             JsonSerializer.SerializeToUtf8Bytes(new SceneRetentionCursor(timestamp.Value, identity)), cancellationToken).ConfigureAwait(false);
-        File.Move(temporary, path, overwrite: true);
+        RetainedFileMutations.Move(temporary, path, overwrite: true);
     }
 
     internal void CompletePass()
-        => File.Delete(ResolvePhysicalPath(canonicalRoot, "journal/scene-retention-cursor.json"));
+        => RetainedFileMutations.Delete(ResolvePhysicalPath(canonicalRoot, "journal/scene-retention-cursor.json"));
 
     internal async ValueTask<bool> HasRetainedConsumerAsync(
         DurableProcessingEvidence candidate, CancellationToken cancellationToken)

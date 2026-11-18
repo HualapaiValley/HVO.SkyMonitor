@@ -342,6 +342,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         try
         {
+            frozenJson = WithoutCommittedOutputCounts(frozenJson);
             using var document = JsonDocument.Parse(frozenJson);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
@@ -419,7 +420,9 @@ internal sealed partial class SqliteCaptureProcessingStore
     /// </summary>
     private static byte[] AddNormalizationPlan(byte[] frozenJson, string nodeId, string identity, byte[] canonical)
     {
-        using var document = JsonDocument.Parse(frozenJson);
+        // Primary plans were validated by FindNormalizationPlan. Preserve optional
+        // metadata verbatim even if its nesting exceeds the primary-plan depth limit.
+        using var document = JsonDocument.Parse(frozenJson, new JsonDocumentOptions { MaxDepth = MaximumFrozenExecutionPlanBytes });
         var buffer = new ArrayBufferWriter<byte>(frozenJson.Length + canonical.Length + 256);
         using (var writer = new Utf8JsonWriter(buffer))
         {

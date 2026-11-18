@@ -36,6 +36,31 @@ without fitting again; a damaged prepared file fails closed.
 
 ## Immutable artifacts and reconstruction
 
+The shared `astrometric-exposure-release-v1` policy preserves original numerical
+estimator, settings, algorithm-list and product identities for exposures up to
+one second. Existing qualified short-exposure products remain readable and
+restore/replay without refitting. The new policy identity applies only above one
+second, where every covariance component is withheld as `exposure-not-qualified`.
+
+Historical available covariance above one second is unsupported and fails
+retained validation. Historical long-exposure products have the earlier settings
+identity and can fail current input-bound validation even when they already
+withheld covariance for a different reason. Such products can show
+`Unavailable` / `retained-evidence-invalid-or-unavailable`; replay or prepared
+restore fails closed rather than rewriting the immutable product. There is no
+automatic requalification or recompute command, storage-layout change or prepared
+data deletion. Keep original products as evidence; future long-exposure
+qualification/reprocessing remains under Refs #1179. Duration uses exact UTC
+endpoints with no tolerance above one second.
+
+On development prereleases (not stable 0.9.0), a pre-upgrade long-exposure product with `available` uncertainty still queued in a CameraAgent outbox is rejected by LogicHost ingest with HTTP 400 and quarantined by CameraAgent as `http-400`, a terminal outcome with no retry loop or blocked outbox.
+
+The configured astrometry node is optional. Its existing worker policy degrades
+an exception to a terminal optional-node outcome in live execution; replay
+retries only up to the configured replay attempt limit, then records optional
+exhaustion. It never changes the immutable evidence into an accepted covariance
+or deletes the prepared file. There is no new retry or storage mechanism here.
+
 The node publishes two typed Metadata artifacts in the existing node commit:
 
 - `measured-astrometry-context-v1`, media

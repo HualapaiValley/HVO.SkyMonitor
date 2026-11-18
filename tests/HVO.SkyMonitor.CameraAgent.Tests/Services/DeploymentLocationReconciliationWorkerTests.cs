@@ -267,6 +267,7 @@ public sealed class DeploymentLocationReconciliationWorkerTests
             35.347, -113.878, 520, "America/Phoenix");
         var store = new Mock<IDeploymentLocationStore>();
         store.SetupGet(item => item.Active).Returns(active);
+        store.SetupGet(item => item.RecentRetainedEvidenceReady).Returns(true);
 
         var result = await new DeploymentLocationHealthCheck(store.Object, new FixedTimeProvider(now))
             .CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);

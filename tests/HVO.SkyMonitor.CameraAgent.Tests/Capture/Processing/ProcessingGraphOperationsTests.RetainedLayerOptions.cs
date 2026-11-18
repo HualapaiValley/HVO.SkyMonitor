@@ -16,6 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
 public sealed partial class ProcessingGraphOperationsTests
 {
+    private static readonly string[] DeepSkyFontChoices = ["MonoRegular", "MonoBold", "PlexRegular"];
     [TestMethod]
     public async Task EnvironmentSelectionOutsideEnabledAssociationPolicyIsRejectedBeforeDraftCreation()
     {
@@ -117,6 +118,14 @@ public sealed partial class ProcessingGraphOperationsTests
                         Assert.AreEqual(256, option.MaximumItems);
                         Assert.AreEqual(16, option.MaximumLength);
                     }
+                    continue;
+                }
+                if (option.Kind == ProcessingOptionKind.Font)
+                {
+                    var font = runtimeType.GetProperties().Single(property => string.Equals(property.Name, option.Members.Single(), StringComparison.OrdinalIgnoreCase));
+                    Assert.AreEqual(typeof(string), font.PropertyType);
+                    CollectionAssert.AreEquivalent(DeepSkyFontChoices, option.AllowedValues.ToArray());
+                    Assert.IsTrue(option.AllowedValues.Contains(option.DefaultValue.AsText(), StringComparer.Ordinal));
                     continue;
                 }
                 if (option.Kind is ProcessingOptionKind.Toggle or ProcessingOptionKind.Color or ProcessingOptionKind.RealNumber) continue;

@@ -1,0 +1,49 @@
+{
+  "head": "8879ad2ef6ee7236a872800b8a5a8adb304ae96e",
+  "commonSha256": "9d267e6ed6c3e26942199e9c1ebd584e089e2bc8fa58e18a16f158a29b6506be",
+  "probeSourceSha256": "6adc6a32e716274ba5451df0a540b2be6bdd41bcc9c0519badc6ea7429a5578f",
+  "runs": [
+    {
+      "mode": "crash",
+      "exitCode": -9,
+      "expectedExit": -9,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "mode": "recover",
+      "exitCode": 0,
+      "expectedExit": 0,
+      "stdout": "{\"mode\":\"recover\",\"parses\":1,\"hits\":0,\"orphans\":1,\"activeVersion\":1}\n",
+      "stderr": ""
+    },
+    {
+      "mode": "read",
+      "exitCode": 0,
+      "expectedExit": 0,
+      "stdout": "{\"mode\":\"read\",\"parses\":0,\"hits\":1,\"orphans\":1,\"activeVersion\":1}\n",
+      "stderr": ""
+    },
+    {
+      "mode": "same-length",
+      "exitCode": 0,
+      "expectedExit": 0,
+      "stdout": "{\"mode\":\"same-length\",\"rejected\":true,\"parses\":1,\"hits\":0,\"orphans\":1,\"sameLengthAndTimestamp\":true}\n",
+      "stderr": ""
+    },
+    {
+      "mode": "gate-cancel",
+      "exitCode": 0,
+      "expectedExit": 0,
+      "stdout": "{\"mode\":\"gate-cancel\",\"canceled\":true,\"unchanged\":true,\"parses\":0,\"hits\":1}\n",
+      "stderr": ""
+    },
+    {
+      "mode": "corrupt",
+      "exitCode": 0,
+      "expectedExit": 0,
+      "stdout": "{\"mode\":\"corrupt\",\"rejected\":true,\"parses\":1,\"hits\":0,\"orphans\":1,\"sameLengthAndTimestamp\":false}\n",
+      "stderr": ""
+    }
+  ]
+}

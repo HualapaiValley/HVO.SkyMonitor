@@ -14,7 +14,7 @@ for capabilities that are not implemented.
 | Devices | Registration at `/devices/register`, inventory and revocation at `/devices`, and CameraAgent import at `/operations/registration` (formerly `/devices/bootstrap`, which still opens it). |
 | Local CameraAgent users | SQLite-backed local Identity and one configuration-seeded site owner. This identity is separate from LogicHost. |
 | Runtime state | SQL Server `SkyMonitor`, the two approved object-store buckets, prefixed Redis cache keys, both hosts' Data Protection keys, CameraAgent local Identity, and CameraAgent provisioning files. |
-| Observability | `/alive`, `/health`, `/metrics`, structured token/API-key events, and ASP.NET request traces. |
+| Observability | Anonymous `/alive` and `/health`. CameraAgent `/metrics` requires the ready site owner's session or a CameraAgent operations-read API key sent only in the `Authorization` header. Structured token/API-key events and ASP.NET request traces. |
 
 The repository provides production OpenIddict signing and encryption certificate
 loading, including split-host secure mounts. It does not provide signing-key
@@ -414,8 +414,8 @@ CameraAgent keys are local to one CameraAgent and separate from LogicHost keys.
 2. Choose `Read` unless the client changes settings or runs operations, then
    create the key. Copy it from that page straight into the client's credential
    store; it is shown once and cannot be shown again.
-3. Send it only as `Authorization: Bearer <key>` to `/api/v1/operations/...`.
-   A key in a URL is refused, and so is a key on any other path.
+3. Send it only as `Authorization: Bearer <key>` to `/api/v1/operations/...` or `GET /metrics`.
+   A key in a URL is refused. Any other path ignores the key and uses the browser session.
 4. Rotate make-before-break: create a new key, move each client to it, then
    revoke the old one on the same page. Revocation takes effect at the next
    request.

@@ -18,7 +18,7 @@ public sealed partial class RawCaptureIngressTests
             using var upgraded = CreateIngress(root, new(TimeProvider.System));
             await upgraded.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(15L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(16L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(1L, await ScalarLongAsync(verify, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
             CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(receipt.StoredFrame.AbsolutePath).ConfigureAwait(false));
             var retry = await upgraded.AcceptAsync(CreateConfiguration(), CreateSubmission(Timestamp(1), [1, 2, 3, 4]), CancellationToken.None).ConfigureAwait(false);

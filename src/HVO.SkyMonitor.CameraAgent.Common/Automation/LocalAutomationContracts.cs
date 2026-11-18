@@ -5,8 +5,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 /// <summary>
 /// Bounds, fixed labels, and reason codes of the versioned durable local automation contract. The
-/// contract only ever names a registered task kind and a registered trigger kind; it can express no
-/// command, script, or executable path.
+/// contract names registered task/trigger kinds. Custom scripts name an owner-registered immutable
+/// invocation identity; definitions never contain command text or executable paths.
 /// </summary>
 public static class LocalAutomationContract
 {
@@ -36,7 +36,7 @@ public static class LocalAutomationContract
     /// The current durable schema version of the separate automation store file. The drift guard counts
     /// tables and indexes, which cannot see a column change, so any column change must bump this.
     /// </summary>
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>The maximum accepted definition identifier length.</summary>
     public const int MaximumDefinitionIdLength = 64;
@@ -149,8 +149,8 @@ public static class LocalAutomationContract
 
 /// <summary>
 /// The registered task kinds an automation definition may name. Every value maps to an existing
-/// operator-triggerable local operation; there is deliberately no value that names a command,
-/// script, or arbitrary endpoint.
+/// operator-triggerable local operation. CustomScript selects a separately authorized sandbox adapter;
+/// no task target is interpreted as command text, a path, or an arbitrary endpoint.
 /// </summary>
 [JsonConverter(typeof(JsonStringEnumConverter<LocalAutomationTaskKind>))]
 public enum LocalAutomationTaskKind
@@ -180,7 +180,13 @@ public enum LocalAutomationTaskKind
     /// Refreshes the managed Earth-orientation and leap-second pair at most daily through an explicitly
     /// registered periodic task adapter. Appended only: the stored text spelling of every earlier value is unchanged.
     /// </summary>
-    TimeDataRefresh
+    TimeDataRefresh,
+
+    /// <summary>Delegates drain/restart/verification to the independent installer lifecycle worker.</summary>
+    ScheduledCameraAgentRestart,
+
+    /// <summary>An owner-registered, digest-pinned invocation in the restricted script sandbox.</summary>
+    CustomScript
 }
 
 /// <summary>
@@ -327,6 +333,10 @@ public sealed record LocalAutomationCalendarEntry(
     public LocalAutomationOccurrence? Occurrence { get; init; }
 }
 
+/// <summary>Non-secret invocation policy for the custom-task wizard; content and argument values are never projected.</summary>
+public sealed record LocalAutomationScriptInvocation(
+    string Target, string RegistrationId, int TimeoutSeconds, long ScratchBytes, long OutputBytes, int ArgumentCount);
+
 /// <summary>One registered task kind, the triggers it accepts, and the targets it can name.</summary>
 public sealed record LocalAutomationTaskDescriptor(
     LocalAutomationTaskKind TaskKind,
@@ -338,6 +348,8 @@ public sealed record LocalAutomationTaskDescriptor(
 {
     /// <summary>Only the source-window presets that this installed adapter actually accepts.</summary>
     public IReadOnlyList<LocalAutomationSourceWindowKind> SupportedSourceWindows { get; init; } = [];
+
+    public IReadOnlyList<LocalAutomationScriptInvocation> ScriptInvocations { get; init; } = [];
 }
 
 /// <summary>The complete operator projection of the local automation contract.</summary>
@@ -350,6 +362,9 @@ public sealed record LocalAutomationOperatorState(
     IReadOnlyList<LocalAutomationCalendarEntry> Calendar,
     IReadOnlyList<LocalAutomationRun> Runs)
 {
+    /// <summary>Bounded queued and running occurrences, including those older than the recent history page.</summary>
+    public IReadOnlyList<LocalAutomationRun> ActiveRuns { get; init; } = [];
+
     /// <summary>Exact journal totals, independent of the bounded recent-run projection.</summary>
     public int? RunningRunCount { get; init; }
     public int? QueuedRunCount { get; init; }

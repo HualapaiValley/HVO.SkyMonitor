@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -225,6 +226,8 @@ internal sealed class ProjectedSceneStagingStore :
             if (files.Length >= _options.MaximumFileCount || files.Sum(static file => file.Length) + bytes.Length > _options.MaximumTotalBytes)
                 throw new IOException("Projected-scene staging capacity is exhausted.");
             var temporary = Path.Combine(_root, $".{stageKey}.{Guid.NewGuid():N}.tmp");
+            // Native rename/link publication bypasses the managed filesystem adapter.
+            using var integrity = RetainedIntegrityLedger.BeginWrite(path, bytes);
             if (OperatingSystem.IsLinux())
             {
                 await PublishLinuxAsync(Path.GetFileName(temporary), $"{stageKey}.json", bytes, cancellationToken)
@@ -252,7 +255,7 @@ internal sealed class ProjectedSceneStagingStore :
                 }
                 try
                 {
-                    File.Move(temporary, path);
+                    RetainedFileMutations.Move(temporary, path);
                     published = true;
                 }
                 catch (IOException) when (File.Exists(path))
@@ -264,7 +267,7 @@ internal sealed class ProjectedSceneStagingStore :
                         throw new InvalidDataException(
                             "Projected-scene stage conflicts with existing capture geometry.");
                     }
-                    File.Delete(temporary);
+                    RetainedFileMutations.Delete(temporary);
                 }
                 RawIngressFileStore.SyncDirectoryHierarchy(_durableRoot, _root);
             }
@@ -338,6 +341,7 @@ internal sealed class ProjectedSceneStagingStore :
                     using var directory = OpenLinuxStageDirectory(create: false);
                     if (directory is not null)
                     {
+                        using var integrity = RetainedIntegrityLedger.BeginDelete(GetPath(stageKey));
                         _ = LinuxUnlink(directory, $"{stageKey}.json");
                         SyncLinuxDirectory(directory);
                     }
@@ -350,7 +354,7 @@ internal sealed class ProjectedSceneStagingStore :
                         // Non-Linux platforms retain strict reparse-point checks, but cannot make check/open atomic.
                         EnsureAncestorChainHasNoLinks(Path.GetDirectoryName(path)!);
                         EnsurePhysicalFile(path);
-                        File.Delete(path);
+                        RetainedFileMutations.Delete(path);
                         RawIngressFileStore.SyncDirectory(_root);
                     }
                 }
@@ -387,12 +391,14 @@ internal sealed class ProjectedSceneStagingStore :
                     SyncLinuxDirectory(directory);
                     return;
                 }
+                var activeBytes = await ReadBoundedHandleAsync(active, cancellationToken).ConfigureAwait(false);
+                using var integrity = RetainedIntegrityLedger.BeginPublication(
+                    Path.Combine(_root, activeName), Path.Combine(_root, completedName), activeBytes);
                 if (!TryRenameNoReplace(directory, activeName, completedName, out var exists))
                 {
                     if (!exists) throw new IOException("Projected-scene completion marker could not be published.");
                     using var completed = LinuxOpenAtFile(directory, completedName)
                         ?? throw new IOException("Projected-scene completion marker disappeared.");
-                    var activeBytes = await ReadBoundedHandleAsync(active, cancellationToken).ConfigureAwait(false);
                     var completedBytes = await ReadBoundedHandleAsync(completed, cancellationToken).ConfigureAwait(false);
                     if (!activeBytes.AsSpan().SequenceEqual(completedBytes))
                         throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
@@ -413,7 +419,7 @@ internal sealed class ProjectedSceneStagingStore :
             EnsurePhysicalFile(activePath);
             try
             {
-                File.Move(activePath, completedPath);
+                RetainedFileMutations.Move(activePath, completedPath);
             }
             catch (IOException) when (File.Exists(completedPath))
             {
@@ -422,7 +428,7 @@ internal sealed class ProjectedSceneStagingStore :
                 var completedBytes = await ReadBoundedFileAsync(completedPath, cancellationToken).ConfigureAwait(false);
                 if (activeBytes is null || completedBytes is null || !activeBytes.AsSpan().SequenceEqual(completedBytes))
                     throw new InvalidDataException("Projected-scene completion marker conflicts with active evidence.");
-                File.Delete(activePath);
+                RetainedFileMutations.Delete(activePath);
             }
             RawIngressFileStore.SyncDirectory(_root);
         }
@@ -444,6 +450,7 @@ internal sealed class ProjectedSceneStagingStore :
                 using var directory = OpenLinuxStageDirectory(create: false);
                 if (directory is not null)
                 {
+                    using var integrity = RetainedIntegrityLedger.BeginDelete(Path.Combine(_root, name));
                     _ = LinuxUnlink(directory, name);
                     SyncLinuxDirectory(directory);
                 }
@@ -453,7 +460,7 @@ internal sealed class ProjectedSceneStagingStore :
             EnsureAncestorChainHasNoLinks(_root);
             if (!File.Exists(path)) return;
             EnsurePhysicalFile(path);
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
             RawIngressFileStore.SyncDirectory(_root);
         }
         finally
@@ -597,7 +604,7 @@ internal sealed class ProjectedSceneStagingStore :
         {
             File.WriteAllBytes(temporary, JsonSerializer.SerializeToUtf8Bytes(value, SerializerOptions));
             RawIngressFileStore.SyncFile(_durableRoot, temporary);
-            File.Move(temporary, _cursorPath, overwrite: true);
+            RetainedFileMutations.Move(temporary, _cursorPath, overwrite: true);
             RawIngressFileStore.SyncDirectory(directory);
         }
         finally
@@ -612,7 +619,7 @@ internal sealed class ProjectedSceneStagingStore :
     {
         try
         {
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -752,6 +759,7 @@ internal sealed class ProjectedSceneStagingStore :
             using var directory = OpenLinuxStageDirectory(create: false);
             if (directory is not null)
             {
+                using var integrity = RetainedIntegrityLedger.BeginDelete(Path.Combine(_root, name));
                 _ = LinuxUnlink(directory, name);
                 SyncLinuxDirectory(directory);
             }
@@ -760,7 +768,7 @@ internal sealed class ProjectedSceneStagingStore :
         var path = Path.Combine(_root, name);
         EnsureAncestorChainHasNoLinks(Path.GetDirectoryName(path)!);
         EnsurePhysicalFile(path);
-        File.Delete(path);
+        RetainedFileMutations.Delete(path);
         RawIngressFileStore.SyncDirectory(_root);
     }
 

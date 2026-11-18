@@ -414,6 +414,39 @@ public sealed class LocalAutomationStoreTests
     }
 
     [TestMethod]
+    [DataRow(511, "", 511, "")]
+    [DataRow(512, "", 512, "")]
+    [DataRow(513, "", 512, "")]
+    [DataRow(510, "\U0001F30C", 510, "\U0001F30C")]
+    [DataRow(510, "\U0001F30Ctail", 510, "\U0001F30C")]
+    [DataRow(511, "\U0001F30Ctail", 511, "")]
+    [DataRow(512, "\U0001F30Ctail", 512, "")]
+    public async Task CompleteRunAsync_PersistsExactUtf16DetailBoundAcrossRestart(
+        int prefixLength, string suffix, int retainedPrefixLength, string retainedSuffix)
+    {
+        // These inputs reach the owner of the bound untrimmed, including a pair straddling code unit 512.
+        var detail = new string('a', prefixLength) + suffix;
+        var expected = new string('a', retainedPrefixLength) + retainedSuffix;
+        using (var store = await CreateInitializedStoreAsync().ConfigureAwait(false))
+        {
+            await store.SaveAsync(SaveRequest(), CancellationToken.None).ConfigureAwait(false);
+            var entry = (await store.GetRunnerViewAsync(CancellationToken.None).ConfigureAwait(false)).Single();
+            Assert.IsTrue(await store.TryBeginRunAsync(entry, "bounded-detail", Now.AddHours(1), null,
+                CancellationToken.None).ConfigureAwait(false));
+            await store.CompleteRunAsync("bounded-detail", LocalAutomationRunOutcome.Succeeded, detail,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(expected, (await store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single().Detail);
+        }
+
+        using var reopened = CreateStore();
+        var retained = (await reopened.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual(LocalAutomationRunOutcome.Succeeded, retained.Outcome);
+        Assert.AreEqual(expected, retained.Detail, "Persist exactly the original boundary text or the specified safe prefix.");
+        Assert.IsTrue(detail.StartsWith(retained.Detail, StringComparison.Ordinal));
+        Assert.IsFalse(retained.Detail.Contains('\uFFFD', StringComparison.Ordinal));
+    }
+
+    [TestMethod]
     public async Task GetStateAsync_ReadsTheCaptureSequenceOnlyForACaptureRelativeDefinition()
     {
         _captureSequence.Sequence = 77;

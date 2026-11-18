@@ -84,7 +84,7 @@ internal sealed partial class DerivedProductReconciler(
             using var unit = await EnterUnitAsync(passToken).ConfigureAwait(false);
             if (!File.Exists(temporary)) continue;
             RawIngressFileStore.EnsureNoSymbolicLinks(_root, temporary);
-            File.Delete(temporary);
+            RetainedFileMutations.Delete(temporary);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(temporary)!);
             cleaned++;
         }
@@ -464,7 +464,7 @@ internal sealed partial class DerivedProductReconciler(
         var destinationRoot = ResolveRoot(operation.DestinationRelativePath);
         if (operation.Kind == "delete" && operation.Phase == "database-completed")
         {
-            if (Directory.Exists(destinationRoot)) Directory.Delete(destinationRoot, recursive: true);
+            if (Directory.Exists(destinationRoot)) RetainedFileMutations.DeleteDirectory(destinationRoot, recursive: true);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationRoot)!);
             await _store.SetLifecyclePhaseAsync(operation.OperationId, "files-deleted", cancellationToken).ConfigureAwait(false);
             await _store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);
@@ -484,9 +484,9 @@ internal sealed partial class DerivedProductReconciler(
                         ? observedEqual : await FilesEqualAsync(source, destination, cancellationToken).ConfigureAwait(false);
                     if (!equal)
                         throw new InvalidDataException("Processing lifecycle source and destination conflict.");
-                    File.Delete(source);
+                    RetainedFileMutations.Delete(source);
                 }
-                else if (File.Exists(source)) File.Move(source, destination, overwrite: false);
+                else if (File.Exists(source)) RetainedFileMutations.Move(source, destination, overwrite: false);
                 else if (!File.Exists(destination)) throw new InvalidDataException("Processing lifecycle evidence is missing.");
                 RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(source)!);
             }
@@ -510,7 +510,7 @@ internal sealed partial class DerivedProductReconciler(
             }
             if (operation.Kind == "delete")
             {
-                if (Directory.Exists(destinationRoot)) Directory.Delete(destinationRoot, recursive: true);
+                if (Directory.Exists(destinationRoot)) RetainedFileMutations.DeleteDirectory(destinationRoot, recursive: true);
                 RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(destinationRoot)!);
                 await _store.SetLifecyclePhaseAsync(operation.OperationId, "files-deleted", cancellationToken).ConfigureAwait(false);
                 await _store.DeleteLifecycleOperationAsync(operation.OperationId, cancellationToken).ConfigureAwait(false);

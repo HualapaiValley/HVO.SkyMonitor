@@ -1,0 +1,9 @@
+PASS bash syntax: 7 plan blocks
+PASS scope: no workflow, admission or merge commands; read-only queue observation valid
+PASS full cutover + rollback: 3 fake ruleset PUTs; exact baseline restored
+PASS precondition rejection: busy queue; 0 writes
+PASS precondition rejection: auto-merge enabled; 0 writes
+PASS precondition rejection: index truncated; 0 writes
+PASS precondition rejection: required check wrong; 0 writes
+PASS bad readback then rollback: full ruleset, classic protection and signature state restored
+Drill plan checks: 6 behavior cases plus 7 syntax blocks passed; 0 failed, 0 skipped

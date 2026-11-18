@@ -1,0 +1,15 @@
+{
+  "readAtUtc": "2026-11-12T17:07:11.397455+00:00",
+  "method": "GET",
+  "repository": "HualapaiValley/HVO.SkyMonitor",
+  "branch": "development/v1",
+  "rulesetId": 26838822,
+  "rulesetCount": 2,
+  "rulesetPageLimit": 100,
+  "liveDrill": "KNOWN LIMIT / HELD",
+  "liveOperator": "Repository administrator, with Roy watching and Kepler coordinating",
+  "runnerCapacity": "READY (Atlas)",
+  "historicalQueueObservationAtUtc": "2026-11-12T16:18:59.463021+00:00",
+  "historicalQueueObservationIsCurrentPreconditionEvidence": false,
+  "runnerCapacityReportedAtPst": "2026-11-12 09:04\u201309:05"
+}

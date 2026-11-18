@@ -12,7 +12,10 @@ public enum NightlyProductKind
     Keogram,
 
     /// <summary>A lighten star trail over quality-admitted night frames.</summary>
-    StarTrail
+    StarTrail,
+
+    /// <summary>A canonical facts snapshot with a representative preview of a sunrise day.</summary>
+    DailySummary
 }
 
 /// <summary>Where a product sits in the hierarchical lineage of an observing day.</summary>
@@ -47,7 +50,10 @@ public enum NightlyProductWindowDisposition
 public static class NightlyProductContract
 {
     /// <summary>The durable schema version of the nightly product store.</summary>
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
+
+    /// <summary>The supported forward input whose product-kind constraints are extended atomically.</summary>
+    public const int PreviousSchemaVersion = 2;
 
     /// <summary>The schema label of the immutable provenance document written beside every product.</summary>
     public const string ProvenanceSchemaVersion = "hvo-still-product-provenance-v2";
@@ -66,6 +72,8 @@ public static class NightlyProductContract
 
     /// <summary>The automation target that generates star trails.</summary>
     public const string StarTrailTarget = "star-trail";
+    public const string DailySummaryTarget = "daily-summary";
+    public const string PartialSummaryReasonCode = "nightly.summary-partial";
 
     public const string ExcludedRigReasonCode = "nightly.rig-mismatch";
     public const string ExcludedSolarAltitudeReasonCode = "nightly.solar-altitude";
@@ -82,6 +90,7 @@ public static class NightlyProductContract
     {
         NightlyProductKind.Keogram => KeogramTarget,
         NightlyProductKind.StarTrail => StarTrailTarget,
+        NightlyProductKind.DailySummary => DailySummaryTarget,
         _ => throw new ArgumentOutOfRangeException(nameof(kind))
     };
 
@@ -95,6 +104,9 @@ public static class NightlyProductContract
                 return true;
             case StarTrailTarget:
                 kind = NightlyProductKind.StarTrail;
+                return true;
+            case DailySummaryTarget:
+                kind = NightlyProductKind.DailySummary;
                 return true;
             default:
                 kind = default;
@@ -214,6 +226,7 @@ public interface INightlyProductCatalog
     /// <summary>Returns a product with its axis, lineage frame count and other outputs, or null when it does not exist.</summary>
     ValueTask<NightlyProductPresentation?> GetPresentationAsync(Guid productId, CancellationToken cancellationToken);
 
-    /// <summary>Lists recorded daily final evaluations, newest report date first, one bounded page at a time.</summary>
-    ValueTask<NightlyProductLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken);
+    /// <summary>Lists daily evaluations and a bounded retained automation snapshot, newest report date first.</summary>
+    ValueTask<NightlyProductLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken,
+        IReadOnlyList<NightlyProductGenerationAttempt>? generationRuns = null);
 }

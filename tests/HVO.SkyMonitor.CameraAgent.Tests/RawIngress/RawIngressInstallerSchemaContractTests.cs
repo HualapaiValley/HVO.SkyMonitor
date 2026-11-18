@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed class RawIngressInstallerSchemaContractTests
 {
     [TestMethod]
-    public async Task CandidateV15SchemaMatchesFrozenInstallerFingerprintAndFencesEarlierReaders()
+    public async Task CandidateV16SchemaMatchesFrozenInstallerFingerprintAndFencesEarlierReaders()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-v14-schema-{Guid.NewGuid():N}");
         var path = Path.Combine(root, "journal", "raw-ingress.db");
@@ -25,12 +25,17 @@ public sealed class RawIngressInstallerSchemaContractTests
             var initialize = journalType.GetMethod("InitializeAsync", System.Reflection.BindingFlags.Instance |
                 System.Reflection.BindingFlags.NonPublic, binder: null, types: [typeof(CancellationToken)], modifiers: null)!;
             await ((Task)initialize.Invoke(journal, [CancellationToken.None])!).ConfigureAwait(false);
+            using var processing = new HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.SqliteCaptureProcessingStore(
+                Microsoft.Extensions.Options.Options.Create(new HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions { RawIngressRoot = root }));
+            await processing.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            var restartedJournal = constructor.Invoke(arguments);
+            await ((Task)initialize.Invoke(restartedJournal, [CancellationToken.None])!).ConfigureAwait(false);
             using var connection = new SqliteConnection($"Data Source={path}");
             await connection.OpenAsync().ConfigureAwait(false);
             Assert.AreEqual(RawIngressV13Schema.V15Fingerprint, RawIngressV13Schema.ComputeFingerprint(connection));
             using var version = connection.CreateCommand();
             version.CommandText = "PRAGMA user_version;";
-            Assert.AreEqual(15L, (long)(await version.ExecuteScalarAsync().ConfigureAwait(false))!);
+            Assert.AreEqual(16L, (long)(await version.ExecuteScalarAsync().ConfigureAwait(false))!);
         }
         finally
         {

@@ -244,7 +244,7 @@ public sealed class VirtualMeasuredStarScenarioTests
             Name = scenario,
             Config = profile.Config with { Module = profile.Config.Module with { Options = JsonSerializer.SerializeToElement(options) } }
         };
-        var module = new VirtualSkyCameraModule(TimeProvider.System, new InMemoryCelestialCatalog(stars), new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), new InMemoryCelestialCatalog(stars), new ProjectedSceneStore());
         await using var lifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
         var clock = Stopwatch.StartNew();

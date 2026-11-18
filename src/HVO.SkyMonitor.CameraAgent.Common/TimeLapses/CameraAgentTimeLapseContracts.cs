@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.Video.FFmpeg;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
@@ -35,6 +36,12 @@ public sealed record CameraAgentTimeLapseJob(
     string? ReasonCode,
     Guid? ProductId)
 {
+    /// <summary>
+    /// The recorded transition into Working, preserved by restart requeue. Other transitions overwrite UpdatedUtc,
+    /// so queued new attempts and terminal jobs do not claim a historical start time.
+    /// </summary>
+    public DateTimeOffset? StartedUtc => State == CameraAgentTimeLapseState.Working ||
+        State == CameraAgentTimeLapseState.Queued && ReasonCode == "timelapse.recovering" ? UpdatedUtc : null;
     public long Revision { get; init; } = 1;
     public IReadOnlyDictionary<string, int> Exclusions { get; init; } = new Dictionary<string, int>();
 }
@@ -87,8 +94,43 @@ public sealed record CameraAgentTimeLapseDateSummary(DateOnly ReportDate, string
 /// <summary>Thin library projection; browsing dates never loads full packet/source provenance.</summary>
 public sealed record CameraAgentTimeLapseSummary(Guid ProductId, DateOnly ReportDate, int Width, int Height, bool HasGaps);
 
+/// <summary>A bounded library row without source plans, presets or packet proofs.</summary>
+public sealed record CameraAgentTimeLapseLibraryEntry(Guid JobId, DateOnly ReportDate,
+    LocalAutomationSourceWindow Window, CameraAgentTimeLapseState JobState, DateTimeOffset? StartedUtc,
+    string? ReasonCode, CameraAgentTimeLapseSummary? Product, bool HasHourlyProducts)
+{
+    /// <summary>Disabled generation cannot present retained pending work as executing on this host.</summary>
+    public bool GenerationEnabled { get; init; } = true;
+
+    /// <summary>
+    /// The hourly segment jobs of a queued daily job: how many it has, how many have finished, and whether one is
+    /// being generated now. The daily job itself stays queued until every one has finished, so its own state cannot
+    /// say that generation is under way. All are zero or false for a job that is not queued.
+    /// </summary>
+    public int HourlyJobs { get; init; }
+
+    /// <inheritdoc cref="HourlyJobs"/>
+    public int HourlyJobsFinished { get; init; }
+
+    /// <inheritdoc cref="HourlyJobs"/>
+    public bool HourlyJobWorking { get; init; }
+
+    /// <summary>Whether a queued daily job's hourly segments have begun, so it is no longer waiting to start.</summary>
+    public bool HourlyGenerationStarted => JobState == CameraAgentTimeLapseState.Queued && (HourlyJobWorking || HourlyJobsFinished > 0);
+
+    public NightlyProductLibraryState State => JobState is CameraAgentTimeLapseState.Queued or CameraAgentTimeLapseState.Working
+        ? GenerationEnabled ? NightlyProductLibraryState.Running : NightlyProductLibraryState.Stalled
+        : Product is not null ? NightlyProductLibraryState.Produced
+        : HasHourlyProducts ? NightlyProductLibraryState.Partial : NightlyProductLibraryState.NotProduced;
+}
+
+public sealed record CameraAgentTimeLapseLibraryPage(IReadOnlyList<CameraAgentTimeLapseLibraryEntry> Entries,
+    DateOnly? NextBefore, DateOnly? SearchedThrough);
+
 public interface ICameraAgentTimeLapseCatalog
 {
+    ValueTask<CameraAgentTimeLapseLibraryPage> ListLibraryAsync(NightlyProductLibraryQuery query, CancellationToken cancellationToken)
+        => ValueTask.FromResult(new CameraAgentTimeLapseLibraryPage([], null, null));
     ValueTask<CameraAgentTimeLapseDay> GetDayAsync(DateOnly reportDate, CancellationToken cancellationToken);
     ValueTask<CameraAgentTimeLapseProduct?> GetAsync(Guid productId, CancellationToken cancellationToken);
     ValueTask<LocalAutomationSourceWindow?> GetWindowAsync(Guid productId, CancellationToken cancellationToken);

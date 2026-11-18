@@ -1173,7 +1173,7 @@ public sealed class DurableCaptureDistributionPerformanceTests
                 -75d + index % 151,
                 -1d + index % 70 / 10d,
                 0.3 + index % 20 / 10d)));
-        var module = new VirtualSkyCameraModule(TimeProvider.System, catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore());
         await module.InitializeAsync(configuration, CancellationToken.None).ConfigureAwait(false);
         var result = await module.CaptureAsync(
             new CaptureRequest(

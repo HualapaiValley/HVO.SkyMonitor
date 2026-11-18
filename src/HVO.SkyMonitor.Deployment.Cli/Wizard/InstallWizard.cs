@@ -362,6 +362,10 @@ internal sealed class InstallWizard : IDisposable
         Add("Address", $"{a.BindAddress}:{a.Port}", "--port");
         Add("Location", $"{a.Latitude}, {a.Longitude}, {a.Elevation} m", "--latitude");
         Add("Time zone", a.TimeZone, "--time-zone");
+        if (a.IlluminationMode is { } illuminationMode)
+        {
+            Add("Lighting", illuminationMode, "--illumination-mode");
+        }
         Add("CPUs", InstallWizardSession.Blank(a.Cpus) ?? "default", "--cpus");
         Add("Memory", InstallWizardSession.Blank(a.Memory) ?? "default", "--memory");
         Add("Owner", InstallWizardSession.Blank(a.OwnerEmail) ?? "default", "--owner-email");

@@ -42,9 +42,9 @@ internal sealed class UploadCaptureLaneHandler(
                     // raw-first arrival must not consume the transient-failure retry budget.
                     if (scene is null)
                     {
-                        // Abandoned standard work (a superseded plan or an expired live execution) never commits a
-                        // scene. The raw is already enqueued, so the upload finishes without one; the abandoned
-                        // standard row records why the scene is unavailable, and archived replay can rebuild it.
+                        // Some abandoned standard work has no committed scene. Raw is already enqueued, so upload
+                        // finishes without one and the standard row records why. Archived replay cannot rebuild a
+                        // missing committed scene. Storage skips that did commit one use the normal enqueue path.
                         var abandoned = await persistence.ReadAbandonedStandardWorkReasonAsync(
                             context.RawCapture.Manifest.Descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
                         return abandoned is null

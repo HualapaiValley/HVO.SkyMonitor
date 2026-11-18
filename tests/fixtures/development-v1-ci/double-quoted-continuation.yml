@@ -1,0 +1,15 @@
+name: R4 spoof
+on: push
+jobs:
+  benign:
+    runs-on: ubuntu-24.04
+    env:
+      A: "one
+two"
+    steps:
+      - run: 'true'
+  hidden:
+    name: hvo/reviewed-head
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'true'

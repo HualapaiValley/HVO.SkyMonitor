@@ -18,6 +18,8 @@ public sealed class VirtualEnvironmentalSourceTests
         {
             (EnvironmentalObservationKind.AirTemperature, 12.5, null),
             (EnvironmentalObservationKind.CameraSensorTemperature, -5, null),
+            (EnvironmentalObservationKind.SkyTemperature, -30, null),
+            (EnvironmentalObservationKind.SeaLevelPressure, 101325, null),
             (EnvironmentalObservationKind.RelativeHumidity, 42, null),
             (EnvironmentalObservationKind.AtmosphericPressure, 101_325, null),
             (EnvironmentalObservationKind.WindSpeed, 4, null),
@@ -42,7 +44,9 @@ public sealed class VirtualEnvironmentalSourceTests
             Assert.IsNotNull(first.Fact);
             Assert.AreEqual(value.Kind, first.Fact.Value.Kind);
             Assert.AreEqual(
-                value.Kind == EnvironmentalObservationKind.CameraSensorTemperature
+                value.Kind is EnvironmentalObservationKind.SkyTemperature or EnvironmentalObservationKind.SeaLevelPressure
+                    ? EnvironmentalObservationSchemaVersions.V3
+                    : value.Kind == EnvironmentalObservationKind.CameraSensorTemperature
                     ? EnvironmentalObservationSchemaVersions.V2
                     : EnvironmentalObservationSchemaVersions.V1,
                 first.Fact.SchemaVersion);

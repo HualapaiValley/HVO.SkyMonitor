@@ -55,7 +55,7 @@ public sealed class LocalReplayRunnerPerformanceTests
     {
         if (!OperatingSystem.IsLinux())
         {
-            Assert.Inconclusive("The self-contained local replay runner is published for Linux.");
+            Assert.Inconclusive("The local replay runner performance test requires Linux.");
         }
         var repositoryRoot = GetRepositoryRoot();
         var revision = new
@@ -66,7 +66,7 @@ public sealed class LocalReplayRunnerPerformanceTests
             DirtyState = RequiredEnvironment("HVO_EVIDENCE_DIRTY_STATE")
         };
         var storage = RequiredEnvironment("HVO_EVIDENCE_STORAGE");
-        var runnerPath = ResolveRunnerPath(repositoryRoot);
+        var runnerPath = ResolveRunnerPath(repositoryRoot, Environment.GetEnvironmentVariable("HVO_REPLAY_RUNNER_EXECUTABLE"));
         var outputRoot = Environment.GetEnvironmentVariable("HVO_ISSUE425_EVIDENCE_ROOT")
             ?? Path.Combine(repositoryRoot, "TestResults", "issue-425", "working-tree");
         Directory.CreateDirectory(outputRoot);
@@ -1309,22 +1309,20 @@ public sealed class LocalReplayRunnerPerformanceTests
             values.GetValueOrDefault("write_bytes"));
     }
 
-    private static string ResolveRunnerPath(string repositoryRoot)
+    internal static string ResolveRunnerPath(string repositoryRoot, string? configuredExecutable)
     {
-        var configured = Environment.GetEnvironmentVariable("HVO_REPLAY_RUNNER_EXECUTABLE");
-        var rid = RuntimeInformation.RuntimeIdentifier;
-        var path = configured ?? Path.Combine(
+        var path = configuredExecutable ?? Path.Combine(
             repositoryRoot,
             "src",
             "HVO.SkyMonitor.CameraAgent.ReplayRunner",
             "bin",
             "Release",
             "net10.0",
-            rid,
             "HVO.SkyMonitor.CameraAgent.ReplayRunner");
         if (!File.Exists(path))
         {
-            Assert.Inconclusive($"Publish or build the Release replay runner first: {path}");
+            Assert.Inconclusive("Build the Release replay runner with dotnet build src/HVO.SkyMonitor.CameraAgent.ReplayRunner " +
+                "--configuration Release, or set HVO_REPLAY_RUNNER_EXECUTABLE to an existing published executable.");
         }
         return path;
     }

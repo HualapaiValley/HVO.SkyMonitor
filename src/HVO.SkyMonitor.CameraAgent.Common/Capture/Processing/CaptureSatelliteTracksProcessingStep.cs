@@ -46,14 +46,7 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         if (context.Config.Pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2)
             throw new InvalidOperationException("Capture satellite prediction requires an explicit v2 graph.");
         var raw = context.Artifacts?.Raw ?? throw new InvalidDataException("Satellite prediction requires the exact raw capture.");
-        var source = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, raw, descriptor.Artifact.Variant,
-            context.AcquisitionTiming, descriptor) with
-        {
-            MediaType = descriptor.Artifact.MediaType,
-            CreatedUtc = descriptor.Artifact.CreatedUtc,
-            ObservationStartedUtc = descriptor.Timing.ExposureStartedUtc,
-            ObservationEndedUtc = descriptor.Timing.ExposureEndedUtc
-        };
+        var source = CreateSource(context.Config, raw, descriptor, context.AcquisitionTiming);
         CaptureSatelliteInputV1 input;
         ReadOnlyMemory<byte>? result;
         OrbitalSnapshotReadResult? exactSnapshot = null;
@@ -89,6 +82,17 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             .Where(static p => p.SchemaVersion is CaptureSatelliteProducts.InputSchema or CaptureSatelliteProducts.StatusSchema or
                 CaptureOrbitalPredictionJson.SchemaVersion).ToArray());
     }
+
+    internal static ProcessingArtifact CreateSource(CameraModuleConfig config, FrameArtifact raw,
+        ReconstructionDescriptor descriptor, CaptureAcquisitionTiming? acquisitionTiming = null) =>
+        CameraAgentRecipeExecutionAdapter.CreateArtifact(config, raw, descriptor.Artifact.Variant,
+            acquisitionTiming, descriptor) with
+        {
+            MediaType = descriptor.Artifact.MediaType,
+            CreatedUtc = descriptor.Artifact.CreatedUtc,
+            ObservationStartedUtc = descriptor.Timing.ExposureStartedUtc,
+            ObservationEndedUtc = descriptor.Timing.ExposureEndedUtc
+        };
 
     private async ValueTask<OrbitalSnapshotReadResult?> ReadExactAsync(CaptureSatelliteInputV1 input, CancellationToken cancellationToken)
     {
@@ -171,7 +175,8 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
                 new(CaptureOrbitalAssessmentMode.OriginalAvailability, descriptor.Timing.DurableIngressUtc,
                     descriptor.Timing.DurableIngressUtc, available!.Value), snapshot,
                 new([new("celestrak:gp:active", 0)], Options.AllowStaleDiagnostics),
-                Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)));
+                Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)),
+                context.Config.Rig.HorizonObstruction is null ? null : context.Config.Rig);
         }
         return new(CaptureSatelliteProducts.InputSchema, descriptor, context.Config.Rig, observer, OptionalBytes(plan?.SerializePlan()),
             OptionalBytes(manifest), null, OptionalBytes(eop), OptionalBytes(leaps), time.Source.ToString(), available, reason)

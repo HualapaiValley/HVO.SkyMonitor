@@ -1,6 +1,7 @@
 using System.Globalization;
 using HVO.SkyMonitor.CameraAgent.Common.SpaceWeather;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Components.Shared;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -66,6 +67,8 @@ public sealed partial class SpaceWeatherPanel : ComponentBase, IAsyncDisposable
     [Inject] internal IJSRuntime JSRuntime { get; set; } = default!;
 
     private bool Busy => _reloading || _refreshing || _resuming || _acknowledging is not null;
+
+    private string SpaceWeatherSwitchUrl => SamePageFragmentLink.Build(NavigationManager.Uri, "space-weather-switch");
 
     private bool CanMutate => _view?.CanMutate == true;
 

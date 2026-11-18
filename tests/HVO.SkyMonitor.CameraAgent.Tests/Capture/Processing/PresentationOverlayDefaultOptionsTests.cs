@@ -87,7 +87,11 @@ public sealed class PresentationOverlayDefaultOptionsTests
         var legacyOptions = new OverlayManifestProcessingStepOptions();
         Assert.IsFalse(JsonSerializer.SerializeToElement(legacyOptions).TryGetProperty("UseRichFrameFacts", out _),
             "An absent opt-in must not change legacy effective options or graph identity.");
+        Assert.IsFalse(JsonSerializer.SerializeToElement(legacyOptions).TryGetProperty("IncludeDeepSkyLayer", out _));
         var legacy = new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 80), legacyOptions);
+        var deepSky = new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 80), new() { IncludeDeepSkyLayer = true });
+        Assert.IsFalse(legacy.DependencyRequirements.Any(static requirement => requirement.Variant == "scene-deep-sky-v1"));
+        Assert.IsTrue(deepSky.DependencyRequirements.Any(static requirement => requirement.Variant == "scene-deep-sky-v1"));
         var optedIn = new OverlayManifestCaptureProcessingStep(new("manifest", "OverlayManifest", 80), new() { UseRichFrameFacts = true });
         Assert.IsFalse(legacy.DependencyRequirements.Any(requirement => requirement.SchemaVersions?.Contains(
             HVO.SkyMonitor.Imaging.PresentationLayerPayloadV1.RichTextSchemaVersion) == true));

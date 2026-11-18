@@ -48,6 +48,7 @@ public sealed partial class CurrentSkyPageTests
         Configure(context);
 
         var cut = context.Render<CurrentSkyPage>();
+        Assert.IsNotNull(cut.Find("a[href='/operations/pipeline/graphs/new?section=predicted-satellite-layer#predicted-satellite-layer']"));
         var satellite = cut.FindAll(".overlay-group[aria-label='Diagnostics layers'] label")
             .Single(label => label.QuerySelector("strong")?.TextContent == "Predicted satellite tracks");
 

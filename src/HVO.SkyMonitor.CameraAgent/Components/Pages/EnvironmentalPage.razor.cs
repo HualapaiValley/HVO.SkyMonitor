@@ -14,7 +14,7 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
     private const int HistoryPageSize = 50;
 
     /// <summary>
-    /// The prototype's eight reading slots. Each names the observation kinds it shows in preference order; a slot
+    /// The environmental reading slots. Each names the observation kinds it shows in preference order; a slot
     /// never borrows a value from an unrelated kind, and one with nothing retained says so instead of showing zero.
     /// </summary>
     private static readonly ReadingSlot[] ReadingSlots =
@@ -27,6 +27,8 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         new("sky-quality", "Sky quality", [EnvironmentalObservationKind.SkyQuality, EnvironmentalObservationKind.SkyBrightness]),
         new("precipitation", "Precipitation", [EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.PrecipitationRate]),
         new("sensor", "Sensor", [EnvironmentalObservationKind.CameraSensorTemperature]),
+        new("sky-temperature", "Sky temperature", [EnvironmentalObservationKind.SkyTemperature]),
+        new("sea-level-pressure", "Sea-level pressure", [EnvironmentalObservationKind.SeaLevelPressure]),
     ];
 
     private readonly CancellationTokenSource _lifetime = new();
@@ -425,6 +427,9 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         NavigationManager.NavigateTo("/Account/AccessDenied");
     }
 
+    private bool HasMixedSources => _latest?.Select(reading => EnvironmentalReadingSelection.MixingGroup(
+        reading.SourceKind, reading.SourceGroup)).OfType<string>().Distinct(StringComparer.Ordinal).Take(2).Count() > 1;
+
     private ReadingView Reading(ReadingSlot slot)
     {
         var observation = slot.Kinds
@@ -433,7 +438,8 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         if (observation is null)
         {
             var configured = _status?.Sources.Any(source => slot.Kinds.Contains(source.Kind)) == true;
-            return new(null, "--", configured ? "No observation yet" : "No source configured", null);
+            var unavailable = _status?.Sources.Any(source => slot.Kinds.Contains(source.Kind) && source.Freshness == "Unavailable") == true;
+            return new(null, "--", unavailable ? "Unavailable" : configured ? "No observation yet" : "No source configured", null);
         }
         var evaluated = _status?.EvaluatedUtc ?? observation.ObservedAtUtc;
         var freshness = evaluated > observation.StaleAfterUtc ? "Stale" : "Fresh";
@@ -447,7 +453,19 @@ public sealed partial class EnvironmentalPage : SiteTimeComponent, IAsyncDisposa
         {
             state += $" / {observation.Quality} quality";
         }
-        return new(observation, FormatReading(observation), state, ReadingDetail(slot, observation));
+        var detail = ReadingDetail(slot, observation);
+        if (observation.SourceGroup is { } group)
+        {
+            state += " / " + observation.SourceId;
+            var station = group + (observation.StationDistanceKilometers is { } distance
+                ? FormattableString.Invariant($" / {distance:0.#} km")
+                : observation.SourceKind == EnvironmentalObservationSourceKind.Imported ? " / Distance unknown" : string.Empty) +
+                (observation.StationElevationMeters is { } elevation
+                    ? FormattableString.Invariant($" / elevation {elevation:0} m")
+                    : observation.SourceKind == EnvironmentalObservationSourceKind.Imported ? " / Elevation unknown" : string.Empty);
+            detail = detail is null ? station : detail + " / " + station;
+        }
+        return new(observation, FormatReading(observation), state, detail);
     }
 
     private string? ReadingDetail(ReadingSlot slot, EnvironmentalUiObservation observation)

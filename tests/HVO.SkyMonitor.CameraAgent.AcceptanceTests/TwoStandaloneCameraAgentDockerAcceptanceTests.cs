@@ -155,8 +155,8 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
             sidingSession.Client,
             sampler).ConfigureAwait(false);
 
-        var hualapaiMetrics = await CaptureMetricsAsync(hualapai, evidenceRoot).ConfigureAwait(false);
-        var sidingMetrics = await CaptureMetricsAsync(siding, evidenceRoot).ConfigureAwait(false);
+        var hualapaiMetrics = await CaptureMetricsAsync(hualapaiSession.Client, hualapai, evidenceRoot).ConfigureAwait(false);
+        var sidingMetrics = await CaptureMetricsAsync(sidingSession.Client, siding, evidenceRoot).ConfigureAwait(false);
         AssertMetricSurface(hualapaiMetrics);
         AssertMetricSurface(sidingMetrics);
         var hualapaiRuntimeMetrics = ReadRuntimeMetrics(hualapaiMetrics);
@@ -1078,9 +1078,8 @@ public sealed class TwoStandaloneCameraAgentDockerAcceptanceTests
         }
     }
 
-    private static async Task<string> CaptureMetricsAsync(AgentContext agent, string evidenceRoot)
+    private static async Task<string> CaptureMetricsAsync(HttpClient client, AgentContext agent, string evidenceRoot)
     {
-        using var client = new HttpClient { BaseAddress = agent.BaseUri };
         var metrics = await client.GetStringAsync(new Uri("/metrics", UriKind.Relative)).ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(evidenceRoot, $"issue-197-{agent.Name}-metrics.txt"), metrics).ConfigureAwait(false);
         return metrics;

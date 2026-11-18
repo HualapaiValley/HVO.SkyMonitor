@@ -15,9 +15,132 @@ public sealed class AstrometricUncertaintyEstimatorTests
     {
         var catalog = AstrometricTestFixture.Catalog(); var truth = AstrometricTestFixture.Truth(); var calibration = AstrometricTestFixture.Calibration(truth);
         var detections = AstrometricTestFixture.Centroids(catalog, truth, AstrometricTestFixture.Utc);
-        var result = AstrometricSolver.Solve(AstrometricTestFixture.Frame(AstrometricTestFixture.Utc), calibration, catalog, detections);
+        var result = AstrometricSolver.Solve(AstrometricTestFixture.Frame(AstrometricTestFixture.Utc, seconds: 1), calibration, catalog, detections);
         Assert.IsTrue(result.Assessment.HasMeasuredMapping, result.Assessment.Reason); return new(catalog, calibration, detections, result);
     });
+
+    [TestMethod]
+    [DataRow(10000001L, false)]
+    [DataRow(10000001L, true)]
+    [DataRow(200000000L, false)]
+    [DataRow(200000000L, true)]
+    [DataRow(600000000L, false)]
+    [DataRow(600000000L, true)]
+    public void UnqualifiedExposure_WithholdsAllCovarianceEvenForAConsistentFit(long ticks, bool withCalibration)
+    {
+        // Midpoint centroids deliberately fit perfectly well: a residual gate alone cannot qualify an exposure.
+        var f = WithExposure(ticks);
+        var shared = withCalibration ? Shared(f.Calibration.Projection) : null;
+        var covariances = Covariances(f, Sigma);
+        var u = Estimate(f, covariances, shared: shared, readout: FullFrame);
+        Assert.IsTrue(f.Result.Assessment.HasMeasuredMapping);
+        Assert.IsNotNull(new AstrometricMapping(f.Calibration, f.Result.Assessment).PixelToSky(new(256, 256)));
+        Assert.AreEqual("exposure-not-qualified", u.ReasonCode);
+        Assert.AreNotEqual(new AstrometricUncertaintyOptions().IdentitySha256, u.OptionsIdentitySha256);
+        Assert.AreEqual(new AstrometricUncertaintyOptions().IdentityForExposure(TimeSpan.FromTicks(ticks)), u.OptionsIdentitySha256);
+        Assert.IsFalse(u.IsAvailable);
+        Assert.IsNull(u.Estimate);
+        Assert.IsNull(u.Validity.ChiSquare);
+        Assert.IsNull(u.SharedCalibration.Sensitivity);
+        foreach (var component in new[] { u.ConditionalFit, u.Systematic, u.SharedCalibration.Pose, u.Total })
+        {
+            Assert.AreEqual(AstrometricUncertaintyEstimator.Withheld, component.Status);
+            Assert.AreEqual(u.ReasonCode, component.ReasonCode);
+            Assert.IsNull(component.Covariance);
+            Assert.IsNull(component.BoresightStandardErrorDegrees);
+            Assert.IsNull(component.RollStandardErrorDegrees);
+            Assert.IsNull(component.FocalScaleStandardError);
+        }
+        Assert.AreEqual(f.Result.Assessment.Frame.ExposureStartUtc, u.Conventions.ExposureStartUtc);
+        Assert.AreEqual(f.Result.Assessment.Frame.ExposureEndUtc, u.Conventions.ExposureEndUtc);
+        Assert.AreEqual(AstrometricTestFixture.Utc, u.Conventions.MidpointUtc);
+        Assert.AreEqual(u.IdentitySha256, Estimate(f, covariances, shared: shared, readout: FullFrame).IdentitySha256);
+        AstrometricUncertaintyEvidence.ValidateInputs(u, f.Result.Assessment, f.Calibration, f.Detections,
+            covariances, f.Result.Associations, AstrometricClockFacts.NotSupplied, FullFrame, new(), new(), shared);
+        if (shared is not null)
+            Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEstimator.CrossCovariance(u, u, shared));
+    }
+
+    [TestMethod]
+    [DataRow(9999999L)]
+    [DataRow(10000000L)]
+    public void QualifiedExposureBoundary_PreservesOneSecondNumerics(long ticks)
+    {
+        var f = WithExposure(ticks);
+        var baseline = Estimate(Accepted.Value, Covariances(Accepted.Value, Sigma));
+        var u = Estimate(f, Covariances(f, Sigma));
+        Assert.IsTrue(u.IsAvailable, u.Reason);
+        Assert.AreEqual(new AstrometricUncertaintyOptions().IdentitySha256, u.OptionsIdentitySha256);
+        Assert.AreEqual(Numerics(baseline), Numerics(u));
+        Console.WriteLine("NUMERICAL_BASELINE " + Numerics(u));
+    }
+
+    [TestMethod]
+    [DataRow(10000001L)]
+    [DataRow(200000000L)]
+    [DataRow(600000000L)]
+    public void RetainedEvidence_RejectsRehashedAvailableCovarianceAboveQualifiedExposure(long ticks)
+    {
+        var f = WithExposure(ticks);
+        var shared = Shared(f.Calibration.Projection);
+        var u = Estimate(Accepted.Value, Covariances(Accepted.Value, Sigma), shared: shared, readout: FullFrame);
+        // Rebind a short-frame result with fully consistent lineage, as an old estimator could have released it.
+        u = u with
+        {
+            AssessmentIdentitySha256 = f.Result.Assessment.IdentitySha256,
+            Conventions = AstrometricUncertaintyEstimator.Conventions(f.Result.Assessment),
+            IdentitySha256 = string.Empty
+        };
+        u = u with { IdentitySha256 = AstrometricIdentity.Hash(u) };
+        Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEvidence.Validate(u, f.Result.Assessment));
+        Assert.Throws<ArgumentException>(() => AstrometricUncertaintyEstimator.CrossCovariance(u, u, shared));
+    }
+
+    [TestMethod]
+    public void UnqualifiedExposure_PreservesInputValidationCancellationAndRejectedAssessmentReason()
+    {
+        var f = WithExposure(TimeSpan.TicksPerSecond * 20);
+        Assert.Throws<ArgumentException>(() => Estimate(f, [new(f.Detections[0].Index, -1, 0, 1)]));
+        Assert.Throws<ArgumentException>(() => Estimate(f, Covariances(f, Sigma), readout: FullFrame with { NativeWidth = 511 }));
+        Assert.Throws<OperationCanceledException>(() => AstrometricUncertaintyEstimator.Estimate(f.Calibration, f.Catalog,
+            new(), f.Result, f.Detections, Covariances(f, Sigma), AstrometricClockFacts.NotSupplied,
+            cancellationToken: new CancellationToken(true)));
+        var rejected = AstrometricSolver.Solve(f.Result.Assessment.Frame, f.Calibration, f.Catalog, f.Detections.Take(5).ToArray());
+        var u = AstrometricUncertaintyEstimator.Estimate(f.Calibration, f.Catalog, new(), rejected,
+            f.Detections.Take(5).ToArray(), [], AstrometricClockFacts.NotSupplied);
+        Assert.AreEqual("assessment-not-accepted", u.ReasonCode);
+    }
+
+    private static Solved WithExposure(long ticks)
+    {
+        var f = Accepted.Value;
+        var start = AstrometricTestFixture.Utc.AddTicks(-ticks / 2);
+        var assessment = f.Result.Assessment with
+        {
+            Frame = f.Result.Assessment.Frame with
+            { ExposureStartUtc = start, ExposureEndUtc = start.AddTicks(ticks) },
+            IdentitySha256 = string.Empty
+        };
+        assessment = assessment with { IdentitySha256 = AstrometricIdentity.Hash(assessment) };
+        return f with { Result = new(assessment, f.Result.Associations, f.Result.Metrics) };
+    }
+
+    private static string Numerics(AstrometricFrameUncertainty u) => System.Text.Json.JsonSerializer.Serialize(new
+    { u.Estimate, u.Centroid, u.ConditionalFit, u.Systematic, u.SharedCalibration, u.Total, u.ClockComponent, u.Validity });
+
+    [TestMethod]
+    public void ExposurePolicyIdentity_PreservesLegacySettingsAndVersionsOnlyUnsupportedDurations()
+    {
+        var options = new AstrometricUncertaintyOptions();
+        var legacy = AstrometricIdentity.Hash(new { schema = "astrometric-frame-uncertainty-v1", options = options with { } });
+        Assert.AreEqual(legacy, options.IdentitySha256);
+        Assert.AreEqual(legacy, options.IdentityForExposure(TimeSpan.Zero));
+        Assert.AreEqual(legacy, options.IdentityForExposure(TimeSpan.FromSeconds(1)));
+        Assert.AreNotEqual(legacy, options.IdentityForExposure(TimeSpan.FromTicks(TimeSpan.TicksPerSecond + 1)));
+        Assert.AreEqual(options.IdentityForExposure(TimeSpan.FromSeconds(20)), options.IdentityForExposure(TimeSpan.FromSeconds(60)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.IdentityForExposure(TimeSpan.FromTicks(-1)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => options.IdentityForExposure(TimeSpan.FromDays(1).Add(TimeSpan.FromTicks(1))));
+    }
 
     [TestMethod]
     public void AcceptedFrame_PublishesSeparateComponentsBoundToEveryIdentity()

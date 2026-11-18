@@ -64,9 +64,18 @@ internal sealed class VirtualSkyCloudObservationProcessingStep(
         var expectedScenarioStart = context.Submission.Request.RequestedStartUtc;
         if (virtualExposure is not null)
         {
+            var timing = context.ReconstructionDescriptor?.Timing;
+            // Durable frames are reconstructed at acquisition start; the virtual scene retains request time.
+            // Descriptor timestamps have millisecond precision, unlike the modeled scene's UTC ticks.
+            var requestedMilliseconds = virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds();
+            var requestMatches = timing is null
+                ? virtualExposure.RequestedStartUtc == context.Submission.Request.RequestedStartUtc
+                : requestedMilliseconds == timing.RequestedStartUtc.ToUnixTimeMilliseconds() &&
+                    requestedMilliseconds == context.Submission.Request.RequestedStartUtc.ToUnixTimeMilliseconds();
+            var frameStart = timing?.ExposureStartedUtc ?? context.Submission.Request.RequestedStartUtc;
             if (!virtualExposure.IsValid(context.Frame.Metadata.Exposure) ||
-                virtualExposure.RequestedStartUtc != context.Submission.Request.RequestedStartUtc ||
-                virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds() != context.Frame.TimestampUtc.ToUnixTimeMilliseconds() ||
+                !requestMatches ||
+                frameStart.ToUnixTimeMilliseconds() != context.Frame.TimestampUtc.ToUnixTimeMilliseconds() ||
                 context.Frame.Metadata.Scene?.SceneUtc != virtualExposure.CelestialMidpointUtc)
                 throw new InvalidDataException("Virtual exposure provenance conflicts with the captured frame.");
             expectedScenarioStart = virtualExposure.ScenarioStartUtc;

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Security.Cryptography;
 using System.Diagnostics;
 using HVO.SkyMonitor.AgentCore;
@@ -264,7 +265,7 @@ public sealed class CalibrationLibraryReconciler(
         var parent = Path.GetDirectoryName(destination)!;
         Directory.CreateDirectory(parent);
         RawIngressFileStore.SyncDirectoryHierarchy(_root, parent);
-        if (sourceExists) Directory.Move(source, destination);
+        if (sourceExists) RetainedFileMutations.MoveDirectory(source, destination);
         // A visible destination can be the result of a rename whose sync failed. Keep
         // the SQLite operation planned until both namespaces are durable, including retries.
         BeforeQuarantineDirectorySyncForTest?.Invoke(Path.GetDirectoryName(source)!);

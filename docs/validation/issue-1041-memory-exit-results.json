@@ -1,0 +1,77 @@
+[
+  {
+    "Process": "testhost",
+    "Before": {
+      "AllocatedBytes": 218045480,
+      "CommittedBytes": 281251840,
+      "HeapBytes": 226557760,
+      "FragmentedBytes": 10335136,
+      "WorkingSetBytes": 532717568,
+      "PeakWorkingSetBytes": 554045440,
+      "Gen0": 3105,
+      "Gen1": 796,
+      "Gen2": 16
+    },
+    "After": {
+      "AllocatedBytes": 126842568,
+      "CommittedBytes": 272470016,
+      "HeapBytes": 175426656,
+      "FragmentedBytes": 48592312,
+      "WorkingSetBytes": 524185600,
+      "PeakWorkingSetBytes": 554045440,
+      "Gen0": 3107,
+      "Gen1": 798,
+      "Gen2": 18
+    }
+  },
+  {
+    "Process": "dotnet",
+    "Before": {
+      "AllocatedBytes": 14643928,
+      "CommittedBytes": 16207872,
+      "HeapBytes": 8293920,
+      "FragmentedBytes": 82536,
+      "WorkingSetBytes": 119345152,
+      "PeakWorkingSetBytes": 119345152,
+      "Gen0": 2,
+      "Gen1": 1,
+      "Gen2": 0
+    },
+    "After": {
+      "AllocatedBytes": 8932584,
+      "CommittedBytes": 19152896,
+      "HeapBytes": 8926632,
+      "FragmentedBytes": 2272,
+      "WorkingSetBytes": 120033280,
+      "PeakWorkingSetBytes": 120033280,
+      "Gen0": 4,
+      "Gen1": 3,
+      "Gen2": 2
+    }
+  },
+  {
+    "Process": "vstest.console",
+    "Before": {
+      "AllocatedBytes": 7033400,
+      "CommittedBytes": 0,
+      "HeapBytes": 0,
+      "FragmentedBytes": 0,
+      "WorkingSetBytes": 96309248,
+      "PeakWorkingSetBytes": 96309248,
+      "Gen0": 0,
+      "Gen1": 0,
+      "Gen2": 0
+    },
+    "After": {
+      "AllocatedBytes": 1747912,
+      "CommittedBytes": 7831552,
+      "HeapBytes": 1739824,
+      "FragmentedBytes": 488,
+      "WorkingSetBytes": 97095680,
+      "PeakWorkingSetBytes": 97996800,
+      "Gen0": 2,
+      "Gen1": 2,
+      "Gen2": 2
+    }
+  }
+]

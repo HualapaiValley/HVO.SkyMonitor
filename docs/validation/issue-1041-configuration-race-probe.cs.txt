@@ -1,0 +1,81 @@
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+SQLitePCL.Batteries_V2.Init();
+var root=Path.GetFullPath(args[0]);
+if(!root.StartsWith(Path.GetFullPath(Path.GetTempPath()),StringComparison.Ordinal)||Directory.Exists(root))
+    throw new InvalidOperationException("Fresh private disposable root required.");
+Directory.CreateDirectory(root);
+var ingress=Path.Combine(root,"ingress");
+var configPath=Path.Combine(root,"camera.json");
+File.Copy(args[1],configPath);
+var keys=Path.Combine(root,"keys");Directory.CreateDirectory(keys);
+var protector=new ProbeProtector(DataProtectionProvider.Create(new DirectoryInfo(keys)).CreateProtector("issue1041-configuration-race"));
+var options=Options.Create(new CameraAgentHostOptions
+{
+    RawIngressRoot=ingress,ConfigFilePath=configPath,
+    Observatory=new ObservatoryLocation(35,-113,0,"America/Phoenix"),
+    DeploymentLocation=new DeploymentLocationOptions
+    {
+        LocationId="probe",Source="synthetic",SourceKind=DeploymentLocationSourceKind.Manual,
+        EffectiveFromUtc=new DateTimeOffset(2026,1,1,0,0,0,TimeSpan.Zero)
+    },
+    CentralIntegration=new CentralIntegrationOptions {Mode=CentralIntegrationMode.Disabled}
+});
+using var store=new ProtectedDeploymentLocationStore(options,protector,TimeProvider.System,NullLogger<ProtectedDeploymentLocationStore>.Instance);
+var loader=new FileCameraAgentConfigurationLoader(options,NullLogger<FileCameraAgentConfigurationLoader>.Instance,store);
+var first=await loader.LoadAsync(CancellationToken.None);
+var location=store.Active!;
+var original=ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16,2,2,4,new byte[8]);
+var now=DateTimeOffset.UtcNow;
+var bytes=CaptureContractJson.Serialize(original with
+{
+    Descriptor=original.Descriptor with
+    {
+        Location=location.ToProvenance(),
+        Timing=new CaptureTimingDescriptor(now,now.AddSeconds(1),now.AddSeconds(2),now.AddSeconds(3),now.AddSeconds(4)),
+        Artifact=original.Descriptor.Artifact with {CreatedUtc=now.AddSeconds(4)}
+    }
+});
+if(!CaptureContractJson.ParseManifest(bytes).IsValid)throw new InvalidOperationException("Invalid fixture manifest.");
+var path=Path.Combine(ingress,"capture.json");
+var ledger=typeof(ProtectedDeploymentLocationStore).Assembly.GetType("HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityLedger")!;
+using((IDisposable)ledger.GetMethod("BeginWrite",BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,[path,new ReadOnlyMemory<byte>(bytes)])!)
+    File.WriteAllBytes(path,bytes);
+var next=JsonNode.Parse(File.ReadAllText(configPath))!;next["agentId"]="race-current-agent";
+var hook=typeof(ProtectedDeploymentLocationStore).GetProperty("BeforeRetainedManifestValidationForTest",BindingFlags.NonPublic|BindingFlags.Instance)!;
+var edited=false;
+hook.SetValue(store,(Action)(()=>{if(!edited){edited=true;File.WriteAllText(configPath,next.ToJsonString());}}));
+var rejected=false;
+try{_ = await loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None);}
+catch(InstallationVerificationPendingException){rejected=true;}
+hook.SetValue(store,null);
+if(!edited||!rejected||store.Active!=location)throw new InvalidOperationException("Stale configuration escaped or changed immutable location.");
+_ = await loader.LoadAsync(CancellationToken.None);
+// Ordinary availability cannot qualify the interrupted scrub. This standalone
+// probe has no host lifetime to run the coalesced refresh, so request it explicitly.
+var pending=false;
+try{_ = await loader.LoadInstallationSnapshotAsync(CancellationToken.None);}
+catch(InstallationVerificationPendingException){pending=true;}
+if(!pending)throw new InvalidOperationException("Interrupted scrub unexpectedly qualified an ordinary load.");
+_ = await loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None);
+var verified=await loader.LoadInstallationSnapshotAsync(CancellationToken.None);
+using var current=JsonDocument.Parse(File.ReadAllBytes(configPath));
+if(verified.Configuration.AgentId!="race-current-agent"||verified.Configuration.AgentId==first.AgentId||
+   verified.ConfigurationSha256!=CaptureContractJson.ComputeCanonicalJsonSha256(current.RootElement))
+    throw new InvalidOperationException("Current snapshot/hash mismatch.");
+Console.WriteLine(JsonSerializer.Serialize(new{actualMidLoadEditRejected=true,currentSnapshotHashMatches=true,locationIdentityUnchanged=true}));
+sealed class ProbeProtector(IDataProtector protector):IDeploymentLocationProtector
+{
+    public byte[] Protect(byte[] bytes)=>protector.Protect(bytes);
+    public byte[] Unprotect(byte[] bytes)=>protector.Unprotect(bytes);
+}

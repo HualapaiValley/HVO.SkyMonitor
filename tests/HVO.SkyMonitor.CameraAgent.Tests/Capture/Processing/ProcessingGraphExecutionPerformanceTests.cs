@@ -28,6 +28,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
     private const int ReplayWarmupCount = 5;
     private const int ReplayMeasuredCount = 30;
     private const int SimultaneousReplayCount = 300;
+    private const int SmallPayloadSimultaneousReplayCount = 600;
     private const int SimultaneousLiveCount = 30;
     private const int GraphNodeCount = 4;
     private const int PayloadScanNodeCount = 3;
@@ -47,6 +48,12 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         new("W2", 3096, 2080, CameraPixelFormat.BayerRggb16, 12_879_360),
         new("W6", 3552, 3552, CameraPixelFormat.BayerRggb16, 25_233_408)
     ];
+
+    // Keep W1 replay work pending through the entire paced live campaign on
+    // faster hosts. This raises queue pressure without slowing the worker or
+    // changing the live cadence, latency budget, or overlap assertion.
+    private static int GetSimultaneousReplayCount(Workload workload) =>
+        workload.Id == "W1" ? SmallPayloadSimultaneousReplayCount : SimultaneousReplayCount;
 
     public TestContext TestContext { get; set; } = null!;
 
@@ -97,7 +104,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
 
             var evidence = new
             {
-                SchemaVersion = "issues-423-424-processing-execution-performance-v2",
+                SchemaVersion = "issues-423-424-processing-execution-performance-v3",
                 Revision = revision,
                 RecordedUtc = DateTimeOffset.UtcNow,
                 Environment = new
@@ -133,7 +140,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                     MeasuredCount,
                     ReplayWarmupCount,
                     ReplayMeasuredCount,
-                    SimultaneousReplayCount,
+                    SimultaneousReplayCounts = Workloads.ToDictionary(static workload => workload.Id, GetSimultaneousReplayCount),
                     SimultaneousLiveCount,
                     Concurrency = 1,
                     LiveLatencyBudgetMilliseconds,
@@ -144,7 +151,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
                     Scope = "Supplemental durable-checkpoint isolation at canonical W1/W2/W6 frame dimensions; this is not the standalone production-graph W6 campaign.",
                     Baseline = "Feature-isolation baseline using the same candidate binary with ProcessingGraphOperationsCoordinator removed. The code baseline commit is provenance, not a second executable comparator, because the harness and execution contracts do not exist there.",
                     Candidate = "Durable live execution enabled through normal CameraAgent dependency injection and the same four-node graph, consisting of one descriptor-only timing barrier and three full-payload probes.",
-                    Replay = "After five warm-ups, 30 replay operations are durably queued behind a controlled worker block and drained without live work for isolated resource and I/O measurements. A separate 10:1 backlog of 300 queued replays drains while 30 live captures arrive on a paced 500 ms schedule, ten times faster than the canonical W6 cadence; the first replay is deliberately preempted by live acceptance.",
+                    Replay = "After five warm-ups, 30 replay operations are durably queued behind a controlled worker block and drained without live work for isolated resource and I/O measurements. A separate backlog of 600 W1 or 300 W2/W6 queued replays drains while 30 live captures arrive on a paced 500 ms schedule, ten times faster than the canonical W6 cadence; the first replay is deliberately preempted by live acceptance. W1 uses more pending work so faster replay cannot end the contention window before the final live arrival; all workloads remain within the same pending-byte cap.",
                     Sample = "Raw acceptance through the real ordered standard-lane handler and acknowledgement; replay submission through terminal graph execution.",
                     Counters = "Process CPU, managed allocation and retained LOH after full collections, 10 ms process working-set samples, Linux /proc/self/io logical/physical bytes and syscall counts, SQLite database/WAL sizes, and 25 ms durable queue count/bytes/oldest-age samples. Submission I/O combines source resolution and frozen-input validation; execution I/O is measured separately. Observer poll counts are reported.",
                     RegressionMethod = "Report absolute feature-off/feature-on live values, percentage changes, absolute replay baselines, and simultaneous-live percentage changes without a universal pass threshold; canonical standalone-host evidence determines merge disposition."
@@ -491,12 +498,13 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         CameraModuleConfig configuration,
         int sequence)
     {
+        var simultaneousReplayCount = GetSimultaneousReplayCount(workload);
         var beforeState = await ReadReplayQueueStateAsync(databasePath).ConfigureAwait(false);
         Assert.AreEqual(0L, beforeState.PendingCount);
         var scannedBefore = probe.PayloadBytesScanned;
         var preemptionsBefore = probe.ReplayBlockCancellationCount;
         var batch = await SubmitBlockedReplayBatchAsync(
-            operations, revisionId, source, workload, probe, "simultaneous", SimultaneousReplayCount, databasePath)
+            operations, revisionId, source, workload, probe, "simultaneous", simultaneousReplayCount, databasePath)
             .ConfigureAwait(false);
         var replayDrainStarted = Stopwatch.GetTimestamp();
         var replayDrain = WaitForReplayBacklogDrainAsync(databasePath);
@@ -528,7 +536,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         Assert.AreEqual(SimultaneousLiveCount, liveOperationsStartedBeforeReplayDrain);
         var finalReplayState = replayDrainObservation.FinalState;
         Assert.AreEqual(0L, finalReplayState.PendingCount);
-        Assert.AreEqual((long)SimultaneousReplayCount, finalReplayState.CompletedCount - beforeState.CompletedCount);
+        Assert.AreEqual((long)simultaneousReplayCount, finalReplayState.CompletedCount - beforeState.CompletedCount);
         Assert.AreEqual(0L, finalReplayState.TerminalFailureCount - beforeState.TerminalFailureCount);
         Assert.AreEqual(preemptionsBefore + 1, probe.ReplayBlockCancellationCount);
         var finalState = await ReadStateAsync(databasePath, durableExecutions: true).ConfigureAwait(false);
@@ -540,7 +548,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
         var replayDurations = await ReadCompletedReplayDurationsAsync(operations, batch.Executions).ConfigureAwait(false);
         Array.Sort(replayDurations);
         var expectedMinimumScanned =
-            (long)(SimultaneousReplayCount + SimultaneousLiveCount) * PayloadScanNodeCount * workload.PayloadBytes;
+            (long)(simultaneousReplayCount + SimultaneousLiveCount) * PayloadScanNodeCount * workload.PayloadBytes;
         Assert.IsGreaterThanOrEqualTo(expectedMinimumScanned, probe.PayloadBytesScanned - scannedBefore);
         Array.Sort(liveSamples);
         Array.Sort(startJitterSamples);
@@ -564,7 +572,7 @@ public sealed class ProcessingGraphExecutionPerformanceTests
             batch.PeakState.PendingBytes,
             replayDrainObservation.MaximumOldestAgeMilliseconds,
             replayDrainMilliseconds,
-            SimultaneousReplayCount / (replayDrainMilliseconds / 1000d),
+            simultaneousReplayCount / (replayDrainMilliseconds / 1000d),
             replayDrainObservation.SampleCount,
             finalReplayState.PendingCount,
             finalReplayState.PendingBytes,

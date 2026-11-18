@@ -133,6 +133,18 @@ public sealed record CaptureCycleEvidence(
     [property: JsonRequired] CaptureControlDecisionEvidence Decision,
     [property: JsonRequired] DateTimeOffset IngressHandoffStartedUtc)
 {
+    /// <summary>Gets the host-issued correlation identity for optional acquisition work belonging to this cycle.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Guid? AcquisitionAttemptId { get; init; }
+
+    /// <summary>Environmental evidence for this capture was unavailable at the admission deadline.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool EnvironmentalUnavailable { get; init; }
+
+    /// <summary>Gets the capture-time before-capture source identities; later configuration cannot change their fence.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<string>? EnvironmentalBeforeCaptureSources { get; init; }
+
     /// <summary>Gets monotonic actual-start lateness relative to the requested deadline.</summary>
     [JsonRequired]
     public TimeSpan MonotonicStartJitter { get; init; }

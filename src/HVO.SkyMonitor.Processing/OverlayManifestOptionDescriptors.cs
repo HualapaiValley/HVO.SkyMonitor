@@ -1,6 +1,6 @@
 namespace HVO.SkyMonitor.Processing;
 
-/// <summary>Overrides for the existing manifest producer, without changing producer selection or identity.</summary>
+/// <summary>Layer defaults and explicit deep-sky retention for the existing manifest producer.</summary>
 public static class OverlayManifestOptionDescriptors
 {
     public static ProcessingNodeOptionsDescriptor Layer { get; } = new(
@@ -19,8 +19,10 @@ public static class OverlayManifestOptionDescriptors
 
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "overlay-manifest-options-v1", "OverlayManifest", "overlay-manifest-v1", "Overlay manifest",
-        "Edit existing layer defaults and constellation opacity. Save a draft, validate and explicitly activate it. Variants, producer bindings and rich Frame Facts opt-in remain in pipeline JSON. Retained manifests stay unchanged.",
+        "Edit layer defaults, constellation opacity and independent deep-sky retention. Save a draft, validate and explicitly activate it. Custom variants and rich Frame Facts opt-in remain in pipeline JSON. Retained manifests stay unchanged.",
         [
+            ProcessingOptionDescriptor.Toggle("includeDeepSkyLayer", "includeDeepSkyLayer", "Retain deep-sky layer",
+                "Include the separate deep-sky product from the Scene overlay node in Current Sky and archived presentations. Enable that producer first.", false),
             ProcessingOptionDescriptor.RowCollection("layers", "layers", "Layer overrides",
                 "Empty overrides retain producer defaults. Up to ten unique canonical kinds. Overrides do not supply missing layers or relax required dependencies.",
                 10, Layer, "kind", PresentationLayerKindSelection.Canonicalize,

@@ -47,6 +47,84 @@ public sealed class LocalAutomationOccurrenceStoreTests : IDisposable
     }
 
     [TestMethod]
+    public async Task ActiveProjectionIncludesFullQueuedCapacityAndAnotherDefinitionsRunningAttempt()
+    {
+        await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        await SaveAsync("running", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        var entries = await _store.GetRunnerViewAsync(default).ConfigureAwait(false);
+        var hourly = entries.Single(entry => entry.Definition.DefinitionId == "hourly");
+        var runningEntry = entries.Single(entry => entry.Definition.DefinitionId == "running");
+        var windows = _planner.ResolveWindows(new DateOnly(2026, 10, 12), hourly.Definition.SourceWindow!)
+            .Concat(_planner.ResolveWindows(new DateOnly(2026, 10, 13), hourly.Definition.SourceWindow!))
+            .Take(SqliteLocalAutomationStore.MaximumQueuedOccurrencesPerDefinition).ToArray();
+        MoveTo(windows[^1].EarliestFinalUtc);
+        var running = LocalAutomationWindowPlanner.CreateOccurrence(runningEntry, windows[0]);
+        Assert.IsTrue(await _store.TryBeginOccurrenceAsync(running, default).ConfigureAwait(false));
+        for (var index = 0; index < windows.Length; index++)
+            Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await _store.BackfillAsync(new("hourly", windows[index].ReportingPeriod.ReportDate,
+                windows[index].StartUtc, 1, "capacity-" + index, "owner", "backfill"), default).ConfigureAwait(false)).Status);
+        for (var index = 0; index <= LocalAutomationContract.MaximumProjectedRuns; index++)
+            await _store.RecordTerminalRunAsync(hourly, "newer-terminal-" + index, _time.GetUtcNow(), LocalAutomationRunOutcome.Skipped,
+                "history overflow control", null, default).ConfigureAwait(false);
+        var state = await _store.GetStateAsync(default).ConfigureAwait(false);
+        Assert.AreEqual(1, state.RunningRunCount);
+        Assert.AreEqual(windows.Length, state.QueuedRunCount);
+        Assert.IsTrue(state.Runs.All(run => run.Outcome == LocalAutomationRunOutcome.Skipped));
+        Assert.HasCount(windows.Length + 1, state.ActiveRuns);
+        Assert.AreEqual(running.RunKey, state.ActiveRuns.Single(run => run.Outcome == LocalAutomationRunOutcome.Running).RunKey);
+        Assert.AreEqual(windows.Length, state.ActiveRuns.Count(run => run.Outcome == LocalAutomationRunOutcome.Queued));
+    }
+
+    [TestMethod]
+    [DataRow("disabled")]
+    [DataRow("edited")]
+    [DataRow("removed")]
+    public async Task MultipleBackfillsAreWithdrawnWithoutChangingOtherDefinitionsOrProgress(string cause)
+    {
+        await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        await SaveAsync("other", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);
+        var windows = _planner.ResolveWindows(new DateOnly(2026, 10, 12),
+            LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.CompletedCivilHour)).Take(3).ToArray();
+        MoveTo(windows[^1].EarliestFinalUtc);
+        foreach (var id in new[] { "hourly", "other" })
+        {
+            foreach (var window in windows)
+            {
+                Assert.AreEqual(LocalAutomationCommandStatus.Applied,
+                    (await _store.BackfillAsync(new(id, window.ReportingPeriod.ReportDate, window.StartUtc, 1,
+                        id + window.StartUtc.ToUnixTimeSeconds(), "owner", "backfill"), default).ConfigureAwait(false)).Status);
+            }
+        }
+        var beforeEntries = await _store.GetRunnerViewAsync(default).ConfigureAwait(false);
+        var otherEntry = beforeEntries.Single(entry => entry.Definition.DefinitionId == "other");
+        var otherRunning = await _store.TryClaimQueuedAsync(otherEntry, default).ConfigureAwait(false);
+        Assert.IsNotNull(otherRunning);
+        var before = await _store.GetStateAsync(default).ConfigureAwait(false);
+        var result = cause == "removed"
+            ? await _store.RemoveAsync(new("hourly", 1, "remove", "owner", null), default).ConfigureAwait(false)
+            : await _store.SaveAsync(new("hourly", cause == "edited" ? "Edited" : "hourly", cause != "disabled",
+                LocalAutomationTaskKind.StillImageGeneration, "test-rig", LocalAutomationTriggerKind.SourceWindowClosed,
+                1, 1, "mutation", "owner", "withdraw", LocalAutomationWindowTests.Policy(LocalAutomationSourceWindowKind.CompletedCivilHour)), default).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, result.Status);
+        foreach (var original in before.Runs.Where(run => run.DefinitionId == "hourly"))
+            LocalAutomationQueuedWithdrawalTests.AssertWithdrawal(original, result.State.Runs.Single(run => run.RunKey == original.RunKey), cause);
+        foreach (var original in before.Runs.Where(run => run.DefinitionId == "other"))
+            Assert.AreEqual(original, result.State.Runs.Single(run => run.RunKey == original.RunKey));
+        Assert.AreEqual(otherEntry, (await _store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single(entry => entry.Definition.DefinitionId == "other"));
+        _store.Dispose();
+        _store = CreateStore();
+        await _store.InitializeAsync(default).ConfigureAwait(false);
+        Assert.HasCount(3, (await _store.GetStateAsync(default).ConfigureAwait(false)).Runs.Where(run => run.DefinitionId == "hourly" && run.Outcome == LocalAutomationRunOutcome.Skipped));
+        if (cause != "removed")
+        {
+            await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour, 2).ConfigureAwait(false);
+            var current = (await _store.GetRunnerViewAsync(default).ConfigureAwait(false)).Single(entry => entry.Definition.DefinitionId == "hourly");
+            Assert.IsNull(await _store.TryClaimQueuedAsync(current, default).ConfigureAwait(false));
+        }
+        Assert.IsEmpty(_registry.Executed);
+    }
+
+    [TestMethod]
     public async Task HourlyAndDailySameKind_RunIndependentlyWithExactPreviewsAndNoCatchupBurst()
     {
         await SaveAsync("hourly", LocalAutomationSourceWindowKind.CompletedCivilHour).ConfigureAwait(false);

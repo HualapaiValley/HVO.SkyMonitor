@@ -173,6 +173,26 @@ public sealed class NightlyProductGeneratorTests
     }
 
     [TestMethod]
+    public async Task SourceCandidateBound_RejectsTheWholeWindowWithoutTruncatingOrRestoring()
+    {
+        var reader = new InMemoryNightlySourceReader { CandidateOverride = NightlyProductContract.MaximumWindowCandidates + 1 };
+        reader.Add(NightlyProductFixture.Frame(1, NightlyProductFixture.DayStartUtc.AddHours(16)));
+        var occurrence = NightlyProductFixture.Occurrence(NightlyProductKind.DailySummary);
+        using var harness = Harness(reader, NightlyProductFixture.Options());
+
+        var report = await harness.Generator.RunAsync(occurrence, CancellationToken.None);
+
+        Assert.AreEqual(1, report.FailedWindows, report.Describe());
+        Assert.AreEqual(0, reader.Restores);
+        Assert.IsEmpty(await harness.Store.ListAsync(NightlyProductFixture.ObservingDate, CancellationToken.None));
+        var status = await harness.Store.ReadWindowAsync(NightlyProductKind.DailySummary, NightlyProductScope.Segment,
+            occurrence.SourceWindow!.StartUtc, CancellationToken.None, occurrence.IdentitySha256);
+        Assert.AreEqual(NightlyProductWindowDisposition.Rejected, status!.Status.Disposition);
+        Assert.AreEqual(NightlyProductContract.WindowSourceBoundReasonCode, status.Status.ReasonCode);
+        Assert.AreEqual(NightlyProductContract.MaximumWindowCandidates + 1, status.Status.CandidateCount);
+    }
+
+    [TestMethod]
     [DataRow(1, 4L)]
     [DataRow(32, 200L * 1024 * 1024)]
     public async Task ImpossibleStarTrailRollup_RejectsBeforePublishingParts(int countBound, long frameBytes)

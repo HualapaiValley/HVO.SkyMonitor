@@ -47,6 +47,8 @@ CameraAgent's opt-in `CloudAssessment` step designates the reference through
 `clearReferenceManifestPath`, a path relative to the configured CameraAgent storage
 root. The loader requires a physical, reconstructable v2 manifest and verifies its
 payload before execution. Omitting the setting produces explicit insufficient evidence.
+The shipped VirtualSky profiles and their quantified-only layer policy are
+described in the [CameraAgent cloud profile runbook](../runbooks/cameraagent-cloud-profile.md).
 Same-capture derivatives are rejected through source lineage.
 
 The existing scalar options are editable in CameraAgent's generic graph draft

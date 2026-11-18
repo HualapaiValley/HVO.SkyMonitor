@@ -129,6 +129,9 @@ public interface IManualFocusPreviewSource
 {
     ManualFocusSessionAvailability GetAvailability();
 
+    /// <summary>Checks capture admission before creating a session; acquisition rechecks at the exposure boundary.</summary>
+    Task EnsureAdmissionAvailableAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
     /// <exception cref="ManualFocusSessionUnavailableException">No module can produce a preview now.</exception>
     Task<ManualFocusPreview> AcquireAsync(
         ManualFocusPreviewSettings settings,

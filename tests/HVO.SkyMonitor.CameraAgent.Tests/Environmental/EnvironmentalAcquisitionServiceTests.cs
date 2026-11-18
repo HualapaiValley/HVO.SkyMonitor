@@ -19,6 +19,19 @@ public sealed class EnvironmentalAcquisitionServiceTests
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    [DataRow(0, true)]
+    [DataRow(2000, true)]
+    [DataRow(2001, false)]
+    [DataRow(5000, false)]
+    public void BeforeCaptureWaitRejectsValuesAboveTheSharedBudget(int milliseconds, bool accepted)
+    {
+        var options = new EnvironmentalAcquisitionOptions { BeforeCaptureWaitMilliseconds = milliseconds };
+        var context = new System.ComponentModel.DataAnnotations.ValidationContext(options)
+        { MemberName = nameof(options.BeforeCaptureWaitMilliseconds) };
+        Assert.AreEqual(accepted, System.ComponentModel.DataAnnotations.Validator.TryValidateProperty(milliseconds, context, []));
+    }
+
+    [TestMethod]
     public async Task Retention_WhenFirstAttemptFails_RetriesWithoutReportingOutage()
     {
         using var services = new ServiceCollection().BuildServiceProvider();

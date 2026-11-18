@@ -21,7 +21,7 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
 
     internal static Task<MeasuredAstrometryFixture> CreateAsync() => CreateAtAsync(0);
 
-    internal static async Task<MeasuredAstrometryFixture> CreateAtAsync(int offsetSeconds)
+    internal static async Task<MeasuredAstrometryFixture> CreateAtAsync(int offsetSeconds, double exposureSeconds = 1)
     {
         var random = new Random(934817);
         var stars = Enumerable.Range(0, 560).Select(i => new CelestialCatalogObject($"SYN{i:0000}", $"Artificial {i}",
@@ -37,7 +37,7 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
         var descriptorIdentity = offsetSeconds == 0 ? MeasuredStellarAssociationFixtures.DescriptorIdentity : Hash("descriptor" + offsetSeconds.ToString(CultureInfo.InvariantCulture));
         var observer = new ObserverLocation(0, 0, 0);
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog(stars)).BuildAsync(new VisibleSceneRequest(
-            start.AddSeconds(.5), observer, projection, new CatalogQuery(7, 2500), metadata, projectionVersion: "equidistant-reference-v1")).ConfigureAwait(false);
+            start.AddSeconds(exposureSeconds / 2), observer, projection, new CatalogQuery(7, 2500), metadata, projectionVersion: "equidistant-reference-v1")).ConfigureAwait(false);
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(512, 512), new(captureId, artifactId, descriptorIdentity), "calibration-v1", visible.Request.ProjectionVersion);
         var pixels = MeasuredStellarAssociationFixtures.Field(512, 512);
@@ -55,8 +55,9 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
             CaptureId = captureId,
             ArtifactId = artifactId,
             DescriptorIdentitySha256 = descriptorIdentity,
+            Integration = TimeSpan.FromSeconds(exposureSeconds),
             ObservationStartedUtc = start,
-            ObservationEndedUtc = start.AddSeconds(1)
+            ObservationEndedUtc = start.AddSeconds(exposureSeconds)
         };
         var produced = await new ProcessingRecipeExecutor().ExecuteAsync(MeasuredStellarAssociationFixtures.Request(raw, scene)).ConfigureAwait(false);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, produced.Status, produced.ReasonCode);
@@ -76,7 +77,7 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
         var readoutHash = MeasuredAstrometryJson.ComputeReadoutIdentity(raw.Layout!);
         var context = new MeasuredAstrometryContextV1(MeasuredAstrometryContextV1.CurrentSchemaVersion,
             new(raw.CaptureId!.Value, raw.ArtifactId, raw.DescriptorIdentitySha256!, ProcessingIdentity.ComputePayloadSha256(raw.Payload),
-                Hash("reference-observer"), observer, start, start.AddSeconds(1), associations.Measurement.AlgorithmVersion,
+                Hash("reference-observer"), observer, start, start.AddSeconds(exposureSeconds), associations.Measurement.AlgorithmVersion,
                 associations.Measurement.SettingsIdentitySha256), projection, "calibration-v1", readoutHash, metadata, stars, true, 7,
             AstrometricConventions.CoordinateModel, package, measured.ArtifactId, associations.AssociationIdentitySha256,
             measured.RecipeIdentitySha256, AstrometricClockFacts.NotSupplied, null);

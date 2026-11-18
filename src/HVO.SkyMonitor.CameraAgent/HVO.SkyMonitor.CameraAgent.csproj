@@ -30,8 +30,6 @@
       <ExcludeAssets>native</ExcludeAssets>
     </PackageReference>
     <PackageReference Include="SkiaSharp.NativeAssets.Linux.NoDependencies" />
-    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
 
   <ItemGroup>

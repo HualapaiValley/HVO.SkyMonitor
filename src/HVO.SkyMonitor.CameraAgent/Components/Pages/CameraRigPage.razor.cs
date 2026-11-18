@@ -181,6 +181,13 @@ public sealed partial class CameraRigPage : ComponentBase, IAsyncDisposable
 
     protected override async Task OnInitializedAsync() => await RefreshAsync();
 
+    private async Task HorizonSavedAsync(string revisionId)
+    {
+        await RefreshAsync();
+        _revisionId = revisionId;
+        await PreviewAsync();
+    }
+
     private async Task RefreshAsync()
     {
         _busy = true;

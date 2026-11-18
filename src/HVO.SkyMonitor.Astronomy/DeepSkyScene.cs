@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json.Serialization;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
 
@@ -49,7 +50,8 @@ public sealed record ProjectedSceneDeepSkySelection(
     [property: JsonRequired] int MaximumOutlines,
     [property: JsonRequired] int PreferredOutlineLevel,
     [property: JsonRequired] double MinimumGlyphPixels,
-    [property: JsonRequired] string PresetVersion = CuratedDeepSkyOptions.PresetVersion)
+    [property: JsonRequired] string PresetVersion = CuratedDeepSkyOptions.PresetVersion,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] OpenNgcDeepSkyOptions? Query = null)
 {
     /// <summary>The largest accepted object bound.</summary>
     public const int MaximumObjectLimit = 128;
@@ -70,7 +72,8 @@ public sealed record ProjectedSceneDeepSkySelection(
     /// <summary>Throws when a bound is outside its accepted range.</summary>
     public void Validate()
     {
-        if (!string.Equals(PresetVersion, CuratedDeepSkyOptions.PresetVersion, StringComparison.Ordinal) ||
+        if (Query is not null) _ = Query.ToQuery(MaximumObjects);
+        if (PresetVersion != (Query is null ? CuratedDeepSkyOptions.PresetVersion : OpenNgcDeepSkyOptions.SelectionVersion) ||
             MaximumObjects is < 1 or > MaximumObjectLimit ||
             MaximumFootprints is < 0 or > 32 ||
             MaximumOutlines != 0 ||
@@ -180,7 +183,8 @@ public sealed record ProjectedDeepSky(
     [property: JsonRequired] string License,
     [property: JsonRequired] int OmittedCandidateCount,
     [property: JsonRequired] IReadOnlyList<ProjectedDeepSkyObject> Objects,
-    [property: JsonRequired] IReadOnlyList<ProjectedDeepSkyOutline> Outlines)
+    [property: JsonRequired] IReadOnlyList<ProjectedDeepSkyOutline> Outlines,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] CatalogSnapshotIdentity? CatalogIdentity = null)
 {
     public const string CurrentContractVersion = "projected-deep-sky-curated-v1";
 
@@ -189,6 +193,7 @@ public sealed record ProjectedDeepSky(
     /// Presentation later ranks only the projected subset by featured status, size, known magnitude and ID.
     /// </summary>
     public const string CurrentAlgorithmVersion = "curated-messier-bright-ngc-preselect-v1";
+    public const string QueryAlgorithmVersion = "openngc-designation-bounds-preselect-v1";
 
     /// <summary>The largest outline point total one scene carries.</summary>
     public const int MaximumTotalOutlinePointCount = 16_384;
@@ -260,7 +265,8 @@ internal static class DeepSkySceneProjector
         VisibleScene scene, IDeepSkyCatalog catalog, ProjectedSceneDeepSkySelection selection)
     {
         var request = scene.Request;
-        var plan = CuratedDeepSkySelectionPlan.For(catalog);
+        var queryPlan = selection.Query is { } query ? OpenNgcSelectionPlan.For(catalog, query) : null;
+        var candidates = queryPlan?.Objects ?? CuratedDeepSkySelectionPlan.For(catalog).Objects;
         var projector = ProjectorFactory.Create(request.Projection);
         var basis = CameraBasis.Create(request.Projection.BoresightAltitudeDegrees,
             request.Projection.BoresightAzimuthDegrees, request.Projection.RollDegrees, request.Projection.HorizontalFlip);
@@ -271,7 +277,7 @@ internal static class DeepSkySceneProjector
         var footprints = new List<ProjectedResolvedFootprint>();
         var objects = new List<ProjectedDeepSkyObject>();
         var source = $"{catalog.Semantics.SourceName} {catalog.Semantics.SourceVersion}";
-        foreach (var item in plan.Objects.Take(selection.MaximumObjects))
+        foreach (var item in candidates.Take(selection.MaximumObjects))
         {
             var j2000 = new EquatorialPoint(item.RightAscensionHours, item.DeclinationDegrees);
             var geometric = CoordinateTransforms.EquatorialToHorizontal(
@@ -316,10 +322,10 @@ internal static class DeepSkySceneProjector
                 item.MinorAxisArcminutes, item.PositionAngleDegrees, size, representation, null, degradation));
         }
         var semantics = catalog.Semantics;
-        return (new(ProjectedDeepSky.CurrentContractVersion, ProjectedDeepSky.CurrentAlgorithmVersion,
+        return (new(ProjectedDeepSky.CurrentContractVersion, selection.Query is null ? ProjectedDeepSky.CurrentAlgorithmVersion : ProjectedDeepSky.QueryAlgorithmVersion,
             semantics.SourceName, semantics.SourceVersion, semantics.SourceCommit, semantics.SourceUrl, semantics.License,
-            Math.Max(0, plan.Objects.Count - selection.MaximumObjects),
-            Freeze(objects.OrderBy(static item => item.Id, StringComparer.Ordinal)), []), footprints);
+            Math.Max(0, (queryPlan?.MatchCount ?? candidates.Count) - selection.MaximumObjects),
+            Freeze(objects.OrderBy(static item => item.Id, StringComparer.Ordinal)), [], semantics.SnapshotIdentity), footprints);
     }
 
     internal static bool IsDrawableExtent(DeepSkyObject item) => item.HasOrientedExtent &&

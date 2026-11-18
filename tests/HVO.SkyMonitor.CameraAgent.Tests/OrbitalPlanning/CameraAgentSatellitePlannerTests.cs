@@ -649,6 +649,26 @@ public sealed class CameraAgentSatellitePlannerTests
     }
 
     [TestMethod]
+    public async Task RealPlannerBindsCompatibleRetainedSiteHorizonToClearArcs()
+    {
+        var input = new PlanningTestInputs(realEngine: true);
+        var config = input.Configuration.Value;
+        var location = config.DeploymentLocation!;
+        var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "planner-horizon", 1, "installation",
+            HorizonObstructionProfile.ComputeSiteIdentitySha256(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters, location.ToProvenance()),
+            HorizonObstructionProfile.ComputeGeometryIdentitySha256(config.Rig), HorizonObstructionSource.Synthetic, 90,
+            [new(0, 0), new(90, 0), new(180, 0), new(270, 0)]);
+        input.Configuration.Value = config with { Rig = config.Rig with { HorizonObstruction = profile } };
+        var search = await input.Planner.SearchAsync(await input.RequestAsync().ConfigureAwait(false), TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, search.Outcome, search.Message);
+        var detail = await input.Planner.GetArcAsync(search.Value!.SearchIdentitySha256, search.Value.Passes[0].Pass.ProductSha256, TestContext.CancellationToken).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSatellitePlanningOutcome.Ready, detail.Outcome, detail.Message);
+        Assert.IsNotEmpty(detail.Value!.Obstruction!);
+        Assert.IsTrue(detail.Value.Obstruction!.SelectMany(p => p.Eligibility).Any(s => s == HorizonObstructionEligibility.Clear));
+        Assert.IsFalse(detail.Value.Obstruction!.SelectMany(p => p.Eligibility).Any(s => s == HorizonObstructionEligibility.Incompatible));
+    }
+
+    [TestMethod]
     public async Task RealEngineFrozenIssSearchAndArcRetainSourceShapeAndWorkCountsAsync()
     {
         var input = new PlanningTestInputs(realEngine: true);

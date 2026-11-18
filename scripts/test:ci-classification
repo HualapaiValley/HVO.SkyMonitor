@@ -17,6 +17,7 @@ result_jobs=(
   changes
   quality
   catalog-contracts
+  catalog-reproducibility
   deployment-contracts
   build
   architecture
@@ -83,6 +84,17 @@ expect_release_scripts() {
     exit 1
   }
   ((release_scripts_cases += 1))
+}
+
+catalog_recipe_cases=0
+expect_catalog_recipe() {
+  local expected="$1" event_name="$2" base_sha="$3" head_sha="$4" output
+  output="$(cd "$work_root" && "$classifier" "$event_name" "$base_sha" "$head_sha")"
+  grep -Fxq "catalog_recipe=$expected" <<< "$output" || {
+    printf 'Expected catalog_recipe=%s, received %s\n' "$expected" "$output" >&2
+    exit 1
+  }
+  ((catalog_recipe_cases += 1))
 }
 
 expect_components() {
@@ -296,6 +308,104 @@ git -C "$work_root" rm --quiet scripts/release:push-image
 git -C "$work_root" commit --quiet -m "Delete a release script"
 release_head="$(git -C "$work_root" rev-parse HEAD)"
 expect_release_scripts true pull_request "$release_base" "$release_head"
+
+# The Catalog Reproducibility job (Refs #1774) is selected by a catalog-recipe change: any path under scripts/catalog/
+# or tests/fixtures/catalog/, added, modified, deleted or renamed, at any depth. Nothing else selects it on a pull
+# request, including the operator entry points beside scripts/catalog/, sibling directories that only share the
+# prefix, the catalog adapter's sources and this job's own wiring. Non-pull-request events keep the full-mode
+# convention, and so does every range the classifier cannot read.
+expect_catalog_recipe true push "$base_sha" "$head_sha"
+expect_catalog_recipe true workflow_dispatch "$base_sha" "$head_sha"
+catalog_recipe_paths=(
+  "scripts/catalog/build-hyg-v42.sh"
+  "scripts/catalog/catalog-common.sh"
+  "scripts/catalog/hyg-v44-openngc-common.sh"
+  "scripts/catalog/openngc-v20260501-outlines.sha256"
+  "scripts/catalog/test-hyg-v44-reproducibility.sh"
+  "scripts/catalog/f7/controls/regression.py"
+  "tests/fixtures/catalog/build-fixture.sql"
+  "tests/fixtures/catalog/build-fixture-v44-openngc.sh"
+  "tests/fixtures/catalog/SHA256SUMS-v44-openngc"
+  "tests/fixtures/catalog/hyg-v44-openngc-subset-star-objects.csv"
+  "tests/fixtures/catalog/hyg-v44-openngc-subset.sqlite"
+  "tests/fixtures/catalog/hyg-v42-bright-stars.sqlite"
+  "tests/fixtures/catalog/nested/recipe.sql"
+)
+for path in "${catalog_recipe_paths[@]}"; do
+  for change in add modify; do
+    recipe_base="$(git -C "$work_root" rev-parse HEAD)"
+    if [[ "$change" == add ]]; then commit_file "$path"; else update_file "$path"; fi
+    recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+    expect_catalog_recipe true pull_request "$recipe_base" "$recipe_head"
+    # Every one of these changes an executable contract, so the job it selects really runs.
+    recipe_output="$(cd "$work_root" && "$classifier" pull_request "$recipe_base" "$recipe_head")"
+    grep -Fxq 'mode=full' <<< "$recipe_output" || {
+      printf 'A catalog-recipe change did not select full mode: %s\n' "$path" >&2
+      exit 1
+    }
+  done
+done
+for path in "scripts/catalog:install" "scripts/catalogs/other.sh" "tests/fixtures/catalogue/other.sql" \
+  "tests/fixtures/stellarium/SIMBAD_ENDPOINTS.md" "docs/catalog/hyg-v44-reproducibility.md" \
+  "docs/catalog/hyg-v42-attribution.md" "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs" \
+  "tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/CatalogTests.cs" "scripts/release:assets" \
+  ".github/workflows/ci.yml" ".github/workflows/release.yml" "scripts/ci:classify" "scripts/ci:require" \
+  "scripts/test:ci-classification"; do
+  # A modification is what is checked, so a later case that adds one of these paths still commits a change.
+  [[ -f "$work_root/$path" ]] || commit_file "$path"
+  recipe_base="$(git -C "$work_root" rev-parse HEAD)"
+  update_file "$path"
+  recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+  expect_catalog_recipe false pull_request "$recipe_base" "$recipe_head"
+done
+# One recipe path among unrelated ones is enough.
+recipe_base="$(git -C "$work_root" rev-parse HEAD)"
+update_file "docs/runbooks/example.md"
+update_file "tests/fixtures/catalog/build-fixture.sql"
+update_file "src/HVO.SkyMonitor.Catalog.Sqlite/Catalog.cs"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_catalog_recipe true pull_request "$recipe_base" "$recipe_head"
+# Deleting or renaming a recipe must retain the selection, even though its tree entry is gone.
+recipe_base="$recipe_head"
+git -C "$work_root" rm --quiet scripts/catalog/build-hyg-v42.sh
+git -C "$work_root" commit --quiet -m "Delete a catalog builder"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_catalog_recipe true pull_request "$recipe_base" "$recipe_head"
+recipe_base="$recipe_head"
+git -C "$work_root" mv tests/fixtures/catalog/build-fixture.sql tests/fixtures/catalog/build-fixture-renamed.sql
+git -C "$work_root" commit --quiet -m "Rename a fixture recipe"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_catalog_recipe true pull_request "$recipe_base" "$recipe_head"
+# Moving a recipe out of the directory still changes it.
+recipe_base="$recipe_head"
+git -C "$work_root" mv scripts/catalog/catalog-common.sh scripts/lib/catalog-common.sh
+git -C "$work_root" commit --quiet -m "Move a catalog library"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_catalog_recipe true pull_request "$recipe_base" "$recipe_head"
+# tests/fixtures/catalog/SOURCE.md is allowlisted documentation and a path under the fixture directory. The plan
+# reports both facts, and Required CI below holds that a reduced plan never runs the job.
+recipe_base="$recipe_head"
+update_file "tests/fixtures/catalog/SOURCE.md"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_plan reduced false pull_request "$recipe_base" "$recipe_head"
+expect_catalog_recipe true pull_request "$recipe_base" "$recipe_head"
+recipe_base="$recipe_head"
+update_file "docs/runbooks/example.md"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+expect_plan reduced false pull_request "$recipe_base" "$recipe_head"
+expect_catalog_recipe false pull_request "$recipe_base" "$recipe_head"
+(cd "$work_root" && GITHUB_STEP_SUMMARY="$summary_file" "$classifier" pull_request "$recipe_base" "$recipe_head" >/dev/null)
+grep -Fq 'Catalog recipe: **false**' "$summary_file"
+recipe_base="$recipe_head"
+update_file "scripts/catalog/hyg-v44-openngc-common.sh"
+recipe_head="$(git -C "$work_root" rev-parse HEAD)"
+(cd "$work_root" && GITHUB_STEP_SUMMARY="$summary_file" "$classifier" pull_request "$recipe_base" "$recipe_head" >/dev/null)
+grep -Fq 'Catalog recipe: **true**' "$summary_file"
+recipe_log="$(cd "$work_root" && "$classifier" pull_request "$recipe_base" "$recipe_head" 2>&1 >/dev/null)"
+grep -Fq ' catalog_recipe=true reason=' <<< "$recipe_log" || {
+  printf 'The classification log line does not record the catalog-recipe selection.\n' >&2
+  exit 1
+}
 
 # Only the top-level skill manifest is reduced. Supporting files, including a
 # nested file also named SKILL.md, fail closed to the complete matrix.
@@ -771,12 +881,15 @@ base_sha="$(git -C "$work_root" rev-parse HEAD)"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_secret_scan_contract true pull_request "$head_sha" "$head_sha"
 expect_release_scripts true pull_request "$head_sha" "$head_sha"
+expect_catalog_recipe true pull_request "$head_sha" "$head_sha"
 expect_plan full true pull_request "$head_sha" "$head_sha"
 expect_components true true true true true true pull_request "$head_sha" "$head_sha"
 expect_secret_scan_contract true pull_request "$head_sha" missing-commit
 expect_secret_scan_contract true pull_request missing-commit "$head_sha"
 expect_release_scripts true pull_request "$head_sha" missing-commit
 expect_release_scripts true pull_request missing-commit "$head_sha"
+expect_catalog_recipe true pull_request "$head_sha" missing-commit
+expect_catalog_recipe true pull_request missing-commit "$head_sha"
 expect_plan full true pull_request "$head_sha" missing-commit
 expect_components true true true true true true pull_request "$head_sha" missing-commit
 
@@ -814,6 +927,7 @@ git -C "$work_root" commit --quiet -m "Add documentation symlink"
 head_sha="$(git -C "$work_root" rev-parse HEAD)"
 expect_secret_scan_contract true pull_request "$base_sha" "$head_sha"
 expect_release_scripts true pull_request "$base_sha" "$head_sha"
+expect_catalog_recipe true pull_request "$base_sha" "$head_sha"
 expect_plan full true pull_request "$base_sha" "$head_sha"
 expect_components true true true true true true pull_request "$base_sha" "$head_sha"
 
@@ -845,13 +959,15 @@ esac
 EOF
 chmod +x "$work_root/fake-bin/git"
 
-expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true'
+expected_fail_closed=$'mode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\ncatalog_recipe=true'
 for fake_case in malformed unterminated empty-path failure; do
   if [[ "$fake_case" == failure ]]; then fake_failure=true; else fake_failure=false; fi
   PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     expect_secret_scan_contract true pull_request fake-base fake-head
   PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     expect_release_scripts true pull_request fake-base fake-head
+  PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
+    expect_catalog_recipe true pull_request fake-base fake-head
   output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     "$classifier" pull_request fake-base fake-head)"
   if [[ "$output" != "$expected_fail_closed" ]]; then
@@ -886,10 +1002,15 @@ PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
   expect_secret_scan_contract true pull_request "$trailing_base" "$trailing_head"
 PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
   expect_release_scripts true pull_request "$trailing_base" "$trailing_head"
+PATH="$work_root/trailing-bin:$PATH" REAL_GIT="$real_git" \
+  expect_catalog_recipe true pull_request "$trailing_base" "$trailing_head"
 
 # Required CI aggregation.
+# The ninth value is the catalog-recipe selection (Refs #1774). It defaults to false, which is what every pull request
+# plan below that is not about it carries; non-pull-request plans must pass true.
 plan() {
-  printf 'mode=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s deployment=%s' "$@"
+  printf 'mode=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s deployment=%s catalog_recipe=%s' \
+    "${@:1:8}" "${9:-false}"
 }
 
 results() {
@@ -914,6 +1035,8 @@ complete_success="$(results changes=success quality=success catalog-contracts=su
   unit=success integration=success coverage=success)"
 complete_plan_deployed="$(plan full true true true true true true true)"
 complete_plan_undeployed="$(plan full true true true true true true false)"
+# Every non-pull-request event selects everything, the catalog reproducibility regressions included.
+event_plan="$(plan full true true true true true true true true)"
 reduced_plan="$(plan reduced false false false false false false false)"
 reduced_success="$(results changes=success quality=success)"
 
@@ -933,16 +1056,12 @@ expect_required_reject() {
   fi
 }
 
-expect_required_accept "push complete matrix" push "$complete_plan_deployed" \
-  "$(results changes=success quality=success catalog-contracts=success deployment-contracts=success \
-    build=success architecture=success coverage-policy=success \
-    migrations-cameraagent=success migrations-logichost=success \
-    unit=success integration=success coverage=success)"
-expect_required_accept "manual complete matrix" workflow_dispatch "$complete_plan_deployed" \
-  "$(results changes=success quality=success catalog-contracts=success deployment-contracts=success \
-    build=success architecture=success coverage-policy=success \
-    migrations-cameraagent=success migrations-logichost=success \
-    unit=success integration=success coverage=success)"
+event_success="$(results changes=success quality=success catalog-contracts=success catalog-reproducibility=success \
+  deployment-contracts=success build=success architecture=success coverage-policy=success \
+  migrations-cameraagent=success migrations-logichost=success \
+  unit=success integration=success coverage=success)"
+expect_required_accept "push complete matrix" push "$event_plan" "$event_success"
+expect_required_accept "manual complete matrix" workflow_dispatch "$event_plan" "$event_success"
 expect_required_accept "pull request complete matrix" pull_request "$complete_plan_undeployed" "$complete_success"
 expect_required_accept "documentation-only reduced plan" pull_request "$reduced_plan" "$reduced_success"
 
@@ -984,6 +1103,44 @@ delivery_success="$(results changes=success quality=success catalog-contracts=su
   migrations-cameraagent=success migrations-logichost=success delivery-component=success)"
 expect_required_accept "delivery component plan" pull_request "$delivery_plan" "$delivery_success"
 
+# Catalog Reproducibility (Refs #1774) is required exactly when a full-mode plan selects it, and must not have run
+# otherwise. The two pull request plans are the ones the classifier really emits: a change under scripts/catalog/ is a
+# deployment input outside every component, and one under tests/fixtures/catalog/ is outside every component only.
+catalog_scripts_plan="$(plan full true true true true true true true true)"
+catalog_fixtures_plan="$(plan full true true true true true true false true)"
+catalog_scripts_success="$(results changes=success quality=success catalog-contracts=success \
+  catalog-reproducibility=success deployment-contracts=success build=success architecture=success \
+  coverage-policy=success migrations-cameraagent=success migrations-logichost=success \
+  unit=success integration=success coverage=success)"
+catalog_fixtures_success="$(results changes=success quality=success catalog-contracts=success \
+  catalog-reproducibility=success build=success architecture=success \
+  coverage-policy=success migrations-cameraagent=success migrations-logichost=success \
+  unit=success integration=success coverage=success)"
+expect_required_accept "catalog builder change" pull_request "$catalog_scripts_plan" "$catalog_scripts_success"
+expect_required_accept "catalog fixture change" pull_request "$catalog_fixtures_plan" "$catalog_fixtures_success"
+for outcome in failure cancelled skipped; do
+  expect_required_reject "catalog-reproducibility=$outcome in a catalog builder plan" pull_request \
+    "$catalog_scripts_plan" "${catalog_scripts_success/catalog-reproducibility=success/catalog-reproducibility=$outcome}"
+  expect_required_reject "catalog-reproducibility=$outcome in a catalog fixture plan" pull_request \
+    "$catalog_fixtures_plan" "${catalog_fixtures_success/catalog-reproducibility=success/catalog-reproducibility=$outcome}"
+  expect_required_reject "catalog-reproducibility=$outcome on a push" push "$event_plan" \
+    "${event_success/catalog-reproducibility=success/catalog-reproducibility=$outcome}"
+done
+# The same results under a plan that did not select the job: it ran when it must not have.
+expect_required_reject "catalog-reproducibility=success in an unselected complete plan" pull_request \
+  "$complete_plan_deployed" "$catalog_scripts_success"
+expect_required_reject "catalog-reproducibility=success in an unselected undeployed plan" pull_request \
+  "$complete_plan_undeployed" "$catalog_fixtures_success"
+# A reduced plan can name a catalog-recipe path, because tests/fixtures/catalog/SOURCE.md is allowlisted
+# documentation. It builds nothing, so the job must be skipped there as every other build is.
+reduced_catalog_plan="$(plan reduced false false false false false false false true)"
+expect_required_accept "documentation-only plan naming a catalog-recipe path" pull_request \
+  "$reduced_catalog_plan" "$reduced_success"
+for outcome in success failure cancelled; do
+  expect_required_reject "catalog-reproducibility=$outcome in a reduced plan" pull_request \
+    "$reduced_catalog_plan" "$(results changes=success quality=success "catalog-reproducibility=$outcome")"
+done
+
 # Failure, cancellation, missing, and unexpected results are all rejected.
 for job in changes quality catalog-contracts build architecture coverage-policy \
   migrations-cameraagent migrations-logichost cameraagent-component; do
@@ -996,7 +1153,7 @@ for job in changes quality catalog-contracts build architecture coverage-policy 
 done
 
 for job in unit integration coverage logichost-component combined-integration \
-  delivery-component shared-libraries deployment-contracts; do
+  delivery-component shared-libraries deployment-contracts catalog-reproducibility; do
   for outcome in failure cancelled success; do
     expect_required_reject "unexpected $job=$outcome in the CameraAgent plan" pull_request "$cameraagent_plan" \
       "$(results changes=success quality=success catalog-contracts=success build=success \
@@ -1020,7 +1177,7 @@ expect_required_reject "missing deployment contracts result" pull_request "$comp
     migrations-logichost=success unit=success integration=success coverage=success)"
 
 invalid_plans=(
-  "reduced|$(plan reduced false false false false false false false)|push"
+  "reduced|$(plan reduced false false false false false false false true)|push"
   "complete on a reduced mode|$(plan reduced true true true true true true false)|pull_request"
   "reduced with a component lane|$(plan reduced false false true false false false false)|pull_request"
   "reduced with deployment contracts|$(plan reduced false false false false false false true)|pull_request"
@@ -1028,13 +1185,27 @@ invalid_plans=(
   "complete without every lane|$(plan full true true true true true false false)|pull_request"
   "unknown mode|$(plan unknown false false true false false false false)|pull_request"
   "non-boolean flag|$(plan full maybe false true false false false false)|pull_request"
-  "push without the complete matrix|$(plan full false false true false false false true)|push"
-  "push without deployment contracts|$(plan full true true true true true true false)|push"
+  "push without the complete matrix|$(plan full false false true false false false true true)|push"
+  "push without deployment contracts|$(plan full true true true true true true false true)|push"
 )
 for entry in "${invalid_plans[@]}"; do
   IFS='|' read -r label plan_value event_value <<< "$entry"
   expect_required_reject "$label" "$event_value" "$plan_value" "$complete_success"
 done
+# A push or manual run that is otherwise complete and green is still rejected without the catalog-recipe selection,
+# whether its job was skipped to match or ran anyway.
+for event_value in push workflow_dispatch; do
+  expect_required_reject "$event_value without the catalog-recipe selection, job skipped" "$event_value" \
+    "$complete_plan_deployed" "${event_success/catalog-reproducibility=success/catalog-reproducibility=skipped}"
+  expect_required_reject "$event_value without the catalog-recipe selection, job run" "$event_value" \
+    "$complete_plan_deployed" "$event_success"
+done
+# These results are exactly what the CameraAgent plan expects, so only the flag's value can reject them.
+expect_required_reject "non-boolean catalog-recipe flag" pull_request \
+  "$(plan full false false true false false false false maybe)" "$cameraagent_success"
+# A plan in the form used before the selection existed cannot pass by omitting it.
+expect_required_reject "plan without the catalog-recipe key" pull_request \
+  "${cameraagent_plan/ catalog_recipe=false/}" "$cameraagent_success"
 
 expect_required_reject "missing plan key" pull_request \
   "mode=full complete=false shared=false cameraagent=true logichost=false combined=false delivery=false" \
@@ -1156,7 +1327,7 @@ grep -Fxq "    if: github.event_name != 'pull_request' || github.event.pull_requ
   printf 'Draft pull requests must not start the classifier-selected CI plan.\n' >&2
   exit 1
 }
-for output in mode deployment complete shared cameraagent logichost combined delivery; do
+for output in mode deployment complete shared cameraagent logichost combined delivery catalog_recipe; do
   # shellcheck disable=SC2016 # The workflow expression is intentionally literal.
   grep -Fq "      $output: \${{ steps.classify.outputs.$output }}" <<< "$changes_job" || {
     printf 'Change Classification must publish the %s plan output.\n' "$output" >&2
@@ -1183,7 +1354,7 @@ for job in "${result_jobs[@]}"; do
     exit 1
   }
 done
-for key in mode complete shared cameraagent logichost combined delivery deployment; do
+for key in mode complete shared cameraagent logichost combined delivery deployment catalog_recipe; do
   # shellcheck disable=SC2016 # The workflow expression is intentionally literal.
   grep -Fq "            $key=\${{ needs.changes.outputs.$key }}" <<< "$required_job" || {
     printf 'Required CI does not forward the plan key: %s\n' "$key" >&2
@@ -1423,6 +1594,105 @@ if (( slot_count != 21 )); then
   exit 1
 fi
 
+# Catalog Reproducibility (Refs #1774) follows its own classifier output, in full mode only. It is aggregated by the
+# checks above, because it is one of result_jobs; what is held here is its own shape.
+catalog_reproducibility_job="$(extract_workflow_job catalog-reproducibility)"
+grep -Fxq "    if: needs.changes.outputs.mode == 'full' && needs.changes.outputs.catalog_recipe == 'true'" \
+  <<< "$catalog_reproducibility_job" || {
+  printf 'Catalog Reproducibility must run for exactly the full-mode heads that change a catalog recipe.\n' >&2
+  exit 1
+}
+grep -Fxq '    needs: changes' <<< "$catalog_reproducibility_job" || {
+  printf 'Catalog Reproducibility must not wait for, or be waited for by, the catalog contracts artifact.\n' >&2
+  exit 1
+}
+if grep -Fq 'continue-on-error' <<< "$catalog_reproducibility_job"; then
+  printf 'A failed catalog reproducibility step must fail its job.\n' >&2
+  exit 1
+fi
+# The offline steps precede the fetch, so an upstream outage cannot hide a fixture result, and the fetched inputs
+# are tested and used only after the step that verified them.
+# shellcheck disable=SC2016 # The workflow's own shell variables are matched literally.
+catalog_reproducibility_steps=(
+  '        run: ./scripts/catalog/test-sqlite-identity.sh'
+  '        run: ./scripts/catalog/test-fixture-reproducibility.sh'
+  '        run: ./scripts/catalog/fetch-hyg-v44-openngc-inputs.sh "$RUNNER_TEMP/hyg-v44-openngc-inputs"'
+  '        run: ./scripts/catalog/test-fetch-hyg-v44-openngc-inputs.sh "$RUNNER_TEMP/hyg-v44-openngc-inputs"'
+  '          ./scripts/catalog/test-hyg-v44-reproducibility.sh \'
+  '            "$RUNNER_TEMP/hyg-v44-openngc-inputs/hyg_v44.csv.gz" \'
+  '            "$RUNNER_TEMP/hyg-v44-openngc-inputs/OpenNGC"'
+)
+previous_step_line=0
+for catalog_step in "${catalog_reproducibility_steps[@]}"; do
+  step_match="$(grep -nFx -m 1 -- "$catalog_step" <<< "$catalog_reproducibility_job" || true)"
+  [[ -n "$step_match" ]] || {
+    printf 'Catalog Reproducibility is missing the step line: %s\n' "$catalog_step" >&2
+    exit 1
+  }
+  (( ${step_match%%:*} > previous_step_line )) || {
+    printf 'Catalog Reproducibility runs a step out of order: %s\n' "$catalog_step" >&2
+    exit 1
+  }
+  previous_step_line="${step_match%%:*}"
+done
+
+# Catalog Contracts also reproduces the HYG 4.2 bytes it has just built (Refs #1774): offline, from the compressed
+# input its build step fetched and verified, and before the contracts are uploaded.
+catalog_contracts_job="$(extract_workflow_job catalog-contracts)"
+# shellcheck disable=SC2016 # The workflow's own shell variables are matched literally.
+catalog_contracts_steps=(
+  '          catalog_root="$RUNNER_TEMP/hyg-v42-contracts"'
+  '          ./scripts/catalog/prepare-hyg-v42-contracts.sh "$catalog_root" >/dev/null'
+  '        run: ./scripts/catalog/test-hyg-v42-reproducibility.sh "$RUNNER_TEMP/hyg-v42-contracts/build/hyg_v42.csv.gz"'
+  '      - name: Upload exact production catalog contracts'
+)
+previous_step_line=0
+for catalog_step in "${catalog_contracts_steps[@]}"; do
+  step_match="$(grep -nFx -m 1 -- "$catalog_step" <<< "$catalog_contracts_job" || true)"
+  [[ -n "$step_match" ]] || {
+    printf 'Catalog Contracts is missing the step line: %s\n' "$catalog_step" >&2
+    exit 1
+  }
+  (( ${step_match%%:*} > previous_step_line )) || {
+    printf 'Catalog Contracts runs a step out of order: %s\n' "$catalog_step" >&2
+    exit 1
+  }
+  previous_step_line="${step_match%%:*}"
+done
+if grep -Fq 'continue-on-error' <<< "$catalog_contracts_job"; then
+  printf 'A failed HYG 4.2 reproducibility step must fail Catalog Contracts.\n' >&2
+  exit 1
+fi
+# No second download: the regression builds from the file it is given and has no way to fetch one.
+if grep -Eq -- '--fetch|curl|wget|https?://' "$repo_root/scripts/catalog/test-hyg-v42-reproducibility.sh"; then
+  printf 'The HYG 4.2 reproducibility regression must stay offline.\n' >&2
+  exit 1
+fi
+
+# Every catalog script the two catalog jobs run exists and is executable, so a step cannot name a script that an
+# unmerged dependency was going to add.
+catalog_job_script_count=0
+while IFS= read -r catalog_job_script; do
+  ((catalog_job_script_count += 1))
+  [[ -f "$repo_root/$catalog_job_script" && -x "$repo_root/$catalog_job_script" ]] || {
+    printf 'A catalog job runs a script that is missing or not executable: %s\n' "$catalog_job_script" >&2
+    exit 1
+  }
+done < <(printf '%s\n' "$catalog_contracts_job" "$catalog_reproducibility_job" |
+  grep -oE 'scripts/catalog/[A-Za-z0-9._-]+\.sh' | sort -u)
+if (( catalog_job_script_count != 8 )); then
+  printf 'Expected 8 catalog job scripts across the two catalog jobs, found %s.\n' "$catalog_job_script_count" >&2
+  exit 1
+fi
+
+# The regressions belong to full qualification. The development/v1 profile neither runs them nor reads their
+# selection (docs/development-v1.md).
+development_workflow="$repo_root/.github/workflows/development-v1.yml"
+if grep -Eq 'reproducibility|fetch-hyg-v44-openngc-inputs|test-sqlite-identity|catalog_recipe' "$development_workflow"; then
+  printf 'The catalog reproducibility regressions must stay out of the development/v1 profile.\n' >&2
+  exit 1
+fi
+
 # A release is qualified by the CI workflow itself, called for the tagged commit before anything is built (#1310).
 release_workflow="$repo_root/.github/workflows/release.yml"
 grep -Fxq '    uses: ./.github/workflows/ci.yml' "$release_workflow" || {
@@ -1440,4 +1710,5 @@ grep -Fxq '  workflow_call:' "$repo_root/.github/workflows/ci.yml" || {
 
 printf 'Secret scan contract classification passed: %d cases.\n' "$secret_scan_contract_cases"
 printf 'Release script classification passed: %d cases.\n' "$release_scripts_cases"
+printf 'Catalog recipe classification passed: %d cases.\n' "$catalog_recipe_cases"
 printf 'CI classification and Required CI contract tests passed.\n'

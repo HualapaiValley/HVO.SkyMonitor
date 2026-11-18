@@ -1,4 +1,7 @@
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
@@ -33,7 +36,11 @@ public sealed record CameraAgentSatellitePassSearchRequest(
 public sealed record CameraAgentSatellitePlanningContext(
     CameraAgentSkyMapObserver Observer,
     CameraAgentSkyMapGeometry Rig,
-    ProjectionContext RigProjection);
+    ProjectionContext RigProjection)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CameraRigConfig? ObstructionRig { get; init; }
+}
 
 /// <summary>A source-named canonical pass. Its boundary kinds distinguish resolved crossings from clipped windows.</summary>
 public sealed record CameraAgentSatellitePassRow(string DisplayName, OrbitalPassSummaryV1 Pass);
@@ -58,7 +65,10 @@ public sealed record CameraAgentSatellitePassArcView(
     string SearchIdentitySha256,
     string ParentPassSha256,
     CameraAgentSatellitePlanningContext Context,
-    OrbitalPredictionResult<OrbitalPassArcV1> Prediction);
+    OrbitalPredictionResult<OrbitalPassArcV1> Prediction)
+{
+    public IReadOnlyList<HorizonObstructionPredictionProduct>? Obstruction { get; init; }
+}
 
 /// <summary>Sanitized local availability, separate from the producer's numerical completion/partial status.</summary>
 public sealed record CameraAgentSatellitePlanningResponse<T>(

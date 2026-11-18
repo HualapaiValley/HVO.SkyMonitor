@@ -22,7 +22,10 @@ public sealed class WideFieldIndexTests
     [TestMethod]
     public void FittingField_IndexesEveryTrainingStarExactlyAsSolverV1()
     {
-        // Values recorded by this same solve at solver v1 (b13f0d0e); every one must be reproduced to the last bit.
+        // Solver-v1 (b13f0d0e) numeric regression baseline, not a persisted index or assessment identity.
+        // Cross-architecture FMA/libm ordering can shift the fit: M5 Max measured 15 ULPs on roll.
+        // Allow 64 ULPs per fitted value for headroom; index-star, triangle and hypothesis counts
+        // and the stable-order equivalence checks remain exact.
         var catalog = AstrometricTestFixture.Catalog();
         var calibration = AstrometricTestFixture.Calibration(SixMillimetreTruth);
         var detections = AstrometricTestFixture.Centroids(catalog, SixMillimetreTruth, AstrometricTestFixture.Utc);
@@ -34,7 +37,7 @@ public sealed class WideFieldIndexTests
         Assert.AreEqual(V1ImageTriangles, result.Metrics.ImageTriangles);
         Assert.AreEqual(V1Hypotheses, result.Metrics.Hypotheses);
         var solved = AstrometricMapping.Projection(calibration, result.Assessment);
-        Assert.AreEqual(V1Solution, Fingerprint(solved));
+        AssertSolutionMatchesSolverV1(solved);
     }
 
     [TestMethod]
@@ -90,10 +93,46 @@ public sealed class WideFieldIndexTests
     private const int V1IndexTriangles = 1_061_529;
     private const int V1ImageTriangles = 4032;
     private const int V1Hypotheses = 2134;
-    private const string V1Solution = "408fff253231bda0 408fff253231bda0 404efffe3da1fcde 40699ffeadb76b6b 402bffd2a504d553";
+    private const int V1SolutionToleranceUlps = 64;
 
-    private static string Fingerprint(ProjectionContext p) => string.Join(' ', new[] { p.FocalLengthXPixels, p.FocalLengthYPixels,
-        p.BoresightAltitudeDegrees, p.BoresightAzimuthDegrees, p.RollDegrees }.Select(v => BitConverter.DoubleToInt64Bits(v).ToString("x16", System.Globalization.CultureInfo.InvariantCulture)));
+    private static void AssertSolutionMatchesSolverV1(ProjectionContext p)
+    {
+        AssertWithinV1Tolerance(0x408fff253231bda0L, p.FocalLengthXPixels, nameof(p.FocalLengthXPixels));
+        AssertWithinV1Tolerance(0x408fff253231bda0L, p.FocalLengthYPixels, nameof(p.FocalLengthYPixels));
+        AssertWithinV1Tolerance(0x404efffe3da1fcdeL, p.BoresightAltitudeDegrees, nameof(p.BoresightAltitudeDegrees));
+        AssertWithinV1Tolerance(0x40699ffeadb76b6bL, p.BoresightAzimuthDegrees, nameof(p.BoresightAzimuthDegrees));
+        AssertWithinV1Tolerance(0x402bffd2a504d553L, p.RollDegrees, nameof(p.RollDegrees));
+    }
+
+    private static void AssertWithinV1Tolerance(long expectedBits, double actual, string component)
+    {
+        var expected = BitConverter.Int64BitsToDouble(expectedBits);
+        var minimum = expected;
+        var maximum = expected;
+        // Walk representable values in each direction; 64 ULPs is below 1.5e-14 relative for this fixture.
+        for (var i = 0; i < V1SolutionToleranceUlps; i++)
+        {
+            minimum = Math.BitDecrement(minimum);
+            maximum = Math.BitIncrement(maximum);
+        }
+        Assert.IsTrue(double.IsFinite(actual) && actual >= minimum && actual <= maximum,
+            $"{component}: expected {expected:R} within {V1SolutionToleranceUlps} ULPs, actual {actual:R}; " +
+            $"observed {UlpDistance(expected, actual)} ULPs.");
+    }
+
+    private static ulong UlpDistance(double expected, double actual)
+    {
+        static ulong OrderedBits(double value)
+        {
+            const ulong signBit = 1UL << 63;
+            var bits = BitConverter.DoubleToUInt64Bits(value);
+            var magnitude = bits & ~signBit;
+            return (bits & signBit) == 0 ? signBit + magnitude : signBit - magnitude;
+        }
+        var expectedBits = OrderedBits(expected);
+        var actualBits = OrderedBits(actual);
+        return expectedBits >= actualBits ? expectedBits - actualBits : actualBits - expectedBits;
+    }
 
     private static int Training(AstrometricCatalogData catalog) => catalog.Stars.Count(s => s.Magnitude <= new AstrometricSolverOptions().MaximumCatalogMagnitude &&
         AstrometricTestFixture.Horizontal(s, AstrometricTestFixture.Utc).AltitudeDegrees > 0 && !AstrometricSolverCore.IsVerification(s.Id));

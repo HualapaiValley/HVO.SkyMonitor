@@ -35,6 +35,25 @@ checks its version and JSON support, installs it beneath
 `/usr/local/lib/hvo/sqlite-3.45.1`, and links `/usr/local/bin/sqlite3`. It does
 not replace the distribution's `libsqlite3` package.
 
+The HYG 4.2, HYG 4.4 and OpenNGC builders explicitly pin
+`PRAGMA secure_delete = ON` on every write connection. Ubuntu's packaged SQLite
+enables secure deletion by default; the upstream source build defaults it off.
+The pin makes the isolated 3.45.1 CLI reproduce the approved bundle in the
+canonical builder environment below, without changing package identities or
+hashes. A serializer-setting pin that preserves approved bytes does not require
+a new preprocessing version; a recipe change that changes bytes does.
+
+Verify HYG 4.2 offline against the pinned compressed input with:
+
+```bash
+./scripts/catalog/test-hyg-v42-reproducibility.sh /secure-cache/hyg_v42.csv.gz
+```
+
+The regression checks both incoming `secure_delete` defaults, builds twice per
+setting, requires the approved database hash and length, and compares every
+bundle payload, manifest and notice byte for byte. The corresponding HYG 4.4 and
+OpenNGC command is in [the reproducibility evidence](hyg-v44-reproducibility.md).
+
 ## Build a Bundle
 
 The canonical builder for package `hyg-v4.2-p3-s2-r1` is Ubuntu 24.04 on

@@ -1,0 +1,50 @@
+"""Reproduce the report plot: python3 this-file (requires matplotlib)."""
+import json
+import pathlib
+import statistics
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+
+directory = pathlib.Path(__file__).resolve().parent
+data = json.loads((directory / 'issue-1041-run2-scale.json').read_text())
+fig, axes = plt.subplots(1, 2, figsize=(12, 5.8), sharey=True)
+labels = ['100,001 sidecars\n100,001 captures', '300,000 sidecars\n300,000 captures',
+          '300,000 sidecars\n100,000 captures']
+for axis, mode, title in zip(axes, ['warm', 'evicted'], ['Warm file cache', 'Retained file pages evicted']):
+    for offset, key, color, label in [(-0.19, 'baseline', '#526780', 'Current development baseline'),
+                                      (0.19, 'candidate', '#167a5a', 'Writer-maintained ledger')]:
+        samples = [[(r['read'] if mode == 'evicted' else r)['elapsedMs']
+                    for r in case[mode]] for case in data[key]['cases']]
+        medians = [statistics.median(rows) for rows in samples]
+        errors = [[m - min(rows) for m, rows in zip(medians, samples)],
+                  [max(rows) - m for m, rows in zip(medians, samples)]]
+        bars = axis.bar(np.arange(3) + offset, medians, 0.34, color=color,
+                        label=label, yerr=errors, capsize=3)
+        for bar, value, rows in zip(bars, medians, samples):
+            axis.text(bar.get_x() + bar.get_width()/2, max(rows)*1.15,
+                      f'{value:,.2f}', ha='center', va='bottom', fontsize=8)
+    axis.set_title(title, fontsize=12)
+    axis.set_xticks(np.arange(3), labels, fontsize=9)
+    axis.set_yscale('log')
+    axis.set_ylim(10, 45000)
+    axis.grid(axis='y', alpha=0.2, which='both')
+    axis.set_axisbelow(True)
+    axis.spines[['top', 'right']].set_visible(False)
+axes[0].set_ylabel('Protected endpoint latency (milliseconds; log scale)')
+handles, legend_labels = axes[0].get_legend_handles_labels()
+fig.legend(handles, legend_labels, loc='lower center', bbox_to_anchor=(0.5, 0.09),
+           ncol=2, frameon=False, fontsize=9)
+fig.suptitle('Protected installation verification after full qualification', fontsize=15, y=0.97)
+fig.text(0.5, 0.89, f"Baseline {data['baselineSource'][:8]} · candidate {data['testedHead'][:8]} · median and range of three reads",
+         ha='center', fontsize=10)
+fig.text(0.5, 0.025, 'Disposable Linux metadata fixtures, one affined CPU. File-page eviction excludes SQLite SHM.\n'
+         'Directory/controller caches uncontrolled. Linear full-scrub and restart costs are reported separately.',
+         ha='center', fontsize=9)
+fig.subplots_adjust(top=0.79, bottom=0.25, wspace=0.12)
+fig.savefig(directory / 'issue-1041-run2-scale.svg', metadata={'Date': None})
+fig.savefig(directory / 'issue-1041-run2-scale.png', dpi=160)
+
+svg = directory / "issue-1041-run2-scale.svg"
+svg.write_text("\n".join(line.rstrip() for line in svg.read_text().splitlines()) + "\n")

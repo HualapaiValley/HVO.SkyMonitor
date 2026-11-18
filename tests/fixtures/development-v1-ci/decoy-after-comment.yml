@@ -1,0 +1,13 @@
+name: Root
+on: push
+jobs: # comment
+  hidden:
+    name: hvo/reviewed-head
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'true'
+run-name: "Tail
+jobs:
+  decoy:
+    runs-on: ubuntu-24.04
+"

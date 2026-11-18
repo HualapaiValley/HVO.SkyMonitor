@@ -75,12 +75,14 @@ dialog.action-dialog.automation-dialog { width: min(calc(100% - 2rem), 42rem); }
 .automation-dialog fieldset { min-inline-size: 0; }
 .automation-dialog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem .75rem; }
 .automation-dialog-grid .full { grid-column: 1 / -1; }
-.automation-field-hint { color: var(--muted); font-size: .55rem; line-height: 1.4; }
+.automation-field-hint { color: var(--muted); font-size: .55rem; line-height: 1.4; overflow-wrap: anywhere; }
 .automation-check { display: flex; align-items: center; gap: .55rem; min-height: 2.75rem; color: var(--muted-strong); font-size: .65rem; cursor: pointer; }
 .automation-check input { width: 1.05rem; height: 1.05rem; flex: 0 0 auto; accent-color: var(--blue-strong); }
 /* Element-qualified so these outrank the shared .ops-facts and .ops-note-banner margins. */
 dialog.automation-dialog .automation-confirm-facts { margin: 0 1.1rem; }
 dialog.automation-dialog .automation-confirm-facts dd { overflow-wrap: anywhere; }
+#automation-window-preview { margin-top: 1rem; }
+#automation-window-preview > :is(h3, p) { margin-inline: 1.1rem; }
 dialog.automation-dialog .automation-dialog-message { margin: .9rem 1.1rem 0; }
 /* The editor can be taller than a phone screen; keep its actions in reach while the fields scroll. */
 dialog.automation-dialog footer { position: sticky; bottom: 0; z-index: 1; background: #0c131e; }

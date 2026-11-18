@@ -22,6 +22,7 @@ internal sealed class EnvironmentalObservationSourceRecord
     public string SourceId { get; init; } = string.Empty;
     public string Version { get; init; } = string.Empty;
     public EnvironmentalObservationSourceKind Kind { get; init; }
+    public bool IsLineageInput { get; init; }
     public string MethodName { get; init; } = string.Empty;
     public string MethodVersion { get; init; } = string.Empty;
     public string ParametersJson { get; init; } = string.Empty;
@@ -50,6 +51,7 @@ internal sealed class EnvironmentalObservationRecord
     public double? Uncertainty { get; init; }
     public double? SubmittedNumericValue { get; init; }
     public string? SubmittedUnit { get; init; }
+    public string? SampleMetadataJson { get; init; }
     public DateTimeOffset ObservedAtUtc { get; init; }
     public DateTimeOffset? ObservedFromUtc { get; init; }
     public DateTimeOffset? ObservedThroughUtc { get; init; }

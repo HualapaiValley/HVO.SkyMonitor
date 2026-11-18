@@ -69,7 +69,7 @@ public sealed class DeploymentAsi676ProfileTests
             Assert.HasCount(2, options.TransientScenario.Recurrence.Profiles);
             options.TransientScenario.ValidateSensorBounds(layout.Width, layout.Height);
             var module = new VirtualSkyCameraModule(
-                TimeProvider.System,
+                ExposureTestTimeProvider.ForRendering(),
                 new InMemoryCelestialCatalog([]),
                 new ProjectedSceneStore(),
                 StandardConstellationTopology.CreateD3Celestial(),
@@ -158,7 +158,7 @@ public sealed class DeploymentAsi676ProfileTests
             Module = configuration.Module with { Options = JsonSerializer.SerializeToElement(options, StrictJsonOptions) }
         };
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             new InMemoryCelestialCatalog([]),
             new ProjectedSceneStore(),
             StandardConstellationTopology.CreateD3Celestial(),

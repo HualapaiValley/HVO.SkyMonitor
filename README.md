@@ -40,6 +40,19 @@ tooling used on the host.
 On Windows, use WSL2 and keep the checkout on its Linux filesystem. Repository
 scripts assume Linux filesystem semantics and GNU tools.
 
+Ordinary builds and tests default to the Linux host architecture, with framework-dependent
+output under `bin/<Configuration>/net10.0/`. Pass `--runtime` to select another
+architecture. Publishing without a runtime follows the Linux SDK host;
+self-contained release and ReadyToRun commands select `linux-x64` or `linux-arm64` explicitly.
+The IL image publish (`scripts/release:cameraagent-publish` without ReadyToRun), used
+by Compose/dev images and local release-asset builds, follows the architecture of
+the per-platform SDK stage from its pinned multi-architecture image manifest. The runners,
+installer, and terminal client remain self-contained when published. Clean existing
+`bin` and `obj` directories when adopting these defaults, switching architectures,
+or switching between default and explicit RID builds, since incremental
+builds do not remove obsolete native files. The former Mac advisory workflow is retired;
+it provides no product qualification. Linux x64 and ARM64 remain the supported targets.
+
 ### Getting Started
 
 #### Native host or SSH

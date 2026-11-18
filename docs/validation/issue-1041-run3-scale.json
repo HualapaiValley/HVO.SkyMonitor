@@ -1,0 +1,1540 @@
+{
+  "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+  "sdk": "10.0.402",
+  "candidate": {
+    "revision": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+    "configuration": "Installer CameraConfiguration.Generate; fixture-local storage roots; completed synthetic owner",
+    "runtime": ".NET 10.0.14",
+    "processorCount": 1,
+    "heapAvailableBytes": 1073741824,
+    "cacheDefinition": "Idle disposable journal WAL checkpointed/truncated after construction; fsync + POSIX_FADV_DONTNEED and mincore=0 for retained data/main DB/checkpoint files before each evicted sample; transient SQLite SHM coordination files excluded; metadata/controller caches and full host cold start uncontrolled",
+    "cases": [
+      {
+        "captures": 100001,
+        "sidecars": 100001,
+        "rawJournalRows": 100001,
+        "productsPerCapture": 1,
+        "corpus": {
+          "fileCount": 100001,
+          "journalCount": 100001,
+          "manifestBytes": 488782680,
+          "orderedManifestSha256": "AA7EB11B46AE27F9235FE56FA54738C70CD3B2EAEBF3D7E082E9C95DEB14FE61",
+          "journalBytes": 500629504,
+          "configurationFileSha256": "2D1C55A749717DB5F3EB009FA53D2BF490C4060E83E3F2A599522AFD75B206AE",
+          "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+        },
+        "qualificationMs": 33780.1184,
+        "firstUncapped": {
+          "kind": "first-uncapped",
+          "elapsedMs": 258.7165,
+          "cpuMs": 254.686,
+          "processAllocatedBytes": 22267400,
+          "workingSetBytes": 305299456,
+          "peakWorkingSetBytes": 305299456,
+          "ioDelta": {
+            "rchar": 45445,
+            "wchar": 231,
+            "syscr": 76,
+            "syscw": 2,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "cancelled_write_bytes": 0
+          },
+          "parses": 0,
+          "retainedScanSpans": 0,
+          "cacheHits": 0,
+          "identity": {
+            "agentId": "10000000-0000-0000-0000-000000001041",
+            "ownerEmail": "owner@cameraagent.browser",
+            "ownerBootstrapState": "owner-ready",
+            "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+            "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+            "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+            "deploymentLocationId": "attribution-location",
+            "deploymentLocationVersion": 1,
+            "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+            "replayProfile": "InProcess",
+            "catalogId": "hyg-v42-fixture",
+            "packageVersion": "hyg-v42-fixture-1",
+            "schemaVersion": "2",
+            "preprocessingVersion": "3",
+            "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+            "databaseLength": 16384,
+            "rowCount": 9
+          }
+        },
+        "warm": [
+          {
+            "kind": "warm",
+            "elapsedMs": 37.8183,
+            "cpuMs": 33.49,
+            "processAllocatedBytes": 8305536,
+            "workingSetBytes": 334442496,
+            "peakWorkingSetBytes": 334442496,
+            "ioDelta": {
+              "rchar": 38986,
+              "wchar": 231,
+              "syscr": 73,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 40.0067,
+            "cpuMs": 35.861,
+            "processAllocatedBytes": 8301712,
+            "workingSetBytes": 334467072,
+            "peakWorkingSetBytes": 334467072,
+            "ioDelta": {
+              "rchar": 38986,
+              "wchar": 231,
+              "syscr": 72,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 35.9988,
+            "cpuMs": 32.072,
+            "processAllocatedBytes": 8301712,
+            "workingSetBytes": 334491648,
+            "peakWorkingSetBytes": 334491648,
+            "ioDelta": {
+              "rchar": 38986,
+              "wchar": 231,
+              "syscr": 73,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          }
+        ],
+        "evicted": [
+          {
+            "evictedFiles": 100008,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 43.2941,
+              "cpuMs": 39.329,
+              "processAllocatedBytes": 8303552,
+              "workingSetBytes": 336220160,
+              "peakWorkingSetBytes": 336220160,
+              "ioDelta": {
+                "rchar": 38989,
+                "wchar": 231,
+                "syscr": 73,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          },
+          {
+            "evictedFiles": 100008,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 53.7747,
+              "cpuMs": 53.663,
+              "processAllocatedBytes": 8572992,
+              "workingSetBytes": 337338368,
+              "peakWorkingSetBytes": 337338368,
+              "ioDelta": {
+                "rchar": 39019,
+                "wchar": 231,
+                "syscr": 73,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          },
+          {
+            "evictedFiles": 100008,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 22.4463,
+              "cpuMs": 19.685,
+              "processAllocatedBytes": 7901288,
+              "workingSetBytes": 340824064,
+              "peakWorkingSetBytes": 340824064,
+              "ioDelta": {
+                "rchar": 39328,
+                "wchar": 231,
+                "syscr": 74,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "74F4FD73C8BC588A505EF0C67C488ADFD79F0531A00E70B2984E577AD49F8806",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          }
+        ],
+        "ordinaryReads": [
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 21.3762,
+            "allocatedBytes": 7717072,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 44.131,
+            "allocatedBytes": 8835880,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 20.5699,
+            "allocatedBytes": 7716416,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 26.117,
+            "allocatedBytes": 8244848,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 20.5481,
+            "allocatedBytes": 7716152,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 23.2514,
+            "allocatedBytes": 8058864,
+            "retainedScanSpans": 0
+          }
+        ],
+        "managedPublication": [
+          {
+            "elapsedMs": 17.973,
+            "allocatedBytes": 379424,
+            "ioDelta": {
+              "rchar": 71533,
+              "wchar": 182318,
+              "syscr": 241,
+              "syscw": 91,
+              "read_bytes": 65536,
+              "write_bytes": 208896,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 9.5757,
+            "allocatedBytes": 202688,
+            "ioDelta": {
+              "rchar": 14621,
+              "wchar": 59334,
+              "syscr": 112,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 9.7371,
+            "allocatedBytes": 203168,
+            "ioDelta": {
+              "rchar": 14621,
+              "wchar": 59334,
+              "syscr": 112,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 10.2829,
+            "allocatedBytes": 205584,
+            "ioDelta": {
+              "rchar": 14749,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 10.008,
+            "allocatedBytes": 205328,
+            "ioDelta": {
+              "rchar": 14749,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          }
+        ],
+        "restartQualification": {
+          "elapsedMs": 26925.6581,
+          "parses": 1,
+          "requalified": true
+        },
+        "persistedProofs": 100002
+      },
+      {
+        "captures": 300000,
+        "sidecars": 300000,
+        "rawJournalRows": 300000,
+        "productsPerCapture": 1,
+        "corpus": {
+          "fileCount": 300000,
+          "journalCount": 300000,
+          "manifestBytes": 1466777790,
+          "orderedManifestSha256": "B67857BD8D0FC3AF3E387831D24A2E254797E1B4ABE49649D4DD77E8FD63A6A8",
+          "journalBytes": 1503985664,
+          "configurationFileSha256": "E83B28C524215CA6467C9432DA0A16E91A558CE0F7E22ECEC229145FCE5D8373",
+          "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+        },
+        "qualificationMs": 102483.3975,
+        "firstUncapped": {
+          "kind": "first-uncapped",
+          "elapsedMs": 184.3032,
+          "cpuMs": 182.619,
+          "processAllocatedBytes": 19655464,
+          "workingSetBytes": 372436992,
+          "peakWorkingSetBytes": 414560256,
+          "ioDelta": {
+            "rchar": 45164,
+            "wchar": 231,
+            "syscr": 80,
+            "syscw": 2,
+            "read_bytes": 192512,
+            "write_bytes": 0,
+            "cancelled_write_bytes": 0
+          },
+          "parses": 0,
+          "retainedScanSpans": 0,
+          "cacheHits": 0,
+          "identity": {
+            "agentId": "10000000-0000-0000-0000-000000001041",
+            "ownerEmail": "owner@cameraagent.browser",
+            "ownerBootstrapState": "owner-ready",
+            "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+            "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+            "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+            "deploymentLocationId": "attribution-location",
+            "deploymentLocationVersion": 1,
+            "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+            "replayProfile": "InProcess",
+            "catalogId": "hyg-v42-fixture",
+            "packageVersion": "hyg-v42-fixture-1",
+            "schemaVersion": "2",
+            "preprocessingVersion": "3",
+            "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+            "databaseLength": 16384,
+            "rowCount": 9
+          }
+        },
+        "warm": [
+          {
+            "kind": "warm",
+            "elapsedMs": 20.0964,
+            "cpuMs": 18.643,
+            "processAllocatedBytes": 7900384,
+            "workingSetBytes": 454746112,
+            "peakWorkingSetBytes": 454746112,
+            "ioDelta": {
+              "rchar": 40069,
+              "wchar": 231,
+              "syscr": 79,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 18.9789,
+            "cpuMs": 17.808,
+            "processAllocatedBytes": 7897000,
+            "workingSetBytes": 454885376,
+            "peakWorkingSetBytes": 454885376,
+            "ioDelta": {
+              "rchar": 40072,
+              "wchar": 231,
+              "syscr": 79,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 19.4218,
+            "cpuMs": 17.805,
+            "processAllocatedBytes": 7897000,
+            "workingSetBytes": 454885376,
+            "peakWorkingSetBytes": 454885376,
+            "ioDelta": {
+              "rchar": 40072,
+              "wchar": 231,
+              "syscr": 78,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          }
+        ],
+        "evicted": [
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 20.3081,
+              "cpuMs": 18.087,
+              "processAllocatedBytes": 7899208,
+              "workingSetBytes": 460873728,
+              "peakWorkingSetBytes": 460873728,
+              "ioDelta": {
+                "rchar": 40078,
+                "wchar": 247,
+                "syscr": 81,
+                "syscw": 4,
+                "read_bytes": 77824,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 26.3225,
+              "cpuMs": 24.785,
+              "processAllocatedBytes": 7899208,
+              "workingSetBytes": 461344768,
+              "peakWorkingSetBytes": 461344768,
+              "ioDelta": {
+                "rchar": 40072,
+                "wchar": 231,
+                "syscr": 78,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 43.8438,
+              "cpuMs": 18.524,
+              "processAllocatedBytes": 7898616,
+              "workingSetBytes": 460738560,
+              "peakWorkingSetBytes": 461680640,
+              "ioDelta": {
+                "rchar": 40069,
+                "wchar": 231,
+                "syscr": 79,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "8B9AC276D0E457F98EAACFD15965FA5A33CD1BDE764CC790A2F55873F2FD7502",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          }
+        ],
+        "ordinaryReads": [
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 27.4924,
+            "allocatedBytes": 7716752,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 27.4791,
+            "allocatedBytes": 8433024,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 19.8685,
+            "allocatedBytes": 7716288,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 29.5163,
+            "allocatedBytes": 8058728,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 18.8268,
+            "allocatedBytes": 7715760,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 21.2998,
+            "allocatedBytes": 8054640,
+            "retainedScanSpans": 0
+          }
+        ],
+        "managedPublication": [
+          {
+            "elapsedMs": 16.6791,
+            "allocatedBytes": 349368,
+            "ioDelta": {
+              "rchar": 80149,
+              "wchar": 206918,
+              "syscr": 265,
+              "syscw": 103,
+              "read_bytes": 73728,
+              "write_bytes": 233472,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 18.4507,
+            "allocatedBytes": 151216,
+            "ioDelta": {
+              "rchar": 11747,
+              "wchar": 59334,
+              "syscr": 52,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 10.9904,
+            "allocatedBytes": 205528,
+            "ioDelta": {
+              "rchar": 14755,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 9.8439,
+            "allocatedBytes": 205360,
+            "ioDelta": {
+              "rchar": 14755,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 11.318,
+            "allocatedBytes": 205360,
+            "ioDelta": {
+              "rchar": 14755,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          }
+        ],
+        "restartQualification": {
+          "elapsedMs": 87170.3568,
+          "parses": 1,
+          "requalified": true
+        },
+        "persistedProofs": 300001
+      },
+      {
+        "captures": 100000,
+        "sidecars": 300000,
+        "rawJournalRows": 100000,
+        "productsPerCapture": 3,
+        "corpus": {
+          "fileCount": 300000,
+          "journalCount": 100000,
+          "manifestBytes": 988555580,
+          "orderedManifestSha256": "8EE00146E45829FEB281CE3EFEB684D3B38245CB177D64BDF6A46FE7DCC1BF1B",
+          "journalBytes": 500686848,
+          "configurationFileSha256": "682C98A558B1FA374041480E6C44847B89F60EB0D96AA14B09DA4ABECDA45BFF",
+          "locationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB"
+        },
+        "qualificationMs": 84612.3128,
+        "firstUncapped": {
+          "kind": "first-uncapped",
+          "elapsedMs": 184.6875,
+          "cpuMs": 159.148,
+          "processAllocatedBytes": 19648168,
+          "workingSetBytes": 457306112,
+          "peakWorkingSetBytes": 560304128,
+          "ioDelta": {
+            "rchar": 47265,
+            "wchar": 231,
+            "syscr": 90,
+            "syscw": 2,
+            "read_bytes": 0,
+            "write_bytes": 0,
+            "cancelled_write_bytes": 0
+          },
+          "parses": 0,
+          "retainedScanSpans": 0,
+          "cacheHits": 0,
+          "identity": {
+            "agentId": "10000000-0000-0000-0000-000000001041",
+            "ownerEmail": "owner@cameraagent.browser",
+            "ownerBootstrapState": "owner-ready",
+            "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+            "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+            "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+            "deploymentLocationId": "attribution-location",
+            "deploymentLocationVersion": 1,
+            "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+            "replayProfile": "InProcess",
+            "catalogId": "hyg-v42-fixture",
+            "packageVersion": "hyg-v42-fixture-1",
+            "schemaVersion": "2",
+            "preprocessingVersion": "3",
+            "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+            "databaseLength": 16384,
+            "rowCount": 9
+          }
+        },
+        "warm": [
+          {
+            "kind": "warm",
+            "elapsedMs": 22.5893,
+            "cpuMs": 18.54,
+            "processAllocatedBytes": 8133640,
+            "workingSetBytes": 546603008,
+            "peakWorkingSetBytes": 560304128,
+            "ioDelta": {
+              "rchar": 41122,
+              "wchar": 231,
+              "syscr": 84,
+              "syscw": 2,
+              "read_bytes": 40960,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 18.4258,
+            "cpuMs": 15.992,
+            "processAllocatedBytes": 8140024,
+            "workingSetBytes": 546603008,
+            "peakWorkingSetBytes": 560304128,
+            "ioDelta": {
+              "rchar": 41122,
+              "wchar": 231,
+              "syscr": 84,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          },
+          {
+            "kind": "warm",
+            "elapsedMs": 18.0134,
+            "cpuMs": 15.577,
+            "processAllocatedBytes": 7895472,
+            "workingSetBytes": 546742272,
+            "peakWorkingSetBytes": 560304128,
+            "ioDelta": {
+              "rchar": 41122,
+              "wchar": 231,
+              "syscr": 85,
+              "syscw": 2,
+              "read_bytes": 0,
+              "write_bytes": 0,
+              "cancelled_write_bytes": 0
+            },
+            "parses": 0,
+            "retainedScanSpans": 0,
+            "cacheHits": 0,
+            "identity": {
+              "agentId": "10000000-0000-0000-0000-000000001041",
+              "ownerEmail": "owner@cameraagent.browser",
+              "ownerBootstrapState": "owner-ready",
+              "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+              "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+              "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+              "deploymentLocationId": "attribution-location",
+              "deploymentLocationVersion": 1,
+              "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+              "replayProfile": "InProcess",
+              "catalogId": "hyg-v42-fixture",
+              "packageVersion": "hyg-v42-fixture-1",
+              "schemaVersion": "2",
+              "preprocessingVersion": "3",
+              "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+              "databaseLength": 16384,
+              "rowCount": 9
+            }
+          }
+        ],
+        "evicted": [
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 20.1174,
+              "cpuMs": 17.11,
+              "processAllocatedBytes": 7897576,
+              "workingSetBytes": 547393536,
+              "peakWorkingSetBytes": 560304128,
+              "ioDelta": {
+                "rchar": 41464,
+                "wchar": 231,
+                "syscr": 87,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 20.8646,
+              "cpuMs": 17.327,
+              "processAllocatedBytes": 7897576,
+              "workingSetBytes": 547930112,
+              "peakWorkingSetBytes": 560304128,
+              "ioDelta": {
+                "rchar": 41466,
+                "wchar": 247,
+                "syscr": 89,
+                "syscw": 4,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          },
+          {
+            "evictedFiles": 300007,
+            "evictionRetries": 0,
+            "coordinationFilesExcluded": 1,
+            "preReadResidentPages": 0,
+            "read": {
+              "kind": "file-page-evicted",
+              "elapsedMs": 27.5369,
+              "cpuMs": 25.385,
+              "processAllocatedBytes": 7898816,
+              "workingSetBytes": 545157120,
+              "peakWorkingSetBytes": 560304128,
+              "ioDelta": {
+                "rchar": 41461,
+                "wchar": 231,
+                "syscr": 87,
+                "syscw": 2,
+                "read_bytes": 12288,
+                "write_bytes": 0,
+                "cancelled_write_bytes": 0
+              },
+              "parses": 0,
+              "retainedScanSpans": 0,
+              "cacheHits": 0,
+              "identity": {
+                "agentId": "10000000-0000-0000-0000-000000001041",
+                "ownerEmail": "owner@cameraagent.browser",
+                "ownerBootstrapState": "owner-ready",
+                "configurationSha256": "E70947020ECDFE0828AC8206185DA6716045562DC3A21736C7F3D4059EE97579",
+                "rigProfileSha256": "B78E9DFDF82DC8087B889A04371F610B0A080D4811F8FE7B1B5EB34032D80755",
+                "scheduleSha256": "BB3758B944068657D7093B0D715AFF114360DE02E906908472A228350BAC9DC8",
+                "deploymentLocationId": "attribution-location",
+                "deploymentLocationVersion": 1,
+                "deploymentLocationSha256": "B24E6A36A7A6A4B06FE4488E9278BFAE8DA0DC7DFF7867285F88450A42F291CB",
+                "replayProfile": "InProcess",
+                "catalogId": "hyg-v42-fixture",
+                "packageVersion": "hyg-v42-fixture-1",
+                "schemaVersion": "2",
+                "preprocessingVersion": "3",
+                "databaseSha256": "F80689217769A6B13C1B9BFB9711485D3CB1AD8DE009D3D6B0F0B0A4F1FA9840",
+                "databaseLength": 16384,
+                "rowCount": 9
+              }
+            }
+          }
+        ],
+        "ordinaryReads": [
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 18.9057,
+            "allocatedBytes": 7715728,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 21.646,
+            "allocatedBytes": 8425568,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 19.1034,
+            "allocatedBytes": 7715000,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 21.6993,
+            "allocatedBytes": 8056592,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "configuration-load",
+            "elapsedMs": 17.133,
+            "allocatedBytes": 7714736,
+            "retainedScanSpans": 0
+          },
+          {
+            "kind": "continuity-http",
+            "elapsedMs": 19.128,
+            "allocatedBytes": 8054944,
+            "retainedScanSpans": 0
+          }
+        ],
+        "managedPublication": [
+          {
+            "elapsedMs": 12.6841,
+            "allocatedBytes": 348608,
+            "ioDelta": {
+              "rchar": 71958,
+              "wchar": 206918,
+              "syscr": 263,
+              "syscw": 103,
+              "read_bytes": 65536,
+              "write_bytes": 233472,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 14.6699,
+            "allocatedBytes": 206120,
+            "ioDelta": {
+              "rchar": 15782,
+              "wchar": 59334,
+              "syscr": 118,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 12.8618,
+            "allocatedBytes": 203800,
+            "ioDelta": {
+              "rchar": 14692,
+              "wchar": 59334,
+              "syscr": 114,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 10.788,
+            "allocatedBytes": 205360,
+            "ioDelta": {
+              "rchar": 14756,
+              "wchar": 59334,
+              "syscr": 116,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          },
+          {
+            "elapsedMs": 10.4918,
+            "allocatedBytes": 203200,
+            "ioDelta": {
+              "rchar": 14628,
+              "wchar": 59334,
+              "syscr": 113,
+              "syscw": 35,
+              "read_bytes": 0,
+              "write_bytes": 86016,
+              "cancelled_write_bytes": 0
+            }
+          }
+        ],
+        "restartQualification": {
+          "elapsedMs": 93470.1573,
+          "parses": 1,
+          "requalified": true
+        },
+        "persistedProofs": 300001
+      }
+    ]
+  },
+  "baselineReference": {
+    "report": "docs/validation/issue-1041-run2-scale.json",
+    "sha256": "331e1b15f264c35481da76a3cd936fa55f3b164806ed880c1cab7335ac7d50e7",
+    "measurementRevision": "0dc79eb582e2e2a583da98af0d50f61992fd2839",
+    "timingStatus": "Prior-run observations; not a new baseline run"
+  },
+  "baselineSourceExtension": {
+    "baseline": "0dc79eb582e2e2a583da98af0d50f61992fd2839",
+    "currentDevelopment": "558608be453c84382f4a2461c4149e65e0451b72",
+    "method": "Complete tracked blobs in retained/configuration/protected endpoint/CLI-read source closure; measurements remain prior-run observations, not a new baseline run",
+    "files": {
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/CameraAgentConfigurationAccessor.cs": {
+        "baseline": "fcafb7526ff51ef0891df3b1451a7f6111b6082d",
+        "currentDevelopment": "fcafb7526ff51ef0891df3b1451a7f6111b6082d"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/CameraAgentConfigurationInitializer.cs": {
+        "baseline": "657308d0bc08d5a83b1f18a38d1f939a5d1d5979",
+        "currentDevelopment": "657308d0bc08d5a83b1f18a38d1f939a5d1d5979"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/FileCameraAgentConfigurationLoader.cs": {
+        "baseline": "79cb05c959745b617ee84ff2ad4addf69a35db75",
+        "currentDevelopment": "79cb05c959745b617ee84ff2ad4addf69a35db75"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/ICameraAgentConfigurationAccessor.cs": {
+        "baseline": "7f374e19b60f1f6f23e71162780a34193e80147b",
+        "currentDevelopment": "7f374e19b60f1f6f23e71162780a34193e80147b"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/ICameraAgentConfigurationLoader.cs": {
+        "baseline": "79ed7604a39667e65da8b555ab45da9a45b893a6",
+        "currentDevelopment": "79ed7604a39667e65da8b555ab45da9a45b893a6"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/ICaptureAgentIdentityProvider.cs": {
+        "baseline": "3d5e910d7b4bacadc84ed3fa7415d452d3703110",
+        "currentDevelopment": "3d5e910d7b4bacadc84ed3fa7415d452d3703110"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/Configuration/OperatorSettingsFile.cs": {
+        "baseline": "f511bcbc8e883f3d633019d0652019a51a272304",
+        "currentDevelopment": "f511bcbc8e883f3d633019d0652019a51a272304"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationReadAttribution.cs": {
+        "baseline": "758b3a56b44ea057f5e37139ed438918e7a64395",
+        "currentDevelopment": "758b3a56b44ea057f5e37139ed438918e7a64395"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationStore.cs": {
+        "baseline": "243881f6f9b130b966db4eebdddfb4c6b1739e60",
+        "currentDevelopment": "243881f6f9b130b966db4eebdddfb4c6b1739e60"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/DeploymentLocationTelemetry.cs": {
+        "baseline": "7a462e14aed734a9a58733bd75f084f663c2a7c3",
+        "currentDevelopment": "7a462e14aed734a9a58733bd75f084f663c2a7c3"
+      },
+      "src/HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/ManualDeploymentLocationContracts.cs": {
+        "baseline": "6fe7c65ce6464d5df5473d70308beb0d9cd2a15a",
+        "currentDevelopment": "6fe7c65ce6464d5df5473d70308beb0d9cd2a15a"
+      },
+      "src/HVO.SkyMonitor.CameraAgent/Program.cs": {
+        "baseline": "3637e9308389f42452797e1dc6f2dcba72d08674",
+        "currentDevelopment": "3637e9308389f42452797e1dc6f2dcba72d08674"
+      },
+      "src/HVO.SkyMonitor.Deployment.Cli/OwnerBootstrapClient.cs": {
+        "baseline": "7a5355a96e9e2fd11bb9ba58f329594f9e7713fe",
+        "currentDevelopment": "7a5355a96e9e2fd11bb9ba58f329594f9e7713fe"
+      }
+    }
+  },
+  "sourceEquivalentCandidate": {
+    "measuredHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+    "candidateHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+    "unchangedRuntimeAndHarness": [
+      {
+        "path": "src/HVO.SkyMonitor.AgentCore",
+        "measuredBlob": "5c048e47709fa0c457fc1b0241f6b88acb392318",
+        "candidateBlob": "5c048e47709fa0c457fc1b0241f6b88acb392318"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Astronomy",
+        "measuredBlob": "00d9bacf8107e184e615ecffc3f20a5075017059",
+        "candidateBlob": "00d9bacf8107e184e615ecffc3f20a5075017059"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Cli",
+        "measuredBlob": "b5ed29680125970fdb303c3d65959ab82a726b5d",
+        "candidateBlob": "b5ed29680125970fdb303c3d65959ab82a726b5d"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common",
+        "measuredBlob": "c2960ce1a96c2db4778af55d8a54d22093ef197c",
+        "candidateBlob": "c2960ce1a96c2db4778af55d8a54d22093ef197c"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo",
+        "measuredBlob": "ed4f3e712e9a7a165bd578052f7787f61ea2b4ad",
+        "candidateBlob": "ed4f3e712e9a7a165bd578052f7787f61ea2b4ad"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Replay",
+        "measuredBlob": "cff78397d68d35bc60273492c3533d5f4e19965f",
+        "candidateBlob": "cff78397d68d35bc60273492c3533d5f4e19965f"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.ReplayRunner",
+        "measuredBlob": "cd228055eb7082b52b45c684c027b3fe8a0dc1b6",
+        "candidateBlob": "cd228055eb7082b52b45c684c027b3fe8a0dc1b6"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent",
+        "measuredBlob": "8c33f677740c6051b364782127beb4a77d1775ec",
+        "candidateBlob": "8c33f677740c6051b364782127beb4a77d1775ec"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Catalog.Sqlite",
+        "measuredBlob": "974fa7355e8dec842b987b264bf5794f7b241b22",
+        "candidateBlob": "974fa7355e8dec842b987b264bf5794f7b241b22"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Common",
+        "measuredBlob": "b202f5668142943b50421f098b05acef8f6dcf8a",
+        "candidateBlob": "b202f5668142943b50421f098b05acef8f6dcf8a"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Contracts",
+        "measuredBlob": "621639bd2d72a7926e9dd46258df0b1cbca2c62b",
+        "candidateBlob": "621639bd2d72a7926e9dd46258df0b1cbca2c62b"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Fleet.Contracts",
+        "measuredBlob": "86f0eb5da1e0ac15043c8cc564d9ddfaaef87672",
+        "candidateBlob": "86f0eb5da1e0ac15043c8cc564d9ddfaaef87672"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Imaging",
+        "measuredBlob": "b6a02777299b12f2c8cdcfdc97439f58eb3fb9fb",
+        "candidateBlob": "b6a02777299b12f2c8cdcfdc97439f58eb3fb9fb"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.LogicHost",
+        "measuredBlob": "6e84dbae9214c7b5499d7ff5a30be1cd6dff4249",
+        "candidateBlob": "6e84dbae9214c7b5499d7ff5a30be1cd6dff4249"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Processing",
+        "measuredBlob": "6ea017f4b14da1f976dc6254e92dec92c063e3b2",
+        "candidateBlob": "6ea017f4b14da1f976dc6254e92dec92c063e3b2"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.ProcessingRunner.Contracts",
+        "measuredBlob": "e3ad5691b159a4b26c5aca79cbfdd2013eec5d8b",
+        "candidateBlob": "e3ad5691b159a4b26c5aca79cbfdd2013eec5d8b"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.ProcessingRunner",
+        "measuredBlob": "29c0a8d9406e7c35cf67834b9b0a47299977db6e",
+        "candidateBlob": "29c0a8d9406e7c35cf67834b9b0a47299977db6e"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Storage.FileSystem",
+        "measuredBlob": "a0f7c5ab486ee35518422e1fb89f417a927696a7",
+        "candidateBlob": "a0f7c5ab486ee35518422e1fb89f417a927696a7"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.TerminalUi",
+        "measuredBlob": "feb1939a7fac45aedec2376b1f42174a8d47ac90",
+        "candidateBlob": "feb1939a7fac45aedec2376b1f42174a8d47ac90"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.TestSupport",
+        "measuredBlob": "49f2de4d871d0f83893dc12abc1e052d32715a93",
+        "candidateBlob": "49f2de4d871d0f83893dc12abc1e052d32715a93"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Video.FFmpeg",
+        "measuredBlob": "a9b10ba7417a5fcf1a95908a6efcca796f05564e",
+        "candidateBlob": "a9b10ba7417a5fcf1a95908a6efcca796f05564e"
+      },
+      {
+        "path": "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+        "measuredBlob": "cc6de3d49bd2d1864cf6724c368631e0d5e14780",
+        "candidateBlob": "cc6de3d49bd2d1864cf6724c368631e0d5e14780"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Cli/CameraConfiguration.cs",
+        "measuredBlob": "f926661bbb9609648d46da883bd2cdafe8f3a875",
+        "candidateBlob": "f926661bbb9609648d46da883bd2cdafe8f3a875"
+      },
+      {
+        "path": "scripts",
+        "measuredBlob": "442e107d4aec75418656fb8629919f7ce539b908",
+        "candidateBlob": "442e107d4aec75418656fb8629919f7ce539b908"
+      },
+      {
+        "path": "tools",
+        "measuredBlob": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a",
+        "candidateBlob": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a"
+      },
+      {
+        "path": ".github",
+        "measuredBlob": "81526742f56c8642f71a6bb00326bcdfce4e29a9",
+        "candidateBlob": "81526742f56c8642f71a6bb00326bcdfce4e29a9"
+      },
+      {
+        "path": "global.json",
+        "measuredBlob": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+        "candidateBlob": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686"
+      },
+      {
+        "path": "Directory.Build.props",
+        "measuredBlob": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+        "candidateBlob": "cbb8c30860f96568419226d54a5b65334c0dd8d4"
+      },
+      {
+        "path": "Directory.Build.targets",
+        "measuredBlob": "c20a45477257b954984f2a8da9fdc939e54551a6",
+        "candidateBlob": "c20a45477257b954984f2a8da9fdc939e54551a6"
+      },
+      {
+        "path": "Directory.Packages.props",
+        "measuredBlob": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19",
+        "candidateBlob": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19"
+      },
+      {
+        "path": "HVO.SkyMonitor.v9.slnx",
+        "measuredBlob": "8a20aed6d34edd985bb7292068cfcdab9981c229",
+        "candidateBlob": "8a20aed6d34edd985bb7292068cfcdab9981c229"
+      },
+      {
+        "path": "dotnet-tools.json",
+        "measuredBlob": "abbb20b1e1389af7707ba10563bf7079dcdb26c3",
+        "candidateBlob": "abbb20b1e1389af7707ba10563bf7079dcdb26c3"
+      }
+    ],
+    "changedPaths": [
+      "docs/runbooks/ci-pipeline.md",
+      "docs/runbooks/deployment-installer.md",
+      "docs/validation/issue-1041-run3-high-corrections.md",
+      "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycleManager.Restore.cs",
+      "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.Integrity.cs",
+      "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Restore.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json"
+    ],
+    "classifierDelta": "CI classification: mode=full deployment=true complete=false shared=false cameraagent=true logichost=false combined=false delivery=true secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=pull request changes only component-scoped paths paths=8\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=true\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=false\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=false\n",
+    "scope": "Agent endpoint runtime, complete Acceptance harness, configuration generator and build/package inputs unchanged. Initial all-component evidence retained; fresh CameraAgent/Delivery evidence covers the only selected component delta. SourceRevision informational metadata differs on rebuild; every process still requires its own scrub epoch."
+  },
+  "corpusComparison": [
+    {
+      "captures": 100001,
+      "sidecars": 100001,
+      "manifestChecksumAndJournalLengthMatchPriorBaseline": true
+    },
+    {
+      "captures": 300000,
+      "sidecars": 300000,
+      "manifestChecksumAndJournalLengthMatchPriorBaseline": true
+    },
+    {
+      "captures": 100000,
+      "sidecars": 300000,
+      "manifestChecksumAndJournalLengthMatchPriorBaseline": true
+    }
+  ]
+}

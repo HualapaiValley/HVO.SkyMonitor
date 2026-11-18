@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 [DoNotParallelize]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "Configured disposal would hide the strongly typed fixture.")]
-public sealed class InstallationVerificationReadTests
+public sealed partial class InstallationVerificationReadTests
 {
     private static readonly ActivitySource ReadSource = new("HVO.Issue1559");
     public TestContext TestContext { get; set; } = null!;
@@ -29,7 +29,7 @@ public sealed class InstallationVerificationReadTests
     public async Task RepeatedDelayedAndConcurrentReadsObserveActualEditsAndRejectInvalidState()
     {
         await using var fixture = await InstallationReadAttributionFixture.CreateAsync(Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_EVIDENCE_DIR"), solar: false).ConfigureAwait(false);
-        var corpus = await fixture.SeedAsync(2, 2).ConfigureAwait(false);
+        _ = await fixture.SeedAsync(2, 2).ConfigureAwait(false);
         using var client = fixture.CreateClient();
         using var stages = new InstallationReadStageCollector();
         using (var deniedTrace = StartTrace("denied")!)
@@ -53,7 +53,7 @@ public sealed class InstallationVerificationReadTests
             Assert.AreEqual(first.GetRawText(), repeated.GetRawText());
             var recorded = stages.ForTrace(trace.TraceId);
             Assert.AreEqual(1, recorded.Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
-            AssertRetainedAttribution(recorded, corpus);
+            AssertBoundedRead(recorded);
         }
         fixture.Loader.DelayNextRead();
         var entered = fixture.Loader.Entered;
@@ -80,13 +80,16 @@ public sealed class InstallationVerificationReadTests
         var concurrent = await Task.WhenAll(Enumerable.Range(0, 4)
             .Select(_ => MeasureAsync("concurrent-regression", fixture, client, stages))).ConfigureAwait(false);
         Assert.IsTrue(concurrent.All(value => value.Identity.GetRawText() == changed.GetRawText()));
-        foreach (var read in concurrent) AssertRetainedAttribution(read.Stages, corpus);
+        foreach (var read in concurrent) AssertBoundedRead(read.Stages);
 
         var manual = fixture.Locations.Manual;
         var locationChange = await fixture.Locations.ApplyManualAsync(new ManualDeploymentLocationRequest(
             35.6, -113.9, 600, "America/Phoenix", manual.KnownVersion, manual.ManualSequence,
             "issue-1559-change", "disposable-test", "Actual retained location edit"), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(ManualDeploymentLocationStatus.Applied, locationChange.Status);
+        _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
+        _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         using var relocatedTrace = StartTrace("manual-location-change")!;
         var relocated = await fixture.ReadAsync(client).ConfigureAwait(false);
         Assert.AreEqual(2, stages.ForTrace(relocatedTrace.TraceId).Count(stage => stage.Name == "configuration.schedule-expand-366-days"));
@@ -95,16 +98,18 @@ public sealed class InstallationVerificationReadTests
         Assert.AreNotEqual(changed.GetProperty("deploymentLocationSha256").GetString(), relocated.GetProperty("deploymentLocationSha256").GetString());
         Assert.AreEqual(changed.GetProperty("configurationSha256").GetString(), relocated.GetProperty("configurationSha256").GetString());
 
-        // Both retained-file and journal edits must be inspected again after successful reads.
+        // Approved policy: out-of-band edits are detected by a full scrub, then protected reads refuse.
         var manifestPath = Path.Combine(fixture.IngressRoot, "fixtures", "00001.json");
         var originalManifest = await File.ReadAllBytesAsync(manifestPath).ConfigureAwait(false);
         var altered = JsonNode.Parse(originalManifest)!;
         altered["descriptor"]!["location"]!["version"] = 999;
         await File.WriteAllTextAsync(manifestPath, altered.ToJsonString()).ConfigureAwait(false);
-        var rejectedFile = await AssertRejectedAsync(fixture, client, stages).ConfigureAwait(false);
-        Assert.IsTrue(rejectedFile.Any(stage => stage.Name == "deployment-location.validate-retained-files"));
-        Assert.IsFalse(rejectedFile.Any(stage => stage.Name == "deployment-location.validate-retained-journal"), "File rejection precedes journal inspection.");
+        _ = await fixture.ReadAsync(client).ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None)).ConfigureAwait(false);
+        _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
         await File.WriteAllBytesAsync(manifestPath, originalManifest).ConfigureAwait(false);
+        // Repairing files out of band requires a full scrub; ordinary loads only queue one.
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         _ = await fixture.ReadAsync(client).ConfigureAwait(false);
         using (var connection = new SqliteConnection($"Data Source={fixture.JournalPath};Pooling=False"))
         {
@@ -115,11 +120,13 @@ public sealed class InstallationVerificationReadTests
             command.CommandText = "UPDATE raw_captures SET manifest_json=$manifest WHERE capture_sequence=3;";
             command.Parameters.AddWithValue("$manifest", System.Text.Encoding.UTF8.GetBytes(altered.ToJsonString()));
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-            var rejectedJournal = await AssertRejectedAsync(fixture, client, stages).ConfigureAwait(false);
-            Assert.IsTrue(rejectedJournal.Any(stage => stage.Name == "deployment-location.validate-retained-journal"));
+            _ = await fixture.ReadAsync(client).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None)).ConfigureAwait(false);
+            _ = await AssertRejectedAsync(fixture, client, stages, HttpStatusCode.ServiceUnavailable).ConfigureAwait(false);
             command.Parameters["$manifest"].Value = originalJournalManifest;
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
+        _ = await fixture.Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         _ = await fixture.ReadAsync(client).ConfigureAwait(false);
         // Unsupported current configuration must also fail before a previously validated identity can escape.
         var configNode = JsonNode.Parse(await File.ReadAllTextAsync(fixture.ConfigPath).ConfigureAwait(false))!;
@@ -177,6 +184,7 @@ public sealed class InstallationVerificationReadTests
         {
             await using var fixture = await InstallationReadAttributionFixture.CreateAsync(output, solar).ConfigureAwait(false);
             using var client = fixture.CreateClient();
+            _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             var samples = new List<ReadMeasurement>
             {
                 await MeasureAsync("cold-host-empty", fixture, client, null).ConfigureAwait(false)
@@ -211,6 +219,7 @@ public sealed class InstallationVerificationReadTests
                 35.6, -113.9, 600, "America/Phoenix", manual.KnownVersion, manual.ManualSequence,
                 "issue-1559-measured", "disposable-measurement", "Measured location change"), CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(ManualDeploymentLocationStatus.Applied, result.Status);
+            _ = await fixture.Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
             samples.Add(await MeasureAsync("location-change", fixture, client, stages).ConfigureAwait(false));
             var after = samples[^1].Identity;
             Assert.AreNotEqual(before.GetProperty("configurationSha256").GetString(), after.GetProperty("configurationSha256").GetString());
@@ -257,6 +266,46 @@ public sealed class InstallationVerificationReadTests
         TestContext.AddResultFile(path);
     }
 
+    [TestMethod]
+    [TestCategory("Manual")]
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Each async fixture is disposed by await using within its loop iteration.")]
+    public async Task LargeRetainedCorpusRecordsCurrentEndpointCost()
+    {
+        var output = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_EVIDENCE_DIR")
+            ?? throw new InvalidOperationException(InstallationReadAttributionFixture.EvidenceRootGuidance);
+        var results = new List<object>();
+        foreach (var solar in new[] { false, true })
+            foreach (var count in new[] { 1_000, 10_000, 100_001 })
+            {
+                await using var fixture = await InstallationReadAttributionFixture.CreateAsync(output, solar).ConfigureAwait(false);
+                var corpus = await fixture.SeedScaleAsync(count).ConfigureAwait(false);
+#if !HVO_BASELINE
+                await fixture.QualifyLegacyScaleAsync().ConfigureAwait(false);
+#endif
+                using var client = fixture.CreateClient();
+                var first = await MeasureAsync("first-populated", fixture, client, null).ConfigureAwait(false);
+                for (var warmup = 0; warmup < 5; warmup++)
+                    _ = await fixture.ReadAsync(client).ConfigureAwait(false);
+                var before = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
+                var reads = new List<ReadMeasurement>();
+                for (var sample = 0; sample < 5; sample++)
+                    reads.Add(await MeasureAsync("scale-repeat", fixture, client, null).ConfigureAwait(false));
+                Assert.IsTrue(reads.All(read => read.Identity.GetRawText() == first.Identity.GetRawText()));
+                Assert.AreEqual(before, await fixture.HashRetainedInputsAsync().ConfigureAwait(false));
+                results.Add(new { Solar = solar, Captures = count, Corpus = corpus, First = first, Reads = reads });
+                var report = Path.Combine(output, "installation-read-scale.json");
+                await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new
+                {
+                    Revision = Environment.GetEnvironmentVariable("HVO_ATTRIBUTION_REVISION"),
+                    Runtime = RuntimeInformation.FrameworkDescription,
+                    ProcessorCount = Environment.ProcessorCount,
+                    HeapAvailableBytes = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes,
+                    Results = results
+                }, InstallationReadAttributionFixture.EvidenceJson)).ConfigureAwait(false);
+                TestContext.AddResultFile(report);
+            }
+    }
+
     private static Activity? StartTrace(string name) => ReadSource.StartActivity(name, ActivityKind.Internal,
         new ActivityContext(ActivityTraceId.CreateRandom(), ActivitySpanId.CreateRandom(), ActivityTraceFlags.Recorded));
 
@@ -296,37 +345,11 @@ public sealed class InstallationVerificationReadTests
         { Memory = ReadMemorySnapshot.Capture() };
     }
 
-    private static void AssertRetainedAttribution(InstallationReadStage[] stages, FixtureIdentity corpus)
+    private static void AssertBoundedRead(InstallationReadStage[] stages)
     {
-        var files = stages.Single(stage => stage.Name == "deployment-location.validate-retained-files");
-        var journal = stages.Single(stage => stage.Name == "deployment-location.validate-retained-journal");
-        AssertTag(files, "manifest.count", 2);
-        AssertTag(journal, "manifest.count", 2);
-        AssertTag(files, "enumeration.count", 4); // creation, two files, terminal MoveNext
-        AssertTag(files, "security.count", 2);
-        AssertTag(files, "read.count", 2);
-        AssertTag(journal, "security.count", 1);
-        AssertTag(journal, "open.count", 1);
-        AssertTag(journal, "query.count", 2);
-        AssertTag(journal, "read.count", 3); // two rows and terminal Read
-        Assert.AreEqual(corpus.ManifestBytes,
-            (long)files.NumericTags["attribution.manifest.bytes"] + (long)journal.NumericTags["attribution.manifest.bytes"]);
-        foreach (var stage in new[] { files, journal })
-        {
-            AssertTag(stage, "parse.count", 2);
-            AssertTag(stage, "provenance.count", 2);
-            Assert.AreEqual(stage.NumericTags["attribution.manifest.bytes"], stage.NumericTags["attribution.read.bytes"]);
-            Assert.AreEqual(stage.NumericTags["attribution.manifest.bytes"], stage.NumericTags["attribution.parse.bytes"]);
-            foreach (var leaf in stage.NumericTags.Keys.Where(key => key.EndsWith(".count", StringComparison.Ordinal) && key != "attribution.manifest.count"))
-            {
-                var prefix = leaf[..^".count".Length];
-                Assert.IsTrue((double)stage.NumericTags[prefix + ".elapsed_ms"] >= 0);
-                Assert.IsTrue((long)stage.NumericTags[prefix + ".thread_allocated_bytes"] >= 0);
-            }
-        }
+        Assert.IsFalse(stages.Any(stage => stage.Name.StartsWith("deployment-location.validate-retained", StringComparison.Ordinal)),
+            "A qualified protected endpoint must not enumerate/hash/parse retained history.");
         AssertProtectedRead(stages.Single(stage => stage.Name == "deployment-location.read-protected-history"));
-        Assert.AreEqual(4, stages.Count(stage => stage.Name.StartsWith("deployment-location.", StringComparison.Ordinal)
-            && stage.Name != "deployment-location.initialize"), "Attribution span count must be independent of corpus size.");
     }
 
     private static void AssertProtectedRead(InstallationReadStage stage)
@@ -360,7 +383,7 @@ public sealed class InstallationVerificationReadTests
         => ReadIo().ToDictionary(pair => pair.Key, pair => pair.Value - before[pair.Key]);
 
     private static async Task<InstallationReadStage[]> AssertRejectedAsync(InstallationReadAttributionFixture fixture,
-        HttpClient client, InstallationReadStageCollector stages)
+        HttpClient client, InstallationReadStageCollector stages, HttpStatusCode expected = HttpStatusCode.InternalServerError)
     {
         Assert.AreEqual(fixture.Host.BaseAddress, client.BaseAddress);
         var retainedBefore = await fixture.HashRetainedInputsAsync().ConfigureAwait(false);
@@ -369,7 +392,7 @@ public sealed class InstallationVerificationReadTests
         request.Headers.Add("X-HVO-Installation-Token", CameraAgentKestrelFixture.InstallationVerificationToken);
         request.Headers.Add("traceparent", trace.Id);
         using var response = await client.SendAsync(request).ConfigureAwait(false);
-        Assert.AreEqual(HttpStatusCode.InternalServerError, response.StatusCode);
+        Assert.AreEqual(expected, response.StatusCode);
         Assert.AreEqual(retainedBefore, await fixture.HashRetainedInputsAsync().ConfigureAwait(false), "Rejected reads must not mutate retained inputs.");
         return stages.ForTrace(trace.TraceId);
     }

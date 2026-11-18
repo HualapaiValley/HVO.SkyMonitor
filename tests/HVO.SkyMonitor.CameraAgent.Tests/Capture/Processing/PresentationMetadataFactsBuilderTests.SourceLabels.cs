@@ -1,0 +1,137 @@
+using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
+
+namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+
+public sealed partial class PresentationMetadataFactsBuilderTests
+{
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task OverlayRetainsAgeSourceAndMixedLabelsWithinTheLineLimit(bool legacyVirtualSource, bool longIdentity)
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var station = Fact(Guid.NewGuid(), EnvironmentalObservationKind.AirTemperature, 20, sourceId: "station");
+        station = station with
+        {
+            SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+            Source = station.Source with
+            {
+                Provider = longIdentity ? new string('P', 128) : "LocalWeatherStation",
+                SourceId = longIdentity ? new string('S', 128) : "station"
+            }
+        };
+        var virtualHumidity = Fact(Guid.NewGuid(), EnvironmentalObservationKind.RelativeHumidity, 45, sourceId: "virtual");
+        virtualHumidity = virtualHumidity with
+        {
+            SchemaVersion = legacyVirtualSource ? EnvironmentalObservationSchemaVersions.V1 : EnvironmentalObservationSchemaVersions.V3,
+            Source = virtualHumidity.Source with { Provider = "VirtualEnvironment", Kind = EnvironmentalObservationSourceKind.Simulated }
+        };
+        await CommitAsync(store, station).ConfigureAwait(false);
+        await CommitAsync(store, virtualHumidity).ConfigureAwait(false);
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var kinds = new[] { EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationKind.RelativeHumidity };
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, kinds, CancellationToken.None).ConfigureAwait(false);
+        fixture.Context.BeginNode("environment-labels", []);
+        var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture),
+            kinds, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var layer = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
+        var lines = layer.TextBlocks.Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
+        Assert.AreEqual("ENVIRONMENT MIXED SOURCES", lines[0]);
+        var stationLine = lines.Single(line => line.Contains("MEASURED", StringComparison.Ordinal));
+        Assert.IsTrue(stationLine.Contains("SRC ", StringComparison.Ordinal));
+        if (longIdentity) Assert.IsTrue(stationLine.Contains('…', StringComparison.Ordinal));
+        else Assert.IsTrue(stationLine.Contains("SRC LocalWeatherStation/station", StringComparison.Ordinal));
+        Assert.IsTrue(stationLine.Contains("AGE ", StringComparison.Ordinal));
+        Assert.IsTrue(stationLine.Contains("MEASURED", StringComparison.Ordinal));
+        Assert.IsTrue(lines.All(line => line.Length <= PresentationLayerPayloadV1.MaximumLineCharacters));
+        Assert.HasCount(2, facts.Environment);
+    }
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OneLocalEnvironmentDoesNotConsumeAMixedSourceOverlayRow(bool measured)
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        var air = Fact(Guid.NewGuid(), EnvironmentalObservationKind.AirTemperature, 20, sourceId: "standalone-temperature");
+        air = air with
+        {
+            Source = air.Source with
+            {
+                Provider = measured ? "LocalWeatherStation" : "virtual-environment",
+                Kind = measured ? EnvironmentalObservationSourceKind.Measured : EnvironmentalObservationSourceKind.Simulated
+            }
+        };
+        var humidity = Fact(Guid.NewGuid(), EnvironmentalObservationKind.RelativeHumidity, 45, sourceId: "standalone-humidity");
+        humidity = humidity with
+        {
+            Source = humidity.Source with
+            {
+                Provider = measured ? "InfraredSky" : "virtual-environment",
+                Kind = measured ? EnvironmentalObservationSourceKind.Measured : EnvironmentalObservationSourceKind.Simulated
+            }
+        };
+        await CommitAsync(store, air).ConfigureAwait(false);
+        await CommitAsync(store, humidity).ConfigureAwait(false);
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var kinds = new[] { air.Value.Kind, humidity.Value.Kind };
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, kinds, CancellationToken.None).ConfigureAwait(false);
+        fixture.Context.BeginNode("single-environment", []);
+        var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture),
+            kinds, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var layer = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216);
+        var lines = layer.TextBlocks.Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
+        Assert.AreEqual("ENVIRONMENT", lines[0]);
+        Assert.IsTrue(lines.Any(line => line.StartsWith("AIR ", StringComparison.Ordinal)));
+        Assert.IsTrue(lines.Any(line => line.StartsWith("RH ", StringComparison.Ordinal)));
+    }
+
+    [TestMethod]
+    public async Task MixedOriginMarkerPreservesAllSevenEnvironmentalReadingRows()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox();
+        (EnvironmentalObservationKind Kind, EnvironmentalObservationUnit Unit, double Value)[] values =
+        [
+            (EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationUnit.DegreesCelsius, 20),
+            (EnvironmentalObservationKind.RelativeHumidity, EnvironmentalObservationUnit.Percent, 45),
+            (EnvironmentalObservationKind.CloudCover, EnvironmentalObservationUnit.Fraction, 0.3),
+            (EnvironmentalObservationKind.WindSpeed, EnvironmentalObservationUnit.MetersPerSecond, 2),
+            (EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationUnit.Pascals, 90000),
+            (EnvironmentalObservationKind.PrecipitationRate, EnvironmentalObservationUnit.MillimetersPerHour, 1),
+            (EnvironmentalObservationKind.SkyQuality, EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond, 21)
+        ];
+        foreach (var (kind, unit, value) in values)
+        {
+            var fact = Fact(Guid.NewGuid(), kind, value, sourceId: kind.ToString());
+            fact = fact with
+            {
+                Value = fact.Value with { Unit = unit },
+                Source = fact.Source with
+                { Kind = kind == EnvironmentalObservationKind.RelativeHumidity ? EnvironmentalObservationSourceKind.Imported : EnvironmentalObservationSourceKind.Measured }
+            };
+            await CommitAsync(store, fact).ConfigureAwait(false);
+        }
+        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var kinds = values.Select(item => item.Kind).ToArray();
+        await fixture.Associations.AssociateAsync(fixture.Descriptor.Capture.CaptureId, fixture.Descriptor.Capture.CaptureSequence,
+            fixture.Descriptor.Timing.ExposureStartedUtc, fixture.Descriptor.Timing.ExposureEndedUtc,
+            fixture.Descriptor.Capture.RigId, kinds, CancellationToken.None).ConfigureAwait(false);
+        fixture.Context.BeginNode("seven-environment-readings", []);
+        var facts = await fixture.Builder.BuildAsync(fixture.Context, fixture.Scene, fixture.Stack, SourceIds(fixture), kinds, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var lines = PresentationLayerProducers.FromMetadataFacts(facts.Corners, 1936, 1216).TextBlocks
+            .Single(block => block.Anchor == PresentationTextAnchor.BottomLeft).Lines;
+        Assert.HasCount(8, lines);
+        Assert.AreEqual("ENVIRONMENT MIXED SOURCES", lines[0]);
+        foreach (var reading in facts.Environment) CollectionAssert.Contains(lines.ToArray(), reading.DisplayLine);
+    }
+
+}

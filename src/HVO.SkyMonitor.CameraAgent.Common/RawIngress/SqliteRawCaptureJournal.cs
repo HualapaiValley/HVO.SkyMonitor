@@ -24,10 +24,11 @@ internal sealed partial class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null)
 {
-    // v15 fences readers that do not preserve audited evidence dispositions and retention holds.
-    internal const int CurrentSchemaVersion = 15;
+    // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
+    internal const int CurrentSchemaVersion = 16;
     internal const int PreviousSchemaVersion = 13;
     internal const int PreviousRecoverySchemaVersion = 14;
+    internal const int PreviousEvidenceSchemaVersion = 15;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
@@ -55,6 +56,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "processing_execution_input_pins",
         "processing_execution_output_input_pins",
         "processing_execution_outputs",
+        "processing_execution_manifest_counts",
         "processing_replay_work",
         "ix_processing_outputs_capture_node",
         "ix_processing_outputs_window",
@@ -130,7 +132,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                     $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
             }
             initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && !initializeSchema)
+            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && version != PreviousEvidenceSchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
                     $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -145,11 +147,13 @@ internal sealed partial class SqliteRawCaptureJournal(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
             cancellationToken).ConfigureAwait(false);
         if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion))
+            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion && writableVersion != PreviousEvidenceSchemaVersion))
         {
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
         }
+        using var integrityMigration = !initializeSchema && writableVersion != CurrentSchemaVersion
+            ? DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath) : null;
         if (initializeSchema)
         {
             try
@@ -182,7 +186,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion)
+        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion or PreviousEvidenceSchemaVersion)
         {
             try
             {
@@ -479,6 +483,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         ProcessingLiveExecutionSeed? liveExecution,
         CancellationToken cancellationToken)
     {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalTransactionBegan);
@@ -1126,6 +1131,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        await SqliteCaptureProcessingStore.InitializeManifestLedgersAsync(connection, transaction, execution.ExecutionId,
+            execution.Revision.Nodes.Select(static node => node.NodeId), cancellationToken).ConfigureAwait(false);
         foreach (var node in execution.Revision.Nodes)
         {
             using var insertNode = connection.CreateCommand();
@@ -1437,6 +1444,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
         CancellationToken cancellationToken)
     {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var claims = await ReadClaimsAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);

@@ -613,6 +613,44 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
+    public async Task CaptureReceiptRetentionAndOperatorCommandCapacityAreIndependent()
+    {
+        using var store = new SqliteEnvironmentalObservationOutbox(new MutableTimeProvider(Epoch));
+        var payload = new string('A', 64);
+        _ = await store.ClaimOnDemandAsync(_root!, "operator-seed", payload, "temperature", "owner", null,
+            Epoch, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        { DataSource = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db") }.ToString());
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var seed = connection.CreateCommand();
+        seed.CommandText = """
+            WITH RECURSIVE numbers(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM numbers WHERE value < $maximum)
+            INSERT INTO environmental_on_demand_commands(
+                idempotency_key, payload_sha256, source_id, actor_id, reason, observed_unix_ms,
+                status, lease_token, lease_expires_unix_ms, receipt_json, updated_unix_ms)
+            SELECT $prefix || numbers.value, payload_sha256, source_id, actor_id, reason, observed_unix_ms,
+                status, lease_token, lease_expires_unix_ms, receipt_json, updated_unix_ms
+            FROM environmental_on_demand_commands AS template, numbers WHERE template.idempotency_key = 'operator-seed';
+            """;
+        seed.Parameters.AddWithValue("$prefix", "__capture-before:retained-");
+        seed.Parameters.AddWithValue("$maximum", SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts);
+        await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Claimed, (await store.ClaimOnDemandAsync(
+            _root!, "operator-next", payload, "temperature", "owner", null, Epoch, TimeSpan.FromMinutes(1), CancellationToken.None)
+            .ConfigureAwait(false)).Disposition);
+
+        seed.Parameters["$prefix"].Value = "operator-history-";
+        seed.Parameters["$maximum"].Value = SqliteEnvironmentalObservationOutbox.MaximumOperationReceipts - 2;
+        await seed.ExecuteNonQueryAsync().ConfigureAwait(false);
+        await Assert.ThrowsExactlyAsync<EnvironmentalOnDemandCommandCapacityException>(async () =>
+            await store.ClaimOnDemandAsync(_root!, "operator-over-capacity", payload, "temperature", "owner", null,
+                Epoch, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalOnDemandClaimDisposition.Claimed, (await store.ClaimOnDemandAsync(
+            _root!, EnvironmentalCaptureAcquisition.Prefix(Guid.NewGuid()) + "source", payload, "temperature", "capture-before", null,
+            Epoch, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false)).Disposition);
+    }
+
+    [TestMethod]
     public async Task OnDemandCommandIsLeasedConflictCheckedAndDurablyReplayable()
     {
         const string key = "environment-command-1";
@@ -819,6 +857,73 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
+    public async Task VersionThreeMigratesRetentionIndexesWithoutChangingPersistedPayloads()
+    {
+        var fact = CreateObservation(Guid.NewGuid());
+        var scope = Guid.NewGuid();
+        var key = EnvironmentalCaptureAcquisition.Prefix(scope) + "sqm";
+        var now = DateTimeOffset.UtcNow;
+        var receipt = new EnvironmentalAcquisitionReceipt("sqm", EnvironmentalAcquisitionTrigger.BeforeCapture,
+            EnvironmentalAcquisitionDisposition.Failed, "source-failure", null, now, now);
+        using (var initial = new SqliteEnvironmentalObservationOutbox())
+        {
+            await initial.EnqueueAsync(_root!, fact, CancellationToken.None).ConfigureAwait(false);
+            var claim = await initial.ClaimOnDemandAsync(_root!, key, new string('A', 64), "sqm", "capture-before", null,
+                now, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+            await initial.CompleteOnDemandAsync(_root!, key, claim.LeaseToken, receipt, CancellationToken.None).ConfigureAwait(false);
+        }
+        SqliteConnection.ClearAllPools();
+        using (var setup = new SqliteConnection($"Data Source={Path.Combine(_root!, ".environment", "environmental-observation-outbox.db")};Pooling=False"))
+        {
+            await setup.OpenAsync().ConfigureAwait(false);
+            using var downgrade = setup.CreateCommand();
+            downgrade.CommandText = "DROP INDEX IF EXISTS ix_environment_on_demand_retention; DROP INDEX IF EXISTS ix_environment_attempt_retention; PRAGMA user_version=3;";
+            await downgrade.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        using var migrated = new SqliteEnvironmentalObservationOutbox();
+        var lease = await migrated.ClaimAsync(_root!, "migration", TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        CollectionAssert.AreEqual(EnvironmentalObservationJson.Serialize(fact), EnvironmentalObservationJson.Serialize(lease.Record.Observation));
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(_root!, ".environment", "environmental-observation-outbox.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var inspect = connection.CreateCommand();
+        inspect.CommandText = "SELECT receipt_json FROM environmental_on_demand_commands WHERE idempotency_key = $key;";
+        inspect.Parameters.AddWithValue("$key", key);
+        CollectionAssert.AreEqual(JsonSerializer.SerializeToUtf8Bytes(receipt), (byte[])(await inspect.ExecuteScalarAsync().ConfigureAwait(false))!);
+        var availability = await migrated.ReadCaptureAvailabilityAsync(_root!, Guid.NewGuid(), scope, CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.Contains(availability.UnavailableSources.ToArray(), "sqm");
+        inspect.CommandText = "PRAGMA user_version;";
+        Assert.AreEqual(4L, await inspect.ExecuteScalarAsync().ConfigureAwait(false));
+        inspect.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('ix_environment_on_demand_retention','ix_environment_attempt_retention');";
+        Assert.AreEqual(2L, await inspect.ExecuteScalarAsync().ConfigureAwait(false));
+        inspect.CommandText = "EXPLAIN QUERY PLAN SELECT idempotency_key FROM environmental_on_demand_commands WHERE updated_unix_ms < 100 ORDER BY updated_unix_ms, idempotency_key LIMIT 1000;";
+        using var plan = await inspect.ExecuteReaderAsync().ConfigureAwait(false);
+        Assert.IsTrue(await plan.ReadAsync().ConfigureAwait(false));
+        StringAssert.Contains(plan.GetString(3), "ix_environment_on_demand_retention", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task MalformedVersionThreeIsRejectedBeforeIndexMigrationWithoutMutation()
+    {
+        using (var current = new SqliteEnvironmentalObservationOutbox())
+            await current.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        SqliteConnection.ClearAllPools();
+        var path = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        using (var setup = new SqliteConnection($"Data Source={path};Pooling=False"))
+        {
+            await setup.OpenAsync().ConfigureAwait(false);
+            using var change = setup.CreateCommand();
+            change.CommandText = "DROP INDEX ix_environment_on_demand_retention; DROP INDEX ix_environment_attempt_retention; DROP INDEX ix_environment_attempt_source; PRAGMA user_version=3;";
+            await change.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        var before = ReadDatabaseFiles(path);
+        using var rejected = new SqliteEnvironmentalObservationOutbox();
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await rejected.GetSnapshotAsync(_root!, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        AssertDatabaseFilesUnchanged(before, ReadDatabaseFiles(path));
+    }
+
+    [TestMethod]
     public async Task SchemaUsesWalStrictVersionedFullDurabilityWithoutCredentialColumns()
     {
         using var outbox = new SqliteEnvironmentalObservationOutbox();
@@ -828,7 +933,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         await connection.OpenAsync().ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(3L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+        Assert.AreEqual(4L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA journal_mode;";
         Assert.AreEqual("wal", (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA synchronous;";
@@ -919,7 +1024,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
 
     [TestMethod]
     [DataRow(1)]
-    [DataRow(4)]
+    [DataRow(5)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The switch selects one of two fixed test statements.")]
     public async Task UnsupportedVersionMarkerIsRejectedWithoutMutation(int version)
     {
@@ -937,7 +1042,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             command.CommandText = version switch
             {
                 1 => "PRAGMA user_version=1;",
-                4 => "PRAGMA user_version=4;",
+                5 => "PRAGMA user_version=5;",
                 _ => throw new InvalidOperationException("Unsupported test schema version.")
             };
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -971,7 +1076,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         Assert.AreEqual(1, enabled);
         using (var command = setup.CreateCommand())
         {
-            command.CommandText = "PRAGMA wal_autocheckpoint=0; PRAGMA user_version=4;";
+            command.CommandText = "PRAGMA wal_autocheckpoint=0; PRAGMA user_version=5;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         var filesBefore = ReadDatabaseFiles(databasePath);

@@ -18,6 +18,9 @@ public sealed class CameraModuleManualFocusPreviewSource(
     private readonly CaptureAdmissionCoordinator _admission = admission;
     private readonly TimeProvider _timeProvider = timeProvider;
 
+    public Task EnsureAdmissionAvailableAsync(CancellationToken cancellationToken)
+        => _admission.EnsureLifecycleCaptureAllowedAsync(cancellationToken);
+
     public ManualFocusSessionAvailability GetAvailability()
     {
         if (_admission.Snapshot.State == CaptureAdmissionState.Unavailable)
@@ -47,6 +50,7 @@ public sealed class CameraModuleManualFocusPreviewSource(
         double? simulatedFocusPosition, long? expectedGeneration, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(settings);
+        await EnsureAdmissionAvailableAsync(cancellationToken).ConfigureAwait(false);
         if (_admission.Snapshot.State == CaptureAdmissionState.Unavailable)
         {
             throw AdmissionUnavailable();

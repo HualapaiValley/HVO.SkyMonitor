@@ -7,6 +7,16 @@ internal static class SqliteConnectionConfigurationGate
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
+    // The retained ledger has synchronous durable-publication callers. They must
+    // share the same configuration gate as asynchronous stores.
+    internal static void Run(Action callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        Gate.Wait();
+        try { callback(); }
+        finally { Gate.Release(); }
+    }
+
     internal static async ValueTask OpenAndConfigureAsync(
         SqliteConnection connection,
         Func<SqliteConnection, CancellationToken, ValueTask> configure,

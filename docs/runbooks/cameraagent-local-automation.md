@@ -7,6 +7,40 @@ next-run calendar, and their durable run history.
 
 This runbook covers the versioned durable local contract behind that section.
 
+## Configure A Product Automation
+
+Choose **Create automation**, then an available registered task and its pinned
+target. Product tasks continue through **Next: source window**: select a completed
+site-local hour or sunrise-to-next-sunrise period, the producer's accepted actual
+source selection, and a settle allowance from 0 to 86400 seconds. Up to seven
+decimal places preserve existing subsecond allowances. Keograms require all actual
+sources; star trails require dark-night sources. The pinned target supplies recipe
+parameters; changing producer configuration is a separate operation.
+
+**Preview and review** shows exact inclusive start, exclusive end, site zone and
+offsets, starting-sunrise product date, and next-run/earliest-final time in both
+site time and UTC. The preview is read-only, calculated for the next future
+occurrence if enabled; saving later may change it. It is not a coverage or
+publication guarantee. Missing sunrise events produce explicit unavailability,
+without a fallback time. Partial sunrise hours and DST folds/gaps use the shared
+planner. Confirm **Record revision** to save; stepping back retains your fields.
+
+**Edit** supports source-window definitions, including their retained selection
+and allowance. **Disable** pauses the definition without rewriting its policy or
+old occurrences. Revision history retains actor and reason. Hourly and daily tasks
+use separate identifiers and revisions. The first-slice scope and decision to
+retain the current runner are recorded in the
+[wizard decision](../planning/automation-wizard-1133.md). Run/cancel/backfill UI and
+broader task parameter editors remain follow-up work under #1133.
+
+Changing a pinned producer preset can retire its old target hash. A retained
+definition then shows **Unavailable**, with repair guidance, and contributes no
+enabled count or upcoming run. Unsupported retained triggers and source presets
+are treated the same way. Choose **Edit** and select a currently registered
+target/trigger/period to record a new revision; old definitions in revision history
+and retained occurrences keep their original identities. Enable/disable is
+unavailable until the retained settings are compatible again.
+
 ## What A Definition Can Express
 
 A definition names a registered task, its source policy and trigger, plus its identity:
@@ -21,7 +55,9 @@ A definition names a registered task, its source policy and trigger, plus its id
 | `definitionId`, `name`, `enabled` | Identity and enablement. |
 
 There is deliberately no field that can hold a command line, a script, a path, an
-executable, or a URL, and no task kind that would interpret one. The default
+executable, or a URL, and no target is interpreted as one. The separately owner-authorized `CustomScript`
+adapter selects an immutable registered invocation in a restricted sandbox; see
+[its execution and qualification contract](cameraagent-custom-scripts.md). The default
 registered task kind is `EnvironmentalOnDemandAcquisition`, whose targets are the
 configured environmental sources that declare the `OnDemand` trigger. A save that
 names a target the registry does not publish is rejected with
@@ -47,18 +83,25 @@ definable here.
 `<raw-ingress-root>/.automation/local-automations.db`, a dedicated SQLite database
 with WAL journaling, `synchronous = FULL`, and `PRAGMA user_version` pinned to the
 contract's schema version. The drift guard counts schema objects, which cannot see a
-column change, so any column change bumps the schema version (currently 3) and a database written by
-an earlier build is refused rather than opened. Startup verifies the version, the exact schema object
-count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt
-database rather than migrating it. Every open re-asserts that write-ahead logging is
-actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
+column change, so any column change bumps the schema version (currently 4). Startup atomically
+migrates the supported schema-3 predecessor by adding the retained script-stop audit table;
+other older schemas are refused. Startup verifies the version, the exact schema object
+count, and `PRAGMA integrity_check`, and refuses a newer, drifted, or corrupt database.
+The image declares writes 4 and reads 3 to 4. Its distinct combined-reader boundary
+`bc5ca7489c4090c299c416309519ab72da4a8cdb` advances beyond the processing-only boundary
+in development/v1 `38320d3a`; adoption from that schema-3 automation reader also requires
+a paired checkpoint before startup. Rollback restores that checkpoint, including schema 3,
+for the previous reader.
+Every open re-asserts that write-ahead logging is actually in force and that neither the database nor its `-wal`, `-shm`, or `-journal`
 sidecars is a symbolic link.
 
 The store is a separate file on purpose. The raw ingress journal pins its own exact
 schema version and object count and refuses a database it does not recognize, so
 adding automation tables there would make an installer rollback to a baseline image
 fail to start. A baseline image never opens this file; a rollback leaves it in place
-and a roll-forward finds the same definitions and run history.
+and a roll-forward finds the same definitions and run history. A previous binary that
+already reads this database but cannot read schema 4 requires the paired pre-upgrade
+checkpoint, including the database and its matching protected state.
 
 Tables:
 
@@ -66,6 +109,7 @@ Tables:
 - `automation_definition_revisions` — every recorded revision, including the removal.
 - `automation_commands` — the idempotency ledger.
 - `automation_runs` — the run-history journal.
+- `automation_script_stops` — the first accepted script-stop actor, run/revision, time and cause; retained with its run.
 - `automation_progress` — the last fired occurrence and the last observed capture sequence.
 
 ## Concurrency, Idempotency, And Retention
@@ -170,9 +214,18 @@ Explicit backfill names a report date and, for an hour, its exact UTC start. It 
 finality, current enablement/version and a window ending within seven days. Explicit
 retry accepts only a retained `Failed` or `Interrupted` attempt and caps each occurrence
 at three attempts. Both commands require an operator reason and retain actor, request
-key/time and payload digest. Queued rows have no start time. Disabling pauses queued work;
-removal cancels queued work and is rejected while an attempt is running. Retries retain
-the original definition/window while requiring the operator's current definition version.
+key/time and payload digest. Queued rows have no start time. For every supported task
+kind and queued trigger (run-now, backfill or retry), disabling or a version-changing
+edit withdraws every pending attempt as `Skipped` in the same durable transaction.
+Re-enabling does not revive it. No-op saves, rejected commands and idempotent replays
+do not withdraw pending work. Removal also withdraws queued work and is rejected
+while an attempt is running. The exact-run script Stop control can withdraw a queued
+attempt without changing its schedule; if claim wins, Stop waits for worker registration
+and real process/result drain. Retries retain the original definition/window while
+requiring the operator's current definition version to authorize that queue attempt.
+A later disable, edit or removal withdraws that pending retry too; an older occurrence
+version alone does not invalidate an explicitly authorized retry. Admission and Stop
+authority follow its retained task kind.
 Adapter command identity stays the original run key; journal retries use `:retry2` or
 `:retry3`. Prepared work does not rewind automatic progress. Restart retains queued work.
 
@@ -216,3 +269,11 @@ run journal. Capture, calibration, and deployment-location evidence are unaffect
 the store is recreated empty on the next start. A database whose `user_version` or
 schema object count does not match the contract makes startup fail closed; archive it
 and complete an explicit state-disposition procedure rather than editing it in place.
+
+## Scheduled CameraAgent restart
+
+The registered `ScheduledCameraAgentRestart` task delegates drain, restart and
+verification to the independent installer lifecycle worker. It runs only outside
+capture windows and stays Running across CameraAgent restart until the installer
+publishes its terminal receipt. See [lifecycle control](cameraagent-lifecycle-control.md)
+for registration, interval bounds, receipts and failure recovery (#1711).

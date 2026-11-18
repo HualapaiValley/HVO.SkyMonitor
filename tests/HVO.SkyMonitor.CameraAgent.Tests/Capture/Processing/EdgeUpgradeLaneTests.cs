@@ -272,7 +272,7 @@ public sealed class EdgeUpgradeLaneTests
     {
         var ingress = provider.GetRequiredService<RawCaptureIngress>();
         await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        var module = new VirtualSkyCameraModule(TimeProvider.System,
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(),
             provider.GetRequiredService<ICelestialCatalog>(), provider.GetRequiredService<IProjectedSceneStore>(),
             stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
         var configuration = CreateConfiguration();

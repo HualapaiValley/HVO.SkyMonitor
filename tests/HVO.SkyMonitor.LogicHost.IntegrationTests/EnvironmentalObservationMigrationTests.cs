@@ -1,8 +1,9 @@
 using FluentAssertions;
 using HVO.SkyMonitor.LogicHost.Data;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.IntegrationTests;
 
@@ -21,6 +22,7 @@ public sealed class EnvironmentalObservationMigrationTests
             await database.Context.Database.MigrateAsync().ConfigureAwait(false);
 
             (await database.Context.Database.GetPendingMigrationsAsync().ConfigureAwait(false)).Should().BeEmpty();
+            database.Context.Database.HasPendingModelChanges().Should().BeFalse();
             await AssertSchemaAsync(database.Context).ConfigureAwait(false);
         }
         finally
@@ -31,6 +33,13 @@ public sealed class EnvironmentalObservationMigrationTests
 
     private static async Task AssertSchemaAsync(ApplicationDbContext db)
     {
+        var metadataColumns = await db.Database.SqlQuery<string>($"""
+            SELECT OBJECT_NAME([object_id]) + '.' + [name] AS [Value]
+            FROM [sys].[columns]
+            WHERE ([object_id] = OBJECT_ID(N'[EnvironmentalObservations]') AND [name] = N'SampleMetadataJson')
+                OR ([object_id] = OBJECT_ID(N'[EnvironmentalObservationSources]') AND [name] = N'IsLineageInput')
+            """).ToListAsync().ConfigureAwait(false);
+        metadataColumns.Should().BeEquivalentTo(["EnvironmentalObservations.SampleMetadataJson", "EnvironmentalObservationSources.IsLineageInput"]);
         var indexes = await db.Database.SqlQuery<string>($"""
             SELECT [name] AS [Value]
             FROM [sys].[indexes]
@@ -65,6 +74,7 @@ public sealed class EnvironmentalObservationMigrationTests
             "CK_EnvironmentalObservations_ObservedInterval",
             "CK_EnvironmentalObservations_SubmittedValue",
             "CK_EnvironmentalObservations_Uncertainty",
+            "CK_EnvironmentalObservations_SampleMetadata",
             "CK_EnvironmentalObservationLineage_Ordinal"
         ]);
     }
@@ -75,16 +85,25 @@ public sealed class EnvironmentalObservationMigrationTests
         {
             InitialCatalog = $"SkyMonitorEnvironment{scenario}_{Guid.NewGuid():N}"
         };
+        // Match the host's Identity v3 model and isolate it from bare v1 migration fixtures.
+        var services = new ServiceCollection().AddEntityFrameworkSqlServer()
+            .Configure<IdentityOptions>(options => options.Stores.SchemaVersion = IdentitySchemaVersions.Version3)
+            .BuildServiceProvider();
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+            .UseInternalServiceProvider(services)
+            .UseApplicationServiceProvider(services)
             .UseSqlServer(builder.ConnectionString)
-            .ConfigureWarnings(warnings => warnings.Ignore(RelationalEventId.PendingModelChangesWarning))
             .Options;
-        return new MigrationDatabase(new ApplicationDbContext(options));
+        return new MigrationDatabase(new ApplicationDbContext(options), services);
     }
 
-    private sealed class MigrationDatabase(ApplicationDbContext context) : IAsyncDisposable
+    private sealed class MigrationDatabase(ApplicationDbContext context, ServiceProvider services) : IAsyncDisposable
     {
         public ApplicationDbContext Context { get; } = context;
-        public ValueTask DisposeAsync() => Context.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+            await Context.DisposeAsync().ConfigureAwait(false);
+            await services.DisposeAsync().ConfigureAwait(false);
+        }
     }
 }

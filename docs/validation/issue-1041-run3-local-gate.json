@@ -1,0 +1,4326 @@
+{
+  "candidateHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+  "initialEvidenceHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+  "targetBase": "558608be453c84382f4a2461c4149e65e0451b72",
+  "risk": "HIGH",
+  "validationTier": "C",
+  "sdk": "10.0.402",
+  "targetProfile": "development-v1 Preflight and Build and Unit plus explicit local HIGH acceptance; no workflow dispatched",
+  "sourceTrees": {
+    "src": "d1ff80610d65456ab1af501c44ac9973892ebdd2",
+    "tests": "e1d2f3da187380c61de891925e7f305e47ad66ae",
+    "scripts": "442e107d4aec75418656fb8629919f7ce539b908",
+    "tools": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a",
+    ".github": "81526742f56c8642f71a6bb00326bcdfce4e29a9",
+    "global.json": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+    "Directory.Build.props": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+    "Directory.Build.targets": "c20a45477257b954984f2a8da9fdc939e54551a6",
+    "Directory.Packages.props": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19",
+    "HVO.SkyMonitor.v9.slnx": "8a20aed6d34edd985bb7292068cfcdab9981c229",
+    "dotnet-tools.json": "abbb20b1e1389af7707ba10563bf7079dcdb26c3",
+    ".editorconfig": "574ae9c2204756df877acabc22233d6456827557",
+    ".gitattributes": "e22988eb1f55c6d9153172d438ac743ca9da896e"
+  },
+  "classifiers": {
+    "archive-classifier-base": "CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=true reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=at least one path is outside every component boundary paths=113\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=true\n",
+    "classifier-base": "CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=false release_scripts=true reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=at least one path is outside every component boundary paths=112\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=true\n",
+    "archive-classifier-correction": "CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=true release_scripts=true reason=pull request changes a deployment-contract input deployment-reason=pull request changes a deployment-contract input complete-reason=at least one path is outside every component boundary paths=99\nmode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\n",
+    "classifier-correction": "CI classification: mode=full deployment=true complete=true shared=true cameraagent=true logichost=true combined=true delivery=true secret_scan_contract=true release_scripts=true reason=pull request changes a deployment-contract input deployment-reason=pull request changes a deployment-contract input complete-reason=at least one path is outside every component boundary paths=98\nmode=full\ndeployment=true\ndeployment_catalog=true\ndeployment_shards=true\ndeployment_installer=true\ncomplete=true\nshared=true\ncameraagent=true\nlogichost=true\ncombined=true\ndelivery=true\nsecret_scan_contract=true\nrelease_scripts=true\n",
+    "archive-classifier-delta": "CI classification: mode=full deployment=true complete=false shared=false cameraagent=true logichost=false combined=false delivery=true secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=pull request changes only component-scoped paths paths=8\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=true\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=false\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=false\n"
+  },
+  "candidateSteps": [
+    {
+      "name": "archive-release-build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 262.295,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "f0f6e9c3191190fabdcdfde138e5cdce315c72cfc1a71512babc3188c1a35eab",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-format",
+      "command": "dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+      "exitCode": 0,
+      "seconds": 164.751,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-ci-shell-syntax",
+      "command": "./scripts/ci:shell-syntax",
+      "exitCode": 0,
+      "seconds": 0.666,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "12925d6db6d7dd30310f871e1c6ab3f6f876bbca933da8d0cade2b7506c61fbc",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-test-ci-classification",
+      "command": "./scripts/test:ci-classification",
+      "exitCode": 0,
+      "seconds": 18.648,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "ea9f09d98117697ed6c42478830c52ee996cad15470284f1b88d497083a2ae14",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-test-coordination-guard",
+      "command": "./scripts/test:coordination-guard",
+      "exitCode": 0,
+      "seconds": 0.266,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-test-pr-review-tools",
+      "command": "./scripts/test:pr-review-tools",
+      "exitCode": 0,
+      "seconds": 9.332,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-test-development-v1-ci",
+      "command": "./scripts/test:development-v1-ci",
+      "exitCode": 0,
+      "seconds": 16.002,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "6f567fb167ecf7ed3ce68bc9d29542904ba4f52ffe84063c1c84c05074972afe",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-test-coverage-development-v1",
+      "command": "./scripts/test:coverage-development-v1",
+      "exitCode": 0,
+      "seconds": 14.397,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "7ab45d930445007d793fb3ea492b5901680ca3d03c33c36e18dfb41f5a06f6e6",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-docs-audit-operations",
+      "command": "./scripts/docs:audit-operations",
+      "exitCode": 0,
+      "seconds": 0.466,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-category-audit",
+      "command": "dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release",
+      "exitCode": 0,
+      "seconds": 100.108,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "7ff3204cff6b9a6ffc490a93dba886893171f25ac27a9e9d6178353441221aa0",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-focused-camera",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"FullyQualifiedName~ProtectedDeploymentLocationStoreTests|FullyQualifiedName~ManualFocusSessionStoreTests|FullyQualifiedName~FileCameraAgentConfigurationLoaderIdentityTests|FullyQualifiedName~ProjectedSceneStagingStoreTests\" --logger \"trx;LogFileName=camera.trx\" --results-directory TestResults/issue-1041-run3/archive-final-focused",
+      "exitCode": 0,
+      "seconds": 10.235,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "32ba873d32fcca04a9c0462189dc632faec7a3106470a92c4382ff0cb11705a7",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-focused-cli",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --no-build --configuration Release --filter \"FullyQualifiedName~CameraAgentStateSnapshotTests|FullyQualifiedName~UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart|FullyQualifiedName~ProtectedVerificationRefusesBeforeLifecycleMutation|FullyQualifiedName~OwnerBootstrapClientTests\" --logger \"trx;LogFileName=cli.trx\" --results-directory TestResults/issue-1041-run3/archive-final-focused",
+      "exitCode": 0,
+      "seconds": 15.803,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "685bce6663a439d90d36337456cd7aa4c0809ce695c3f8033c387c7a57bd94fe",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-focused-endpoint",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --configuration Release --filter \"FullyQualifiedName~InstallationVerification&TestCategory=Integration\" --logger \"trx;LogFileName=endpoint.trx\" --results-directory TestResults/issue-1041-run3/archive-final-focused",
+      "exitCode": 0,
+      "seconds": 10.739,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "45612bac768489eea90ae320146d145844da44fc5b3d3d5d07ecbea6948b42a7",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-canonical-unit-cameraagent",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run3/archive-canonical/unit/cameraagent",
+      "exitCode": 0,
+      "seconds": 501.875,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "58f3d0f6b3977493ee1dcfd18ccc69e4a8d4a8cb0089ab96ce6a41ea507fa00e",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-canonical-unit-deployment-cli",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger \"trx;LogFileName=unit.trx\" --results-directory TestResults/issue-1041-run3/archive-canonical/unit/deployment-cli",
+      "exitCode": 0,
+      "seconds": 276.641,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "e2d9dbd46adf03cb9eeada73eded5c26137d0ac42ea3edbfaf99d41f92aae42e",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-v1-settings",
+      "command": "./scripts/coverage:development-v1 --settings TestResults/issue-1041-run3/archive-development-v1.runsettings",
+      "exitCode": 0,
+      "seconds": 0.033,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "4190b219e61b06e7b93a882ee045a8a471c0d186260e4d623fec545c4274b79b",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-v1-unit",
+      "command": "dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings TestResults/issue-1041-run3/archive-development-v1.runsettings --collect:\"XPlat Code Coverage\" --logger trx --results-directory TestResults/issue-1041-run3/archive-v1-unit -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 358.823,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "348bb40906960a1b456029648ef2063a96fe7bed46f54700df4939e41c16575a",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-v1-coverage",
+      "command": "./scripts/coverage:development-v1 TestResults/issue-1041-run3/archive-v1-unit TestResults/issue-1041-run3/archive-development-v1-coverage",
+      "exitCode": 0,
+      "seconds": 12.954,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "e41a77e1daccc6bafbcbcbeef6d3509abc9b96f5687ca49976184d76806cbc80",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-bind-coverage",
+      "command": "python3 TestResults/issue-1041-run3/archive-bind-coverage.py",
+      "exitCode": 0,
+      "seconds": 0.115,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "3de2c6198e7f8437b37a3a707ed324786f0a0a21fa3cf23bea1a2ccef576194a",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-coverage-shared",
+      "command": "./scripts/coverage:component shared",
+      "exitCode": 0,
+      "seconds": 4.978,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "b2ccc3bc1b85d7e878591ae38962ff102664b2396f31a743244795a7968fbc10",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-coverage-cameraagent",
+      "command": "./scripts/coverage:component cameraagent",
+      "exitCode": 0,
+      "seconds": 9.085,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "792e4897adb88b5bcd88b512973c0b8eb71acb1519bf6254f0ca133bb27671ee",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-coverage-logichost",
+      "command": "./scripts/coverage:component logichost",
+      "exitCode": 0,
+      "seconds": 4.329,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "db552b49079fc776fc635f786add788affde087bf0a57b9b86c1a33b73ff05eb",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-coverage-combined",
+      "command": "./scripts/coverage:component combined",
+      "exitCode": 0,
+      "seconds": 8.69,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "97aa4bb6b3a5aaf4e7b3c1ed2d26c8ab8de67a37489cfc4ce9fe1ab0ea72934d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-coverage-delivery",
+      "command": "./scripts/coverage:component delivery",
+      "exitCode": 0,
+      "seconds": 1.97,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "2ead506b93735c82dc81ab3f77133689f00dfd403d6174f4183c32758c2bb649",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-aggregate-coverage",
+      "command": "bash TestResults/issue-1041-run3/aggregate-coverage.sh",
+      "exitCode": 0,
+      "seconds": 15.669,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "dcb650a0c57a9578310c9649bb5536a220a8a4ad214538691845f209a4d39981",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-publish-delivery",
+      "command": "./scripts/ci:component-publish delivery",
+      "exitCode": 0,
+      "seconds": 44.041,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "10302b004a1c4f09f5d6f75adfa247908b89f2434624010a5ac363fda26f980a",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-cross-rid-publish",
+      "command": "bash TestResults/issue-1041-run3/architecture-publish.sh",
+      "exitCode": 0,
+      "seconds": 28.714,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "054c827e0300949e22782173b744b8ba20286829cd76669a5cd0d0f68d592634",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-installer-campaign",
+      "command": "./scripts/test:deployment-installer",
+      "exitCode": 0,
+      "seconds": 557.581,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "55fbc76ff1a92cf1362100f1aeb0b8677774daf6b163ba4e855b68544e58ddef",
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "archive-secret-scan-contract",
+      "command": "./scripts/test:ci-secret-scan",
+      "exitCode": 0,
+      "seconds": 46.226,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "7f8ab9900161575ea1c49eda7b5d1f49a2593e627da6d2c78826a50bb3fb810b",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-script-sandbox-prerequisites",
+      "command": "./scripts/ci:script-sandbox --verify",
+      "exitCode": 0,
+      "seconds": 0.017,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "102b4c1eb7d566145e8fac91d2d68d6fd27950d2218f4f66c45bfe996854c713",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "archive-diff-check",
+      "command": "git diff --check",
+      "exitCode": 0,
+      "seconds": 0.005,
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docker": "invalid endpoint"
+    }
+  ],
+  "initialSteps": [
+    {
+      "name": "tool-restore",
+      "command": "dotnet tool restore",
+      "exitCode": 0,
+      "seconds": 0.115,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "c66fdf42706194a4de7a46c52ce1767db9419ccf74518cc4d36a9cd06a3808a7",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "restore",
+      "command": "dotnet restore HVO.SkyMonitor.v9.slnx",
+      "exitCode": 0,
+      "seconds": 1.532,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "40d104602671164ab3958225da3e1c8cabd55f0251d6df6bc911d9d5a24f44ce",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "debug-build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 249.721,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "e69334d9eb1597ee00cac743eb86303b99418cd6da9d3b08ccf6d4b4d4adfb47",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "release-build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 561.89,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "a8404c2a17ef3a5afae8ad5306446f4ad11404c709cbb6e7771f9d7a95e455d3",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "format",
+      "command": "dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+      "exitCode": 0,
+      "seconds": 385.022,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "package-audit",
+      "command": "./scripts/package:audit",
+      "exitCode": 0,
+      "seconds": 67.054,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "0d89ccfc7cd423637015cb2f94551a62e8460ce891896a987aeb4561c4822bb6",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "ci-shell-syntax",
+      "command": "./scripts/ci:shell-syntax",
+      "exitCode": 0,
+      "seconds": 1.476,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "12925d6db6d7dd30310f871e1c6ab3f6f876bbca933da8d0cade2b7506c61fbc",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-ci-classification",
+      "command": "./scripts/test:ci-classification",
+      "exitCode": 0,
+      "seconds": 45.179,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "ea9f09d98117697ed6c42478830c52ee996cad15470284f1b88d497083a2ae14",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-coordination-guard",
+      "command": "./scripts/test:coordination-guard",
+      "exitCode": 0,
+      "seconds": 0.523,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-pr-review-tools",
+      "command": "./scripts/test:pr-review-tools",
+      "exitCode": 0,
+      "seconds": 19.53,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-development-v1-ci",
+      "command": "./scripts/test:development-v1-ci",
+      "exitCode": 0,
+      "seconds": 31.073,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "9ad1da50cd472485d82438b043b83094ec018a2dd359f82efbfa0a459a62e6bc",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-coverage-development-v1",
+      "command": "./scripts/test:coverage-development-v1",
+      "exitCode": 0,
+      "seconds": 29.092,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "7ab45d930445007d793fb3ea492b5901680ca3d03c33c36e18dfb41f5a06f6e6",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "docs-audit-operations",
+      "command": "./scripts/docs:audit-operations",
+      "exitCode": 0,
+      "seconds": 0.718,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "catalog-smoke-test.sh",
+      "command": "./scripts/catalog/smoke-test.sh",
+      "exitCode": 0,
+      "seconds": 0.316,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "5438dd9f68c6ac34e42c931eafb5a670bf6ee13b518df5591aa26135da6fdc66",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-release-scripts",
+      "command": "./scripts/test:release-scripts",
+      "exitCode": 0,
+      "seconds": 22.925,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "c14759f4e34b61c6e1b66fc66890de268ad813d720772b40f039344bb9cb98fb",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "category-audit",
+      "command": "dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release",
+      "exitCode": 0,
+      "seconds": 125.741,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "f4e98e2b7f4ce5d0b981dd1ae3ea413e3db205cc2bf667b1aa19a7e4925c73cd",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "focused-camera",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests --no-build --configuration Release --filter \"FullyQualifiedName~ProtectedDeploymentLocationStoreTests|FullyQualifiedName~ManualFocusSessionStoreTests|FullyQualifiedName~FileCameraAgentConfigurationLoaderIdentityTests|FullyQualifiedName~ProjectedSceneStagingStoreTests\" --logger \"trx;LogFileName=camera.trx\" --results-directory TestResults/issue-1041-run3/final-focused",
+      "exitCode": 0,
+      "seconds": 11.489,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "0ac2de6845df35bee4b20d925146aacb88d986fa2d30eaeb47bd5cb5b525c66d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "focused-cli",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests --no-build --configuration Release --filter \"FullyQualifiedName~CameraAgentStateSnapshotTests|FullyQualifiedName~UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart|FullyQualifiedName~ProtectedVerificationRefusesBeforeLifecycleMutation|FullyQualifiedName~OwnerBootstrapClientTests\" --logger \"trx;LogFileName=cli.trx\" --results-directory TestResults/issue-1041-run3/final-focused",
+      "exitCode": 0,
+      "seconds": 16.604,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "0735f2e3c64d26b6361e528173b942a9a26b4a44a516bff7406d6f4b18f78d82",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "focused-endpoint",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --configuration Release --filter \"FullyQualifiedName~InstallationVerification&TestCategory=Integration\" --logger \"trx;LogFileName=endpoint.trx\" --results-directory TestResults/issue-1041-run3/final-focused",
+      "exitCode": 0,
+      "seconds": 12.442,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "2021641c2b5eddd442abb61df41ade88572562df5045158901169e589ba6744a",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-solution",
+      "command": "dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --logger trx --results-directory TestResults/issue-1041-run3/unit -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 675.247,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "b4f5c62c90e1b565acc13a36c2fba0c6de8ba05725ab85094630d80b08415a04",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "development-v1-coverage",
+      "command": "./scripts/coverage:development-v1 TestResults/issue-1041-run3/unit TestResults/issue-1041-run3/development-v1-coverage",
+      "exitCode": 1,
+      "seconds": 9.743,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "e0df9ceba4e8298631a87466c3a8b6fc5ca8d8cecc280ca85d7dac477777fc38",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "development-v1-settings",
+      "command": "./scripts/coverage:development-v1 --settings TestResults/issue-1041-run3/development-v1.runsettings",
+      "exitCode": 0,
+      "seconds": 0.066,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "4190b219e61b06e7b93a882ee045a8a471c0d186260e4d623fec545c4274b79b",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "development-v1-unit",
+      "command": "dotnet test HVO.SkyMonitor.v9.slnx --no-build --configuration Release --filter \"TestCategory=Unit&TestCategory!=Integration&TestCategory!=Manual&TestCategory!=Soak&TestCategory!=External&TestCategory!=Hardware\" --settings TestResults/issue-1041-run3/development-v1.runsettings --collect:\"XPlat Code Coverage\" --logger trx --results-directory TestResults/issue-1041-run3/v1-unit -nodeReuse:false -p:UseSharedCompilation=false",
+      "exitCode": 0,
+      "seconds": 438.581,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "c3779022ffdf624cb9d1d82063b76d86f9f1665d5683ddc8da953dbc5435df2d",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "development-v1-coverage",
+      "command": "./scripts/coverage:development-v1 TestResults/issue-1041-run3/v1-unit TestResults/issue-1041-run3/development-v1-coverage",
+      "exitCode": 0,
+      "seconds": 14.207,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "a20fbf4c549c5e5749961580778ec65e3470b3ae3c4581f62cade94aa851d785",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.LogicHost.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/integration/logichost --logger \"trx;LogFileName=integration-logichost.trx\"",
+      "exitCode": 0,
+      "seconds": 753.763,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "a0d98c01a47e19e92abf20f3bad1306b250a471500fb1dd85e1d6eb22a5b1873",
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/integration/cameraagent-storage --logger \"trx;LogFileName=integration-cameraagent-storage.trx\"",
+      "exitCode": 0,
+      "seconds": 230.851,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "6cac167eb3a0fe69ab418c2db1e0320e6a6f1c2a4702fdd6692b61372efb098f",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/integration/cameraagent-standalone --logger \"trx;LogFileName=integration-cameraagent-standalone.trx\"",
+      "exitCode": 0,
+      "seconds": 107.476,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "6bf112a38324d4bf4750b104c6d9a29ed3ac3b16f9bc01762c9b1fff3cbfd408",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.Astronomy.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/integration/astronomy --logger \"trx;LogFileName=integration-astronomy.trx\"",
+      "exitCode": 0,
+      "seconds": 4.877,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "b5d0af5548cbc1b41519911bea6df94ac61a1cfb4439c13442943a4f7b7325e5",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/integration/cameraagent --logger \"trx;LogFileName=integration-cameraagent.trx\"",
+      "exitCode": 0,
+      "seconds": 48.337,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "573609e24cc38bdd53da763abe044a33fa9c1c90ed1f8fae15204933af452e90",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/integration/cameraagent-logichost --logger \"trx;LogFileName=integration-cameraagent-logichost.trx\"",
+      "exitCode": 0,
+      "seconds": 223.294,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "3507d50147737fd2520ae218d2286c0dc1dbc157f41da6b3c8a375f305419d19",
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "architecture-integration",
+      "command": "dotnet test tests/HVO.SkyMonitor.Architecture.Tests --no-build --configuration Release --filter \"TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/issue-1041-run3/canonical/architecture --logger \"trx;LogFileName=architecture.trx\"",
+      "exitCode": 0,
+      "seconds": 110.144,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "e248d53ada62f7af0f3f407d385c6fb0077c854d5312373a3bd4f540bdbe254e",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "bind-coverage",
+      "command": "python3 TestResults/issue-1041-run3/bind-coverage.py",
+      "exitCode": 0,
+      "seconds": 3.072,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "1c0176bdff92e9b130e0bdef5bf4229e5ff93a0377aac98efc7fba79c67d4bd9",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-shared",
+      "command": "./scripts/coverage:component shared",
+      "exitCode": 0,
+      "seconds": 5.125,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "9a7ba57b4e4e1d822394d412d37011abe57410ab07c3fbf8e0d5fc82f5627a68",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-cameraagent",
+      "command": "./scripts/coverage:component cameraagent",
+      "exitCode": 0,
+      "seconds": 9.485,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "cb211370ae1d13948c05b5dcb807afadea3ffb7039f8e14ef2fc3ffe99870d27",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-logichost",
+      "command": "./scripts/coverage:component logichost",
+      "exitCode": 0,
+      "seconds": 4.725,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "987365987be462517c34d63569779782f8ff4c5bdcecfc5f2af9da7af6caadc3",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-combined",
+      "command": "./scripts/coverage:component combined",
+      "exitCode": 0,
+      "seconds": 9.643,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "580037a12a1084307bc546d2ac3743bf9ad3a7b8ec45c16c56271f721fb586e5",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-delivery",
+      "command": "./scripts/coverage:component delivery",
+      "exitCode": 0,
+      "seconds": 2.069,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "40934f1584f2b6fd8ec53239135577be8c1b2931474f8c0c99b38d5c75b3f318",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-shared",
+      "command": "./scripts/ci:component-publish shared",
+      "exitCode": 0,
+      "seconds": 1.07,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "0cc59a391760486fcc742328bcead2c45f3e6c9329f97ac4913096cdfc9aa941",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-cameraagent",
+      "command": "./scripts/ci:component-publish cameraagent",
+      "exitCode": 0,
+      "seconds": 2.822,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "9238d71b2ffe8a2e7bab368275e8095e4447b843b033ed8433211d7905d5686e",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-logichost",
+      "command": "./scripts/ci:component-publish logichost",
+      "exitCode": 0,
+      "seconds": 1.468,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "bf649776403ce4df2fad4b56d59fee2eee698d914868d2ed6fdf71594e9feec4",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-delivery",
+      "command": "./scripts/ci:component-publish delivery",
+      "exitCode": 0,
+      "seconds": 17.383,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "67620934c78485ec139eccc6b24eee3631449df5d42d93b74df93c3f38dbf7bb",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "cross-rid-publish",
+      "command": "bash TestResults/issue-1041-run3/architecture-publish.sh",
+      "exitCode": 0,
+      "seconds": 27.217,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "6c9df8b400e51fa26317da437a2a7c25d0aaa5e968223f98647abd9a784057ae",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "migration-cameraagent",
+      "command": "./scripts/ci:canonical-migration cameraagent && dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent --startup-project src/HVO.SkyMonitor.CameraAgent --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build",
+      "exitCode": 0,
+      "seconds": 1.369,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "137d66aaf9449cedb051efc025f76a020ac61d8af3ecb269a66f4c596ab9a606",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "migration-logichost",
+      "command": "./scripts/ci:canonical-migration logichost && dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.LogicHost --startup-project src/HVO.SkyMonitor.LogicHost --context HVO.SkyMonitor.LogicHost.Data.ApplicationDbContext --configuration Release --no-build",
+      "exitCode": 0,
+      "seconds": 2.72,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "765a6bd5890748946bed48f4153b982d93203af21ccb9c7a47bebf866b7c9579",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-policy",
+      "command": "./scripts/coverage:policy pull_request development/v1",
+      "exitCode": 0,
+      "seconds": 0.165,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "ab00d10ced1e842fa255b01708bd7ca86ffc09646a044064462b6aa905451e50",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "configuration-generator",
+      "command": "dotnet build <private-tmp>/generator/Generator.csproj --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false && dotnet <private-tmp>/generator/bin/Release/net10.0/Generator.dll src/HVO.SkyMonitor.Deployment.Cli/bin/Release/net10.0/HVO.SkyMonitor.Deployment.Cli.dll <private-tmp>/owner-configuration.json",
+      "exitCode": 0,
+      "seconds": 1.619,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "f8b2b8bc175dcd45c00ee115f115a898f611b5aeea110b4bca50e0d0ab105eff",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "process-crash",
+      "command": "HVO_ISSUE1041_EVIDENCE_ROOT=TestResults/issue-1041-run3 python3 docs/validation/issue-1041-ledger-crash-probe.py.txt",
+      "exitCode": 0,
+      "seconds": 3.421,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "a74008446f28ccc064dea203e89be3024b329f758f0c28c9bc8467694c77a82e",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "config-edit",
+      "command": "HVO_ISSUE1041_EVIDENCE_ROOT=TestResults/issue-1041-run3 HVO_INSTALLATION_READ_OWNER_CONFIGURATION=<private-tmp>/owner-configuration.json python3 docs/validation/issue-1041-configuration-race-probe.py.txt",
+      "exitCode": 0,
+      "seconds": 2.219,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "cab487fe4de6017f1a10f8d0c17874b1824dc2dd66612b49d3e7e6b31eda31ab",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "scale",
+      "command": "bash TestResults/issue-1041-run3/scale-run.sh",
+      "exitCode": 0,
+      "seconds": 614.045,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "d1c702517cdba43b1950c235d7ea1cee541a078734433c47929c9745173e7ace",
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "installer-campaign",
+      "command": "./scripts/test:deployment-installer",
+      "exitCode": 1,
+      "seconds": 198.759,
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "logSha256": "16be9f0dd654caee4e6fde7dd9422ae0151e4dd86b45ed9470d572d6a22ea969",
+      "docker": "local disposable fixtures"
+    }
+  ],
+  "initialStepDisposition": "All successful initial steps retained only in source-equivalent scopes. The first canonical-as-v1 input inventory failed and was corrected with generated settings. The initial installer campaign failed on complete-archive restore and is superseded by archive-installer-campaign at candidateHead; neither failure is called a pass.",
+  "archiveReuseProof": {
+    "measuredHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+    "candidateHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+    "unchangedRuntimeAndHarness": [
+      {
+        "path": "src/HVO.SkyMonitor.AgentCore",
+        "measuredBlob": "5c048e47709fa0c457fc1b0241f6b88acb392318",
+        "candidateBlob": "5c048e47709fa0c457fc1b0241f6b88acb392318"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Astronomy",
+        "measuredBlob": "00d9bacf8107e184e615ecffc3f20a5075017059",
+        "candidateBlob": "00d9bacf8107e184e615ecffc3f20a5075017059"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Cli",
+        "measuredBlob": "b5ed29680125970fdb303c3d65959ab82a726b5d",
+        "candidateBlob": "b5ed29680125970fdb303c3d65959ab82a726b5d"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Common",
+        "measuredBlob": "c2960ce1a96c2db4778af55d8a54d22093ef197c",
+        "candidateBlob": "c2960ce1a96c2db4778af55d8a54d22093ef197c"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Modules.Zwo",
+        "measuredBlob": "ed4f3e712e9a7a165bd578052f7787f61ea2b4ad",
+        "candidateBlob": "ed4f3e712e9a7a165bd578052f7787f61ea2b4ad"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.Replay",
+        "measuredBlob": "cff78397d68d35bc60273492c3533d5f4e19965f",
+        "candidateBlob": "cff78397d68d35bc60273492c3533d5f4e19965f"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent.ReplayRunner",
+        "measuredBlob": "cd228055eb7082b52b45c684c027b3fe8a0dc1b6",
+        "candidateBlob": "cd228055eb7082b52b45c684c027b3fe8a0dc1b6"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.CameraAgent",
+        "measuredBlob": "8c33f677740c6051b364782127beb4a77d1775ec",
+        "candidateBlob": "8c33f677740c6051b364782127beb4a77d1775ec"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Catalog.Sqlite",
+        "measuredBlob": "974fa7355e8dec842b987b264bf5794f7b241b22",
+        "candidateBlob": "974fa7355e8dec842b987b264bf5794f7b241b22"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Common",
+        "measuredBlob": "b202f5668142943b50421f098b05acef8f6dcf8a",
+        "candidateBlob": "b202f5668142943b50421f098b05acef8f6dcf8a"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Contracts",
+        "measuredBlob": "621639bd2d72a7926e9dd46258df0b1cbca2c62b",
+        "candidateBlob": "621639bd2d72a7926e9dd46258df0b1cbca2c62b"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Fleet.Contracts",
+        "measuredBlob": "86f0eb5da1e0ac15043c8cc564d9ddfaaef87672",
+        "candidateBlob": "86f0eb5da1e0ac15043c8cc564d9ddfaaef87672"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Imaging",
+        "measuredBlob": "b6a02777299b12f2c8cdcfdc97439f58eb3fb9fb",
+        "candidateBlob": "b6a02777299b12f2c8cdcfdc97439f58eb3fb9fb"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.LogicHost",
+        "measuredBlob": "6e84dbae9214c7b5499d7ff5a30be1cd6dff4249",
+        "candidateBlob": "6e84dbae9214c7b5499d7ff5a30be1cd6dff4249"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Processing",
+        "measuredBlob": "6ea017f4b14da1f976dc6254e92dec92c063e3b2",
+        "candidateBlob": "6ea017f4b14da1f976dc6254e92dec92c063e3b2"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.ProcessingRunner.Contracts",
+        "measuredBlob": "e3ad5691b159a4b26c5aca79cbfdd2013eec5d8b",
+        "candidateBlob": "e3ad5691b159a4b26c5aca79cbfdd2013eec5d8b"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.ProcessingRunner",
+        "measuredBlob": "29c0a8d9406e7c35cf67834b9b0a47299977db6e",
+        "candidateBlob": "29c0a8d9406e7c35cf67834b9b0a47299977db6e"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Storage.FileSystem",
+        "measuredBlob": "a0f7c5ab486ee35518422e1fb89f417a927696a7",
+        "candidateBlob": "a0f7c5ab486ee35518422e1fb89f417a927696a7"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.TerminalUi",
+        "measuredBlob": "feb1939a7fac45aedec2376b1f42174a8d47ac90",
+        "candidateBlob": "feb1939a7fac45aedec2376b1f42174a8d47ac90"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.TestSupport",
+        "measuredBlob": "49f2de4d871d0f83893dc12abc1e052d32715a93",
+        "candidateBlob": "49f2de4d871d0f83893dc12abc1e052d32715a93"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Video.FFmpeg",
+        "measuredBlob": "a9b10ba7417a5fcf1a95908a6efcca796f05564e",
+        "candidateBlob": "a9b10ba7417a5fcf1a95908a6efcca796f05564e"
+      },
+      {
+        "path": "tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+        "measuredBlob": "cc6de3d49bd2d1864cf6724c368631e0d5e14780",
+        "candidateBlob": "cc6de3d49bd2d1864cf6724c368631e0d5e14780"
+      },
+      {
+        "path": "src/HVO.SkyMonitor.Deployment.Cli/CameraConfiguration.cs",
+        "measuredBlob": "f926661bbb9609648d46da883bd2cdafe8f3a875",
+        "candidateBlob": "f926661bbb9609648d46da883bd2cdafe8f3a875"
+      },
+      {
+        "path": "scripts",
+        "measuredBlob": "442e107d4aec75418656fb8629919f7ce539b908",
+        "candidateBlob": "442e107d4aec75418656fb8629919f7ce539b908"
+      },
+      {
+        "path": "tools",
+        "measuredBlob": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a",
+        "candidateBlob": "e6e3182ab12a8fae1a741f09fec90ee682c60a1a"
+      },
+      {
+        "path": ".github",
+        "measuredBlob": "81526742f56c8642f71a6bb00326bcdfce4e29a9",
+        "candidateBlob": "81526742f56c8642f71a6bb00326bcdfce4e29a9"
+      },
+      {
+        "path": "global.json",
+        "measuredBlob": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+        "candidateBlob": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686"
+      },
+      {
+        "path": "Directory.Build.props",
+        "measuredBlob": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+        "candidateBlob": "cbb8c30860f96568419226d54a5b65334c0dd8d4"
+      },
+      {
+        "path": "Directory.Build.targets",
+        "measuredBlob": "c20a45477257b954984f2a8da9fdc939e54551a6",
+        "candidateBlob": "c20a45477257b954984f2a8da9fdc939e54551a6"
+      },
+      {
+        "path": "Directory.Packages.props",
+        "measuredBlob": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19",
+        "candidateBlob": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19"
+      },
+      {
+        "path": "HVO.SkyMonitor.v9.slnx",
+        "measuredBlob": "8a20aed6d34edd985bb7292068cfcdab9981c229",
+        "candidateBlob": "8a20aed6d34edd985bb7292068cfcdab9981c229"
+      },
+      {
+        "path": "dotnet-tools.json",
+        "measuredBlob": "abbb20b1e1389af7707ba10563bf7079dcdb26c3",
+        "candidateBlob": "abbb20b1e1389af7707ba10563bf7079dcdb26c3"
+      }
+    ],
+    "changedPaths": [
+      "docs/runbooks/ci-pipeline.md",
+      "docs/runbooks/deployment-installer.md",
+      "docs/validation/issue-1041-run3-high-corrections.md",
+      "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentLifecycleManager.Restore.cs",
+      "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.Integrity.cs",
+      "src/HVO.SkyMonitor.Deployment.Cli/CameraAgentStateSnapshot.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/DeploymentLocation/ProtectedDeploymentLocationStoreTests.Restore.cs",
+      "tests/HVO.SkyMonitor.CameraAgent.Tests/test-categories.json"
+    ],
+    "classifierDelta": "CI classification: mode=full deployment=true complete=false shared=false cameraagent=true logichost=false combined=false delivery=true secret_scan_contract=false release_scripts=false reason=at least one path is outside the reduced-mode allowlist deployment-reason=pull request changes a deployment-contract input complete-reason=pull request changes only component-scoped paths paths=8\nmode=full\ndeployment=true\ndeployment_catalog=false\ndeployment_shards=false\ndeployment_installer=true\ncomplete=false\nshared=false\ncameraagent=true\nlogichost=false\ncombined=false\ndelivery=true\nsecret_scan_contract=false\nrelease_scripts=false\n",
+    "scope": "Agent endpoint runtime, complete Acceptance harness, configuration generator and build/package inputs unchanged. Initial all-component evidence retained; fresh CameraAgent/Delivery evidence covers the only selected component delta. SourceRevision informational metadata differs on rebuild; every process still requires its own scrub epoch."
+  },
+  "canonicalUnit": [
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_55_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "cfc178c66522709e04a451f86f59824b37d97639d26167f8167a2ff96f06d96a",
+      "assembly": "hvo.skymonitor.architecture.tests.dll",
+      "counts": {
+        "total": 32,
+        "executed": 32,
+        "passed": 32,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_56_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "c0436b20472b2a06df545f406c0989ee76092df203bd0b78e50808414702a53f",
+      "assembly": "hvo.skymonitor.common.tests.dll",
+      "counts": {
+        "total": 50,
+        "executed": 50,
+        "passed": 50,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_59_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "ab2f8bbd96a08fdc4a40e623a4a76dc8ed9bcf317458045a7887eb04c2388d0c",
+      "assembly": "hvo.skymonitor.catalog.sqlite.tests.dll",
+      "counts": {
+        "total": 296,
+        "executed": 296,
+        "passed": 296,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_03_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "cd6730449b978f8989ab23cd24aa88835a7584f4dfd3c49518b790b248765432",
+      "assembly": "hvo.skymonitor.catalog.sqlite.performancetests.dll",
+      "counts": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_03_net10.0[1].trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "5b400b48c5d75c0303ca8843e5b14adec0c7e32fe34b2c22315dc9bbdbc230de",
+      "assembly": "hvo.skymonitor.agentcore.tests.dll",
+      "counts": {
+        "total": 91,
+        "executed": 91,
+        "passed": 91,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_06_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "fd13ffdd979b7deeb589d7db3d567710ed1ef0e2867b344a22debedf8c80066d",
+      "assembly": "hvo.skymonitor.astronomy.tests.dll",
+      "counts": {
+        "total": 803,
+        "executed": 803,
+        "passed": 803,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_07_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "26d2947453096252d52df1cc4c8d731f39b94071739c5c1419e916b6494a7a16",
+      "assembly": "hvo.skymonitor.deployment.distribution.tests.dll",
+      "counts": {
+        "total": 120,
+        "executed": 120,
+        "passed": 120,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-canonical/unit/deployment-cli/unit.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "83e6a97726a178b49df75a36b60968a39903cf437a7b18f29c00936aaafce465",
+      "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+      "counts": {
+        "total": 3192,
+        "executed": 3191,
+        "passed": 3191,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_13_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "132bc30e0b7bb819d103b8e5c6097ea10651c030a685613250c1d2ad7adbe719",
+      "assembly": "hvo.skymonitor.imaging.tests.dll",
+      "counts": {
+        "total": 493,
+        "executed": 493,
+        "passed": 493,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_14_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "582219a91aced88c4fcdc4ff59b36563ce4d0c2bfc4601774f46bae6c3d51a09",
+      "assembly": "hvo.skymonitor.fleet.contracts.tests.dll",
+      "counts": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_22_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "097d2a0545b1c72b7854fb2a0342ecb8515bb317cbbd864aad29c520d7c2a979",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.tests.dll",
+      "counts": {
+        "total": 94,
+        "executed": 94,
+        "passed": 94,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_24_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "122e130b6e5a1edb402b7e8d3c3f9b80e6535f2e912774f1d11ce938618650bb",
+      "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+      "counts": {
+        "total": 54,
+        "executed": 54,
+        "passed": 54,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_27_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "e91ff644faaa1e7b8e0c488e82d5c14dfaa84b2f12cba76287ed71c94e49d148",
+      "assembly": "hvo.skymonitor.processing.tests.dll",
+      "counts": {
+        "total": 1320,
+        "executed": 1320,
+        "passed": 1320,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_36_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "7880024a12e3727043a07a7c12b45990a5af9d984efff397193ab2155024cc03",
+      "assembly": "hvo.skymonitor.logichost.tests.dll",
+      "counts": {
+        "total": 1003,
+        "executed": 1002,
+        "passed": 1002,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_43_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "5c6c4dd0530fed05790bddda7287637183af09f9ac9cadcd81272cc63077af0b",
+      "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+      "counts": {
+        "total": 30,
+        "executed": 30,
+        "passed": 30,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-canonical/unit/cameraagent/unit.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "a02f70277a7cb4071228929f55018b06d6cc301290f40c7cdcdf7d5a312cd74d",
+      "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+      "counts": {
+        "total": 8169,
+        "executed": 8168,
+        "passed": 8168,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_51_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "67f651879fce352d7c978be38f4f034f818658729ee34219203853a7e3b1ec76",
+      "assembly": "hvo.skymonitor.storage.filesystem.tests.dll",
+      "counts": {
+        "total": 77,
+        "executed": 77,
+        "passed": 77,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_53_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "05de9d185cc97672b56b5f491c874a0f20f6d704e581d609590a4a28a01eb9f6",
+      "assembly": "hvo.skymonitor.cameraagent.integrationtests.dll",
+      "counts": {
+        "total": 6,
+        "executed": 6,
+        "passed": 6,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_53_net10.0[1].trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "2a3ee82a70096512055c1a9514e7a0f699422dcd74f0173f8f8bd9340168bff8",
+      "assembly": "hvo.skymonitor.processingrunner.tests.dll",
+      "counts": {
+        "total": 35,
+        "executed": 35,
+        "passed": 35,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_59_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "015eae4f72788aa8c7a8f39bc8ff96fdb186ac858fd867bb249bd885027ef105",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.integrationtests.dll",
+      "counts": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_45_10_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "d99966b4276846225ddfa7260636157e80e18c2cb1e8495a0d960bac09511229",
+      "assembly": "hvo.skymonitor.testsupport.tests.dll",
+      "counts": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "initialCanonicalUnit": [
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_55_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "cfc178c66522709e04a451f86f59824b37d97639d26167f8167a2ff96f06d96a",
+      "assembly": "hvo.skymonitor.architecture.tests.dll",
+      "counts": {
+        "total": 32,
+        "executed": 32,
+        "passed": 32,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_56_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "c0436b20472b2a06df545f406c0989ee76092df203bd0b78e50808414702a53f",
+      "assembly": "hvo.skymonitor.common.tests.dll",
+      "counts": {
+        "total": 50,
+        "executed": 50,
+        "passed": 50,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_59_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "ab2f8bbd96a08fdc4a40e623a4a76dc8ed9bcf317458045a7887eb04c2388d0c",
+      "assembly": "hvo.skymonitor.catalog.sqlite.tests.dll",
+      "counts": {
+        "total": 296,
+        "executed": 296,
+        "passed": 296,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_03_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "cd6730449b978f8989ab23cd24aa88835a7584f4dfd3c49518b790b248765432",
+      "assembly": "hvo.skymonitor.catalog.sqlite.performancetests.dll",
+      "counts": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_03_net10.0[1].trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "5b400b48c5d75c0303ca8843e5b14adec0c7e32fe34b2c22315dc9bbdbc230de",
+      "assembly": "hvo.skymonitor.agentcore.tests.dll",
+      "counts": {
+        "total": 91,
+        "executed": 91,
+        "passed": 91,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_06_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "fd13ffdd979b7deeb589d7db3d567710ed1ef0e2867b344a22debedf8c80066d",
+      "assembly": "hvo.skymonitor.astronomy.tests.dll",
+      "counts": {
+        "total": 803,
+        "executed": 803,
+        "passed": 803,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_07_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "26d2947453096252d52df1cc4c8d731f39b94071739c5c1419e916b6494a7a16",
+      "assembly": "hvo.skymonitor.deployment.distribution.tests.dll",
+      "counts": {
+        "total": 120,
+        "executed": 120,
+        "passed": 120,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_07_net10.0[1].trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "dfb2437435972e7a9be9f9ff88196a669ffb315eeb75d3b795423d1dda07f744",
+      "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+      "counts": {
+        "total": 3192,
+        "executed": 3191,
+        "passed": 3191,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_13_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "132bc30e0b7bb819d103b8e5c6097ea10651c030a685613250c1d2ad7adbe719",
+      "assembly": "hvo.skymonitor.imaging.tests.dll",
+      "counts": {
+        "total": 493,
+        "executed": 493,
+        "passed": 493,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_14_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "582219a91aced88c4fcdc4ff59b36563ce4d0c2bfc4601774f46bae6c3d51a09",
+      "assembly": "hvo.skymonitor.fleet.contracts.tests.dll",
+      "counts": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_22_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "097d2a0545b1c72b7854fb2a0342ecb8515bb317cbbd864aad29c520d7c2a979",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.tests.dll",
+      "counts": {
+        "total": 94,
+        "executed": 94,
+        "passed": 94,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_24_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "122e130b6e5a1edb402b7e8d3c3f9b80e6535f2e912774f1d11ce938618650bb",
+      "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+      "counts": {
+        "total": 54,
+        "executed": 54,
+        "passed": 54,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_27_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "e91ff644faaa1e7b8e0c488e82d5c14dfaa84b2f12cba76287ed71c94e49d148",
+      "assembly": "hvo.skymonitor.processing.tests.dll",
+      "counts": {
+        "total": 1320,
+        "executed": 1320,
+        "passed": 1320,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_36_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "7880024a12e3727043a07a7c12b45990a5af9d984efff397193ab2155024cc03",
+      "assembly": "hvo.skymonitor.logichost.tests.dll",
+      "counts": {
+        "total": 1003,
+        "executed": 1002,
+        "passed": 1002,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_43_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "5c6c4dd0530fed05790bddda7287637183af09f9ac9cadcd81272cc63077af0b",
+      "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+      "counts": {
+        "total": 30,
+        "executed": 30,
+        "passed": 30,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_43_net10.0[1].trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "c60a9cb42dcdc3059a30bbbde4e7038ef5bdaa82bba80bbab48dcd92c46f58ac",
+      "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+      "counts": {
+        "total": 8166,
+        "executed": 8165,
+        "passed": 8165,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_51_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "67f651879fce352d7c978be38f4f034f818658729ee34219203853a7e3b1ec76",
+      "assembly": "hvo.skymonitor.storage.filesystem.tests.dll",
+      "counts": {
+        "total": 77,
+        "executed": 77,
+        "passed": 77,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_53_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "05de9d185cc97672b56b5f491c874a0f20f6d704e581d609590a4a28a01eb9f6",
+      "assembly": "hvo.skymonitor.cameraagent.integrationtests.dll",
+      "counts": {
+        "total": 6,
+        "executed": 6,
+        "passed": 6,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_53_net10.0[1].trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "2a3ee82a70096512055c1a9514e7a0f699422dcd74f0173f8f8bd9340168bff8",
+      "assembly": "hvo.skymonitor.processingrunner.tests.dll",
+      "counts": {
+        "total": 35,
+        "executed": 35,
+        "passed": 35,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_59_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "015eae4f72788aa8c7a8f39bc8ff96fdb186ac858fd867bb249bd885027ef105",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.integrationtests.dll",
+      "counts": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_45_10_net10.0.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "d99966b4276846225ddfa7260636157e80e18c2cb1e8495a0d960bac09511229",
+      "assembly": "hvo.skymonitor.testsupport.tests.dll",
+      "counts": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "affectedCanonicalUnit": [
+    {
+      "trx": "TestResults/issue-1041-run3/archive-canonical/unit/cameraagent/unit.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "a02f70277a7cb4071228929f55018b06d6cc301290f40c7cdcdf7d5a312cd74d",
+      "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+      "counts": {
+        "total": 8169,
+        "executed": 8168,
+        "passed": 8168,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-canonical/unit/deployment-cli/unit.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "83e6a97726a178b49df75a36b60968a39903cf437a7b18f29c00936aaafce465",
+      "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+      "counts": {
+        "total": 3192,
+        "executed": 3191,
+        "passed": 3191,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    }
+  ],
+  "developmentV1Unit": [
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_23_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "3ea6df24c4888d034a8f75b078e70647c0afa61b54b29a52e41c4264fd323ebf",
+      "assembly": "hvo.skymonitor.common.tests.dll",
+      "counts": {
+        "total": 50,
+        "executed": 50,
+        "passed": 50,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_23_net10.0[1].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "8e825a10fc4cc8b001808f41f2b6078a6865541e0c12e8c9cb399f279aaf6657",
+      "assembly": "hvo.skymonitor.architecture.tests.dll",
+      "counts": {
+        "total": 32,
+        "executed": 32,
+        "passed": 32,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_25_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "ebf17b436a9bd0803931206b04690eaf95b277a2e8b310cc0dde1806d905bbe7",
+      "assembly": "hvo.skymonitor.catalog.sqlite.tests.dll",
+      "counts": {
+        "total": 296,
+        "executed": 296,
+        "passed": 296,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_28_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "86d3e8ed8791ca023cfa1e3adfc12d38bec953217588c3d79cc9e4e717a10869",
+      "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+      "counts": {
+        "total": 3192,
+        "executed": 3191,
+        "passed": 3191,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_29_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "48d743748d8ae202148083f2a63f2fbba00e94a337df5d5dfa13ce76ae7721bb",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.integrationtests.dll",
+      "counts": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_29_net10.0[1].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "038fe45b1c9cc499208e2b261dd5ab7bb685c6321ef62db54e1ea8cf70c306b3",
+      "assembly": "hvo.skymonitor.agentcore.tests.dll",
+      "counts": {
+        "total": 91,
+        "executed": 91,
+        "passed": 91,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_29_net10.0[2].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "da5ef4d67d48469c1da89b73b323e22da7a7887acb9c0bc2c97c6a49b319a902",
+      "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+      "counts": {
+        "total": 30,
+        "executed": 30,
+        "passed": 30,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_31_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "27728c38df06b5d94ada3ab8c0d1928e8871f37e22da3a5a1864640d883eaa07",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.tests.dll",
+      "counts": {
+        "total": 94,
+        "executed": 94,
+        "passed": 94,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_31_net10.0[1].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "36bb6cbc0049f7ee723b1cf306eeef3b21937e37c021e587911054e7f42ddbfa",
+      "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+      "counts": {
+        "total": 8169,
+        "executed": 8168,
+        "passed": 8168,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_32_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "67e536f684a2035be155752dc6333cd81a9a8306bd1e2e3f45cf95a49f8caf03",
+      "assembly": "hvo.skymonitor.deployment.distribution.tests.dll",
+      "counts": {
+        "total": 120,
+        "executed": 120,
+        "passed": 120,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_32_net10.0[1].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "6d3f580d4f2ab4049d6a3df0e3d89195a94b940ee1b55f89a2aadcb2a2b69b64",
+      "assembly": "hvo.skymonitor.astronomy.tests.dll",
+      "counts": {
+        "total": 803,
+        "executed": 803,
+        "passed": 803,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_33_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "f0f91f6511fc80fee9da0a3f33df86fd899934e3c777c25e643dd79368b03b9d",
+      "assembly": "hvo.skymonitor.catalog.sqlite.performancetests.dll",
+      "counts": {
+        "total": 4,
+        "executed": 4,
+        "passed": 4,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_39_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "14a7b1df49c54678fe93839ee9c7555ef4d04e891ffdb0d6479a3d2659581b0d",
+      "assembly": "hvo.skymonitor.cameraagent.integrationtests.dll",
+      "counts": {
+        "total": 6,
+        "executed": 6,
+        "passed": 6,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_39_net10.0[1].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "d57855fc9be336a576889b2fdd41d7f94ee737ede7ecff494eaadc3936b4c3af",
+      "assembly": "hvo.skymonitor.imaging.tests.dll",
+      "counts": {
+        "total": 493,
+        "executed": 493,
+        "passed": 493,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_40_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "d833399aff487f8523b60a67bc8ec85255ef3e33605f32c0acde0527d99d24d3",
+      "assembly": "hvo.skymonitor.fleet.contracts.tests.dll",
+      "counts": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_42_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "561e93c7f89c2b5017585a1e113a086e470c8eb3a7e8c859d73a16da1e23f9fa",
+      "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+      "counts": {
+        "total": 54,
+        "executed": 54,
+        "passed": 54,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_42_net10.0[1].trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "2fc159a1f136052b4789f27bb6603476ec7a50e1b1596bc4029913e1e6236c9d",
+      "assembly": "hvo.skymonitor.processing.tests.dll",
+      "counts": {
+        "total": 1320,
+        "executed": 1320,
+        "passed": 1320,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_43_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "e9cb434b1ea7720beec3e3fa83d3301f46849c64f8935fb3fda9d633d26e7b83",
+      "assembly": "hvo.skymonitor.logichost.tests.dll",
+      "counts": {
+        "total": 1003,
+        "executed": 1002,
+        "passed": 1002,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 1
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_46_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "da88010efd5fdf01eec54044370a414dcf2fed6ad7ffc073763f33f7fa7f6ae0",
+      "assembly": "hvo.skymonitor.storage.filesystem.tests.dll",
+      "counts": {
+        "total": 77,
+        "executed": 77,
+        "passed": 77,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_50_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "f4aa763604e41e0c6afd2fe04ee4ec2366aa341d75ef3e821d641a2fa8577c56",
+      "assembly": "hvo.skymonitor.processingrunner.tests.dll",
+      "counts": {
+        "total": 35,
+        "executed": 35,
+        "passed": 35,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-v1-unit/_home-dev-03_2026-11-11_06_13_54_net10.0.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "d2d10bfcbfb120f969f334d6a7d29fcae93f0ca41c3b50e6567bfccfb8fab9e6",
+      "assembly": "hvo.skymonitor.testsupport.tests.dll",
+      "counts": {
+        "total": 11,
+        "executed": 11,
+        "passed": 11,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "integration": [
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/architecture/architecture.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "5373e820103b0a44dc8280099b4e6f40df52597eeaba17920d0003768cd134f5",
+      "assembly": "hvo.skymonitor.architecture.tests.dll",
+      "counts": {
+        "total": 7,
+        "executed": 7,
+        "passed": 7,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/integration/astronomy/integration-astronomy.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "0f1ea990d1d5e54f904032cc1b93110533db3ea79420c5493244b8b52f993b0a",
+      "assembly": "hvo.skymonitor.astronomy.tests.dll",
+      "counts": {
+        "total": 2,
+        "executed": 2,
+        "passed": 2,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent/integration-cameraagent.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "2b0b24f98551da049dfdc4b864c1eab8cb8b3caaf8485418717609f20f317369",
+      "assembly": "hvo.skymonitor.cameraagent.integrationtests.dll",
+      "counts": {
+        "total": 61,
+        "executed": 61,
+        "passed": 61,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent-logichost/integration-cameraagent-logichost.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "df6b93e7e02f07581819775fb1d6fe07c4f8b445f9a9205de83b8510232b4bf3",
+      "assembly": "hvo.skymonitor.cameraagent.logichost.integrationtests.dll",
+      "counts": {
+        "total": 24,
+        "executed": 24,
+        "passed": 24,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent-standalone/integration-cameraagent-standalone.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "23fe33bee467310018f5cc8e49d9af0269fae69b4231dba974128941e43e57e4",
+      "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+      "counts": {
+        "total": 33,
+        "executed": 33,
+        "passed": 33,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent-storage/integration-cameraagent-storage.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "8e89b57b2540385815ca9a1ead505744699e1b7eb8a2accc51799aa5b43e7da7",
+      "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+      "counts": {
+        "total": 535,
+        "executed": 535,
+        "passed": 535,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/canonical/integration/logichost/integration-logichost.trx",
+      "testedHead": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+      "sha256": "743e76bde3abef043046c28917b65bf954974e2774f4db7685cd39bc6c2152ed",
+      "assembly": "hvo.skymonitor.logichost.integrationtests.dll",
+      "counts": {
+        "total": 600,
+        "executed": 600,
+        "passed": 600,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "focused": [
+    {
+      "trx": "TestResults/issue-1041-run3/archive-final-focused/camera.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "538fca47a3c08ae2de94580138ea68da145ecf4c68e57f64bfb13b3113000c67",
+      "assembly": "hvo.skymonitor.cameraagent.tests.dll",
+      "counts": {
+        "total": 155,
+        "executed": 155,
+        "passed": 155,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-final-focused/cli.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "4094a0e920409e77888b901baeb2211244e2a2b9acaf4f11580fd056d8066f03",
+      "assembly": "hvo.skymonitor.deployment.cli.tests.dll",
+      "counts": {
+        "total": 70,
+        "executed": 70,
+        "passed": 70,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "trx": "TestResults/issue-1041-run3/archive-final-focused/endpoint.trx",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "sha256": "ae26b425f24f05975fceb9dc7eff5e722a90f94f8dc36b6a17c3563921559cf2",
+      "assembly": "hvo.skymonitor.cameraagent.acceptancetests.dll",
+      "counts": {
+        "total": 7,
+        "executed": 7,
+        "passed": 7,
+        "failed": 0,
+        "error": 0,
+        "timeout": 0,
+        "aborted": 0,
+        "inconclusive": 0,
+        "passedButRunAborted": 0,
+        "notRunnable": 0,
+        "notExecuted": 0,
+        "disconnected": 0,
+        "warning": 0,
+        "completed": 0,
+        "inProgress": 0,
+        "pending": 0,
+        "skipped": 0
+      }
+    }
+  ],
+  "focusedCases": {
+    "camera.trx": [
+      {
+        "method": "IndexReusesOnlyCurrentContentAcrossRestartAndInspectsReplacementBytes",
+        "outcome": "Passed"
+      },
+      {
+        "method": "IncompleteRestoreAndUnmanagedDeletionCannotBeHiddenByManagedWriters",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RevertingCandidateRemovesItsClassificationAndRemainsRestartable",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "LinkedRecordDirectory_IsRejected",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_OverBoundDeletesInvalidAndAdvancesCursor",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "NativeStagePublicationCompletionDeletionAndReconciliationRemainQualifiedAcrossRestart",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StagedActivation_PreservesOldCaptureEvidenceUntilActualRestartBoundary",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CancellationAfterDurableLocationChangeDoesNotLeaveMemoryAtTheOldVersion",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "FailedFirstUpgradeRestoresRecordedLegacyAbsenceAndForcesFullAdoption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "GenuineLegacyHistoryIsSealedWithoutChangingInstallationIdentity",
+        "outcome": "Passed"
+      },
+      {
+        "method": "WarmIndexRejectsInvalidCurrentManifestInEitherSource",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageNamespaceRetryMustRepeatFailedDirectoryBarrier",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RawIngressStartup_DurablePauseHoldsStageCleanupWhileARunningJournalPrunes",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_BackdatedChangeCannotInvalidateRetainedCapture",
+        "outcome": "Passed"
+      },
+      {
+        "method": "EnsureAncestorChainHasNoLinks_RejectsConfiguredRootAncestorSymlink",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ScrubMergesConcurrentManagedChangesAndProtectedWaitIsFinite",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem",
+        "outcome": "Passed"
+      },
+      {
+        "method": "WarmIndexRejectsInvalidCurrentManifestInEitherSource",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageAsync_DoesNotChangeLiveGeometryAndActivatesOnlyOnRestart",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_MarkerMismatchFailsWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "LedgerTamperCannotCertifyAFullScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ManagedPublishCopyMoveRetentionAndTreeMoveMaintainTheCheckpoint",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_RetainsOwnedAndPrunesCanonicalUnownedAndTemporaryStages",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_SkippedVersionMarkerFailsWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_RecoversInterruptedMarkerPublication",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CentralIntegrationRejectsMissingPersistentIdentityProvider",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_InvalidKeyReleasesHardCapacity",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_RestoredOlderHistoryFailsForNewerRetainedEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "FailedFirstUpgradeRestoresRecordedLegacyAbsenceAndForcesFullAdoption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_OwnedInvalidEvidenceIsRetainedUntouched",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OrdinaryLoadsStayQualifiedAndOnlyExplicitScrubsInspectRetainedHistory",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OrphanCleanupIsBoundedAndNeverDeletesEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ApprovedOutOfBandBoundaryDetectsDriftAtFullScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReplacedLedgerPathCannotBeHiddenByAnAlreadyOpenSqliteHandle",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "WarmIndexRejectsInvalidCurrentManifestInEitherSource",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalChronologyWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ApprovedOutOfBandBoundaryDetectsDriftAtFullScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "NoNewProcessInheritsCheckpointTrust",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReadAsync_LinuxRejectsStageSymlinkWithoutFollowingTarget",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeRetryMustSettleMarkerDurabilityBeforePublishingActiveLocation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageAsync_ResolvedFootprintsSurviveRestartAndBindAsProjectedSceneV2",
+        "outcome": "Passed"
+      },
+      {
+        "method": "QualifiedProtectedReadNeverTraversesRetainedEvidenceAndConcurrentReadsAgree",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedHistoryCannotQualifyWithAnotherLedgersNonce",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RawIngressStartup_SecondPauseInterruptsDeferredStageLifecycleWait",
+        "outcome": "Passed"
+      },
+      {
+        "method": "BackgroundScrubCooldownUsesTheInjectedClockAndExplicitScrubPath",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OptionalIndexWriteFailureKeepsDurableAndInMemoryLocationConsistent",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReadAsync_RejectsOversizedFileBeforePayloadRead",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ClearedLedgerCannotMasqueradeAsLegacyState",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageAsync_ExactDuplicateIsIdempotentAndConflictIsRejected",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageAsync_EnforcesFileCountBound",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_ResumeBeforeReadinessPublicationRetriesDeferredMaintenance",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StagedActivation_FutureOrExpiredIntervalDoesNotPreventStartup",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_SymbolicLinkDataRootFailsBeforeWritingState",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_TransientInspectionFailureRemainsVisibleAndDoesNotDeleteEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeRestartAndChange_PreservesProtectedImmutableVersions",
+        "outcome": "Passed"
+      },
+      {
+        "method": "NoNewProcessInheritsCheckpointTrust",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageNamespaceRetryMustRepeatFailedDirectoryBarrier",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Save_PrunesTheOldestRecordsAndInterruptedSavesBeyondTheBound",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RawIngressStartup_DurablePauseHoldsStageCleanupWhileARunningJournalPrunes",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_InvalidPrefixDoesNotBlockValidOrphanCleanup",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalChronologyWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DailyScrubDeadlineCannotBeExtendedByManagedWrites",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CentralIntegrationRejectsBlankPersistentDeviceIdentity",
+        "outcome": "Passed"
+      },
+      {
+        "method": "WarmIndexRejectsInvalidCurrentManifestInEitherSource",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageNamespaceRetryMustRepeatFailedDirectoryBarrier",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "TamperedRecords_AreNeverReturnedAsVerified",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_ManyOwnedEntriesCompleteCycleWithoutPerpetualBacklog",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CentralIntegrationAcceptsExactAgentIdAndRejectsMismatch",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OptionalIndexWriteFailureKeepsDurableAndInMemoryLocationConsistent",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StandaloneModePreservesConfiguredAgentId",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageAsync_ConcurrentStoreInstancesAuthenticateIdenticalAndRejectConflict",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CompleteArchiveStagesItsAuthenticatedLedgerWithoutPermittingDatabaseOnlyAdoption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ClearedLedgerCannotMasqueradeAsLegacyState",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ApprovedOutOfBandBoundaryDetectsDriftAtFullScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Save_PublishesAChecksummedRecordThatReadsBackExactly",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ManualFocusPruningWithOneRecordCompletesAlongsideATrackedWriter",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StageAsync_RestartPreservesCanonicalGeometryAndIdentity",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitialQualificationIncludesManagedWritesAlreadyInFlightBeforeRegistration",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StartupAdmitsInvalidSidecarsButStrictVerificationRefusesThem",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DeleteAsync_RemovesOnlyExplicitlyCommittedStage",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OtherOwnedJsonIsClassifiedOnceAndNeverSatisfiesAFrameContract",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexWrongLayoutRebuildsWithoutChangingRetainedEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OversizedInvalidAndMissingRecords_AreRefused",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "MidScanCancellationPersistsOnlyCompletedProofsAndStillReadsCurrentBytes",
+        "outcome": "Passed"
+      },
+      {
+        "method": "WarmIndexRejectsInvalidCurrentManifestInEitherSource",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_RejectsOverlapAndProtectedPayloadTampering",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexSymlinkIsIgnoredWithoutWritingOutsideTheStateRoot",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RawIngressStartup_DeferredStagesYieldToSecondPauseAndResumeWithoutRepeatingDeletes",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CentralIntegrationDerivesSampleAgentIdFromPersistentDeviceIdentity",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify",
+        "outcome": "Passed"
+      },
+      {
+        "method": "MidScanCancellationPersistsOnlyCompletedProofsAndStillReadsCurrentBytes",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_ResumeBeforeReadinessPublicationRetriesDeferredMaintenance",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InterruptedAdoptionRecoversThroughFullScrubWithTheOriginalNonce",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_ManyInvalidEntriesAreDeletedWithoutPerpetualBacklog",
+        "outcome": "Passed"
+      },
+      {
+        "method": "WarmIndexRejectsInvalidCurrentManifestInEitherSource",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DamagedRequiredLedgerLeavesRecoveryAvailableButCannotQualify",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ChangedHistoryInvalidatesProofsAndConcurrentReadsKeepCurrentValidation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "LedgerTamperCannotCertifyAFullScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsNoncanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StaleBackgroundConfigurationCannotCommitNewLocationAuthority",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitialQualificationIncludesManagedWritesAlreadyInFlightBeforeRegistration",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StagedActivation_ReconcilesConfigurationChangedBeforeRestart",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReadAndDeleteAsync_DisappearedStageIsUnavailableAndIdempotent",
+        "outcome": "Passed"
+      },
+      {
+        "method": "TornProductionSidecarCanReachTheRealReconcilerWithoutDeletingEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "LedgerTamperCannotCertifyAFullScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "NestedManagedDeleteCompletesWhileAnotherFlowStartsAWrite",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReconcileAsync_ActionablesDrainAcrossBatchesAndNewTempAfterZeroIsDiscovered",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InitializeAsync_RejectsIncompleteCanonicalHistoryWithoutMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CompletedMarker_IsIdempotentAndReconciliationDeletesItDespiteRawOwnership",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_MissingHistoryOrWrongKeyFailsClosedForExistingEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DatabaseRestorePreservesAuthenticatedPostSnapshotFilesAndRejectsUntrustedProofs",
+        "outcome": "Passed"
+      },
+      {
+        "method": "NoNewProcessInheritsCheckpointTrust",
+        "outcome": "Passed"
+      },
+      {
+        "method": "AdvisoryIndexDamageCannotHideFreshCorruption",
+        "outcome": "Passed"
+      },
+      {
+        "method": "Initialize_EmitsBoundedSignalsWithoutCoordinates",
+        "outcome": "Passed"
+      }
+    ],
+    "cli.trx": [
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_FinalBodySharesTheBudgetAlreadySpentWaitingForScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InvalidPairedSnapshotRefusesBeforeAnyRestore",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RestoreAsync_LeavesTheCalibrationFamiliesStoreUntouched",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_FinalBodySharesTheBudgetAlreadySpentWaitingForScrub",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_CallerCancellationDuringPendingDelayRemainsCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_UnrelatedCancellationIsNotReportedAsDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedReadTimeout_TestOverrideCannotRemoveOrExtendDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RestoreAsync_PutsEveryStoreBackExactlyAndIsRepeatable",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_CallerCancellationRemainsCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "SqliteStores_LeaveOutTheOrbitalElementsStore",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_RejectsRedirectAndAuthenticationFailure",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_PendingRetriesCannotRestartOrExtendTheDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_HeadersAndBodyShareOneDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_PendingScrubNeverBypassesFinalIdentityComparison",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_UnrelatedCancellationIsNotReportedAsDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CancelledPairedRestoreIsResumableAndNeverRecordsPartialCompletion",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InvalidPairedSnapshotRefusesBeforeAnyRestore",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_ExplicitPendingScrubRetriesWithinTheOriginalBudget",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_RejectsRedirectAndAuthenticationFailure",
+        "outcome": "Passed"
+      },
+      {
+        "method": "CreateAsync_CorruptStore_IsRefusedRatherThanSnapshotted",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedReadTimeout_TestOverrideCannotRemoveOrExtendDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_CallerCancellationRemainsCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "VerifyAsync_AcceptsASnapshotAnEarlierInstallerTookWithoutTheCalibrationFamiliesStore",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_GenericUnavailableResponseDoesNotBecomeARetry",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedReadTimeout_ProductionPolicyIs120Seconds",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_RejectsRedirectAndAuthenticationFailure",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_CallerCancellationRemainsCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RestoreAsync_LeavesTheOrbitalElementsStoreUntouched",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_RejectsRedirectAndAuthenticationFailure",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_CallerCancellationDuringPendingDelayRemainsCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedReadTimeout_TestOverrideCannotRemoveOrExtendDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "VerifyAsync_RejectsASnapshotRecordedForAnotherOperationOrInstance",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_GenericUnavailableResponseDoesNotBecomeARetry",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_CallerCancellationRemainsCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_PendingRetriesCannotRestartOrExtendTheDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_RejectsRedirectAndAuthenticationFailure",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReadState_PostsTheOwnerIdentifierAsInputEmailAndRequiresTheSignInRedirect",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DeletedEstablishedLedgerRefusesBeforeRestoringProtectedFilesOrRetainedEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InvalidPairedSnapshotRefusesBeforeAnyRestore",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_PreCanceledCallerDoesNotSend",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_ExplicitPendingScrubRetriesWithinTheOriginalBudget",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_RejectsRedirectAndAuthenticationFailure",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_DeadlineCoversHeadersAndBodyWithoutLeakingSecrets",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_SlowResponseSucceedsWithinBudget",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ReadState_PostsTheOwnerIdentifierAsInputEmailAndRequiresTheSignInRedirect",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_HeadersAndBodyShareOneDeadline",
+        "outcome": "Passed"
+      },
+      {
+        "method": "InvalidPairedSnapshotRefusesBeforeAnyRestore",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_PreCanceledCallerDoesNotSend",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedRead_SlowResponseSucceedsWithinBudget",
+        "outcome": "Passed"
+      },
+      {
+        "method": "VerifyInstallation_DefaultBudgetStillRejectsIdentityMismatch",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ProtectedVerificationRefusesBeforeLifecycleMutation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "ExplicitPreLedgerAbsenceRemovesCandidateStateAndPreservesRetainedEvidence",
+        "outcome": "Passed"
+      }
+    ],
+    "endpoint.trx": [
+      {
+        "method": "OptionalIndexWriteFailureDoesNotPreventHostStartup",
+        "outcome": "Passed"
+      },
+      {
+        "method": "DirtyEndpointRefusesPromptlyAndCoalescedScrubSurvivesCallerCancellation",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "OrdinaryConfigurationAndContinuityReadsDoNotScrubOrInvalidateTheEndpoint",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "StartupAndRecoveryUiRemainAvailableWhileProtectedReadRefusesInvalidEvidence",
+        "outcome": "Passed"
+      },
+      {
+        "method": "RepeatedDelayedAndConcurrentReadsObserveActualEditsAndRejectInvalidState",
+        "outcome": "Passed"
+      }
+    ]
+  },
+  "processCrash": {
+    "head": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+    "commonSha256": "32529f3cf57e41cc92e6f8dd04f42d7671440abfe961d00748253427ad87e084",
+    "probeSourceSha256": "a7fd9d732a63a6968851cca933f9eb34baa47db1f0fec1932b1e83e50e16d8ec",
+    "runs": [
+      {
+        "mode": "crash-before",
+        "exitCode": -9,
+        "expectedExit": -9,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "mode": "recover",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"recover\",\"pending\":true,\"requalified\":true,\"files\":0}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "restart",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"restart\",\"pending\":true,\"requalified\":true,\"files\":0}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "crash-after",
+        "exitCode": -9,
+        "expectedExit": -9,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "mode": "recover",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"recover\",\"pending\":true,\"requalified\":true,\"files\":1}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "restart",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"restart\",\"pending\":true,\"requalified\":true,\"files\":1}\n",
+        "stderr": ""
+      },
+      {
+        "mode": "crash-torn",
+        "exitCode": -9,
+        "expectedExit": -9,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "mode": "recover-torn",
+        "exitCode": 0,
+        "expectedExit": 0,
+        "stdout": "{\"mode\":\"recover-torn\",\"pending\":true,\"rejected\":true,\"startup\":true}\n",
+        "stderr": ""
+      }
+    ]
+  },
+  "configurationEdit": {
+    "head": "dafbb60fb4a6f768241f77c7ccae3470e5248739",
+    "commonSha256": "32529f3cf57e41cc92e6f8dd04f42d7671440abfe961d00748253427ad87e084",
+    "probeSourceSha256": "1fa1517a84f0b22d1ba8f5fa788bf9478cb36571807f24000ef6c35003d1d520",
+    "exitCode": 0,
+    "stdout": "{\"actualMidLoadEditRejected\":true,\"currentSnapshotHashMatches\":true,\"locationIdentityUnchanged\":true}\n",
+    "stderr": ""
+  },
+  "coverageSummaries": {
+    "shared": "Summary\n  Generated on: 11/11/2026 - 06:19:37\n  Coverage date: 11/11/2026 - 04:43:57 - 11/11/2026 - 05:21:34\n  Parser: MultiReport (10x Cobertura)\n  Assemblies: 9\n  Classes: 1084\n  Files: 303\n  Line coverage: 90.2%\n  Covered lines: 36879\n  Uncovered lines: 3987\n  Coverable lines: 40866\n  Total lines: 74117\n  Branch coverage: 74.8% (24897 of 33256)\n  Covered branches: 24897\n  Total branches: 33256\n  Method coverage: 91.8% (7238 of 7880)\n  Full method coverage: 84% (6622 of 7880)\n  Covered methods: 7238\n  Fully covered methods: 6622\n  Total methods: 7880\n\nHVO.SkyMonitor.AgentCore                                                               72.2%\n  HVO.SkyMonitor.AgentCore.ArtifactDescriptor                                           100%\n  HVO.SkyMonitor.AgentCore.ArtifactManifestDocument                                     100%",
+    "cameraagent": "Summary\n  Generated on: 11/11/2026 - 06:19:46\n  Coverage date: 11/11/2026 - 04:44:47 - 11/11/2026 - 06:08:43\n  Parser: MultiReport (5x Cobertura)\n  Assemblies: 5\n  Classes: 1591\n  Files: 791\n  Line coverage: 90.6%\n  Covered lines: 101862\n  Uncovered lines: 10502\n  Coverable lines: 112364\n  Total lines: 201291\n  Branch coverage: 77.4% (48156 of 62179)\n  Covered branches: 48156\n  Total branches: 62179\n  Method coverage: 93.9% (15279 of 16261)\n  Full method coverage: 81.5% (13261 of 16261)\n  Covered methods: 15279\n  Fully covered methods: 13261\n  Total methods: 16261\n\nHVO.SkyMonitor.CameraAgent                                                                                 87.1%\n  HVO.SkyMonitor.CameraAgent.Authentication.CameraAgentApiKeyAuthenticationMiddleware                       100%\n  HVO.SkyMonitor.CameraAgent.Authentication.CameraAgentApiKeyCreateResult                                   100%",
+    "logichost": "Summary\n  Generated on: 11/11/2026 - 06:19:50\n  Coverage date: 11/11/2026 - 04:45:51 - 11/11/2026 - 05:15:50\n  Parser: MultiReport (2x Cobertura)\n  Assemblies: 1\n  Classes: 786\n  Files: 444\n  Line coverage: 84.3%\n  Covered lines: 44070\n  Uncovered lines: 8170\n  Coverable lines: 52240\n  Total lines: 87431\n  Branch coverage: 67.6% (14792 of 21862)\n  Covered branches: 14792\n  Total branches: 21862\n  Method coverage: 82.4% (6528 of 7913)\n  Full method coverage: 73.5% (5817 of 7913)\n  Covered methods: 6528\n  Fully covered methods: 5817\n  Total methods: 7913\n\nHVO.SkyMonitor.LogicHost                                                                              84.3%\n  HVO.SkyMonitor.LogicHost.Components.Account.IdentityRedirectManager                                   50%\n  HVO.SkyMonitor.LogicHost.Components.Account.IdentityRevalidatingAuthenticationStateProvider         13.3%",
+    "combined": "Summary\n  Generated on: 11/11/2026 - 06:19:58\n  Coverage date: 11/11/2026 - 04:45:24 - 11/11/2026 - 05:26:05\n  Parser: MultiReport (2x Cobertura)\n  Assemblies: 16\n  Classes: 3467\n  Files: 1520\n  Line coverage: 34.5%\n  Covered lines: 70000\n  Uncovered lines: 132756\n  Coverable lines: 202756\n  Total lines: 357815\n  Branch coverage: 20.1% (23421 of 115982)\n  Covered branches: 23421\n  Total branches: 115982\n  Method coverage: 36.3% (11656 of 32089)\n  Full method coverage: 30% (9653 of 32089)\n  Covered methods: 11656\n  Fully covered methods: 9653\n  Total methods: 32089\n\nHVO.SkyMonitor.AgentCore                                                                                     80%\n  HVO.SkyMonitor.AgentCore.ArtifactDescriptor                                                               100%\n  HVO.SkyMonitor.AgentCore.ArtifactManifestDocument                                                         100%",
+    "delivery": "Summary\n  Generated on: 11/11/2026 - 06:20:01\n  Coverage date: 11/11/2026 - 04:44:17 - 11/11/2026 - 06:13:20\n  Parser: MultiReport (2x Cobertura)\n  Assemblies: 4\n  Classes: 277\n  Files: 136\n  Line coverage: 91.3%\n  Covered lines: 17989\n  Uncovered lines: 1713\n  Coverable lines: 19702\n  Total lines: 37289\n  Branch coverage: 77.7% (10713 of 13775)\n  Covered branches: 10713\n  Total branches: 13775\n  Method coverage: 95.5% (2770 of 2898)\n  Full method coverage: 84.3% (2445 of 2898)\n  Covered methods: 2770\n  Fully covered methods: 2445\n  Total methods: 2898\n\nHVO.SkyMonitor.Deployment.Cli                                                    90.7%\n  HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityFormat      0%\n  HVO.SkyMonitor.CameraAgent.Configuration.OwnerPasswordFileText                   80%"
+  },
+  "aggregateCoverageSummary": "Summary\n  Generated on: 11/11/2026 - 06:20:16\n  Coverage date: 11/11/2026 - 04:43:57 - 11/11/2026 - 06:13:20\n  Parser: MultiReport (23x Cobertura)\n  Assemblies: 21\n  Classes: 3778\n  Files: 1683\n  Line coverage: 89.8%\n  Covered lines: 203795\n  Uncovered lines: 23005\n  Coverable lines: 226800\n  Total lines: 402653\n  Branch coverage: 75.9% (100151 of 131918)\n  Covered branches: 100151\n  Total branches: 131918\n  Method coverage: 92.4% (32660 of 35344)\n  Full method coverage: 81.8% (28924 of 35344)\n  Covered methods: 32660\n  Fully covered methods: 28924\n  Total methods: 35344\n\nHVO.SkyMonitor.AgentCore                                                                                   95.8%\n  HVO.SkyMonitor.AgentCore.ArtifactDescriptor                                                               100%\n  HVO.SkyMonitor.AgentCore.ArtifactManifestDocument                                                         100%",
+  "initialCoverageBindings": [
+    {
+      "slot": "TestResults/unit/astronomy",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_06_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/ce7f3bac-c341-4e82-a3f3-0a29e948e37b/coverage.cobertura.xml",
+      "sha256": "ab6d9f3c8a6b9b5268eb2f955fd4132363df5dfd71ca7b0958918221af36289e"
+    },
+    {
+      "slot": "TestResults/unit/imaging",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_13_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/7b4dab1c-378b-454d-a910-49cfafcf262a/coverage.cobertura.xml",
+      "sha256": "ab4ec86a7175235f2413a82380b33d324dacd1be9b2dfce764b1978dcb4f8816"
+    },
+    {
+      "slot": "TestResults/unit/processing",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_27_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/295a83f1-2d3e-41ca-b8d7-775fcd5ac37f/coverage.cobertura.xml",
+      "sha256": "9c10654cc664eb63bcf231b5cddc8f8f83ec5ed8a2605ac229cc8ba62b648420"
+    },
+    {
+      "slot": "TestResults/unit/processing-runner",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_53_net10.0[1].trx",
+      "coverage": "TestResults/issue-1041-run3/unit/a4278f62-2a64-4144-8869-34c9b88b5b33/coverage.cobertura.xml",
+      "sha256": "26af043c07ac3fa91a13856babc22747fd88c9c054aa06732af4f2854326fb8d"
+    },
+    {
+      "slot": "TestResults/unit/catalog-sqlite",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_59_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/e72c38a3-3a43-4f2c-8336-f29a4d463bcf/coverage.cobertura.xml",
+      "sha256": "fefc44e1c6a46c5b6dd921f606280cec8b99f5aa2a0b5ba790add035b56af03e"
+    },
+    {
+      "slot": "TestResults/unit/storage-filesystem",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_51_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/39acbf26-681a-49d0-a441-d41773438cb7/coverage.cobertura.xml",
+      "sha256": "78a0e758bfc43e674dcd532f7ae620ad7a77a3498fa059a092e68754cff9c6ea"
+    },
+    {
+      "slot": "TestResults/unit/deployment-cli",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_07_net10.0[1].trx",
+      "coverage": "TestResults/issue-1041-run3/unit/b7a85cab-fa20-4729-b5f7-28212d210bc2/coverage.cobertura.xml",
+      "sha256": "a15528fabb6ed7bc012103266784d6753cffa5b8e573b6d01dcf6c3c7323a2d3"
+    },
+    {
+      "slot": "TestResults/unit/deployment-distribution",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_07_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/0955688a-7c27-4d67-b578-33ec89fbb63a/coverage.cobertura.xml",
+      "sha256": "ef9cfc970c334b4c8e6008cdc4d697b741e8baef6c62b6f87a2d1cbb745f0c4a"
+    },
+    {
+      "slot": "TestResults/unit/agent-core",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_03_net10.0[1].trx",
+      "coverage": "TestResults/issue-1041-run3/unit/3c16782a-8762-493a-a483-aee214488c2e/coverage.cobertura.xml",
+      "sha256": "17e7bf01b15eff7950204749f1d70ef5c763bdf6bed0cfd2b93100aabe2849e0"
+    },
+    {
+      "slot": "TestResults/unit/common",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_56_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/53a5ac42-e6a7-4bf7-92e7-a94b0f0fc728/coverage.cobertura.xml",
+      "sha256": "a82203f942f51b6084acf9610cff4390705a2c72002792c740e8b3ee7a8bcc79"
+    },
+    {
+      "slot": "TestResults/unit/fleet-contracts",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_14_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/7e9d0af6-2e8c-4a45-bbd3-46ae16d142ff/coverage.cobertura.xml",
+      "sha256": "4d7c8e89b01427eaf1965c7b692053b962fc0974504f22a7c2d6205638a7becb"
+    },
+    {
+      "slot": "TestResults/unit/test-support",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_45_10_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/56ce9bf9-e6a5-47ee-8e50-46b902c84e31/coverage.cobertura.xml",
+      "sha256": "49374ad86b1af36c3fa06d5af71641faf9334be04aed8da1b5c85572c09e5432"
+    },
+    {
+      "slot": "TestResults/unit/architecture",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_43_55_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/bd38c4b8-26d8-4b75-8ac8-792e38de0da8/coverage.cobertura.xml",
+      "sha256": "0e8bf7e0b24abc356c2b433cf738355410d5d42cac7db9727c1c5356fff2f0bb"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_43_net10.0[1].trx",
+      "coverage": "TestResults/issue-1041-run3/unit/c90b8ec6-1af2-4d3c-960d-9a8b739e7570/coverage.cobertura.xml",
+      "sha256": "cad05a6de75694ba581354466220d70fe5c43cadae074137f832543c412b0ba2"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent-acceptance",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_43_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/146cc71c-4c18-4f56-b91a-33d1cddbda8c/coverage.cobertura.xml",
+      "sha256": "0d4c314fbebac9731fb3d75e13aed584c21b7bb8fb60657021770529d0a50645"
+    },
+    {
+      "slot": "TestResults/unit/logichost",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_36_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/2835cd7c-de6b-40db-bd6e-cbff24dd068c/coverage.cobertura.xml",
+      "sha256": "26ab66acb25256fea0c7a7f03577bec43eb541221c53a2d78aadb240dc3e492c"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent-logichost",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_22_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/76f5c88e-fb53-4b24-8a37-0a53f7a53f38/coverage.cobertura.xml",
+      "sha256": "82808adf758efce64cf517ce7306cb15127b87f179d5825237bab87304dfcbd9"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent-integration",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_53_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/871f0153-f020-4d5e-bf25-c59e67bab268/coverage.cobertura.xml",
+      "sha256": "fda3993682f380847e999f905fd11362011931d31a08c1c3e33371e6a91e80e8"
+    },
+    {
+      "slot": "TestResults/unit/logichost-integration",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_24_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/0a2825ff-84b5-431d-a8d8-690c5c39359a/coverage.cobertura.xml",
+      "sha256": "35bd87109c43c11d6cb04fd3e24257ee5d8339f61403d4500e9c032699df0fca"
+    },
+    {
+      "slot": "TestResults/unit/cameraagent-logichost-integration",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_59_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/27e01b63-a1ed-45f5-95c6-6431be866c65/coverage.cobertura.xml",
+      "sha256": "311a315c97fa1660cd1079a158fb37ea62d9026a17661190304841e90ef8174d"
+    },
+    {
+      "slot": "TestResults/unit/catalog-sqlite-performance",
+      "trx": "TestResults/issue-1041-run3/unit/_home-dev-03_2026-11-11_04_44_03_net10.0.trx",
+      "coverage": "TestResults/issue-1041-run3/unit/517d2f87-9619-4fc4-97b0-f0526335c787/coverage.cobertura.xml",
+      "sha256": "6deecae50f8692b9c94c9547e5cdc47ccda0a4a8e70ed0a3257c11bd4b4192dc"
+    },
+    {
+      "slot": "TestResults/integration/astronomy",
+      "trx": "TestResults/issue-1041-run3/canonical/integration/astronomy/integration-astronomy.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/integration/astronomy/a268c044-fa3f-4c26-b05b-3cff5c68604e/coverage.cobertura.xml",
+      "sha256": "3b262f1a22d9aae700e8694bd4a96a56c0707667ca0d95c0e07953f36c135643"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent",
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent/integration-cameraagent.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/integration/cameraagent/5caddda1-4305-4fc3-9e09-7a953f466222/coverage.cobertura.xml",
+      "sha256": "d3063e69ac143c9a15d0c533843226808591e44ed94161dd9cc9c51c2e42884e"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent-logichost",
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent-logichost/integration-cameraagent-logichost.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/integration/cameraagent-logichost/3457d14c-7f12-4c30-9541-a9e2ef0b0a16/coverage.cobertura.xml",
+      "sha256": "fa6a0fd0019ec4bcd9df2106b218995e076feb6aebf494d4e984bf8d6a0a6db8"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent-standalone",
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent-standalone/integration-cameraagent-standalone.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/integration/cameraagent-standalone/0e305843-9b60-4246-badc-c554dac58dd2/coverage.cobertura.xml",
+      "sha256": "df071f6e078ace5fdb412f387a07c9199dfc76596191d4add0f1f352e1a3cec0"
+    },
+    {
+      "slot": "TestResults/integration/cameraagent-storage",
+      "trx": "TestResults/issue-1041-run3/canonical/integration/cameraagent-storage/integration-cameraagent-storage.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/integration/cameraagent-storage/e23786c5-8a59-4340-be21-725ef3571158/coverage.cobertura.xml",
+      "sha256": "dd0ec0d0540c8248a122e918b77f463bf9fecbdcbfd123a4e60adbfaf62efacb"
+    },
+    {
+      "slot": "TestResults/integration/logichost",
+      "trx": "TestResults/issue-1041-run3/canonical/integration/logichost/integration-logichost.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/integration/logichost/99e84a00-75c0-44c3-8c4a-475244280e45/coverage.cobertura.xml",
+      "sha256": "7211dbb69be2064b426a746b9d7bed354ecc631a51afb67890377f592058c703"
+    },
+    {
+      "slot": "TestResults/architecture",
+      "trx": "TestResults/issue-1041-run3/canonical/architecture/architecture.trx",
+      "coverage": "TestResults/issue-1041-run3/canonical/architecture/1445a4fc-515e-4880-88cf-f00fa7e24584/coverage.cobertura.xml",
+      "sha256": "f7fdf0eff767fe6bc7276e436bc1612dcebfd2e9b83bdd3310187c52534ceff1"
+    }
+  ],
+  "affectedCoverageBindings": [
+    {
+      "slot": "TestResults/unit/cameraagent",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "coverage": "TestResults/issue-1041-run3/archive-canonical/unit/cameraagent/91310b50-e356-480f-b138-2b316dfa4b2e/coverage.cobertura.xml",
+      "trx": "TestResults/issue-1041-run3/archive-canonical/unit/cameraagent/unit.trx",
+      "sha256": "c42de00476d451cbd641526e43661352c0d19812f805fc6ed02ae30f1a5eb4a4"
+    },
+    {
+      "slot": "TestResults/unit/deployment-cli",
+      "testedHead": "12e73a7a804e2d423d739919748e78dfcc57ced7",
+      "coverage": "TestResults/issue-1041-run3/archive-canonical/unit/deployment-cli/95a7f745-4d04-4250-b0c4-3887787347a2/coverage.cobertura.xml",
+      "trx": "TestResults/issue-1041-run3/archive-canonical/unit/deployment-cli/unit.trx",
+      "sha256": "e645e3fd7f61b026d45ffc363972d9ea78d2c3711da0457628ac9df402e6e054"
+    }
+  ],
+  "rawLogSha256": {
+    "coverage-policy.log": "ab00d10ced1e842fa255b01708bd7ca86ffc09646a044064462b6aa905451e50",
+    "format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "cli-focus.log": "5a975f867673399fb7be210b9a5d829569a09f18b212c6b944cf0263e6005625",
+    "archive-publish-delivery.log": "10302b004a1c4f09f5d6f75adfa247908b89f2434624010a5ac363fda26f980a",
+    "archive-v1-coverage.log": "e41a77e1daccc6bafbcbcbeef6d3509abc9b96f5687ca49976184d76806cbc80",
+    "archive-format.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "archive-format-apply.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "category-audit.log": "f4e98e2b7f4ce5d0b981dd1ae3ea413e3db205cc2bf667b1aa19a7e4925c73cd",
+    "archive-coverage-delivery.log": "2ead506b93735c82dc81ab3f77133689f00dfd403d6174f4183c32758c2bb649",
+    "config-edit.log": "cab487fe4de6017f1a10f8d0c17874b1824dc2dd66612b49d3e7e6b31eda31ab",
+    "catalog-smoke-test.sh.log": "5438dd9f68c6ac34e42c931eafb5a670bf6ee13b518df5591aa26135da6fdc66",
+    "initial-focus-attempt-1.log": "de8f4eafde3d3abe933bc3c5801f97f5ac42a5700465c3b022b1c9e7cd268543",
+    "main-progress.log": "7866e0feafee1ba33194bd20c4c0bb945880462b3ae0656d2ce1c8953b410a0e",
+    "archive-test-coverage-development-v1.log": "7ab45d930445007d793fb3ea492b5901680ca3d03c33c36e18dfb41f5a06f6e6",
+    "package-audit.log": "0d89ccfc7cd423637015cb2f94551a62e8460ce891896a987aeb4561c4822bb6",
+    "test-coverage-development-v1.log": "7ab45d930445007d793fb3ea492b5901680ca3d03c33c36e18dfb41f5a06f6e6",
+    "ci-shell-syntax.log": "12925d6db6d7dd30310f871e1c6ab3f6f876bbca933da8d0cade2b7506c61fbc",
+    "archive-v1-settings.log": "4190b219e61b06e7b93a882ee045a8a471c0d186260e4d623fec545c4274b79b",
+    "archive-release-build.log": "f0f6e9c3191190fabdcdfde138e5cdce315c72cfc1a71512babc3188c1a35eab",
+    "bind-coverage.log": "1c0176bdff92e9b130e0bdef5bf4229e5ff93a0377aac98efc7fba79c67d4bd9",
+    "archive-aggregate-coverage.log": "dcb650a0c57a9578310c9649bb5536a220a8a4ad214538691845f209a4d39981",
+    "scale.log": "d1c702517cdba43b1950c235d7ea1cee541a078734433c47929c9745173e7ace",
+    "debug-build.log": "e69334d9eb1597ee00cac743eb86303b99418cd6da9d3b08ccf6d4b4d4adfb47",
+    "publish-logichost.log": "bf649776403ce4df2fad4b56d59fee2eee698d914868d2ed6fdf71594e9feec4",
+    "archive-test-development-v1-ci.log": "6f567fb167ecf7ed3ce68bc9d29542904ba4f52ffe84063c1c84c05074972afe",
+    "archive-coverage-combined.log": "97aa4bb6b3a5aaf4e7b3c1ed2d26c8ab8de67a37489cfc4ce9fe1ab0ea72934d",
+    "archive-coverage-cameraagent.log": "792e4897adb88b5bcd88b512973c0b8eb71acb1519bf6254f0ca133bb27671ee",
+    "publish-cameraagent.log": "9238d71b2ffe8a2e7bab368275e8095e4447b843b033ed8433211d7905d5686e",
+    "archive-coverage-logichost.log": "db552b49079fc776fc635f786add788affde087bf0a57b9b86c1a33b73ff05eb",
+    "test-ci-classification.log": "ea9f09d98117697ed6c42478830c52ee996cad15470284f1b88d497083a2ae14",
+    "integration-HVO.SkyMonitor.CameraAgent.IntegrationTests.log": "573609e24cc38bdd53da763abe044a33fa9c1c90ed1f8fae15204933af452e90",
+    "archive-script-sandbox-prerequisites.log": "102b4c1eb7d566145e8fac91d2d68d6fd27950d2218f4f66c45bfe996854c713",
+    "coverage-combined.log": "580037a12a1084307bc546d2ac3743bf9ad3a7b8ec45c16c56271f721fb586e5",
+    "archive-bind-coverage.log": "3de2c6198e7f8437b37a3a707ed324786f0a0a21fa3cf23bea1a2ccef576194a",
+    "restore.log": "40d104602671164ab3958225da3e1c8cabd55f0251d6df6bc911d9d5a24f44ce",
+    "archive-progress.log": "ea4c848efc925e45aa08823da8b285afe148ecc5f647c82f698667eeb04dffd8",
+    "coverage-logichost.log": "987365987be462517c34d63569779782f8ff4c5bdcecfc5f2af9da7af6caadc3",
+    "archive-test-ci-classification.log": "ea9f09d98117697ed6c42478830c52ee996cad15470284f1b88d497083a2ae14",
+    "migration-cameraagent.log": "137d66aaf9449cedb051efc025f76a020ac61d8af3ecb269a66f4c596ab9a606",
+    "initial-build.log": "319cc2cd22023c2e8e5a556eee41d9853e3ce8094d5808c7b8e5cc5a6e5053d2",
+    "integration-HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.log": "3507d50147737fd2520ae218d2286c0dc1dbc157f41da6b3c8a375f305419d19",
+    "test-pr-review-tools.log": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644",
+    "archive-test-coordination-guard.log": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d",
+    "archive-test-pr-review-tools.log": "ef6ce6d87e9e51c2dcac7a6de8ff9d4ce91f8d49ea2fc8466f9abc48c7172644",
+    "archive-build.log": "1c5e6b34604b2365da48d1b6565dcc296874e40dfbdd4b12fe161b8736ccfbcf",
+    "archive-focused-camera.log": "32ba873d32fcca04a9c0462189dc632faec7a3106470a92c4382ff0cb11705a7",
+    "coverage-delivery.log": "40934f1584f2b6fd8ec53239135577be8c1b2931474f8c0c99b38d5c75b3f318",
+    "archive-diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "format-apply.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "publish-delivery.log": "67620934c78485ec139eccc6b24eee3631449df5d42d93b74df93c3f38dbf7bb",
+    "endpoint-focus.log": "a4ea967abc438cd83f3922975c9cfeca4514d417344b284b94d2cb186c1e3c4a",
+    "initial-build-attempt-1.log": "9617ae34b220a61d01d323e182e5cf2eb84499373195dcfa25da4b114043be1b",
+    "archive-canonical-unit-deployment-cli.log": "e2d9dbd46adf03cb9eeada73eded5c26137d0ac42ea3edbfaf99d41f92aae42e",
+    "archive-category-audit.log": "7ff3204cff6b9a6ffc490a93dba886893171f25ac27a9e9d6178353441221aa0",
+    "development-v1-settings.log": "4190b219e61b06e7b93a882ee045a8a471c0d186260e4d623fec545c4274b79b",
+    "focused-camera.log": "0ac2de6845df35bee4b20d925146aacb88d986fa2d30eaeb47bd5cb5b525c66d",
+    "archive-coverage-shared.log": "b2ccc3bc1b85d7e878591ae38962ff102664b2396f31a743244795a7968fbc10",
+    "coverage-shared.log": "9a7ba57b4e4e1d822394d412d37011abe57410ab07c3fbf8e0d5fc82f5627a68",
+    "integration-HVO.SkyMonitor.LogicHost.IntegrationTests.log": "a0d98c01a47e19e92abf20f3bad1306b250a471500fb1dd85e1d6eb22a5b1873",
+    "configuration-generator.log": "f8b2b8bc175dcd45c00ee115f115a898f611b5aeea110b4bca50e0d0ab105eff",
+    "archive-focus.log": "3579f5c01e5278146d4d1523c9ce89b585bd06c82d5854728458704d94fe9a73",
+    "camera-focus.log": "20796d2554057ef5a3a3c345c1d1d1f12e7a0cc2441e93c8b7b1657c26905d33",
+    "unit-solution.log": "b4f5c62c90e1b565acc13a36c2fba0c6de8ba05725ab85094630d80b08415a04",
+    "archive-v1-unit.log": "348bb40906960a1b456029648ef2063a96fe7bed46f54700df4939e41c16575a",
+    "development-v1-coverage.log": "a20fbf4c549c5e5749961580778ec65e3470b3ae3c4581f62cade94aa851d785",
+    "integration-HVO.SkyMonitor.CameraAgent.Tests.log": "6cac167eb3a0fe69ab418c2db1e0320e6a6f1c2a4702fdd6692b61372efb098f",
+    "archive-ci-shell-syntax.log": "12925d6db6d7dd30310f871e1c6ab3f6f876bbca933da8d0cade2b7506c61fbc",
+    "archive-focused-endpoint.log": "45612bac768489eea90ae320146d145844da44fc5b3d3d5d07ecbea6948b42a7",
+    "installer-campaign.log": "16be9f0dd654caee4e6fde7dd9422ae0151e4dd86b45ed9470d572d6a22ea969",
+    "release-build.log": "a8404c2a17ef3a5afae8ad5306446f4ad11404c709cbb6e7771f9d7a95e455d3",
+    "focused-cli.log": "0735f2e3c64d26b6361e528173b942a9a26b4a44a516bff7406d6f4b18f78d82",
+    "test-release-scripts.log": "c14759f4e34b61c6e1b66fc66890de268ad813d720772b40f039344bb9cb98fb",
+    "docs-audit-operations.log": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d",
+    "endpoint-focus-attempt-1.log": "d137726e99d2b529d7f4bcbaf91cc2f32d8e21944b6b8f19a72679a50f2940aa",
+    "archive-secret-scan-contract.log": "7f8ab9900161575ea1c49eda7b5d1f49a2593e627da6d2c78826a50bb3fb810b",
+    "cross-rid-publish.log": "6c9df8b400e51fa26317da437a2a7c25d0aaa5e968223f98647abd9a784057ae",
+    "archive-installer-campaign.log": "55fbc76ff1a92cf1362100f1aeb0b8677774daf6b163ba4e855b68544e58ddef",
+    "archive-cross-rid-publish.log": "054c827e0300949e22782173b744b8ba20286829cd76669a5cd0d0f68d592634",
+    "archive-focused-cli.log": "685bce6663a439d90d36337456cd7aa4c0809ce695c3f8033c387c7a57bd94fe",
+    "archive-docs-audit-operations.log": "da035acf6a595d3845800bea7d01bc554fd09c0339d070cfae61e2817559474d",
+    "initial-focus.log": "de8f4eafde3d3abe933bc3c5801f97f5ac42a5700465c3b022b1c9e7cd268543",
+    "test-development-v1-ci.log": "9ad1da50cd472485d82438b043b83094ec018a2dd359f82efbfa0a459a62e6bc",
+    "development-v1-unit.log": "c3779022ffdf624cb9d1d82063b76d86f9f1665d5683ddc8da953dbc5435df2d",
+    "architecture-integration.log": "e248d53ada62f7af0f3f407d385c6fb0077c854d5312373a3bd4f540bdbe254e",
+    "acceptance-build.log": "fdc5fe0855a49dfdbbf94f608554d7adf111ce09bf951321bc240d31a22fa1b9",
+    "integration-HVO.SkyMonitor.CameraAgent.AcceptanceTests.log": "6bf112a38324d4bf4750b104c6d9a29ed3ac3b16f9bc01762c9b1fff3cbfd408",
+    "publish-shared.log": "0cc59a391760486fcc742328bcead2c45f3e6c9329f97ac4913096cdfc9aa941",
+    "tool-restore.log": "c66fdf42706194a4de7a46c52ce1767db9419ccf74518cc4d36a9cd06a3808a7",
+    "archive-canonical-unit-cameraagent.log": "58f3d0f6b3977493ee1dcfd18ccc69e4a8d4a8cb0089ab96ce6a41ea507fa00e",
+    "focus-progress.log": "02cdf8efc298017ee93c9559b9a3232db0f74e497808388c716b6886675ddff4",
+    "coverage-cameraagent.log": "cb211370ae1d13948c05b5dcb807afadea3ffb7039f8e14ef2fc3ffe99870d27",
+    "process-crash.log": "a74008446f28ccc064dea203e89be3024b329f758f0c28c9bc8467694c77a82e",
+    "integration-HVO.SkyMonitor.Astronomy.Tests.log": "b5d0af5548cbc1b41519911bea6df94ac61a1cfb4439c13442943a4f7b7325e5",
+    "test-coordination-guard.log": "8fcb608de4e3d61d8409a1f807f7e1c08163852673f7c2e9aa3e6a189d8e1d6d",
+    "migration-logichost.log": "765a6bd5890748946bed48f4153b982d93203af21ccb9c7a47bebf866b7c9579",
+    "focused-endpoint.log": "2021641c2b5eddd442abb61df41ade88572562df5045158901169e589ba6744a"
+  },
+  "limitations": [
+    "No live-instance, hardware or production qualification.",
+    "Prior linear baseline timings remain prior-run observations.",
+    "Sol and Opus HIGH re-reviews belong to Kepler; no CLEAN claim.",
+    "L2/L3/L4/L5 follow-up tracking/acknowledgement belongs to Kepler; no GitHub writes."
+  ],
+  "issueSourceSnapshot": {
+    "readAt": "2026-11-11T12:58:20.702050+00:00",
+    "bodySha256": "720cf8412a804ae3b87562a5be5c28c10100139b5a7168e919c8821f7d36cb3a",
+    "comments": [
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWtbVyA",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5818996168",
+        "bodySha256": "bd4bebe463f6ed6769c1d733bb7656e98305e57ad2aea47e4e8502fb72bca128"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWtccaw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819014251",
+        "bodySha256": "da2648c6f66b235c5054fe1d5ee76c30a4e361656f98f62444bde490d0d33fa3"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWtji7A",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819130604",
+        "bodySha256": "05407e14f40080511ec4d7269b6b8dd8523abb39134f00d51b11a307ca5d728b"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWtma9g",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819177718",
+        "bodySha256": "9e9f0ed018fcfb7e1c9850ebf92e721ce0d6b3bd56ad42bf1ca480bbabbeac33"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWtphqQ",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819228585",
+        "bodySha256": "3a5da5b1c40a29e374156b04f5d3adcbb0da50dbdc8c7d3f29649b799a161f78"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWt2QuA",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819437240",
+        "bodySha256": "db44a37369643e594fd93c5704a44e0c7785ceb1d9dfcd00f53026bf0f752c7c"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABWuUSiw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5819929227",
+        "bodySha256": "f6600d5b01ab04e0a6cd169b590f8a99dc5725c04064f6d77e89cf7a6d229fb8"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABYXKZ_g",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-5929867774",
+        "bodySha256": "f6ad691dba88bd662355a6a804394763c6b9699c19ddd1a2386d1642fde4ee19"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABd2wy9Q",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6298546933",
+        "bodySha256": "34d6733fc9385b2a0789144a94cc832c30f4f7aae7394865a08b116dea014eb9"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABerMkCg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6353527818",
+        "bodySha256": "856fb0b8370f07bed5df5fe68c53139f22f8b295071cb0d42183b65063fa8e19"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABex4F8A",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6360532464",
+        "bodySha256": "05b635b0eb8dcdbae5be99717130de2a28e78467f88ac7295db2f8282ecefc91"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABe1tLdg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6364547958",
+        "bodySha256": "f00da7e9135045a824cb9847dbec136945160f006d2a62b9a9c5979a7f2c7bff"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABe-z4Vw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6374094935",
+        "bodySha256": "64b723c4b4d0bc85ce944760f6e84e0ab0e04ab0b036aa40ad9092c8c88d56ad"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABk-ORxg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6776132038",
+        "bodySha256": "adcc70f75017eb633a67c68cdc0a3f583fdb0c28953f273f5f6ef0b2f8e50df0"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABk-zqmA",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6776744600",
+        "bodySha256": "eda6d9c3d0fb25f104a51a483e1d572aa9f39197bea99ce8b8c243b328f4fc85"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABk_suKA",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6777679400",
+        "bodySha256": "d015c1cfd67e3a8587f28644689fc49390912fc023e7c259e36feba96fc7ae83"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlAWGsw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6778357427",
+        "bodySha256": "ae6106190cf9a18e337fbfab5bebcce6a84411b24af32b3d4fe61c0da0bc8a94"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlA21kw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6778893715",
+        "bodySha256": "904ef7c748f87446ce878382fb9637f95daf7843c315a3eb7299ff8ff3c73581"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlBAW3A",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779049692",
+        "bodySha256": "696f0b93fb2403cacaf2f1440514b56f55cb59da1384ce7105f1c88825f26a1a"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlB550Q",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6779992529",
+        "bodySha256": "08f7504956eb9510048666619af4ebcc688f94cbc3c236bec8ce8d82c123d39c"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlCqzhA",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6780793732",
+        "bodySha256": "4cac2d8af94f4adea08c9e575aaaaf1cb0c7c6bdc9df400deec49a986b8b45c2"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlDFG_g",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6781224702",
+        "bodySha256": "2fc678bab61a6a43af2ce91e9d3f4b2a73488e8b0fdfc989e20701432ec42769"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlDbFBg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6781584646",
+        "bodySha256": "c01684e2e64e01282f4a72a61101aa939b5f9ac584940e6d48846d5923b4a80a"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlD4d1A",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6782066132",
+        "bodySha256": "abef6577184266a5e34e5f90d34970983cb6e8c377b988e23064930dd8543b4d"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlEpB2g",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6782861786",
+        "bodySha256": "a53c64f966ed827f91c11ce1c3b5baafc54f6f6a65423283ace77fa1ae24886e"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlFEsRw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6783315015",
+        "bodySha256": "623520956fba05660509387deadf64fbcdf102fd2cc22b61e40f4c0b6699a9b5"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlFh3ug",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6783793082",
+        "bodySha256": "6ecd6d7140378cce08234c9da182a65bdaf6cb9d29e1d847354203c44d638692"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlF_usg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6784282290",
+        "bodySha256": "0acfc3b869abff4b3c76c02aacce0400ef089bc9a64c3c7fe19f97ad1d47ab0b"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlGdIeQ",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6784764025",
+        "bodySha256": "28e839308059f347f6d7ae86ab1ec48137293124fff1184e3046c258055e236e"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlHN4RQ",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6785562693",
+        "bodySha256": "0e208ca44e56a3625319149bf2fd740d34f475f5ddf8469768eb2d44f092c083"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlHqXpg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6786029478",
+        "bodySha256": "6a6fdc2fcef327b375acb71c05d44c008890d96907ed14106c78c6dc9e57e19e"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlIFSTQ",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6786470477",
+        "bodySha256": "5f6ccd6cfefa2bee12c5853cb6bdbb67d61d1a01c3548ed26180c8f7a58390eb"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlIxaNw",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6787193399",
+        "bodySha256": "33aea73adf26100a785bf48c56a0359f567d974919981124c08e83f1a5460d69"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlJLBKA",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6787612968",
+        "bodySha256": "79c5e35b5cdcc8c1c817251e71d74bb37d242cf1765d0b6e4b4d08b7f54fa412"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlJp4xg",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788118726",
+        "bodySha256": "d695f86de7c718da5efa69428fc3e87f2ae235fed6c854d2f02360dac673a5bc"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlKEK4Q",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788549345",
+        "bodySha256": "d3f3b032793ee47e02e0d96c14e9d57df7dff25a01d1613972b02e257e240327"
+      },
+      {
+        "id": "IC_kwDOQUc6XM8AAAABlKdTVQ",
+        "url": "https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1041#issuecomment-6788961109",
+        "bodySha256": "0a77f0b5f232e4605178894064cb5192b32fd84d947cbbce6f96b8c1590079e8"
+      }
+    ]
+  }
+}

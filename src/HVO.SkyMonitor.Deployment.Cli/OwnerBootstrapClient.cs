@@ -8,10 +8,22 @@ namespace HVO.SkyMonitor.Deployment;
 
 internal interface IOwnerBootstrapClient
 {
-    /// <summary>Waits until the host is alive and its catalog health check reports <paramref name="expectedCatalog"/>.</summary>
-    Task WaitForHealthAsync(ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null);
+    /// <summary>
+    /// Waits until the host is alive and its catalog health check reports <paramref name="expectedCatalog"/>.
+    /// With <paramref name="allowQuarantinedReadiness"/>, an otherwise ready host whose only unhealthy checks are a
+    /// processing-lane quarantine is ready too.
+    /// </summary>
+    Task WaitForHealthAsync(
+        ApprovedCatalogContract expectedCatalog,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null,
+        bool allowQuarantinedReadiness = false);
     Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken);
     Task<string> ReadInstallationStateAsync(string verificationToken, CancellationToken cancellationToken);
+    // Pre-mutation callers must compare the current running installation, not only read its owner state.
+    Task<string> ReadInstallationStateAsync(
+        string verificationToken, InstallationVerificationExpectation expectation, CancellationToken cancellationToken)
+        => VerifyInstallationAsync(verificationToken, expectation, cancellationToken);
     Task<string> VerifyInstallationAsync(
         string verificationToken,
         InstallationVerificationExpectation expectation,
@@ -30,7 +42,8 @@ internal sealed record InstallationVerificationExpectation(
     string DeploymentLocationSha256,
     HVO.SkyMonitor.Deployment.Contracts.CameraAgentReplayProfile ReplayProfile,
     HVO.SkyMonitor.Deployment.Contracts.CatalogInstallationIdentity Catalog,
-    bool AllowCompletedPasswordReplacement = false);
+    bool AllowCompletedPasswordReplacement = false,
+    CatalogInstallationIdentity? DeepSkyCatalog = null);
 
 internal sealed class OwnerBootstrapClient(
     Uri baseAddress,
@@ -38,6 +51,8 @@ internal sealed class OwnerBootstrapClient(
     TimeSpan? protectedReadTimeout = null) : IOwnerBootstrapClient
 {
     internal static readonly TimeSpan ProtectedReadTimeout = TimeSpan.FromSeconds(120);
+    internal const string VerificationStateHeader = "X-HVO-Installation-Verification";
+    internal const string ScrubPendingState = "scrub-pending";
 
     private readonly TimeSpan _protectedReadTimeout = protectedReadTimeout is null
         ? ProtectedReadTimeout
@@ -51,16 +66,21 @@ internal sealed class OwnerBootstrapClient(
         TimeSpan.FromSeconds(1));
 
     public async Task WaitForHealthAsync(
-        ApprovedCatalogContract expectedCatalog, CancellationToken cancellationToken, TimeSpan? timeout = null)
+        ApprovedCatalogContract expectedCatalog,
+        CancellationToken cancellationToken,
+        TimeSpan? timeout = null,
+        bool allowQuarantinedReadiness = false)
     {
         ArgumentNullException.ThrowIfNull(expectedCatalog);
-        using var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = false,
-            UseProxy = false,
-            CheckCertificateRevocationList = true
-        };
-        using var client = new HttpClient(handler, disposeHandler: false)
+        using var ownedHandler = handler is null
+            ? new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                UseProxy = false,
+                CheckCertificateRevocationList = true
+            }
+            : null;
+        using var client = new HttpClient(handler ?? ownedHandler!, disposeHandler: false)
         {
             BaseAddress = baseAddress,
             Timeout = TimeSpan.FromSeconds(5)
@@ -77,20 +97,21 @@ internal sealed class OwnerBootstrapClient(
                 if (alive.IsSuccessStatusCode && health.IsSuccessStatusCode)
                 {
                     using var document = JsonDocument.Parse(latest);
-                    var catalog = document.RootElement.GetProperty("checks").EnumerateArray().Single(item =>
-                        item.GetProperty("name").GetString() == "catalog");
-                    var data = catalog.GetProperty("data");
-                    // A host predating issue #521 does not report PackageVersion; when present it must be this lineage's.
-                    if (data.GetProperty("CatalogId").GetString() == expectedCatalog.CatalogId &&
-                        data.GetProperty("CatalogVersion").GetString() == expectedCatalog.CatalogVersion &&
-                        data.GetProperty("SchemaVersion").GetString() == expectedCatalog.SchemaVersion &&
-                        data.GetProperty("PreprocessingVersion").GetString() == expectedCatalog.PreprocessingVersion &&
-                        data.GetProperty("RowCount").GetInt64() == expectedCatalog.RowCount &&
-                        (!data.TryGetProperty("PackageVersion", out var packageVersion) ||
-                         expectedCatalog.IsPackageVersion(packageVersion.GetString())))
+                    if (QuarantinedReadiness.CatalogMatches(document.RootElement, expectedCatalog))
                     {
                         return;
                     }
+                }
+                else if (allowQuarantinedReadiness && alive.IsSuccessStatusCode &&
+                         health.StatusCode == HttpStatusCode.ServiceUnavailable)
+                {
+                    using var document = JsonDocument.Parse(latest);
+                    if (QuarantinedReadiness.TryAccept(document.RootElement, expectedCatalog, out var reason))
+                    {
+                        return;
+                    }
+
+                    latest = reason;
                 }
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
@@ -148,6 +169,14 @@ internal sealed class OwnerBootstrapClient(
                       Lower(value, "databaseSha256") == expectation.Catalog.DatabaseSha256 &&
                       value.GetProperty("databaseLength").GetInt64() == expectation.Catalog.DatabaseLength &&
                       value.GetProperty("rowCount").GetInt64() == expectation.Catalog.RowCount;
+        var hasDeepSky = value.TryGetProperty("deepSkyCatalog", out var deepSky) && deepSky.ValueKind != JsonValueKind.Null;
+        matches &= expectation.DeepSkyCatalog is { } selectedDeepSky
+            ? hasDeepSky && deepSky.GetProperty("catalogId").GetString() == selectedDeepSky.CatalogId &&
+              deepSky.GetProperty("packageVersion").GetString() == selectedDeepSky.PackageVersion &&
+              deepSky.GetProperty("schemaVersion").GetString() == selectedDeepSky.SchemaVersion &&
+              deepSky.GetProperty("preprocessingVersion").GetString() == selectedDeepSky.PreprocessingVersion &&
+              Lower(deepSky, "databaseSha256") == selectedDeepSky.DatabaseSha256
+            : !hasDeepSky;
         if (!matches)
         {
             throw new InstallerException("CameraAgent reported installation identities that differ from the installer manifest.");
@@ -186,13 +215,27 @@ internal sealed class OwnerBootstrapClient(
         client.DefaultRequestHeaders.Add("X-HVO-Installation-Token", verificationToken);
         try
         {
-            using var response = await client.GetAsync(
-                new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), deadline.Token)
-                .ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsByteArrayAsync(deadline.Token).ConfigureAwait(false);
-            deadline.Token.ThrowIfCancellationRequested();
-            return JsonDocument.Parse(body);
+            while (true)
+            {
+                using (var response = await client.GetAsync(
+                    new Uri("/api/internal/owner-bootstrap/installation-verification", UriKind.Relative), deadline.Token)
+                    .ConfigureAwait(false))
+                {
+                    var scrubPending = response.StatusCode == HttpStatusCode.ServiceUnavailable &&
+                        response.Headers.TryGetValues(VerificationStateHeader, out var states) &&
+                        states.Contains(ScrubPendingState, StringComparer.Ordinal);
+                    if (!scrubPending)
+                    {
+                        response.EnsureSuccessStatusCode();
+                        var body = await response.Content.ReadAsByteArrayAsync(deadline.Token).ConfigureAwait(false);
+                        deadline.Token.ThrowIfCancellationRequested();
+                        return JsonDocument.Parse(body);
+                    }
+                }
+                // Only the explicit new-agent pending response is retryable. Requests,
+                // retry delays and the final body all spend the same finite budget.
+                await Task.Delay(TimeSpan.FromSeconds(1), deadline.Token).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
         {

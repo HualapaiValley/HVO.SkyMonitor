@@ -1,5 +1,7 @@
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 
@@ -21,7 +23,11 @@ public sealed record CaptureOrbitalPredictionPlanV1(string SchemaVersion, Recons
     OrbitalSnapshotManifestV1? SnapshotManifest, OrbitalSnapshotUnavailableReason? SnapshotUnavailableReason,
     OrbitalPopulationCoverage PopulationCoverage,
     CaptureOrbitalSelectionPolicyV1 SelectionPolicy, IReadOnlyList<OrbitalObjectIdentity> Objects,
-    IReadOnlyList<OrbitalRecordSelection> Selections);
+    IReadOnlyList<OrbitalRecordSelection> Selections)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CameraRigConfig? ObstructionRig { get; init; }
+}
 
 /// <summary>
 /// A bounded recipe input constructed from already resolved local evidence. No reader, resolver or current pointer.
@@ -40,7 +46,7 @@ public sealed class CaptureOrbitalPredictionInput
     public CaptureOrbitalPredictionInput(ReconstructionDescriptor descriptor, ObserverLocation observer,
         OrbitalGeometryFacts geometry, OrbitalTimingFacts timing, OrbitalPredictionModelFacts model,
         OrbitalQueryBounds bounds, CaptureOrbitalAvailabilityV1 availability, OrbitalSnapshotReadResult resolvedSnapshot,
-        OrbitalSelectionPolicy selectionPolicy, IEnumerable<OrbitalObjectIdentity> objects)
+        OrbitalSelectionPolicy selectionPolicy, IEnumerable<OrbitalObjectIdentity> objects, CameraRigConfig? obstructionRig = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor); ArgumentNullException.ThrowIfNull(geometry);
         ArgumentNullException.ThrowIfNull(timing); ArgumentNullException.ThrowIfNull(model);
@@ -91,6 +97,13 @@ public sealed class CaptureOrbitalPredictionInput
                 ["Snapshot unavailable; population coverage unknown."]),
             new(OrbitalSelectionPolicy.CurrentVersion, selectionPolicy.IdentitySha256, selectionPolicy.AllowStaleDiagnostics, selectionPolicy.Sources),
             ids, selections);
+        if (obstructionRig is not null)
+        {
+            Require(obstructionRig.HorizonObstruction is not null &&
+                CameraRigProfileIdentity.ComputeSha256(obstructionRig) == descriptor.Profiles.Rig.Sha256 &&
+                RigProjectionContextFactory.Create(obstructionRig) == geometry.Projection, "capture-obstruction-rig-binding");
+            plan = plan with { ObstructionRig = obstructionRig };
+        }
         canonicalPlan = OrbitalContract.SerializeCanonical(plan);
         Require(canonicalPlan.Length <= MaximumPlanBytes, "capture-plan-byte-bound");
         // Freeze caller-owned descriptor lineage and all nested selection/population arrays.
@@ -127,7 +140,7 @@ public sealed class CaptureOrbitalPredictionInput
         var plan = CaptureOrbitalPredictionJson.Deserialize<CaptureOrbitalPredictionPlanV1>(canonicalPlan);
         var restored = new CaptureOrbitalPredictionInput(plan.Descriptor, plan.Observer, plan.Geometry, plan.Timing,
             plan.Model, plan.Bounds, plan.Availability, resolvedSnapshot,
-            new(plan.SelectionPolicy.Sources, plan.SelectionPolicy.AllowStaleDiagnostics), plan.Objects);
+            new(plan.SelectionPolicy.Sources, plan.SelectionPolicy.AllowStaleDiagnostics), plan.Objects, plan.ObstructionRig);
         Require(canonicalPlan.SequenceEqual(restored.canonicalPlan), "capture-plan-exact-evidence");
         return restored;
     }
@@ -163,22 +176,75 @@ public sealed class CaptureOrbitalPredictionInput
 public sealed record CaptureOrbitalPredictionV1(string SchemaVersion, string InputIdentitySha256,
     CaptureOrbitalPredictionPlanV1 Input, string PhysicalVisibility, OrbitalExecutionStatus Status,
     OrbitalPredictionReason Reason, int EvaluatedObjects, int PropagationEvaluations,
-    IReadOnlyList<OrbitalExposureTrackV1> Tracks, IReadOnlyList<OrbitalObjectFailure> Failures);
+    IReadOnlyList<OrbitalExposureTrackV1> Tracks, IReadOnlyList<OrbitalObjectFailure> Failures)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<HorizonObstructionPredictionProduct>? Obstruction { get; init; }
+}
 
 public static class CaptureOrbitalPredictionJson
 {
     public const string SchemaVersion = "hvo-capture-orbital-prediction-v1";
     public const string MediaType = "application/vnd.hvo.capture-orbital-prediction+json";
     public const int MaximumOutputBytes = 16 * 1024 * 1024;
-    private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web)
+    private static readonly JsonSerializerOptions Options = CreateOptions();
+
+    private static JsonSerializerOptions CreateOptions()
     {
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        RespectNullableAnnotations = true,
-        RespectRequiredConstructorParameters = true,
-        AllowDuplicateProperties = false,
-        MaxDepth = 32,
-        Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
-    };
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+            RespectNullableAnnotations = true,
+            RespectRequiredConstructorParameters = true,
+            AllowDuplicateProperties = false,
+            MaxDepth = 32,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { AllowOmittedNullableCaptureFacts } },
+            Converters = { new JsonStringEnumConverter(allowIntegerValues: false) }
+        };
+        return options;
+    }
+
+    /// <summary>
+    /// The capture writer omits null solar regime, metering and other nullable cycle facts. Those constructor
+    /// parameters have no default, so <see cref="JsonSerializerOptions.RespectRequiredConstructorParameters"/> would
+    /// reject a real descriptor. Absent nullable facts stay null. Properties marked required, and non-nullable
+    /// constructor parameters, stay required.
+    /// </summary>
+    private static void AllowOmittedNullableCaptureFacts(JsonTypeInfo typeInfo)
+    {
+        if (typeInfo.Type != typeof(CaptureCycleEvidence) &&
+            typeInfo.Type != typeof(CaptureMeteringEvidence) &&
+            typeInfo.Type != typeof(CaptureControlDecisionEvidence))
+        {
+            return;
+        }
+        foreach (var property in typeInfo.Properties)
+        {
+            if (IsOmittedNullableCaptureFact(property))
+            {
+                property.IsRequired = false;
+            }
+        }
+    }
+
+    private static bool IsOmittedNullableCaptureFact(JsonPropertyInfo property)
+    {
+        if (property.AttributeProvider?.GetCustomAttributes(typeof(JsonRequiredAttribute), true) is { Length: > 0 })
+        {
+            return false;
+        }
+        if (Nullable.GetUnderlyingType(property.PropertyType) is not null)
+        {
+            return true;
+        }
+        var nullability = property.AttributeProvider switch
+        {
+            PropertyInfo info => new NullabilityInfoContext().Create(info),
+            ParameterInfo parameter => new NullabilityInfoContext().Create(parameter),
+            _ => null
+        };
+        return nullability?.ReadState == NullabilityState.Nullable;
+    }
 
     internal static T Deserialize<T>(ReadOnlySpan<byte> bytes) => JsonSerializer.Deserialize<T>(bytes, Options)
         ?? throw new ArgumentException("missing-capture-prediction");
@@ -213,9 +279,23 @@ public static class CaptureOrbitalPredictionJson
             CaptureOrbitalPredictionInput.Require(value.Status == OrbitalExecutionStatus.Unavailable &&
                 value.Reason == OrbitalPredictionReason.SelectionWithheld && value.EvaluatedObjects == 0 &&
                 value.PropagationEvaluations == 0 && value.Tracks.Count == 0 && value.Failures.Count == 0, "unavailable-snapshot-result");
+        var obstruction = EvaluateObstruction(expected, value.Tracks);
+        CaptureOrbitalPredictionInput.Require((value.Obstruction is null) == (obstruction is null) &&
+            (obstruction is null || OrbitalContract.SerializeCanonical(value.Obstruction!).AsSpan()
+                .SequenceEqual(OrbitalContract.SerializeCanonical(obstruction))), "capture-obstruction-result-binding");
         var bytes = OrbitalContract.SerializeCanonical(value);
         CaptureOrbitalPredictionInput.Require(bytes.Length <= MaximumOutputBytes, "capture-prediction-byte-bound");
         return bytes;
+    }
+
+    internal static IReadOnlyList<HorizonObstructionPredictionProduct>? EvaluateObstruction(
+        CaptureOrbitalPredictionInput input, IReadOnlyList<OrbitalExposureTrackV1> tracks)
+    {
+        if (input.Plan.ObstructionRig is not { HorizonObstruction: { } profile } rig) return null;
+        var evaluator = new HorizonObstructionEvaluator(profile, rig, input.Plan.Observer, input.Plan.Descriptor.Location);
+        return Array.AsReadOnly(tracks.Select(track => HorizonObstructionProducts.Predict(evaluator,
+            HorizonObstructionProducts.Bind(track.ProductSha256, evaluator, rig.Optics.CalibrationVersion,
+                input.Plan.Geometry.ImageTransform), track.Samples.Select(static sample => sample.Horizontal).ToArray())).ToArray());
     }
 
     /// <summary>Requires the exact retained input; never substitutes a current capture, snapshot, model or geometry.</summary>

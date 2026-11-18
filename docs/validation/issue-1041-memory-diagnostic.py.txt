@@ -1,0 +1,21 @@
+import pathlib,subprocess,os,json,hashlib,gzip
+repo=pathlib.Path.cwd(); root=pathlib.Path(os.environ['TMPDIR'])/'gcdiag'; root.mkdir(exist_ok=True)
+project=root/'hook';project.mkdir(exist_ok=True)
+(project/'StartupHook.cs').write_text((repo/'docs/validation/issue-1041-memory-exit-hook.cs.txt').read_text())
+(project/'hook.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><EnableNETAnalyzers>false</EnableNETAnalyzers></PropertyGroup></Project>')
+env=os.environ.copy();env['TMPDIR']=os.environ['TMPDIR'];env['DOCKER_HOST']='unix:///tmp/hvo-no-docker.sock';env.pop('DOCKER_CONTEXT',None);env.pop('HVO_PRODUCTION_CATALOG_BUNDLE',None)
+with open(repo/'TestResults/issue-1041/memory-hook-build.log','w') as f:r=subprocess.run(['dotnet','build',str(project/'hook.csproj'),'-c','Release','-warnaserror','-nodeReuse:false','-p:UseSharedCompilation=false'],env=env,stdout=f,stderr=subprocess.STDOUT,timeout=120)
+assert r.returncode==0
+reports=root/'exit';reports.mkdir(exist_ok=True)
+env.update(DOTNET_STARTUP_HOOKS=str(project/'bin/Release/net10.0/hook.dll'),HVO_I41_MEMORY_REPORT_DIR=str(reports),HVO_INSTALLATION_READ_GC_DIAGNOSTICS='1',HVO_INSTALLATION_READ_EVIDENCE_DIR=str(root),HVO_ATTRIBUTION_REVISION=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),DOTNET_PROCESSOR_COUNT='1',DOTNET_GCHeapHardLimit='0x18000000')
+cmd=['taskset','-c',str(min(os.sched_getaffinity(0))),'dotnet','test','tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests','--no-build','--no-restore','--configuration','Release','--filter','FullyQualifiedName~LargeRetainedCorpusRecordsCurrentEndpointCost','--logger','trx;LogFileName=memory.trx','--results-directory','TestResults/issue-1041/memory-diagnostic']
+with open(repo/'TestResults/issue-1041/memory-diagnostic.log','w') as f:r=subprocess.run(cmd,env=env,stdout=f,stderr=subprocess.STDOUT,timeout=900)
+assert r.returncode==0
+exits=[json.loads(p.read_text()) for p in reports.glob('*.json')]
+(repo/'TestResults/issue-1041/memory-exit-results.json').write_text(json.dumps(exits,indent=2))
+data=json.loads((root/'installation-read-scale.json').read_text())
+for result in data['results']:
+    for sample in [result['first']]+result['reads']: sample['identity']['rawIngressRoot']='<disposable fixture>'
+with gzip.GzipFile(filename='',fileobj=open(repo/'TestResults/issue-1041/memory-scale-evidence.json.gz','wb'),mode='wb',mtime=0) as f:f.write(json.dumps(data,separators=(',',':')).encode())
+for p in exits:print(json.dumps(p),flush=True)
+print('MEMORY DIAGNOSTIC PASS',flush=True)

@@ -909,7 +909,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
             centralIdentity.ClientCredentials.Scopes.Add(requestedScope);
         }
         var cameraConfiguration = await services.GetRequiredService<ICameraAgentConfigurationLoader>()
-            .LoadAsync(CancellationToken.None).ConfigureAwait(false);
+            .LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
         await _hostFixture.SeedRigProfileAsync(identity.DeviceId, cameraConfiguration.Rig).ConfigureAwait(false);
         var deploymentLocationStore = services.GetRequiredService<IDeploymentLocationStore>();
         var deployment = deploymentLocationStore.Active

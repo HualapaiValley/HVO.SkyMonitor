@@ -56,6 +56,9 @@ internal static class CameraAgentStateInventory
     {
         ArgumentNullException.ThrowIfNull(paths);
         var stores = new List<string>(CameraAgentStateLayout.SqliteStores);
+        var integrity = CameraAgentStateSnapshot.StorePath(paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
+        if (File.Exists(integrity) || CameraAgentStateLayout.SqliteSidecarSuffixes.Any(suffix => File.Exists(integrity + suffix)))
+            stores.Add(CameraAgentStateSnapshot.RetainedIntegrityStore);
         var mounts = CameraAgentStateLayout.WritableBindSources(paths.StateRoot, replayProfile)
             .Where(static source => source.ContainerPath != "/run/hvo-replay")
             .Select(source => (Container: source.ContainerPath, Relative: Path.GetRelativePath(paths.StateRoot, source.HostPath).Replace('\\', '/')))

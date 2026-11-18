@@ -1,0 +1,35 @@
+import pathlib,os,subprocess,json,shutil,tempfile,hashlib
+repo=pathlib.Path.cwd()
+if not os.environ.get('TMPDIR'): raise SystemExit('Set TMPDIR to a short private disposable directory first.')
+scratch=pathlib.Path(tempfile.mkdtemp(prefix='probe-',dir=os.environ['TMPDIR']))
+evidence=repo/pathlib.Path(os.environ.get('HVO_ISSUE1041_EVIDENCE_ROOT','TestResults/issue-1041-run2'))/'configuration-race-probe'/scratch.name
+evidence.mkdir(parents=True)
+source=pathlib.Path(__file__).with_name('issue-1041-configuration-race-probe.cs.txt')
+env=os.environ.copy();env['DOCKER_HOST']='unix:///tmp/hvo-no-docker.sock';env.pop('DOCKER_CONTEXT',None)
+pinned=json.loads((repo/'global.json').read_text())['sdk']['version']
+assert subprocess.check_output(['dotnet','--version'],text=True,env=env).strip()==pinned,'Pinned SDK required'
+shutil.copyfile(source,scratch/'Program.cs')
+host=repo/'src/HVO.SkyMonitor.CameraAgent/bin/Release/net10.0'
+names=['HVO.SkyMonitor.CameraAgent.Common','HVO.SkyMonitor.AgentCore','HVO.SkyMonitor.Storage.FileSystem','HVO.SkyMonitor.TestSupport','Microsoft.Data.Sqlite','SQLitePCLRaw.core','SQLitePCLRaw.provider.e_sqlite3','SQLitePCLRaw.batteries_v2']
+refs=[]
+for name in names:
+ path=host/(name+'.dll')
+ if name=='HVO.SkyMonitor.TestSupport':path=repo/'src/HVO.SkyMonitor.TestSupport/bin/Release/net10.0'/path.name
+ assert path.exists(),path.name
+ refs.append(f'<Reference Include="{name}" HintPath="{path}" />')
+(scratch/'probe.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><EnableNETAnalyzers>false</EnableNETAnalyzers></PropertyGroup><ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App" />'+''.join(refs)+'</ItemGroup></Project>')
+with open(evidence/'build.log','w') as f:
+ result=subprocess.run(['dotnet','build',str(scratch/'probe.csproj'),'-c','Release','-warnaserror','-nodeReuse:false','-p:UseSharedCompilation=false'],stdout=f,stderr=subprocess.STDOUT,timeout=120,env=env)
+assert result.returncode==0,'Probe compilation failed; inspect the retained process-probe build log'
+program=scratch/'bin/Release/net10.0/probe.dll'
+assets=json.loads((repo/'src/HVO.SkyMonitor.CameraAgent/obj/project.assets.json').read_text())
+version=next(key.split('/')[1] for key in assets['libraries'] if key.lower().startswith('sqlitepclraw.lib.e_sqlite3/'))
+cache=pathlib.Path(next(iter(assets['packageFolders'])))
+shutil.copyfile(cache/'sqlitepclraw.lib.e_sqlite3'/version/'runtimes/linux-x64/native/libe_sqlite3.so',program.parent/'libe_sqlite3.so')
+configuration=os.environ.get('HVO_INSTALLATION_READ_OWNER_CONFIGURATION')
+assert configuration and pathlib.Path(configuration).is_file(),'Provide the disposable installer-generated configuration'
+result=subprocess.run(['dotnet',str(program),str(scratch/'synthetic-state'),configuration],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=60,env=env)
+(evidence/'results.json').write_text(json.dumps(dict(head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),commonSha256=hashlib.sha256((host/'HVO.SkyMonitor.CameraAgent.Common.dll').read_bytes()).hexdigest(),probeSourceSha256=hashlib.sha256(source.read_bytes()).hexdigest(),exitCode=result.returncode,stdout=result.stdout,stderr=result.stderr),indent=2))
+assert result.returncode==0,'Configuration race probe failed; inspect retained evidence'
+print(result.stdout.strip())
+print('ACTUAL CONFIGURATION EDIT/SNAPSHOT PROBE PASS')

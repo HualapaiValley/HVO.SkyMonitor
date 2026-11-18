@@ -8,14 +8,16 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 [TestCategory("Unit")]
 public sealed class ConfigurationTests
 {
+    private static readonly string[] ExpectedCloudInput = ["$raw"];
+    private static readonly string[] ExpectedCloudLayerInput = ["CloudAssessment"];
     private static readonly string[] ExpectedArchiveDependencies =
         ["$raw", "ProjectedScene", "Calibration", "RollingCombination", "CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer"];
     private static readonly string[] ExpectedTelemetryDependencies =
         ["ProjectedScene", "Calibration", "RollingCombination", "CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest", "PresentationMaterializer", "LocalStorage", "ArchiveStorage"];
     private static readonly string[] ExpectedManifestDependencies =
-        ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation"];
+        ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "CloudPresentation"];
     private static readonly string[] ExpectedMaterializerDependencies =
-        ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"];
+        ["CombinedPreview", "ScenePresentation", "EnvironmentPresentation", "CloudPresentation", "OverlayManifest"];
 
     [TestMethod]
     public void Generate_ProducesValidatedSunsetToSunriseStandaloneConfiguration()
@@ -89,4 +91,30 @@ public sealed class ConfigurationTests
         => step.GetProperty("dependsOn").EnumerateArray()
             .Select(static dependency => dependency.GetString()!)
             .ToArray();
+
+    [TestMethod]
+    public void Generate_EnablesDurableOptionalCloudBranchWithoutBlockingRawOrPreview()
+    {
+        var generated = CameraConfiguration.Generate(new InstallRequest { FriendlyName = "Cloud acceptance" }, Guid.NewGuid());
+        using var json = JsonDocument.Parse(generated.Json);
+        var steps = json.RootElement.GetProperty("pipeline").GetProperty("steps").EnumerateArray().ToArray();
+        var cloud = steps.SingleOrDefault(step => step.GetProperty("type").GetString() == "CloudAssessment");
+        Assert.AreNotEqual(JsonValueKind.Undefined, cloud.ValueKind, "The installed profile must include image-derived cloud assessment.");
+        var layer = steps.Single(step => step.GetProperty("type").GetString() == "CloudPresentationLayer");
+        foreach (var step in new[] { cloud, layer })
+        {
+            Assert.IsFalse(step.GetProperty("required").GetBoolean());
+            Assert.AreEqual("durable-local", step.GetProperty("publication").GetProperty("persistence").GetString());
+        }
+        CollectionAssert.AreEqual(ExpectedCloudInput, Dependencies(cloud));
+        CollectionAssert.AreEqual(ExpectedCloudLayerInput, Dependencies(layer));
+        Assert.AreEqual("references/cloud/clear-reference.manifest.json", cloud.GetProperty("options").GetProperty("clearReferenceManifestPath").GetString());
+        Assert.AreEqual(1936, layer.GetProperty("options").GetProperty("widthPixels").GetInt32());
+        Assert.AreEqual(1216, layer.GetProperty("options").GetProperty("heightPixels").GetInt32());
+        Assert.IsTrue(layer.GetProperty("options").GetProperty("requireQuantifiedAssessment").GetBoolean());
+        foreach (var id in new[] { "OverlayManifest", "PresentationMaterializer" })
+            CollectionAssert.Contains(Dependencies(steps.Single(step => step.GetProperty("id").GetString() == id)), "CloudPresentation");
+        foreach (var id in new[] { "RollingCombination", "CombinedPreview", "LocalStorage", "ArchiveStorage", "Telemetry" })
+            CollectionAssert.DoesNotContain(Dependencies(steps.Single(step => step.GetProperty("id").GetString() == id)), "CloudPresentation");
+    }
 }

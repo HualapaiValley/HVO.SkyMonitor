@@ -6,9 +6,13 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Layout;
 
 public sealed partial class MainLayout : LayoutComponentBase
 {
+    [Inject] internal NavigationManager NavigationManager { get; set; } = default!;
+
     private bool _interactive;
     private ElementReference _mainContent;
     private AppErrorBoundary? _pageErrorBoundary;
+
+    private string MainContentUrl => SamePageFragmentLink.Build(NavigationManager.Uri, "mainContent");
 
     protected override void OnParametersSet() => RecoverFromError();
 

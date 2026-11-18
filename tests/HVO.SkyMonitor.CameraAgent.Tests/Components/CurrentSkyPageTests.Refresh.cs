@@ -499,6 +499,41 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task DeepSkyVisibilityIsIndependentOfStarAnnotations()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        service.PresentationHandler = (id, _) =>
+        {
+            var layers = Layered(id, new string('D', 64));
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(layers with
+            {
+                Layers = [layers.Layers[0], new(new string('E', 64), "scene-deep-sky", "hvo-layer-1", 22, true, 1_000_000, "renderer-v1", "style-v1")],
+                Svg = System.Text.Encoding.UTF8.GetBytes("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 480"><g id="hvo-layer-0"></g><g id="hvo-layer-1"></g></svg>""")
+            }));
+        };
+        var module = context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js");
+        module.Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        module.Setup<string?>("readLayerVisibility", _ => true).SetResult(null);
+        module.SetupVoid("writeLayerVisibility", _ => true).SetVoidResult();
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".restore-layers").HasAttribute("disabled")));
+        await cut.Find("input[data-layer-target='hvo-layer-1']").ChangeAsync(false).ConfigureAwait(false);
+        Assert.IsTrue(cut.Find("input[data-layer-target='hvo-layer-0']").HasAttribute("checked"));
+        StringAssert.Contains(cut.Markup, "Deep-sky catalog", StringComparison.Ordinal);
+        StringAssert.Contains(cut.Markup, "not measured associations", StringComparison.Ordinal);
+        cut.WaitForAssertion(() =>
+        {
+            var arguments = module.Invocations["writeLayerVisibility"].Single().Arguments;
+            Assert.AreEqual(LayerVisibilityKey, arguments[0]);
+            using var saved = System.Text.Json.JsonDocument.Parse((string)arguments[1]!);
+            Assert.IsFalse(saved.RootElement.GetProperty("scene-deep-sky").GetBoolean());
+            Assert.IsTrue(saved.RootElement.GetProperty("scene-annotation").GetBoolean());
+        });
+    }
+
+    [TestMethod]
     public async Task ALayerChoiceIsRememberedByKind()
     {
         using var context = new BunitContext();

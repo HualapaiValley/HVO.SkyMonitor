@@ -18,6 +18,20 @@ public sealed class FrameFactsRetainedContextTests
     private static readonly string Hash = new('A', 64);
 
     [TestMethod]
+    [DataRow(EnvironmentalObservationSchemaVersions.V2, "UNSUPPORTED")]
+    [DataRow(EnvironmentalObservationSchemaVersions.V3, "AVAILABLE")]
+    public void ImportedUnknownQualityUsesTheVersionThreeWeatherPolicy(string schema, string expected)
+    {
+        var observation = Observation(EnvironmentalObservationSourceKind.Imported) with
+        {
+            SchemaVersion = schema,
+            Value = Observation().Value with { Quality = EnvironmentalObservationQuality.Unknown }
+        };
+        var context = FrameFactsRetainedContext.Create(new(Descriptor(), Environment: [Association(observation)]));
+        Assert.AreEqual(expected, Evaluate("{{environment.airTemperature.status}}", context));
+    }
+
+    [TestMethod]
     public void CatalogueDocumentsEveryScalarAndProvidesOnlyClosedFormatsAndStatusCompanions()
     {
         Assert.IsTrue(FrameFactsRetainedCatalog.Entries.Length < FrameFactsTokenContext.MaximumFacts);
@@ -383,7 +397,7 @@ public sealed class FrameFactsRetainedContextTests
         var (unit, numeric) = valueKind switch
         {
             EnvironmentalObservationKind.RelativeHumidity => (EnvironmentalObservationUnit.Percent, 50d),
-            EnvironmentalObservationKind.AtmosphericPressure => (EnvironmentalObservationUnit.Pascals, 101325d),
+            EnvironmentalObservationKind.AtmosphericPressure or EnvironmentalObservationKind.SeaLevelPressure => (EnvironmentalObservationUnit.Pascals, 101325d),
             EnvironmentalObservationKind.WindSpeed or EnvironmentalObservationKind.WindGust => (EnvironmentalObservationUnit.MetersPerSecond, 2d),
             EnvironmentalObservationKind.WindDirection => (EnvironmentalObservationUnit.DegreesTrue, 270d),
             EnvironmentalObservationKind.PrecipitationRate => (EnvironmentalObservationUnit.MillimetersPerHour, 0d),
@@ -393,7 +407,8 @@ public sealed class FrameFactsRetainedContextTests
             EnvironmentalObservationKind.CameraSensorTemperature => (EnvironmentalObservationUnit.DegreesCelsius, 21d),
             _ => (EnvironmentalObservationUnit.DegreesCelsius, 12.5)
         };
-        return new(EnvironmentalObservationSchemaVersions.V2, Guid.Parse("15510000-0000-0000-0000-000000000003"),
+        return new(valueKind is EnvironmentalObservationKind.SkyTemperature or EnvironmentalObservationKind.SeaLevelPressure
+            ? EnvironmentalObservationSchemaVersions.V3 : EnvironmentalObservationSchemaVersions.V2, Guid.Parse("15510000-0000-0000-0000-000000000003"),
             new("fixture", "weather", "1", kind, new(new("fixture", "1"), parameters, CaptureContractJson.ComputeCanonicalJsonSha256(parameters))),
             Epoch.AddSeconds(-10), null, null, Epoch.AddMinutes(-1), Epoch.AddMinutes(5), Epoch.AddMinutes(4),
             new(valueKind, unit, valueKind == EnvironmentalObservationKind.RainState ? null : numeric, valueKind == EnvironmentalObservationKind.RainState ? true : null, EnvironmentalObservationQuality.Good),

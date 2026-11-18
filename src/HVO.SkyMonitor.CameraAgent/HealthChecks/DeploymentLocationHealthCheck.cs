@@ -15,6 +15,8 @@ public sealed class DeploymentLocationHealthCheck(
         var active = locationStore.Active;
         var result = active switch
         {
+            _ when !locationStore.RecentRetainedEvidenceReady =>
+                HealthCheckResult.Unhealthy("Recent retained evidence requires verification or recovery."),
             null => HealthCheckResult.Degraded("Waiting for protected deployment-location history."),
             _ when !active.Validate().IsValid || !active.IsEffectiveAt(timeProvider.GetUtcNow()) =>
                 HealthCheckResult.Degraded(

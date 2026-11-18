@@ -116,7 +116,8 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             privateSnapshot.Load(connection);
 
             ValidateIntegrity(connection);
-            var deepSky = string.Equals(options.ExpectedSchemaVersion, DeepSkySchemaVersion, StringComparison.Ordinal);
+            var standalone = options.ExpectedSchemaVersion == "5";
+            var deepSky = standalone || string.Equals(options.ExpectedSchemaVersion, DeepSkySchemaVersion, StringComparison.Ordinal);
             var detailed = deepSky ||
                 string.Equals(options.ExpectedSchemaVersion, DetailedSchemaVersion, StringComparison.Ordinal);
             if (!deepSky && options.ExpectedDeepSkyCounts is not null)
@@ -124,7 +125,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 throw new ArgumentException(
                     $"Only a schema {DeepSkySchemaVersion} snapshot has deep-sky counts to expect.", nameof(options));
             }
-            ValidateSchema(connection, detailed, deepSky);
+            ValidateSchema(connection, detailed, deepSky, standalone);
             var metadata = ReadMetadata(connection);
             ValidateVersion("schema_version", options.ExpectedSchemaVersion, metadata);
             ValidateVersion("preprocessing_version", options.ExpectedPreprocessingVersion, metadata);
@@ -142,11 +143,11 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
                 RequiredMetadata(metadata, "license"),
                 RequiredMetadata(metadata, "schema_version"));
             PreprocessingVersion = RequiredMetadata(metadata, "preprocessing_version");
-            Semantics = detailed ? ReadSemantics(metadata, deepSky) : CatalogSemantics.LegacyFixedJ2000;
+            Semantics = detailed && !standalone ? ReadSemantics(metadata, deepSky) : CatalogSemantics.LegacyFixedJ2000;
             var details = new Dictionary<string, CelestialCatalogObjectDetails>(StringComparer.Ordinal);
-            _objects = Array.AsReadOnly(ReadObjects(connection, detailed ? details : null));
+            _objects = Array.AsReadOnly(standalone ? [] : ReadObjects(connection, detailed ? details : null));
             _detailsById = details;
-            if (detailed)
+            if (detailed && !standalone)
             {
                 ValidateAliases(connection, details);
             }
@@ -154,16 +155,24 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             // index is built from them on first use rather than held by every host that never searches by name.
             _aliases = new Lazy<Dictionary<string, CelestialCatalogAlias[]>>(
                 () => BuildAliasIndex(details), LazyThreadSafetyMode.ExecutionAndPublication);
-            if (options.ExpectedRowCount is { } expectedRowCount && _objects.Count != expectedRowCount)
-            {
-                throw new InvalidDataException(
-                    $"Catalog row count mismatch. Expected {expectedRowCount}, got {_objects.Count}.");
-            }
             if (deepSky)
             {
-                var collection = ReadDeepSky(connection, ReadDeepSkySemantics(metadata));
+                var semantics = ReadDeepSkySemantics(metadata);
+                if (standalone && astrometricProvenance is not null)
+                    semantics = semantics with
+                    {
+                        SnapshotIdentity = new(astrometricProvenance.CatalogId,
+                        astrometricProvenance.PackageVersion, options.ExpectedSchemaVersion, options.ExpectedPreprocessingVersion,
+                        privateSnapshot.Sha256)
+                    };
+                var collection = ReadDeepSky(connection, semantics);
                 ValidateDeepSkyCounts(collection, options.ExpectedDeepSkyCounts);
                 DeepSky = collection;
+            }
+            if (options.ExpectedRowCount is { } expectedRowCount && (standalone ? DeepSky!.Objects.Count : _objects.Count) != expectedRowCount)
+            {
+                throw new InvalidDataException(
+                    $"Catalog row count mismatch. Expected {expectedRowCount}, got {(standalone ? DeepSky!.Objects.Count : _objects.Count)}.");
             }
             _objectsByHipparcosId = _objects
                 .Where(static item => item.HipparcosId is not null)
@@ -407,7 +416,7 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
         }
     }
 
-    private static void ValidateSchema(SqliteConnection connection, bool detailed, bool deepSky)
+    private static void ValidateSchema(SqliteConnection connection, bool detailed, bool deepSky, bool standalone)
     {
         var objects = ReadSchemaObjects(connection);
         var expectedObjects = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -416,7 +425,12 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             ["celestial_objects"] = "table",
             ["celestial_objects_magnitude_id"] = "index"
         };
-        if (detailed)
+        if (standalone)
+        {
+            expectedObjects.Remove("celestial_objects");
+            expectedObjects.Remove("celestial_objects_magnitude_id");
+        }
+        if (detailed && !standalone)
         {
             expectedObjects.Add("celestial_object_aliases", "table");
         }
@@ -438,6 +452,11 @@ public sealed class SqliteCelestialCatalog : ICelestialCatalog, IHipparcosCatalo
             new("key", "TEXT", true, 1),
             new("value", "TEXT", true, 0)
         ]);
+        if (standalone)
+        {
+            ValidateDeepSkySchema(connection);
+            return;
+        }
         ColumnDefinition[] objectColumns =
         [
             new("id", "TEXT", true, 1),

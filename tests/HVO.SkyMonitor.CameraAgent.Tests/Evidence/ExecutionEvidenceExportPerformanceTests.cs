@@ -322,7 +322,7 @@ public sealed class ExecutionEvidenceExportPerformanceTests
         CameraModuleConfig configuration)
     {
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             new InMemoryCelestialCatalog([
                 new CelestialCatalogObject("HIP 32349", "Sirius", 101.28715533 / 15, -16.71611586, -1.46, 0.009, "32349"),
                 new CelestialCatalogObject("HIP 24608", "Capella", 79.17232794 / 15, 45.99799147, 0.08, 0.795, "24608")

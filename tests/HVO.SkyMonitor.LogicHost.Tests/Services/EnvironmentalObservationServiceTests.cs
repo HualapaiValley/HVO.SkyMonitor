@@ -21,6 +21,57 @@ public sealed class EnvironmentalObservationServiceTests
         CultureInfo.InvariantCulture);
 
     [TestMethod]
+    [DataRow("LocalWeatherStation")]
+    [DataRow("SkyQualityMeter")]
+    public async Task IngestRetainsLegacyAndCurrentAdapterProvenanceWithTheV1Method(string type)
+    {
+        await using var context = CreateContext();
+        var target = await SeedTargetAsync(context).ConfigureAwait(false);
+        using var telemetry = new EnvironmentalObservationTelemetry();
+        var ingest = CreateIngest(context, telemetry);
+        foreach (var legacy in new[] { true, false })
+        {
+            var fields = new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["protocol"] = type == "SkyQualityMeter" ? "sqm-rx-v1" : "environmental-bridge-v1",
+                ["deviceGroup"] = "station",
+                ["acquisitionSourceId"] = "adapter",
+                ["readingRole"] = "primary"
+            };
+            if (legacy)
+            {
+                fields["modelVersion"] = "sky-ambient-linear-v1";
+                fields["clearDeltaCelsius"] = -25;
+                fields["cloudyDeltaCelsius"] = -5;
+            }
+            var parameters = CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(fields));
+            var digest = CaptureContractJson.ComputeCanonicalJsonSha256(parameters);
+            var version = CaptureContractJson.ComputeCanonicalJsonSha256(new
+            { Algorithm = "environmental-adapter-v1", Simulated = false, ParametersSha256 = digest });
+            var observation = CreateObservation(target.Site.Id, target.AgentId) with
+            {
+                SchemaVersion = EnvironmentalObservationSchemaVersions.V3,
+                Source = new(type, "adapter", version, EnvironmentalObservationSourceKind.Measured,
+                    new(new("environmental-adapter", "adapter-v1"), parameters, digest)),
+                Value = new(type == "SkyQualityMeter" ? EnvironmentalObservationKind.SkyQuality : EnvironmentalObservationKind.AirTemperature,
+                    type == "SkyQualityMeter" ? EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond : EnvironmentalObservationUnit.DegreesCelsius,
+                    20, null, EnvironmentalObservationQuality.Good)
+            };
+            var accepted = await ingest.IngestAsync(observation).ConfigureAwait(false);
+            accepted.Disposition.Should().Be(EnvironmentalObservationIngestDisposition.Accepted);
+            var duplicate = await ingest.IngestAsync(observation).ConfigureAwait(false);
+            duplicate.Disposition.Should().Be(EnvironmentalObservationIngestDisposition.Duplicate);
+            var stored = await context.EnvironmentalObservationSources.SingleAsync(source => source.Version == version).ConfigureAwait(false);
+            stored.MethodName.Should().Be("environmental-adapter");
+            stored.MethodVersion.Should().Be("adapter-v1");
+            stored.ParametersJson.Should().Be(parameters.GetRawText());
+            stored.ParametersSha256.Should().Be(digest);
+        }
+        (await context.EnvironmentalObservationSources.CountAsync().ConfigureAwait(false)).Should().Be(2);
+        (await context.EnvironmentalObservations.CountAsync().ConfigureAwait(false)).Should().Be(2);
+    }
+
+    [TestMethod]
     public async Task IngestPersistsExactDuplicateAndRejectsConflictingIdentity()
     {
         await using var context = CreateContext();

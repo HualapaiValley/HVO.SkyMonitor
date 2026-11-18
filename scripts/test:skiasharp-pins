@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Exercise the static pin guard against aligned and partial dependency bumps."""
+from pathlib import Path
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+GUARD = ROOT / "scripts/ci:skiasharp-pins"
+subprocess.run([str(GUARD)], check=True)
+base = '<PackageVersion Include="SkiaSharp" Version="4.155.0" />'
+native = '<PackageVersion Include="SkiaSharp.NativeAssets.Linux.NoDependencies" Version="4.155.0" />'
+cases = [
+    (base + native, True),
+    (base + native.replace('4.155.0', '4.154.0'), False),
+    (base + native + '<PackageVersion Include="SkiaSharp.FutureNative" Version="4.154.0" />', False),
+    (native, False),
+    (base, False),
+    (base + native.replace(' Version="4.155.0"', ''), False),
+    (base + native + native, False),
+]
+with tempfile.TemporaryDirectory(prefix="hvo-skia-pins-") as temp:
+    source = Path(temp) / "Directory.Packages.props"
+    for body, expected in cases:
+        source.write_text('<Project><ItemGroup>' + body + '</ItemGroup></Project>')
+        result = subprocess.run([str(GUARD), str(source)], capture_output=True, text=True)
+        assert (result.returncode == 0) == expected, "SkiaSharp pin mutation returned an unexpected result"
+print(f"SkiaSharp pin contracts: {len(cases)} fixture cases passed.")

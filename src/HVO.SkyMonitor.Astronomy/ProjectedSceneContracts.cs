@@ -604,8 +604,16 @@ public static class ProjectedSceneJson
         if (!string.Equals(section.ContractVersion, ProjectedDeepSky.CurrentContractVersion, StringComparison.Ordinal))
             throw new ArgumentException("Deep-sky contract version is unsupported.", nameof(scene));
         ValidateText(section.AlgorithmVersion, $"{path}.algorithmVersion");
-        if (section.AlgorithmVersion != ProjectedDeepSky.CurrentAlgorithmVersion || section.Outlines is not { Count: 0 })
+        if (section.AlgorithmVersion != (selection.Query is null ? ProjectedDeepSky.CurrentAlgorithmVersion : ProjectedDeepSky.QueryAlgorithmVersion) || section.Outlines is not { Count: 0 })
             throw new ArgumentException("Curated scenes do not accept source contours or other algorithms.", nameof(scene));
+        if (section.CatalogIdentity is { } catalogIdentity)
+        {
+            ValidateText(catalogIdentity.CatalogId, "deepSky.catalogIdentity.catalogId");
+            ValidateText(catalogIdentity.PackageVersion, "deepSky.catalogIdentity.packageVersion");
+            ValidateSha256(catalogIdentity.DatabaseSha256, "deepSky.catalogIdentity.databaseSha256");
+            if (catalogIdentity.SchemaVersion != "5" || catalogIdentity.PreprocessingVersion != "6")
+                throw new ArgumentException("Deep-sky catalog identity must describe a supported standalone snapshot.", nameof(scene));
+        }
         ValidateText(section.SourceName, $"{path}.sourceName");
         ValidateText(section.SourceVersion, $"{path}.sourceVersion");
         ValidateText(section.SourceCommit, $"{path}.sourceCommit");
@@ -830,11 +838,16 @@ public static class ProjectedSceneJson
         point.X >= 0 && point.X <= transform.OutputWidthPixels &&
         point.Y >= 0 && point.Y <= transform.OutputHeightPixels;
 
-    private static ProjectionContext ToProjectionContext(ProjectedSceneProjection value) => new(
+    /// <summary>Restores the complete source projection recorded by a validated retained scene.</summary>
+    public static ProjectionContext ToProjectionContext(ProjectedSceneProjection value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return new(
         value.Model, value.PrincipalPointX, value.PrincipalPointY, value.FocalLengthXPixels,
         value.FocalLengthYPixels, value.WidthPixels, value.HeightPixels, value.Aperture,
         value.ImageCircleRadiusPixels, value.BoresightAltitudeDegrees, value.BoresightAzimuthDegrees,
         value.RollDegrees, value.HorizontalFlip, value.EnforceSensorBounds, value.RadialDistortionK1);
+    }
 
     private static double Distance(EnuVector left, EnuVector right) => Math.Sqrt(
         Math.Pow(left.East - right.East, 2) + Math.Pow(left.North - right.North, 2) + Math.Pow(left.Up - right.Up, 2));
@@ -1104,7 +1117,10 @@ public static class ProjectedSceneJson
         return value with
         {
             Objects = Freeze(objects.OrderBy(static item => item.Id, StringComparer.Ordinal)),
-            Outlines = []
+            Outlines = [],
+            CatalogIdentity = value.CatalogIdentity is { } identity
+                ? identity with { DatabaseSha256 = NormalizeSha256(identity.DatabaseSha256) }
+                : null
         };
     }
 

@@ -99,6 +99,54 @@ hyg_check_sqlite_version() {
         hyg_fail "sqlite3 $HYG_REQUIRED_SQLITE_VERSION is required; found $actual_version"
 }
 
+# Prints one line naming the sqlite3 a catalog is about to be built with: the executable's path, its `--version`
+# line, the SHA-256 of that executable, and the `PRAGMA secure_delete` value a new connection starts with. Every
+# catalog builder calls this before it builds, so a build log records the tool instead of leaving it to be inferred
+# from the runner image (Refs #1774).
+#
+# The path is the resolved regular file whose bytes the SHA-256 covers. When PATH reaches it through a symbolic link,
+# as the isolated CLI from install-sqlite-3.45.1.sh is reached, the line also carries `via=` with the PATH entry. A
+# sqlite3 that cannot be named is not one to build an approved catalog with, so every failure here is an error, with
+# an explicit `return 1` because this is not an accumulating validator (see hyg_fail).
+#
+# The reproducibility regressions run the builders through a wrapper that forces the connection default. Under one,
+# this names the wrapper and the forced setting, which is the sqlite3 the builder is really invoking; the regressions
+# print the wrapped tool's own line first.
+hyg_print_sqlite_identity() {
+    local sqlite_command
+    local sqlite_path
+    local sqlite_version
+    local sqlite_sha256
+    local sqlite_secure_delete
+    local via=""
+
+    sqlite_command="$(type -P sqlite3)" || { hyg_fail "cannot identify sqlite3: it is not on PATH"; return 1; }
+    sqlite_path="$(realpath -e -- "$sqlite_command" 2>/dev/null)" ||
+        { hyg_fail "cannot identify sqlite3: $sqlite_command does not resolve to a file"; return 1; }
+    [[ -f "$sqlite_path" && -x "$sqlite_path" ]] ||
+        { hyg_fail "cannot identify sqlite3: $sqlite_path is not an executable regular file"; return 1; }
+    sqlite_version="$("$sqlite_command" --version 2>/dev/null)" ||
+        { hyg_fail "cannot identify sqlite3: $sqlite_command --version failed"; return 1; }
+    sqlite_sha256="$(hyg_sha256 "$sqlite_path")" ||
+        { hyg_fail "cannot identify sqlite3: cannot read $sqlite_path"; return 1; }
+    sqlite_secure_delete="$("$sqlite_command" -batch -noheader ':memory:' 'PRAGMA secure_delete;' 2>/dev/null)" ||
+        { hyg_fail "cannot identify sqlite3: $sqlite_command cannot report PRAGMA secure_delete"; return 1; }
+
+    # One line is the contract: refuse a value that would break it or that is not what the tool is documented to print.
+    [[ -n "$sqlite_version" && "$sqlite_version" != *[[:cntrl:]]* ]] ||
+        { hyg_fail "cannot identify sqlite3: $sqlite_command --version did not print exactly one line"; return 1; }
+    [[ "$sqlite_command" != *[[:cntrl:]]* && "$sqlite_path" != *[[:cntrl:]]* ]] ||
+        { hyg_fail "cannot identify sqlite3: its path contains a control character"; return 1; }
+    [[ "$sqlite_sha256" =~ ^[0-9a-f]{64}$ ]] ||
+        { hyg_fail "cannot identify sqlite3: cannot hash $sqlite_path"; return 1; }
+    [[ "$sqlite_secure_delete" =~ ^[012]$ ]] ||
+        { hyg_fail "cannot identify sqlite3: PRAGMA secure_delete returned '$sqlite_secure_delete', expected 0, 1 or 2"; return 1; }
+
+    [[ "$sqlite_command" == "$sqlite_path" ]] || via=" via=$sqlite_command"
+    printf 'catalog sqlite3: path=%s%s version="%s" sha256=%s secure_delete=%s\n' \
+        "$sqlite_path" "$via" "$sqlite_version" "$sqlite_sha256" "$sqlite_secure_delete"
+}
+
 hyg_sqlite_scalar() {
     sqlite3 -batch -noheader -readonly "$1" "$2"
 }

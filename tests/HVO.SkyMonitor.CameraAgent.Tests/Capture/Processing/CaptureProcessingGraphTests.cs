@@ -1,6 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -93,25 +94,23 @@ public sealed class CaptureProcessingGraphTests
     }
 
     [TestMethod]
-    public void AddCameraAgentInfrastructure_InitializesRawSchemaBeforeProcessingHostedServices()
+    public void AddCameraAgentInfrastructure_RegistersConfigurationRecoveryBeforeProcessingHostedServices()
     {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddCameraAgentInfrastructure(new ConfigurationBuilder().Build());
-        var hostedTypes = services
-            .Where(static descriptor => descriptor.ServiceType == typeof(IHostedService))
-            .Select(static descriptor => descriptor.ImplementationType)
-            .ToList();
-
-        var configurationIndex = hostedTypes.IndexOf(typeof(CameraAgentConfigurationInitializer));
+        var registrations = services.ToList();
+        var configurationIndex = registrations.FindIndex(static descriptor =>
+            descriptor.ServiceType == typeof(CameraAgentConfigurationInitializer));
         Assert.IsGreaterThanOrEqualTo(0, configurationIndex);
-        Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(CaptureProcessingStateRefreshService)));
-        Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(DerivedProductReconciliationService)));
-        Assert.IsTrue(configurationIndex < hostedTypes.IndexOf(typeof(ProjectedSceneStageReconciliationService)));
+        foreach (var consumer in new[] { typeof(CaptureProcessingStateRefreshService),
+                     typeof(DerivedProductReconciliationService), typeof(ProjectedSceneStageReconciliationService) })
+            Assert.IsGreaterThan(configurationIndex, registrations.FindIndex(descriptor =>
+                descriptor.ServiceType == typeof(IHostedService) && descriptor.ImplementationType == consumer));
     }
 
     [TestMethod]
-    public void AddCameraAgentInfrastructure_InitializesCaptureAdmissionBeforeDependentHostedServices()
+    public void AddCameraAgentInfrastructure_DefersRetainedRecoveryUntilTheHostHasStarted()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -121,13 +120,13 @@ public sealed class CaptureProcessingGraphTests
             .Select(static descriptor => descriptor.ImplementationType)
             .ToList();
 
-        var configurationIndex = hostedTypes.IndexOf(typeof(CameraAgentConfigurationInitializer));
-        var admissionIndex = hostedTypes.IndexOf(typeof(CaptureAdmissionInitializationService));
-        Assert.IsGreaterThanOrEqualTo(0, configurationIndex);
-        Assert.IsGreaterThanOrEqualTo(0, admissionIndex);
-        Assert.IsTrue(configurationIndex < admissionIndex);
-        Assert.IsTrue(admissionIndex < hostedTypes.IndexOf(typeof(CaptureProcessingStateRefreshService)));
-        Assert.IsTrue(admissionIndex < hostedTypes.IndexOf(typeof(CameraCaptureService)));
+        foreach (var deferred in new[] { typeof(AfterApplicationStartedService<CaptureAdmissionInitializationService>),
+                     typeof(AfterApplicationStartedService<CaptureDistributionService>),
+                     typeof(AfterApplicationStartedService<VirtualCalibrationAcquisitionRecoveryService>) })
+            CollectionAssert.Contains(hostedTypes, deferred);
+        CollectionAssert.DoesNotContain(hostedTypes, typeof(CaptureAdmissionInitializationService));
+        CollectionAssert.DoesNotContain(hostedTypes, typeof(CaptureDistributionService));
+        CollectionAssert.DoesNotContain(hostedTypes, typeof(VirtualCalibrationAcquisitionRecoveryService));
     }
 
     private static readonly string[] ExpectedTopologicalOrder = ["first", "middle", "last"];

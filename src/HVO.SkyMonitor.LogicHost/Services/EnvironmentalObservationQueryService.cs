@@ -339,6 +339,7 @@ internal sealed class EnvironmentalObservationQueryService(
         return dbContext.EnvironmentalObservations
             .AsNoTracking()
             .Where(observation => observation.SiteId == request.Target.SiteId &&
+                !observation.Source!.IsLineageInput &&
                 observation.Kind == request.Selector.Kind &&
                 qualities.Contains(observation.Quality) &&
                 observation.ObservedAtUtc <= latestAllowedObservation &&
@@ -446,7 +447,9 @@ internal sealed class EnvironmentalObservationQueryService(
                 record.Quality,
                 record.Uncertainty,
                 record.SubmittedNumericValue,
-                record.SubmittedUnit),
+                record.SubmittedUnit,
+                record.SampleMetadataJson is null ? null :
+                    JsonSerializer.Deserialize<EnvironmentalObservationSampleMetadata>(record.SampleMetadataJson)),
             lineage);
     }
 }

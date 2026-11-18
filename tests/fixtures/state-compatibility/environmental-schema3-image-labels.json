@@ -1,0 +1,18 @@
+{
+  "sourceRevision": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
+  "sourcePath": "src/HVO.SkyMonitor.CameraAgent/Dockerfile",
+  "sourceSha256": "f169e061364137a37b5fd12a3e4505a3f4c28d713f0c0e6e59bcabf0073f87ff",
+  "imageLabels": {
+    "io.hvo.skymonitor.component": "CameraAgent",
+    "io.hvo.skymonitor.state-compatibility": "cameraagent-state-v2",
+    "io.hvo.skymonitor.minimum-compatible-revision": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
+    "io.hvo.skymonitor.identity-migration": "20260827053715_InitialIdentity",
+    "io.hvo.skymonitor.raw-ingress-schema": "15",
+    "io.hvo.skymonitor.raw-ingress-migration": "canonical-v13-v14-to-v15",
+    "io.hvo.skymonitor.catalog-manifest-version": "3",
+    "io.hvo.skymonitor.configuration-contract": "cameraagent-install-v1",
+    "io.hvo.skymonitor.catalog-contract": "hvo-approved-catalogs-v2",
+    "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
+    "io.hvo.skymonitor.state-contracts": "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}"
+  }
+}

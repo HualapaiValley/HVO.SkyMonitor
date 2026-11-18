@@ -67,7 +67,12 @@
                                 </li>
                             }
                         </ol>
-                        <button id="@(inputId + "-add")" type="button" class="btn btn-outline-secondary" disabled="@(Form.Collection(option.Key).Items.Length >= option.MaximumItems)" @onclick="() => CollectionChangedAsync(() => Form.AddCollectionItem(option.Key))">Add @option.Label item</button>
+                        @{ var nothingToAdd = Form.AddCollectionItemUnavailableReason(option.Key); }
+                        <button id="@(inputId + "-add")" type="button" class="btn btn-outline-secondary" disabled="@(nothingToAdd is not null || Form.Collection(option.Key).Items.Length >= option.MaximumItems)" aria-describedby="@(nothingToAdd is null ? null : inputId + "-add-unavailable")" @onclick="() => CollectionChangedAsync(() => Form.AddCollectionItem(option.Key))">Add @option.Label item</button>
+                        @if (nothingToAdd is not null)
+                        {
+                            <p id="@(inputId + "-add-unavailable")" role="status">@nothingToAdd</p>
+                        }
                         @if (option.ClearCollectionLabel is not null)
                         {
                             <button id="@(inputId + "-clear")" type="button" class="btn btn-outline-secondary" @onclick="() => CollectionChangedAsync(() => Form.ClearCollection(option.Key))">@option.ClearCollectionLabel</button>

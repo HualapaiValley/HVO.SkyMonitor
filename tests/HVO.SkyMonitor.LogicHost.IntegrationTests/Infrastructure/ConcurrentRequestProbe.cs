@@ -25,6 +25,20 @@ internal static class ConcurrentRequestProbe
             $"Submission completed before generation probe entry: HTTP {(int)response.StatusCode}; {progress()}");
     }
 
+    internal static async Task<HttpResponseMessage> WaitForResponseAsync(
+        Task<HttpResponseMessage> request, TimeSpan timeout, Func<string> progress)
+    {
+        Task<HttpResponseMessage> completed;
+        // Waiting on the completion signal separates the probe deadline from a subject TimeoutException.
+        try { completed = await Task.WhenAny(request).WaitAsync(timeout).ConfigureAwait(false); }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException(
+                $"Submission timed out after generation release: {progress()}; request state={request.Status}", exception);
+        }
+        return await completed.ConfigureAwait(false);
+    }
+
     internal static async Task DrainAfterFailureAsync(
         IReadOnlyList<Task<HttpResponseMessage>> requests, CancellationTokenSource cancellation, TimeSpan timeout)
     {

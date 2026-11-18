@@ -67,9 +67,7 @@ public static class EnvironmentalObservationFactJson
         ArgumentNullException.ThrowIfNull(fact);
         return CaptureContractJson.ComputeCanonicalJsonSha256(new
         {
-            Schema = fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
-                ? "hvo-targetless-environmental-observation-content-v2"
-                : "hvo-targetless-environmental-observation-content-v1",
+            Schema = $"hvo-targetless-environmental-observation-content-{EnvironmentalObservationSchemaVersions.IdentityVersion(fact.SchemaVersion)}",
             Fact = Normalize(fact)
         });
     }
@@ -77,10 +75,10 @@ public static class EnvironmentalObservationFactJson
     public static string ComputeSourceIdentitySha256(EnvironmentalObservationFactV1 fact)
     {
         ArgumentNullException.ThrowIfNull(fact);
-        return fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+        return fact.SchemaVersion != EnvironmentalObservationSchemaVersions.V1
             ? CaptureContractJson.ComputeCanonicalJsonSha256(new
             {
-                Schema = "hvo-targetless-environmental-source-identity-v2",
+                Schema = $"hvo-targetless-environmental-source-identity-{EnvironmentalObservationSchemaVersions.IdentityVersion(fact.SchemaVersion)}",
                 fact.RigId,
                 fact.Source.Provider,
                 fact.Source.SourceId,
@@ -100,10 +98,10 @@ public static class EnvironmentalObservationFactJson
     public static string ComputeSourceContentSha256(EnvironmentalObservationFactV1 fact)
     {
         ArgumentNullException.ThrowIfNull(fact);
-        return fact.SchemaVersion == EnvironmentalObservationSchemaVersions.V2
+        return fact.SchemaVersion != EnvironmentalObservationSchemaVersions.V1
             ? CaptureContractJson.ComputeCanonicalJsonSha256(new
             {
-                Schema = "hvo-targetless-environmental-source-content-v2",
+                Schema = $"hvo-targetless-environmental-source-content-{EnvironmentalObservationSchemaVersions.IdentityVersion(fact.SchemaVersion)}",
                 fact.RigId,
                 Source = Normalize(fact).Source,
                 fact.Value.Kind

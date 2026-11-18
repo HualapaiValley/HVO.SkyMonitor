@@ -1,0 +1,11 @@
+name: R4 spoof
+on: push
+jobs:
+  benign:
+    runs-on: [ubuntu-24.04,
+]
+    steps:
+      - run: 'true'
+  dev:
+    name: Development v1
+    uses: ./.github/workflows/r4-callee.yml

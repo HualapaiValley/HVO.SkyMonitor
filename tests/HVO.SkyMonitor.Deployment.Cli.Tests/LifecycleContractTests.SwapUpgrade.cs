@@ -19,6 +19,24 @@ public sealed partial class LifecycleContractTests
     private const string CandidateMigrationTable = "candidate_migration";
     private static readonly string[] SnapshotEntries =
         ["00-cameraagent_identity.db", "01-raw-ingress.db", "02-artifact-outbox.db", "manifest.json"];
+    private static readonly string[] SnapshotProtectedLocations =
+    [
+        "raw/.location/deployment-location.v1.protected",
+        "raw/.location/manual-deployment-location.v1.protected",
+        "raw/.deployment-location.v1.identity",
+        "raw/.location/retained-integrity.v1.protected"
+    ];
+    private static readonly string[] DurableRestoreSteps =
+    [
+        "restore-sidecars-removed:identity/cameraagent_identity.db",
+        "restore:identity/cameraagent_identity.db",
+        "restore-sidecars-removed:raw/journal/raw-ingress.db",
+        "restore:raw/journal/raw-ingress.db",
+        "restore-sidecars-removed:raw/outbox/artifact-outbox.db",
+        "restore:raw/outbox/artifact-outbox.db",
+        "restore-protected:raw/.deployment-location.v1.identity",
+        "restore-directories-synced"
+    ];
     private static readonly string[] DurableSwapSteps =
     [
         "journal:Prepared", "journal:CandidateValidated", "journal:Drained", "snapshot:identity/cameraagent_identity.db",
@@ -91,9 +109,14 @@ public sealed partial class LifecycleContractTests
         var root = CameraAgentStateSnapshot.SnapshotRoot(fixture.Paths, snapshot.OperationId, snapshot.SnapshotId);
         CollectionAssert.AreEquivalent(SnapshotEntries, Directory.EnumerateFileSystemEntries(root).Select(Path.GetFileName).ToArray());
         CollectionAssert.AreEqual(
-            CameraAgentStateLayout.SqliteStores.ToArray(),
+            CameraAgentStateLayout.SqliteStores.Append(CameraAgentStateSnapshot.RetainedIntegrityStore).ToArray(),
             snapshotManifest.Databases.Select(static database => database.RelativePath).ToArray());
         Assert.AreEqual(3, snapshotManifest.Databases.Count(static database => database.Present));
+        Assert.IsNotNull(snapshotManifest.ProtectedFiles);
+        CollectionAssert.AreEqual(
+            SnapshotProtectedLocations,
+            snapshotManifest.ProtectedFiles.Select(static file => file.RelativePath).ToArray());
+        Assert.IsTrue(snapshotManifest.ProtectedFiles.All(static file => !file.Present));
         // The snapshot is the pre-upgrade state, not what the candidate migrated.
         CollectionAssert.AreEqual(before, ReadStoreFacts(SnapshotFile(root, "01-raw-ingress.db")));
         var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None);
@@ -101,6 +124,46 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(CandidateImageId, manifest.Image.ImageId);
         AssertBulkUntouched(bulk);
         AssertNothingBulkCopied(fixture, bulk);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task UpgradeAsync_PreLedgerCandidateFailureRestoresOriginalStateBeforeRestart()
+    {
+        using var fixture = await MigratingFixtureAsync();
+        SeedStores(fixture.Paths);
+        var before = ReadStoreFacts(fixture.Paths);
+        var bulk = SeedBulk(fixture.Paths);
+        var ledger = CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore);
+        var restartedOriginal = false;
+        fixture.Runner.OnComposeUp = image =>
+        {
+            if (image == CandidateImageId)
+            {
+                MigrateAsCandidate(fixture.Paths);
+                Directory.CreateDirectory(Path.GetDirectoryName(ledger)!);
+                using var connection = new SqliteConnection($"Data Source={ledger};Pooling=False");
+                connection.Open();
+                using var create = connection.CreateCommand();
+                create.CommandText = "CREATE TABLE candidate_only(value INTEGER);";
+                _ = create.ExecuteNonQuery();
+                File.WriteAllText(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, SnapshotProtectedLocations[^1]), "candidate checkpoint");
+                return;
+            }
+            restartedOriginal = true;
+            Assert.IsFalse(File.Exists(ledger));
+            Assert.IsFalse(File.Exists(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, SnapshotProtectedLocations[^1])));
+            CollectionAssert.AreEqual(before, ReadStoreFacts(fixture.Paths));
+        };
+        var owner = new FakeOwnerClient(fixture.ApplicationIdentity) { RejectNextVerification = true };
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentLifecycleManager.ExecuteAsync(
+            UpgradeRequest(fixture, assertMigration: false), fixture.Runner, _ => new FakeLifecycleClient(),
+            _ => owner, fixture.Uid, fixture.Gid, CancellationToken.None, error: TextWriter.Null));
+        Assert.IsTrue(restartedOriginal);
+        Assert.AreEqual(fixture.Manifest.Image.ImageId, fixture.Runner.ActiveImageId);
+        var journal = (await CameraAgentLifecycleManager.ReadOperationAsync(fixture.Paths.LifecycleStatePath, CancellationToken.None))!;
+        Assert.IsNotNull(journal.StateSnapshotRestoredUtc);
+        AssertBulkUntouched(bulk);
     }
 
     [TestMethod]
@@ -417,8 +480,10 @@ public sealed partial class LifecycleContractTests
             ResetCrashHooks();
         }
         var restoreSteps = second.Where(static image => image.Step.StartsWith("restore", StringComparison.Ordinal)).ToArray();
-        // Two steps for each of the three present stores, and the sync of every restored directory's chain.
-        Assert.AreEqual(2 * 3 + 1, restoreSteps.Length, string.Join(", ", second.Select(static image => image.Step)));
+        // Every present store is restored, the absent identity marker is enforced, then the directory chains are synced.
+        CollectionAssert.AreEqual(
+            DurableRestoreSteps,
+            restoreSteps.Select(static image => image.Step).ToArray());
 
         foreach (var image in second.TakeWhile(static image => image.Step != "journal:Completed"))
         {

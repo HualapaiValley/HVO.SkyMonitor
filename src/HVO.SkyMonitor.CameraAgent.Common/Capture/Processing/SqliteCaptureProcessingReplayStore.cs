@@ -257,6 +257,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                         "The replay trigger already identifies a different execution.", exception);
                 }
             }
+            await InitializeManifestLedgersAsync(connection, transaction, executionId,
+                revision.Nodes.Select(static node => node.NodeId), cancellationToken).ConfigureAwait(false);
             foreach (var node in revision.Nodes)
             {
                 using var insertNode = connection.CreateCommand();
@@ -710,6 +712,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 throw new ProcessingGraphStoreConflictException("A frozen processing window output changed before it could be pinned.");
         }
+        await RecordFrozenOutputInputCountAsync(connection, transaction, executionId, nodeId, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask EnsureFrozenRawFilesExistAsync(

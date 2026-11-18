@@ -140,7 +140,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 item.ConstellationId, item.FromPixel, item.ToPixel)).ToArray();
             projectionOverlay = CreateProjectionOverlay(generatedScene.Scene.Request.Projection);
         }
-        else if (sceneStore.TryGet(provenance!.SceneId, out var scene) && scene is not null)
+        else if (provenance is not null && sceneStore.TryGet(provenance.SceneId, out var scene) && scene is not null)
         {
             objects = scene.Objects.Select(item =>
             {
@@ -155,7 +155,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 : [];
             projectionOverlay = CreateProjectionOverlay(scene.Request.Projection);
         }
-        else if (provenance.Objects is { } persistedObjects)
+        else if (provenance?.Objects is { } persistedObjects)
         {
             var rigHash = RigProjectionContextFactory.CreateProfileHashSha256(context.Config.Rig);
             if (!string.IsNullOrWhiteSpace(provenance.RigProfileHashSha256) &&
@@ -190,6 +190,27 @@ internal sealed class AnnotationCaptureProcessingStep(
             throw new InvalidOperationException("The projected scene required for annotation is unavailable.");
         }
 
+        HorizonObstructionSceneSelection? curatedHorizon = null;
+        if (context.Config.Rig.HorizonObstruction is { } horizon)
+        {
+            var observer = HorizonCaptureObserver.Resolve(context, serviceProvider);
+            var evaluator = new HorizonObstructionEvaluator(horizon, context.Config.Rig, observer,
+                context.ReconstructionDescriptor?.Location ?? context.Config.DeploymentLocation?.ToProvenance());
+            if (projectedScene is not null)
+            {
+                var eligibility = new HorizonObstructionSceneEligibility(evaluator, context.Config.Rig, projectedScene);
+                (objects, segments) = HorizonObstructionAnnotation.Filter(eligibility, objects, segments);
+                if (projectedScene.DeepSky is not null) curatedHorizon = eligibility.SelectDeepSky(projectedScene);
+                context.RecordCanonicalInput("horizon-scene-eligibility", "1", eligibility.IdentitySha256);
+            }
+            else
+            {
+                var imageTransform = ProjectedSceneImageTransformV1.Identity(evaluator.Projection.WidthPixels, evaluator.Projection.HeightPixels);
+                (objects, segments) = HorizonObstructionAnnotation.Filter(evaluator, imageTransform, objects, segments);
+            }
+            context.RecordCanonicalInput("horizon-obstruction", HorizonObstructionProfile.CurrentSchemaVersion, horizon.ComputeIdentitySha256());
+        }
+
         var previewProduct = context.GetProcessingProduct(preview.ArtifactId);
         MetadataCornerOverlay? metadataOverlay = null;
         if (Options.DrawMetadataCorners)
@@ -217,6 +238,7 @@ internal sealed class AnnotationCaptureProcessingStep(
         }
         var executionInputs = new List<ProcessingArtifact> { input };
         var auxiliaryInputs = new List<ProcessingAuxiliaryInput>();
+        if (curatedHorizon is not null) auxiliaryInputs.Add(curatedHorizon.ToAuxiliaryInput());
         if (projectedSceneProduct is not null)
         {
             var projectedSceneArtifactId = CaptureProcessingContext.CreateArtifactId(
@@ -540,7 +562,11 @@ internal sealed class AnnotationCaptureProcessingStep(
             };
     }
 
-    private async ValueTask<IReadOnlyList<string>?> CreateEnvironmentLinesAsync(
+    /// <summary>
+    /// Expands the environment token into one line per selected kind, in kind order, or returns null while a configured
+    /// kind's capture association is still pending.
+    /// </summary>
+    internal async ValueTask<IReadOnlyList<string>?> CreateEnvironmentLinesAsync(
         ReconstructionDescriptor? descriptor,
         CancellationToken cancellationToken)
     {
@@ -560,21 +586,37 @@ internal sealed class AnnotationCaptureProcessingStep(
         {
             throughUtc = fromUtc.AddMilliseconds(1);
         }
-        var associations = await environmentalAssociations.ReadCompletedAsync(
-            descriptor.Capture.CaptureId,
-            descriptor.Capture.CaptureSequence,
-            fromUtc,
-            throughUtc,
-            descriptor.Capture.RigId,
-            Options.EnvironmentalKinds,
-            cancellationToken).ConfigureAwait(false);
-        if (associations is null)
+        // Only kinds with a configured source have capture associations. A selected kind outside the configured policy
+        // keeps its MISSING line instead of failing every capture; selection does not enable a sensor. Refs #1784
+        var selectedKinds = Options.EnvironmentalKinds.Distinct().Order().ToArray();
+        var policyKinds = EnvironmentalAssociationService.SelectConfiguredPolicyKinds(
+            hostOptions.Value.EnvironmentalAcquisition, selectedKinds);
+        IReadOnlyList<LocalEnvironmentalCaptureAssociation> associations = [];
+        if (policyKinds.Length > 0)
         {
-            return null;
+            var completed = await environmentalAssociations.ReadCompletedAsync(
+                descriptor.Capture.CaptureId,
+                descriptor.Capture.CaptureSequence,
+                fromUtc,
+                throughUtc,
+                descriptor.Capture.RigId,
+                policyKinds,
+                cancellationToken).ConfigureAwait(false);
+            if (completed is null)
+            {
+                return null;
+            }
+            associations = completed;
         }
-        var lines = new List<string>(associations.Count);
-        foreach (var association in associations)
+        var lines = new List<string>(selectedKinds.Length);
+        foreach (var kind in selectedKinds)
         {
+            var association = associations.SingleOrDefault(candidate => candidate.Kind == kind);
+            if (association is null)
+            {
+                lines.Add(FormatMissingEnvironmentLine(kind));
+                continue;
+            }
             LocalEnvironmentalObservationRecord? selected = null;
             if (association.SelectedRecordId is { } recordId)
             {
@@ -597,6 +639,9 @@ internal sealed class AnnotationCaptureProcessingStep(
             Options.TopRightTokens.Contains(AnnotationMetadataTokens.Environment, StringComparer.Ordinal) ||
             Options.BottomLeftTokens.Contains(AnnotationMetadataTokens.Environment, StringComparer.Ordinal) ||
             Options.BottomRightTokens.Contains(AnnotationMetadataTokens.Environment, StringComparer.Ordinal);
+
+    private static string FormatMissingEnvironmentLine(EnvironmentalObservationKind kind)
+        => $"{kind.ToString().ToUpperInvariant()} {LocalEnvironmentalAssociationStatus.Missing.ToString().ToUpperInvariant()}";
 
     private static string FormatEnvironmentLine(
         LocalEnvironmentalCaptureAssociation association,

@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
@@ -163,7 +164,11 @@ public sealed class PresentationResolvedFootprintTests
         Assert.IsEmpty(groups.StarAnnotations.Segments);
     }
 
-    private static async Task<ProjectedSceneV1> SceneAsync(double focalLengthPixels,
+    private static Task<ProjectedSceneV1> SceneAsync(double focalLengthPixels,
+        params (string Id, string Name, double AltitudeDegrees, double Magnitude)[] extraStars)
+        => SceneAsync(focalLengthPixels, SolarSystemBody.Sun, extraStars);
+
+    private static async Task<ProjectedSceneV1> SceneAsync(double focalLengthPixels, SolarSystemBody body,
         params (string Id, string Name, double AltitudeDegrees, double Magnitude)[] extraStars)
     {
         // A first-magnitude star 0.24 degrees below the Sun's centre, inside its 0.25 degree limb.
@@ -182,14 +187,72 @@ public sealed class PresentationResolvedFootprintTests
         ]), null, new AstronomyEnginePlanetEphemeris()).BuildAsync(new VisibleSceneRequest(Utc,
             new ObserverLocation(0, 0, 0), projection, new CatalogQuery(6, 10),
             new CatalogMetadata("fixture", "1", new Uri("https://example.test/catalog"), new string('C', 64), "test", "v1"),
-            projectionVersion: "perspective-v1", solarSystemBodies: [SolarSystemBody.Sun])).ConfigureAwait(false);
-        visible = visible.WithResolvedBodies([new SolarDiskAppearance(SolarSystemBody.Sun, Utc,
+            projectionVersion: "perspective-v1", solarSystemBodies: [body])).ConfigureAwait(false);
+        visible = visible.WithResolvedBodies([new SolarDiskAppearance(body, Utc,
             new AltAzPoint(60, 0), .25, 0, 1, 0, 149600000)]);
         return ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
             ProjectedSceneImageTransformV1.Identity(400, 300),
             new ProjectedSceneSource(Guid.Parse("11111111-1111-1111-1111-111111111111"),
                 Guid.Parse("22222222-2222-2222-2222-222222222222"), new string('A', 64)),
             "calibration-v1", visible.Request.ProjectionVersion);
+    }
+
+    [TestMethod]
+    [DataRow(SolarSystemBody.Sun, false, false)]
+    [DataRow(SolarSystemBody.Sun, true, false)]
+    [DataRow(SolarSystemBody.Sun, false, true)]
+    [DataRow(SolarSystemBody.Sun, true, true)]
+    [DataRow(SolarSystemBody.Moon, false, false)]
+    [DataRow(SolarSystemBody.Moon, true, false)]
+    [DataRow(SolarSystemBody.Moon, false, true)]
+    [DataRow(SolarSystemBody.Moon, true, true)]
+    public async Task SolarFootprintChecksInterveningPeaksAndUnknownGapsIncludingClosingEdge(SolarSystemBody body, bool unknown, bool closing)
+    {
+        var scene = await SceneAsync(4000, body).ConfigureAwait(false);
+        var footprint = scene.ResolvedFootprints!.Single();
+        var points = footprint.Parts.Single().Points;
+        var projector = ProjectorFactory.Create(ProjectedSceneJson.ToProjectionContext(scene.Projection));
+        var directions = points.Select(point => projector.Unproject(point)!.Value).ToArray();
+        static double Wrap(double az) => (az % 360 + 360) % 360;
+        double Middle(int i)
+        {
+            var a = directions[i].AzimuthDegrees;
+            var delta = Wrap(directions[(i + 1) % directions.Length].AzimuthDegrees - a + 180) - 180;
+            return Wrap(a + delta / 2);
+        }
+        var edge = Enumerable.Range(0, points.Count).First(i =>
+            directions.All(p => Math.Abs(Wrap(p.AzimuthDegrees - Middle(i) + 180) - 180) > 1e-7));
+        var middle = Middle(edge);
+        var shifted = Enumerable.Range(0, points.Count).Select(i => points[(edge + (closing ? 1 : 0) + i) % points.Count]).ToArray();
+        footprint = footprint with { Parts = [new(true, shifted)] };
+        scene = scene with { ResolvedFootprints = [footprint] };
+        scene = scene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(scene) };
+        var rig = new CameraRigConfig(new("fixture", 400, 300, 2, SensorColorMode.Mono, CameraPixelFormat.Mono8),
+            new("Perspective", 0, 100, 0, LensKind.Rectilinear, PrincipalPointX: 200, PrincipalPointY: 150,
+                FocalLengthXPixels: 4000, FocalLengthYPixels: 4000, CalibrationVersion: "calibration-v1"),
+            new(60, 0, 0), new(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1), 1, 100));
+        // Every vertex is exactly known/clear. Only the interior of an edge is excluded.
+        var samples = directions.Select(d => new HorizonObstructionSample(Wrap(d.AzimuthDegrees), 0))
+            .Concat(new[] { 0d, 90, 180, 270 }.Select(a => new HorizonObstructionSample(a, 0)))
+            .Append(new(middle, unknown ? null : 90)).GroupBy(s => s.AzimuthDegrees).Select(g => g.First()).OrderBy(s => s.AzimuthDegrees).ToArray();
+        var profile = new HorizonObstructionProfile(HorizonObstructionProfile.CurrentSchemaVersion, "solar-horizon", 1, "site",
+            HorizonObstructionProfile.ComputeSiteIdentitySha256(0, 0, 0), HorizonObstructionProfile.ComputeGeometryIdentitySha256(rig),
+            HorizonObstructionSource.Synthetic, 90, samples);
+        var evaluator = new HorizonObstructionEvaluator(profile, rig, scene.Observer);
+        var view = new HorizonObstructionSceneEligibility(evaluator, rig, scene);
+        Assert.IsTrue(view.IsAligned);
+        Assert.IsTrue(shifted.All(view.IsClear), "The failure must be between vertices, not at a sampled limb point.");
+        var from = closing ? shifted[^1] : shifted[0];
+        var to = closing ? shifted[0] : shifted[1];
+        Assert.IsFalse(view.IsSegmentClear(from, to));
+        var objects = ProjectedSceneAnnotation.CreateObjects(scene, 6);
+        var id = "solar-system:" + body;
+        Assert.IsTrue(objects.Any(o => o.Id == id));
+        Assert.IsFalse(HorizonObstructionAnnotation.Filter(view, objects, []).Objects.Any(o => o.Id == id));
+        Assert.IsFalse(HorizonObstructionAnnotation.Filter(evaluator, scene.ImageTransform, objects, []).Objects.Any(o => o.Id == id));
+        var layers = PresentationLayerProducers.FromProjectedSceneGroupsV2(scene, includeConstellations: false, horizon: view);
+        Assert.IsEmpty(layers.StarAnnotations.Segments);
+        Assert.IsFalse(layers.StarAnnotations.TextBlocks.Any(t => t.Lines.Contains(body.ToString())));
     }
 
     private static double Distance(PixelPoint a, PixelPoint b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));

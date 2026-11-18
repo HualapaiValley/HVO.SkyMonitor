@@ -2,30 +2,126 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-python3 - "$repo_root" <<'PY'
+# Hosted Preflight installs hash-pinned PyYAML on PYTHONPATH; local hosts may use yamllint.
+# Prefer the developer's python3 when it already supplies the parser.
+yaml_python=python3
+if ! "$yaml_python" -c 'import yaml' >/dev/null 2>&1; then
+    yaml_python="${PIPX_HOME:-/opt/pipx}/venvs/yamllint/bin/python"
+    if [[ ! -x "$yaml_python" ]] || ! "$yaml_python" -c 'import yaml' >/dev/null 2>&1; then
+        printf 'test:development-v1-ci requires PyYAML in python3 or the yamllint pipx environment; install python3-yaml locally.\n' >&2
+        exit 1
+    fi
+fi
+"$yaml_python" - "$repo_root" <<'PY'
 import json
+import ast
+import copy
+import unittest.mock
+import functools
 import itertools
 import os
 import pathlib
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
 
+try:
+    import yaml
+except ImportError:
+    raise SystemExit("test:development-v1-ci requires PyYAML; install python3-yaml locally")
+
+print(f"Workflow YAML parser: PyYAML {yaml.__version__} ({sys.executable})")
+
 root = pathlib.Path(sys.argv[1])
 short = (root / ".github/workflows/development-v1.yml").read_text()
 full = (root / ".github/workflows/ci.yml").read_text()
 promotion = (root / ".github/workflows/promote-main.yml").read_text()
+queue_gate = (root / ".github/workflows/merge-queue-reviewed-head.yml").read_text()
+
+
+def read_workflows(directory):
+    return {path.name: path.read_text() for path in directory.iterdir()
+            if path.is_file() and path.suffix.lower() in (".yml", ".yaml")}
+
+
+workflows = read_workflows(root / ".github/workflows")
+
+
+def regex_jobs(workflow):
+    return re.search(r"^jobs:\n(.*?)(?=^[^\s#]|\Z)", workflow, re.M | re.S)
+
+
+def jobs_section(workflow):
+    # This view binds canonical command formatting only. Parsed nodes below
+    # decide which jobs exist, and must agree with these exact source bounds.
+    match = regex_jobs(workflow)
+    return match.group(1) if match else ""
+
+
+def unique_mapping(node, label):
+    if not isinstance(node, yaml.MappingNode):
+        raise ValueError(f"{label} must be a mapping")
+    result = {}
+    for key, value in node.value:
+        if not isinstance(key, yaml.ScalarNode) or key.value == "<<" or key.value in result:
+            raise ValueError(f"{label} has a complex, duplicate or merge key")
+        result[key.value] = (key, value)
+    return result
+
+
+def scalar(node, label):
+    if not isinstance(node, yaml.ScalarNode):
+        raise ValueError(f"{label} must be a scalar")
+    return node.value
+
+
+@functools.lru_cache(maxsize=256)
+def parsed_document(workflow):
+    return unique_mapping(yaml.compose(workflow, Loader=yaml.BaseLoader), "workflow")
+
+
+@functools.lru_cache(maxsize=256)
+def parsed_jobs(workflow):
+    # BaseLoader preserves strings such as the root `on` key (YAML 1.1 boolean
+    # resolution would turn it into True). Compose never constructs tagged code.
+    document = parsed_document(workflow)
+    if "jobs" not in document:
+        raise ValueError("workflow has no jobs mapping")
+    jobs_key, jobs_node = document["jobs"]
+    result = {}
+    for header, (key, node) in unique_mapping(jobs_node, "jobs").items():
+        properties = unique_mapping(node, f"job {header}")
+        allowed = {"name", "uses", "needs", "if", "runs-on", "permissions", "environment", "concurrency",
+                   "outputs", "env", "defaults", "steps", "timeout-minutes", "strategy", "continue-on-error",
+                   "container", "services", "with", "secrets", "snapshot"}
+        if properties.keys() - allowed:
+            raise ValueError(f"job {header} has unknown or non-lowercase properties: {properties.keys() - allowed}")
+        result[header] = {
+            "index": key.start_mark.index,
+            "name": scalar(properties["name"][1], "job name") if "name" in properties else header,
+            "uses": scalar(properties["uses"][1], "job uses") if "uses" in properties else None,
+        }
+    return jobs_key.start_mark.index, jobs_node.end_mark.index, result
 
 
 def job(workflow, name):
     # This guard binds the checked-in job/command shape; actionlint validates YAML.
     match = re.search(
         rf"^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:\n|\Z)",
-        workflow, re.M | re.S,
+        jobs_section(workflow), re.M | re.S,
     )
     return match.group(1) if match else ""
+
+
+def normalized_name(value):
+    return " ".join(value.split()).casefold() if isinstance(value, str) else None
+
+
+required_names = ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit")
 
 
 classifier_run_line = (
@@ -54,7 +150,38 @@ def step(section, name):
     return match.group(1) if match else ""
 
 
-def violations(short, full):
+def lint_commands(executable):
+    return [
+        'find .github/workflows -type f \\( -iname \'*.yml\' -o -iname \'*.yaml\' \\) -print0 > "$RUNNER_TEMP/actionlint-workflows.list"',
+        'mapfile -d \'\' -t workflows < "$RUNNER_TEMP/actionlint-workflows.list"',
+        "((${#workflows[@]} > 0)) || { echo 'No workflow files found for actionlint.' >&2; exit 1; }",
+        executable + ' "${workflows[@]}"',
+    ]
+
+
+merge_group_trigger = (
+    "  merge_group:\n    types: [checks_requested]\n    branches: [development/v1]\n"
+)
+
+
+preflight_timeout = "    timeout-minutes: 6"
+queue_permissions = "permissions:\n  contents: read\n  pull-requests: read\n  statuses: read\n"
+trusted_checkout = """        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/development/v1
+          persist-credentials: false"""
+queue_execution = """        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          ALLOWED_SETTERS: RoySalisbury
+        run: BASE_SHA="$(git rev-parse HEAD)" ./scripts/ci:queue-reviewed-head"""
+
+
+def violations(short, full, queue=None, extra=None):
+    queue = queue_gate if queue is None else queue
     errors = []
     preflight = job(short, "preflight")
     build = job(short, "build-unit")
@@ -69,10 +196,142 @@ def violations(short, full):
     require("name: Development v1 / Build and Unit" in build, "required Build and Unit name")
     require("needs: preflight" in build, "preflight dependency")
     require(
-        "if: github.event_name == 'push' || github.event.pull_request.draft == false" in build,
+        "if: github.event_name == 'push' || github.event_name == 'merge_group' || "
+        "github.event.pull_request.draft == false" in build,
         "draft exclusion",
     )
-    require(short.count("branches: [development/v1]") == 2, "v1 PR and push triggers")
+    require(short.count("branches: [development/v1]") == 3, "v1 PR, push and merge queue triggers")
+    require(merge_group_trigger in short, "both required checks report on merge queue commits")
+    # The queue commit never carries the operator's hvo/reviewed-head status, so a
+    # merge_group-only job reports that context after re-checking the queued PR head.
+    # It must never run (or be skipped) on pull_request, where a job with that name
+    # would satisfy the required context without a review.
+    queue_on = queue.split("\non:\n", 1)[1].split("\npermissions:", 1)[0] if "\non:\n" in queue else ""
+    require(queue_on.strip() == merge_group_trigger.strip(), "queue reviewed-head runs only on merge_group")
+    require("pull_request" not in queue_on and "push" not in queue_on and "workflow_" not in queue_on,
+            "queue reviewed-head has no PR, push or dispatch trigger")
+    # The YAML parse is authoritative for producer identities. Retain canonical
+    # source checks for command/wiring contracts, but require their view to agree
+    # with parsed job locations, names and reusable calls. Fail closed on either
+    # malformed YAML or a disagreement; actionlint remains the workflow linter.
+    sources = dict(workflows, **{"development-v1.yml": short, "ci.yml": full,
+                                "merge-queue-reviewed-head.yml": queue})
+    sources.update(extra or {})
+    names = []
+    for path, workflow in sources.items():
+        try:
+            document = parsed_document(workflow)
+            permission_nodes = [(document["permissions"][1], "workflow")] if "permissions" in document else []
+            for header, (_, node) in unique_mapping(document["jobs"][1], "jobs").items():
+                properties = unique_mapping(node, f"job {header}")
+                if "permissions" in properties:
+                    permission_nodes.append((properties["permissions"][1], header))
+            for node, label in permission_nodes:
+                # Other write scopes (packages, contents, OIDC) have legitimate release owners.
+                # No workflow step may mint a required check or status with its token.
+                if isinstance(node, yaml.ScalarNode):
+                    require(node.value == "read-all", f"check/status permissions allowlist: {path}/{label}")
+                else:
+                    grants = unique_mapping(node, "permissions")
+                    scopes = {"actions", "attestations", "checks", "contents", "deployments", "discussions",
+                              "id-token", "issues", "models", "packages", "pages", "pull-requests",
+                              "security-events", "statuses", "artifact-metadata"}
+                    require(all(key in scopes and scalar(value[1], key) in
+                                (("read", "none") if key in ("checks", "statuses") else ("read", "write", "none"))
+                                for key, value in grants.items()),
+                            f"check/status permissions allowlist: {path}/{label}")
+            jobs_index, jobs_end, actual_jobs = parsed_jobs(workflow)
+        except (yaml.YAMLError, ValueError) as error:
+            require(False, f"valid workflow YAML jobs: {path}: {error}")
+            continue
+        match = regex_jobs(workflow)
+        require(match is not None and match.start() == jobs_index and match.end(1) == jobs_end,
+                f"YAML/regex jobs bounds agree: {path}")
+        require(workflow.count("\njobs:\n") == 1, f"canonical jobs block: {path}")
+        section = jobs_section(workflow)
+        header_matches = list(re.finditer(r"^  ([\w-]+):\n", section, re.M))
+        headers = [header.group(1) for header in header_matches]
+        require(headers == list(actual_jobs) and match is not None and all(
+            match.start(1) + header.start() + 2 == actual_jobs[header.group(1)]["index"]
+            for header in header_matches if header.group(1) in actual_jobs),
+            f"YAML/regex job ids and locations agree: {path}")
+        direct_children = [line for line in section.splitlines()
+                           if re.match(r"^  [^\s#]", line)]
+        require(bool(headers) and direct_children == [f"  {header}:" for header in headers],
+                f"canonical job headers: {path}")
+        for header, actual in actual_jobs.items():
+            body = job(workflow, header)
+            values = re.findall(r"^    name: ([^\n]+)$", body, re.M)
+            properties = [line for line in body.splitlines() if re.match(r"^    [^\s#]", line)]
+            require(bool(properties) and all(re.match(r"^    [\w-]+:", line) for line in properties),
+                    f"canonical job properties: {path}/{header}")
+            require(len(values) <= 1 and len(values) == len(re.findall(r"^    name:", body, re.M)),
+                    f"one single-line name per job: {path}/{header}")
+            raw_name = values[0] if values else header
+            # Required check names cannot be computed. Reject expressions before
+            # parsing comments/quotes, and again after decoding escaped strings.
+            # With no expressions, matrix/input values cannot feed a job name.
+            # Printable ASCII also excludes tabs, controls and Unicode lookalikes.
+            require("${{" not in raw_name and all(" " <= char <= "~" for char in raw_name),
+                    f"static printable job name: {path}/{header}")
+            value = raw_name.strip()
+            # Decode ordinary quoted names too; reject folded/anchored names.
+            if value.startswith('"'):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    value = None
+            elif value.startswith("'"):
+                value = value[1:-1].replace("''", "'") if value.endswith("'") else None
+            else:
+                value = value.split(" #", 1)[0].strip()
+            require(isinstance(value, str) and not value.startswith(("|", ">", "&", "*", "{", "!")),
+                    f"canonical job name: {path}/{header}")
+            require(value == actual["name"], f"YAML/regex job name agrees: {path}/{header}")
+            uses_lines = re.findall(r"^    uses: ([^\n]+)$", body, re.M)
+            require(len(uses_lines) <= 1, f"one uses field per job: {path}/{header}")
+            try:
+                view_uses = scalar(yaml.compose(uses_lines[0], Loader=yaml.BaseLoader), "uses") if uses_lines else None
+            except (yaml.YAMLError, ValueError):
+                view_uses = None
+                require(False, f"canonical uses scalar: {path}/{header}")
+            require(view_uses == actual["uses"], f"YAML/regex job uses agrees: {path}/{header}")
+            value = actual["name"]
+            require(isinstance(value, str) and "${{" not in value and
+                    all(" " <= char <= "~" for char in value),
+                    f"decoded static printable job name: {path}/{header}")
+            if normalized_name(value) == normalized_name("hvo/reviewed-head"):
+                require(path == "merge-queue-reviewed-head.yml" and header == "reviewed-head" and
+                        raw_name == "hvo/reviewed-head",
+                        f"reviewed-head name belongs only to the approved queue gate: {path}/{header}")
+            label = normalized_name(value)
+            if label is not None and actual["uses"] is not None:
+                # A reusable workflow reports "caller label / callee label".
+                # Reserve every caller prefix that could form a required context,
+                # for local and external calls alike, regardless of callee ids.
+                require(not any(normalized_name(required).startswith(label + " / ")
+                                for required in required_names),
+                        f"reusable caller can compose a required job name: {path}/{header}")
+            names.append(label)
+    for required in required_names:
+        require(names.count(normalized_name(required)) == 1,
+                f"globally unique required job name: {required}")
+    require(queue == (root / "tests/fixtures/development-v1-ci/merge-queue-reviewed-head.expected.txt").read_text(),
+            "queue whole workflow matches approved source")
+    require(queue.split("\npermissions:\n", 1)[-1].split("\njobs:\n", 1)[0].strip() ==
+            queue_permissions.split("\n", 1)[1].strip() and
+            len(re.findall(r"^\s*permissions:", queue, re.M)) == 1,
+            "queue exact read-only permissions without job overrides")
+    require(step(queue, "Checkout trusted development base").strip() == trusted_checkout.strip(),
+            "queue trusted branch checkout with credentials disabled")
+    require(step(queue, "Require the reviewed-head status on the queued pull request head").strip() ==
+            queue_execution.strip(), "queue exact environment and trusted-base execution")
+    require(len(re.findall(r"^      - ", queue, re.M)) == 2 and
+            re.findall(r"^  ([\w-]+):$", jobs_section(queue), re.M) == ["reviewed-head"],
+            "queue has only the trusted checkout and gate steps in one job")
+    require("        if:" not in queue and "    if:" not in queue and "continue-on-error:" not in queue,
+            "queue reviewed-head is unconditional and fails closed")
+    require("hvo/reviewed-head" not in short, "the v1 checks never report hvo/reviewed-head")
     require("cancel-in-progress: true" in short, "stale-run cancellation")
     require("continue-on-error:" not in short, "required checks must fail closed")
     for command in (
@@ -80,10 +339,26 @@ def violations(short, full):
         "test:pr-review-tools", "test:development-v1-ci",
     ):
         require(f"          ./scripts/{command}\n" in preflight, f"preflight {command}")
+    for profile, section, title, executable in (
+        ("Preflight", preflight, "Lint workflows", '"$RUNNER_TEMP/actionlint"'),
+        ("Quality", quality, "Lint GitHub Actions workflows", "/tmp/actionlint"),
+    ):
+        lint = step(section, title)
+        commands = [line.strip() for line in lint.splitlines() if line.startswith("          ")]
+        require(commands[-4:] == lint_commands(executable),
+                f"{profile} actionlint receives explicit case-insensitive files and rejects empty discovery")
+    parser_install = step(preflight, "Install pinned workflow YAML parser")
+    require('--require-hashes --only-binary=:all: --no-deps' in parser_install and
+            '-r scripts/ci/pyyaml-requirements.txt' in parser_install and
+            '"$RUNNER_TEMP/hvo-pyyaml" >> "$GITHUB_ENV"' in parser_install and
+            "        if:" not in parser_install,
+            "Preflight installs hash-pinned parser before CI control contracts")
+    require(preflight.find("Install pinned workflow YAML parser") < preflight.find("Check CI control contracts"),
+            "pinned parser precedes YAML contract")
     base_images = step(preflight, "Check Dockerfile base images")
     require(base_images.strip() == "run: ./scripts/ci:base-images",
             "base-image check is unconditional and fail-closed")
-    require(re.search(r"^    timeout-minutes: 4$", preflight, re.M), "Preflight keeps its 240-second budget")
+    require(preflight_timeout in preflight.splitlines(), "Preflight allows 360 seconds for every event")
     # Issue #1321: both required profiles scan the complete history for secrets,
     # inside a check that branch protection already requires.
     for profile, section in (("preflight", preflight), ("full Quality", quality)):
@@ -129,18 +404,48 @@ def violations(short, full):
     require('--filter "TestCategory=Unit"' in build, "positive Unit filter")
     require("--no-build" in build, "reuse this job's Release build")
     require("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock" in build, "Docker-disabled Unit")
-    require(build.count("((remaining > 0)) || exit 124") == 3, "cumulative deadline guards")
-    require(build.count('timeout --signal=TERM --kill-after=30s "${remaining}s"') == 3,
+    unit = step(build, "Run Docker-disabled Unit selection")
+    coverage = step(build, "Enforce canonical per-file coverage floors")
+    policy = step(preflight, "Check coverage policy")
+    require('        run: ./scripts/coverage:policy "$EVENT_NAME" "$BASE_REF"' in policy and
+            'EVENT_NAME: ${{ github.event_name }}' in policy and
+            'BASE_REF: ${{ github.base_ref }}' in policy and '        if:' not in policy and
+            'continue-on-error:' not in policy, "coverage policy runs on every v1 event")
+    for command in (
+        '          ./scripts/coverage:development-v1 --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"',
+        '              --settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings" \\',
+        '              --collect:"XPlat Code Coverage" \\',
+    ):
+        require(unit.splitlines().count(command) == 1, f"Unit coverage wiring: {command}")
+    for command in (
+        '              dotnet tool restore',
+        '              ./scripts/test:coverage-development-v1',
+        '              ./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"',
+    ):
+        require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
+    require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
+            "coverage failures propagate and retain stage identity")
+    for name, body in (("Unit", unit), ("coverage", coverage)):
+        require("        if:" not in body and "continue-on-error:" not in body,
+                f"{name} cannot skip or tolerate errors")
+    require(0 <= build.find("- name: Run Docker-disabled Unit selection") <
+            build.find("- name: Enforce canonical per-file coverage floors") <
+            build.find("- name: Write evidence summary"), "coverage runs after Unit and before evidence")
+    require('COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}' in build and
+            'stage_json coverage "$COVERAGE_OUTCOME"' in build and
+            'stages:[$restore,$build,$unit,$coverage]' in build, "coverage outcome and timing retained")
+    require(build.count("((remaining > 0)) || exit 124") == 4, "cumulative deadline guards")
+    require(build.count('timeout --signal=TERM --kill-after=30s "${remaining}s"') == 4,
             "bounded commands")
     require(re.search(r"started_at_epoch \+ 1080\)\)", build) is not None and
             re.search(r"^    timeout-minutes: 22$", build, re.M) is not None, "bounded workload and job")
     require("workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount" in build, "summary matches enforced budgets")
     require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
-    require("hvo-development-v1-ci-v4" in build, "versioned short-profile evidence")
+    require("hvo-development-v1-ci-v5" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
                   "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
-                  '--collect:', "TestCategory=Integration", "gh workflow run ci.yml"):
+                  "TestCategory=Integration", "gh workflow run ci.yml"):
         require(heavy not in short, f"qualification work in short run: {heavy}")
     for command in ("ci:shellcheck", "test:ci-shellcheck"):
         require(f"          ./scripts/{command}\n" in quality, f"full Quality retains {command}")
@@ -151,10 +456,9 @@ def violations(short, full):
     )
     require("if: needs.changes.outputs.mode == 'full'" in qualification_build,
             "category audit belongs to full qualification")
-    # Issue #849 keeps two general x64 runners out of qualification so a ready v1
-    # PR is not queued behind a promotion fan-out. Qualification must opt in to
-    # the hvo-qualification label on every self-hosted job; the v1 check must not.
-    general = "[self-hosted, linux, x64, hvo-skymonitor]"
+    # Refs #1747. Atlas assigned the build label only to gh-runner-05/06.
+    # Qualification retains its own label; v1 selects the ready build pair.
+    build_pool = "[self-hosted, linux, x64, hvo-skymonitor-build]"
     reserved = "[self-hosted, linux, x64, hvo-skymonitor, hvo-qualification]"
     # A selector is either a bare GitHub-hosted image or the exact reserved list;
     # anything else (a self-hosted list carrying an image label, a mapping or an
@@ -163,11 +467,78 @@ def violations(short, full):
     require(reserved in selectors and all(
         value == reserved or re.fullmatch(r"ubuntu-(latest|\d+\.\d+)", value) for value in selectors),
         "every self-hosted qualification job requires hvo-qualification")
-    require(re.findall(r"^    runs-on: (.+)$", build, re.M) == [general],
-            "v1 Build and Unit stays on the general runner pool")
+    require(re.findall(r"^    runs-on: (.+)$", build, re.M) == [build_pool],
+            "v1 Build and Unit uses the reserved build pair")
     require("hvo-qualification" not in short, "v1 profile never requires the qualification label")
     return errors
 
+
+# Target each agreement independently: another overlapping error cannot stand
+# in for the named guard. Each disabled require must lose its own diagnostic.
+probe = "name: Probe\non: push\njobs:\n  probe:\n    name: Probe\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+original_parsed_jobs = parsed_jobs
+agreement_cases = (
+    ("YAML/regex jobs bounds agree", "bounds"),
+    ("YAML/regex job ids and locations agree", "location"),
+    ("YAML/regex job name agrees", "name"),
+    ("YAML/regex job uses agrees", "uses"),
+    ("reusable caller can compose a required job name", "composition"),
+)
+function_text = (root / "scripts/test:development-v1-ci").read_text().split("def violations(", 1)[1].split("# Target each agreement", 1)[0]
+function_tree = ast.parse("def violations(" + function_text)
+for diagnostic, fault in agreement_cases:
+    def altered_parse(source):
+        begin, end, jobs = original_parsed_jobs(source)
+        if source == probe:
+            jobs = copy.deepcopy(jobs)
+            if fault == "bounds": end -= 1
+            elif fault == "location": jobs["probe"]["index"] += 1
+            elif fault == "composition":
+                jobs["probe"]["name"] = "Development v1"
+                jobs["probe"]["uses"] = "./.github/workflows/callee.yml"
+            else: jobs["probe"][fault] = "different"
+        return begin, end, jobs
+    with unittest.mock.patch.dict(globals(), parsed_jobs=altered_parse):
+        observed = violations(short, full, extra={"probe.yml": probe})
+        if not any(diagnostic in error for error in observed):
+            raise SystemExit("Agreement fixture missed " + diagnostic)
+        mutant = copy.deepcopy(function_tree)
+        changed = 0
+        for node in ast.walk(mutant):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "require" and len(node.args) == 2:
+                message = node.args[1]
+                if isinstance(message, ast.JoinedStr) and any(isinstance(part, ast.Constant) and diagnostic in str(part.value) for part in message.values):
+                    node.args[0] = ast.Constant(True)
+                    changed += 1
+        if changed != 1: raise SystemExit("Expected one agreement guard: " + diagnostic)
+        namespace = dict(globals())
+        exec(compile(ast.fix_missing_locations(mutant), "<agreement-mutant>", "exec"), namespace)
+        if any(diagnostic in error for error in namespace["violations"](short, full, extra={"probe.yml": probe})):
+            raise SystemExit("Agreement mutation survived: " + diagnostic)
+    print("Killed agreement mutation: " + diagnostic)
+for key in ("name", "uses", "runs-on"):
+    for spelling in (key.title(), "unknown-key"):
+        candidate = probe.replace("    name: Probe", f"    {spelling}: Probe")
+        if not violations(short, full, extra={"probe.yml": candidate}):
+            raise SystemExit("Unknown/mixed-case job property accepted")
+mapping_source = "def unique_mapping" + (root / "scripts/test:development-v1-ci").read_text().split("def unique_mapping", 1)[1].split("def scalar", 1)[0]
+for node_text, removed in (("{name: A, name: B}", " or key.value in result"),
+                           ("{<<: {name: A}}", ' or key.value == "<<"')):
+    node = yaml.compose(node_text, Loader=yaml.BaseLoader)
+    try:
+        unique_mapping(node, "negative mapping")
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("Duplicate/merge mapping key accepted")
+    if removed not in mapping_source: raise SystemExit("Mapping mutant did not change source")
+    namespace = dict(globals())
+    exec(mapping_source.replace(removed, ""), namespace)
+    namespace["unique_mapping"](node, "mutated mapping")
+    print("Killed mapping mutation: " + removed)
+composition = probe.replace("name: Probe\n    runs-on: ubuntu-24.04", "name: Development v1\n    uses: ./.github/workflows/callee.yml").split("    steps:")[0]
+if not any("reusable caller can compose" in error for error in violations(short, full, extra={"compose.yml": composition})):
+    raise SystemExit("Dedicated reusable composition fixture missed its guard")
 
 errors = violations(short, full)
 if errors:
@@ -182,19 +553,43 @@ mutations = (
     ("hard timeout reverted", short.replace("timeout-minutes: 22", "timeout-minutes: 15"), full),
     ("summary workload drift", short.replace("workloadBudgetSeconds:1080", "workloadBudgetSeconds:720"), full),
     ("summary hard timeout drift", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:900"), full),
-    ("Preflight budget reverted", short.replace("timeout-minutes: 4", "timeout-minutes: 3"), full),
-    ("Preflight budget inflated to 40", short.replace("timeout-minutes: 4", "timeout-minutes: 40"), full),
-    ("Preflight budget raised", short.replace("timeout-minutes: 4", "timeout-minutes: 5"), full),
-    ("Preflight budget removed", short.replace("    timeout-minutes: 4\n", ""), full),
+    ("Preflight budget reverted", short.replace(preflight_timeout, "    timeout-minutes: 3"), full),
+    ("Preflight budget inflated to 40", short.replace(preflight_timeout, "    timeout-minutes: 40"), full),
+    ("Preflight budget reduced", short.replace(preflight_timeout, "    timeout-minutes: 5"), full),
+    ("Preflight budget removed", short.replace(preflight_timeout + "\n", ""), full),
+    ("Preflight four-minute budget restored", short.replace(preflight_timeout, "    timeout-minutes: 4"), full),
     ("base-image check removed", short.replace("run: ./scripts/ci:base-images", "run: true"), full),
     ("base-image check gated", short.replace(
         "- name: Check Dockerfile base images", "- name: Check Dockerfile base images\n        if: false"), full),
     ("base-image failure masked", short.replace("run: ./scripts/ci:base-images", "run: ./scripts/ci:base-images || true"), full),
     ("missing Unit filter", short.replace('--filter "TestCategory=Unit"', ""), full),
+    ("coverage not collected", short.replace('--collect:"XPlat Code Coverage"', ""), full),
+    ("coverage policy removed", short.replace('run: ./scripts/coverage:policy ', 'run: true '), full),
+    ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
+    ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
+    ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
+    ("coverage step conditional", short.replace('- name: Enforce canonical per-file coverage floors', '- name: Enforce canonical per-file coverage floors\n        if: false'), full),
+    ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
+    ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
+    ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),
     ("integration in fast run", short.replace("TestCategory=Unit", "TestCategory=Integration"), full),
     ("Docker enabled", short.replace("DOCKER_HOST: unix:///tmp/hvo-no-docker.sock", ""), full),
     ("warnings tolerated", short.replace("-warnaserror", ""), full),
     ("draft build", short.replace(" || github.event.pull_request.draft == false", ""), full),
+    ("merge queue trigger removed", short.replace(merge_group_trigger, ""), full),
+    ("Build and Unit skipped in the queue", short.replace(" || github.event_name == 'merge_group'", ""), full),
+    ("queue gate on pull_request", short, full, queue_gate.replace(
+        "on:\n  merge_group:", "on:\n  pull_request:\n    branches: [development/v1]\n  merge_group:")),
+    ("queue gate on push", short, full, queue_gate.replace(
+        "on:\n  merge_group:", "on:\n  push:\n  merge_group:")),
+    ("queue gate renamed", short, full, queue_gate.replace("name: hvo/reviewed-head", "name: reviewed head")),
+    ("queue gate check removed", short, full, queue_gate.replace("./scripts/ci:queue-reviewed-head", "true")),
+    ("queue gate skippable", short, full, queue_gate.replace(
+        "    runs-on: ubuntu-24.04", "    if: github.event_name == 'merge_group'\n    runs-on: ubuntu-24.04")),
+    ("queue gate masked", short, full, queue_gate.replace(
+        "    timeout-minutes: 3", "    timeout-minutes: 3\n    continue-on-error: true")),
+    ("v1 checks report reviewed-head", short.replace(
+        "name: Development v1 / Preflight", "name: hvo/reviewed-head"), full),
     ("deadline removed", short.replace("((remaining > 0)) || exit 124", ":"), full),
     ("errors tolerated", short + "\n    continue-on-error: true\n", full),
     ("heavy lint returned", short + "\n          ./scripts/ci:shellcheck\n", full),
@@ -211,7 +606,9 @@ mutations = (
     ("qualification selector with an image label", short, full.replace(
         "x64, hvo-skymonitor, hvo-qualification]", "x64, hvo-skymonitor, ubuntu-24.04]", 1)),
     ("v1 confined to qualification runners", short.replace(
-        "x64, hvo-skymonitor]", "x64, hvo-skymonitor, hvo-qualification]"), full),
+        "x64, hvo-skymonitor-build]", "x64, hvo-skymonitor-build, hvo-qualification]"), full),
+    ("v1 returns to the general runner pool", short.replace(
+        "x64, hvo-skymonitor-build]", "x64, hvo-skymonitor]"), full),
     ("v1 secret scan removed", short.replace("./scripts/ci:secret-scan", ":"), full),
     ("v1 contract removed", short.replace("./scripts/test:ci-secret-scan", ":"), full),
     ("v1 history scan gated", short.replace(
@@ -242,8 +639,256 @@ mutations = (
     ("v1 shallow checkout", short.replace("fetch-depth: 0", "fetch-depth: 1"), full),
     ("full shallow checkout", short, full.replace("fetch-depth: 0", "fetch-depth: 1")),
 )
-for name, candidate, qualification in mutations:
-    if not violations(candidate, qualification):
+# Bind every credential, environment and trust source independently.
+queue_mutations = [
+    ("statuses write", queue_gate.replace("statuses: read", "statuses: write")),
+    ("contents write", queue_gate.replace("contents: read", "contents: write")),
+    ("job permissions override", queue_gate.replace("    runs-on:", "    permissions: write-all\n    runs-on:")),
+    ("credentials persisted", queue_gate.replace("persist-credentials: false", "persist-credentials: true")),
+    ("credential setting removed", queue_gate.replace("          persist-credentials: false\n", "")),
+    ("queued checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.head_sha }}")),
+    ("base_sha checkout", queue_gate.replace("ref: refs/heads/development/v1", "ref: ${{ github.event.merge_group.base_sha }}")),
+    ("checkout failure ignored", queue_gate.replace("        with:", "        continue-on-error: true\n        with:")),
+    ("trusted base execution removed", queue_gate.replace('BASE_SHA="$(git rev-parse HEAD)" ', "")),
+    ("execution failure ignored", queue_gate.replace("./scripts/ci:queue-reviewed-head\n", "./scripts/ci:queue-reviewed-head || true\n")),
+]
+for scope in ("workflow", "job"):
+    for key, value in (("defaults", "{run: {shell: sh}}"), ("env", "{BASH_ENV: /tmp/untrusted}"),
+                       ("container", "alpine")):
+        before = "\njobs:\n" if scope == "workflow" else "    runs-on:"
+        after = f"\n{key}: {value}\njobs:\n" if scope == "workflow" else f"    {key}: {value}\n    runs-on:"
+        queue_mutations.append((f"{scope} {key} changed", queue_gate.replace(before, after)))
+for scope in ("workflow", "job"):
+    for grant in ("{checks: write}", "{statuses: write}", "write-all"):
+        spoof = ("name: Permissions\non: push\n" +
+            (f"permissions: {grant}\n" if scope == "workflow" else "") +
+            "jobs:\n  benign:\n    name: Benign\n" +
+            (f"    permissions: {grant}\n" if scope == "job" else "") +
+            "    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n")
+        mutations += ((f"{scope} {grant}", short, full, queue_gate, {"permissions.yml": spoof}),)
+for key in ("GH_TOKEN", "REPOSITORY", "HEAD_REF", "GROUP_SHA", "BASE_REF", "ALLOWED_SETTERS"):
+    line = next(line for line in queue_gate.splitlines() if line.startswith(f"          {key}:"))
+    queue_mutations.append((f"{key} removed", queue_gate.replace(line + "\n", "")))
+    queue_mutations.append((f"{key} miswired", queue_gate.replace(line, f"          {key}: wrong")))
+queue_mutations.extend([
+    ("setter allowlist expanded", queue_gate.replace("ALLOWED_SETTERS: RoySalisbury", "ALLOWED_SETTERS: RoySalisbury someone")),
+    ("GROUP_SHA sourced from PR", queue_gate.replace("GROUP_SHA: ${{ github.event.merge_group.head_sha }}",
+                                                    "GROUP_SHA: ${{ github.event.pull_request.head.sha }}")),
+])
+mutations += tuple((name, short, full, candidate) for name, candidate in queue_mutations)
+for required in ("hvo/reviewed-head", "Development v1 / Preflight", "Development v1 / Build and Unit"):
+    spoof = f"name: Spoof\non: push\njobs:\n  spoof:\n    name: {json.dumps(required)}\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+    mutations += ((f"spoof workflow: {required}", short, full, queue_gate, {"spoof.yml": spoof}),)
+mutations += (("inline jobs spoof", short, full, queue_gate,
+               {"spoof.yml": "name: Spoof\non: push\njobs: {spoof: {name: hvo/reviewed-head}}\n"}),)
+for spoof in (
+    'name: Spoof\non: push\njobs:\n  benign:\n    runs-on: ubuntu-24.04\n  spoof: {name: hvo/reviewed-head}\n',
+    'name: Spoof\non: push\njobs:\n  spoof:\n    "name": hvo/reviewed-head\n',
+    'name: Spoof\non: push\njobs:\n  spoof:\n    name:\n      hvo/reviewed-head\n',
+):
+    mutations += (("alternate YAML spoof", short, full, queue_gate, {"spoof.yml": spoof}),)
+# Negative regressions for the R2 producer-name bypass. Exercise discovery using
+# real files: injecting an extra dict alone cannot catch a *.yml-only reader.
+def spoof_workflow(name, matrix=""):
+    return ("name: Spoof\non: push\njobs:\n  spoof:\n    name: " + name + "\n" + matrix +
+            "    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n")
+
+
+name_spoofs = (
+    ("literal expression", "${{ 'hvo/reviewed-head' }}", ""),
+    ("format expression", "${{ format('{0}/reviewed-head','hvo') }}", ""),
+    ("matrix-derived name", "${{ matrix.check }}",
+     "    strategy:\n      matrix:\n        check: [hvo/reviewed-head]\n"),
+    ("expression in name matrix value", "${{ matrix.check }}",
+     "    strategy:\n      matrix:\n        check: [\"${{ 'hvo/reviewed-head' }}\"]\n"),
+    ("tab before comment", "hvo/reviewed-head\t# note", ""),
+    ("escaped expression", json.dumps("${{ 'hvo/reviewed-head' }}").replace("$", r"\u0024"), ""),
+    ("escaped tab", r'"hvo/reviewed-head\t"', ""),
+    ("escaped control", r'"hvo/reviewed-head\u0001"', ""),
+    ("raw control", "hvo/reviewed-head\x01", ""),
+    ("normalized Unicode", "ｈｖｏ／ｒｅｖｉｅｗｅｄ－ｈｅａｄ", ""),
+    ("case normalization", "HVO/REVIEWED-HEAD", ""),
+    ("space and comment normalization", "hvo/reviewed-head # note", ""),
+)
+for name, value, matrix in name_spoofs:
+    mutations += ((name, short, full, queue_gate, {"spoof.yml": spoof_workflow(value, matrix)}),)
+mutations += (("Preflight parser hashes omitted", short.replace("--require-hashes ", ""), full),)
+for profile, source, executable in (("Preflight", short, '\"$RUNNER_TEMP/actionlint\"'),
+                                    ("Quality", full, "/tmp/actionlint")):
+    for name, candidate in (
+        ("default discovery", source.replace(executable + ' "${workflows[@]}"', executable)),
+        ("case-sensitive discovery", source.replace("-iname", "-name")),
+        ("empty workflow list allowed", source.replace(lint_commands(executable)[2], "true")),
+        ("hidden workflows excluded", source.replace("find .github/workflows -type f", "find .github/workflows -type f ! -name '.*'")),
+    ):
+        mutations += ((f"{profile} {name}", candidate, full) if profile == "Preflight"
+                      else (f"{profile} {name}", short, candidate),)
+with tempfile.TemporaryDirectory(prefix="hvo-v1-workflows-") as directory:
+    fixture = pathlib.Path(directory)
+    (fixture / "benign.yml").write_text(spoof_workflow("Benign"))
+    (fixture / "ignored.txt").write_text(spoof_workflow("hvo/reviewed-head"))
+    (fixture / "spoof.yaml").write_text(spoof_workflow("Benign YAML"))
+    (fixture / ".hidden.YML").write_text(spoof_workflow("Hidden"))
+    (fixture / "upper.YAML").write_text(spoof_workflow("Upper"))
+    discovered = read_workflows(fixture)
+    if set(discovered) != {"benign.yml", "spoof.yaml", ".hidden.YML", "upper.YAML"} or violations(short, full, queue_gate, discovered):
+        raise SystemExit("Both workflow extensions must be discovered and safe names must pass")
+    (fixture / "spoof.yaml").write_text(spoof_workflow("hvo/reviewed-head"))
+    if not violations(short, full, queue_gate, read_workflows(fixture)):
+        raise SystemExit("Discovered .yaml spoof workflow was not rejected")
+    print("R2 file discovery: benign .yml/.yaml pass; .yaml spoof rejected.")
+# R3: on.pull_request must not shadow jobs.pull_request in the job helper.
+shadow = ("name: Event shadow\non:\n  pull_request:\n    types: [opened]\n"
+          "jobs:\n  pull_request:\n    name: Benign\n    runs-on: ubuntu-24.04\n"
+          "    steps:\n      - run: 'true'\n")
+if "types:" in job(shadow, "pull_request") or "name: Benign" not in job(shadow, "pull_request"):
+    raise SystemExit("Event block shadowed a job with the same id")
+if violations(short, full, queue_gate, {"shadow.yml": shadow}):
+    raise SystemExit("Benign event/job id overlap must pass")
+mutations += (("event name shadows reserved job", short, full, queue_gate,
+               {"shadow.yml": shadow.replace("name: Benign", "name: hvo/reviewed-head")}),)
+# Also verify that a later root-level event mapping is outside the jobs block.
+trailing_event = "name: Trailing event\njobs:\n  build:\n    runs-on: ubuntu-24.04\non:\n  pull_request:\n"
+if job(trailing_event, "pull_request") or re.search(r"^on:", job(trailing_event, "build"), re.M):
+    raise SystemExit("Job lookup escaped the top-level jobs mapping")
+
+# R3: local reusable callers compose names even though neither label alone is
+# reserved. Include named and id-fallback callees, plus normalized caller labels.
+for check in ("Preflight", "Build and Unit"):
+    for named in (True, False) if check == "Preflight" else (True,):
+        callee = ("name: Callee\non:\n  workflow_call:\njobs:\n  Preflight:\n" +
+                  (f"    name: {check}\n" if named else "") +
+                  "    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n")
+        caller = ("name: Caller\non:\n  pull_request:\njobs:\n  call:\n"
+                  "    name: Fixture\n    uses: ./.github/workflows/callee.yml\n")
+        sources = {"caller.yml": caller, "callee.yml": callee}
+        if violations(short, full, queue_gate, sources):
+            raise SystemExit("Benign reusable caller/callee must pass")
+        for label in ("Development v1", "  dEvElOpMeNt   V1  "):
+            sources = {"caller.yml": caller.replace("name: Fixture", f"name: {json.dumps(label)}"),
+                       "callee.yml": callee}
+            mutations += ((f"composed {check} (named={named}, caller={label!r})",
+                           short, full, queue_gate, sources),)
+for required in required_names:
+    for label in (required.swapcase(), "  " + required.replace(" ", "   ") + "  "):
+        mutations += ((f"normalized required name: {label!r}", short, full, queue_gate,
+                       {"normalized.yml": spoof_workflow(json.dumps(label))}),)
+# R4 fixtures are valid YAML/actionlint workflows whose quoted/flow values
+# conceal producers from the old line-regex view. Parsing them must succeed;
+# the semantic producer checks and source agreement must reject every one.
+r4_fixtures = root / "tests/fixtures/development-v1-ci"
+r4_callee = (r4_fixtures / "r4-callee.yml").read_text()
+r4_paths = sorted(path for path in r4_fixtures.glob("*.yml") if path.name != "r4-callee.yml")
+if len(r4_paths) != 10:
+    raise SystemExit("Expected all ten R4 producer-name repro fixtures")
+for path in r4_paths:
+    source = path.read_text()
+    parsed_jobs(source)
+    sources = {path.name: source, "r4-callee.yml": r4_callee}
+    if not violations(short, full, queue_gate, sources):
+        raise SystemExit(f"R4 spoof was not rejected: {path.name}")
+    print(f"R4 spoof rejected: {path.name}")
+    mutations += ((f"R4 {path.name}", short, full, queue_gate, sources),)
+
+# Refs #1747. Actionlint's default discovery ignores uppercase extensions.
+# Check the actual workflow tails, including invalid steps that the job-name
+# contract deliberately leaves to actionlint rather than treating names as lint.
+choices = [os.environ.get("HVO_ACTIONLINT_BIN"),
+           str(pathlib.Path(os.environ.get("RUNNER_TEMP", "/tmp")) / "actionlint"),
+           shutil.which("actionlint"), "/tmp/actionlint"]
+actionlint = next((pathlib.Path(path) for path in choices
+                   if path and pathlib.Path(path).is_file() and os.access(path, os.X_OK)), None)
+if actionlint is None:
+    raise SystemExit("Actionlint regressions require pinned 1.7.12; set HVO_ACTIONLINT_BIN locally")
+version = subprocess.run([str(actionlint), "-version"], capture_output=True, text=True, check=True)
+if version.stdout.splitlines()[0] != "1.7.12":
+    raise SystemExit("Actionlint regressions require the workflow's pinned version 1.7.12")
+lint_cases = lint_mutations = 0
+for profile, source, title, executable in (
+    ("Preflight", short, "Lint workflows", '"$RUNNER_TEMP/actionlint"'),
+    ("Quality", full, "Lint GitHub Actions workflows", "/tmp/actionlint"),
+):
+    section = step(source, title)
+    tail = [line.strip() for line in section.splitlines() if line.startswith("          ")][-4:]
+    if tail != lint_commands(executable):
+        raise SystemExit("Unexpected lint fixture wiring: " + profile)
+    tail[-1] = tail[-1].replace(executable, shlex.quote(str(actionlint)), 1)
+    with tempfile.TemporaryDirectory(prefix="hvo-actionlint-") as directory:
+        fixture = pathlib.Path(directory)
+        subprocess.run(["git", "init", "-q", str(fixture)], check=True)
+        workflow_dir = fixture / ".github/workflows"
+        workflow_dir.mkdir(parents=True)
+        runner_temp = fixture / "runner"
+        runner_temp.mkdir()
+        environment = dict(os.environ, RUNNER_TEMP=str(runner_temp))
+        names = ("normal.yml", "normal.yaml", ".hidden.yml", "upper.YML", "upper.YAML",
+                 ".hidden.YaMl", "space name.YmL")
+        good = spoof_workflow("Benign")
+        bad = good[:good.index("    steps:")] + "    steps: [{unexpected: true}]\n"
+        if violations(short, full, extra={"upper.YML": bad}):
+            raise SystemExit("Bad-step regression must exercise lint, not the job-name contract")
+        for name in names:
+            (workflow_dir / name).write_text(good)
+
+        def lint(lines):
+            return subprocess.run(["bash", "-euo", "pipefail", "-c", "\n".join(lines)],
+                                  cwd=fixture, env=environment, capture_output=True, text=True)
+
+        result = lint(tail)
+        discovered = (runner_temp / "actionlint-workflows.list").read_bytes().split(b"\0")[:-1]
+        if result.returncode != 0 or {pathlib.Path(os.fsdecode(name)).name for name in discovered} != set(names):
+            raise SystemExit(f"{profile} missed hidden/uppercase/space workflow names: {result.stderr}")
+        lint_cases += 1
+        for name in (".hidden.yml", "upper.YML", "upper.YAML"):
+            (workflow_dir / name).write_text(bad)
+            result = lint(tail)
+            if result.returncode == 0 or "unexpected" not in result.stdout + result.stderr:
+                raise SystemExit(f"{profile} accepted invalid step in {name}: {result.stdout}{result.stderr}")
+            lint_cases += 1
+            if name.startswith("upper"):
+                for mutation, lines in (
+                    ("default discovery", [*tail[:-1], shlex.quote(str(actionlint))]),
+                    ("case-sensitive discovery", [line.replace("-iname", "-name") for line in tail]),
+                ):
+                    result = lint(lines)
+                    if result.returncode != 0:
+                        raise SystemExit(f"{profile} {mutation} must expose the prior omission: {result.stdout}{result.stderr}")
+                    lint_mutations += 1
+            (workflow_dir / name).write_text(good)
+        for path in workflow_dir.iterdir():
+            path.unlink()
+        result = lint(tail)
+        if result.returncode == 0 or "No workflow files found" not in result.stderr:
+            raise SystemExit(f"{profile} accepted an empty workflow list")
+        lint_cases += 1
+print(f"Actionlint discovery passed: {lint_cases} behavior cases and {lint_mutations} mutation controls.")
+
+# Exercise the actual interpreter-selection prologue without running this suite
+# recursively. This also proves missing system PyYAML cannot silently skip it.
+with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
+    fixture = pathlib.Path(directory)
+    bin_dir = fixture / "bin"
+    bin_dir.mkdir()
+    missing_python = bin_dir / "python3"
+    missing_python.write_text("#!/usr/bin/env bash\nexit 1\n")
+    missing_python.chmod(0o700)
+    selector = fixture / "select-parser"
+    prologue = (root / "scripts/test:development-v1-ci").read_text().split("<<'PY'\n", 1)[0]
+    selector.write_text(prologue + "<<'PY'\nimport yaml\nprint('PyYAML available')\nPY\n")
+    environment = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", PIPX_HOME=str(fixture / "pipx"))
+    result = subprocess.run(["bash", str(selector)], env=environment, capture_output=True, text=True)
+    if result.returncode == 0 or "requires PyYAML" not in result.stderr:
+        raise SystemExit("Missing YAML parser did not fail closed")
+    fallback = fixture / "pipx/venvs/yamllint/bin/python"
+    fallback.parent.mkdir(parents=True)
+    fallback.write_text(f'#!/usr/bin/env bash\nexec {shlex.quote(sys.executable)} "$@"\n')
+    fallback.chmod(0o700)
+    result = subprocess.run(["bash", str(selector)], env=environment, capture_output=True, text=True)
+    if result.returncode != 0 or result.stdout.strip() != "PyYAML available":
+        raise SystemExit(f"Hosted yamllint parser fallback failed: {result.stderr}")
+    print("PyYAML availability controls: absent parser fails; hosted pipx fallback passes.")
+for name, candidate, qualification, *queue in mutations:
+    if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
@@ -312,3 +957,4 @@ PY
 # Keep the cheap image and runtime-directory fixtures on the Preflight contract path.
 "$repo_root/scripts/test:ci-base-images"
 "$repo_root/scripts/test:cameraagent-arm64-preflight"
+"$repo_root/scripts/test:ci-queue-reviewed-head"

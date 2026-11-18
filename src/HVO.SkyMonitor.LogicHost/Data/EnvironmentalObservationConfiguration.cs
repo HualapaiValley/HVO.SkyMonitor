@@ -26,6 +26,7 @@ internal static class EnvironmentalObservationConfiguration
         builder.Property(source => source.SourceId).HasMaxLength(128).IsRequired();
         builder.Property(source => source.Version).HasMaxLength(64).IsRequired();
         builder.Property(source => source.Kind).HasConversion<string>().HasMaxLength(16).IsRequired();
+        builder.Property(source => source.IsLineageInput).HasDefaultValue(false);
         builder.Property(source => source.MethodName).HasMaxLength(128).IsRequired();
         builder.Property(source => source.MethodVersion).HasMaxLength(64).IsRequired();
         builder.Property(source => source.ParametersJson).HasMaxLength(32_768).IsRequired();
@@ -57,6 +58,8 @@ internal static class EnvironmentalObservationConfiguration
             table.HasCheckConstraint(
                 "CK_EnvironmentalObservations_Uncertainty",
                 "[Uncertainty] IS NULL OR [Uncertainty] >= 0");
+            table.HasCheckConstraint("CK_EnvironmentalObservations_SampleMetadata",
+                "[SampleMetadataJson] IS NULL OR ISJSON([SampleMetadataJson]) = 1");
         });
         builder.HasKey(observation => observation.Id);
         builder.Property(observation => observation.RigId).HasMaxLength(128).UseCollation(BinaryCollation);
@@ -67,6 +70,7 @@ internal static class EnvironmentalObservationConfiguration
         builder.Property(observation => observation.Unit).HasConversion<string>().HasMaxLength(48).IsRequired();
         builder.Property(observation => observation.Quality).HasConversion<string>().HasMaxLength(16).IsRequired();
         builder.Property(observation => observation.SubmittedUnit).HasMaxLength(64);
+        builder.Property(observation => observation.SampleMetadataJson).HasMaxLength(512);
         builder.Property(observation => observation.ClockDiagnostic).HasConversion<string>().HasMaxLength(48).IsRequired();
         builder.Property(observation => observation.PayloadSha256).HasMaxLength(64).IsRequired();
         builder.HasIndex(observation => new { observation.SourceRecordId, observation.ObservationId }).IsUnique();

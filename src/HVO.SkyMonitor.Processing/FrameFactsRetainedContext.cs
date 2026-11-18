@@ -276,7 +276,10 @@ public sealed class FrameFactsRetainedContext
                     else if (observation!.ValidFromUtc > descriptor.Timing.ExposureStartedUtc ||
                         observation.ValidThroughUtc < descriptor.Timing.ExposureEndedUtc ||
                         observation.StaleAfterUtc <= descriptor.Timing.ExposureEndedUtc) status = FrameFactsAvailability.Stale;
-                    else if (observation.Value.Quality != EnvironmentalObservationQuality.Good) status = FrameFactsAvailability.Unsupported;
+                    else if (observation.Value.Quality != EnvironmentalObservationQuality.Good &&
+                        !(observation.SchemaVersion == EnvironmentalObservationSchemaVersions.V3 &&
+                          observation.Source.Kind == EnvironmentalObservationSourceKind.Imported &&
+                          observation.Value.Quality == EnvironmentalObservationQuality.Unknown)) status = FrameFactsAvailability.Unsupported;
                 }
                 if (validObservation)
                 {

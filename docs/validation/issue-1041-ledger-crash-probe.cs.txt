@@ -1,0 +1,78 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.TestSupport;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+
+SQLitePCL.Batteries_V2.Init();
+var mode = args[0];
+var root = Path.GetFullPath(args[1]);
+if (!root.StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.Ordinal)) throw new InvalidOperationException("Disposable root required.");
+var marker = Path.Combine(root, "probe-fixture");
+if (mode.StartsWith("crash", StringComparison.Ordinal))
+{
+    if (Directory.Exists(root)) throw new InvalidOperationException("Fresh root required.");
+    Directory.CreateDirectory(root);
+    File.WriteAllText(marker, "issue-1041-ledger-fixture");
+}
+else if (!File.Exists(marker) || File.ReadAllText(marker) != "issue-1041-ledger-fixture") throw new InvalidOperationException("Unmarked root.");
+var ingress = Path.Combine(root, "ingress");
+var keys = Path.Combine(root, "keys");
+Directory.CreateDirectory(keys);
+var protector = new ProbeProtector(DataProtectionProvider.Create(new DirectoryInfo(keys)).CreateProtector("issue1041-ledger-fixture"));
+using var store = new ProtectedDeploymentLocationStore(Options.Create(new CameraAgentHostOptions
+{
+    RawIngressRoot = ingress,
+    CentralIntegration = new CentralIntegrationOptions { Mode = CentralIntegrationMode.Disabled }
+}), protector, TimeProvider.System, NullLogger<ProtectedDeploymentLocationStore>.Instance);
+var seed = new DeploymentLocationSeed("probe", "synthetic", null, new DateTimeOffset(2026,1,1,0,0,0,TimeSpan.Zero), null,
+    new ObservatoryLocation(35,-113,0,"America/Phoenix"), DeploymentLocationSourceKind.Manual);
+var path = Path.Combine(ingress, "capture.json");
+if (mode.StartsWith("crash", StringComparison.Ordinal))
+{
+    var active = await store.InitializeAsync(seed, CancellationToken.None);
+    var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16,2,2,4,new byte[8]);
+    var manifest = original with { Descriptor = original.Descriptor with { Location = active.ToProvenance() } };
+    var bytes = CaptureContractJson.Serialize(manifest);
+    if (!CaptureContractJson.ParseManifest(bytes).IsValid) throw new InvalidOperationException("Bad fixture.");
+    var ledger = typeof(ProtectedDeploymentLocationStore).Assembly.GetType("HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.RetainedIntegrityLedger")!;
+    // Durable intent before data publication. Intentionally no Dispose/finally after SIGKILL.
+    _ = (IDisposable)ledger.GetMethod("BeginWrite",BindingFlags.NonPublic|BindingFlags.Static)!.Invoke(null,[path, new ReadOnlyMemory<byte>(bytes)])!;
+    if (mode != "crash-before")
+    {
+        using var stream = new FileStream(path,FileMode.Create,FileAccess.Write,FileShare.None);
+        stream.Write(mode == "crash-torn" ? bytes.AsSpan(0,16) : bytes);
+        stream.Flush(true);
+    }
+    Process.GetCurrentProcess().Kill();
+    Thread.Sleep(Timeout.Infinite);
+}
+var pending = false;
+try { _ = await store.VerifyInstallationAsync(seed, CancellationToken.None); }
+catch (InstallationVerificationPendingException) { pending = true; }
+if (!pending) throw new InvalidOperationException("Restart inherited trust.");
+if (mode == "recover-torn")
+{
+    _ = await store.InitializeAsync(seed, CancellationToken.None); // startup/recovery available
+    try { _ = await store.FullVerifyAsync(seed,CancellationToken.None); throw new InvalidOperationException("Torn write accepted."); }
+    catch (InvalidDataException) { }
+    try { _ = await store.VerifyInstallationAsync(seed,CancellationToken.None); throw new InvalidOperationException("Torn checkpoint trusted."); }
+    catch (InstallationVerificationPendingException) { }
+    Console.WriteLine(JsonSerializer.Serialize(new { mode,pending,rejected=true,startup=true }));
+}
+else
+{
+    _ = await store.FullVerifyAsync(seed,CancellationToken.None);
+    _ = await store.VerifyInstallationAsync(seed,CancellationToken.None);
+    Console.WriteLine(JsonSerializer.Serialize(new { mode,pending,requalified=true,files=File.Exists(path)?1:0 }));
+}
+sealed class ProbeProtector(IDataProtector protector) : IDeploymentLocationProtector
+{
+    public byte[] Protect(byte[] bytes) => protector.Protect(bytes);
+    public byte[] Unprotect(byte[] bytes) => protector.Unprotect(bytes);
+}

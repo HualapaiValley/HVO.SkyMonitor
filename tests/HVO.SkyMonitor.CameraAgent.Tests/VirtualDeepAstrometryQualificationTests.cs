@@ -102,7 +102,7 @@ public sealed class VirtualDeepAstrometryQualificationTests
             foreach (var fixtureProfile in VirtualAstrometryFixture.Profiles(seed))
             {
                 var profile = Apply(fixtureProfile, variant.Render, variant.Dense ? DensePointings[(month, day)] : null);
-                var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+                var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
                 await using var lifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
                 var priors = new Dictionary<string, AstrometricFrameAssessment>(StringComparer.Ordinal);
@@ -273,7 +273,7 @@ public sealed class VirtualDeepAstrometryQualificationTests
         foreach (var fixtureProfile in VirtualAstrometryFixture.Profiles(116771))
         {
             var profile = Apply(fixtureProfile, new(7, 32768), null);
-            var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+            var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
             await using var lifetime = module.ConfigureAwait(false);
             await module.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
             var captured = await module.CaptureAsync(VirtualAstrometryQualificationTests.Request(utc), CancellationToken.None).ConfigureAwait(false);
@@ -428,7 +428,7 @@ public sealed class VirtualDeepAstrometryQualificationTests
         VirtualAstrometryPixels original, AstrometricCalibration nominal, AstrometricCatalogData catalog, AstrometricSolverOptions options,
         AstrometricSolveResult expected, DateTimeOffset utc)
     {
-        var repeated = new VirtualSkyCameraModule(TimeProvider.System, source, new ProjectedSceneStore());
+        var repeated = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), source, new ProjectedSceneStore());
         await using var lifetime = repeated.ConfigureAwait(false);
         await repeated.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
         var capture = await repeated.CaptureAsync(VirtualAstrometryQualificationTests.Request(utc), CancellationToken.None).ConfigureAwait(false);

@@ -20,7 +20,7 @@ internal sealed record CaptureSatelliteWork(string Key, string Holder, string No
 internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions> options,
     SqliteCaptureProcessingStore processing, IOrbitalElementsStore orbital, TimeProvider? timeProvider = null)
 {
-    private readonly string root = Path.GetFullPath(options.Value.RawIngressRoot);
+    private readonly string root = StorageRootIdentity.CanonicalPath(options.Value.RawIngressRoot);
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     // More than 30 days at the supported 15-second cadence (172,800 captures), including cleanup lag.
     internal const int MaximumWorkEntries = 262144;
@@ -127,7 +127,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(string storageRoot,
         CancellationToken cancellationToken)
     {
-        if (!string.Equals(Path.GetFullPath(storageRoot), root, StringComparison.Ordinal)) return [];
+        if (!StorageRootIdentity.AreEqual(storageRoot, root)) return [];
         var directory = Path.Combine(root, "journal", "capture-satellites");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         if (!Directory.Exists(directory)) return [];
@@ -157,7 +157,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
 
     internal async ValueTask ReconcileAsync(string storageRoot, CancellationToken cancellationToken)
     {
-        if (!string.Equals(Path.GetFullPath(storageRoot), root, StringComparison.Ordinal)) return;
+        if (!StorageRootIdentity.AreEqual(storageRoot, root)) return;
         var directory = Path.Combine(root, "journal", "capture-satellites");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, directory);
         if (!Directory.Exists(directory)) return;
@@ -180,7 +180,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             {
                 if (!Directory.EnumerateFileSystemEntries(entry).Any())
                 {
-                    Directory.Delete(entry);
+                    RetainedFileMutations.DeleteDirectory(entry);
                     removedEmpty = true;
                     continue;
                 }
@@ -203,11 +203,11 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             foreach (var file in Directory.EnumerateFiles(entry).Where(file => !string.Equals(file, path, StringComparison.Ordinal)))
             {
                 RawIngressFileStore.EnsureNoSymbolicLinks(root, file);
-                File.Delete(file);
+                RetainedFileMutations.Delete(file);
             }
             // Keep the small reference intent until every large file is gone, so interrupted cleanup resumes.
-            File.Delete(path);
-            Directory.Delete(entry);
+            RetainedFileMutations.Delete(path);
+            RetainedFileMutations.DeleteDirectory(entry);
             RawIngressFileStore.SyncDirectory(directory);
         }
         // Empty pre-intents have no reference. A crash before this flush can only make them reappear.
@@ -218,7 +218,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
         if (orphans.Count == 0)
         {
             RawIngressFileStore.EnsureNoSymbolicLinks(root, cursorPath);
-            File.Delete(cursorPath);
+            RetainedFileMutations.Delete(cursorPath);
         }
         foreach (var entry in orphans)
         {
@@ -247,9 +247,9 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
                 foreach (var file in Directory.EnumerateFiles(entry))
                 {
                     RawIngressFileStore.EnsureNoSymbolicLinks(root, file);
-                    File.Delete(file);
+                    RetainedFileMutations.Delete(file);
                 }
-                Directory.Delete(entry);
+                RetainedFileMutations.DeleteDirectory(entry);
                 RawIngressFileStore.SyncDirectory(directory);
             }
             await SaveOrphanCursorAsync(cursorPath, Path.GetFileName(entry), cancellationToken).ConfigureAwait(false);
@@ -281,7 +281,7 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
             CameraAgentFileSystem.PublishPrepared(root, temporary, path, overwrite: true);
             RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
         }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        finally { if (File.Exists(temporary)) RetainedFileMutations.Delete(temporary); }
     }
 
     private sealed class ArchiveDiscovery(CaptureSatelliteWorkStore owner)
@@ -344,7 +344,9 @@ internal sealed class CaptureSatelliteWorkStore(IOptions<CameraAgentHostOptions>
     private string Resolve(string relative)
     {
         var path = Path.GetFullPath(Path.Combine(root, relative));
-        if (Path.IsPathRooted(relative) || !path.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+        if (Path.IsPathRooted(relative) || !path.StartsWith(prefix,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             throw new InvalidDataException("Satellite intent path escapes its storage root.");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         return path;

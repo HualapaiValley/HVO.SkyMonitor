@@ -605,15 +605,17 @@ public sealed class CameraAgentSettingsServiceTests
     }
 
     [TestMethod]
-    public async Task SkyLighting_StagesARigRevisionForTheNextStartAsync()
+    [DataRow(null, "ControlledNight")]
+    [DataRow("ControlledNight", "SolarDriven")]
+    public async Task SkyLighting_StagesARigRevisionForTheNextStartAsync(string? baselineMode, string targetMode)
     {
-        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        using var harness = await CameraAgentSettingsHarness.CreateAsync(illuminationMode: baselineMode).ConfigureAwait(false);
         var read = await harness.GroupAsync("camera").ConfigureAwait(false);
         var before = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
 
         var result = await harness.WriteAsync("camera", read.Version, new Dictionary<string, object?>
         {
-            ["camera.skyLighting"] = "controlledNight"
+            ["camera.skyLighting"] = targetMode
         }).ConfigureAwait(false);
 
         Assert.AreEqual(CameraAgentSettingsWriteOutcome.PendingRestart, result.Outcome, result.Message);
@@ -622,10 +624,10 @@ public sealed class CameraAgentSettingsServiceTests
         var catalog = await harness.Named.GetAsync(CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(before.Selection.ActiveRevisionId, catalog.Selection.ActiveRevisionId);
         var pending = catalog.Revisions.Single(revision => revision.RevisionId == catalog.Selection.PendingRevisionId);
-        Assert.AreEqual("ControlledNight", pending.Module.Options!.Value.GetProperty("illuminationMode").GetString());
+        Assert.AreEqual(targetMode, pending.Module.Options!.Value.GetProperty("illuminationMode").GetString());
         var lighting = result.Group!.Settings.Single();
-        Assert.AreEqual(nameof(VirtualSkyIlluminationMode.LegacyScalarSolar), lighting.Value!.Value.GetString());
-        Assert.AreEqual(nameof(VirtualSkyIlluminationMode.ControlledNight), lighting.PendingValue!.Value.GetString());
+        Assert.AreEqual(baselineMode ?? nameof(VirtualSkyIlluminationMode.LegacyScalarSolar), lighting.Value!.Value.GetString());
+        Assert.AreEqual(targetMode, lighting.PendingValue!.Value.GetString());
         Assert.IsFalse(result.Group.CanWrite);
         StringAssert.Contains(result.Group.ReadOnlyReason, "awaiting restart", StringComparison.Ordinal);
 

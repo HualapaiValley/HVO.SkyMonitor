@@ -113,7 +113,7 @@ internal sealed class CameraAgentAcceptanceFaultController(string controlRoot) :
             }
             ValidateOperationId(arm.OperationId);
             Directory.CreateDirectory(_controlRoot);
-            File.Move(armPath, Path.Combine(_controlRoot, $"consumed-{arm.OperationId}.json"), overwrite: false);
+            RetainedFileMutations.Move(armPath, Path.Combine(_controlRoot, $"consumed-{arm.OperationId}.json"), overwrite: false);
             WriteAtomic(
                 Path.Combine(_controlRoot, $"hit-{arm.OperationId}.json"),
                 JsonSerializer.SerializeToUtf8Bytes(new FaultHit(arm.OperationId, boundary, nodeId, DateTimeOffset.UtcNow), JsonOptions));
@@ -149,7 +149,7 @@ internal sealed class CameraAgentAcceptanceFaultController(string controlRoot) :
     {
         var temporary = $"{path}.{Guid.NewGuid():N}.tmp";
         File.WriteAllBytes(temporary, content);
-        File.Move(temporary, path, overwrite: false);
+        RetainedFileMutations.Move(temporary, path, overwrite: false);
     }
 
     private static void ValidateOperationId(string operationId)

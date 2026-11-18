@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using HVO.SkyMonitor.AgentCore;
 
 namespace HVO.SkyMonitor.Astronomy;
 
@@ -187,7 +188,8 @@ public sealed record DeepSkySemantics(
     string AxisUnit,
     string PositionAngleConvention,
     string OutlineLevelConvention,
-    string SurfaceBrightnessUnit);
+    string SurfaceBrightnessUnit,
+    CatalogSnapshotIdentity? SnapshotIdentity = null);
 
 /// <summary>The magnitude band a deep-sky brightness criterion compares.</summary>
 public enum DeepSkyMagnitudeBand
@@ -237,7 +239,11 @@ public sealed record DeepSkyQuery(
     int MaximumResults,
     J2000SphericalCap? Region = null,
     IReadOnlySet<string>? ObjectTypes = null,
-    DeepSkyBrightnessLimit? Brightness = null)
+    DeepSkyBrightnessLimit? Brightness = null,
+    DeepSkyDesignations? Designations = null,
+    double? MinimumSizeArcminutes = null,
+    double? MaximumSizeArcminutes = null,
+    bool IncludeUnknownSize = true)
 {
     /// <summary>Validates the result bound and each supplied criterion.</summary>
     public void Validate()
@@ -246,6 +252,11 @@ public sealed record DeepSkyQuery(
         {
             throw new ArgumentOutOfRangeException(nameof(MaximumResults));
         }
+        if (Designations is { } designation && (designation & ~DeepSkyDesignations.All) != 0 ||
+            MinimumSizeArcminutes is { } minimum && (!double.IsFinite(minimum) || minimum < 0) ||
+            MaximumSizeArcminutes is { } maximum && (!double.IsFinite(maximum) || maximum < 0) ||
+            MinimumSizeArcminutes > MaximumSizeArcminutes)
+            throw new ArgumentOutOfRangeException(nameof(Designations));
         Region?.Validate();
         Brightness?.Validate();
         if (ObjectTypes is not null &&
@@ -328,6 +339,7 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
     private readonly ReadOnlyCollection<DeepSkyTombstone> _tombstones;
     private readonly Dictionary<string, DeepSkyTombstone> _tombstonesById;
     private readonly Dictionary<string, ReadOnlyCollection<DeepSkyAlias>> _aliases;
+    private readonly Dictionary<string, DeepSkyDesignations> _designationsById;
     private readonly SpatialEntry[] _byDeclination;
     private readonly double _maximumReachDegrees;
 
@@ -383,6 +395,11 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
 
         _aliases = BuildAliasIndex(aliases, _objectsById, out var aliasCount);
         AliasCount = aliasCount;
+        _designationsById = _objects.ToDictionary(static item => item.Id, static item =>
+            Family(item.Id) | (item.MessierNumber is null ? DeepSkyDesignations.None : DeepSkyDesignations.Messier), StringComparer.Ordinal);
+        foreach (var alias in _aliases.Values.SelectMany(static values => values))
+            if (alias.Kind is DeepSkyAliasKinds.Designation or DeepSkyAliasKinds.Duplicate or DeepSkyAliasKinds.CrossReference)
+                _designationsById[alias.ObjectId] |= Family(alias.Alias);
         _outlinesById = BuildOutlineIndex(outlines, _objectsById);
         (_byDeclination, _maximumReachDegrees) = BuildSpatialIndex(_objects, _outlinesById);
     }
@@ -451,7 +468,10 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         {
             var item = _objects[index];
             if (query.ObjectTypes is { } types && !types.Contains(item.ObjectType) ||
-                query.Brightness is { } brightness && !brightness.Matches(item))
+                query.Brightness is { } brightness && !brightness.Matches(item) ||
+                query.Designations is { } designation && (_designationsById[item.Id] & designation) == 0 ||
+                item.MajorAxisArcminutes is { } size && (size < query.MinimumSizeArcminutes || size > query.MaximumSizeArcminutes) ||
+                item.MajorAxisArcminutes is null && !query.IncludeUnknownSize)
             {
                 continue;
             }
@@ -462,6 +482,10 @@ public sealed class DeepSkyCatalog : IDeepSkyCatalog
         }
         return new DeepSkyQueryResult(selected.AsReadOnly(), matches);
     }
+
+    private static DeepSkyDesignations Family(string designation) =>
+        designation.StartsWith("NGC", StringComparison.OrdinalIgnoreCase) ? DeepSkyDesignations.Ngc :
+        designation.StartsWith("IC", StringComparison.OrdinalIgnoreCase) ? DeepSkyDesignations.Ic : DeepSkyDesignations.None;
 
     // Two directions never differ in declination by more than the angle between them, so only the declination band
     // within the region's radius plus the largest reach can hold a match. The matches come back in ID order.

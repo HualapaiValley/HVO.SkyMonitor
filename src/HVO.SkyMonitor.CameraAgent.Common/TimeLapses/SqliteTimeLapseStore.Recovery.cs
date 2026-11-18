@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Storage.FileSystem;
 using Microsoft.Data.Sqlite;
 
@@ -30,7 +31,7 @@ internal sealed partial class SqliteTimeLapseStore
                 {
                     root.Verify(path, "video-recovery");
                     DurableSync.RequireRegularFile(path);
-                    File.Delete(path);
+                    RetainedFileMutations.Delete(path);
                 }
                 DurableSync.Directory(directory);
             }

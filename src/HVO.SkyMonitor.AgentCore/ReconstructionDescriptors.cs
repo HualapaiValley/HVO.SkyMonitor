@@ -310,6 +310,18 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidMetering, "descriptor.cycleEvidence.solarRegime");
         }
+        if (evidence.AcquisitionAttemptId == Guid.Empty ||
+            evidence.EnvironmentalUnavailable && evidence.AcquisitionAttemptId is null)
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.cycleEvidence.acquisitionAttemptId");
+        }
+        if (evidence.EnvironmentalBeforeCaptureSources is { } sources &&
+            (evidence.AcquisitionAttemptId is null || sources.Count is 0 or > 128 ||
+                sources.Any(source => string.IsNullOrWhiteSpace(source) || source.Length > 128) ||
+                sources.Distinct(StringComparer.Ordinal).Count() != sources.Count))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.cycleEvidence.environmentalBeforeCaptureSources");
+        }
         if (evidence.MonotonicStartJitter < TimeSpan.Zero ||
             evidence.ObservedInterExposureGap.HasValue &&
             evidence.ObservedInterExposureGap.Value < TimeSpan.Zero)

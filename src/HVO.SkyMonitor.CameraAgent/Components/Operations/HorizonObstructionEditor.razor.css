@@ -1,0 +1,10 @@
+.horizon-editor { margin-block: 1rem; }
+.horizon-editor textarea { width: 100%; font-family: monospace; }
+.horizon-editor svg { display: block; width: min(100%, 45rem); margin-block: 1rem; }
+.unknown { fill: #343a40; }
+.horizon { stroke: #f0b35a; stroke-width: 2; }
+.zero { stroke: #e0e0e0; stroke-width: .5; stroke-dasharray: 4 4; }
+.horizon-editor code { overflow-wrap: anywhere; }
+
+.clear-sky { fill: #1c526a; }
+.blocked-sky { fill: #604526; }

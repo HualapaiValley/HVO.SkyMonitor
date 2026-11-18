@@ -17,7 +17,7 @@ internal static class CommandLine
         "--config", "--instance-id", "--friendly-name", "--owner-email", "--bind-address", "--port",
         "--product-root", "--catalog-bundle", "--release", "--image-source", "--image-ref", "--image-archive",
         "--image-archive-sha256", "--password-file", "--latitude", "--longitude",
-        "--elevation", "--time-zone", "--replay-profile", "--cpus", "--memory"
+        "--elevation", "--time-zone", "--replay-profile", "--illumination-mode", "--cpus", "--memory"
     ];
 
     internal static readonly string[] InstallFlags =
@@ -88,6 +88,9 @@ internal static class CommandLine
             "A new install makes an instance ID when --instance-id is not given. Only --cpus, --memory, --release, " +
             "--image-source, --catalog-bundle and --no-download may accompany --answers. --config cannot be combined with " +
             "the other value options. " + PlanScratchNote),
+        new(["cameraagent", "lifecycle-worker"], null,
+            "Run the independent drain/restart verifier for one installed CameraAgent; no host-power commands.",
+            InstanceValueOptions, ["--once", "--json"]),
         new(["cameraagent", "recover-owner"], null,
             "Give an instance's owner a new temporary password.",
             OwnerRecoveryValueOptions, OwnerRecoveryFlags),
@@ -100,9 +103,12 @@ internal static class CommandLine
         new(["cameraagent", "upgrade"], null,
             "Move an instance to a release's image (--release) or an immutable one (--image-ref).",
             [.. InstanceValueOptions, "--release", "--image-source", "--image-ref", "--image-archive", "--image-archive-sha256", "--operation-id"],
-            ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption],
+            ["--plan", "--dry-run", "--resume", "--restore-only", "--json", "--no-download", DeprecatedMigrationOption, "--allow-quarantined-readiness"],
             PlanScratchNote),
-        Lifecycle("Return an instance to the image it ran before its last upgrade.", "cameraagent", "rollback"),
+        new(["cameraagent", "rollback"], null,
+            "Return an instance to the image it ran before its last upgrade.",
+            InstanceValueOptions, [.. OperationFlags, "--allow-quarantined-readiness"],
+            PlanScratchNote),
         Lifecycle("Start an uninstalled instance again from the state it kept.", "cameraagent", "reinstall"),
         Lifecycle("Remove an instance's containers, keeping its state for cameraagent reinstall.", "cameraagent", "uninstall"),
         new(["cameraagent", "purge"], null, "Remove an uninstalled instance and everything it keeps.",
@@ -110,7 +116,7 @@ internal static class CommandLine
             PlanScratchNote),
         new(["cameraagent", "backup"], null,
             "Copy an instance, captures included, into one archive in <product-root>/backups.",
-            InstanceValueOptions, OperationFlags,
+            InstanceValueOptions, [.. OperationFlags, "--abort", "--allow-quarantined-readiness"],
             "Run it as the instance's service account, not with sudo. The archive is readable by its owner alone. " + PlanScratchNote),
         new(["cameraagent", "restore"], "<archive>",
             "Put an instance back, uninstalled, from a backup in <product-root>/backups.",
@@ -120,8 +126,9 @@ internal static class CommandLine
         new(["catalog", "install"], null, "Install a catalog bundle beside the catalogs already installed.",
             ["--catalog-bundle", "--product-root"], OperationFlags, PlanScratchNote),
         new(["catalog", "select"], null, "Switch an instance to another installed catalog version.",
-            ["--instance-id", "--catalog-version", "--product-root"], OperationFlags, PlanScratchNote),
-        Lifecycle("Return an instance to the catalog version it used before.", "catalog", "rollback"),
+            ["--instance-id", "--catalog-version", "--catalog-family", "--product-root"], OperationFlags, PlanScratchNote),
+        new(["catalog", "rollback"], null, "Return an instance to the catalog version it used before.",
+            ["--instance-id", "--catalog-family", "--product-root"], OperationFlags, PlanScratchNote),
         new(["catalog", "gc"], null,
             "Remove an installed catalog version that no instance uses.",
             ["--catalog-version", "--product-root"], OperationFlags,
@@ -139,6 +146,7 @@ internal static class CommandLine
     /// </summary>
     private static readonly Dictionary<string, (string? Value, string Description)> OptionHelp = new(StringComparer.Ordinal)
     {
+        ["--once"] = (null, "Perform one authenticated lifecycle poll, including any admitted operation, then exit."),
         ["--inventory"] = ("<file>", "The immutable split-host inventory (schema 8; partial-prepare also accepts retained schema 7)."),
         ["--preserve-state"] = (null, "Stop applications while preserving existing services and runtime data."),
         ["--delete-state"] = (null, "Request deletion; existing-services runs refuse this policy before mutation."),
@@ -156,7 +164,8 @@ internal static class CommandLine
         ["--port"] = ("<port>", "The port CameraAgent listens on (default 5130)."),
         ["--product-root"] = ("<path>", "The product root (default: this host's production product root)."),
         ["--catalog-bundle"] = ("<path>", "The catalog bundle folder."),
-        ["--catalog-version"] = ("<version>", "An installed catalog version."),
+        ["--catalog-version"] = ("<version>", "An installed catalog version, or disabled with catalog select --catalog-family deep-sky."),
+        ["--catalog-family"] = ("<deep-sky>", "Select the independent deep-sky family, including rollback."),
         ["--release"] = ("<folder>", "The release folder, holding the release's release.json and SHA256SUMS."),
         ["--image-source"] = ("<source>", "With --release: archive (default) loads its offline image archive; registry pulls its image."),
         ["--image-ref"] = ("<image>", "An immutable image, sha256:<id> or <repository>@sha256:<digest>, instead of a release's."),
@@ -169,6 +178,7 @@ internal static class CommandLine
         ["--elevation"] = ("<metres>", "The camera's elevation (default 0)."),
         ["--time-zone"] = ("<zone>", "The camera's IANA time zone (default UTC)."),
         ["--replay-profile"] = ("<profile>", "Where archived replay runs: in-process (default) or local-runner."),
+        ["--illumination-mode"] = ("<mode>", "VirtualSky lighting: LegacyScalarSolar (default), SolarDriven or ControlledNight."),
         ["--cpus"] = ("<count>", "The container's CPU limit."),
         ["--memory"] = ("<size>", "The container's memory limit, such as 4g."),
         ["--confirm-instance-id"] = ("<uuid>", "The instance's ID again, to confirm."),
@@ -177,6 +187,8 @@ internal static class CommandLine
         [PlanOption] = (null, "Show what the command would change, and change nothing."),
         ["--dry-run"] = (null, "The older name of --plan."),
         ["--resume"] = (null, "Finish an interrupted run of the same command."),
+        ["--abort"] = (null, "Abandon an incomplete backup: discard its partial archive, put the instance back, and leave no backup. Does not restore or overwrite instance data."),
+        ["--allow-quarantined-readiness"] = (null, "Accept /health only with explicit evidence of a required standard processing-lane quarantine and, if processing is Unhealthy, its matching durable terminal outcome. Required-lane pressure, lane worker/claim/state failures and missing cause evidence remain refused, including older unhealthy images without that evidence. Catalog identity, installation identity, the container, and archive checksums are still verified."),
         ["--json"] = (null, "Write the result, or the error, as JSON."),
         ["--repair"] = (null, "Re-record the current mount, keeping the product root already named by the host policy."),
         ["--acknowledge-plaintext-http"] = (null, "Accept plain HTTP on a --bind-address other than loopback."),
@@ -404,6 +416,8 @@ internal static class CommandLine
         if (args.Length > 0 && args[0] == "existing-down") return ExistingDownRequest.Parse(args);
         if (args.Length > 0 && args[0] == "partial-prepare-cleanup") return PartialPrepareRequest.Parse(args);
         var allowTestProductRoot = context.AllowTestProductRoot;
+        if (args is ["cameraagent", "lifecycle-worker", ..])
+            return LifecycleWorkerRequest.Parse(args, production, allowTestProductRoot);
         if (args.Length >= 2 && args[0] == "cameraagent" && args[1] == "install")
         {
             return new InstallDeploymentCommand(Parse(args, allowTestProductRoot, production))
@@ -561,6 +575,7 @@ internal static class CommandLine
                 ElevationMeters = ParseDouble(Get(values, "--elevation"), 0, "--elevation"),
                 TimeZoneId = Get(values, "--time-zone") ?? "UTC",
                 ReplayProfile = ParseReplayProfile(Get(values, "--replay-profile")),
+                IlluminationMode = Get(values, "--illumination-mode"),
                 Cpus = ParseCpus(Get(values, "--cpus")),
                 Memory = Get(values, "--memory")
             };
@@ -784,8 +799,11 @@ internal static class CommandLine
             ConfirmationInstanceId = ParseGuid(Get(values, "--confirm-instance-id"), "--confirm-instance-id"),
             ConfirmRemovedOperationId = ParseGuid(
                 Get(values, "--confirm-removed-operation-id"), "--confirm-removed-operation-id"),
+            AllowQuarantinedReadiness = flags.Contains("--allow-quarantined-readiness"),
+            Abort = flags.Contains("--abort"),
             CatalogBundle = Get(values, "--catalog-bundle"),
             CatalogVersion = Get(values, "--catalog-version"),
+            CatalogFamily = Get(values, "--catalog-family"),
             Archive = archive
         };
         if (archive is not null && archive.Contains('/', StringComparison.Ordinal))

@@ -30,16 +30,24 @@ internal sealed class PresentationMetadataFactsBuilder(
         var throughUtc = descriptor.Timing.ExposureEndedUtc.ToUniversalTime();
         if (throughUtc <= fromUtc) throughUtc = fromUtc.AddMilliseconds(1);
         var expectedKinds = kinds.Distinct().Order().ToArray();
-        IReadOnlyList<LocalEnvironmentalCaptureAssociation>? associated = null;
-        if (hostOptions.Value.EnvironmentalAcquisition.Enabled && expectedKinds.Length > 0)
+        IReadOnlyList<LocalEnvironmentalCaptureAssociation> persisted = [];
+        var acquisition = hostOptions.Value.EnvironmentalAcquisition;
+        // Only kinds with a configured source have capture associations. A selected kind outside the configured policy
+        // is retained as missing, exactly as with acquisition disabled, instead of failing every capture. Refs #1784
+        var policyKinds = acquisition.Enabled
+            ? EnvironmentalAssociationService.SelectConfiguredPolicyKinds(acquisition, expectedKinds)
+            : [];
+        if (policyKinds.Length > 0)
         {
-            associated = await associations.ReadCompletedAsync(
+            var completed = await associations.ReadCompletedAsync(
                 descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, fromUtc, throughUtc,
-                descriptor.Capture.RigId, expectedKinds, cancellationToken).ConfigureAwait(false);
-            if (associated is null) return null;
+                descriptor.Capture.RigId, policyKinds, cancellationToken).ConfigureAwait(false);
+            if (completed is null) return null;
+            persisted = completed;
         }
         var configuredPolicyIdentity = EnvironmentalAssociationService.CreatePolicyIdentity(expectedKinds);
-        associated ??= expectedKinds.Select(kind => new LocalEnvironmentalCaptureAssociation(
+        var associated = expectedKinds.Select(kind =>
+            persisted.SingleOrDefault(association => association.Kind == kind) ?? new LocalEnvironmentalCaptureAssociation(
             descriptor.Capture.CaptureId, descriptor.Capture.CaptureSequence, kind, descriptor.Capture.RigId,
             fromUtc, throughUtc, configuredPolicyIdentity, LocalEnvironmentalAssociationStatus.Missing, null, [],
             CaptureContractJson.ComputeCanonicalJsonSha256(new
@@ -58,8 +66,9 @@ internal sealed class PresentationMetadataFactsBuilder(
             }),
             throughUtc)).ToArray();
 
-        var environment = new List<PresentationEnvironmentalFactV1>(associated.Count);
-        var retainedEnvironment = retainFrameFacts ? new List<FrameFactsRetainedEnvironmentV1>(associated.Count) : null;
+        var environment = new List<PresentationEnvironmentalFactV1>(associated.Length);
+        var sourceGroups = new HashSet<string>(StringComparer.Ordinal);
+        var retainedEnvironment = retainFrameFacts ? new List<FrameFactsRetainedEnvironmentV1>(associated.Length) : null;
         foreach (var association in associated)
         {
             LocalEnvironmentalObservationRecord? observation = null;
@@ -82,6 +91,9 @@ internal sealed class PresentationMetadataFactsBuilder(
                 var source = string.Compare(left.SourceIdentitySha256, right.SourceIdentitySha256, StringComparison.Ordinal);
                 return source != 0 ? source : left.Fact.ObservationId.CompareTo(right.Fact.ObservationId);
             });
+            if (observation is not null && EnvironmentalReadingSelection.MixingGroup(observation.Fact.Source.Kind,
+                EnvironmentalReadingSelection.SourceGroup(observation.Fact)) is { } sourceGroup)
+                sourceGroups.Add(sourceGroup);
             var conflicts = conflictRecords.Select(static conflict => new PresentationEnvironmentalConflictV1(
                 conflict.Fact.ObservationId, conflict.SourceIdentitySha256, conflict.ContentSha256)).ToArray();
             environment.Add(new(
@@ -111,6 +123,8 @@ internal sealed class PresentationMetadataFactsBuilder(
                     conflictRecords[index].Fact.SchemaVersion, conflictRecords[index].ContentSha256);
         }
 
+        var environmentLines = environment.Select(static item => item.DisplayLine);
+        var environmentHeader = sourceGroups.Count > 1 ? "ENVIRONMENT MIXED SOURCES" : "ENVIRONMENT";
         var schedule = descriptor.CycleEvidence?.ScheduleAdmission;
         var capture = JsonSerializer.SerializeToElement(new
         {
@@ -146,7 +160,7 @@ internal sealed class PresentationMetadataFactsBuilder(
               $"OFFSET {descriptor.Controls.EffectiveOffset?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
               $"SETPOINT {descriptor.Controls.TemperatureSetpointC?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE"} C"]),
             DisplayLines(environment.Count == 0 ? ["ENVIRONMENT", "NOT RETAINED"] :
-                environment.Select(static item => item.DisplayLine).Prepend("ENVIRONMENT")),
+                environmentLines.Prepend(environmentHeader)),
             DisplayLines(["LINEAGE", $"CATALOG {scene.Catalog.Name} {scene.Catalog.Version}",
               $"CALIBRATION {descriptor.Profiles.Calibration.Version} / {descriptor.Profiles.Calibration.Sha256[..12]}",
               stackProduct is null ? "STACK UNAVAILABLE" : $"STACK {stackProduct.SourceArtifactIds.Count} {stackProduct.TotalIntegration.TotalSeconds.ToString("F3", CultureInfo.InvariantCulture)} S",
@@ -189,15 +203,65 @@ internal sealed class PresentationMetadataFactsBuilder(
         LocalEnvironmentalObservationRecord? selected,
         DateTimeOffset evaluatedUtc)
     {
-        var kind = association.Kind.ToString().ToUpperInvariant();
+        var kind = association.Kind switch
+        {
+            EnvironmentalObservationKind.AirTemperature => "AIR",
+            EnvironmentalObservationKind.RelativeHumidity => "RH",
+            EnvironmentalObservationKind.AtmosphericPressure => "PRESS",
+            EnvironmentalObservationKind.SeaLevelPressure => "SLP",
+            EnvironmentalObservationKind.WindSpeed => "WIND",
+            EnvironmentalObservationKind.WindDirection => "DIR",
+            EnvironmentalObservationKind.WindGust => "GUST",
+            EnvironmentalObservationKind.PrecipitationRate => "RAINRATE",
+            EnvironmentalObservationKind.RainState => "RAIN",
+            EnvironmentalObservationKind.SkyBrightness => "SKYBR",
+            EnvironmentalObservationKind.SkyQuality => "SQM",
+            EnvironmentalObservationKind.CloudCover => "CLOUD",
+            EnvironmentalObservationKind.CameraSensorTemperature => "CAMTEMP",
+            EnvironmentalObservationKind.SkyTemperature => "SKYTEMP",
+            _ => association.Kind.ToString().ToUpperInvariant()
+        };
         var status = association.Status.ToString().ToUpperInvariant();
         if (selected is null) return $"{kind} {status}";
         var value = selected.Fact.Value;
         var formatted = value.BooleanValue is { } boolean
             ? boolean ? "TRUE" : "FALSE"
             : value.NumericValue?.ToString("F1", CultureInfo.InvariantCulture) ?? "UNAVAILABLE";
-        var age = Math.Max(0, Math.Round((evaluatedUtc - selected.Fact.ObservedAtUtc).TotalSeconds));
-        return $"{kind} {formatted} {value.Unit.ToString().ToUpperInvariant()} {status} {value.Quality.ToString().ToUpperInvariant()} AGE {age.ToString("F0", CultureInfo.InvariantCulture)} S";
+        var unit = value.Unit switch
+        {
+            EnvironmentalObservationUnit.DegreesCelsius => "C",
+            EnvironmentalObservationUnit.Percent => "%",
+            EnvironmentalObservationUnit.Pascals => "Pa",
+            EnvironmentalObservationUnit.MetersPerSecond => "m/s",
+            EnvironmentalObservationUnit.DegreesTrue => "deg",
+            EnvironmentalObservationUnit.MillimetersPerHour => "mm/h",
+            EnvironmentalObservationUnit.MagnitudesPerSquareArcsecond => "mag/as2",
+            EnvironmentalObservationUnit.Fraction => "frac",
+            _ => string.Empty
+        };
+        var ageSeconds = Math.Max(0, (evaluatedUtc - selected.Fact.ObservedAtUtc).TotalSeconds);
+        var age = ageSeconds < 60 ? FormattableString.Invariant($"{ageSeconds:0}S") :
+            ageSeconds < 3600 ? FormattableString.Invariant($"{ageSeconds / 60:0}M") :
+            ageSeconds < 86400 ? FormattableString.Invariant($"{ageSeconds / 3600:0}H") :
+            FormattableString.Invariant($"{ageSeconds / 86400:0}D");
+        var quality = value.Quality == EnvironmentalObservationQuality.Good ? string.Empty : " ?";
+        var prefix = $"{kind} {formatted}{unit} {status}{quality} AGE {age} {selected.Fact.Source.Kind.ToString().ToUpperInvariant()} SRC ";
+        var group = EnvironmentalReadingSelection.SourceGroup(selected.Fact)!;
+        return prefix + CompactSource(group, PresentationLayerPayloadV1.MaximumLineCharacters - prefix.Length);
+    }
+
+    private static string CompactSource(string value, int maximum)
+    {
+        if (value.Length <= maximum) return value;
+        if (maximum <= 3) return value[..Math.Max(0, maximum)];
+        var slash = value.LastIndexOf('/');
+        if (slash < 0) return Shorten(value, maximum);
+        var providerBudget = Math.Min(slash, Math.Max(1, maximum / 2));
+        return Shorten(value[..slash], providerBudget) + "/" + Shorten(value[(slash + 1)..], maximum - providerBudget - 1);
+
+        static string Shorten(string text, int limit)
+            => text.Length <= limit ? text : limit <= 1 ? text[..Math.Max(0, limit)] :
+                text[..((limit - 1) / 2)] + "…" + text[^(limit / 2)..];
     }
 
     private static string[] DisplayLines(IEnumerable<string> lines) => lines

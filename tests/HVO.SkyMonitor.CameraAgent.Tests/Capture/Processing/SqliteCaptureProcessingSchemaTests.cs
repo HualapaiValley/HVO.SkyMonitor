@@ -13,10 +13,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestClass]
 [TestCategory("Unit")]
 [DoNotParallelize]
-public sealed class SqliteCaptureProcessingSchemaTests
+public sealed partial class SqliteCaptureProcessingSchemaTests
 {
     [TestMethod]
-    public async Task FreshSharedDatabaseCreatesCanonicalSchema8AndRestarts()
+    public async Task FreshSharedDatabaseCreatesCanonicalSchema9AndRestarts()
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
 
@@ -54,13 +54,13 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var connection = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(8L, await ScalarAsync(
+        Assert.AreEqual(9L, await ScalarAsync(
             connection,
             "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(
             connection,
             "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
-        Assert.AreEqual(46L, await ScalarAsync(connection, """
+        Assert.AreEqual(47L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
                OR name LIKE 'processing_%'
@@ -87,7 +87,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
     [TestMethod]
     [DataRow(0)]
     [DataRow(4)]
-    [DataRow(9)]
+    [DataRow(10)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Schema versions are fixed integer test data rows.")]
     public async Task UnsupportedPopulatedSchemaIsRejectedWithoutMutation(int version)
     {
@@ -163,7 +163,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(8L, await ScalarAsync(
+        Assert.AreEqual(9L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(
             verify, "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'migrated-node';").ConfigureAwait(false));
@@ -173,7 +173,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
 
     [TestMethod]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The query combines fixed test schema and insert SQL only.")]
-    public async Task CanonicalSchema6GraphIdentitySurvivesSchema8Migration()
+    public async Task CanonicalSchema6GraphIdentitySurvivesSchema9Migration()
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
         var definition = new ProcessingGraphDefinition(
@@ -218,7 +218,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(8L, await ScalarAsync(
+        Assert.AreEqual(9L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         using var read = verify.CreateCommand();
         read.CommandText = """
@@ -237,7 +237,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
     }
 
     /// <summary>
-    /// Schema 7 already carries execution history, so the migration to schema 8 has to preserve every recorded
+    /// Schema 7 already carries execution history, so the migration to schema 9 has to preserve every recorded
     /// attempt and give each one a route it never wrote. The route the historical row takes must be
     /// <c>Unknown</c>: the attempt completed before the store recorded routes, so nothing observed whether it ran
     /// in process or dispatched to the local replay runner, and claiming either would report a value the
@@ -258,7 +258,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(8L, await ScalarAsync(
+        Assert.AreEqual(9L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, """
             SELECT COUNT(*) FROM processing_node_attempts
@@ -273,7 +273,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
     }
 
     /// <summary>
-    /// A schema 6 database reaches schema 8 through a single migration step, so that step owes the attempt-table
+    /// A schema 6 database reaches schema 9 through a single migration step, so that step owes the attempt-table
     /// rebuild schema 7 introduces in addition to its own graph delivery tables. Without it the version marker
     /// advances while the execution route column stays absent, which the schema validation inside the same
     /// transaction then rejects, so this asserts the column and the preserved row rather than only the marker.
@@ -293,7 +293,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(8L, await ScalarAsync(
+        Assert.AreEqual(9L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, """
             SELECT COUNT(*) FROM processing_node_attempts
@@ -364,7 +364,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
             command.CommandText = $"""
                 DROP TABLE capture_processing_schema;
                 {malformedDefinition};
-                INSERT INTO capture_processing_schema(schema_key, version) VALUES(1, 8);
+                INSERT INTO capture_processing_schema(schema_key, version) VALUES(1, 9);
                 """;
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
@@ -412,7 +412,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 15;";
+                command.CommandText = "PRAGMA user_version = 16;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
@@ -444,7 +444,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
     [TestMethod]
     [DataRow((int)CaptureProcessingFaultPoint.AfterSchemaTransactionBegan)]
     [DataRow((int)CaptureProcessingFaultPoint.BeforeSchemaCommit)]
-    public async Task InterruptedCreationRollsBackAndRetryCreatesSchema8(int faultPoint)
+    public async Task InterruptedCreationRollsBackAndRetryCreatesSchema9(int faultPoint)
     {
         using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
         var fault = new ThrowOnceFaultInjector((CaptureProcessingFaultPoint)faultPoint);
@@ -466,7 +466,7 @@ public sealed class SqliteCaptureProcessingSchemaTests
         using var retried = new SqliteCaptureProcessingStore(fixture.Options);
         await retried.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(8L, await ScalarAsync(
+        Assert.AreEqual(9L, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
     }
 

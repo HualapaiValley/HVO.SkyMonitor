@@ -224,96 +224,98 @@ public sealed class ProcessingGraphProposalReadTests
         var probe = new ReadProbe { PayloadPlanToken = cacheToken };
         using var factory = CreateFactory(probe);
         using var client = await KeyClientAsync(factory, seed).ConfigureAwait(false);
-        await using var planCapture = await Infrastructure.ProposalPayloadPlanCapture.StartAsync(
-            AssemblyHooks.Fixture.SqlServerConnectionString, cacheToken).ConfigureAwait(false);
-        // Compile the real payload statement for two facts before reusing it for 10,000.
-        // The fixture-only comment gives this statement its own cache entry without recompiling the replay.
-        var cacheProbe = await SeedCacheProbeAsync(seed, history.Accepted).ConfigureAwait(false);
-        using (var first = await client.GetAsync(Path(seed, proposal: cacheProbe.Proposal.Id)).ConfigureAwait(false))
+        await Infrastructure.ProposalPayloadPlanCapture.RunAsync(
+            AssemblyHooks.Fixture.SqlServerConnectionString, cacheToken, async planCapture =>
         {
-            first.StatusCode.Should().Be(HttpStatusCode.OK);
-            var tiny = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await first.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
-            tiny.Facts.Should().HaveCount(2);
-            tiny.FactsAreTruncated.Should().BeFalse();
-        }
-        // One large warm-up; one observed HTTP operation, no percentile or speedup claim.
-        using (var warmup = await client.GetAsync(Path(seed)).ConfigureAwait(false)) warmup.StatusCode.Should().Be(HttpStatusCode.OK);
-        probe.Commands.Clear();
-        probe.NonQueries.Clear();
-        var clock = Stopwatch.StartNew();
-        using var response = await client.GetAsync(Path(seed)).ConfigureAwait(false);
-        var payload = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-        clock.Stop();
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        var result = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(payload)!;
-        result.Facts.Should().HaveCount(50);
-        result.FactsAreTruncated.Should().BeTrue();
-        probe.Commands.Should().HaveCount(4);
-        probe.NonQueries.Should().BeEmpty();
-        var factsCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-keys", StringComparison.Ordinal));
-        factsCommand.Sql.Should().Contain("TOP(").And.Contain("ORDER BY").And.NotContain("OFFSET").And.NotContain("COUNT(");
-        var payloadCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-payload", StringComparison.Ordinal));
-        payloadCommand.Sql.Should().NotContain("@proposalId");
-        await AssertExecutedPayloadPlansAsync(planCapture, cacheProbe.Key,
-            payloadCommand.Parameters.Single(item => item.Type == SqlDbType.NVarChar).Name).ConfigureAwait(false);
-        await AssertIndexedBoundAsync(factsCommand, 51).ConfigureAwait(false);
-        await AssertPayloadBoundAsync(payloadCommand, 51).ConfigureAwait(false);
-        await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-        var expected = await db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => fact.ProposalId == seed.Proposal.Id)
-            .OrderByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id).Take(50).ToArrayAsync().ConfigureAwait(false);
-        result.Facts.Select(fact => fact.Id).Should().Equal(expected.Select(fact => fact.Id));
-        result.Facts.Select(fact => fact.RecordedAtUtc).Distinct().Should().HaveCount(50);
-        foreach (var fact in result.Facts)
-        {
-            fact.Kind.Should().BeOneOf("Activated", "RolledBack");
-            fact.LocalRevisionId.Should().Be(history.Accepted.LocalRevisionId);
-            fact.DefinitionIdentitySha256.Should().Be(history.Accepted.DefinitionIdentitySha256);
-            fact.SharedPlanIdentitySha256.Should().Be(history.Accepted.SharedPlanIdentitySha256);
-            fact.LocalPlanIdentitySha256.Should().Be(history.Accepted.LocalPlanIdentitySha256);
-        }
-        TestContext.WriteLine($"source workload=1270-v2-faithful retainedLifecycleFacts=10000 unrelatedLifecycleFacts=10000 unrelatedProposals=200 initialRetrievedAndAcceptedFacts=402 transitionRulesValidated=20201 concurrency=1 warmup=1 observedOperations=1 cacheProbeProposals=1 cacheProbeFacts=2 productSQL=4 paginationKeyRowsReturned=51 payloadRowsReturned=51 outputFacts=50 responseBytes={payload.Length} observedHttpMs={clock.Elapsed.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
-        TestContext.WriteLine(factsCommand.Sql);
-        // Insert while the next request is between the proposal and fact commands. The new read
-        // may see the appended immutable fact; it remains deterministic and bounded, without a snapshot promise.
-        var inserted = LifecycleFact(seed.Proposal, history.Accepted, history.Latest, 10000);
-        probe.BeforeKeys = async () =>
-        {
-            await using var insertion = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-            var writer = insertion.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var registration = await writer.DeviceRegistrations.AsNoTracking()
-                .SingleAsync(item => item.Id == seed.Proposal.RegistrationId).ConfigureAwait(false);
-            var acknowledgement = await insertion.ServiceProvider.GetRequiredService<IProcessingGraphDeliveryService>()
-                .AcknowledgeAsync(registration, ToContract(inserted), CancellationToken.None).ConfigureAwait(false);
-            acknowledgement.Disposition.Should().Be(ProcessingGraphFactAcknowledgementDisposition.Recorded);
-        };
-        using var concurrent = await client.GetAsync(Path(seed)).ConfigureAwait(false);
-        concurrent.StatusCode.Should().Be(HttpStatusCode.OK);
-        var next = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await concurrent.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
-        next.Facts.Should().HaveCount(50);
-        next.FactsAreTruncated.Should().BeTrue();
-        next.Facts[0].Id.Should().Be(inserted.Id);
-        var between = LifecycleFact(seed.Proposal, history.Accepted, inserted, 10001);
-        probe.BeforePayload = async () =>
-        {
-            await using var insertion = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
-            var writer = insertion.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-            var registration = await writer.DeviceRegistrations.AsNoTracking()
-                .SingleAsync(item => item.Id == seed.Proposal.RegistrationId).ConfigureAwait(false);
-            var acknowledgement = await insertion.ServiceProvider.GetRequiredService<IProcessingGraphDeliveryService>()
-                .AcknowledgeAsync(registration, ToContract(between), CancellationToken.None).ConfigureAwait(false);
-            acknowledgement.Disposition.Should().Be(ProcessingGraphFactAcknowledgementDisposition.Recorded);
-        };
-        using var hydrationRace = await client.GetAsync(Path(seed)).ConfigureAwait(false);
-        hydrationRace.StatusCode.Should().Be(HttpStatusCode.OK);
-        var stable = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await hydrationRace.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
-        stable.Facts.Select(fact => fact.Id).Should().Equal(next.Facts.Select(fact => fact.Id));
-        stable.FactsAreTruncated.Should().BeTrue();
-        using var small = await client.GetAsync(new Uri(Path(seed).OriginalString + "?take=1", UriKind.Relative)).ConfigureAwait(false);
-        var one = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await small.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
-        one.Facts.Should().ContainSingle().Which.Id.Should().Be(between.Id);
-        one.FactsAreTruncated.Should().BeTrue();
-        await AssertSyntheticEqualTimeOrderAsync(seed, client).ConfigureAwait(false);
+            // Compile the real payload statement for two facts before reusing it for 10,000.
+            // The fixture-only comment gives this statement its own cache entry without recompiling the replay.
+            var cacheProbe = await SeedCacheProbeAsync(seed, history.Accepted).ConfigureAwait(false);
+            using (var first = await client.GetAsync(Path(seed, proposal: cacheProbe.Proposal.Id)).ConfigureAwait(false))
+            {
+                first.StatusCode.Should().Be(HttpStatusCode.OK);
+                var tiny = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await first.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
+                tiny.Facts.Should().HaveCount(2);
+                tiny.FactsAreTruncated.Should().BeFalse();
+            }
+            // One large warm-up; one observed HTTP operation, no percentile or speedup claim.
+            using (var warmup = await client.GetAsync(Path(seed)).ConfigureAwait(false)) warmup.StatusCode.Should().Be(HttpStatusCode.OK);
+            probe.Commands.Clear();
+            probe.NonQueries.Clear();
+            var clock = Stopwatch.StartNew();
+            using var response = await client.GetAsync(Path(seed)).ConfigureAwait(false);
+            var payload = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
+            clock.Stop();
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            var result = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(payload)!;
+            result.Facts.Should().HaveCount(50);
+            result.FactsAreTruncated.Should().BeTrue();
+            probe.Commands.Should().HaveCount(4);
+            probe.NonQueries.Should().BeEmpty();
+            var factsCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-keys", StringComparison.Ordinal));
+            factsCommand.Sql.Should().Contain("TOP(").And.Contain("ORDER BY").And.NotContain("OFFSET").And.NotContain("COUNT(");
+            var payloadCommand = probe.Commands.Single(item => item.Sql.Contains("proposal-read:fact-payload", StringComparison.Ordinal));
+            payloadCommand.Sql.Should().NotContain("@proposalId");
+            await AssertExecutedPayloadPlansAsync(planCapture, cacheProbe.Key,
+                payloadCommand.Parameters.Single(item => item.Type == SqlDbType.NVarChar).Name).ConfigureAwait(false);
+            await AssertIndexedBoundAsync(factsCommand, 51).ConfigureAwait(false);
+            await AssertPayloadBoundAsync(payloadCommand, 51).ConfigureAwait(false);
+            await using var scope = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+            var expected = await db.CentralProcessingGraphDeliveryFacts.AsNoTracking().Where(fact => fact.ProposalId == seed.Proposal.Id)
+                .OrderByDescending(fact => fact.RecordedAtUtc).ThenByDescending(fact => fact.Id).Take(50).ToArrayAsync().ConfigureAwait(false);
+            result.Facts.Select(fact => fact.Id).Should().Equal(expected.Select(fact => fact.Id));
+            result.Facts.Select(fact => fact.RecordedAtUtc).Distinct().Should().HaveCount(50);
+            foreach (var fact in result.Facts)
+            {
+                fact.Kind.Should().BeOneOf("Activated", "RolledBack");
+                fact.LocalRevisionId.Should().Be(history.Accepted.LocalRevisionId);
+                fact.DefinitionIdentitySha256.Should().Be(history.Accepted.DefinitionIdentitySha256);
+                fact.SharedPlanIdentitySha256.Should().Be(history.Accepted.SharedPlanIdentitySha256);
+                fact.LocalPlanIdentitySha256.Should().Be(history.Accepted.LocalPlanIdentitySha256);
+            }
+            TestContext.WriteLine($"source workload=1270-v2-faithful retainedLifecycleFacts=10000 unrelatedLifecycleFacts=10000 unrelatedProposals=200 initialRetrievedAndAcceptedFacts=402 transitionRulesValidated=20201 concurrency=1 warmup=1 observedOperations=1 cacheProbeProposals=1 cacheProbeFacts=2 productSQL=4 paginationKeyRowsReturned=51 payloadRowsReturned=51 outputFacts=50 responseBytes={payload.Length} observedHttpMs={clock.Elapsed.TotalMilliseconds.ToString(CultureInfo.InvariantCulture)}");
+            TestContext.WriteLine(factsCommand.Sql);
+            // Insert while the next request is between the proposal and fact commands. The new read
+            // may see the appended immutable fact; it remains deterministic and bounded, without a snapshot promise.
+            var inserted = LifecycleFact(seed.Proposal, history.Accepted, history.Latest, 10000);
+            probe.BeforeKeys = async () =>
+            {
+                await using var insertion = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                var writer = insertion.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var registration = await writer.DeviceRegistrations.AsNoTracking()
+                    .SingleAsync(item => item.Id == seed.Proposal.RegistrationId).ConfigureAwait(false);
+                var acknowledgement = await insertion.ServiceProvider.GetRequiredService<IProcessingGraphDeliveryService>()
+                    .AcknowledgeAsync(registration, ToContract(inserted), CancellationToken.None).ConfigureAwait(false);
+                acknowledgement.Disposition.Should().Be(ProcessingGraphFactAcknowledgementDisposition.Recorded);
+            };
+            using var concurrent = await client.GetAsync(Path(seed)).ConfigureAwait(false);
+            concurrent.StatusCode.Should().Be(HttpStatusCode.OK);
+            var next = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await concurrent.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
+            next.Facts.Should().HaveCount(50);
+            next.FactsAreTruncated.Should().BeTrue();
+            next.Facts[0].Id.Should().Be(inserted.Id);
+            var between = LifecycleFact(seed.Proposal, history.Accepted, inserted, 10001);
+            probe.BeforePayload = async () =>
+            {
+                await using var insertion = AssemblyHooks.Fixture.Factory.Services.CreateAsyncScope();
+                var writer = insertion.ServiceProvider.GetRequiredService<ApplicationDbContext>();
+                var registration = await writer.DeviceRegistrations.AsNoTracking()
+                    .SingleAsync(item => item.Id == seed.Proposal.RegistrationId).ConfigureAwait(false);
+                var acknowledgement = await insertion.ServiceProvider.GetRequiredService<IProcessingGraphDeliveryService>()
+                    .AcknowledgeAsync(registration, ToContract(between), CancellationToken.None).ConfigureAwait(false);
+                acknowledgement.Disposition.Should().Be(ProcessingGraphFactAcknowledgementDisposition.Recorded);
+            };
+            using var hydrationRace = await client.GetAsync(Path(seed)).ConfigureAwait(false);
+            hydrationRace.StatusCode.Should().Be(HttpStatusCode.OK);
+            var stable = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await hydrationRace.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
+            stable.Facts.Select(fact => fact.Id).Should().Equal(next.Facts.Select(fact => fact.Id));
+            stable.FactsAreTruncated.Should().BeTrue();
+            using var small = await client.GetAsync(new Uri(Path(seed).OriginalString + "?take=1", UriKind.Relative)).ConfigureAwait(false);
+            var one = JsonSerializer.Deserialize<ProcessingGraphProposalReadResult>(await small.Content.ReadAsByteArrayAsync().ConfigureAwait(false))!;
+            one.Facts.Should().ContainSingle().Which.Id.Should().Be(between.Id);
+            one.FactsAreTruncated.Should().BeTrue();
+            await AssertSyntheticEqualTimeOrderAsync(seed, client).ConfigureAwait(false);
+        }, message => TestContext.WriteLine(message)).ConfigureAwait(false);
     }
 
     [TestMethod]

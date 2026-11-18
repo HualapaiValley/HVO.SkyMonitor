@@ -351,6 +351,7 @@ public sealed class CameraRigPageTests
         cut.Find("#rig-revision-select").Change("older-v1");
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Selected</th>", StringComparison.Ordinal));
         StringAssert.Contains(CompareValue(cut, "Sensor", "selected"), "Historical sensor", StringComparison.Ordinal);
+        Assert.Contains("compatibility unavailable", cut.Find("#selected-horizon-compatibility").TextContent);
         ClickPreview(cut);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Markup, "Contract preview passed", StringComparison.Ordinal));
         Assert.AreEqual(2, service.HistoryCalls);
@@ -1211,10 +1212,25 @@ public sealed class CameraRigPageTests
         => cut.FindAll("[aria-label='Rig selection'] dl > div").Single(d => d.QuerySelector("dt")!.TextContent == term)
             .QuerySelector("dd")!.TextContent;
 
+    [TestMethod]
+    public void ActiveSelectedAndPendingRigShowHorizonRevalidationWarningBeforeStaging()
+    {
+        var service = new FakeRigService { HorizonWarning = "Horizon revalidation required. Detection is quarantined.", PendingId = "other-v2" };
+        using var context = CreateContext(service);
+        var cut = context.Render<CameraRigPage>();
+        cut.WaitForElement("#horizon-compatibility");
+        cut.Find("#rig-revision-select").Change("rig-v1");
+        cut.WaitForElement("#selected-horizon-compatibility");
+        Assert.Contains("revalidation required", cut.Find("#horizon-compatibility").TextContent);
+        Assert.Contains("revalidation required", cut.Find("#selected-horizon-compatibility").TextContent);
+        Assert.Contains("revalidation required", cut.Find("#pending-horizon-compatibility").TextContent);
+    }
+
     private sealed class FakeRigService : ICameraAgentNamedRigUiService
     {
         private readonly NamedRigRevision _rig;
         private readonly NamedRigInventory _inventory;
+        internal string? HorizonWarning { get; set; }
         internal bool VirtualOnly { get; set; }
         internal string ActiveModuleType { init => _rig = _rig with { Module = new(value) }; }
         /// <summary>Camera revisions projected as VirtualSky, with their sky lighting choice and fixed-background flag.</summary>
@@ -1315,7 +1331,11 @@ public sealed class CameraRigPageTests
                 : OperatorUiResult<NamedRigUiCatalog>.Success(new(new("rig-v1", PendingId, Version),
                     [_rig, _rig with { RevisionId = "other-v2", ProfileId = "other", RevisionNumber = 2 },
                      .. (_composedRig is null ? [] : new[] { _composedRig })],
-                    PendingFailure, ActiveFailure)));
+                    PendingFailure, ActiveFailure)
+                {
+                    HorizonCompatibility = HorizonWarning is null ? new Dictionary<string, string>() :
+                        new Dictionary<string, string> { ["rig-v1"] = HorizonWarning, ["other-v2"] = HorizonWarning }
+                }));
         }
         public ValueTask<OperatorUiResult<NamedRigInventory>> GetInventoryAsync(CancellationToken token)
         {

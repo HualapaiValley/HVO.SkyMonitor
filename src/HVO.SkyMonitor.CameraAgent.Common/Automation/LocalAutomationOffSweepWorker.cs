@@ -12,9 +12,12 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     private readonly object _sync = new();
     private readonly CancellationTokenSource _stopping = new();
     private TaskCompletionSource _idle = Completed();
+    private TaskCompletionSource _registered = Completed();
     private Task _execution = Task.CompletedTask;
     private bool _reserved;
     private bool _stopped;
+    private string? _scriptRunKey;
+    private CancellationTokenSource? _scriptStop;
     private int _disposed;
 
     internal Reservation? TryReserve()
@@ -27,6 +30,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             }
             _reserved = true;
             _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _registered = new(TaskCreationOptions.RunContinuationsAsynchronously);
             return new(this);
         }
     }
@@ -38,6 +42,34 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
         {
             return _idle.Task;
         }
+    }
+
+    /// <summary>Cancels only the matching script attempt and waits for its real journal/tree drain.</summary>
+    public async ValueTask<bool> StopScriptRunAsync(string runKey, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runKey);
+        cancellationToken.ThrowIfCancellationRequested();
+        Task registered;
+        lock (_sync)
+        {
+            // Reservation precedes the durable claim. Stop may observe Running before Dispatch
+            // publishes its exact attempt key; registration or release wakes that handoff waiter.
+            registered = _registered.Task;
+        }
+        await registered.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Task cancellation;
+        Task drained;
+        lock (_sync)
+        {
+            if (_scriptStop is null || !string.Equals(_scriptRunKey, runKey, StringComparison.Ordinal)) return false;
+            // Capture this occurrence's completion under the same lock as its identity. A later
+            // reservation can never be cancelled by a retry of a previous run's stop command.
+            drained = _idle.Task;
+            cancellation = _scriptStop.CancelAsync();
+        }
+        await cancellation.ConfigureAwait(false);
+        await drained.WaitAsync(cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
@@ -76,6 +108,10 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
         lock (_sync)
         {
             _reserved = false;
+            _scriptRunKey = null;
+            _scriptStop?.Dispose();
+            _scriptStop = null;
+            _registered.TrySetResult();
             _idle.TrySetResult();
         }
     }
@@ -92,7 +128,8 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
         private int _dispatched;
         private int _released;
 
-        internal void Dispatch(Func<CancellationToken, Task> execute, CancellationToken cancellationToken)
+        internal void Dispatch(Func<CancellationToken, Task> execute, LocalAutomationOccurrence occurrence,
+            string journalRunKey, CancellationToken cancellationToken)
         {
             if (Interlocked.Exchange(ref _dispatched, 1) != 0)
             {
@@ -102,11 +139,19 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
             // enter the delegate so its authority and reservation are released.
             lock (owner._sync)
             {
+                var scriptStop = occurrence.Definition.TaskKind == LocalAutomationTaskKind.CustomScript
+                    ? new CancellationTokenSource() : null;
+                owner._scriptStop = scriptStop;
+                // The adapter retains the original occurrence identity across retries, but stop
+                // must name this saved attempt, just like status and terminal result persistence.
+                owner._scriptRunKey = scriptStop is null ? null : journalRunKey;
+                owner._registered.TrySetResult();
                 owner._execution = Task.Run(async () =>
                 {
                     try
                     {
-                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(owner._stopping.Token, cancellationToken);
+                        using var linked = CancellationTokenSource.CreateLinkedTokenSource(owner._stopping.Token,
+                            cancellationToken, scriptStop?.Token ?? CancellationToken.None);
                         await execute(linked.Token).ConfigureAwait(false);
                     }
                     finally

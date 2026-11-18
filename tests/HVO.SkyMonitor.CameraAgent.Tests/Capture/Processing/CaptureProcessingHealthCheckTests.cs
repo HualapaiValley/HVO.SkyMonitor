@@ -9,6 +9,47 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed class CaptureProcessingHealthCheckTests
 {
     [TestMethod]
+    public async Task SupersededRevisionGuidancePrecedesHistoricalStorageSkips()
+    {
+        var state = new CaptureProcessingState();
+        state.SetStoragePolicySkipped(2);
+        state.SetActiveRevisionSuperseded("old-revision");
+        var check = new CaptureProcessingHealthCheck(state);
+
+        var result = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        Assert.AreEqual(HealthStatus.Degraded, result.Status);
+        StringAssert.Contains(result.Description!, "activate a compatible revision", StringComparison.Ordinal);
+        Assert.AreEqual("old-revision", result.Data["SupersededActiveRevisionId"]);
+        Assert.AreEqual(2L, result.Data["StoragePolicySkippedCount"]);
+
+        state.SetActiveRevisionSuperseded(null);
+        var recovered = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        StringAssert.Contains(recovered.Description!, "new compatible work can continue", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task TerminalAttributionComesOnlyFromDurableStandardLaneEvidence()
+    {
+        var state = new CaptureProcessingState();
+        var check = new CaptureProcessingHealthCheck(state);
+        state.GraphStarted();
+        state.GraphCompleted("terminal");
+        var transient = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        Assert.AreEqual(1L, transient.Data["TerminalCount"]);
+        Assert.AreEqual(0L, transient.Data["LaneQuarantineTerminalCount"]);
+
+        state.SetDurable(0, 0, 0, 2, null);
+        var durable = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        Assert.AreEqual(2L, durable.Data["TerminalCount"]);
+        Assert.AreEqual(2L, durable.Data["LaneQuarantineTerminalCount"]);
+
+        state.GraphCompleted("terminal");
+        var mixed = await check.CheckHealthAsync(new HealthCheckContext()).ConfigureAwait(false);
+        Assert.AreEqual(3L, mixed.Data["TerminalCount"]);
+        Assert.AreEqual(2L, mixed.Data["LaneQuarantineTerminalCount"]);
+    }
+
+    [TestMethod]
     [DataRow("completed", HealthStatus.Healthy)]
     [DataRow("retry", HealthStatus.Degraded)]
     [DataRow("terminal", HealthStatus.Unhealthy)]

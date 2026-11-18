@@ -361,7 +361,7 @@ public sealed class OperatorSettingsFile : IDisposable
         {
             if (File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                RetainedFileMutations.Delete(temporaryPath);
             }
         }
     }

@@ -61,7 +61,7 @@ public sealed class VirtualAstrometryQualificationTests
             {
                 var refusal = VirtualAstrometryFixture.DeclaredRefusal(family, profile, exposureSeconds, variant);
                 var cell = $"{month:D2}-{profile.Name}";
-                var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+                var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
                 await using var lifetime = module.ConfigureAwait(false);
                 if (await RenderStage(async () =>
                     {
@@ -425,7 +425,7 @@ public sealed class VirtualAstrometryQualificationTests
         VirtualAstrometryPixels original, AstrometricCalibration nominal, AstrometricCatalogData catalog,
         VirtualAstrometryMeasurement measured, AstrometricSolveResult expected, DateTimeOffset utc)
     {
-        var repeated = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+        var repeated = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
         await using var lifetime = repeated.ConfigureAwait(false);
         await repeated.InitializeAsync(profile.Config, CancellationToken.None).ConfigureAwait(false);
         var capture = await repeated.CaptureAsync(Request(utc), CancellationToken.None).ConfigureAwait(false);

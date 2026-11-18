@@ -71,7 +71,7 @@ public sealed class CatalogLineageResourceQualificationTests
         var full = await MeasureAsync("full-catalog-query", 2, 10, async () =>
             (await snapshot.Catalog.QueryCandidatesAsync(new(99)).ConfigureAwait(false)).Count).ConfigureAwait(false);
 
-        var module = new VirtualSkyCameraModule(TimeProvider.System, snapshot.Catalog, new ProjectedSceneStore());
+        var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), snapshot.Catalog, new ProjectedSceneStore());
         await module.InitializeAsync(CreateConfig(), CancellationToken.None).ConfigureAwait(false);
         var request = new CaptureRequest(SceneUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
             new CaptureSetpoint(TimeSpan.FromSeconds(20), 150, null, null));

@@ -1,7 +1,7 @@
 namespace HVO.SkyMonitor.CameraAgent.Common.Automation;
 
 /// <summary>
-/// An installed built-in task that runs on the wall-clock periodic trigger, routed by its task kind.
+/// An installed registered task that runs on the wall-clock periodic trigger, routed by its task kind.
 /// It never owns a source window, and its kind is never shared with a source-window adapter or the
 /// environmental registry, so registering one leaves every existing task's routing unchanged.
 /// </summary>

@@ -1698,16 +1698,17 @@ public sealed class ElasticProviderIntegrationTests
                 root = root.Parent;
             }
             root.Should().NotBeNull("the repository root is discoverable from the test output");
-            // The runner is self-contained per runtime identifier, so its output sits under net10.0/<rid>/.
+            // Ordinary builds are framework-dependent; RID publish leftovers must never take precedence.
             var frameworkBin = Path.Combine(root!.FullName, "src", "HVO.SkyMonitor.ProcessingRunner", "bin", configuration, "net10.0");
-            var appHostName = OperatingSystem.IsWindows() ? "HVO.SkyMonitor.ProcessingRunner.exe" : "HVO.SkyMonitor.ProcessingRunner";
-            foreach (var runnerBin in new[] { Path.Combine(frameworkBin, System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier), frameworkBin })
+            return ResolveRunnerLaunch(frameworkBin);
+        }
+
+        internal static (string Executable, string[] Arguments) ResolveRunnerLaunch(string frameworkBin)
+        {
+            var appHost = Path.Combine(frameworkBin, "HVO.SkyMonitor.ProcessingRunner");
+            if (File.Exists(appHost))
             {
-                var appHost = Path.Combine(runnerBin, appHostName);
-                if (File.Exists(appHost))
-                {
-                    return (appHost, []);
-                }
+                return (appHost, []);
             }
             var dll = Path.Combine(frameworkBin, "HVO.SkyMonitor.ProcessingRunner.dll");
             File.Exists(dll).Should().BeTrue($"the runner build output exists under {frameworkBin}");

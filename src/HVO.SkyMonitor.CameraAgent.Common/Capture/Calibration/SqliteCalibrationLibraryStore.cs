@@ -445,7 +445,8 @@ public sealed partial class SqliteCalibrationLibraryStore(
 
     internal async Task<CalibrationAcquisitionJobSnapshot> CancelAcquisitionAsync(
         string jobId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool onlyIfUnstarted = false)
     {
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -455,6 +456,11 @@ public sealed partial class SqliteCalibrationLibraryStore(
             using var transaction = BeginImmediate(connection);
             var current = await ReadRequiredAcquisitionJobAsync(
                 connection, transaction, jobId, cancellationToken).ConfigureAwait(false);
+            if (onlyIfUnstarted && (current.State != CalibrationAcquisitionStates.Planned || current.AttemptCount != 0))
+            {
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                return current;
+            }
             CalibrationAcquisitionJobSnapshot result;
             if (current.IsTerminal)
             {

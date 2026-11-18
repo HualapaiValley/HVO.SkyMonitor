@@ -41,11 +41,14 @@ public static class SkyMonitorObservabilityExtensions
     };
     private static readonly HashSet<string> CaptureLaneHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Availability", "LaneCount", "PendingCount", "PendingBytes", "LeasedCount", "QuarantineCount"
+        "Availability", "LaneCount", "PendingCount", "PendingBytes", "LeasedCount", "QuarantineCount", "Reason",
+        "RequiredQuarantinedLaneCount", "RequiredPressureLaneCount", "RequiredProcessingQuarantineCount", "OperationalFailureCount"
     };
     private static readonly HashSet<string> CaptureProcessingHealthDataKeys = new(StringComparer.Ordinal)
     {
-        "Availability", "PendingCount", "RetryCount", "TerminalCount", "OldestPendingAgeSeconds", "Reason"
+        "Availability", "PendingCount", "RetryCount", "TerminalCount", "OldestPendingAgeSeconds", "Reason",
+        "LaneQuarantineTerminalCount", "ProcessingQuarantineCount", "MissingProductCount", "DurableStateUnavailable",
+        "ReconciliationFailed", "ReplayTerminalCount", "ReplayRetryCount"
     };
     private static readonly HashSet<string> ArtifactOutboxHealthDataKeys = new(StringComparer.Ordinal)
     {

@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -126,6 +127,7 @@ public sealed class ManualFocusSessionStore : IManualFocusSessionStore, IDisposa
             var directory = root.Resolve(DirectoryName);
             AtomicPublisher.EnsureDirectory(root, directory);
             AtomicPublisher.CleanupTemporaries(root, directory, MaximumEnumeratedEntries);
+            using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginWrite(root.Resolve(RelativePath(record.RecordId, RecordExtension)), bytes);
             await AtomicPublisher.PublishAsync(root, RelativePath(record.RecordId, RecordExtension), PublishMode.CreateNew,
                 (stream, token) => stream.WriteAsync(bytes, token).AsTask(), cancellationToken).ConfigureAwait(false);
             var sidecar = Encoding.ASCII.GetBytes(string.Concat(sha256, "  ", record.RecordId, RecordExtension, "\n"));
@@ -261,7 +263,7 @@ public sealed class ManualFocusSessionStore : IManualFocusSessionStore, IDisposa
         {
             var path = root.Resolve(RelativePath(recordId, extension));
             root.Verify(path, "prune-focus-session");
-            File.Delete(path);
+            RetainedFileMutations.Delete(path);
         }
     }
 

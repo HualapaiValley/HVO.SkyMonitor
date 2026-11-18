@@ -54,6 +54,41 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
+    [DataRow(null)]
+    [DataRow("The execution's node evidence is no longer retained.")]
+    [DataRow("The execution's artifact input or output evidence is no longer retained.")]
+    [DataRow("The retained run evidence exceeds the manifest download limits.")]
+    public void DetailPage_ManifestHasDownloadOrSpecificUnavailableReason(string? reason)
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(
+                Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)), "shared", "local", [])
+            { ManifestUnavailableReason = reason }
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement(".run-overview");
+        Assert.IsFalse(cut.Markup.Contains("More run actions", StringComparison.Ordinal));
+        if (reason is null)
+        {
+            var link = cut.Find($"a[href='/api/v1/operations/processing-graphs/executions/{CompletedId}/manifest']");
+            Assert.IsTrue(link.HasAttribute("download"));
+            Assert.AreEqual("Download manifest", link.TextContent);
+        }
+        else
+        {
+            var button = cut.Find("button[aria-describedby='manifest-unavailable']");
+            Assert.IsTrue(button.HasAttribute("disabled"));
+            Assert.AreEqual(reason, button.GetAttribute("title"));
+            Assert.AreEqual(reason, cut.Find("#manifest-unavailable").TextContent);
+            Assert.IsFalse(cut.FindAll("a").Any(link => link.GetAttribute("href")?.EndsWith("/manifest", StringComparison.Ordinal) == true));
+        }
+    }
+
+    [TestMethod]
     public void MixedGainDiagnosticsShowsExclusionsClippingAndNoMeasurement()
     {
         using var context = new BunitContext();
@@ -202,7 +237,9 @@ public sealed class ProcessingExecutionPagesTests
     }
 
     [TestMethod]
-    public void DetailPage_FailedRunDoesNotUseSuccessfulTitleGlyph()
+    [DataRow(null)]
+    [DataRow("old-target")]
+    public void DetailPage_FailedRunDoesNotUseSuccessfulTitleGlyph(string? existingFragment)
     {
         using var context = new BunitContext();
         ConfigureTransientRun(context);
@@ -213,6 +250,8 @@ public sealed class ProcessingExecutionPagesTests
         {
             Detail = new CameraAgentProcessingExecutionDetailView(Now, failure, "shared", "local", [])
         });
+        context.Services.GetRequiredService<NavigationManager>().NavigateTo(
+            $"/operations/pipeline/executions/{CompletedId}?view=local{(existingFragment is null ? string.Empty : $"#{existingFragment}")}");
 
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
 
@@ -220,6 +259,8 @@ public sealed class ProcessingExecutionPagesTests
         {
             Assert.IsTrue(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--failed"));
             Assert.IsFalse(cut.Find(".run-title__glyph").ClassList.Contains("run-title__glyph--completed"));
+            Assert.AreEqual($"http://localhost/operations/pipeline/executions/{CompletedId}?view=local#run-inspector",
+                cut.Find(".run-notice a").GetAttribute("href"));
         });
     }
 
@@ -557,7 +598,7 @@ public sealed class ProcessingExecutionPagesTests
         StringAssert.Contains(cut.Find(".attempt-list").TextContent, "Attempt 2", StringComparison.Ordinal);
         cut.Find("#run-tab-artifacts").Click();
         StringAssert.Contains(cut.Find(".artifact-table-wrap").TextContent, "Not recorded", StringComparison.Ordinal);
-        Assert.IsNotNull(cut.Find("button[disabled][title='No run manifest download contract']"));
+        Assert.AreEqual(CameraAgentRunManifest.MissingReason, cut.Find("button[aria-describedby='manifest-unavailable']").GetAttribute("title"));
     }
 
     [TestMethod]

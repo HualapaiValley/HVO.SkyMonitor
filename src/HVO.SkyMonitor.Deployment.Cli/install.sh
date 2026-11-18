@@ -279,9 +279,9 @@ EOF
   }
 
   # catalog_asset <SHA256SUMS>: the names of the release's catalog archives, <catalog version>.bundle.tar.gz, as
-  # SHA256SUMS lists them (a release has one).
+  # SHA256SUMS lists them. Standalone OpenNGC is independently selected after installation.
   catalog_asset() {
-    awk '{ name = $2; sub(/^\*/, "", name); if (name ~ /^[A-Za-z0-9][A-Za-z0-9._-]*\.bundle\.tar\.gz$/) print name }' "$1"
+    awk '{ name = $2; sub(/^\*/, "", name); if (name ~ /^[A-Za-z0-9][A-Za-z0-9._-]*\.bundle\.tar\.gz$/ && name !~ /^openngc-/) print name }' "$1"
   }
 
   # catalog_root: where the release's catalog is unpacked, ${XDG_CACHE_HOME:-~/.cache}/hvo-sky/catalogs. It is kept
@@ -725,7 +725,8 @@ EOF
     if [ -n "${deploys}" ] && ! ${names_image}; then
       files+=("${image}-${release_version}-linux-${arch}.oci.tar")
     fi
-    # An install's catalog is the one archive SHA256SUMS lists as <catalog version>.bundle.tar.gz.
+    # An install's catalog is the one star archive SHA256SUMS lists as <catalog version>.bundle.tar.gz; the standalone
+    # openngc-* deep-sky archive is selected after installation, not handed to install.
     if [ "${deploys}" = install ] && ! ${names_catalog} && [ -f "${from}/SHA256SUMS" ]; then
       catalog=$(catalog_asset "${from}/SHA256SUMS")
       case "${catalog}" in

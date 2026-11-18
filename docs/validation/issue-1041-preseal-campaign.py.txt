@@ -1,0 +1,63 @@
+"""Run the repository's disposable installer setup with a pre-seal-image scenario.
+
+The generic baseline scenario tests an image predating owner recovery. This
+scenario instead tests the protected-history reader boundary, using the same
+local-daemon guard, image builds, install setup, runtime checks and cleanup.
+"""
+import os
+import pathlib
+import subprocess
+import tempfile
+
+repo = pathlib.Path.cwd()
+assert os.environ.get("TMPDIR"), "Set a short private TMPDIR."
+source = (repo / "scripts/test:deployment-installer").read_text()
+opening = 'if [[ -n "$baseline_revision" ]]; then' + chr(10) + '  recovery_state='
+start = source.index(opening)
+ending = chr(10) + 'fi' + chr(10) + chr(10) + '"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent preflight'
+end = source.index(ending, start) + len(chr(10) + 'fi')
+scenario = r'''
+if [[ -z "$baseline_revision" ]]; then
+  echo 'A pre-seal baseline revision is required.' >&2
+  exit 2
+fi
+history="$instance_root/state/raw/.location/deployment-location.v1.protected"
+old_history_sha="$(sha256sum "$history" | cut -d' ' -f1)"
+lifecycle_state="$root/product/operations/cameraagent-$instance_id.lifecycle.json"
+result_path="$instance_root/state/deployment/installation-result.json"
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent upgrade \
+  --instance-id "$instance_id" --product-root "$root/product" \
+  --image-ref "$candidate_image_id" --no-download --migration-backward-compatible \
+  --json >"$root/sealed-upgrade.json"
+test "$(jq -er '.outcome' "$root/sealed-upgrade.json")" = completed
+test "$(jq -er '.image.imageId' "$root/sealed-upgrade.json")" = "$candidate_image_id"
+jq -e '.stateSnapshotRequired == true and .stateSnapshot != null' "$lifecycle_state" >/dev/null
+test "$(sha256sum "$history" | cut -d' ' -f1)" != "$old_history_sha"
+operation_id="$(jq -er '.stateSnapshot.operationId' "$lifecycle_state")"
+snapshot_id="$(jq -er '.stateSnapshot.snapshotId' "$lifecycle_state")"
+snapshot_manifest="$root/product/operations/lifecycle/$operation_id/state-snapshots/$snapshot_id/manifest.json"
+jq -e '(.protectedFiles | length) == 4 and any(.databases[]; .relativePath == "raw/.location/retained-integrity.v1.db" and .present)' "$snapshot_manifest" >/dev/null
+"$publish_root/HVO.SkyMonitor.Deployment.Cli" cameraagent rollback \
+  --instance-id "$instance_id" --product-root "$root/product" \
+  --json >"$root/preseal-rollback.json"
+test "$(jq -er '.outcome' "$root/preseal-rollback.json")" = completed
+test "$(jq -er '.image.imageId' "$root/preseal-rollback.json")" = "$image_id"
+test "$(sha256sum "$history" | cut -d' ' -f1)" = "$old_history_sha"
+for field in installationId configurationSha256; do
+  test "$(jq -er ".$field" "$result_path")" = "$(jq -er ".$field" "$root/first.json")"
+done
+test "$(docker inspect --format '{{.State.Health.Status}}' "$container")" = healthy
+echo 'Protected-history adoption upgrade and paired rollback contract passed.'
+exit 0
+'''
+source = source[:start] + scenario + source[end:]
+root_line = next(line for line in source.splitlines() if line.startswith("repo_root="))
+source = source.replace(root_line, 'repo_root="${HVO_ISSUE1041_WORKTREE:?}"', 1)
+env = os.environ.copy()
+env["HVO_ISSUE1041_WORKTREE"] = str(repo)
+env["HVO_INSTALLER_BASELINE_REVISION"] = "18ef888157ae6632bdf38b4a7e2215b16d2a3d91"
+with tempfile.TemporaryDirectory(prefix="ps-", dir=env["TMPDIR"]) as scratch:
+    script = pathlib.Path(scratch) / "campaign.sh"
+    script.write_text(source)
+    result = subprocess.run(["bash", str(script)], env=env, cwd=repo)
+raise SystemExit(result.returncode)

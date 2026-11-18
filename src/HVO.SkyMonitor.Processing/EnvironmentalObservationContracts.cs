@@ -25,7 +25,9 @@ public enum EnvironmentalObservationKind
     SkyBrightness,
     SkyQuality,
     CloudCover,
-    CameraSensorTemperature
+    CameraSensorTemperature,
+    SkyTemperature,
+    SeaLevelPressure
 }
 
 public static class EnvironmentalObservationSchemaVersions
@@ -33,8 +35,12 @@ public static class EnvironmentalObservationSchemaVersions
     public const string V1 = "environmental-observation-v1";
     public const string V2 = "environmental-observation-v2";
 
+    public const string V3 = "environmental-observation-v3";
+
+    public static string IdentityVersion(string schema) => schema == V1 ? "v1" : schema == V2 ? "v2" : "v3";
+
     public static bool IsSupported(string? value)
-        => value is V1 or V2;
+        => value is V1 or V2 or V3;
 }
 
 public enum EnvironmentalObservationUnit
@@ -76,7 +82,18 @@ public sealed record EnvironmentalObservationSource(
     [property: JsonRequired] string SourceId,
     [property: JsonRequired] string Version,
     [property: JsonRequired] EnvironmentalObservationSourceKind Kind,
-    [property: JsonRequired] EnvironmentalObservationProvenance Provenance);
+    [property: JsonRequired] EnvironmentalObservationProvenance Provenance)
+{
+    /// <summary>Retained derivation evidence which must not compete with configured primary readings.</summary>
+    [JsonIgnore]
+    public bool IsLineageInput => Provenance is not null && Provenance.Parameters.ValueKind == JsonValueKind.Object &&
+        Provenance.Parameters.TryGetProperty("readingRole", out var role) && role.ValueKind == JsonValueKind.String &&
+        string.Equals(role.GetString(), "lineage-input", StringComparison.Ordinal);
+}
+
+public sealed record EnvironmentalObservationSampleMetadata(
+    DateTimeOffset? DeviceReceivedAtUtc = null,
+    double? SensorTemperatureCelsius = null);
 
 public sealed record EnvironmentalObservationValue(
     [property: JsonRequired] EnvironmentalObservationKind Kind,
@@ -86,7 +103,8 @@ public sealed record EnvironmentalObservationValue(
     [property: JsonRequired] EnvironmentalObservationQuality Quality,
     double? Uncertainty = null,
     double? SubmittedNumericValue = null,
-    string? SubmittedUnit = null);
+    string? SubmittedUnit = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] EnvironmentalObservationSampleMetadata? Metadata = null);
 
 /// <summary>An immutable, source-authored environmental fact. Receipt time is deliberately receiver-owned.</summary>
 public sealed record EnvironmentalObservationV1(

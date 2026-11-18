@@ -286,3 +286,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 
 For more information, please refer to <http://unlicense.org/>
+
+The standalone OpenNGC catalog retains its CC BY-SA 4.0 license and upstream credit in
+`LICENSE-OPENNGC.md` and `ATTRIBUTION-OPENNGC.md` inside each bundle. The maintained
+notices are in `docs/catalog/openngc-license.md` and `docs/catalog/openngc-attribution.md`.

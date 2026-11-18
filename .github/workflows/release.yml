@@ -132,7 +132,7 @@ jobs:
             --amd64 "$RUNNER_TEMP/platform-images/amd64.oci.tar" --amd64-sha256 "$AMD64_SHA256" \
             --arm64 "$RUNNER_TEMP/platform-images/arm64.oci.tar" --arm64-sha256 "$ARM64_SHA256"
       - name: Setup .NET from global.json
-        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Build the release's files
@@ -315,7 +315,7 @@ jobs:
           overwrite: true
 
   install-test:
-    name: Release / Install and Upgrade (${{ matrix.platform }})
+    name: Release / Install and Upgrade
     needs: [gate, draft]
     # Tag pushes alone; the arm64 runner never runs a pull request's code.
     if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -324,10 +324,8 @@ jobs:
       matrix:
         include:
           - platform: linux-x64
-            runner: '"ubuntu-24.04"'
           - platform: linux-arm64
-            runner: '["self-hosted", "linux", "ARM64", "hvo-skymonitor-arm64"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+    runs-on: ${{ fromJSON(matrix.platform == 'linux-arm64' && '["self-hosted", "linux", "ARM64", "hvo-skymonitor-arm64"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 45
     permissions:
       contents: read

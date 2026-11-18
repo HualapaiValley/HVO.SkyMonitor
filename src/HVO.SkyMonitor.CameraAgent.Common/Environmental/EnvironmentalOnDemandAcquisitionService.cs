@@ -21,7 +21,7 @@ public sealed partial class EnvironmentalOnDemandAcquisitionService(
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(sourceId) || sourceId.Length > 128 ||
-            !ValidText(idempotencyKey, 128) || !ValidText(actorId, 256) ||
+            !ValidText(idempotencyKey, 128) || idempotencyKey.StartsWith("__capture-before:", StringComparison.Ordinal) || !ValidText(actorId, 256) ||
             reason is not null && !ValidText(reason, 128))
         {
             throw new ArgumentException("The environmental on-demand command is invalid.");

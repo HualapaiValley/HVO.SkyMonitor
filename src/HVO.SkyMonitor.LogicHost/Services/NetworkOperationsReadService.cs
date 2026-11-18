@@ -509,10 +509,11 @@ internal sealed class NetworkOperationsReadService(
             .ConfigureAwait(false);
         var environmentalRows = includeEnvironment
             ? await dbContext.EnvironmentalObservations.AsNoTracking()
-                .Where(item => item.SiteId == observatoryId)
+                .Where(item => item.SiteId == observatoryId && !item.Source!.IsLineageInput)
                 .Where(item => !dbContext.EnvironmentalObservations.Any(successor =>
                     successor.SiteId == item.SiteId
                     && successor.Kind == item.Kind
+                    && !successor.Source!.IsLineageInput
                     && (successor.ObservedAtUtc > item.ObservedAtUtc
                         || successor.ObservedAtUtc == item.ObservedAtUtc
                         && successor.Id.CompareTo(item.Id) > 0)))

@@ -16,7 +16,7 @@ facts. It builds on the [shared astrometry library](shared-astrometry-v1.md).
 
 - **`HVO.SkyMonitor.Astronomy`**
   - Owns the estimator: `AstrometricUncertaintyEstimator.Estimate` and `CrossCovariance`, with
-    `AstrometricUncertaintyOptions` (`astrometric-frame-uncertainty-v1`) and the result
+    `AstrometricUncertaintyOptions` (estimator `astrometric-frame-uncertainty-v1`) and the result
     `AstrometricFrameUncertainty` (schema `astrometric-frame-uncertainty-v1`).
   - Owns the shared-calibration input `AstrometricCalibrationCovariance` (`astrometric-calibration-covariance-v1`).
   - Owns the clock-facts contract `AstrometricClockFacts`, which is host-neutral.
@@ -123,6 +123,38 @@ The estimator rejects incompatible reuse rather than propagating it:
 - associations that do not match the assessment's association identity
 - a shared calibration whose readout view is not exactly the frame's calibration
 - a readout declaration that is inconsistent or does not produce the frame calibration's image size
+
+## Exposure release policy (Refs #1179)
+
+The `astrometric-exposure-release-v1` policy withholds every covariance component for an accepted mapping
+whose authoritative `ExposureEndUtc - ExposureStartUtc` exceeds one second,
+with reason `exposure-not-qualified`. There is no tuning option to bypass this
+gate. A good residual fit or a supplied session covariance cannot qualify an
+unsupported exposure. The mapping and its exposure midpoint remain usable
+within their own qualified envelope. Clock facts remain separately reported.
+
+The [long-exposure held-out evidence](virtual-astrometry-long-exposure-v1.md#held-out-astrometric-uncertainty)
+failed withholding and coverage, including overconfident released log-focal-scale
+intervals at 60 s. This release restriction enforces that existing envelope; it
+does not requalify long exposures. Durations at or below one second retain the
+same numerical path, subject to all existing validity gates; only the previously
+qualified profiles carry a qualification claim.
+
+The result JSON schema, numerical estimator version and Processing algorithm list
+remain v1. `IdentityForExposure` preserves the exact original settings identity at
+durations up to one second; above that boundary it hashes the new policy version
+with the original settings identity. Qualified one-second payloads, output
+identities, restore, replay and viewer validation remain compatible. Unsupported
+long-exposure results receive a policy-bound identity without a storage migration.
+Retained validation rejects historical available long-exposure covariance; old
+long-exposure products may become unavailable and are never silently rewritten
+or refitted by a viewer, restart or replay. See the retained-astrometry runbook
+for that fail-closed boundary. A future campaign must explicitly version its
+qualification/evaluation path before collecting evidence; the current Manual
+long-exposure uncertainty harness will correctly report the policy withholding.
+
+The [frozen slice plan and validation](../validation/issue-1179-exposure-withholding.md)
+records the baseline comparison and remaining work.
 
 ## Clock policy
 

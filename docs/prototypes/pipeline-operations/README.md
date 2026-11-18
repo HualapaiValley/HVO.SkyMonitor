@@ -248,9 +248,10 @@ font dependencies. Included image assets are local.
 - Recovery creates or represents successor work. Historical run evidence and
   artifacts are never rewritten.
 - Automation accepts registered task types and compatible triggers only; it does
-  not expose arbitrary command execution. Scheduled CameraAgent restart remains
-  an unavailable design target until authenticated lifecycle, drain,
-  verification, and terminal-receipt support exists.
+  not expose arbitrary command execution. Scheduled CameraAgent restart is enabled only while the independent
+  installer lifecycle worker is registered; it supplies authenticated drain,
+  restart verification and durable terminal receipts (#1711). See
+  [lifecycle control](../../runbooks/cameraagent-lifecycle-control.md).
 - CameraAgent owns local candidate evidence and local Automations. LogicHost owns
   authoritative event validation, correlation, reconstruction, scientific
   derivation, and publication review.

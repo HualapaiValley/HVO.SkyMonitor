@@ -55,7 +55,7 @@ internal static partial class Program
     {
         RejectUnknown(options, "--version", "--commit", "--created-utc", "--image-repository", "--image-archive", "--platforms",
             "--installer-linux-x64", "--installer-linux-arm64", "--cli-linux-x64", "--cli-linux-arm64", "--catalog-bundle",
-            "--install-script", "--notices", "--upgrade-notes", "--output");
+            "--deep-sky-catalog-bundle", "--install-script", "--notices", "--upgrade-notes", "--output");
         var version = RequireReleaseVersion(options, "--version");
         var commit = RequireGitOid(options, "--commit");
         var created = RequireUtc(options, "--created-utc");
@@ -76,6 +76,7 @@ internal static partial class Program
             ? new[] { ("linux-arm64", RequireExistingFile(options, "--cli-linux-arm64")), ("linux-x64", RequireExistingFile(options, "--cli-linux-x64")) }
             : [];
         var catalogBundle = options.ContainsKey("--catalog-bundle") ? RequireExistingDirectory(options, "--catalog-bundle") : null;
+        var deepSkyCatalogBundle = options.ContainsKey("--deep-sky-catalog-bundle") ? RequireExistingDirectory(options, "--deep-sky-catalog-bundle") : null;
         var installScript = options.ContainsKey("--install-script")
             ? StampInstallScript(await ReadInstallScriptAsync(RequireExistingFile(options, "--install-script"), cancellationToken)
                 .ConfigureAwait(false), version)
@@ -122,6 +123,13 @@ internal static partial class Program
             if (catalogBundle is not null)
             {
                 assets.Add(await CatalogAssetAsync(catalogBundle, output, created, cancellationToken).ConfigureAwait(false));
+            }
+            if (deepSkyCatalogBundle is not null)
+            {
+                var asset = await CatalogAssetAsync(deepSkyCatalogBundle, output, created, cancellationToken, standalone: true).ConfigureAwait(false);
+                if (assets.Any(item => item["name"]?.GetValue<string>() == asset["name"]?.GetValue<string>()))
+                    throw new ReleaseToolException("Release catalog assets must have distinct identities.");
+                assets.Add(asset);
             }
             if (installScript is not null)
             {
@@ -241,7 +249,8 @@ internal static partial class Program
         string source,
         string output,
         DateTimeOffset created,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool standalone = false)
     {
         var staging = Directory.CreateTempSubdirectory("hvo-release-catalog-");
         try
@@ -252,6 +261,8 @@ internal static partial class Program
             var packageVersion = manifest.RootElement.GetProperty("package").GetProperty("version").GetString()!;
             var specification = ReleaseCatalogs.Get(
                 manifest.RootElement.GetProperty("catalog").GetProperty("id").GetString(), packageVersion);
+            if ((specification.ManifestVersion == 4) != standalone)
+                throw new ReleaseToolException("The catalog bundle belongs to the other catalog family.");
             var name = $"{packageVersion}.bundle.tar.gz";
             await WriteCatalogArchiveAsync(bundle, Path.Combine(output, name), packageVersion, specification, created, cancellationToken)
                 .ConfigureAwait(false);

@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Authorization;
@@ -48,6 +49,12 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         graphs.MapGet("/executions/{executionId:guid}", ReadExecutionAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
             .WithName("GetCameraAgentProcessingExecution");
+        graphs.MapGet("/executions/{executionId:guid}/manifest", DownloadRunManifestAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsReadV1)
+            .WithName("DownloadCameraAgentProcessingRunManifest")
+            .Produces(StatusCodes.Status200OK, contentType: "application/json")
+            .ProducesProblem(StatusCodes.Status404NotFound)
+            .ProducesProblem(StatusCodes.Status409Conflict);
         graphs.MapMethods(
                 "/executions/{executionId:guid}/outputs/{artifactId:guid}/content",
                 [HttpMethods.Get, HttpMethods.Head],
@@ -227,6 +234,40 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The download boundary returns fixed sanitized failures.")]
+    private static async Task<IResult> DownloadRunManifestAsync(
+        Guid executionId, HttpContext context, IProcessingGraphOperations operations, CancellationToken cancellationToken)
+    {
+        context.Response.Headers.CacheControl = "no-store";
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        try
+        {
+            if (executionId == Guid.Empty) return Problem(StatusCodes.Status404NotFound, "The processing execution was not found.");
+            var detail = await operations.ReadRunManifestAsync(executionId, cancellationToken).ConfigureAwait(false);
+            if (detail is null) return Problem(StatusCodes.Status404NotFound, "The processing execution was not found.");
+            var manifest = CameraAgentRunManifest.Create(detail);
+            return manifest.Payload is { } payload
+                ? Results.File(payload, "application/json", $"pipeline-run-{executionId:D}-manifest-v1.json")
+                : Problem(StatusCodes.Status409Conflict, manifest.Reason!);
+        }
+        catch (ProcessingRunManifestBoundsException)
+        {
+            return Problem(StatusCodes.Status409Conflict, ProcessingRunManifestBounds.UnavailableReason);
+        }
+        catch (InvalidDataException)
+        {
+            return Problem(StatusCodes.Status409Conflict, CameraAgentRunManifest.CorruptReason);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return Problem(StatusCodes.Status500InternalServerError, "The run manifest is unavailable.");
+        }
+    }
+
     private static async Task WriteReplayOutputContentAsync(
         Guid executionId,
         Guid artifactId,
@@ -297,6 +338,11 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         catch (ArgumentException)
         {
             return Problem(StatusCodes.Status400BadRequest, "The processing graph command is invalid.");
+        }
+        catch (ValidationException exception) when (exception.Message == CaptureStoragePolicy.RejectionMessage)
+        {
+            return Results.Problem(statusCode: StatusCodes.Status409Conflict, title: CaptureStoragePolicy.RejectionMessage,
+                detail: CaptureStoragePolicy.DescribeMismatch(exception));
         }
         catch (Exception exception) when (exception is KeyNotFoundException or FileNotFoundException)
         {

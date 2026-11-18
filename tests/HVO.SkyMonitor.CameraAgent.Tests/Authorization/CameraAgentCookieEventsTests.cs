@@ -33,6 +33,22 @@ public sealed class CameraAgentCookieEventsTests
             page, scheme, options, new AuthenticationProperties(), "/Account/AccessDenied")).ConfigureAwait(false);
         Assert.AreEqual(StatusCodes.Status302Found, page.Response.StatusCode);
         Assert.AreEqual("/Account/AccessDenied", page.Response.Headers.Location.ToString());
+
+        var metrics = new DefaultHttpContext();
+        metrics.Request.Path = "/metrics";
+        await options.Events.OnRedirectToLogin(new RedirectContext<CookieAuthenticationOptions>(
+            metrics, scheme, options, new AuthenticationProperties(), "/Account/Login?ReturnUrl=%2Fmetrics")).ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status401Unauthorized, metrics.Response.StatusCode);
+        Assert.IsFalse(metrics.Response.Headers.ContainsKey("Location"));
+        Assert.AreEqual("Bearer", metrics.Response.Headers.WWWAuthenticate.ToString());
+        Assert.AreEqual("no-store", metrics.Response.Headers.CacheControl.ToString());
+
+        var deniedMetrics = new DefaultHttpContext();
+        deniedMetrics.Request.Path = "/metrics";
+        await options.Events.OnRedirectToAccessDenied(new RedirectContext<CookieAuthenticationOptions>(
+            deniedMetrics, scheme, options, new AuthenticationProperties(), "/Account/AccessDenied")).ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status403Forbidden, deniedMetrics.Response.StatusCode);
+        Assert.IsFalse(deniedMetrics.Response.Headers.ContainsKey("Location"));
     }
 
     [TestMethod]

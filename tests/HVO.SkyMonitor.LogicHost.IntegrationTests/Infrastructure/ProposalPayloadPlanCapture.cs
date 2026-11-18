@@ -10,16 +10,18 @@ namespace HVO.SkyMonitor.IntegrationTests.Infrastructure;
     Justification = "Session names and predicates contain only fixture-generated GUIDs and constant SQL.")]
 internal sealed class ProposalPayloadPlanCapture(SqlConnection connection, string session) : IAsyncDisposable
 {
-    internal static async Task<ProposalPayloadPlanCapture> StartAsync(string connectionString, Guid token)
+    internal static async Task RunAsync(
+        string connectionString, Guid token, Func<ProposalPayloadPlanCapture, Task> subject, Action<string> report)
     {
         var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync().ConfigureAwait(false);
         var session = $"hvo_proposal_{token:N}";
         var capture = new ProposalPayloadPlanCapture(connection, session);
-        try
+        await QualificationDiagnostics.RunWithCleanupAsync(async () =>
         {
-            await using var command = connection.CreateCommand();
-            command.CommandText = $"""
+            await connection.OpenAsync().ConfigureAwait(false);
+            await using (var command = connection.CreateCommand())
+            {
+                command.CommandText = $"""
                 CREATE EVENT SESSION [{session}] ON SERVER
                 ADD EVENT sqlserver.query_post_execution_showplan(
                     WHERE ([sqlserver].[like_i_sql_unicode_string]([sqlserver].[sql_text], N'%proposal-payload-cache:{token:N}%')))
@@ -28,14 +30,10 @@ internal sealed class ProposalPayloadPlanCapture(SqlConnection connection, strin
                     MAX_DISPATCH_LATENCY = 1 SECONDS, STARTUP_STATE = OFF);
                 ALTER EVENT SESSION [{session}] ON SERVER STATE = START;
                 """;
-            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
-            return capture;
-        }
-        catch
-        {
-            await capture.DisposeAsync().ConfigureAwait(false);
-            throw;
-        }
+                await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            await subject(capture).ConfigureAwait(false);
+        }, capture.DisposeAsync, message => report($"Plan-capture session={session}: {message}")).ConfigureAwait(false);
     }
 
     internal async Task<XDocument[]> ReadAsync(int expectedCount, string parameterName)
@@ -54,19 +52,27 @@ internal sealed class ProposalPayloadPlanCapture(SqlConnection connection, strin
             command.Parameters.AddWithValue("@name", session);
             var text = await command.ExecuteScalarAsync().ConfigureAwait(false) as string
                 ?? throw new InvalidOperationException("The fixture plan-capture target is missing.");
-            var target = XDocument.Parse(text);
-            if ((string?)target.Root?.Attribute("truncated") == "1")
-                throw new InvalidOperationException("The fixture plan-capture target was truncated.");
-            XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
-            // Auto-statistics statements can inherit the parent marker. Keep only
-            // the parameterized application statement, not its internal STATMAN work.
-            var plans = target.Descendants(ns + "ShowPlanXML")
-                .Where(plan => plan.Descendants(ns + "ParameterList").Elements(ns + "ColumnReference")
-                    .Any(parameter => (string?)parameter.Attribute("Column") == parameterName))
-                .Select(plan => new XDocument(plan)).ToArray();
+            var plans = ParsePlans(text, parameterName);
             if (plans.Length >= expectedCount || clock.Elapsed >= TimeSpan.FromSeconds(5)) return plans;
             await Task.Delay(50).ConfigureAwait(false);
         }
+    }
+
+    internal static XDocument[] ParsePlans(string text, string parameterName)
+    {
+        var target = XDocument.Parse(text);
+        if ((string?)target.Root?.Attribute("truncated") == "1")
+            throw new InvalidOperationException("The fixture plan-capture target was truncated.");
+        var dropped = (long?)target.Root?.Attribute("droppedCount") ?? 0;
+        if (dropped > 0)
+            throw new InvalidOperationException($"The fixture plan-capture target dropped {dropped} events.");
+        XNamespace ns = "http://schemas.microsoft.com/sqlserver/2004/07/showplan";
+        // Auto-statistics statements can inherit the parent marker. Keep only
+        // the parameterized application statement, not its internal STATMAN work.
+        return target.Descendants(ns + "ShowPlanXML")
+            .Where(plan => plan.Descendants(ns + "ParameterList").Elements(ns + "ColumnReference")
+                .Any(parameter => (string?)parameter.Attribute("Column") == parameterName))
+            .Select(plan => new XDocument(plan)).ToArray();
     }
 
     public async ValueTask DisposeAsync()

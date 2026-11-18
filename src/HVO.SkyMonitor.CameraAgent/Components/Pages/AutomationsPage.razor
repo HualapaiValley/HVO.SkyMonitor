@@ -73,8 +73,9 @@ else
         case AutomationView.Schedule:
             var (trackStart, trackEnd) = TrackWindow();
             var markers = RunMarkers(trackStart, trackEnd);
+            var upcoming = RunnableCalendar;
             var captureRelative = automation.Definitions
-                .Where(static item => item.Definition.Enabled && item.NextRunCaptureSequence is not null)
+                .Where(item => IsDefinitionRunnable(item) && item.NextRunCaptureSequence is not null)
                 .OrderBy(static item => item.NextRunCaptureSequence)
                 .ToList();
             <div class="automation-view" id="automation-schedule">
@@ -101,14 +102,14 @@ else
                         </div>
                     </div>
                     <h4 class="automation-subheading">Upcoming runs</h4>
-                    @if (automation.Calendar.Count == 0 && captureRelative.Count == 0)
+                    @if (upcoming.Count == 0 && captureRelative.Count == 0)
                     {
-                        <p class="automation-empty">No enabled automation is due. Enable a definition to schedule its next run.</p>
+                        <p class="automation-empty">No available enabled automation is due. Check Definitions to enable or repair a schedule.</p>
                     }
                     else
                     {
                         <ol class="automation-upcoming">
-                            @foreach (var entry in automation.Calendar.OrderBy(static item => item.DueUtc))
+                            @foreach (var entry in upcoming.OrderBy(static item => item.DueUtc))
                             {
                                 <li @key="@($"{entry.DefinitionId}-{entry.DueUtc.UtcTicks}")"><strong>@DayClock(entry.DueUtc)</strong><span>@entry.Name</span><small>@entry.TaskTarget</small></li>
                             }
@@ -166,9 +167,9 @@ else
                 <section class="ops-panel" aria-labelledby="automation-runs-heading">
                     <header class="ops-panel-heading">
                         <div><h3 id="automation-runs-heading">Recent retained runs</h3><p>Every occurrence is recorded once with its outcome. A retry is a new run; a recorded run is never rewritten.</p></div>
-                        <span>@Plural(automation.Runs.Count, "run", "runs") retained</span>
+                        <span>@Plural(DisplayRuns.Count, "run", "runs") retained or active</span>
                     </header>
-                    @if (automation.Runs.Count == 0)
+                    @if (DisplayRuns.Count == 0)
                     {
                         <p class="automation-empty">No automation run has been recorded on this CameraAgent.</p>
                     }
@@ -178,7 +179,7 @@ else
                             <table class="ops-table automation-run-table">
                                 <thead><tr><th scope="col">Run</th><th scope="col">Automation</th><th scope="col">Trigger</th><th scope="col">Scheduled for</th><th scope="col">Outcome</th><th scope="col">Detail</th></tr></thead>
                                 <tbody>
-                                    @foreach (var run in automation.Runs)
+                                    @foreach (var run in DisplayRuns)
                                     {
                                         <tr @key="run.Sequence">
                                             <td>@DayClock(run.StartedAtUtc)</td>
@@ -192,7 +193,12 @@ else
                                                 }
                                             </td>
                                             <td><span class="state-chip @OutcomeClass(run.Outcome)">@Split(run.Outcome.ToString())</span></td>
-                                            <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)</td>
+                                            <td>@(string.IsNullOrWhiteSpace(run.Detail) ? "None" : run.Detail)
+                                                @if (run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript)
+                                                {
+                                                    <AutomationScriptRunControls Run="run" Changed="LoadAsync" />
+                                                }
+                                            </td>
                                         </tr>
                                     }
                                 </tbody>
@@ -243,11 +249,16 @@ else
                     {
                         var item = definition.Definition;
                         var focused = IsFocusedCard(item);
+                        var unavailableReason = DefinitionUnavailableReason(item);
+                        var unavailable = unavailableReason is not null;
                         <article id="@CardId(item.DefinitionId)" class="automation-card@(focused ? " focused" : null)" @key="item.DefinitionId" aria-labelledby="@($"automation-card-{item.DefinitionId}")" aria-current="@(focused ? "true" : null)">
                             <header>
                                 <span class="automation-icon @IconClass(item.TaskKind)" aria-hidden="true">
                                     @switch (IconClass(item.TaskKind))
                                     {
+                                        case "reboot":
+                                            <svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg>
+                                            break;
                                         case "orbital":
                                             <svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="2.2"></circle><ellipse cx="10" cy="10" rx="8" ry="3.4" transform="rotate(-30 10 10)"></ellipse><circle cx="16.2" cy="6.4" r="1.1"></circle></svg>
                                             break;
@@ -260,7 +271,7 @@ else
                                     }
                                 </span>
                                 <div><h3 id="@($"automation-card-{item.DefinitionId}")">@item.Name</h3><p>@TaskDescription(item)</p></div>
-                                <span class="state-chip @(item.Enabled ? "success" : "pending")">@(item.Enabled ? "Enabled" : "Disabled")</span>
+                                <span class="state-chip @(item.Enabled && !unavailable ? "success" : "pending")">@(item.Enabled ? unavailable ? "Unavailable" : "Enabled" : "Disabled")</span>
                             </header>
                             <dl>
                                 <div><dt>Trigger</dt><dd>@DescribeTrigger(item)</dd></div>
@@ -268,9 +279,9 @@ else
                                 <div><dt>Last run</dt><dd>@DescribeLastRun(definition.LastRun)</dd></div>
                                 <div><dt>Next run</dt><dd>@DescribeNextRun(definition)</dd></div>
                             </dl>
-                            @if (item.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)
+                            @if (unavailable)
                             {
-                                <p class="automation-field-hint">Source-window settings are read-only in this editor.</p>
+                                <p class="automation-field-hint">@unavailableReason The recorded enablement is @(item.Enabled ? "on" : "off"); execution requires an available producer.</p>
                             }
                             @if (definition.History.Count > 0)
                             {
@@ -294,28 +305,40 @@ else
                             <footer>
                                 <span>@Split(item.TaskKind.ToString()) / revision @definition.Version</span>
                                 <div class="automation-card-actions">
-                                    <button type="button" id="@EditTriggerId(definition)" class="button secondary small" aria-label="@($"Edit {item.DefinitionId}")" disabled="@(_busy || _loading || item.TriggerKind == LocalAutomationTriggerKind.SourceWindowClosed)" @onclick="() => BeginEdit(definition)">Edit</button>
-                                    <button type="button" id="@ToggleTriggerId(definition)" class="button secondary small" aria-label="@($"{(item.Enabled ? "Disable" : "Enable")} {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginToggle(definition)">@(item.Enabled ? "Disable" : "Enable")</button>
+                                    <button type="button" id="@EditTriggerId(definition)" class="button secondary small" aria-label="@($"Edit {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginEdit(definition)">Edit</button>
+                                    <button type="button" id="@ToggleTriggerId(definition)" class="button secondary small" aria-label="@($"{(item.Enabled ? "Disable" : "Enable")} {item.DefinitionId}")" disabled="@(_busy || _loading || unavailable)" title="@unavailableReason" @onclick="() => BeginToggle(definition)">@(item.Enabled ? "Disable" : "Enable")</button>
                                     <button type="button" id="@RemoveTriggerId(definition)" class="button secondary small" aria-label="@($"Remove {item.DefinitionId}")" disabled="@(_busy || _loading)" @onclick="() => BeginRemove(definition)">Remove</button>
                                 </div>
                             </footer>
+                            @if (item.TaskKind == LocalAutomationTaskKind.CustomScript)
+                            {
+                                <AutomationScriptRunControls Definition="definition" Run="@(DisplayRuns.FirstOrDefault(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running && run.Occurrence?.Definition.TaskKind == LocalAutomationTaskKind.CustomScript))"
+                                    Available="@(!unavailable)" Pending="@(DisplayRuns.Any(run => run.DefinitionId == item.DefinitionId && run.Outcome is LocalAutomationRunOutcome.Queued or LocalAutomationRunOutcome.Running))" Changed="LoadAsync" />
+                            }
                         </article>
                     }
                     <article class="automation-card unsupported" aria-labelledby="automation-card-restart">
                         <header>
                             <span class="automation-icon reboot" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2v7"></path><path d="M6 4a7 7 0 1 0 8 0"></path></svg></span>
                             <div><h3 id="automation-card-restart">Scheduled CameraAgent Restart</h3><p>Requires authenticated lifecycle support, graceful drain, restart verification, and a terminal receipt.</p></div>
-                            <span class="state-chip pending">Design target</span>
+                            <span class="state-chip pending">@(Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart)?.Available == true ? "Available" : "Installer worker required")</span>
                         </header>
                         <dl>
-                            <div><dt>Task type</dt><dd>Not registered</dd></div>
+                            <div><dt>Task type</dt><dd>@(Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart) is null ? "Not registered" : "Scheduled CameraAgent Restart")</dd></div>
                             <div><dt>Interface</dt><dd>Installer CLI only</dd></div>
-                            <div><dt>Scheduling</dt><dd>Unavailable</dd></div>
+                            <div><dt>Scheduling</dt><dd>@(Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart)?.Available == true ? "Outside capture windows" : "Unavailable")</dd></div>
                             <div><dt>Safety</dt><dd>Lifecycle service required</dd></div>
                         </dl>
                         <footer>
                             <span>Arbitrary command execution is never allowed.</span>
-                            <button type="button" class="button secondary small" disabled>Unavailable</button>
+                            @if (Descriptor(LocalAutomationTaskKind.ScheduledCameraAgentRestart)?.Available == true)
+                            {
+                                <a id="automation-restart-setup" class="button secondary small" href="/operations/automations?setup=restart">Set up restart</a>
+                            }
+                            else
+                            {
+                                <button type="button" class="button secondary small" disabled>Unavailable</button>
+                            }
                         </footer>
                     </article>
                 </div>
@@ -338,52 +361,120 @@ else
             @if (_dialog == DialogMode.Editor)
             {
                 <p id="automation-dialog-description" class="dialog-intro">Choose a registered task, its target and a trigger. Nothing is recorded until you review and confirm; arbitrary commands are never accepted.</p>
+                @if (WindowTask)
+                {
+                    <p class="automation-field-hint" role="status">@(_windowStep ? "Step 2 of 3: Source window and schedule" : "Step 1 of 3: Task and parameters")</p>
+                }
                 <fieldset disabled="@(_busy || _loading)">
                     <legend class="visually-hidden">Local automation definition</legend>
                     <div class="automation-dialog-grid">
-                        <label class="ops-field">Identifier
-                            <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@(Editing || ReservedTaskSelected)" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
-                            <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : SelectedReservedTask?.IdentifierHint ?? "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
-                        </label>
-                        <label class="ops-field">Name
-                            <input id="automation-name" autocomplete="off" maxlength="@LocalAutomationContract.MaximumNameLength" @bind="_nameInput" @bind:after="FormChanged" />
-                        </label>
-                        <label class="ops-field">Registered task
-                            <select id="automation-task" @bind="_taskKindInput" @bind:after="TaskChanged">
-                                @foreach (var descriptor in EditorTasks)
+                        @if (!_windowStep && !_scriptStep)
+                        {
+                            <label class="ops-field">Identifier
+                                <input id="automation-id" autocomplete="off" spellcheck="false" readonly="@(Editing || ReservedTaskSelected)" aria-describedby="automation-id-help" @bind="_idInput" @bind:after="FormChanged" />
+                                <small id="automation-id-help" class="automation-field-hint">@(Editing ? "Fixed once recorded." : SelectedReservedTask?.IdentifierHint ?? "Lower-case letters, digits, hyphens and dots; fixed once recorded.")</small>
+                            </label>
+                            <label class="ops-field">Name
+                                <input id="automation-name" autocomplete="off" maxlength="@LocalAutomationContract.MaximumNameLength" @bind="_nameInput" @bind:after="FormChanged" />
+                            </label>
+                            <label class="ops-field">Registered task
+                                <select id="automation-task" @bind="_taskKindInput" @bind:after="TaskChanged">
+                                    @foreach (var descriptor in EditorTasks)
+                                    {
+                                        <option value="@descriptor.TaskKind" disabled="@(!descriptor.Available)">@Split(descriptor.TaskKind.ToString())</option>
+                                    }
+                                </select>
+                            </label>
+                            @if (!ScriptTask)
+                            {
+                            <label class="ops-field">Task target
+                                <select id="automation-target" disabled="@ReservedTaskSelected" @bind="_targetInput" @bind:after="FormChanged">
+                                    @if (!ReservedTaskSelected)
+                                    {
+                                        <option value="">Select a registered target</option>
+                                    }
+                                    @foreach (var target in Targets())
+                                    {
+                                        <option value="@target">@target</option>
+                                    }
+                                </select>
+                            </label>
+                            }
+                            <label class="ops-field">Trigger
+                                <select id="automation-trigger" disabled="@(ReservedTaskSelected || ScriptTask)" @bind="_triggerKindInput" @bind:after="TriggerChanged">
+                                    @foreach (var trigger in CompatibleTriggers())
+                                    {
+                                        <option value="@trigger">@Split(trigger.ToString())</option>
+                                    }
+                                </select>
+                            </label>
+                            @if (!WindowTask)
+                            {
+                                <label class="ops-field">@(_triggerKindInput == LocalAutomationTriggerKind.Periodic ? "Interval (seconds)" : "Interval (captures)")
+                                    <input id="automation-interval" inputmode="numeric" autocomplete="off" aria-describedby="automation-interval-help" @bind="_intervalInput" @bind:after="FormChanged" />
+                                    <small id="automation-interval-help" class="automation-field-hint">@IntervalHint()</small>
+                                </label>
+                            }
+                            <label class="automation-check full"><input id="automation-enabled" type="checkbox" @bind="_enabledInput" @bind:after="FormChanged" /> Run this automation once it is recorded</label>
+                            <label class="ops-field full">Reason (recorded with the revision)
+                                <input id="automation-reason" autocomplete="off" @bind="_reasonInput" @bind:after="FormChanged" />
+                            </label>
+                        }
+                        else if (_scriptStep)
+                        {
+                            <section id="automation-script-step" class="full" aria-labelledby="automation-script-heading">
+                                <h3 id="automation-script-heading">Step 2 of 3: Registered script and schedule</h3>
+                                <p>Choose an owner-registered POSIX invocation. Content and typed argument values stay pinned to its version; this wizard cannot upload commands, credentials or host paths.</p>
+                                <label class="ops-field">Registered invocation
+                                    <select id="automation-script-target" @bind="_targetInput" @bind:after="FormChanged">
+                                        <option value="">Select a registered invocation</option>
+                                        @foreach (var script in Descriptor(LocalAutomationTaskKind.CustomScript)?.ScriptInvocations ?? [])
+                                        {
+                                            <option value="@script.Target">@script.RegistrationId</option>
+                                        }
+                                    </select>
+                                </label>
+                                @if (SelectedScript is { } selectedScript)
                                 {
-                                    <option value="@descriptor.TaskKind" disabled="@(!descriptor.Available)">@Split(descriptor.TaskKind.ToString())</option>
+                                    <dl class="ops-facts">
+                                        <div><dt>Version identity</dt><dd>@selectedScript.Target</dd></div>
+                                        <div><dt>Runtime limit</dt><dd>@selectedScript.TimeoutSeconds seconds</dd></div>
+                                        <div><dt>Temporary bytes</dt><dd>@selectedScript.ScratchBytes</dd></div>
+                                        <div><dt>Output limit</dt><dd>@selectedScript.OutputBytes bytes; raw output is discarded</dd></div>
+                                        <div><dt>Arguments</dt><dd>@selectedScript.ArgumentCount pinned typed arguments</dd></div>
+                                    </dl>
                                 }
-                            </select>
-                        </label>
-                        <label class="ops-field">Task target
-                            <select id="automation-target" disabled="@ReservedTaskSelected" @bind="_targetInput" @bind:after="FormChanged">
-                                @if (!ReservedTaskSelected)
-                                {
-                                    <option value="">Select a registered target</option>
-                                }
-                                @foreach (var target in Targets())
-                                {
-                                    <option value="@target">@target</option>
-                                }
-                            </select>
-                        </label>
-                        <label class="ops-field">Trigger
-                            <select id="automation-trigger" disabled="@ReservedTaskSelected" @bind="_triggerKindInput" @bind:after="TriggerChanged">
-                                @foreach (var trigger in CompatibleTriggers())
-                                {
-                                    <option value="@trigger">@Split(trigger.ToString())</option>
-                                }
-                            </select>
-                        </label>
-                        <label class="ops-field">@(_triggerKindInput == LocalAutomationTriggerKind.Periodic ? "Interval (seconds)" : "Interval (captures)")
-                            <input id="automation-interval" inputmode="numeric" autocomplete="off" aria-describedby="automation-interval-help" @bind="_intervalInput" @bind:after="FormChanged" />
-                            <small id="automation-interval-help" class="automation-field-hint">@IntervalHint()</small>
-                        </label>
-                        <label class="automation-check full"><input id="automation-enabled" type="checkbox" @bind="_enabledInput" @bind:after="FormChanged" /> Run this automation once it is recorded</label>
-                        <label class="ops-field full">Reason (recorded with the revision)
-                            <input id="automation-reason" autocomplete="off" @bind="_reasonInput" @bind:after="FormChanged" />
-                        </label>
+                                <p>No capture hardware, host files, secrets or network access is granted. Files are not published. Cancellation cannot undo earlier side effects.</p>
+                                <label class="ops-field">Interval (seconds)
+                                    <input id="automation-script-interval" inputmode="numeric" @bind="_intervalInput" @bind:after="FormChanged" />
+                                </label>
+                            </section>
+                        }
+                        else
+                        {
+                            <p class="automation-field-hint full">@_nameInput / @Split(_taskKindInput.ToString()) / @_targetInput. Producer parameters are pinned by this registered target.</p>
+                            <label class="ops-field">Source period
+                                <select id="automation-source-window" @bind="_windowKindInput" @bind:after="FormChanged">
+                                    @foreach (var kind in SourceWindows)
+                                    {
+                                        <option value="@kind">@SourceWindowLabel(kind)</option>
+                                    }
+                                </select>
+                            </label>
+                            <label class="ops-field">Source selection
+                                <select id="automation-source-selection" @bind="_selectionInput" @bind:after="FormChanged">
+                                    @foreach (var selection in Enum.GetValues<LocalAutomationSourceSelection>())
+                                    {
+                                        <option value="@selection">@SelectionLabel(selection)</option>
+                                    }
+                                </select>
+                            </label>
+                            <label class="ops-field full">Settle allowance (seconds)
+                                <input id="automation-settle" inputmode="decimal" autocomplete="off" aria-describedby="automation-window-help" @bind="_settleInput" @bind:after="FormChanged" />
+                                <small id="automation-window-help" class="automation-field-hint">0 to 86400 seconds after source close. Full-period finality waits for close plus this allowance; it does not guarantee complete capture coverage.</small>
+                            </label>
+                            <p class="automation-field-hint full">Trigger: source window closed plus settle allowance. Daily products belong to the starting sunrise's local date. Hours can be partial at sunrise; repeated hours have distinct UTC offsets. A missing sunrise has no fallback period.</p>
+                        }
                     </div>
                 </fieldset>
                 @if (_commandMessage is not null)
@@ -396,7 +487,11 @@ else
                 }
                 <footer>
                     <button type="button" id="automation-editor-cancel" class="button secondary" disabled="@_busy" @onclick="CloseDialog">Cancel</button>
-                    <button type="button" id="@SaveTriggerId" class="button primary" disabled="@(_busy || _loading)" @onclick="BeginSave">Review and save</button>
+                    @if (_windowStep || _scriptStep)
+                    {
+                        <button type="button" id="automation-back-task" class="button secondary" disabled="@_busy" @onclick="BackToTask">Back to task</button>
+                    }
+                    <button type="button" id="@SaveTriggerId" class="button primary" disabled="@(_busy || _loading)" @onclick="BeginSaveAsync">@(ScriptTask ? _scriptStep ? "Review script" : "Next: registered script" : WindowTask ? _windowStep ? "Preview and review" : "Next: source window" : "Review and save")</button>
                 </footer>
             }
             else
@@ -411,8 +506,38 @@ else
                         <div><dt>Target</dt><dd>@_targetInput.Trim()</dd></div>
                         <div><dt>Trigger</dt><dd>@(int.TryParse(_intervalInput, System.Globalization.NumberStyles.Integer, Invariant, out var interval) ? DescribeTrigger(_triggerKindInput, interval) : _intervalInput)</dd></div>
                         <div><dt>State</dt><dd>@(_enabledInput ? "Enabled" : "Disabled")</dd></div>
+                        @if (WindowTask && _sourceWindowInput is { } policy)
+                        {
+                            <div><dt>Source period</dt><dd>@SourceWindowLabel(policy.Kind)</dd></div>
+                            <div><dt>Selection</dt><dd>@SelectionLabel(policy.Selection)</dd></div>
+                            <div><dt>Settle allowance</dt><dd>@_settleInput seconds</dd></div>
+                        }
                         <div class="full"><dt>Reason</dt><dd>@(TrimmedReason() ?? "None given")</dd></div>
                     </dl>
+                    @if (_windowPreview is { } preview)
+                    {
+                        <section id="automation-window-preview" aria-labelledby="automation-preview-heading" aria-live="polite">
+                            <h3 id="automation-preview-heading">Step 3 of 3: Review source window and next run</h3>
+                            <p class="automation-field-hint">Next future occurrence if enabled, calculated at UTC @preview.ReadAtUtc.ToString("yyyy-MM-dd HH:mm:ss", Invariant). Saving later can change the next run. Existing due or missed work stays governed by the recorded schedule.</p>
+                            @if (preview.NextWindow is { } window)
+                            {
+                                <dl class="ops-facts automation-confirm-facts">
+                                    <div><dt>Source period</dt><dd>@SourceWindowLabel(window.Policy.Kind)</dd></div>
+                                    <div><dt>Selection</dt><dd>@SelectionLabel(window.Policy.Selection)</dd></div>
+                                    <div><dt>Site zone</dt><dd>@window.ReportingPeriod.Site.TimeZoneId</dd></div>
+                                    <div><dt>Product report date</dt><dd>@window.ReportingPeriod.ReportDate.ToString("yyyy-MM-dd", Invariant)</dd></div>
+                                    <div class="full"><dt>Source start (inclusive)</dt><dd>@WindowTime(window.StartUtc, window)</dd></div>
+                                    <div class="full"><dt>Source end (exclusive)</dt><dd>@WindowTime(window.EndUtc, window)</dd></div>
+                                    <div class="full"><dt>Next run / earliest final</dt><dd>@WindowTime(window.EarliestFinalUtc, window)</dd></div>
+                                </dl>
+                                <p class="automation-field-hint">Final eligibility requires the full planned window to close plus @_settleInput seconds. Actual coverage and product publication are reported by the producer.</p>
+                            }
+                            else
+                            {
+                                <p role="status">Source window unavailable (@preview.UnavailableReasonCode). No qualified upcoming period can be previewed; no substitute sunrise or run time is invented.</p>
+                            }
+                        </section>
+                    }
                 }
                 else
                 {

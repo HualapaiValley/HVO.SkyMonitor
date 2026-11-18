@@ -5,15 +5,15 @@ using HVO.SkyMonitor.Processing;
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed class SceneStylePresentationCaptureProcessingStep(
-    CaptureProcessingStepMetadata metadata, SceneStylePresentationStepOptions options)
-    : ScenePresentationLayerCaptureProcessingStep(metadata, options)
+    CaptureProcessingStepMetadata metadata, SceneStylePresentationStepOptions options, IServiceProvider? serviceProvider = null)
+    : ScenePresentationLayerCaptureProcessingStep(metadata, options, serviceProvider)
 {
     protected override string ProducerVersion => SceneStylePresentation.ProducerVersion;
     public override string? OutputSchemaVersion => PresentationLayerPayloadV1.SceneStyleSchemaVersion;
 
     protected override PresentationSceneLayerPayloadsV2 Produce(ProjectedSceneV1 scene, PresentationAnnotationStyleV1 style,
         bool markers, bool labels, bool constellations, bool circle, bool cardinals,
-        MeasuredStellarAssociationsV1? measured, bool expected) => SceneStylePresentation.Create(scene,
+        MeasuredStellarAssociationsV1? measured, bool expected, HorizonObstructionSceneEligibility? horizon) => SceneStylePresentation.Create(scene,
             new(style with
             {
                 MarkerColor = new(options.MarkerRed, options.MarkerGreen, options.MarkerBlue),
@@ -21,7 +21,7 @@ internal sealed class SceneStylePresentationCaptureProcessingStep(
                 CardinalColor = new(options.CardinalRed, options.CardinalGreen, options.CardinalBlue),
                 ImageCircleColor = new(options.ImageCircleRed, options.ImageCircleGreen, options.ImageCircleBlue)
             }, options.LabelFont, options.CardinalFont, options.PointGlyph),
-            markers, labels, constellations, circle, cardinals, measured, expected);
+            markers, labels, constellations, circle, cardinals, measured, expected, horizon, includeDeepSky: !options.IncludeDeepSkyLayer);
 }
 
 internal sealed class SceneStylePresentationStepOptions : ScenePresentationLayerProcessingStepOptions

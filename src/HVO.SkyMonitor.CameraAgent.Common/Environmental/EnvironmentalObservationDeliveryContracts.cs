@@ -50,7 +50,8 @@ public enum EnvironmentalObservationProjectionDisposition
     NotRequested,
     Waiting,
     Staged,
-    Acknowledged
+    Acknowledged,
+    Abandoned
 }
 
 public sealed record LocalEnvironmentalObservationCommitResult(
@@ -105,6 +106,14 @@ public interface ILocalEnvironmentalObservationStore
         long recordId,
         CancellationToken cancellationToken);
 
+    /// <summary>Filters primary-source eligibility before selecting the newest retained reading.</summary>
+    ValueTask<LocalEnvironmentalObservationRecord?> ReadLocalLatestPrimaryAsync(
+        string root,
+        EnvironmentalObservationKind kind,
+        IReadOnlyList<string> configuredSourceIds,
+        IReadOnlyList<string> unavailableSourceIds,
+        CancellationToken cancellationToken);
+
     ValueTask<IReadOnlyList<LocalEnvironmentalObservationRecord>> ReadLocalCandidatesAsync(
         string root,
         EnvironmentalObservationKind kind,
@@ -119,7 +128,11 @@ public sealed record LocalEnvironmentalRetentionResult(
     int RemovedCount,
     long RemovedBytes,
     long RemainingCount,
-    long RemainingBytes);
+    long RemainingBytes)
+{
+    /// <summary>At least one history or observation batch filled; another transaction may have more work.</summary>
+    public bool BatchLimitReached { get; init; }
+}
 
 public interface ILocalEnvironmentalRetentionStore
 {

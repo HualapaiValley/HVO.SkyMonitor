@@ -24,7 +24,9 @@ public static class FrameFactsRetainedCatalog
         (EnvironmentalObservationKind.SkyBrightness, "skyBrightness", "mag/arcsec2"),
         (EnvironmentalObservationKind.SkyQuality, "skyQuality", "mag/arcsec2"),
         (EnvironmentalObservationKind.CloudCover, "cloudCover", "fraction [0,1]"),
-        (EnvironmentalObservationKind.CameraSensorTemperature, "cameraSensorTemperature", "C")
+        (EnvironmentalObservationKind.CameraSensorTemperature, "cameraSensorTemperature", "C"),
+        (EnvironmentalObservationKind.SkyTemperature, "skyTemperature", "C"),
+        (EnvironmentalObservationKind.SeaLevelPressure, "seaLevelPressure", "Pa")
     ];
 
     public static ImmutableArray<FrameFactsRetainedToken> Entries { get; } = CreateEntries();

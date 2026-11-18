@@ -17,6 +17,47 @@ public sealed class CameraModuleCadenceTests
     private const double VirtualSkyLongitude = -113.878;
 
     [TestMethod]
+    public async Task RunAsync_ContinuousVirtualSkyWaitsEachExposureWithoutAnExtraCadenceDelay()
+    {
+        var clock = new ManualTimeProvider(StartUtc);
+        var config = CreateVirtualSkyHostMeteredConfig(VirtualSkyIlluminationMode.ControlledNight);
+        config = config with
+        {
+            Rig = config.Rig with
+            {
+                ControlPolicy = new() { ExposureControl = AutomaticControlOwnership.Disabled, GainControl = AutomaticControlOwnership.Disabled },
+                Pipeline = config.Rig.Pipeline with
+                {
+                    NightExposure = TimeSpan.FromSeconds(20),
+                    CaptureInterval = TimeSpan.FromSeconds(25),
+                    CadenceMode = CaptureCadenceMode.Continuous
+                }
+            }
+        };
+        var module = new VirtualSkyCameraModule(clock, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+        await using var moduleLifetime = module.ConfigureAwait(false);
+        await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+        using var cancellation = new CancellationTokenSource();
+        var context = new RecordingHostContext(config, clock, cancellation, publishTarget: 2);
+        var run = CreateRunner(module, context, clock).RunAsync(cancellation.Token);
+        await clock.WaitForTimerCountAsync(1).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.IsEmpty(context.Submissions);
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await clock.WaitForTimerCountAsync(2).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.HasCount(1, context.Submissions);
+        clock.Advance(TimeSpan.FromSeconds(20));
+        await run.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        Assert.AreEqual(2, clock.TimerCreationCount, "Only the two exposure timers are allowed in continuous cadence.");
+        Assert.HasCount(2, context.Submissions);
+        var first = context.Submissions[0].Result.AcquisitionTiming!;
+        var second = context.Submissions[1].Result.AcquisitionTiming!;
+        Assert.AreEqual(TimeSpan.FromSeconds(20), first.ExposureEndedUtc - first.ExposureStartedUtc);
+        Assert.AreEqual(TimeSpan.FromSeconds(20), second.ExposureEndedUtc - second.ExposureStartedUtc);
+        Assert.AreEqual(first.ReadoutCompletedUtc, second.ExposureStartedUtc);
+        Assert.AreEqual(StartUtc.AddSeconds(40), second.ExposureEndedUtc);
+    }
+
+    [TestMethod]
     public async Task RunAsync_ContinuousStartsAfterReadoutAndSynchronousHandoffWithoutWaitingForBackgroundWork()
     {
         var timeProvider = new ManualTimeProvider(StartUtc);
@@ -925,12 +966,13 @@ public sealed class CameraModuleCadenceTests
     private static SolarAltitudeRegime RealSunRegime(IPlanetEphemeris ephemeris, DateTimeOffset utc)
         => SolarAltitudeClassifier.Classify(ephemeris, utc, VirtualSkyLatitude, VirtualSkyLongitude, 0, -12).Regime;
 
-    private static VirtualSkyCameraModule CreateVirtualSkyModule(TimeProvider timeProvider, DateTimeOffset utc)
+    private static VirtualSkyCameraModule CreateVirtualSkyModule(ManualTimeProvider timeProvider, DateTimeOffset utc)
     {
         var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(utc, VirtualSkyLongitude) / 15d;
         var catalog = new InMemoryCelestialCatalog([
             new CelestialCatalogObject("fixture-star", "Fixture Star", rightAscension, VirtualSkyLatitude, 0, 0.65)
         ]);
+        timeProvider.AutoAdvanceTimers = true;
         return new VirtualSkyCameraModule(timeProvider, catalog, new ProjectedSceneStore());
     }
 
@@ -1376,6 +1418,7 @@ public sealed class CameraModuleCadenceTests
 
     private sealed class ManualTimeProvider(DateTimeOffset startUtc) : TimeProvider
     {
+        public bool AutoAdvanceTimers { get; set; }
         private readonly object _sync = new();
         private readonly List<ManualTimer> _timers = [];
         private readonly List<(int Count, TaskCompletionSource Completion)> _timerWaiters = [];
@@ -1427,6 +1470,7 @@ public sealed class CameraModuleCadenceTests
                 completion.TrySetResult();
             }
 
+            if (AutoAdvanceTimers) Advance(dueTime);
             return timer;
         }
 

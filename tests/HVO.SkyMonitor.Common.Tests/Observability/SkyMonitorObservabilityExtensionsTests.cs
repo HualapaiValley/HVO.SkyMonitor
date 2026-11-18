@@ -198,6 +198,49 @@ public sealed class SkyMonitorObservabilityExtensionsTests
         Assert.AreEqual(JsonValueKind.Null, checks["unregistered"].GetProperty("data").ValueKind);
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow("capture-lanes")]
+    [DataRow("capture-processing")]
+    public async Task WriteDetailedHealthResponse_RetainsQuarantineCauseEvidenceOnly(string checkName)
+    {
+        var evidence = checkName == "capture-lanes"
+            ? new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["Reason"] = "required-quarantine",
+                ["RequiredQuarantinedLaneCount"] = 1,
+                ["RequiredPressureLaneCount"] = 0,
+                ["RequiredProcessingQuarantineCount"] = 2L,
+                ["OperationalFailureCount"] = 0
+            }
+            : new Dictionary<string, object>(StringComparer.Ordinal)
+            {
+                ["LaneQuarantineTerminalCount"] = 2L,
+                ["ProcessingQuarantineCount"] = 0L,
+                ["MissingProductCount"] = 0L,
+                ["DurableStateUnavailable"] = false,
+                ["ReconciliationFailed"] = false,
+                ["ReplayTerminalCount"] = 0L,
+                ["ReplayRetryCount"] = 0L
+            };
+        var expectedKeys = evidence.Keys.ToArray();
+        evidence["Unlisted"] = "withheld";
+        var report = new HealthReport(new Dictionary<string, HealthReportEntry>(StringComparer.Ordinal)
+        {
+            [checkName] = new(HealthStatus.Unhealthy, "cause evidence", TimeSpan.Zero, null, evidence)
+        }, TimeSpan.Zero);
+        var context = new DefaultHttpContext();
+        using var body = new MemoryStream();
+        context.Response.Body = body;
+
+        await SkyMonitorObservabilityExtensions.WriteDetailedHealthResponse(context, report);
+
+        using var document = JsonDocument.Parse(body.ToArray());
+        var data = document.RootElement.GetProperty("checks")[0].GetProperty("data");
+        CollectionAssert.AreEquivalent(expectedKeys, data.EnumerateObject().Select(static property => property.Name).ToArray());
+        Assert.IsFalse(data.TryGetProperty("Unlisted", out _));
+    }
+
     private static IHost BuildHost(string? buildVersion, string? configuredServiceVersion)
     {
         var builder = Host.CreateApplicationBuilder();

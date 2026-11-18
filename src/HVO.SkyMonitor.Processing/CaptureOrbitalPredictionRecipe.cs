@@ -52,7 +52,10 @@ public sealed class CaptureOrbitalPredictionRecipe : IProcessingRecipe
         var output = new CaptureOrbitalPredictionV1(CaptureOrbitalPredictionJson.SchemaVersion, input.IdentitySha256,
             input.Plan, "Unknown", result?.Status ?? OrbitalExecutionStatus.Unavailable,
             result?.Reason ?? OrbitalPredictionReason.SelectionWithheld, result?.EvaluatedObjects ?? 0,
-            result?.PropagationEvaluations ?? 0, result?.Products ?? [], result?.Failures ?? []);
+            result?.PropagationEvaluations ?? 0, result?.Products ?? [], result?.Failures ?? [])
+        {
+            Obstruction = CaptureOrbitalPredictionJson.EvaluateObstruction(input, result?.Products ?? [])
+        };
         var payload = CaptureOrbitalPredictionJson.Serialize(output, input);
         cancellationToken.ThrowIfCancellationRequested();
         return ProcessingOutcome.Produced(ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Metadata,

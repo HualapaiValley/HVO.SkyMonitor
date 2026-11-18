@@ -326,6 +326,7 @@ public class Program
         builder.Services.AddScoped<ICameraAgentNightlyProductUiService, CameraAgentNightlyProductUiService>();
         builder.Services.AddScoped<ICameraAgentSkyMapUiService, CameraAgentSkyMapUiService>();
         builder.Services.AddScoped<ICameraAgentProcessingGraphUiService, CameraAgentProcessingGraphUiService>();
+        builder.Services.AddSingleton<ICameraAgentControlRestartWindow, CameraAgentControlRestartWindow>();
         builder.Services.AddScoped<ICameraAgentSystemUiService, CameraAgentSystemUiService>();
         builder.Services.AddScoped<ICameraAgentOrbitalUiService, CameraAgentOrbitalUiService>();
         builder.Services.AddScoped<ICameraAgentSpaceWeatherUiService, CameraAgentSpaceWeatherUiService>();
@@ -400,28 +401,7 @@ public class Program
             await next(context).ConfigureAwait(false);
         });
 
-        app.UseWhen(context => !context.Request.Path.StartsWithSegments("/api"), appBuilder =>
-            {
-                appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
-                appBuilder.Use(async (context, next) =>
-                {
-                    await next(context).ConfigureAwait(false);
-                    if (context.Response.HasStarted)
-                    {
-                        return;
-                    }
-                    if (context.Response.StatusCode == StatusCodes.Status401Unauthorized)
-                    {
-                        var returnUrl = string.Concat(context.Request.PathBase, context.Request.Path, context.Request.QueryString);
-                        context.Response.Redirect($"/Account/Login?returnUrl={Uri.EscapeDataString(returnUrl)}");
-                    }
-                    else if (context.Response.StatusCode == StatusCodes.Status403Forbidden)
-                    {
-                        context.Response.Redirect("/Account/AccessDenied");
-                    }
-                });
-            }
-        );
+        UseBrowserAuthenticationRedirects(app);
 
         app.UseStaticFiles();
         app.MapStaticAssets();
@@ -466,6 +446,7 @@ public class Program
         app.MapCameraAgentEnvironmentalOperationsEndpoints();
         app.MapCameraAgentDeploymentEndpoints();
         app.MapCameraAgentLifecycleEndpoints();
+        app.MapCameraAgentControlLifecycleEndpoints();
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         app.MapAdditionalIdentityEndpoints();
@@ -487,6 +468,7 @@ public class Program
                 OwnerBootstrapStateReader ownerBootstrapStateReader,
                 HVO.SkyMonitor.CameraAgent.Common.Configuration.ICameraAgentConfigurationLoader configurationLoader,
                 HVO.SkyMonitor.Catalog.Sqlite.CatalogSnapshotResult catalog,
+                HVO.SkyMonitor.Astronomy.ICelestialCatalog selectedCatalog,
                 IOptions<HVO.SkyMonitor.CameraAgent.Common.Options.CameraAgentHostOptions> options,
                 CancellationToken cancellationToken) =>
             {
@@ -499,17 +481,33 @@ public class Program
                 {
                     return Results.Unauthorized();
                 }
-                var configuration = await configurationLoader.LoadAsync(cancellationToken).ConfigureAwait(false);
+                HVO.SkyMonitor.CameraAgent.Common.Configuration.InstallationConfigurationSnapshot verified;
+                try { verified = await configurationLoader.LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false); }
+                catch (HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation.InstallationVerificationPendingException)
+                {
+                    var recoveryRequired = configurationLoader.RetainedIntegrityRecoveryRequired;
+                    if (!recoveryRequired) context.Response.Headers.RetryAfter = "1";
+                    context.Response.Headers["X-HVO-Installation-Verification"] = recoveryRequired ? "recovery-required" : "scrub-pending";
+                    return Results.Problem(statusCode: StatusCodes.Status503ServiceUnavailable,
+                        title: recoveryRequired ? "Installation integrity requires recovery before verification."
+                            : "Installation integrity verification is awaiting a complete scrub.");
+                }
+                var configuration = verified.Configuration;
                 var ownerBootstrapState = await ownerBootstrapStateReader.GetStateAsync(cancellationToken).ConfigureAwait(false);
-                await using var stream = File.OpenRead(Path.GetFullPath(options.Value.ConfigFilePath));
-                using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
+                var configurationSha256 = verified.ConfigurationSha256;
+                if (configurationSha256 is null)
+                {
+                    // Compatibility for transport/test loaders; the file loader always supplies its own parsed snapshot.
+                    await using var stream = File.OpenRead(Path.GetFullPath(options.Value.ConfigFilePath));
+                    using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+                    configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement);
+                }
                 return Results.Ok(new
                 {
                     agentId = configuration.AgentId,
                     ownerEmail = hostConfiguration["LocalIdentity:AdminEmail"],
                     ownerBootstrapState,
-                    configurationSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(document.RootElement),
+                    configurationSha256,
                     rigProfileSha256 = CameraRigProfileIdentity.ComputeSha256(configuration.Rig),
                     scheduleSha256 = configuration.Schedule is null
                         ? null
@@ -525,11 +523,12 @@ public class Program
                     preprocessingVersion = catalog.PreprocessingVersion,
                     databaseSha256 = catalog.DatabaseSha256,
                     databaseLength = catalog.DatabaseLength,
-                    rowCount = catalog.RowCount
+                    rowCount = catalog.RowCount,
+                    deepSkyCatalog = (selectedCatalog as HVO.SkyMonitor.Astronomy.IDeepSkyCatalogSource)?.DeepSky?.Semantics.SnapshotIdentity
                 });
             })
             .AllowAnonymous();
-        app.MapPrometheusScrapingEndpoint();
+        CameraAgentMetricsEndpoint.Map(app);
 
         app.MapSkyMonitorHealthEndpoints();
 
@@ -596,9 +595,15 @@ public class Program
         options.ExpireTimeSpan = TimeSpan.FromHours(12);
         options.Events.OnRedirectToLogin = context =>
         {
-            if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            if (CameraAgentMetricsEndpoint.PrefersAuthenticationStatusCode(context.Request.Path))
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                if (CameraAgentMetricsEndpoint.IsScrapePath(context.Request.Path))
+                {
+                    context.Response.Headers.CacheControl = "no-store";
+                    context.Response.Headers.WWWAuthenticate = "Bearer";
+                }
+
                 return Task.CompletedTask;
             }
 
@@ -607,15 +612,54 @@ public class Program
         };
         options.Events.OnRedirectToAccessDenied = context =>
         {
-            if (context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase))
+            if (CameraAgentMetricsEndpoint.PrefersAuthenticationStatusCode(context.Request.Path))
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                if (CameraAgentMetricsEndpoint.IsScrapePath(context.Request.Path))
+                {
+                    context.Response.Headers.CacheControl = "no-store";
+                }
+
                 return Task.CompletedTask;
             }
 
             context.Response.Redirect(context.RedirectUri);
             return Task.CompletedTask;
         };
+    }
+
+    /// <summary>
+    /// Sends ordinary pages to login or access denied. API routes and <c>/metrics</c> keep the
+    /// status code so a scraper is not redirected and a query string is not copied into a login URL.
+    /// </summary>
+    internal static void UseBrowserAuthenticationRedirects(IApplicationBuilder app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        app.UseWhen(
+            static context => !CameraAgentMetricsEndpoint.PrefersAuthenticationStatusCode(context.Request.Path),
+            appBuilder =>
+            {
+                appBuilder.UseStatusCodePagesWithReExecute("/not-found", "?statusCode={0}");
+                appBuilder.Use(async (context, next) =>
+                {
+                    await next(context).ConfigureAwait(false);
+                    if (context.Response.HasStarted)
+                    {
+                        return;
+                    }
+
+                    if (context.Response.StatusCode == StatusCodes.Status401Unauthorized)
+                    {
+                        var returnUrl = string.Concat(
+                            context.Request.PathBase, context.Request.Path, context.Request.QueryString);
+                        context.Response.Redirect($"/Account/Login?returnUrl={Uri.EscapeDataString(returnUrl)}");
+                    }
+                    else if (context.Response.StatusCode == StatusCodes.Status403Forbidden)
+                    {
+                        context.Response.Redirect("/Account/AccessDenied");
+                    }
+                });
+            });
     }
 
     internal static void ApplyLocalIdentityPasswordFile(ConfigurationManager configuration)

@@ -13,11 +13,14 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using System.Collections.Concurrent;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 
 [TestClass]
 [TestCategory("Unit")]
+[DoNotParallelize]
 public sealed class CameraAgentAutomationOperationsEndpointsTests
 {
     [TestMethod]
@@ -101,7 +104,7 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         CollectionAssert.Contains(
             read.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(static data => data.Policy).ToArray(),
             CameraAgentAuthorizationPolicyNames.OperationsReadV1);
-        foreach (var mutation in new[] { save, remove, backfill, retry })
+        foreach (var mutation in new[] { save, remove, backfill, retry, FindEndpoint(app, "RunCameraAgentScriptNow"), FindEndpoint(app, "StopCameraAgentScriptRun") })
         {
             CollectionAssert.Contains(
                 mutation.Metadata.GetOrderedMetadata<IAuthorizeData>().Select(static data => data.Policy).ToArray(),
@@ -268,10 +271,72 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         Assert.IsEmpty(store.SaveRequests);
     }
 
-    private static WebApplication CreateApp(ILocalAutomationStore store)
+    [TestMethod]
+    [DataRow("RunCameraAgentScriptNow", "{\"expectedVersion\":1}")]
+    [DataRow("StopCameraAgentScriptRun", "{\"runKey\":\"missing\",\"expectedDefinitionVersion\":1}")]
+    public async Task ScriptEndpointsRejectAnonymousUnknownFieldsAndMissingInputs(string name, string payload)
+    {
+        using var app = CreateApp(new RecordingStore());
+        var route = new Dictionary<string, object?> { ["definitionId"] = "script" };
+        Assert.AreEqual(403, (await PostAsync(app, name, payload, anonymous: true, routeValues: route).ConfigureAwait(false)).Status);
+        Assert.AreEqual(400, (await PostAsync(app, name, "{}", routeValues: route).ConfigureAwait(false)).Status);
+        Assert.AreEqual(400, (await PostAsync(app, name, payload[..^1] + ",\"content\":\"synthetic-secret\"}", routeValues: route).ConfigureAwait(false)).Status);
+    }
+
+    [TestMethod]
+    public async Task ScriptRunNowEndpointUsesTheOwnerAndDurableIdempotencyAndRejectsStaleVersions()
+    {
+        using var fixture = new Automation.ScriptControlsFixture();
+        await fixture.Store.InitializeAsync(default).ConfigureAwait(false);
+        await fixture.Store.SaveAsync(Automation.ScriptControlsFixture.Save(), default).ConfigureAwait(false);
+        using var app = CreateApp(fixture.Store);
+        var route = new Dictionary<string, object?> { ["definitionId"] = "script" };
+        Assert.AreEqual(409, (await PostAsync(app, "RunCameraAgentScriptNow", "{\"expectedVersion\":2}", "stale", routeValues: route).ConfigureAwait(false)).Status);
+        foreach (var attempt in new[] { 1, 2 })
+        {
+            Assert.AreEqual(200, (await PostAsync(app, "RunCameraAgentScriptNow", "{\"expectedVersion\":1}", "run", routeValues: route).ConfigureAwait(false)).Status, "Attempt " + attempt);
+        }
+        var run = (await fixture.Store.GetStateAsync(default).ConfigureAwait(false)).Runs.Single();
+        Assert.AreEqual("owner", run.Preparation!.Actor);
+        Assert.AreEqual(LocalAutomationRunOutcome.Queued, run.Outcome);
+    }
+
+    [TestMethod]
+    [DataRow("SaveCameraAgentAutomation", "{\"definitionId\":\"script\",\"name\":\"Check\",\"enabled\":true,\"taskKind\":\"CustomScript\",\"taskTarget\":\"registered.digest\",\"triggerKind\":\"Periodic\",\"triggerInterval\":60,\"expectedVersion\":1}")]
+    [DataRow("RemoveCameraAgentAutomation", "{\"expectedVersion\":1}")]
+    [DataRow("BackfillCameraAgentAutomation", "{\"expectedVersion\":1,\"reportDate\":\"2026-11-09\"}")]
+    [DataRow("RetryCameraAgentAutomation", "{\"expectedVersion\":1,\"previousRunKey\":\"run\"}")]
+    [DataRow("RunCameraAgentScriptNow", "{\"expectedVersion\":1}")]
+    [DataRow("StopCameraAgentScriptRun", "{\"expectedDefinitionVersion\":1,\"runKey\":\"run\"}")]
+    public async Task EveryMutationFailsClosedWithoutSuccessfulAntiforgery(string name, string payload)
+    {
+        foreach (bool? valid in new bool?[] { null, false })
+        {
+            var store = new RecordingStore();
+            var logs = new RejectionLogs();
+            using var app = CreateApp(store, logs);
+            var response = await PostAsync(app, name, payload, routeValues: new Dictionary<string, object?>
+            { ["definitionId"] = "script" }, antiforgeryValid: valid).ConfigureAwait(false);
+            Assert.AreEqual(400, response.Status, $"{name}, feature valid = {valid}");
+            using var problem = System.Text.Json.JsonDocument.Parse(response.Body);
+            Assert.AreEqual("automation.antiforgery-invalid", problem.RootElement.GetProperty("reasonCode").GetString());
+            var rejection = logs.Messages.Single(message => message.Id == 7431);
+            Assert.AreEqual("CameraAgent automation command rejected: automation.antiforgery-invalid.", rejection.Text);
+            Assert.DoesNotContain("registered.digest", rejection.Text, StringComparison.Ordinal);
+            Assert.IsEmpty(store.SaveRequests);
+            Assert.IsEmpty(store.RemoveRequests);
+            Assert.IsEmpty(store.BackfillRequests);
+            Assert.IsEmpty(store.RetryRequests);
+        }
+    }
+
+    private static WebApplication CreateApp(ILocalAutomationStore store, ILoggerProvider? logs = null)
     {
         var builder = WebApplication.CreateBuilder();
+        if (logs is not null) builder.Logging.AddProvider(logs);
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton<LocalAutomationOffSweepWorker>();
+        builder.Services.AddSingleton<LocalAutomationScriptCommands>();
         var app = builder.Build();
         app.MapCameraAgentAutomationOperationsEndpoints();
         return app;
@@ -292,8 +357,9 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         string json,
         string? idempotencyKey = null,
         bool anonymous = false,
-        IReadOnlyDictionary<string, object?>? routeValues = null)
-        => InvokeAsync(app, name, HttpMethods.Post, json, idempotencyKey, anonymous, routeValues);
+        IReadOnlyDictionary<string, object?>? routeValues = null,
+        bool? antiforgeryValid = true)
+        => InvokeAsync(app, name, HttpMethods.Post, json, idempotencyKey, anonymous, routeValues, antiforgeryValid);
 
     private static async Task<(int Status, string Body)> InvokeAsync(
         WebApplication app,
@@ -302,7 +368,8 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         string? json,
         string? idempotencyKey,
         bool anonymous,
-        IReadOnlyDictionary<string, object?>? routeValues)
+        IReadOnlyDictionary<string, object?>? routeValues,
+        bool? antiforgeryValid = true)
     {
         var endpoint = FindEndpoint(app, name);
         var context = new DefaultHttpContext
@@ -319,6 +386,10 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
                     ],
                     IdentityConstants.ApplicationScheme))
         };
+        if (antiforgeryValid is { } valid)
+        {
+            context.Features.Set<IAntiforgeryValidationFeature>(new AntiforgeryFeature(valid));
+        }
         context.Request.Method = method;
         if (routeValues is not null)
         {
@@ -346,6 +417,26 @@ public sealed class CameraAgentAutomationOperationsEndpointsTests
         context.Response.Body = body;
         await endpoint.RequestDelegate!(context).ConfigureAwait(false);
         return (context.Response.StatusCode, Encoding.UTF8.GetString(body.ToArray()));
+    }
+
+    private sealed class RejectionLogs : ILoggerProvider
+    {
+        internal ConcurrentQueue<(int Id, string Text)> Messages { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new Recorder(Messages);
+        public void Dispose() { }
+        private sealed class Recorder(ConcurrentQueue<(int Id, string Text)> messages) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter) => messages.Enqueue((eventId.Id, formatter(state, exception)));
+        }
+    }
+
+    private sealed class AntiforgeryFeature(bool valid) : IAntiforgeryValidationFeature
+    {
+        public bool IsValid => valid;
+        public Exception? Error => valid ? null : new AntiforgeryValidationException("Invalid test token.");
     }
 
     private sealed class BodyDetectionFeature : IHttpRequestBodyDetectionFeature

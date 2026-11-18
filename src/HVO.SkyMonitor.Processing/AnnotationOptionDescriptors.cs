@@ -5,12 +5,19 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>Effective legacy Annotation controls at the exact registered recipe implementation.</summary>
 public static class AnnotationOptionDescriptors
 {
+    private static readonly string[] CornerKeys = ["topLeftTokens", "topRightTokens", "bottomLeftTokens", "bottomRightTokens"];
+    private static readonly string[] CornerChoices =
+    [
+        "agent-identity", "capture-sequence", "utc", "schedule-profile", "exposure", "cadence", "gain", "offset",
+        "sensor-setpoint", "environment", "catalog", "calibration", "stack", "processing-profile"
+    ];
+
     public static ProcessingNodeOptionsDescriptor Descriptor { get; } = new(
         "annotation-options-v1",
         "Annotation",
         "projected-annotation-v4",
         "Legacy annotation",
-        "Style the existing Annotation output. Constellation intensity affects Mono8 previews; constellation color affects RGB previews. Collections, label qualification and recipe/output identities stay in the pipeline JSON. Save, validate and explicitly activate a new graph revision; retained images stay unchanged.",
+        "Select and style the existing Annotation output and retained-fact corner lines. Constellation intensity affects Mono8 previews; constellation color affects RGB previews. Rich templates use the explicit Frame Facts conversion. Save, validate and explicitly activate a new graph revision; retained images stay unchanged.",
         [
             ProcessingOptionDescriptor.Toggle("enabled", "enabled", "Enable legacy annotation",
                 "Run this Annotation node. In an explicit v2 graph this edits the node's enabled state.", true),
@@ -58,6 +65,47 @@ public static class AnnotationOptionDescriptors
             ProcessingOptionDescriptor.WholeNumber("metadataInset", "metadataInset", "Metadata inset",
                 "Inset of metadata lines from the image edges.", 4, 0, 64, "px"),
             ProcessingOptionDescriptor.WholeNumber("metadataLineSpacing", "metadataLineSpacing", "Metadata line spacing",
-                "Additional spacing between existing metadata lines.", 2, 0, 16, "px")
+                "Additional spacing between existing metadata lines.", 2, 0, 16, "px"),
+            ProcessingOptionDescriptor.TextCollection("constellationIds", "constellationIds", "Constellation IDs",
+                "Draw these retained constellation figures. Empty draws all retained figures. Unknown IDs, duplicates and source order are preserved.", 256, 16),
+            Corner("topLeftTokens", "Top left corner", ["agent-identity", "capture-sequence", "utc"]),
+            Corner("topRightTokens", "Top right corner", ["schedule-profile", "exposure", "cadence", "gain", "offset", "sensor-setpoint"]),
+            Corner("bottomLeftTokens", "Bottom left corner", ["environment"]),
+            Corner("bottomRightTokens", "Bottom right corner", ["catalog", "calibration", "stack", "processing-profile"]),
+            ProcessingOptionDescriptor.EnumCollection<EnvironmentalObservationKind>("environmentalKinds", "environmentalKinds", "Environmental observations",
+                "Existing retained observations expanded by the environment token. Select at most eight unique kinds. Missing or unavailable observations keep their status; selection does not enable a sensor or provider.",
+                [EnvironmentalObservationKind.AirTemperature, EnvironmentalObservationKind.RelativeHumidity,
+                    EnvironmentalObservationKind.AtmosphericPressure, EnvironmentalObservationKind.WindSpeed,
+                    EnvironmentalObservationKind.RainState, EnvironmentalObservationKind.CloudCover], 8)
         ]);
+
+    private static ProcessingOptionDescriptor Corner(string key, string label, IEnumerable<string> defaults)
+        => ProcessingOptionDescriptor.ChoiceCollection(key, key, label,
+            "Ordered retained-fact lines, with at most eight unique tokens and eight expanded lines. The environment token expands to the selected observation count, or one unavailable line when empty. Clear the selection for an empty corner.",
+            CornerChoices, defaults, 8, uniqueItemIdentity: static value => value,
+            emptyCollectionLabel: "No lines in this corner.", clearCollectionLabel: "Clear corner");
+
+    internal static IEnumerable<ProcessingGraphDiagnostic> ValidateSelections(ProcessingNodeOptionsDescriptor descriptor,
+        IEnumerable<ProcessingDecodedOption> decoded, string path)
+    {
+        if (!descriptor.StepAlias.Equals(Descriptor.StepAlias, StringComparison.OrdinalIgnoreCase) ||
+            descriptor.StepVersion != Descriptor.StepVersion)
+            yield break;
+        var options = decoded.ToDictionary(static option => option.Descriptor.Key, StringComparer.Ordinal);
+        if (!options.TryGetValue("environmentalKinds", out var environment)) yield break;
+        var kinds = environment.Value.AsCollection().Items;
+        if (kinds.Distinct(StringComparer.Ordinal).Count() != kinds.Length)
+            yield return new(ProcessingOptionReasonCodes.NotAllowed, path + ".environmentalKinds",
+                "Select each environmental kind at most once.");
+        foreach (var key in CornerKeys)
+        {
+            if (!options.TryGetValue(key, out var corner)) continue;
+            var tokens = corner.Value.AsCollection().Items;
+            var expanded = tokens.Count(static token => token != "environment") +
+                (tokens.Contains("environment", StringComparer.Ordinal) ? Math.Max(1, kinds.Length) : 0);
+            if (expanded > 8)
+                yield return new(ProcessingOptionReasonCodes.NotAllowed, path + "." + key,
+                    "Expanded metadata corner content cannot exceed eight lines. Remove tokens or environmental selections.");
+        }
+    }
 }

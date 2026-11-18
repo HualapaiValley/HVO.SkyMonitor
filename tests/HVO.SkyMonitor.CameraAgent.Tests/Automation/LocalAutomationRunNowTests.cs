@@ -381,23 +381,31 @@ public sealed class LocalAutomationRunNowTests : IDisposable
     }
 
     [TestMethod]
-    public async Task RunNow_QueuedBeforeAnEdit_RunsItsRetainedInputsAndReleasesThePendingBound()
+    public async Task RunNow_QueuedBeforeAnEdit_IsWithdrawnAndReleasesThePendingBound()
     {
         Assert.AreEqual(LocalAutomationCommandStatus.Applied, (await SaveAsync().ConfigureAwait(false)).Status);
         var queued = await _store.RunNowAsync(RunNow("before-edit"), CancellationToken.None).ConfigureAwait(false);
         var prepared = queued.State.Runs.Single();
         Assert.AreEqual(LocalAutomationCommandStatus.Applied,
             (await SaveAsync(1, name: "Orbital refresh", key: "edit").ConfigureAwait(false)).Status);
-        await AssertRejectedAsync(RunNow("after-edit", 2),
-            LocalAutomationCommandStatus.Conflict, LocalAutomationContract.RunNowPendingReasonCode).ConfigureAwait(false);
+        var withdrawn = (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single();
+        LocalAutomationQueuedWithdrawalTests.AssertWithdrawal(prepared, withdrawn, "edited");
+        var replacement = await _store.RunNowAsync(RunNow("after-edit", 2), CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(LocalAutomationCommandStatus.Applied, replacement.Status);
+        var pending = replacement.State.Runs.Single(static run => run.Outcome == LocalAutomationRunOutcome.Queued);
+        Assert.AreEqual(LocalAutomationCommandStatus.Replayed,
+            (await _store.RunNowAsync(RunNow("before-edit"), CancellationToken.None).ConfigureAwait(false)).Status);
+        Assert.AreEqual(pending, (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single(run => run.RunKey == pending.RunKey));
 
         using var runner = CreateRunner();
         await runner.SweepAsync(CancellationToken.None).ConfigureAwait(false);
 
         var executed = _adapter.Executed.Single();
-        Assert.AreEqual(prepared.RunKey, executed.RunKey);
-        Assert.AreEqual("Orbital elements refresh", executed.Definition.Name);
-        Assert.AreEqual(1, executed.DefinitionVersion);
+        Assert.AreEqual(pending.RunKey, executed.RunKey);
+        Assert.AreNotEqual(prepared.RunKey, executed.RunKey);
+        Assert.AreEqual("Orbital refresh", executed.Definition.Name);
+        Assert.AreEqual(2, executed.DefinitionVersion);
+        Assert.AreEqual(withdrawn, (await _store.GetStateAsync(CancellationToken.None).ConfigureAwait(false)).Runs.Single(run => run.RunKey == prepared.RunKey));
         Assert.AreEqual(LocalAutomationCommandStatus.Applied,
             (await _store.RunNowAsync(RunNow("after-edit-settled", 2), CancellationToken.None).ConfigureAwait(false)).Status);
     }

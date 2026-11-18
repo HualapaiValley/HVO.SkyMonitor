@@ -293,10 +293,7 @@ public sealed class ArtifactOutboxDrainService(
         string storageRoot,
         string rawIngressRoot)
         => string.IsNullOrWhiteSpace(rawIngressRoot)
-            || !string.Equals(
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(storageRoot)),
-                Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawIngressRoot)),
-                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+            || !StorageRootIdentity.AreEqual(storageRoot, rawIngressRoot);
 
     internal static string? ResolveStorageRoot(HVO.SkyMonitor.AgentCore.CameraModuleConfig config)
     {
@@ -404,9 +401,6 @@ public sealed class ArtifactOutboxDrainService(
     }
 
     private static bool PathsEqual(string left, string right)
-        => string.Equals(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
-            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        => StorageRootIdentity.AreEqual(left, right);
 
 }

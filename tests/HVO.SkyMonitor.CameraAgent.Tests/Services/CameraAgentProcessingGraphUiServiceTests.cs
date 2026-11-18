@@ -5,6 +5,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Components;
+using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Components.Authorization;
@@ -17,7 +18,79 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Services;
 [TestCategory("Unit")]
 public sealed class CameraAgentProcessingGraphUiServiceTests
 {
+    [TestMethod]
+    [DataRow("MeasuredAstrometry", "\"captureStride\":\"120\"", "Use a JSON number without quotes")]
+    [DataRow("Storage", "\"retentionDays\":\"30\"", "Use a JSON number without quotes")]
+    [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":\"7\"", "Use a JSON number without quotes")]
+    [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":5,\"WINDOWSIZE\":7", "Remove duplicate members")]
+    public async Task RawNodeOptionsPreflightRejectsAmbiguousTokensBeforeCompileOrSave(string alias, string members, string guidance)
+    {
+        var raw = JsonSerializer.Deserialize<JsonElement>("{" + members + ",\"future\":{\"keep\":1e+02}}");
+        var before = raw.GetRawText();
+        var pipeline = new CapturePipelineConfig([new(alias, "preflight", Options: raw)]);
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
+        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
+        var create = await service.CreateRevisionAsync("preflight", "1", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
+        foreach (var (kind, message) in new[] { (preview.Kind, preview.Message), (create.Kind, create.Message) })
+        {
+            Assert.AreEqual(OperatorUiResultKind.Invalid, kind);
+            StringAssert.Contains(message!, guidance, StringComparison.Ordinal);
+            StringAssert.Contains(message!, "steps[0].options.", StringComparison.Ordinal);
+        }
+        Assert.AreEqual(before, pipeline.Steps[0].Options!.Value.GetRawText());
+        operations.VerifyNoOtherCalls();
+        factory.VerifyNoOtherCalls();
+    }
+
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
+
+    [TestMethod]
+    [DataRow("retained")]
+    [DataRow("expired")]
+    [DataRow("missing")]
+    [DataRow("temporary")]
+    [DataRow("bounded")]
+    [DataRow("corrupt")]
+    [DataRow("absent")]
+    public async Task ManifestStateKeepsReadableJournalAndShowsSpecificSafeReasonFromOneRead(string state)
+    {
+        var execution = ProcessingExecutionPagesTests.Execution(Guid.NewGuid(), ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed);
+        var journal = new ProcessingGraphExecutionDetail(execution, []);
+        // The manifest evidence carries private text the page must never show, whatever its state.
+        var evidence = CameraAgentProcessingGraphOperationsEndpointsTests.ManifestDetail();
+        var read = state switch
+        {
+            "retained" => new ProcessingGraphExecutionDetailWithRunManifest(journal, evidence),
+            "expired" => new(journal, evidence with { Nodes = [evidence.Nodes[0] with { ArtifactBindingsRetained = false }] }),
+            "missing" => new(journal, evidence with { Nodes = [], FrozenNodeCount = 1 }),
+            "temporary" => new(journal, null, ProcessingRunManifestEvidenceFailure.Unavailable),
+            "bounded" => new(journal, null, ProcessingRunManifestEvidenceFailure.ExceedsBounds),
+            "corrupt" => new(journal, null, ProcessingRunManifestEvidenceFailure.Corrupt),
+            _ => new(journal, null)
+        };
+        // Strict: the page may make this one read. The manifest read it used to make is not set up and would throw.
+        var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(read);
+        var result = await CreateService(operations.Object, authorized: true)
+            .GetExecutionDetailAsync(execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(result.IsSuccess);
+        Assert.AreEqual(execution.ExecutionId, result.Value!.Execution.ExecutionId);
+        Assert.AreEqual(state switch
+        {
+            "retained" => null,
+            "expired" => CameraAgentRunManifest.ArtifactEvidenceUnavailableReason,
+            "temporary" => "The run manifest is temporarily unavailable. Refresh the run to try again.",
+            "bounded" => ProcessingRunManifestBounds.UnavailableReason,
+            "corrupt" => CameraAgentRunManifest.CorruptReason,
+            _ => CameraAgentRunManifest.MissingReason
+        }, result.Value.ManifestUnavailableReason);
+        Assert.IsFalse(JsonSerializer.Serialize(result.Value).Contains("sentinel", StringComparison.Ordinal));
+        operations.Verify(value => value.ReadExecutionDetailWithRunManifestAsync(execution.ExecutionId, It.IsAny<CancellationToken>()), Times.Once);
+        operations.VerifyNoOtherCalls();
+    }
 
     [TestMethod]
     public async Task EnvironmentPolicyFailureIsInvalidAndExplainedWithoutExposingInternalDetails()
@@ -170,8 +243,10 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
               }
         ]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
-        operations.Setup(value => value.ReadExecutionDetailAsync(executionId, It.IsAny<CancellationToken>())).ReturnsAsync(detail);
-        operations.Setup(value => value.ReadExecutionDetailAsync(It.Is<Guid>(id => id != executionId), It.IsAny<CancellationToken>())).ReturnsAsync((ProcessingGraphExecutionDetail?)null);
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(executionId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ProcessingGraphExecutionDetailWithRunManifest(detail, detail));
+        operations.Setup(value => value.ReadExecutionDetailWithRunManifestAsync(It.Is<Guid>(id => id != executionId), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((ProcessingGraphExecutionDetailWithRunManifest?)null);
         var service = CreateService(operations.Object, authorized: true);
 
         var found = await service.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);

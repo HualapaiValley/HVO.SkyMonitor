@@ -12,7 +12,7 @@ public sealed class CatalogSnapshotHealthCheck : IHealthCheck
     private readonly HealthCheckResult _result;
 
     /// <summary>Creates a health check from a resolved immutable snapshot without retaining file access.</summary>
-    public CatalogSnapshotHealthCheck(CatalogSnapshotResult snapshot)
+    public CatalogSnapshotHealthCheck(CatalogSnapshotResult snapshot, HVO.SkyMonitor.Astronomy.ICelestialCatalog? selectedCatalog = null)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         ValidateVersion(snapshot.CatalogId, nameof(snapshot.CatalogId), MaximumCatalogVersionLength);
@@ -46,8 +46,17 @@ public sealed class CatalogSnapshotHealthCheck : IHealthCheck
             values.Add("DeepSkyObjectCount", deepSky.ObjectCount);
             values.Add("DeepSkyOutlineObjectCount", deepSky.OutlineObjectCount);
         }
+        var deepSkySnapshot = (selectedCatalog as InstalledCatalogPair)?.DeepSkySnapshot;
+        if (deepSkySnapshot is not null)
+        {
+            values["DeepSkyCatalogId"] = deepSkySnapshot.CatalogId;
+            values["DeepSkyPackageVersion"] = deepSkySnapshot.SnapshotVersion;
+            values["DeepSkyDatabaseSha256"] = deepSkySnapshot.DatabaseSha256;
+            values["DeepSkyObjectCount"] = deepSkySnapshot.RowCount;
+            values["DeepSkyLicense"] = deepSkySnapshot.Catalog.Metadata.License;
+        }
         var data = new ReadOnlyDictionary<string, object>(values);
-        _result = snapshot.PackageKind switch
+        _result = (deepSkySnapshot?.PackageKind == CatalogSnapshotPackageKind.Fixture ? CatalogSnapshotPackageKind.Fixture : snapshot.PackageKind) switch
         {
             CatalogSnapshotPackageKind.Production => HealthCheckResult.Healthy(
                 "Production celestial catalog snapshot is installed.", data),

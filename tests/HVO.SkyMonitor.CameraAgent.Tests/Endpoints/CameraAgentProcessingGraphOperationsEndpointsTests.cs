@@ -26,7 +26,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 [TestCategory("Unit")]
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
     Justification = "WebApplication must remain available for the full test scope.")]
-public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
+public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
 {
     private static readonly string[] ContentMethods = ["GET", "HEAD"];
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
@@ -47,7 +47,7 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
             .Where(static endpoint => endpoint.RoutePattern.RawText?.StartsWith(
                 "/api/v1/operations/processing-graphs", StringComparison.Ordinal) == true)
             .ToArray();
-            Assert.HasCount(12, routes);
+            Assert.HasCount(13, routes);
             foreach (var route in routes)
             {
                 var methods = route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods;
@@ -352,7 +352,7 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
         operations.VerifyNoOtherCalls();
     }
 
-    private static WebApplication CreateApp(
+    internal static WebApplication CreateApp(
         IProcessingGraphOperations operations,
         ICameraAgentArtifactService artifacts,
         CameraAgentHostOptions? hostOptions = null)
@@ -412,12 +412,13 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
         return context.Response.StatusCode;
     }
 
-    private static async Task<(int Status, string Body)> InvokeForBodyAsync(
+    internal static async Task<(int Status, string Body)> InvokeForBodyAsync(
         WebApplication app,
         string endpointName,
         string method,
         object? requestBody = null,
-        RouteValueDictionary? routeValues = null)
+        RouteValueDictionary? routeValues = null,
+        CancellationToken cancellationToken = default)
     {
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
             .OfType<RouteEndpoint>()
@@ -428,7 +429,8 @@ public sealed class CameraAgentProcessingGraphOperationsEndpointsTests
         var context = new DefaultHttpContext
         {
             RequestServices = app.Services,
-            User = CreateUser()
+            User = CreateUser(),
+            RequestAborted = cancellationToken
         };
         context.Request.Method = method;
         context.Request.Headers["Idempotency-Key"] = "test-key";

@@ -130,8 +130,12 @@ coordinator's limits, and the solver version is now `spherical-triangle-astromet
   - Fisheye selection is unchanged.
   - Every fisheye tuning report at `3e6e4f44` matches `f0634c45` in every measured, fitted, residual and coverage
     value. Only the revision, solver version, identity hashes and resource/timing fields differ.
-  - `WideFieldIndexTests` pins a field that fits the bound to solver v1's index, triangle and hypothesis counts and
-    to the IEEE bits of its solution.
+  - `WideFieldIndexTests` pins a field that fits the bound to solver v1's exact index, triangle and hypothesis
+    counts. Its original IEEE solution values remain the numeric regression baseline, with a 64-ULP bound per
+    fitted value for cross-architecture FMA/libm round-off. M5 Max measured a maximum of 15 ULPs on roll;
+    the bound leaves headroom at about 1e-14 relative precision. Index ordering checks remain exact. This test
+    fingerprint is not a persisted index identity or a contract for cross-platform re-solves to share bits;
+    retained assessment identities still validate the exact serialized content.
 - **Result.** At `3e6e4f44` every rectilinear blind solve is accepted, 12 of 12:
 
   | Profile | Index stars | Index triangles | Cold solve |

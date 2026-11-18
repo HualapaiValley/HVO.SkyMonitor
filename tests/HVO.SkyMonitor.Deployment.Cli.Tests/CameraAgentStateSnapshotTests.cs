@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
-public sealed class CameraAgentStateSnapshotTests
+public sealed partial class CameraAgentStateSnapshotTests
 {
     private static readonly ImageInstallationIdentity Image = new(
         "registry", $"cameraagent@sha256:{new string('b', 64)}", $"sha256:{new string('c', 64)}", "amd64", null);
@@ -147,9 +147,20 @@ public sealed class CameraAgentStateSnapshotTests
         var snapshot = await CameraAgentStateSnapshot.CreateAsync(
             root.Paths, root.InstanceId, Guid.NewGuid(), Image, StoresBeforeCalibrationFamilies, CancellationToken.None);
 
+        // Reconstruct the actual earlier wire shape, not a new snapshot with an old input inventory.
+        var current = await CameraAgentStateSnapshot.VerifyAsync(root.Paths, root.InstanceId, snapshot, CancellationToken.None);
+        var earlier = current with
+        {
+            Databases = current.Databases.Where(static database => database.RelativePath != CameraAgentStateSnapshot.RetainedIntegrityStore).ToArray(),
+            ProtectedFiles = null
+        };
+        snapshot = await RewriteSnapshotManifestAsync(root, snapshot, earlier);
         var manifest = await CameraAgentStateSnapshot.VerifyAsync(root.Paths, root.InstanceId, snapshot, CancellationToken.None);
-
         CollectionAssert.AreEquivalent(StoresBeforeCalibrationFamilies, manifest.Databases.Select(static database => database.RelativePath).ToArray());
+        var original = await SafeFileSystem.ComputeSha256Async(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), CancellationToken.None);
+        CreateDatabase(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, CameraAgentStateSnapshot.RetainedIntegrityStore), 1);
+        await Assert.ThrowsExactlyAsync<InstallerException>(() => CameraAgentStateSnapshot.PlanRestoreAsync(root.Paths, root.InstanceId, snapshot, [], CancellationToken.None));
+        Assert.AreEqual(original, await SafeFileSystem.ComputeSha256Async(CameraAgentStateSnapshot.StorePath(root.Paths.StateRoot, "raw/journal/raw-ingress.db"), CancellationToken.None));
     }
 
     [TestMethod]

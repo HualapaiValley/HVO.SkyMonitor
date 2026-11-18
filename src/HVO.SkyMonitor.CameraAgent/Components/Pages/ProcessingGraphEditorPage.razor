@@ -164,6 +164,10 @@
         {
             <p role="status">This graph has no supported legacy Annotation node. Select a retained graph with Annotation to edit its existing styling. Missing or unsupported nodes are not replaced or upgraded; saving, validation and activation remain separate.</p>
         }
+        @if (Section == "predicted-satellite-layer" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "CaptureSatelliteLayer"))
+        {
+            <p role="status">This graph has no supported predicted satellite layer node. Select a saved graph with CaptureSatelliteLayer and its capture-bound prediction inputs. Saving, validation and activation remain separate.</p>
+        }
         @if (Section == "projected-scene" && !_model.Nodes.Any(static node => node.OptionsForm?.Descriptor.StepAlias == "ProjectedScene"))
         {
             <p role="status">This graph has no supported projected scene node. Add ProjectedScene with an explicit raw dependency to configure physical predicted-scene queries. VirtualSky keeps its separate module settings and authoritative rendered scene; saving, validation and activation remain separate.</p>

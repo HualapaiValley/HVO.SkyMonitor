@@ -22,10 +22,13 @@ using Microsoft.Extensions.Options;
 namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 
 // Real endpoint, loader, protected location history and v15 journal; only autonomous workers are removed.
-internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixture host, DelayedInstallationLoader loader) : IAsyncDisposable
+internal sealed partial class InstallationReadAttributionFixture(CameraAgentKestrelFixture host,
+    Func<StartupProtectionCounter?>? startupProtection = null, Action? stopStartup = null) : IAsyncDisposable
 {
+    internal StartupProtectionCounter? StartupProtection => startupProtection?.Invoke();
+    internal void StopStartupForBudgetProbe() => stopStartup?.Invoke();
     internal CameraAgentKestrelFixture Host { get; } = host;
-    internal DelayedInstallationLoader Loader { get; } = loader;
+    internal DelayedInstallationLoader Loader => (DelayedInstallationLoader)Host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
     internal string ConfigPath => Path.Combine(Host.Root, "cameraagent.browser.json");
     internal string IngressRoot => Path.Combine(Host.Root, "attribution-ingress");
     internal string JournalPath => Path.Combine(IngressRoot, "journal", "raw-ingress.db");
@@ -51,14 +54,42 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Successful construction transfers host ownership to the wrapper; failures dispose it in catch.")]
-    internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar)
+    internal static async Task<InstallationReadAttributionFixture> CreateAsync(string? scratchRoot, bool solar, bool completeOwner = false,
+        bool startupServices = false, TimeProvider? clock = null)
     {
         if (scratchRoot is not null) ValidateEvidenceRoot(scratchRoot);
         string? ingressRoot = null;
+        StartupProtectionCounter? counter = null;
+        IHostApplicationLifetime? startupLifetime = null;
         var host = await CameraAgentKestrelFixture.CreateAsync(services =>
         {
             // No acquisition, retention, reconciliation, or worker writes during the measured reads.
             services.RemoveAll<IHostedService>();
+            if (clock is not null) services.AddSingleton(clock);
+            if (startupServices)
+            {
+                if (Environment.GetEnvironmentVariable("HVO_STARTUP_MODE") == "reviewed-baseline")
+                    services.Configure<HostOptions>(host => host.StartupTimeout = TimeSpan.FromMinutes(3));
+                var protection = services.Last(item => item.ServiceType == typeof(IDeploymentLocationProtector));
+                services.Remove(protection);
+                services.AddSingleton<IDeploymentLocationProtector>(provider =>
+                {
+                    startupLifetime = provider.GetRequiredService<IHostApplicationLifetime>();
+                    return counter = new StartupProtectionCounter(
+                        (IDeploymentLocationProtector)(protection.ImplementationInstance ?? protection.ImplementationFactory?.Invoke(provider)
+                            ?? ActivatorUtilities.CreateInstance(provider, protection.ImplementationType!)));
+                });
+                services.AddHostedService<CameraAgentConfigurationInitializer>();
+#if !HVO_BASELINE
+                services.AddHostedService<RetainedIntegrityScrubService>();
+#endif
+                services.Configure<Microsoft.Extensions.Diagnostics.HealthChecks.HealthCheckServiceOptions>(checks =>
+                {
+                    foreach (var registration in checks.Registrations.Where(item =>
+                        item.Name is not ("catalog" or "deployment-location" or "camera-configuration" or "owner-bootstrap")).ToArray())
+                        checks.Registrations.Remove(registration);
+                });
+            }
             services.Configure<CameraAgentHostOptions>(new ConfigurationBuilder().AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
@@ -75,7 +106,15 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
         {
             ingressRoot = Path.Combine(root, "attribution-ingress");
             var path = Path.Combine(root, "cameraagent.browser.json");
-            if (solar)
+            var ownerConfiguration = Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_OWNER_CONFIGURATION");
+            if (!string.IsNullOrEmpty(ownerConfiguration))
+            {
+                var generated = JsonNode.Parse(await File.ReadAllTextAsync(ownerConfiguration).ConfigureAwait(false))!;
+                foreach (var step in generated["pipeline"]!["steps"]!.AsArray())
+                    if (step!["type"]!.GetValue<string>() == "Storage") step["options"]!["storageRoot"] = step["id"]!.GetValue<string>() == "ArchiveStorage" ? Path.Combine(root, "attribution-archive") : ingressRoot;
+                await File.WriteAllTextAsync(path, generated.ToJsonString(EvidenceJson)).ConfigureAwait(false);
+            }
+            else if (solar)
             {
                 var config = JsonNode.Parse(await File.ReadAllTextAsync(path).ConfigureAwait(false))!;
                 foreach (var window in config["schedule"]!["weeklyWindows"]!.AsArray())
@@ -85,12 +124,12 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
                 }
                 await File.WriteAllTextAsync(path, config.ToJsonString(EvidenceJson)).ConfigureAwait(false);
             }
-        }, requireOwnerPasswordReplacement: true, scratchRoot: scratchRoot).ConfigureAwait(false);
+        }, requireOwnerPasswordReplacement: !completeOwner && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HVO_INSTALLATION_READ_OWNER_CONFIGURATION")), scratchRoot: scratchRoot).ConfigureAwait(false);
         // Hosted services are intentionally absent; resolve the endpoint's loader explicitly.
         try
         {
-            var loader = (DelayedInstallationLoader)host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
-            return new InstallationReadAttributionFixture(host, loader);
+            _ = (DelayedInstallationLoader)host.Services.GetRequiredService<ICameraAgentConfigurationLoader>();
+            return new InstallationReadAttributionFixture(host, () => counter, () => startupLifetime?.StopApplication());
         }
         catch
         {
@@ -138,7 +177,11 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
             bytes += json.Length;
             if (index <= fileCount)
             {
+#if HVO_BASELINE
                 await File.WriteAllBytesAsync(Path.Combine(directory, $"{index:D5}.json"), json).ConfigureAwait(false);
+#else
+                await HVO.SkyMonitor.CameraAgent.Common.Storage.RetainedFileMutations.WriteAllBytesAsync(Path.Combine(directory, $"{index:D5}.json"), json).ConfigureAwait(false);
+#endif
             }
             else
             {
@@ -155,6 +198,106 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
             new FileInfo(JournalPath).Length, await HashAsync(ConfigPath).ConfigureAwait(false),
             location.CanonicalSha256);
     }
+
+    // Bulk disposable metadata construction: real v15 schema and contract bytes, one transaction.
+    // No payload files, acquisition, production data, or durability-throughput claim.
+    internal async Task<FixtureIdentity> SeedScaleAsync(int count, int productsPerCapture = 1)
+    {
+        var config = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        var location = config.DeploymentLocation!;
+#if !HVO_BASELINE
+        using (var empty = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(IngressRoot, ".location", RetainedIntegrityLedger.DatabaseName)};Mode=ReadOnly;Pooling=False"))
+        {
+            await empty.OpenAsync().ConfigureAwait(false);
+            using var check = empty.CreateCommand();
+            check.CommandText = "SELECT COUNT(*) FROM entries;";
+            Assert.AreEqual(0L, await check.ExecuteScalarAsync().ConfigureAwait(false), "Bulk legacy import is allowed only into this empty disposable fixture.");
+        }
+#endif
+        var journal = new SqliteRawCaptureJournal(JournalPath, 10);
+        await journal.InitializeAsync([], CancellationToken.None).ConfigureAwait(false);
+        using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={JournalPath};Pooling=False;Foreign Keys=True");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            INSERT INTO raw_capture_assignments(capture_id,raw_artifact_id,agent_id,capture_sequence)
+            VALUES($capture,$artifact,$agent,$sequence);
+            INSERT INTO raw_captures(capture_id,raw_artifact_id,agent_id,capture_sequence,
+                descriptor_sha256,manifest_sha256,payload_sha256,payload_length,
+                payload_relative_path,sidecar_relative_path,manifest_json,
+                exposure_started_unix_ms,durable_ingress_unix_ms,committed_unix_ms,state,evidence_origin)
+            VALUES($capture,$artifact,$agent,$sequence,$hash,$hash,$payload,8,
+                $path||'.bin',$path||'.json',$json,0,0,0,'committed','DeveloperFixture');
+            """;
+        foreach (var name in new[] { "$capture", "$artifact", "$agent", "$sequence", "$hash", "$payload", "$path", "$json" })
+            command.Parameters.Add(new Microsoft.Data.Sqlite.SqliteParameter(name, null));
+        var original = ArtifactManifestFixture.CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long bytes = 0;
+        for (var index = 1; index <= count; index++)
+        {
+            var captureSequence = (index - 1) / productsPerCapture + 1;
+            var product = (index - 1) % productsPerCapture;
+            var captureId = new Guid(captureSequence, 1041, 1, new byte[8]);
+            var artifactId = new Guid(index, 1041, 2, new byte[8]);
+            var rawArtifactId = new Guid((captureSequence - 1) * productsPerCapture + 1, 1041, 2, new byte[8]);
+            var role = product == 0 ? FrameArtifactRole.Raw : product == 1 ? FrameArtifactRole.Preview : FrameArtifactRole.AnnotatedPreview;
+            var relative = $"frames/2026/11/10/{role}/{index:D6}";
+            var manifest = original with
+            {
+                Descriptor = original.Descriptor with
+                {
+                    Capture = original.Descriptor.Capture with { AgentId = config.AgentId!, CaptureSequence = captureSequence, CaptureId = captureId },
+                    Artifact = original.Descriptor.Artifact with { ArtifactId = artifactId, Role = role, SourceArtifactIds = product == 0 ? [] : [rawArtifactId] },
+                    Location = location.ToProvenance()
+                },
+                RelativeArtifactPath = relative + ".bin"
+            };
+            var json = CaptureContractJson.Serialize(manifest);
+            Assert.IsTrue(CaptureContractJson.ParseManifest(json).IsValid);
+            hash.AppendData(json);
+            bytes += json.Length * (product == 0 ? 2L : 1L);
+            var path = Path.Combine(IngressRoot, relative + ".json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllBytesAsync(path, json).ConfigureAwait(false);
+            if (product != 0) continue;
+            command.Parameters["$capture"].Value = captureId.ToString();
+            command.Parameters["$artifact"].Value = artifactId.ToString();
+            command.Parameters["$agent"].Value = config.AgentId!;
+            command.Parameters["$sequence"].Value = captureSequence;
+            command.Parameters["$hash"].Value = CaptureContractJson.ComputeManifestSha256(json);
+            command.Parameters["$payload"].Value = manifest.Descriptor.Artifact.ChecksumSha256;
+            command.Parameters["$path"].Value = relative;
+            command.Parameters["$json"].Value = json;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        await transaction.CommitAsync().ConfigureAwait(false);
+        return new FixtureIdentity(count, (count + productsPerCapture - 1) / productsPerCapture, bytes, Convert.ToHexString(hash.GetHashAndReset()),
+            new FileInfo(JournalPath).Length, await HashAsync(ConfigPath).ConfigureAwait(false), location.CanonicalSha256);
+    }
+
+#if !HVO_BASELINE
+    internal async Task QualifyLegacyScaleAsync()
+    {
+        // SeedScale asserted an empty ledger before importing this synthetic legacy corpus.
+        // Reconstruct the signed legacy history shape before discarding only that
+        // asserted-empty fixture ledger. This is corpus construction, not recovery.
+        ((IDisposable)Locations).Dispose();
+        var state = Path.Combine(IngressRoot, ".location");
+        var historyPath = Path.Combine(state, "deployment-location.v1.protected");
+        var protector = Host.Services.GetRequiredService<IDeploymentLocationProtector>();
+        var legacyHistory = System.Text.Json.Nodes.JsonNode.Parse(protector.Unprotect(await File.ReadAllBytesAsync(historyPath).ConfigureAwait(false)))!.AsObject();
+        Assert.IsTrue(legacyHistory.Remove("retainedIntegrityNonce"));
+        await File.WriteAllBytesAsync(historyPath, protector.Protect(JsonSerializer.SerializeToUtf8Bytes(legacyHistory))).ConfigureAwait(false);
+        foreach (var name in new[] { RetainedIntegrityLedger.DatabaseName, RetainedIntegrityLedger.CheckpointName })
+            File.Delete(Path.Combine(state, name));
+        await Host.RestartAsync().ConfigureAwait(false);
+        _ = await Loader.LoadAsync(CancellationToken.None).ConfigureAwait(false);
+        _ = await Loader.LoadForRetainedIntegrityScrubAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+#endif
 
     internal async Task<JsonElement> ReadAsync(HttpClient client, CancellationToken cancellationToken = default)
     {
@@ -189,11 +332,19 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     internal async Task<string> HashRetainedInputsAsync()
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[64 * 1024];
         foreach (var path in Directory.EnumerateFiles(IngressRoot, "*", SearchOption.AllDirectories)
-                     .Where(path => !path.EndsWith("-shm", StringComparison.Ordinal)).Order(StringComparer.Ordinal))
+                     .Where(path => !path.EndsWith("-shm", StringComparison.Ordinal) &&
+                         !Path.GetFileName(path).StartsWith("retained-validation.", StringComparison.Ordinal) &&
+                         !Path.GetFileName(path).StartsWith(".retained-validation.", StringComparison.Ordinal) &&
+                         !Path.GetFileName(path).StartsWith("retained-integrity.", StringComparison.Ordinal) &&
+                         !Path.GetFileName(path).StartsWith(".retained-integrity.", StringComparison.Ordinal)).Order(StringComparer.Ordinal))
         {
             hash.AppendData(System.Text.Encoding.UTF8.GetBytes(Path.GetRelativePath(IngressRoot, path) + "\0"));
-            hash.AppendData(await File.ReadAllBytesAsync(path).ConfigureAwait(false));
+            using var stream = File.OpenRead(path);
+            int read;
+            while ((read = await stream.ReadAsync(buffer).ConfigureAwait(false)) != 0)
+                hash.AppendData(buffer.AsSpan(0, read));
         }
         return Convert.ToHexString(hash.GetHashAndReset());
     }
@@ -207,11 +358,28 @@ internal sealed class InstallationReadAttributionFixture(CameraAgentKestrelFixtu
     public ValueTask DisposeAsync() => Host.DisposeAsync();
 }
 
+internal sealed class StartupProtectionCounter(IDeploymentLocationProtector inner) : IDeploymentLocationProtector
+{
+    private long _protects;
+    private long _unprotects;
+    internal long Protects => Interlocked.Read(ref _protects);
+    internal long Unprotects => Interlocked.Read(ref _unprotects);
+    public byte[] Protect(byte[] plaintext) { Interlocked.Increment(ref _protects); return inner.Protect(plaintext); }
+    public byte[] Unprotect(byte[] payload) { Interlocked.Increment(ref _unprotects); return inner.Unprotect(payload); }
+}
+
 internal sealed record FixtureIdentity(int FileCount, int JournalCount, long ManifestBytes, string OrderedManifestSha256,
     long JournalBytes, string ConfigurationFileSha256, string LocationSha256);
 
 internal sealed class DelayedInstallationLoader(FileCameraAgentConfigurationLoader inner) : ICameraAgentConfigurationLoader
 {
+#if !HVO_BASELINE
+    public bool RetainedIntegrityRecoveryRequired => inner.RetainedIntegrityRecoveryRequired;
+    public Task RequestRetainedIntegrityScrubAsync(bool force, CancellationToken cancellationToken)
+        => inner.RequestRetainedIntegrityScrubAsync(force, cancellationToken);
+    public Task DrainRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+        => inner.DrainRetainedIntegrityScrubAsync(cancellationToken);
+#endif
     private TaskCompletionSource? _entered;
     private TaskCompletionSource? _release;
     internal Task Entered => _entered!.Task;
@@ -221,7 +389,29 @@ internal sealed class DelayedInstallationLoader(FileCameraAgentConfigurationLoad
         _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
     internal void Release() => _release!.TrySetResult();
-    public async Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken)
+    public Task<CameraModuleConfig> LoadAsync(CancellationToken cancellationToken) => LoadCoreAsync(false, cancellationToken);
+    public Task<CameraModuleConfig> LoadForInstallationVerificationAsync(CancellationToken cancellationToken) => LoadCoreAsync(true, cancellationToken);
+    private async Task<CameraModuleConfig> LoadCoreAsync(bool strict, CancellationToken cancellationToken)
+    {
+        await WaitBeforeReadAsync(cancellationToken).ConfigureAwait(false);
+        // The manual baseline harness also builds against c4069b8c, before the explicit strict-load API.
+        var verification = strict ? inner.GetType().GetMethod(nameof(LoadForInstallationVerificationAsync)) : null;
+        return verification is null
+            ? await inner.LoadAsync(cancellationToken).ConfigureAwait(false)
+            : await ((Task<CameraModuleConfig>)verification.Invoke(inner, [cancellationToken])!).ConfigureAwait(false);
+    }
+#if !HVO_BASELINE
+    public Task<CameraModuleConfig> LoadForRetainedIntegrityScrubAsync(CancellationToken cancellationToken)
+        => inner.LoadForRetainedIntegrityScrubAsync(cancellationToken);
+
+    public async Task<InstallationConfigurationSnapshot> LoadInstallationSnapshotAsync(CancellationToken cancellationToken)
+    {
+        await WaitBeforeReadAsync(cancellationToken).ConfigureAwait(false);
+        return await inner.LoadInstallationSnapshotAsync(cancellationToken).ConfigureAwait(false);
+    }
+#endif
+
+    private async Task WaitBeforeReadAsync(CancellationToken cancellationToken)
     {
         var entered = Interlocked.Exchange(ref _entered, null);
         if (entered is not null)
@@ -229,8 +419,8 @@ internal sealed class DelayedInstallationLoader(FileCameraAgentConfigurationLoad
             entered.TrySetResult();
             await _release!.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
-        return await inner.LoadAsync(cancellationToken).ConfigureAwait(false);
     }
+
 }
 
 internal sealed class InstallationReadStageCollector : IDisposable

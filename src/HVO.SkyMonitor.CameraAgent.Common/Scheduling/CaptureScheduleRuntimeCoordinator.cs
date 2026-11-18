@@ -156,7 +156,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     {
         ArgumentNullException.ThrowIfNull(prepared);
         ArgumentNullException.ThrowIfNull(commit);
-        await _admissionCoordinator.ExecuteCaptureBoundaryAsync(async token =>
+        await _admissionCoordinator.ExecuteConfigurationBoundaryAsync(async token =>
             {
                 await _gate.WaitAsync(token).ConfigureAwait(false);
                 try
@@ -545,7 +545,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             targetConfiguration,
             _timeProvider.GetUtcNow(),
             cancellationToken).ConfigureAwait(false);
-        return await _admissionCoordinator.ExecuteCaptureBoundaryAsync(
+        return await _admissionCoordinator.ExecuteConfigurationBoundaryAsync(
             async boundaryToken =>
             {
                 await _gate.WaitAsync(boundaryToken).ConfigureAwait(false);

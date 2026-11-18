@@ -46,7 +46,8 @@ public sealed class ProcessingNodeOptionsForm
         ArgumentNullException.ThrowIfNull(alias);
         if (string.Equals(alias, "RollingCombination", StringComparison.OrdinalIgnoreCase))
             return options is null || RollingCombinationOptionDescriptors.IsSameGain(options.Value)
-                ? RollingCombinationOptionDescriptors.Descriptor : null;
+                ? RollingCombinationOptionDescriptors.Descriptor
+                : RollingCombinationOptionDescriptors.IsMixedGain(options.Value) ? RollingCombinationOptionDescriptors.MixedGain : null;
         if (PreviewOptionDescriptors.IsPreviewAlias(alias))
         {
             return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
@@ -61,6 +62,11 @@ public sealed class ProcessingNodeOptionsForm
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
+            "MEASUREDSTELLARASSOCIATIONS" => CaptureAnalysisOptionDescriptors.StellarAssociations.StepVersion,
+            "MEASUREDASTROMETRY" => CaptureAnalysisOptionDescriptors.Astrometry.StepVersion,
+            "CAPTURESATELLITETRACKS" => CaptureSatelliteOptionDescriptors.Tracks.StepVersion,
+            "CAPTURESATELLITELAYER" => CaptureSatelliteOptionDescriptors.Layer.StepVersion,
+            "STORAGE" => StorageOptionDescriptors.Descriptor.StepVersion,
             "ANNOTATION" => "projected-annotation-v4",
             "OVERLAYMANIFEST" => OverlayManifestOptionDescriptors.Descriptor.StepVersion,
             "PRESENTATIONMATERIALIZER" => PresentationMaterializerOptionDescriptors.Descriptor.StepVersion,
@@ -78,8 +84,45 @@ public sealed class ProcessingNodeOptionsForm
     public ProcessingOptionSelection Collection(string key) => _collections[key];
 
     public void SetCollectionItem(string key, int index, string value) => SetCollection(key, Collection(key).Set(index, value));
-    public void AddCollectionItem(string key) => SetCollection(key, Collection(key).Add(
-        Descriptor.Find(key)!.Kind is ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection ? Descriptor.Find(key)!.AllowedValues[0] : string.Empty));
+
+    /// <summary>The reason a closed collection has nothing left to add.</summary>
+    public const string EveryChoiceSelectedReason = "Every supported choice is already selected.";
+
+    /// <summary>
+    /// Adds one item. A closed enum or choice collection receives its first allowed value that is not selected yet,
+    /// so the new item never repeats a selected one and never raises a duplicate error of its own; when every allowed
+    /// value is already selected, nothing is added. A free-text collection receives an empty item to type into.
+    /// </summary>
+    public void AddCollectionItem(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        if (option.Kind is not (ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection))
+        {
+            SetCollection(key, Collection(key).Add(string.Empty));
+        }
+        else if (NextUnusedChoice(option) is { } choice)
+        {
+            SetCollection(key, Collection(key).Add(choice));
+        }
+    }
+
+    /// <summary>Why adding an item to a closed collection would add nothing, or null while an unused value remains.</summary>
+    public string? AddCollectionItemUnavailableReason(string key)
+    {
+        var option = Descriptor.Find(key)!;
+        return option.Kind is ProcessingOptionKind.EnumCollection or ProcessingOptionKind.ChoiceCollection &&
+            NextUnusedChoice(option) is null ? EveryChoiceSelectedReason : null;
+    }
+
+    // Selected items are compared as the option compares them for uniqueness, so an alias of a selected choice counts
+    // as selected. Allowed values keep their declared order, which is the order the item's own choice list shows.
+    private string? NextUnusedChoice(ProcessingOptionDescriptor option)
+    {
+        var identity = option.UniqueItemIdentity ?? (static value => value);
+        var selected = Collection(option.Key).Items.Select(identity).ToHashSet(StringComparer.Ordinal);
+        return option.AllowedValues.FirstOrDefault(value => !selected.Contains(identity(value)));
+    }
+
     public void ClearCollection(string key) => SetCollection(key, ProcessingOptionSelection.Empty);
     public void RemoveCollectionItem(string key, int index) => SetCollection(key, Collection(key).RemoveAt(index));
     public void MoveCollectionItem(string key, int index, int destination) => SetCollection(key, Collection(key).Move(index, destination));

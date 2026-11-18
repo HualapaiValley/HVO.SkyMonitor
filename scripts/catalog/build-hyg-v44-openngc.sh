@@ -59,6 +59,8 @@ if [[ $# -ne 0 || -z "$output_argument" || -z "$hyg_bundle" || -z "$openngc_sour
 fi
 
 hyg_require_commands chmod cmp cp find mkdir mktemp mv realpath rm sha256sum sort sqlite3 sync wc
+# Name the tool before anything is staged or built, and before the version gate can reject it (Refs #1774).
+hyg_print_sqlite_identity
 hyg_check_sqlite_version
 
 hyg_bundle="$(realpath "$hyg_bundle")"

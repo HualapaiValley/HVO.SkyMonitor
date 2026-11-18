@@ -1,0 +1,807 @@
+{
+  "base": "d122742c7b619a887168d3f9e2b4f23e54ba6ee7",
+  "testedHead": "8879ad2ef6ee7236a872800b8a5a8adb304ae96e",
+  "sourceTrees": {
+    "src": "cb8471ae4d4ca02be97eb225ea45aa79a80508c4",
+    "tests": "64cb29bc1fff14648bba79b3fa0b9815827c275f",
+    "scripts": "359b2deb7be5782e928062db079fc30b81edba7a",
+    ".github": "3ada476ec1b02e14dac55cf19ae047d9bcfe6eff",
+    "global.json": "e8a91cbf7506d4f30d2f278f1efdd6fce4156686",
+    "Directory.Build.props": "cbb8c30860f96568419226d54a5b65334c0dd8d4",
+    "Directory.Packages.props": "a2d8844a5845ba83b8b37ac1076caa3e79b56c19"
+  },
+  "risk": "HIGH",
+  "validationTier": "C",
+  "targetProfile": "development-v1",
+  "sdk": "10.0.402",
+  "runtime": ".NET 10.0.14",
+  "classifier": {
+    "command": "./scripts/ci:classify pull_request d122742c7b619a887168d3f9e2b4f23e54ba6ee7 8879ad2ef6ee7236a872800b8a5a8adb304ae96e",
+    "mode": "full",
+    "complete": false,
+    "deployment": true,
+    "deployment_installer": true,
+    "cameraagent": true,
+    "combined": true,
+    "delivery": true,
+    "otherFlags": false
+  },
+  "steps": [
+    {
+      "name": "tool-restore",
+      "command": "dotnet tool restore",
+      "seconds": 0.114,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "restore",
+      "command": "dotnet restore HVO.SkyMonitor.v9.slnx",
+      "seconds": 1.372,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "debug-build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "seconds": 260.608,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "release-build",
+      "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Release -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+      "seconds": 325.97,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "format",
+      "command": "dotnet format HVO.SkyMonitor.v9.slnx --no-restore --verify-no-changes",
+      "seconds": 179.141,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "package-audit",
+      "command": "./scripts/package:audit",
+      "seconds": 42.583,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "ci-shell-syntax",
+      "command": "./scripts/ci:shell-syntax",
+      "seconds": 0.665,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-ci-classification",
+      "command": "./scripts/test:ci-classification",
+      "seconds": 21.605,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-coordination-guard",
+      "command": "./scripts/test:coordination-guard",
+      "seconds": 0.264,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-pr-review-tools",
+      "command": "./scripts/test:pr-review-tools",
+      "seconds": 10.634,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "docs-audit",
+      "command": "./scripts/docs:audit-operations",
+      "seconds": 0.515,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "category-audit",
+      "command": "dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release --no-build",
+      "seconds": 0.364,
+      "exitCode": 1,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "category-audit",
+      "command": "dotnet run --project scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj --configuration Release",
+      "seconds": 151.955,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-deployment-installer-qualification",
+      "command": "./scripts/test:deployment-installer-qualification",
+      "seconds": 0.064,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-deploy-environment-cli",
+      "command": "./scripts/test:deploy-environment-cli",
+      "seconds": 21.79,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-deployment-logichost-outage-contract",
+      "command": "./scripts/test:deployment-logichost-outage-contract",
+      "seconds": 0.765,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-deployment-normal-flow-contract",
+      "command": "./scripts/test:deployment-normal-flow-contract",
+      "seconds": 0.264,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "test-filesystem-object-store-qualification",
+      "command": "./scripts/test:filesystem-object-store-qualification",
+      "seconds": 0.514,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "summary-process-crash",
+      "command": "python3 docs/validation/issue-1041-summary-crash-probe.py.txt",
+      "seconds": 2.37,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "candidate-scale",
+      "command": "env -u HVO_PRODUCTION_CATALOG_BUNDLE DOTNET_PROCESSOR_COUNT=1 DOTNET_GCHeapHardLimit=0x18000000 HVO_INSTALLATION_READ_EVIDENCE_DIR=${TMPDIR}/cand HVO_ATTRIBUTION_REVISION=8879ad2ef6ee7236a872800b8a5a8adb304ae96e taskset -c 0 dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests --no-build --no-restore --configuration Release --filter FullyQualifiedName~LargeRetainedCorpusRecordsCurrentEndpointCost --logger \"trx;LogFileName=scale.trx\" --results-directory TestResults/issue-1041/candidate-scale",
+      "seconds": 97.783,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Astronomy.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/astronomy --logger \"trx;LogFileName=unit-astronomy.trx\"",
+      "seconds": 183.278,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Imaging.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Imaging.Tests/HVO.SkyMonitor.Imaging.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/imaging --logger \"trx;LogFileName=unit-imaging.trx\"",
+      "seconds": 26.187,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Processing.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Processing.Tests/HVO.SkyMonitor.Processing.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/processing --logger \"trx;LogFileName=unit-processing.trx\"",
+      "seconds": 62.706,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.ProcessingRunner.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.ProcessingRunner.Tests/HVO.SkyMonitor.ProcessingRunner.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/processing-runner --logger \"trx;LogFileName=unit-processing-runner.trx\"",
+      "seconds": 36.362,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Catalog.Sqlite.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.Tests/HVO.SkyMonitor.Catalog.Sqlite.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/catalog-sqlite --logger \"trx;LogFileName=unit-catalog-sqlite.trx\"",
+      "seconds": 4.373,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Storage.FileSystem.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Storage.FileSystem.Tests/HVO.SkyMonitor.Storage.FileSystem.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/storage-filesystem --logger \"trx;LogFileName=unit-storage-filesystem.trx\"",
+      "seconds": 1.317,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Deployment.Cli.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Cli.Tests/HVO.SkyMonitor.Deployment.Cli.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/deployment-cli --logger \"trx;LogFileName=unit-deployment-cli.trx\"",
+      "seconds": 279.834,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Deployment.Distribution.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Deployment.Distribution.Tests/HVO.SkyMonitor.Deployment.Distribution.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/deployment-distribution --logger \"trx;LogFileName=unit-deployment-distribution.trx\"",
+      "seconds": 6.737,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.AgentCore.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.AgentCore.Tests/HVO.SkyMonitor.AgentCore.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/agent-core --logger \"trx;LogFileName=unit-agent-core.trx\"",
+      "seconds": 5.081,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Common.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Common.Tests/HVO.SkyMonitor.Common.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/common --logger \"trx;LogFileName=unit-common.trx\"",
+      "seconds": 2.522,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Fleet.Contracts.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Fleet.Contracts.Tests/HVO.SkyMonitor.Fleet.Contracts.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/fleet-contracts --logger \"trx;LogFileName=unit-fleet-contracts.trx\"",
+      "seconds": 4.93,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.TestSupport.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.TestSupport.Tests/HVO.SkyMonitor.TestSupport.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/test-support --logger \"trx;LogFileName=unit-test-support.trx\"",
+      "seconds": 4.977,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Architecture.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Architecture.Tests/HVO.SkyMonitor.Architecture.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/architecture --logger \"trx;LogFileName=unit-architecture.trx\"",
+      "seconds": 29.95,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.CameraAgent.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/cameraagent --logger \"trx;LogFileName=unit-cameraagent.trx\"",
+      "seconds": 751.92,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/cameraagent-acceptance --logger \"trx;LogFileName=unit-cameraagent-acceptance.trx\"",
+      "seconds": 24.928,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.LogicHost.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.Tests/HVO.SkyMonitor.LogicHost.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/logichost --logger \"trx;LogFileName=unit-logichost.trx\"",
+      "seconds": 34.392,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.CameraAgent.LogicHost.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests/HVO.SkyMonitor.CameraAgent.LogicHost.Tests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/unit/cameraagent-logichost --logger \"trx;LogFileName=unit-cameraagent-logichost.trx\"",
+      "seconds": 32.677,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.CameraAgent.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/cameraagent-integration --logger \"trx;LogFileName=unit-cameraagent-integration.trx\"",
+      "seconds": 3.421,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.LogicHost.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/logichost-integration --logger \"trx;LogFileName=unit-logichost-integration.trx\"",
+      "seconds": 4.777,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/cameraagent-logichost-integration --logger \"trx;LogFileName=unit-cameraagent-logichost-integration.trx\"",
+      "seconds": 1.166,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "unit-HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests/HVO.SkyMonitor.Catalog.Sqlite.PerformanceTests.csproj --no-build --configuration Release --filter \"$UNIT_FILTER\" --results-directory TestResults/unit/catalog-sqlite-performance --logger \"trx;LogFileName=unit-catalog-sqlite-performance.trx\"",
+      "seconds": 1.016,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.LogicHost.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.LogicHost.IntegrationTests/HVO.SkyMonitor.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/logichost --logger \"trx;LogFileName=integration-logichost.trx\"",
+      "seconds": 789.452,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.Tests/HVO.SkyMonitor.CameraAgent.Tests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-storage --logger \"trx;LogFileName=integration-cameraagent-storage.trx\"",
+      "seconds": 217.102,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-standalone --logger \"trx;LogFileName=integration-cameraagent-standalone.trx\"",
+      "seconds": 92.023,
+      "exitCode": 1,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.AcceptanceTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.AcceptanceTests/HVO.SkyMonitor.CameraAgent.AcceptanceTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-standalone --logger \"trx;LogFileName=integration-cameraagent-standalone.trx\"",
+      "seconds": 89.411,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.Astronomy.Tests",
+      "command": "dotnet test tests/HVO.SkyMonitor.Astronomy.Tests/HVO.SkyMonitor.Astronomy.Tests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/astronomy --logger \"trx;LogFileName=integration-astronomy.trx\"",
+      "seconds": 5.475,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.IntegrationTests/HVO.SkyMonitor.CameraAgent.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent --logger \"trx;LogFileName=integration-cameraagent.trx\"",
+      "seconds": 48.532,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "integration-HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests",
+      "command": "dotnet test tests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests/HVO.SkyMonitor.CameraAgent.LogicHost.IntegrationTests.csproj --no-build --configuration Release --filter \"$INTEGRATION_FILTER\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/integration/cameraagent-logichost --logger \"trx;LogFileName=integration-cameraagent-logichost.trx\"",
+      "seconds": 221.459,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "architecture-integration",
+      "command": "dotnet test tests/HVO.SkyMonitor.Architecture.Tests --no-build --configuration Release --filter \"TestCategory=Integration&FullyQualifiedName~ArchitectureBoundaryTests\" --settings tests/coverage.runsettings --collect:\"XPlat Code Coverage\" --results-directory TestResults/architecture --logger \"trx;LogFileName=architecture-publish.trx\"",
+      "seconds": 122.557,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-cameraagent",
+      "command": "./scripts/coverage:component cameraagent",
+      "seconds": 12.562,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-combined",
+      "command": "./scripts/coverage:component combined",
+      "seconds": 9.748,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-delivery",
+      "command": "./scripts/coverage:component delivery",
+      "seconds": 2.069,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-cameraagent",
+      "command": "./scripts/ci:component-publish cameraagent",
+      "seconds": 3.228,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "publish-delivery",
+      "command": "./scripts/ci:component-publish delivery",
+      "seconds": 21.102,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "migration-cameraagent",
+      "command": "./scripts/ci:canonical-migration cameraagent && dotnet ef migrations has-pending-model-changes --project src/HVO.SkyMonitor.CameraAgent --startup-project src/HVO.SkyMonitor.CameraAgent --context HVO.SkyMonitor.CameraAgent.Data.ApplicationDbContext --configuration Release --no-build",
+      "seconds": 2.071,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-policy",
+      "command": "./scripts/coverage:policy pull_request origin/development/v1",
+      "seconds": 0.164,
+      "exitCode": 1,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "coverage-policy",
+      "command": "./scripts/coverage:policy pull_request development/v1",
+      "seconds": 0.114,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    },
+    {
+      "name": "installer-campaign",
+      "command": "./scripts/test:deployment-installer",
+      "seconds": 337.552,
+      "exitCode": 0,
+      "docker": "local disposable fixtures"
+    },
+    {
+      "name": "diff-check",
+      "command": "git diff --check",
+      "seconds": 0.008,
+      "exitCode": 0,
+      "docker": "invalid endpoint"
+    }
+  ],
+  "latestSuccessfulCommands": 56,
+  "originalStoppedAttempt": {
+    "head": "978dedfc6fd95dfba5f49c3dec65f79e539f44c4",
+    "steps": [
+      {
+        "name": "tool-restore",
+        "command": "dotnet tool restore",
+        "seconds": 0.165,
+        "exitCode": 0,
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "restore",
+        "command": "dotnet restore HVO.SkyMonitor.v9.slnx",
+        "seconds": 2.389,
+        "exitCode": 0,
+        "docker": "invalid endpoint"
+      },
+      {
+        "name": "debug-build",
+        "command": "dotnet build HVO.SkyMonitor.v9.slnx --no-restore --configuration Debug -warnaserror -nodeReuse:false -p:UseSharedCompilation=false",
+        "seconds": 330.109,
+        "exitCode": 0,
+        "docker": "invalid endpoint"
+      }
+    ]
+  },
+  "corrections": [
+    {
+      "check": "initial candidate",
+      "result": "Release gate deliberately stopped before broad tests after auxiliary JSON interaction discovered; corrected at tested head"
+    },
+    {
+      "check": "category-audit",
+      "result": "Wrapper assumed standalone audit tool built by solution; built audit tool and reran successfully without changing product"
+    },
+    {
+      "check": "coverage-policy",
+      "result": "Wrapper passed origin/development/v1 to a script that adds origin/; corrected to development/v1 at the unchanged fetched base and reran"
+    },
+    {
+      "check": "acceptance integration",
+      "result": "Playwright Chromium v1248 binary missing; installed prerequisite, segregated failed coverage/TRX and reran 27/27 successfully"
+    }
+  ],
+  "trxReports": [
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/agent-core/unit-agent-core.trx",
+      "counts": {
+        "Passed": 91
+      },
+      "sha256": "bff3da3cfd12bd13eb6d9e177fa69070089a7dda24dbd51428d43119c7e1574c",
+      "bytes": 147217
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/architecture/unit-architecture.trx",
+      "counts": {
+        "Passed": 32
+      },
+      "sha256": "3ea026c1e6f5b65654a4177f0f221ed54d6a1246abc91872d8f9bb8206229a48",
+      "bytes": 56414
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/astronomy/unit-astronomy.trx",
+      "counts": {
+        "Passed": 803
+      },
+      "sha256": "2a4ea10fc035fafc015a1ed2915f96187ca5ddd72207879a07f859b79da79a88",
+      "bytes": 1255071
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/cameraagent/unit-cameraagent.trx",
+      "counts": {
+        "Passed": 8038,
+        "NotExecuted": 1
+      },
+      "sha256": "81f85f96e60cc1b9a6a00c4b998ff7c50e1a85b4e6f0068ac524c60ce6ec1f52",
+      "bytes": 13527644
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/cameraagent-acceptance/unit-cameraagent-acceptance.trx",
+      "counts": {
+        "Passed": 30
+      },
+      "sha256": "57e05f15346ec116da9169a5d4737d7365a9e7a0cb0898911409cb6b2178cd88",
+      "bytes": 50652
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/cameraagent-integration/unit-cameraagent-integration.trx",
+      "counts": {
+        "Passed": 6
+      },
+      "sha256": "9eeaa08b3e5ddec7ce1e1440d5dbe4240b84501623755d92005588b281905337",
+      "bytes": 10992
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/cameraagent-logichost/unit-cameraagent-logichost.trx",
+      "counts": {
+        "Passed": 94
+      },
+      "sha256": "f4442df167b317a55bc7f951b885b293c31ea007216375e00255a3be4407f311",
+      "bytes": 163390
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/cameraagent-logichost-integration/unit-cameraagent-logichost-integration.trx",
+      "counts": {
+        "Passed": 4
+      },
+      "sha256": "35bf2ca47096971ea1a1b83cbe97575d1994aad6126c7df98736886b6215e4c4",
+      "bytes": 7580
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/catalog-sqlite/unit-catalog-sqlite.trx",
+      "counts": {
+        "Passed": 296
+      },
+      "sha256": "5b3b2b8fa47237e797e7fa4e82ffdcafc0a1346ca4b3e4435aa2ab733f588caa",
+      "bytes": 453260
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/catalog-sqlite-performance/unit-catalog-sqlite-performance.trx",
+      "counts": {
+        "Passed": 4
+      },
+      "sha256": "39ce3313c40d8d7d3b42b5df41f8678e1809f61984fcafff53f23b3878a2d937",
+      "bytes": 7468
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/common/unit-common.trx",
+      "counts": {
+        "Passed": 50
+      },
+      "sha256": "d268a6f0adb6096066b7a9057cf5dfbf742e225420161f874e3d98124f95ede4",
+      "bytes": 78091
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/deployment-cli/unit-deployment-cli.trx",
+      "counts": {
+        "Passed": 3172,
+        "NotExecuted": 1
+      },
+      "sha256": "112ba4bf863b3dc6d1af4b975ce9d8cce4c42c690d8d26a0ac1404375b97c3d9",
+      "bytes": 5467968
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/deployment-distribution/unit-deployment-distribution.trx",
+      "counts": {
+        "Passed": 117
+      },
+      "sha256": "26b671011c81e689384d769610b1a9d946b1aceecb5992e4005d112ee6e3868e",
+      "bytes": 210170
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/fleet-contracts/unit-fleet-contracts.trx",
+      "counts": {
+        "Passed": 11
+      },
+      "sha256": "524938793132a397a091cb6843695043f172b8a6a8adc09eeacf240d423f7bc3",
+      "bytes": 20340
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/imaging/unit-imaging.trx",
+      "counts": {
+        "Passed": 493
+      },
+      "sha256": "4e40ceb1d6e76bb64c66b0c9762ebb20139e47ec563c0cc2e7f156a7ddea37b6",
+      "bytes": 758727
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/logichost/unit-logichost.trx",
+      "counts": {
+        "Passed": 1002,
+        "NotExecuted": 1
+      },
+      "sha256": "13d8a076375ce9b530d3863e180ca41651aac9f29fdc7e7bff661812e4bfbe2a",
+      "bytes": 1581747
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/logichost-integration/unit-logichost-integration.trx",
+      "counts": {
+        "Passed": 54
+      },
+      "sha256": "c10117f8bee187a8e7f79d2e20f8d73ea086b79be8c35e5d2a897f89441e407f",
+      "bytes": 87508
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/processing/unit-processing.trx",
+      "counts": {
+        "Passed": 1320
+      },
+      "sha256": "cadc60d2dd3a28d63ec263a351236afa6e901ff6e1673a7af211c9fc540eb272",
+      "bytes": 2116091
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/processing-runner/unit-processing-runner.trx",
+      "counts": {
+        "Passed": 35
+      },
+      "sha256": "f13a2c380cf1700aac8d5976387f9f9e251a4619c7803978b24cea396538fc23",
+      "bytes": 58871
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/storage-filesystem/unit-storage-filesystem.trx",
+      "counts": {
+        "Passed": 77
+      },
+      "sha256": "25975bd64e1864f5bc420ec41e2fa505099c7b9caaa8a615fe11aa3b1173035b",
+      "bytes": 122438
+    },
+    {
+      "category": "Unit",
+      "path": "TestResults/unit/test-support/unit-test-support.trx",
+      "counts": {
+        "Passed": 11
+      },
+      "sha256": "9deed3fc28f3b1614bbb96fa5e9ca5093b3e2153722e13362f277ec24e0e4841",
+      "bytes": 18451
+    },
+    {
+      "category": "Integration",
+      "path": "TestResults/integration/astronomy/integration-astronomy.trx",
+      "counts": {
+        "Passed": 2
+      },
+      "sha256": "ea24ce5fa0e64812c34c30aba4d327b39aa06c4df3d5d95091af776f1a72e575",
+      "bytes": 4580
+    },
+    {
+      "category": "Integration",
+      "path": "TestResults/integration/cameraagent/integration-cameraagent.trx",
+      "counts": {
+        "Passed": 61
+      },
+      "sha256": "caef5435aebe7d4d454ec6d78c799efd54086d6966dbc8f0ee0b5781651c3a8b",
+      "bytes": 144194
+    },
+    {
+      "category": "Integration",
+      "path": "TestResults/integration/cameraagent-logichost/integration-cameraagent-logichost.trx",
+      "counts": {
+        "Passed": 24
+      },
+      "sha256": "b2c43b23fc3d35557aedb0311488caf2dda5225fb5ceae2d97b322342af5c22f",
+      "bytes": 1476405
+    },
+    {
+      "category": "Integration",
+      "path": "TestResults/integration/cameraagent-standalone/integration-cameraagent-standalone.trx",
+      "counts": {
+        "Passed": 27
+      },
+      "sha256": "10ba81d3f76b27eb57fde9d2312fdd652599d5bb5835eb03f923bb11a99ebc86",
+      "bytes": 577903
+    },
+    {
+      "category": "Integration",
+      "path": "TestResults/integration/cameraagent-storage/integration-cameraagent-storage.trx",
+      "counts": {
+        "Passed": 472
+      },
+      "sha256": "5879c965c5dce1a57a61ab4b8f505a088c94860a7d2f38bf2dd488b295856ed3",
+      "bytes": 787383
+    },
+    {
+      "category": "Integration",
+      "path": "TestResults/integration/logichost/integration-logichost.trx",
+      "counts": {
+        "Passed": 600
+      },
+      "sha256": "25631cc964e26f60f41dbfa07b504313e3e8c9f9eabd7233b032f067c97e4247",
+      "bytes": 3383076
+    },
+    {
+      "category": "Architecture",
+      "path": "TestResults/architecture/architecture-publish.trx",
+      "counts": {
+        "Passed": 7
+      },
+      "sha256": "338f85b71f4af8debfb8ccea22f6136e88ff093c135bc17e188cf84ee568f008",
+      "bytes": 12654
+    }
+  ],
+  "supplemental": {
+    "memoryCommand": "flock -o /tmp/hvo-heavy-gate.lock timeout 1200 python3 docs/validation/issue-1041-memory-diagnostic.py.txt",
+    "memoryResult": "PASS",
+    "baselineMemoryResult": "PASS",
+    "extendedRecoveryInitialAttempt": "Probe-only compile error CS4007: ref-span receiver crossed await; read bytes into a local first, then reran. No runtime probe began in that failed attempt.",
+    "extendedRecoveryCommand": "flock -o /tmp/hvo-heavy-gate.lock timeout 180 python3 docs/validation/issue-1041-summary-crash-probe.py.txt",
+    "extendedRecoveryResult": "PASS",
+    "probe": "results.json"
+  },
+  "scope": "Disposable local fixtures only; no CI dispatch, review request, PR or deployment; required Sol/Opus review acquisition belongs to Kepler",
+  "pathRedaction": "The disposable private root in the scale command is represented by ${TMPDIR}; original literal command remains in ignored local evidence.",
+  "artifacts": {
+    "docs/validation/issue-1041-baseline-environment.json": {
+      "sha256": "6ad956cd71ac5bd8d8a23a77befd24ef5d8c57c919de5e351569603918be31e5",
+      "bytes": 3443
+    },
+    "docs/validation/issue-1041-baseline-memory-exit-results.json": {
+      "sha256": "3fff3a392d6dbde8bc40f20429f755db47fe1737742a9495013b457178663659",
+      "bytes": 1768
+    },
+    "docs/validation/issue-1041-baseline-memory.py.txt": {
+      "sha256": "cea3aab44747cee6c57e7aae6c58e58e2bef9e42d5560c011ea582c787d501ec",
+      "bytes": 2251
+    },
+    "docs/validation/issue-1041-memory-diagnostic.py.txt": {
+      "sha256": "0a8c71ea346b35b4fa26b3d568e726ecbbabd7cbc12d3cc2bf1c86493d0fe385",
+      "bytes": 2649
+    },
+    "docs/validation/issue-1041-memory-exit-hook.cs.txt": {
+      "sha256": "84c8cdafca3c2db99d82223f863515733849bd01abea1a1652f854e5a9efb997",
+      "bytes": 1658
+    },
+    "docs/validation/issue-1041-memory-exit-results.json": {
+      "sha256": "37da247c6551aca4cd096faf8e7cdafebe1940cc88a206a3a09a91d0b822df61",
+      "bytes": 1768
+    },
+    "docs/validation/issue-1041-memory-scale-evidence.json.gz": {
+      "sha256": "c62d7dfbd617aa0244d43069eca8d3fd35bccc5f522d544b712613c9bc9b6d2e",
+      "bytes": 4704
+    },
+    "docs/validation/issue-1041-process-probe.json": {
+      "sha256": "4830b1bc813482c67977b94898f1b1cab59d60884fbb5b6f8f479876cbca6c2b",
+      "bytes": 1471
+    },
+    "docs/validation/issue-1041-scale-evidence.json.gz": {
+      "sha256": "f518313b11ab06b5fa6620fb659157ff0206f58548a58f6f8be96292b5b152bf",
+      "bytes": 5459
+    },
+    "docs/validation/issue-1041-scale-summary.json": {
+      "sha256": "995b915f8d8dbf76a64eac107b147dc95946c0c61ec8e3a3cfee997eacc81f7d",
+      "bytes": 10700
+    },
+    "docs/validation/issue-1041-summary-crash-probe.cs.txt": {
+      "sha256": "6adc6a32e716274ba5451df0a540b2be6bdd41bcc9c0519badc6ea7429a5578f",
+      "bytes": 7570
+    },
+    "docs/validation/issue-1041-summary-crash-probe.py.txt": {
+      "sha256": "e0fd4bfcc5d23c5dc5e1718ac4a684f1cbda155db044460e8f82f0fb219e732d",
+      "bytes": 2986
+    }
+  }
+}

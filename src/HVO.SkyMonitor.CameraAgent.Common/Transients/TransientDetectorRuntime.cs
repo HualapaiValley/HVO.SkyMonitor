@@ -48,6 +48,8 @@ internal sealed class TransientDetectorRuntime(
         }
 
         var output = new Dictionary<int, TransientTemporalSource>();
+        string? obstructionKey = null;
+        HorizonObstructionMaskPlanes? obstructionPlanes = null;
         foreach (var pair in frames.OrderBy(static pair => pair.Key))
         {
             var configuration = configurations[pair.Key];
@@ -121,7 +123,7 @@ internal sealed class TransientDetectorRuntime(
                     radius)).ToArray();
                 star = Linear16MaskOperations.CreateCircularSupportMask(width, height, starRegions, cancellationToken);
             }
-            var masks = new[]
+            var masks = new List<TransientDetectorMask>
             {
                 TransientDetectorMask.Create(TransientDetectorMaskKind.Sky,
                     new ProcessingAlgorithmIdentity("geometric-sky-mask", "v1"), empty),
@@ -137,6 +139,44 @@ internal sealed class TransientDetectorRuntime(
                     new ProcessingAlgorithmIdentity(options.ExposureIntegratedStarMask
                         ? StellarExposureMask.AlgorithmVersion : "catalog-projected-star-mask", "v1"), star)
             };
+            if (configuration.Rig.HorizonObstruction is { } profile)
+            {
+                var evaluator = new HorizonObstructionEvaluator(profile, configuration.Rig, request.Observer, pair.Value.Manifest.Descriptor.Location);
+                if (!evaluator.IsCompatible)
+                    throw new TransientWorkerExecutionException("transient-runtime.obstruction-revalidation-required", retryable: false);
+                var key = CaptureContractJson.ComputeCanonicalJsonSha256(new
+                {
+                    profile = profile.ComputeIdentitySha256(),
+                    evaluator.GeometryIdentitySha256,
+                    request.Observer,
+                    pair.Value.Manifest.Descriptor.Location,
+                    projection,
+                    transform,
+                    width,
+                    height
+                });
+                if (key != obstructionKey)
+                {
+                    var detectorTransform = ProjectedSceneImageTransformV1.Identity(projection.WidthPixels, projection.HeightPixels) with
+                    {
+                        BinX = projection.WidthPixels / width,
+                        BinY = projection.HeightPixels / height,
+                        OutputWidthPixels = width,
+                        OutputHeightPixels = height
+                    };
+                    if (transform.OffsetX != 0 || transform.OffsetY != 0 ||
+                        transform.ScaleX != (double)width / projection.WidthPixels ||
+                        transform.ScaleY != (double)height / projection.HeightPixels)
+                        throw new TransientWorkerExecutionException("transient-runtime.obstruction-transform-unsupported", retryable: false);
+                    obstructionPlanes = HorizonObstructionMask.Create(evaluator, detectorTransform, cancellationToken);
+                    obstructionKey = key;
+                }
+                var algorithm = new ProcessingAlgorithmIdentity("horizon-detector-pixel-centres-v1", profile.ComputeIdentitySha256());
+                masks.Add(TransientDetectorMask.Create(TransientDetectorMaskKind.FixedHorizonObstruction,
+                    algorithm, obstructionPlanes!.Obstructed));
+                masks.Add(TransientDetectorMask.Create(TransientDetectorMaskKind.UnknownHorizonObstruction,
+                    algorithm, obstructionPlanes.Unknown));
+            }
             output.Add(pair.Key, new TransientTemporalSource(
                 ToPosition(pair.Key), input.CaptureSequence!.Value, input,
                 new TransientSensitivityV1(input.Descriptor.Compatibility.SetpointRegime, 1, 1), masks));

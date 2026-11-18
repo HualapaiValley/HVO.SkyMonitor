@@ -182,7 +182,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
         Assert.IsNull(unavailable.Facts.Environment.Single().ObservationId);
         var denseSource = JsonSerializer.SerializeToElement(new { widthPixels = 1936, heightPixels = 1216, environmentalKinds = Enum.GetNames<EnvironmentalObservationKind>() });
         var dense = await Execute(denseSource, "all-kinds").ConfigureAwait(false);
-        Assert.HasCount(12, dense.Facts.Environment);
+        Assert.HasCount(Enum.GetValues<EnvironmentalObservationKind>().Length, dense.Facts.Environment);
         Assert.HasCount(PresentationLayerPayloadV1.MaximumLinesPerBlock, dense.Facts.Corners.BottomLeft);
         Assert.IsTrue(dense.Facts.Corners.BottomLeft.All(static line => line.Length <= PresentationLayerPayloadV1.MaximumLineCharacters));
 

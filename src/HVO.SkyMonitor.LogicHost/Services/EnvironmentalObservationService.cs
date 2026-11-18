@@ -29,6 +29,7 @@ internal sealed record EnvironmentalObservationIngestResult(
 
 internal sealed class EnvironmentalObservationConflictException : InvalidOperationException
 {
+    public bool IsMissingLineage { get; init; }
     public EnvironmentalObservationConflictException()
     {
     }
@@ -177,7 +178,7 @@ internal sealed class EnvironmentalObservationIngestService(
                     """, cancellationToken).ConfigureAwait(false);
             }
 
-            if (observation.Source.Kind == EnvironmentalObservationSourceKind.Derived)
+            if (observation.Lineage.Count > 0)
             {
                 await AcquireRetentionLockAsync().ConfigureAwait(false);
             }
@@ -381,7 +382,8 @@ internal sealed class EnvironmentalObservationIngestService(
         {
             telemetry.RecordConflict("lineage");
             return new EnvironmentalObservationConflictException(
-                "A referenced environmental source observation does not exist.");
+                "A referenced environmental source observation does not exist.")
+            { IsMissingLineage = true };
         }
 
         async Task AcquireRetentionLockAsync()
@@ -433,6 +435,7 @@ internal sealed class EnvironmentalObservationIngestService(
             SourceId = observation.Source.SourceId,
             Version = observation.Source.Version,
             Kind = observation.Source.Kind,
+            IsLineageInput = observation.Source.IsLineageInput,
             MethodName = provenance.Method.Name,
             MethodVersion = provenance.Method.Version,
             ParametersJson = JsonSerializer.Serialize(CaptureContractJson.Canonicalize(provenance.Parameters)),
@@ -467,6 +470,7 @@ internal sealed class EnvironmentalObservationIngestService(
             Uncertainty = value.Uncertainty,
             SubmittedNumericValue = value.SubmittedNumericValue,
             SubmittedUnit = value.SubmittedUnit,
+            SampleMetadataJson = value.Metadata is null ? null : JsonSerializer.Serialize(value.Metadata),
             ObservedAtUtc = observation.ObservedAtUtc,
             ObservedFromUtc = observation.ObservedFromUtc,
             ObservedThroughUtc = observation.ObservedThroughUtc,

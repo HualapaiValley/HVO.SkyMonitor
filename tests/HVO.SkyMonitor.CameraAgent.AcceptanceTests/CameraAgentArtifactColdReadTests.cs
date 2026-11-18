@@ -147,7 +147,7 @@ public sealed class CameraAgentArtifactColdReadTests
             "fact path is looked up before timing; metadata/controller cache and full app cold start uncontrolled.");
     }
 
-    private static int EvictAndCount(string path)
+    internal static int EvictAndCount(string path)
     {
         using var file = File.OpenHandle(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
         var length = RandomAccess.GetLength(file);

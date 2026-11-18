@@ -31,7 +31,11 @@ public sealed record ClockSyncSnapshot(
     TimeServerResult? Selected,
     IReadOnlyList<TimeServerResult> Servers,
     int IgnoredEntries,
-    KernelClockState Kernel);
+    KernelClockState Kernel)
+{
+    /// <summary>Optional fake-only GPS diagnostics; not used by clock health or production registration.</summary>
+    public GpsTimeStatus? Gps { get; init; }
+}
 
 public enum ClockCheckOutcome
 {

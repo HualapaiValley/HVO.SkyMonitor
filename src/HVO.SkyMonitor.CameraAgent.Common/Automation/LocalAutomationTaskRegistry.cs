@@ -14,7 +14,7 @@ public sealed record LocalAutomationExecution(LocalAutomationRunOutcome Outcome,
 /// <summary>
 /// The closed set of tasks an automation definition may name and the only place that maps a stored
 /// definition onto a real operation. A definition can name nothing this registry does not publish,
-/// so no definition can express a command, script, or arbitrary endpoint.
+/// so targets remain registered identities, including separately authorized sandboxed script invocations.
 /// </summary>
 public interface ILocalAutomationTaskRegistry
 {

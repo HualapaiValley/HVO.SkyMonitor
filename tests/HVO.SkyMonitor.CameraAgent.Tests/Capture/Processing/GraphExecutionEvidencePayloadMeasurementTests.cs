@@ -220,7 +220,7 @@ public sealed class GraphExecutionEvidencePayloadMeasurementTests
             static lane => lane.Name == "standard");
 
         var module = new VirtualSkyCameraModule(
-            TimeProvider.System,
+            ExposureTestTimeProvider.ForRendering(),
             CreateCatalog(),
             provider.GetRequiredService<IProjectedSceneStore>(),
             provider.GetRequiredService<IConstellationTopology>(),
