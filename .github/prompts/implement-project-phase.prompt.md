@@ -1,13 +1,13 @@
 ---
 name: "Implement Roadmap Issue"
-description: "Implement and validate an assigned roadmap issue, obtain local review, and hand the candidate to Kepler."
+description: "Implement and validate an assigned roadmap issue and hand the candidate to Kepler."
 argument-hint: "Required: GitHub issue number"
 agent: "agent"
 ---
 
 Implement GitHub issue `${input:scope:Required GitHub issue number}` in this
-repository. This command requests implementation, validation, independent local
-review, and corrections for one ready issue, followed by a candidate handoff to
+repository. This command requests implementation, validation, and corrections
+for one ready issue, followed by a candidate handoff to
 Kepler. Coding threads push only when instructed and never create PRs, mark
 ready, set `hvo/reviewed-head`, or enqueue. Kepler owns formal review and the
 merge queue. Do not take another issue unless the user authorized that scope.
@@ -63,13 +63,14 @@ Use the execution protocol's validation ladder: focused tests in the inner loop,
 one tier-selected local candidate gate before the first push, affected local
 gates for corrections, and classifier-selected protected CI on the final
 reviewed head. Do not repeat unchanged long suites or performance harnesses.
-Commit only intended files. Before independent local review, map every in-scope
+Commit only intended files. Before independent formal review, map every in-scope
 original-issue requirement to implemented behavior and local evidence at the
 candidate SHA. Missing scope or evidence returns to implementation. Follow the
 PR lifecycle skill for LOW/HIGH review requirements, exact ranges, explicit
 completeness verdicts, and verified finding dispositions. Hand the candidate,
-requirement mapping, guard results, and required local CLEAN reports to Kepler.
-Push only when instructed; stop at that handoff.
+requirement mapping and guard results to Kepler. Push only when instructed;
+stop at that handoff. Kepler creates the draft and obtains formal reviews after
+draft checks pass on the exact head.
 
 Report milestones and blockers directly to the operator and retain UTC local
 evidence at least every thirty minutes during active work. Keep the issue claim

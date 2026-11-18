@@ -54,28 +54,53 @@ skills explicitly where discovery is uncertain; non-pilot roadmap work follows
 `docs/planning/agent-execution.md`. Policy text includes AGENTS.md, the policy
 snapshot/profile, agent skills and normative workflow process docs; enforcement
 includes branch settings, workflows and scripts that gate review, CI or merging.
+Policy-text entry points include `CLAUDE.md`, `.github/copilot-instructions.md`,
+`.github/prompts/**`, `.agents/skills/**`, `docs/planning/agent-execution.md`,
+`docs/planning/agent-prompts.md`, and normative `docs/runbooks/**`. Enforcement
+paths include `.github/workflows/**`, `.github/PULL_REQUEST_TEMPLATE/**`,
+`.github/pull_request_template.md`, `scripts/ci:*`, `scripts/pr:*`, and live
+branch protection and rulesets where they implement the common definition.
+The repository has no `.claude/`, `.cursor/`, or OpenCode adapter configuration;
+verify harness discovery and load [hvo-coordination](../../../.agents/skills/hvo-coordination/SKILL.md)
+and applicable local skills explicitly.
+
+For `main` and `release/**` PRs, `ci.yml` intentionally fails `Required CI`
+while draft. No passing draft check for those targets is identified here; the
+common draft-check prerequisite must be resolved before review, not waived or
+interpreted as a pass. Pilot assignments use the common lifecycle stages and
+are designated explicitly by Roy; this profile designates no assignment as a pilot.
+
 Repository labels include `review:*`, `risk:*` and `workflow:in-progress` /
 `workflow:blocked`; they do not replace evidence or the existing gates.
 
 ## Retained stricter SkyMonitor procedures (Roy t581u)
 
-These transitional procedures remain in force under common policy's retained
-procedure authority and may not be relaxed without Roy's decision:
+These transitional procedures remain in force until Roy records a decision to
+retire them or promote them to common, or the next shared-policy version bump,
+whichever comes first. They may not relax common policy:
 
 1. Kepler alone creates agent PRs, including drafts, marks ready, publishes
    `hvo/reviewed-head`, and enqueues. Coding threads perform none of these.
-2. LOW requires one Sol CLEAN; HIGH requires Sol and Opus CLEAN on the same
-   candidate SHA. When unsure, choose HIGH. Only High and Medium findings block;
+2. Apply the stricter tier assigned by common policy and SkyMonitor to each
+   change. Common policy classifies ordinary behavior/API changes, policy text,
+   CI trust and enforcement as HIGH. SkyMonitor then requires one Sol CLEAN for
+   LOW, and Sol and Opus CLEAN on the same candidate SHA for HIGH. When unsure, choose HIGH. Only High and Medium findings
+   block;
    Critical maps to High, Lows become linked follow-ups, and incompleteness always
    blocks. Mechanical, Standard and Deep set coverage and round limits; they never
    reduce the named-reviewer requirement.
 
 ## Evidence translation
 
-SkyMonitor records `CLEAN` and `CHANGES_REQUIRED`; common `INCOMPLETE` and
-`BLOCKED` are non-approval and cannot become CLEAN. Reviews are posted through
-`hvo-agentcontrol[bot]` as described in the review runbook. Model identity is
+SkyMonitor `CLEAN` maps to common `CLEAN`; `CHANGES REQUIRED` and
+`CHANGES REQUESTED` map to common `CHANGES_REQUIRED`. The older `APPROVE`
+label represents approval only when the required CLEAN and completeness gates
+are met; it cannot replace them. Reviewer completeness values are `COMPLETE`,
+`INCOMPLETE`, and `BLOCKED`; the latter two and common `INCOMPLETE` / `BLOCKED`
+are non-approval. Kepler publishes reviewer output verbatim under the operator
+account and links the reviewer session. The `hvo-agentcontrol[bot]` review
+publication route described in the older runbook is unused. Model identity is
 reported, not authenticated. Roy decided at 4:27 PM PST on 2026-11-17
 (widget t594s3390) to drop independent local Sol/Opus review before draft
-creation. Formal HIGH-tier Sol and Opus reviews are bound to the same exact
-head and start only after draft checks pass on that head.
+creation. All formal reviews start only after draft checks pass on the exact
+head; HIGH-tier Sol and Opus reviews are bound to the same exact head.

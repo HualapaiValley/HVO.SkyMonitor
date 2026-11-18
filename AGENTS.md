@@ -10,8 +10,9 @@ The shared [common policy](docs/development/policy/common.md),
 [SkyMonitor profile](docs/development/policy/skymonitor.md), and
 [harness adapters](docs/development/policy/adapters.md) are version 2026-11-17.1.
 Common policy governs designated pilot work, policy text and enforcement changes;
-its six folded rules, including the standing authorized merge rule, apply to all
-agent work. The profile records local structure and retained stricter procedures.
+its six folded rules apply to all agent work. The standing authorized merge
+rule also applies as specified in common policy. The profile records local
+structure and retained stricter procedures.
 Platform/security requirements take precedence, then common policy, then the
 profile. Existing repository procedures remain in force within that scope.
 Load applicable repository skills explicitly when discovery is uncertain.
@@ -36,8 +37,11 @@ actions to a coding thread.
 | LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix, with no HIGH concern | One Sol **CLEAN** |
 | HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component work; when unsure, HIGH | Sol **and** Opus **CLEAN**, both on that candidate |
 
-HIGH concerns take precedence over LOW categories. Required independent formal
-review starts after draft checks pass on the exact head (Roy t594s3390). The
+For each change use the stricter tier assigned by common policy and the table
+above; SkyMonitor's named Sol/Opus reviewers apply to that tier. Common policy
+classes ordinary behavior/API changes, policy text, CI trust and enforcement as
+HIGH. HIGH concerns take precedence over LOW categories. Required independent
+formal review starts after draft checks pass on the exact head (Roy t594s3390). The
 existing A/B/C/M validation ladder and review-depth profiles still
 select checks and depth, but cannot replace the named reviewers or their count.
 Humans, bots, other models, a focused interaction review, an availability

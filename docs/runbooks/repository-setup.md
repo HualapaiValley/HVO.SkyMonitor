@@ -7,7 +7,7 @@ promotion, org-level self-hosted runners, and an independent review identity.
 Every step below was performed on `HVO.SkyMonitor` in September 2026; where a
 step has a known trap, the trap is recorded next to it.
 
-Coding threads stop at the tested candidate/evidence/independent-local-review
+Coding threads stop at the tested candidate/evidence
 handoff and push only when instructed. They never create PRs, even drafts,
 mark ready, set `hvo/reviewed-head`, or enqueue. Kepler alone performs those
 actions and controls formal review and any direct/auto-merge fallback. The
@@ -212,7 +212,10 @@ process requirement.
 | LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix with no HIGH concern | One Sol |
 | HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component; when unsure, HIGH | Sol and Opus |
 
-HIGH concerns override LOW categories. Apply this at each required formal
+For each change use the stricter tier assigned by common policy and this
+table; SkyMonitor's named Sol/Opus reviewers apply to that tier. Common policy
+classifies ordinary behavior/API changes, policy text, CI trust and enforcement
+as HIGH. HIGH concerns override LOW categories. Apply this at each formal
 review stage after draft checks pass on the exact head; profiles and the A/B/C/M validation ladder do not replace reviewers.
 Humans/bots, an availability waiver, elapsed time, or the legacy correction cap
 cannot substitute for the required named CLEAN reports. Only High/Medium

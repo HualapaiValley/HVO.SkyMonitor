@@ -110,9 +110,9 @@ explicit issue/operator acceptance scope. Before changing PR state, read and
 follow `.agents/skills/pr-lifecycle/SKILL.md`. Before independent formal review,
 map every in-scope original-issue requirement to implemented behavior and local
 evidence at the candidate SHA. Missing scope or evidence returns to
-implementation. Obtain LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN on that
-candidate, with explicit completeness verdicts and verified finding
-dispositions. Human/bot reviews are supplemental. The legacy correction-round
+implementation. After draft checks pass on the exact head, Kepler obtains
+LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN on that candidate, with explicit
+completeness verdicts and verified finding dispositions. Human/bot reviews are supplemental. The legacy correction-round
 budget is a checkpoint, not a waiver of blockers or required review.
 
 Hand the candidate, original-source mapping, and local evidence to Kepler,

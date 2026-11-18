@@ -42,8 +42,11 @@ checkout is never modified.
 | LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix, without a HIGH concern | One Sol **CLEAN** |
 | HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component work; when unsure, HIGH | Sol **and** Opus **CLEAN**, both on that candidate |
 
-HIGH concerns override LOW categories. Required formal reviews start only after
-draft checks pass on the exact head (Roy t594s3390).
+For each change use the stricter tier assigned by common policy and this
+table; SkyMonitor's named Sol/Opus reviewers apply to that tier. Common policy
+classes ordinary behavior/API changes, policy text, CI trust and enforcement as
+HIGH. Required formal reviews start only after draft checks pass on the exact
+head (Roy t594s3390).
 A/B/C/M tiers and fast/standard/deep profiles select validation and depth, not
 substitute reviewers. Humans, bots, other models, interchangeable providers,
 availability waivers, elapsed time, and correction caps cannot replace the
@@ -384,8 +387,8 @@ than token cost alone.
 ## Bounded Review Acquisition
 
 For each required Sol/Opus review, record the exact candidate/range, selected
-depth, actual model/effort, and STARTED acknowledgement. Before PR creation the
-coding thread retains that record locally; Kepler records formal PR activity.
+depth, actual model/effort, and STARTED acknowledgement. Kepler records formal
+PR activity after draft checks pass on the exact head.
 Require a valid start within fifteen minutes, then report unavailability and
 retry only an execution route for the same required reviewer family. A started
 review gets milestone reports and an interim update at least every thirty
@@ -679,15 +682,11 @@ corrections and local evidence, then stop at handoff.
 - After merge, confirm closure only for fully resolved issues. For a partial
   slice, record what shipped and keep its incomplete parent issue open. Update
   the owning roadmap epic when applicable, and synchronize local `main`.
-  Clean up the PR's disposable
-  resources: those created only for this PR and used by nothing else. That
-  means:
-  - its worktrees and local branch, and the remote branch if it remains;
-  - its scratch directories and review checkouts;
-  - containers, images, volumes and networks created only for its own tests;
-  - test databases and processes it left running.
-
-  Never remove any of these, even if this PR created or started them:
+  Inventory the PR's disposable resources, including worktrees, branches,
+  scratch directories, review checkouts, containers, images, volumes, networks,
+  test databases and processes. Deletions require Roy's explicit decision;
+  agents do not manually delete local or remote branches. Do not treat ordinary
+  closeout as deletion authorization. Preserve shared and retained resources:
   - shared infrastructure, such as the shared-services stack and its volumes
     (for example `skymonitor-redis-data`);
   - another PR's or session's worktrees;
@@ -695,10 +694,9 @@ corrections and local evidence, then stop at handoff.
   - release, validation or evidence artifacts kept under their retention
     policies.
 
-  When ownership is unclear, leave the resource and say so on the issue. Keep a
-  disposable resource only when a recorded follow-up needs it, and say what and
-  why on the issue. Then release the finalization lock if this PR held it, and
-  report completion.
+  When ownership is unclear, leave the resource and say so on the issue.
+  Record retained resources and any follow-up. Then release the finalization
+  lock if this PR held it, and report completion.
   Start or select another issue only with explicit operator authorization,
   including an existing explicit multi-issue assignment or an `agent:ready`
   queue label; completing this PR is not that authorization.
