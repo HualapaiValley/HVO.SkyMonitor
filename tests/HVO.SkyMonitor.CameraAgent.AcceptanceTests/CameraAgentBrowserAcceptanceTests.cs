@@ -1294,11 +1294,13 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await LoginAsync(page, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
         await WaitForGalleryCapturesAsync(page, minimumCards: 24).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
-        // An older genuine capture has finished its journal before graph inspection starts.
+        // The selected capture must finish its journal before graph inspection starts.
         var runLink = page.Locator(".capture-card .run-link").Nth(3);
         await VisibleAsync(runLink).ConfigureAwait(false);
         var runUrl = await runLink.GetAttributeAsync("href").ConfigureAwait(false);
         Assert.IsNotNull(runUrl);
+        var liveId = Guid.Parse(new Uri(host.BaseAddress, runUrl).Segments[^1]);
+        await WaitForCompletedExecutionAsync(host, liveId).ConfigureAwait(false);
         await page.GotoAsync(runUrl).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         await page.Locator(".run-graph[data-interactive='true']").WaitForAsync().ConfigureAwait(false);
