@@ -96,6 +96,8 @@ while the transport responds. Idle heartbeats do not write durable state or eval
      operations or interrupted rollback publication. For corrupt, unsupported or
      linked state, see [receipts and failure recovery](#receipts-and-failure-recovery).
      Retain the records and escalate unexplained mismatches instead of editing them.
+     A settled backup abort, a missing partial settled by recovery, or a failed backup whose cleanup and required
+     restart succeeded does not by itself block runtime control. An active backup or incomplete recovery still does.
    - **Failed** `lifecycle.restart-required`: the worker's cached listener,
      credential or runtime identity differs from the retained installation. Stop
      and restart the lifecycle worker as the recorded runtime account, then submit

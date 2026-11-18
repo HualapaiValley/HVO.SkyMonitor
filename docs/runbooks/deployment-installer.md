@@ -2328,7 +2328,9 @@ It refuses a backup whose archive and record are already published, even if the 
 finish that one with `--resume`. `--abort` is not a resume, and it cannot be combined with `--plan` or `--resume`. Run it
 as the same service account. When the quarantine is why the restart failed, pass `--allow-quarantined-readiness` with
 `--abort` or `--resume` as well, provided that image publishes the required cause evidence. A settled abort does not
-block the next backup or upgrade. Completing or aborting a backup that had stopped a running instance starts that
+block the next backup, upgrade, or runtime-control request. A backup whose failure or interruption was fully recovered
+also permits runtime control; an incomplete backup or failed recovery still fences it until recovery succeeds. The
+settled lifecycle journal is retained. Completing or aborting a backup that had stopped a running instance starts that
 instance and resumes capture.
 
 If abort's cleanup and restart succeed but its four-minute recovery budget expires while settling the journal,

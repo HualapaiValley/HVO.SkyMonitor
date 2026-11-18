@@ -2443,6 +2443,7 @@ public sealed partial class LifecycleContractTests
         Assert.AreEqual(3L, journal.PostMutationContinuity.CaptureVersion);
         Assert.AreEqual(1, lifecycle.RecoveryResumeCalls);
         Assert.AreEqual(1, lifecycle.RecoveryCommands.Count);
+        using (await CameraAgentLifecycleManager.AcquireControlDeploymentAsync(fixture.Paths, CancellationToken.None)) { }
         CollectionAssert.AreEqual(journalBytes, await File.ReadAllBytesAsync(fixture.Paths.LifecycleStatePath));
         CollectionAssert.AreEqual(manifestBefore, await File.ReadAllBytesAsync(fixture.Paths.ManifestPath));
         CollectionAssert.AreEqual(resultBefore, await File.ReadAllBytesAsync(fixture.Paths.ResultPath));
