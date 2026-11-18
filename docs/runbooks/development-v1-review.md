@@ -2,6 +2,11 @@
 
 This process applies to feature pull requests targeting `development/v1`. Promotion to `main` is described in [development-v1.md](../development-v1.md). The command-level procedure for one pull request is [pull-request-walkthrough.md](pull-request-walkthrough.md).
 
+The [unified policy and SkyMonitor profile](../development/policy/skymonitor.md)
+govern review timing and retained named-reviewer tiers. Draft Preflight passes on
+the exact head before formal review; the repository lifecycle skill governs
+where older detail below differs.
+
 ## Flow
 
 ```text

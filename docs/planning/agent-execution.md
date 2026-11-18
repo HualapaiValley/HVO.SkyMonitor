@@ -159,7 +159,7 @@ reason.
 ### Independent Issue Ownership
 
 The assigned coding owner owns implementation, original-requirement evidence,
-validation, independent local review, corrections, and the candidate handoff.
+validation, corrections, and the candidate handoff.
 Kepler owns the formal PR lifecycle and merge queue. Coding threads push only
 when instructed and never create PRs, mark ready, publish `hvo/reviewed-head`,
 or enqueue. Delegation does not transfer implementation ownership.
@@ -481,7 +481,7 @@ review request, selection, timeout, correction-cap, finalization-lock, CI,
 merge, and cleanup contracts plus links back here.
 
 Coding threads map every in-scope original-issue requirement to implemented
-behavior and local evidence at the candidate SHA before independent local
+behavior and local evidence at the candidate SHA before independent formal
 review. Missing scope or evidence returns to implementation. Apply `AGENTS.md`
 and the skill's issue-completeness contract: LOW requires Sol CLEAN; HIGH
 requires Sol and Opus CLEAN on the same candidate, including explicit
@@ -496,14 +496,14 @@ cannot supply CLEAN or waive required review; use the lifecycle skill's
 blocker and handoff procedure.
 
 Coding threads hand the candidate, original-source mapping, gate results, and
-required local CLEAN reports to Kepler and stop. Push only when instructed.
+local validation results to Kepler and stop. Push only when instructed.
 Kepler alone creates PRs, obtains formal review, marks ready, publishes
 `hvo/reviewed-head`, and enqueues. The sequence is:
 
 ```text
-implementation -> original-issue evidence -> required local CLEAN reviews
-  -> candidate handoff to Kepler
-Kepler draft -> required formal CLEAN reviews -> ready -> required head CI
+implementation -> original-issue evidence -> candidate handoff to Kepler
+Kepler draft -> draft checks pass on exact head -> required formal CLEAN reviews
+  -> ready -> required head CI
   -> current-head revalidation -> reviewed-head -> merge queue
   -> queue integration CI/merge -> completion and cleanup
 ```
@@ -531,8 +531,8 @@ If any build, test, runtime, review, or deployment check is not green:
    long suites locally when protected CI will cover them.
 7. For a code correction, Kepler keeps/returns the PR to draft and withdraws
    queue advancement before authorizing a push. The coding owner implements,
-   tests, and obtains required local review on the new candidate, then hands
-   it back for Kepler's formal review and CI. Resolve actual integration
+   tests and hands back the new candidate for draft checks and Kepler's formal
+   review. Resolve actual integration
    conflicts under the lifecycle skill; target-tip movement alone does not
    require a base merge. With no repository content change, use the skill's
    bounded same-SHA infrastructure rerun exception.
