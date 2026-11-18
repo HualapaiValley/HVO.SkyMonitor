@@ -1,13 +1,28 @@
 # Development v1 Review Process
 
-This process applies to feature pull requests targeting `development/v1`. Promotion to `main` is described in [development-v1.md](../development-v1.md). The command-level procedure for one pull request is [pull-request-walkthrough.md](pull-request-walkthrough.md).
+This runbook applies to feature pull requests targeting `development/v1`.
+Review Levels And Limits and CI And Merge remain current, subject to
+[AGENTS.md](../../AGENTS.md), the [SkyMonitor profile](../development/policy/skymonitor.md),
+and the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md).
+Sections and templates labeled historical describe retired mechanics, not operating
+instructions. The related [walkthrough](pull-request-walkthrough.md) is historical.
 
 The [unified policy and SkyMonitor profile](../development/policy/skymonitor.md)
 govern review timing and retained named-reviewer tiers. Draft Preflight passes on
 the exact head before formal review; the repository lifecycle skill governs
 where older detail below differs.
 
+Hosted Preflight runs on draft and ready PRs. Self-hosted Build and Unit runs only on non-draft PRs and pushes to `development/v1`.
+
+Use these two checks for ordinary v1 merge qualification. The full
+`ci.yml` matrix runs for main/release or explicit issue/operator qualification;
+do not dispatch it merely because a local classifier or base-sync delta selects
+`complete=true`. Keep focused local acceptance evidence and risk-tier gates.
+See [the short/full check ownership](../development-v1.md#short-checks-and-full-qualification).
+
 ## Flow
+
+**Historical:** This flow describes retired mechanics.
 
 ```text
 implement and validate locally
@@ -24,14 +39,6 @@ implement and validate locally
   -> merge when green and current
 ```
 
-Hosted Preflight runs on draft and ready PRs. Self-hosted Build and Unit runs only on non-draft PRs and pushes to `development/v1`.
-
-Use these two checks for ordinary v1 merge qualification. The full
-`ci.yml` matrix runs for main/release or explicit issue/operator qualification;
-do not dispatch it merely because a local classifier or base-sync delta selects
-`complete=true`. Keep focused local acceptance evidence and risk-tier gates.
-See [the short/full check ownership](../development-v1.md#short-checks-and-full-qualification).
-
 ## Review Levels And Limits
 
 | Level | Initial reviews | Correction reviews | Ordinary maximum |
@@ -40,13 +47,15 @@ See [the short/full check ownership](../development-v1.md#short-checks-and-full-
 | Standard | 1 | 2 | 3 |
 | Deep | 1 | 3 | 4 |
 
-One independent reviewer is sufficient for Standard work. Deep review uses the strongest available independent reviewer and adds a specialist only when the issue requires it.
+Review depth does not replace the required tier reviewers: LOW requires Sol CLEAN; HIGH requires Sol and Opus CLEAN on the same candidate, with at least one Deep review.
 
-Medium findings block by default. The issue owner may explicitly approve deferral only when the behavior is outside current acceptance and a follow-up issue records the source evidence and residual risk. Critical and High findings are never deferred.
+High and Medium findings block and cannot be deferred; Critical maps to High. Lows require linked follow-up tracking through Kepler.
 
-An exceptional focused review is allowed for a CI-discovered code defect, a late security/data-loss defect, or a material base-sync interaction. The reason must be recorded.
+An exceptional focused review is supplemental for a CI-discovered code defect, a late security/data-loss defect, or a material base-sync interaction. Record the reason; it cannot replace the full tier's required CLEAN reviews on the changed head after draft checks pass.
 
 ## Reviewer Identity
+
+**Historical:** This identity and publication mechanism are retired. Kepler publishes reviews without head-mutating review commits.
 
 The independent reviewer posts as `hvo-agentcontrol[bot]`, the HualapaiValley-owned
 GitHub App, so that review records are attributable to an identity distinct from
@@ -77,6 +86,8 @@ shared operator account and remain valid records.
 
 ## Review Parent And Child Findings
 
+**Historical:** This describes the retired review publication format.
+
 Each round posts one parent review summary. Every finding from that review is one resolvable child review thread. The parent indexes the child IDs and links; it does not duplicate all evidence.
 
 Finding IDs are stable across the PR: `F1`, `F2`, and so on. New correction-round findings receive the next unused ID. A finding thread contains:
@@ -91,6 +102,8 @@ Line-specific GitHub review threads are preferred. Attach cross-cutting findings
 
 ## Finding Lifecycle
 
+**Historical:** This describes the retired finding-thread mechanics.
+
 ```text
 OPEN -> CORRECTED -> VERIFIED_CORRECTED -> resolved thread
 OPEN -> DEFERRED -> VERIFIED_DEFERRED -> resolved thread + open follow-up issue
@@ -101,6 +114,8 @@ OPEN -> SUPERSEDED -> VERIFIED_SUPERSEDED -> resolved thread
 The implementer posts `CORRECTED`, `DEFERRED`, `NON_ACTIONABLE`, or `SUPERSEDED` in the finding thread. Only the independent reviewer posts the verified disposition; the operator resolves the thread after it.
 
 ## Parent Review Format
+
+**Historical template:** This format is retired.
 
 ```markdown
 ## Review
@@ -129,6 +144,8 @@ Open blockers: `F1` or `none`
 
 ## Finding Thread Format
 
+**Historical template:** This format is retired.
+
 ```markdown
 ### F1 - High - Short title
 
@@ -147,6 +164,8 @@ Observable behavior needed for closure.
 
 ## Author Resolution Format
 
+**Historical template:** This format is retired.
+
 ```markdown
 ### F1 - CORRECTED
 
@@ -162,6 +181,8 @@ Evidence:
 
 ## Reviewer Verification Format
 
+**Historical template:** This format is retired.
+
 ```markdown
 ### F1 - VERIFIED_CORRECTED
 
@@ -175,7 +196,7 @@ Disposition: resolved.
 
 Correction review covers the previous reviewed head to the current head, the interactions introduced by that delta, and every unresolved finding. It must disposition every prior finding. Omitted findings remain open.
 
-The parent correction review indexes existing finding threads instead of recreating them. New findings get new child threads.
+Kepler records the review and finding dispositions under the lifecycle skill.
 
 ## Convergence
 
@@ -186,31 +207,16 @@ A PR is converged only when:
 - every finding thread is resolved;
 - deferred findings link to valid follow-up issues;
 - acceptance criteria are verified;
-- the latest verdict is `APPROVE`;
-- the round limit is respected.
+- the required tier's reports are CLEAN on the current head and completeness is established.
 
-Post one convergence summary before marking the PR ready:
-
-```markdown
-## Review Converged
-
-Reviewed head: `<sha>`
-Review level: `Standard`
-Rounds: `2 of 3 maximum`
-Verified corrected: 2
-Verified deferred: 1
-Open: 0
-
-Current PR head matches the reviewed head.
-Next: mark ready and run Development v1 CI.
-```
+Kepler records convergence before marking the PR ready, subject to the lifecycle skill.
 
 ## CI And Merge
 
-If Development v1 CI finds a real code defect, return the PR to draft, add a finding ID, correct it, and obtain a focused exceptional review. An infrastructure failure does not create a code finding and may receive one diagnosed rerun.
+If Development v1 CI finds a real code defect, Kepler returns the PR to draft. Correct it and obtain the full tier’s required CLEAN reviews on the changed head after draft checks pass; a focused exceptional review cannot replace them. An infrastructure failure does not create a code finding and follows the current bounded retry policy.
 
-Merge when review is converged, all conversations are resolved, the current head
-is reviewed and up to date, and required Development v1 checks pass. Follow
+Merge when review is converged, all conversations and actual conflicts are resolved,
+the current head is reviewed, and required Development v1 checks pass. Follow
 the repository lifecycle skill's finalization reservation and exact-head checks;
 the reservation does not change the branch's CI profile or require a full-matrix dispatch.
 

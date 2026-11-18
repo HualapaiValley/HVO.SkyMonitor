@@ -49,6 +49,7 @@ public sealed partial class CameraAgentBrowserAcceptanceTests
         await page.GotoAsync(runUrl).ConfigureAwait(false);
         await WaitForInteractiveShellAsync(page).ConfigureAwait(false);
         var liveId = Guid.Parse(new Uri(page.Url).Segments[^1]);
+        await WaitForCompletedExecutionAsync(host, liveId).ConfigureAwait(false);
         var operations = host.Services.GetRequiredService<IProcessingGraphOperations>();
         var live = (await operations.ReadExecutionDetailAsync(liveId, CancellationToken.None).ConfigureAwait(false))!;
         var submitted = await operations.SubmitReplayAsync(new(live.Execution.CaptureId,

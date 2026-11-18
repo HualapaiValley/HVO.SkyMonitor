@@ -305,9 +305,14 @@ HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed
 Diagnostics distinguish `recovery=probe-timeout`, `recovery=transport-unavailable`
 and `recovery=probe-refused status=<code>` from heartbeat or publication failures.
 The next poll retries the retained recovery; caller cancellation still stops the worker.
-During retained receipt recovery, the corresponding worker diagnostic is
-`recovery=installer-busy`; the receipt remains pending rather than being
-failed by this diagnostic.
+During retained receipt recovery, `recovery=installer-busy` reports any installer
+error or refusal while acquiring deployment authority, other than a restart-required
+identity or credential mismatch. This includes a held deployment lock, an
+Uninstalled instance without an incomplete reinstall or rollback, and an incomplete
+operation not eligible for the settlement exceptions above. Other retained-state
+errors or refusals can also produce it; the diagnostic alone does not identify the
+cause. The receipt remains pending for a later poll, unlike the terminal
+`lifecycle.installer-busy` failure for a new request described above.
 If recovery reports `recovery=restart-required`, the receipt remains pending. Stop
 and restart the lifecycle worker as the recorded runtime account so it reloads the
 listener, credential and identity; retain the journals for settlement. If startup

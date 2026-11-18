@@ -78,8 +78,9 @@ Repository labels include `review:*`, `risk:*` and `workflow:in-progress` /
 ## Transitional retained procedures (stricter SkyMonitor rules; Roy t581u, renewed t595s3419)
 
 These are the clearly labeled Transitional retained procedures for this profile,
-as common.md:47 requires. Roy originated both stricter rules in t581u on
-16 November 2026 at 9:42 PM PST (America/Los_Angeles): Kepler-only PR creation,
+as common.md:47 requires. Roy designated both existing SkyMonitor rules (in
+AGENTS.md since #1751) as retained stricter procedures in t581u on 16 November
+2026 at 9:42 PM PST (America/Los_Angeles): Kepler-only PR creation,
 Ready, reviewed-head publication, and merge-queue enqueue; and the named
 Sol/Opus tiers (LOW = one Sol CLEAN; HIGH = Sol and Opus CLEAN on the same
 candidate; when unsure, HIGH). t594s3390 on 17 November 2026 at 4:27 PM PST
@@ -97,11 +98,13 @@ not relax common policy:
 2. Apply the stricter tier assigned by common policy and SkyMonitor to each
    change. Common policy classifies ordinary behavior/API changes, policy text,
    CI trust and enforcement as HIGH. SkyMonitor then requires one Sol CLEAN for
-   LOW, and Sol and Opus CLEAN on the same candidate SHA for HIGH. When unsure, choose HIGH. Only High and Medium findings
-   block;
-   Critical maps to High, Lows become linked follow-ups, and incompleteness always
-   blocks. Mechanical, Standard and Deep set coverage and round limits; they never
-   reduce the named-reviewer requirement.
+   LOW, and Sol and Opus CLEAN on the same candidate SHA for HIGH. When unsure,
+   choose HIGH. HIGH work needs at least one Deep review. Only High and Medium
+   findings block; Critical maps to High, Lows become linked follow-ups, and
+   incompleteness always blocks. Acceptance, correctness, safety, security,
+   data-loss, compatibility, and required-test failures are never Low; common
+   policy governs these blocking categories. Mechanical, Standard and Deep set
+   coverage and round limits; they never reduce the named-reviewer requirement.
 
 ## Evidence translation
 
