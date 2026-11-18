@@ -75,12 +75,21 @@ are designated explicitly by Roy; this profile designates no assignment as a pil
 Repository labels include `review:*`, `risk:*` and `workflow:in-progress` /
 `workflow:blocked`; they do not replace evidence or the existing gates.
 
-## Retained stricter SkyMonitor procedures (Roy t581u)
+## Transitional retained procedures (stricter SkyMonitor rules; Roy t581u, renewed t595s3419)
 
-Roy originated these procedures in t581u and authorized continuing this work,
-including retaining them through the 2026-11-17.2 version bump, in t594u. They
-remain in force until Roy records a decision to retire them or promote them to
-common, or the next shared-policy version bump, whichever comes first. They may
+These are the clearly labeled Transitional retained procedures for this profile,
+as common.md:47 requires. Roy originated both stricter rules in t581u on
+16 November 2026 at 9:42 PM PST (America/Los_Angeles): Kepler-only PR creation,
+Ready, reviewed-head publication, and merge-queue enqueue; and the named
+Sol/Opus tiers (LOW = one Sol CLEAN; HIGH = Sol and Opus CLEAN on the same
+candidate; when unsure, HIGH). t594s3390 on 17 November 2026 at 4:27 PM PST
+removed only the pre-draft local review. t594u at 4:06 PM PST that day
+authorized running this SkyMonitor rollout through merge; it did not record a
+17.2 retention decision. On 17 November 2026 at 8:54 PM PST, widget t595s3419,
+Roy renewed both stricter rules under policy 2026-11-17.2, still labeled
+transitional until the next shared-policy version. They remain in force until
+Roy records a decision to retire them or promote them to common, or the next
+shared-policy version bump after 2026-11-17.2, whichever comes first. They may
 not relax common policy:
 
 1. Kepler alone creates agent PRs, including drafts, marks ready, publishes
