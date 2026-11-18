@@ -1000,9 +1000,9 @@ and snapshot; adding a second migration fails CI during the pre-release period.
 Protect `main` with the stable `Required CI` check and require branches to be
 current before merge. GitHub enforces current-head CI and conversation
 resolution; independent review is an additional repository-process requirement,
-not an approving-review branch-protection rule. The merge-method, branch-deletion
-and release-tag settings the install contract requires await the owner's
-approval; see [Repository Settings](../development-v1.md#repository-settings). The complete review-provider,
+not an approving-review branch-protection rule. The [SkyMonitor profile](../development/policy/skymonitor.md#repository-and-integration)
+records observed merge-method, automatic branch-deletion, and release-tag settings;
+live settings remain authoritative. See [Repository Settings](../development-v1.md#repository-settings). The complete review-provider,
 correction-cap, finalization-lock, and merge procedure is defined by
 `.agents/skills/pr-lifecycle/SKILL.md`.
 

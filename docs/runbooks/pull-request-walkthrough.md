@@ -1,10 +1,16 @@
 # Pull Request Walkthrough
 
-The exact sequence for taking an issue from claim to merge on `development/v1`,
-with the commands, using PR #909 (the September dependency consolidation) as the
-worked example throughout. [development-v1-review.md](development-v1-review.md)
-is the rulebook; this is the procedure. Both apply to every repository that has
-adopted the model in [repository-setup.md](repository-setup.md).
+> **Historical record:** This document preserves an older workflow and its
+> commands are not current operating instructions. Follow [AGENTS.md](../../AGENTS.md),
+> the [SkyMonitor profile](../development/policy/skymonitor.md), and the
+> [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md). Kepler alone
+> operates agent PRs; reviews are not published through head-mutating commits,
+> and agents do not manually delete branches.
+
+This records the former sequence for an issue on `development/v1`, using PR #909
+(the September dependency consolidation) as its worked example. The related
+[review process](development-v1-review.md) retains current sections alongside
+clearly labeled historical mechanics; the [setup](repository-setup.md) is historical.
 
 The shape:
 

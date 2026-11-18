@@ -27,9 +27,9 @@ A pull request that changes what operators or users notice adds a line under `##
 
 - [Development v1 issue form](../.github/ISSUE_TEMPLATE/development-v1.yml)
 - [Development v1 pull request template](../.github/PULL_REQUEST_TEMPLATE/development-v1.md)
-- [Development v1 review process](runbooks/development-v1-review.md)
-- [Pull request walkthrough](runbooks/pull-request-walkthrough.md): the step-by-step procedure with commands, using a real PR as the example
-- [Repository setup](runbooks/repository-setup.md): how to bring another repository into this model
+- [Development v1 review process](runbooks/development-v1-review.md): current review limits and CI guidance alongside labeled historical mechanics
+- [Pull request walkthrough](runbooks/pull-request-walkthrough.md): historical example and retired commands
+- [Repository setup](runbooks/repository-setup.md): historical setup checklist and retired commands
 
 Issues merged into `development/v1` are closed explicitly with the pull request and merge SHA. Completion comments state that the work is not promoted to `main`.
 
@@ -184,35 +184,11 @@ qualification.
 
 ## Repository Settings
 
-Section 2 of the [install contract](hvo-install-contract.md) also needs repository
-settings. Agents do not change repository settings; the owner applies these after
-approving them (#1321). The tag ruleset is applied; the others are pending that
-approval. The current values were read on 2026-10-16, and the tag ruleset on
-2026-10-17.
-
-| Setting | Current | Recommended |
-| --- | --- | --- |
-| Merge methods | Merge commits, squash and rebase all allowed | Merge commits only, so every commit keeps its SHA; `.gitleaks.toml` exceptions name commits |
-| Delete branch on merge | Off | On |
-| `v*` release tags | Ruleset `release tags` (id 25302808), active on `refs/tags/v*`: creation, update, deletion and non-fast-forward rules, with repository administrators as the only bypass, as RoofController's `release tags` ruleset does | Unchanged |
-| Required checks | `development/v1`: Development v1 / Preflight and Build and Unit. `main`: Required CI | Unchanged. The secret scan runs inside Preflight and inside Quality, which Required CI aggregates |
-| GitHub secret scanning and push protection | Off | Optional: on. Both are free for public repositories, and push protection rejects a recognised provider token before it is pushed, which a CI history scan cannot do |
-
-The owner can apply them with:
-
-```bash
-gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
-  -F allow_merge_commit=true -F allow_squash_merge=false -F allow_rebase_merge=false \
-  -F delete_branch_on_merge=true
-# Optional:
-gh api -X PATCH repos/HualapaiValley/HVO.SkyMonitor \
-  -f 'security_and_analysis[secret_scanning][status]=enabled' \
-  -f 'security_and_analysis[secret_scanning_push_protection][status]=enabled'
-```
-
-The [integration pre-release workflow](runbooks/prereleases.md) creates no tags:
-the owner pushes them, so it needs no bypass. If a workflow later creates `v*`
-tags, add its actor as a ruleset bypass at that time.
+The [SkyMonitor profile](development/policy/skymonitor.md#repository-and-integration)
+records the observed integration settings and their observation date; live settings
+remain authoritative. Agents do not change repository settings. Changes to
+protections or rulesets require Roy's decision and the applicable policy checks.
+The install contract's settings requirements remain in [section 2](hvo-install-contract.md).
 
 ## Review
 
