@@ -9,8 +9,8 @@
 
 This records the former sequence for an issue on `development/v1`, using PR #909
 (the September dependency consolidation) as its worked example. The related
-[review process](development-v1-review.md) and [setup](repository-setup.md) are
-also historical.
+[review process](development-v1-review.md) retains current sections alongside
+clearly labeled historical mechanics; the [setup](repository-setup.md) is historical.
 
 The shape:
 

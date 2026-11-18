@@ -18,7 +18,7 @@ Coding threads stop at the tested candidate/evidence
 handoff and push only when instructed. They never create PRs, even drafts,
 mark ready, set `hvo/reviewed-head`, or enqueue. Kepler alone performs those
 actions and controls formal review and any direct/auto-merge fallback. The
-setup/PR commands here are for Kepler/operator operation, not coding authority.
+setup/PR commands below are historical, not operating instructions for either role.
 
 The model in one picture:
 

@@ -27,9 +27,9 @@ A pull request that changes what operators or users notice adds a line under `##
 
 - [Development v1 issue form](../.github/ISSUE_TEMPLATE/development-v1.yml)
 - [Development v1 pull request template](../.github/PULL_REQUEST_TEMPLATE/development-v1.md)
-- [Development v1 review process](runbooks/development-v1-review.md)
-- [Pull request walkthrough](runbooks/pull-request-walkthrough.md): the step-by-step procedure with commands, using a real PR as the example
-- [Repository setup](runbooks/repository-setup.md): how to bring another repository into this model
+- [Development v1 review process](runbooks/development-v1-review.md): current review limits and CI guidance alongside labeled historical mechanics
+- [Pull request walkthrough](runbooks/pull-request-walkthrough.md): historical example and retired commands
+- [Repository setup](runbooks/repository-setup.md): historical setup checklist and retired commands
 
 Issues merged into `development/v1` are closed explicitly with the pull request and merge SHA. Completion comments state that the work is not promoted to `main`.
 
