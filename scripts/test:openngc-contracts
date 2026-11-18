@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/trx-evidence.sh
+source "$script_dir/lib/trx-evidence.sh"
+
+if [[ $# != 1 || -z "$1" ]]; then
+    printf 'Usage: %s RESULTS_DIRECTORY\n' "${0##*/}" >&2
+    exit 2
+fi
+for variable in HVO_PRODUCTION_CATALOG_BUNDLE HVO_OPENNGC_CATALOG_BUNDLE; do
+    if [[ ! -d "${!variable:-}" || -L "${!variable:-}" ]]; then
+        printf '%s must name a verified catalog bundle directory.\n' "$variable" >&2
+        exit 1
+    fi
+done
+
+results="$(realpath -m -- "$1")"
+mkdir -p -- "$results"
+cd "$script_dir/.."
+
+run_contracts() {
+    local project="$1" trx_name="$2" contract filter=""
+    local trx="$results/$trx_name"
+    shift 2
+    if [[ -e "$trx" || -L "$trx" ]]; then
+        printf 'Evidence file already exists: %s\n' "$trx" >&2
+        return 1
+    fi
+    for contract in "$@"; do
+        filter+="${filter:+|}FullyQualifiedName=$project.${contract%:*}"
+    done
+
+    DOCKER_HOST="unix://$results/docker-must-not-exist.sock" \
+        dotnet test "tests/$project/$project.csproj" --configuration Release -warnaserror \
+        --filter "TestCategory=Unit&($filter)" \
+        --results-directory "$results" --logger "trx;LogFileName=$trx_name"
+    trx_assert_executed_and_passed "$trx" "$project" || return 1
+    trx_assert_counters_executed_and_passed "$trx" "$project" || return 1
+
+    # MSTest puts the Boolean argument in the display name, which is recorded
+    # on both the discovery definition and the result linked by testId.
+    python3 - "$trx" "$project" "$@" <<'PY'
+from collections import Counter
+import sys
+import xml.etree.ElementTree as ET
+
+trx, project, *contracts = sys.argv[1:]
+expected = set()
+for contract in contracts:
+    method, _, rows = contract.partition(":")
+    name = method.rsplit(".", 1)[-1]
+    for row in rows.split(","):
+        display = f"{name} ({row})" if row else name
+        expected.add((f"{project}.{method}", display))
+
+run = ET.parse(trx)
+definitions = {}
+for test in run.findall("./{*}TestDefinitions/{*}UnitTest"):
+    test_id = test.attrib["id"]
+    if test_id in definitions:
+        sys.exit(f"{project}: duplicate testId definition {test_id}")
+    method = test.find("./{*}TestMethod")
+    qualified = f"{method.attrib['className']}.{method.attrib['name']}"
+    definitions[test_id] = (qualified, test.attrib["name"])
+
+results = run.findall("./{*}Results/{*}UnitTestResult")
+if len(results) != len(run.findall(".//{*}UnitTestResult")):
+    sys.exit(f"{project}: unexpected nested TRX results")
+
+observed = Counter()
+for result in results:
+    test_id = result.attrib["testId"]
+    case = definitions.get(test_id)
+    if case is None:
+        sys.exit(f"{project}: unknown result testId {test_id}")
+    if result.attrib["testName"] != case[1]:
+        sys.exit(f"{project}: result name does not match its testId definition {test_id}")
+    if result.attrib["outcome"] != "Passed":
+        sys.exit(f"{project}: {case[1]} did not pass")
+    observed[case] += 1
+
+missing = expected - observed.keys()
+unexpected = [(case, count) for case, count in observed.items() if case not in expected or count != 1]
+if missing or unexpected:
+    sys.exit(f"{project}: missing OpenNGC cases {sorted(missing)}; unexpected or repeated cases {sorted(unexpected)}")
+for method, display in sorted(expected):
+    print(f"{method.rsplit('.', 1)[0]}.{display}: Passed")
+PY
+}
+
+run_contracts HVO.SkyMonitor.Catalog.Sqlite.Tests catalog-sqlite.trx \
+    IndependentOpenNgcCatalogTests.PublicOpenNgcArtifactMatchesTheApprovedIndependentSpecification
+run_contracts HVO.SkyMonitor.Deployment.Cli.Tests deployment-cli.trx \
+    InstallerFlowTests.InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting \
+    InstallerFlowTests.InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite:False,True \
+    InstallerFlowTests.InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent \
+    LifecycleContractTests.PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands

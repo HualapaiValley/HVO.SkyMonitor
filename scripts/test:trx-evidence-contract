@@ -226,3 +226,115 @@ if ((failures > 0)); then
     exit 1
 fi
 printf 'All %s TRX evidence contract cases passed.\n' "$cases"
+
+# Exercise the actual OpenNGC runner against trimmed MSTest output. Only dotnet
+# is stubbed so every fixture goes through the production evidence checks.
+python3 - "$REPO_ROOT" "$FIXTURES" <<'PY'
+import copy
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+
+repo, fixtures = map(Path, sys.argv[1:])
+runner = repo / "scripts/test:openngc-contracts"
+catalog = fixtures / "openngc-catalog-sqlite.trx"
+cli = ET.parse(fixtures / "openngc-deployment-cli.trx")
+ET.register_namespace("", "http://microsoft.com/schemas/VisualStudio/TeamTest/2010")
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    dotnet = root / "dotnet"
+    dotnet.write_text("""#!/usr/bin/env bash
+set -euo pipefail
+while (($#)); do
+    case "$1" in
+        --results-directory) results="$2"; shift ;;
+        'trx;LogFileName='*) name="${1#*=}" ;;
+    esac
+    shift
+done
+case "$name" in
+    catalog-sqlite.trx) input="$HVO_TRX_TEST_CATALOG" ;;
+    deployment-cli.trx) input="$HVO_TRX_TEST_CLI" ;;
+    *) exit 2 ;;
+esac
+cp -- "$input" "$results/$name"
+""")
+    dotnet.chmod(0o700)
+    fixture = root / "cli.trx"
+    env = {
+        **os.environ,
+        "PATH": f"{root}:{os.environ['PATH']}",
+        "HVO_PRODUCTION_CATALOG_BUNDLE": directory,
+        "HVO_OPENNGC_CATALOG_BUNDLE": directory,
+        "HVO_TRX_TEST_CATALOG": str(catalog),
+        "HVO_TRX_TEST_CLI": str(fixture),
+    }
+
+    def check(label, evidence, status, *messages, output=None):
+        evidence.write(fixture, encoding="utf-8")
+        result = subprocess.run([runner, output or root / label], env=env, capture_output=True, text=True)
+        log = result.stdout + result.stderr
+        if result.returncode != status or any(message not in log for message in messages):
+            sys.exit(f"{label}: expected exit {status} and {messages}, got exit {result.returncode}\n{log}")
+        verdict = "accepted" if status == 0 else "rejected"
+        print(f"OpenNGC TRX {verdict} {label} as expected")
+
+    result_path = "./{*}Results/{*}UnitTestResult"
+    boolean_cases = [result.attrib["testName"] for result in cli.findall(result_path)
+                     if result.attrib["testName"].endswith(" (False)")]
+    if len(boolean_cases) != 4:
+        sys.exit("Expected four Boolean pairs in the recorded OpenNGC TRX fixture")
+
+    green = "counters verified, executed=11 passed=11"
+    check("intended cases", cli, 0, green,
+          *(f"{name}: Passed" for name in boolean_cases),
+          *(name.replace(" (False)", " (True): Passed") for name in boolean_cases))
+
+    for false_name in sorted(boolean_cases):
+        changed = copy.deepcopy(cli)
+        by_name = {result.attrib["testName"]: result for result in changed.findall(result_path)}
+        true_name = false_name.replace(" (False)", " (True)")
+        false_result = by_name[false_name]
+        true_result = by_name[true_name]
+        if false_result.attrib["executionId"] == true_result.attrib["executionId"]:
+            sys.exit(f"Fixture rows for {false_name} must have distinct execution IDs")
+        # Reproduce F1 with the real False testId and display name while
+        # retaining the True row's distinct executionId and green counters.
+        true_result.set("testId", false_result.attrib["testId"])
+        true_result.set("testName", false_name)
+        check(f"duplicate {false_name}", changed, 1, green,
+              "missing OpenNGC cases", true_name, "unexpected or repeated cases", false_name)
+
+    changed = copy.deepcopy(cli)
+    results = changed.find("./{*}Results")
+    removed = results[0].attrib["testName"]
+    results.remove(results[0])
+    counters = changed.find("./{*}ResultSummary/{*}Counters")
+    for attribute in ("total", "executed", "passed"):
+        counters.set(attribute, "10")
+    check("missing case", changed, 1, "executed=10 passed=10", "missing OpenNGC cases", removed)
+
+    changed = copy.deepcopy(cli)
+    changed.find(result_path).set("testId", "00000000-0000-0000-0000-000000000000")
+    check("unknown testId", changed, 1, green, "unknown result testId")
+
+    changed = copy.deepcopy(cli)
+    changed.find(result_path).set("testName", "Unknown display name")
+    check("mismatched display", changed, 1, green, "result name does not match its testId definition")
+
+    changed = copy.deepcopy(cli)
+    changed.find("./{*}TestDefinitions/{*}UnitTest/{*}TestMethod").set("name", "UnknownMethod")
+    check("unknown method", changed, 1, green, "unexpected or repeated cases", "UnknownMethod")
+
+    changed = copy.deepcopy(cli)
+    results = changed.find("./{*}Results")
+    nested = results[-1]
+    results.remove(nested)
+    ET.SubElement(results[0], "InnerResults").append(nested)
+    check("nested result", changed, 1, green, "unexpected nested TRX results")
+    check("stale evidence", cli, 1, "Evidence file already exists", output=root / "intended cases")
+PY
