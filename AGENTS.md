@@ -4,11 +4,23 @@ This is the canonical repository-wide instruction source for every coding-agent
 harness. Agent-specific instruction files must load or point to this file and
 must not redefine its policy inconsistently.
 
+## Unified policy
+
+The shared [common policy](docs/development/policy/common.md),
+[SkyMonitor profile](docs/development/policy/skymonitor.md), and
+[harness adapters](docs/development/policy/adapters.md) are version 2026-11-17.1.
+Common policy governs designated pilot work, policy text and enforcement changes;
+its six folded rules, including the standing authorized merge rule, apply to all
+agent work. The profile records local structure and retained stricter procedures.
+Platform/security requirements take precedence, then common policy, then the
+profile. Existing repository procedures remain in force within that scope.
+Load applicable repository skills explicitly when discovery is uncertain.
+
 ## Coding Threads and Kepler
 
 Coding threads own implementation, original-requirement evidence, local tests,
-independent local review, and corrections. They stop at the candidate/evidence/
-review handoff to Kepler, and push only when instructed. They **never create a
+and corrections. They stop at the candidate/evidence
+handoff to Kepler, and push only when instructed. They **never create a
 PR, including a draft, mark a PR ready, publish `hvo/reviewed-head`, or enqueue**.
 This boundary is unconditional; being the issue owner or having write access
 does not authorize those actions. Kepler alone creates PRs, controls draft/
@@ -24,9 +36,9 @@ actions to a coding thread.
 | LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix, with no HIGH concern | One Sol **CLEAN** |
 | HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component work; when unsure, HIGH | Sol **and** Opus **CLEAN**, both on that candidate |
 
-HIGH concerns take precedence over LOW categories. These requirements apply at
-each required local/formal review stage; local review does not waive formal
-review. The existing A/B/C/M validation ladder and review-depth profiles still
+HIGH concerns take precedence over LOW categories. Required independent formal
+review starts after draft checks pass on the exact head (Roy t594s3390). The
+existing A/B/C/M validation ladder and review-depth profiles still
 select checks and depth, but cannot replace the named reviewers or their count.
 Humans, bots, other models, a focused interaction review, an availability
 waiver, elapsed time, and a correction cap cannot substitute for required Sol/
@@ -169,8 +181,8 @@ have follow-up tracking.
 
 ### Developer Ownership
 
-- The assigned coding owner owns implementation, validation, independent local
-  review, corrections, and the resumable candidate handoff. Kepler owns the PR
+- The assigned coding owner owns implementation, validation, corrections, and
+  the resumable candidate handoff. Kepler owns the PR
   lifecycle and returns findings to that owner when implementation is needed.
   No coordinator enrollment is required for ordinary coding work; it does not
   change the unconditional Kepler boundary.
@@ -243,16 +255,12 @@ have follow-up tracking.
   removal of scheduling-only holds in the issue and roadmap before claiming.
   Distinguish start, integration, and release gates; preparation can precede
   qualification, but supported adoption cannot.
-- Reaching a PR, including a draft, means the declared issue scope is completed,
-  tested locally, and independently vetted locally at the required complexity.
-  Apply the Issue Completeness contract below before PR creation; draft-first
-  convergence is the subsequent Kepler/PR lifecycle, not permission to offload
-  unfinished implementation or acceptance discovery onto formal review or CI.
-- Kepler creates a draft PR only after completeness evidence and the required
-  tier-specific local CLEAN reviews pass. Protected CI must not advance until
-  formal review converges on the current PR head and real merge/product
-  conflicts are resolved, tested, and independently reviewed. Target-tip
-  movement alone requires no synchronization, re-testing, or new review.
+- Before a draft PR, complete the declared scope, local validation, and the
+  original-requirement evidence mapping. Kepler creates the draft; draft checks
+  pass on its exact head before independent formal review begins (Roy t594s3390).
+  Ready-state CI must not advance until formal review converges on the current
+  PR head and real merge/product conflicts are resolved, tested, and reviewed.
+  Target-tip movement alone requires no synchronization, re-testing, or new review.
 - Initial review covers the full merge-base-to-candidate diff and original
   requirements. Correction review covers the prior-reviewed-head delta and
   concrete interactions, verifying every prior finding individually. Every
@@ -264,7 +272,7 @@ have follow-up tracking.
   and depth roles. Use deep for HIGH concerns and material blocking findings;
   these profiles never reduce LOW's one Sol or HIGH's Sol-and-Opus requirement.
 - For the operated `development/v1` merge queue, Kepler revalidates the
-  **CURRENT PR HEAD SHA**, complete requirement evidence, required local/formal
+  **CURRENT PR HEAD SHA**, complete requirement evidence, required formal
   CLEAN reviews, passing required CI, and resolved conversations. Kepler alone
   publishes `hvo/reviewed-head` on that exact head and then enqueues with
   GraphQL `enqueuePullRequest`, checking the expected head. Under the queue,
@@ -305,7 +313,7 @@ have follow-up tracking.
   and approved scope clarifications. Roy's latest instructions win conflicts;
   record the source and resulting scope explicitly. A PR description, code diff,
   generated test list, or previous review summary cannot replace those sources.
-- Before requesting independent local review, map every in-scope requirement to
+- Before requesting independent formal review, map every in-scope requirement to
   implemented behavior and local behavioral evidence at the immutable candidate
   SHA. Include normal, negative, failure, cancellation, recovery, durable-state,
   and interaction cases as relevant; give N/A reasons for inapplicable cases.
@@ -338,10 +346,9 @@ have follow-up tracking.
   exact remaining validation to Kepler/Roy, never assert a pass. Required
   acceptance remains blocked until evidenced or explicitly re-scoped by Roy.
 - The rejection loop is **reject -> IMPLEMENTATION -> local tests/evidence ->
-  independent local review -> Kepler PR lifecycle**. Prove resolution before
-  the local review; obtain the required tier-specific CLEAN reports before
-  handoff. Only Kepler may create a PR/draft. Unavailability waives no required
-  local or formal review.
+  draft checks on the new head -> independent formal review**. Prove resolution
+  before review; Kepler obtains the required tier-specific CLEAN reports before
+  Ready. Only Kepler may create a PR/draft. Unavailability waives no review.
 - These are agent/Kepler process requirements. GitHub may disallow a PR author
   from submitting native `request_changes` on their own PR, just as it forbids
   self-approval. Record the honest process verdict and enforce the state/handoff;

@@ -201,7 +201,7 @@ Labels the process uses (create with `gh label create`): `review:mechanical`,
 ### Owner and reviewer completeness contract
 
 Install the [AGENTS.md Issue Completeness contract](../../AGENTS.md#issue-completeness)
-and the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md#issue-completeness-and-independent-local-review)
+and the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md#issue-completeness-and-independent-review)
 with the process documentation. They govern pre-PR readiness even where an
 older walkthrough starts at draft creation. Use the skill's compact owner and
 reviewer evidence tables; copying workflows alone does not establish this
@@ -212,8 +212,8 @@ process requirement.
 | LOW | Docs/tests-only, non-gating CI configuration, dependency bump, or small isolated non-safety fix with no HIGH concern | One Sol |
 | HIGH | Camera, roof, safety, interlock, durable-state, lifecycle, concurrency, recovery, security, merge-gating, data-migration, or cross-component; when unsure, HIGH | Sol and Opus |
 
-HIGH concerns override LOW categories. Apply this at each required local/formal
-stage; profiles and the A/B/C/M validation ladder do not replace reviewers.
+HIGH concerns override LOW categories. Apply this at each required formal
+review stage after draft checks pass on the exact head; profiles and the A/B/C/M validation ladder do not replace reviewers.
 Humans/bots, an availability waiver, elapsed time, or the legacy correction cap
 cannot substitute for the required named CLEAN reports. Only High/Medium
 review findings block; Critical is High. Lows become follow-up issues through
@@ -228,19 +228,19 @@ never Low or deferrable. Required tests and CI remain separate gates.
    and interaction cases, with explicit N/A reasons where inapplicable.
    Tests/criteria derived only from the implemented behavior are
    insufficient. Preserve assigned HIGH/LOW tiers and their validation depth.
-2. Prove resolution before requesting independent local review. The reviewer
+2. Prove resolution before requesting independent formal review. The reviewer
    independently reads the original sources as well as the implementation and
    evidence, and reports completeness, supporting evidence, and every uncovered
    requirement. For each requirement the reviewer independently checks normal,
    negative, failure, cancellation, recovery, durable-state, and interaction
    evidence or the explicit N/A reasons. A focused interaction review alone
-   cannot establish full issue resolution. A PR or draft means the declared
-   scope is completed, tested locally, and independently vetted by complexity.
+   cannot establish full issue resolution. A draft requires completed scope,
+   local validation and evidence; review follows passing draft checks.
 3. Missing in-scope behavior or required evidence means `CHANGES REQUESTED` and
    return to implementation, never a silent Low deferral. Keep or return any
    existing PR to draft through Kepler; do not advance CI/queue.
-   The loop is reject -> implementation -> local tests/evidence -> independent
-   local review -> Kepler PR lifecycle. Formal review, green CI, coverage, and
+   The loop is reject -> implementation -> local tests/evidence -> draft checks
+   on the new head -> independent formal review. Formal review, green CI, coverage, and
    code-only CLEAN verdicts cannot carry implementation completeness.
 4. Distinguish existing bugs, test gaps, fix-introduced regressions, and
    mechanical-only invariants in the evidence. Report missing hardware/state
@@ -250,7 +250,7 @@ never Low or deferrable. Required tests and CI remain separate gates.
 5. Accurately describe an authorized partial slice and track its remaining
    requirements. Keep the parent issue **OPEN** until its full scope is done;
    avoid automatic parent-closing references. Hand off candidate SHA, changed
-   files, evidence, limitations, and the required tier's local CLEAN reports.
+   files, evidence, and limitations.
    Stop at that handoff; Kepler alone owns PR/readiness/reviewed-head/queue writes.
 
 For the operated merge queue, eligibility attaches to the **CURRENT PR
@@ -262,16 +262,17 @@ monitor merge queue and CI first; adopt stricter policy only if evidence shows
 a need and Roy authorizes it. Actual CONFLICTING merges and real product
 conflicts still require resolution; resulting head changes need applicable
 local tests and independent review. Group CI handles combined integration.
-Completeness and required local/formal reviews remain mandatory. This
+Completeness and required formal reviews remain mandatory. This
 documentation does not enable the queue or add executable CI, coverage, or
 test-harness enforcement.
 
 ### Operated queue and separate fallback
 
 Kepler creates/maintains the draft after the complete local handoff, obtains
-required formal reviews, and marks ready only after convergence. After fresh
+required formal reviews after draft checks pass on the exact head, and marks
+ready only after convergence. After fresh
 required CI, Kepler revalidates the **CURRENT PR HEAD SHA**, completeness,
-required local/formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus on that SHA),
+required formal CLEAN reports (LOW: Sol; HIGH: Sol and Opus on that SHA),
 passing required checks, and resolved conversations. Kepler alone publishes
 `hvo/reviewed-head` on that exact head, then calls GraphQL `enqueuePullRequest`
 with `expectedHeadOid` bound to it and verifies queue admission. Queue CI tests
@@ -291,10 +292,9 @@ submission/resubmission policy. No coding thread performs either route.
 In this order, because each step depends on the last:
 
 1. For the setup-verification change, first satisfy the completeness contract
-   above with candidate evidence and a passing independent local review. Only
-   then have Kepler open a trivial draft PR to `development/v1`.
-   Preflight runs hosted; Build and Unit
-   starts on a `hvo-skymonitor` runner after review and the ready transition.
+   above with candidate evidence. Kepler opens a trivial draft PR to
+   `development/v1`. Hosted Preflight passes on its exact head before formal
+   review; Build and Unit starts after review and the ready transition.
    Confirm the job's `runner_group_name`.
 2. `gh workflow run agentcontrol.yml -f operation=verify-identity`. The summary
    must show the App slug and that the token sees exactly this repository.

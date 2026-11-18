@@ -107,7 +107,7 @@ protected CI on the final reviewed head. For `development/v1`, use Preflight
 and Build and Unit; a classifier `complete=true` result or broad base-sync
 delta does not request a manual full-matrix run. Additional qualification needs
 explicit issue/operator acceptance scope. Before changing PR state, read and
-follow `.agents/skills/pr-lifecycle/SKILL.md`. Before independent local review,
+follow `.agents/skills/pr-lifecycle/SKILL.md`. Before independent formal review,
 map every in-scope original-issue requirement to implemented behavior and local
 evidence at the candidate SHA. Missing scope or evidence returns to
 implementation. Obtain LOW's Sol CLEAN or HIGH's Sol and Opus CLEAN on that
@@ -115,10 +115,10 @@ candidate, with explicit completeness verdicts and verified finding
 dispositions. Human/bot reviews are supplemental. The legacy correction-round
 budget is a checkpoint, not a waiver of blockers or required review.
 
-Hand the candidate, original-source mapping, evidence, and local review reports
-to Kepler, then stop. Push only when instructed. Coding threads never create
+Hand the candidate, original-source mapping, and local evidence to Kepler,
+then stop. Push only when instructed. Coding threads never create
 PRs, mark ready, publish hvo/reviewed-head, or enqueue. Kepler creates the draft,
-obtains formal review, and operates the merge queue under the lifecycle skill.
+waits for draft checks on its exact head, obtains formal review, and operates the merge queue under the lifecycle skill.
 Being behind the target tip alone does not trigger synchronization or new
 review; actual conflicts and changed candidates require applicable evidence
 and review. Do not repeat long suites when the validated boundary did not
