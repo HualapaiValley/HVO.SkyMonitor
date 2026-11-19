@@ -258,6 +258,8 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     [Required, MinLength(1), MaxLength(128)]
     public string OutputVariant { get; init; } = "projected-scene-v1";
 
+    // Opt-in behavior must not change the effective identity of existing profiles.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool IndependentPrediction { get; init; }
 
     [Range(-30d, 30d)]

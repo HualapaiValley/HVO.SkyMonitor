@@ -126,6 +126,7 @@ public sealed class MeasuredAstrometryCaptureOptions : IValidatableObject
     [Range(60, 1_000_000)]
     public int CaptureStride { get; init; } = 60;
     public AstrometryCatalogSnapshotV1? Catalog { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public MeasuredAstrometryCatalogSelection? CatalogSelection { get; init; }
     public AstrometricClockFacts Clock { get; init; } = AstrometricClockFacts.NotSupplied;
     public AstrometricFrameAssessment? PreviousAccepted { get; init; }
