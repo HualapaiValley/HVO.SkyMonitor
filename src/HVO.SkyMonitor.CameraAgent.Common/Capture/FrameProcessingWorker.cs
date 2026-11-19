@@ -211,7 +211,7 @@ internal sealed class FrameProcessingWorker
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
-                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep || rawCapture?.Manifest.Scene is null))
+                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false } || rawCapture?.Manifest.Scene is null))
                     continue;
                 // Retain scene evidence when possible without promoting an optional node into a lane/admission fault.
                 var required = node.Required;

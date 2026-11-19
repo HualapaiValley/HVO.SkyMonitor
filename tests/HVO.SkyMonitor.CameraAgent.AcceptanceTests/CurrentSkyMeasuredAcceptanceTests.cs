@@ -1,6 +1,7 @@
-using System.Text.Json;
 using System.Diagnostics;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -16,11 +17,18 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 
 public sealed partial class RetainedAstrometryBrowserAcceptanceTests
 {
+    private static readonly string[] RawPredictionDependencies = ["$raw"];
+    private static readonly string[] PredictionDependencies = [AstrometryPredictionCaptureProcessingStep.Alias];
+    private static readonly string[] AstrometryDependencies = [AstrometryPredictionCaptureProcessingStep.Alias, "Measured"];
+
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task CurrentSkyMeasuredVirtualCaptureRefreshPreservesTimestampAndCaptureContinuityAsync(bool catalogFailure)
+    [DataRow("accepted")]
+    [DataRow("failure")]
+    [DataRow("baseline")]
+    public async Task CurrentSkyMeasuredVirtualCaptureRefreshPreservesTimestampAndCaptureContinuityAsync(string scenario)
     {
+        var catalogFailure = scenario == "failure";
+        var baseline = scenario == "baseline";
         var catalogRoot = Environment.GetEnvironmentVariable("HVO_ASTROMETRY_CATALOG_ROOT");
         var evidenceRoot = Environment.GetEnvironmentVariable("HVO_1901_EVIDENCE_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(catalogRoot));
@@ -31,13 +39,15 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         var stars = await snapshot.Catalog.ReadAsync(5, 2500).ConfigureAwait(false);
         Assert.IsTrue(stars.IsCompleteForRequestedMagnitude);
         var selection = new MeasuredAstrometryCatalogSelection(stars.IdentitySha256, stars.SelectionIdentitySha256, 5);
-        evidenceRoot = Path.Combine(evidenceRoot, catalogFailure ? "failure" : "accepted");
+        evidenceRoot = Path.Combine(evidenceRoot, scenario);
         Directory.CreateDirectory(evidenceRoot);
         if (catalogFailure) selection = selection with { SelectionIdentitySha256 = new string('B', 64) };
         await using var host = await CameraAgentKestrelFixture.CreateAsync(prepareRoot: async root =>
         {
             var path = Path.Combine(root, "cameraagent.browser.json");
             var document = JsonNode.Parse(await File.ReadAllTextAsync(path).ConfigureAwait(false))!;
+            var installer = JsonNode.Parse(await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
+                "Fixtures", "installer-defaults-2.camera-module.json")).ConfigureAwait(false))!;
             var sensor = document["rig"]!["sensor"]!;
             sensor["widthPixels"] = 1024; sensor["heightPixels"] = 1024; sensor["strideBytes"] = 2048;
             document["rig"]!["readout"] = JsonNode.Parse("""
@@ -61,7 +71,10 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 psfSigmaPixels = 1,
                 psfRadiusPixels = 4,
                 shotNoiseEnabled = true,
-                readNoiseStandardDeviation = 1
+                readNoiseStandardDeviation = 1,
+                constellationIds = installer["module"]!["options"]!["constellationIds"],
+                includeConstellationEndpointStars = true,
+                solarSystemBodies = installer["module"]!["options"]!["solarSystemBodies"]
             });
             var profile = document["schedule"]!["setpointProfiles"]![0]!;
             profile["exposure"] = "00:00:01"; profile["captureInterval"] = "00:00:05";
@@ -71,75 +84,52 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             document["rig"]!["orientation"]!["boresightAltitudeDegrees"] = 82;
             document["rig"]!["orientation"]!["boresightAzimuthDegrees"] = 137;
             document["rig"]!["orientation"]!["rollAdjustmentDegrees"] = 13;
+            // Preserve the installer topology and rich scene options. Only fixture resolution and roots differ.
+            document["pipeline"] = installer["pipeline"]!.DeepClone();
             var steps = document["pipeline"]!["steps"]!.AsArray();
-            var scene = steps.Single(n => n!["id"]!.GetValue<string>() == "ProjectedScene")!;
-            scene["required"] = false;
-            scene["options"] = JsonSerializer.SerializeToNode(new { independentPrediction = true, maximumMagnitude = 5, maximumResults = 2000 });
-            steps.Add(JsonSerializer.SerializeToNode(new
+            JsonNode Find(string id) => steps.Single(step => step!["id"]!.GetValue<string>() == id)!;
+            Find("LocalStorage")["options"]!["storageRoot"] = root;
+            Find("ArchiveStorage")["options"]!["storageRoot"] = Path.Combine(root, "archive");
+            foreach (var id in (string[])["CloudPresentation", "EnvironmentPresentation"])
             {
-                id = "Measured",
-                type = "MeasuredStellarAssociations",
-                required = false,
-                dependsOn = (string[])["ProjectedScene"],
-                publication = new { persistence = "durable-local" }
-            }));
-            steps.Add(JsonSerializer.SerializeToNode(new
+                Find(id)["options"]!["widthPixels"] = 1024;
+                Find(id)["options"]!["heightPixels"] = 1024;
+            }
+            if (!baseline)
             {
-                id = "Astrometry",
-                type = "MeasuredAstrometry",
-                required = false,
-                dependsOn = (string[])["ProjectedScene", "Measured"],
-                publication = new { persistence = "durable-local" },
-                options = new { captureStride = 60, catalogSelection = selection, recipe = new MeasuredAstrometryOptions(Solver: new(MaximumCatalogMagnitude: 5)) }
-            }));
-            steps.Add(JsonSerializer.SerializeToNode(new
-            {
-                id = "Rolling",
-                type = "RollingCombination",
-                dependsOn = (string[])["$raw"],
-                publication = new { persistence = "durable-local" },
-                options = new { windowSize = 1 }
-            }));
-            var preview = steps.Single(n => n!["id"]!.GetValue<string>() == "Preview")!;
-            preview["dependsOn"] = JsonSerializer.SerializeToNode((string[])["Rolling"]);
-            preview["publication"] = JsonSerializer.SerializeToNode(new { persistence = "durable-local" });
-            steps.Add(JsonSerializer.SerializeToNode(new
-            {
-                id = "ScenePresentation",
-                type = "ScenePresentationLayer",
-                required = false,
-                dependsOn = (string[])["ProjectedScene"],
-                publication = new { persistence = "durable-local" }
-            }));
-            steps.Add(JsonSerializer.SerializeToNode(new
-            {
-                id = "EnvironmentPresentation",
-                type = "EnvironmentPresentationLayer",
-                required = false,
-                dependsOn = (string[])["ProjectedScene", "Preview"],
-                publication = new { persistence = "durable-local" },
-                options = new { widthPixels = 1024, heightPixels = 1024, stackPreviewVariant = "browser-display" }
-            }));
-            steps.Add(JsonSerializer.SerializeToNode(new
-            {
-                id = "OverlayManifest",
-                type = "OverlayManifest",
-                required = false,
-                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation"],
-                publication = new { persistence = "durable-local" },
-                options = new { basePreviewVariant = "browser-display" }
-            }));
-            steps.Add(JsonSerializer.SerializeToNode(new
-            {
-                id = "PresentationMaterializer",
-                type = "PresentationMaterializer",
-                required = false,
-                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"],
-                publication = new { persistence = "durable-local" },
-                options = new { basePreviewVariant = "browser-display" }
-            }));
-            // Raw publication never depends on the optional analysis branch.
-            steps.Single(n => n!["id"]!.GetValue<string>() == "LocalStorage")!["dependsOn"] = JsonSerializer.SerializeToNode((string[])["$raw", "Preview"]);
+                steps.Add(JsonSerializer.SerializeToNode(new
+                {
+                    id = AstrometryPredictionCaptureProcessingStep.Alias,
+                    type = AstrometryPredictionCaptureProcessingStep.Alias,
+                    required = false,
+                    dependsOn = RawPredictionDependencies,
+                    publication = new { persistence = "durable-local" }
+                }));
+                steps.Add(JsonSerializer.SerializeToNode(new
+                {
+                    id = "Measured",
+                    type = "MeasuredStellarAssociations",
+                    required = false,
+                    dependsOn = PredictionDependencies,
+                    publication = new { persistence = "durable-local" },
+                    options = new { useAstrometryPrediction = true }
+                }));
+                steps.Add(JsonSerializer.SerializeToNode(new
+                {
+                    id = "Astrometry",
+                    type = "MeasuredAstrometry",
+                    required = false,
+                    dependsOn = AstrometryDependencies,
+                    publication = new { persistence = "durable-local" },
+                    options = new
+                    {
+                        useAstrometryPrediction = true,
+                        captureStride = 60,
+                        catalogSelection = selection,
+                        recipe = new MeasuredAstrometryOptions(Solver: new(MaximumCatalogMagnitude: 5))
+                    }
+                }));
+            }
             await File.WriteAllTextAsync(path, document.ToJsonString()).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "qualified-config.json"), document.ToJsonString()).ConfigureAwait(false);
         }, scratchRoot: evidenceRoot, preserveRoot: true, productionCatalogRoot: catalogRoot,
@@ -152,17 +142,19 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             }).ConfigureAwait(false);
         var reader = host.Services.GetRequiredService<ICameraAgentRetainedAstrometryService>();
         var gallery = host.Services.GetRequiredService<ICameraAgentGallery>();
+        if (baseline)
+        {
+            var (captures, stack) = await WaitForFullStackAsync(gallery).ConfigureAwait(false);
+            await WriteGraphTimingsAsync(host, captures, stack, evidenceRoot).ConfigureAwait(false);
+            Assert.IsNull(await reader.GetLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
+            return;
+        }
         if (catalogFailure)
         {
-            using var failureDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
-            CameraAgentGalleryPage captures;
-            do
-            {
-                await Task.Delay(1000, failureDeadline.Token).ConfigureAwait(false);
-                captures = await gallery.GetPageAsync(new(PageSize: 20), failureDeadline.Token).ConfigureAwait(false);
-            } while (captures.Items.Count < 3);
+            var (captures, stack) = await WaitForFullStackAsync(gallery).ConfigureAwait(false);
             Assert.IsTrue(captures.Items.Any(c => c.ProcessingNodes.Any(n => n.NodeId == "Astrometry" && n.Status == "TerminalFailure")));
-            Assert.IsNull(await reader.GetLatestAcceptedAsync(failureDeadline.Token).ConfigureAwait(false));
+            Assert.IsTrue(stack.Artifacts.Any(a => a.Variant == "installer-annotated-preview" && a.Availability == "Available"));
+            Assert.IsNull(await reader.GetLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
             using var failurePlaywright = await Playwright.CreateAsync().ConfigureAwait(false);
             await using var failureBrowser = await failurePlaywright.LaunchOrInconclusiveAsync().ConfigureAwait(false);
             await using var failureContext = await failureBrowser.NewContextAsync(new() { BaseURL = host.BaseAddress.ToString() }).ConfigureAwait(false);
@@ -237,16 +229,24 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "latest-before-refresh.png"), FullPage = true }).ConfigureAwait(false);
         Assert.HasCount(1, await page.Locator(".astrometry-card .latest-measured-solution").AllAsync().ConfigureAwait(false));
         Assert.IsEmpty(await page.Locator(".sky-inspector > .latest-measured-solution").AllAsync().ConfigureAwait(false));
+        var canonical = await VerifyCoexistingScenesAsync(host, accepted, evidenceRoot).ConfigureAwait(false);
         await VerifyCurrentMeasuredControlsAsync(page, host, accepted, evidenceRoot).ConfigureAwait(false);
+        await VerifyRichSceneControlsAsync(page, canonical, evidenceRoot).ConfigureAwait(false);
+        await VerifyCoexistingReplayAsync(host, accepted, evidenceRoot).ConfigureAwait(false);
         await admission.ResumeAsync("issue1901-proof-resume", null, "disposable-proof", "Verify unsolved refresh and raw continuity", CancellationToken.None).ConfigureAwait(false);
-        await Task.Delay(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
+        var (afterCaptures, fullStack) = await WaitForFullStackAsync(gallery).ConfigureAwait(false);
+        Assert.IsTrue(fullStack.ProcessingNodes.Any(n => n.NodeId == "LocalStorage" && n.Status == "Completed"));
+        Assert.IsTrue(fullStack.ProcessingNodes.Any(n => n.NodeId == "ArchiveStorage" && n.Status == "Completed"));
+        Assert.IsTrue(fullStack.ProcessingNodes.Any(n => n.NodeId == "Astrometry" && n.Status == "Skipped"));
+        Assert.IsTrue(fullStack.Artifacts.Any(a => a.Variant == "installer-annotated-preview" && a.Availability == "Available"));
         await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
         await summary.GetByText("For a previous capture; this is not a solve for the selected image.", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
         Assert.Contains(accepted.MidpointUtc.ToString("O"), await summary.InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
         Assert.IsTrue(await page.Locator(".pixel-sky-calculator button").First.IsDisabledAsync().ConfigureAwait(false));
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "latest-after-refresh.png"), FullPage = true }).ConfigureAwait(false);
         await VerifyUnsolvedMeasuredControlsAsync(page, accepted, evidenceRoot).ConfigureAwait(false);
-        var afterCaptures = await gallery.GetPageAsync(new(PageSize: 20), CancellationToken.None).ConfigureAwait(false);
+        await VerifySceneLayerControlsAsync(page, ["Constellation lines"]).ConfigureAwait(false);
+        await WriteGraphTimingsAsync(host, afterCaptures, fullStack, evidenceRoot).ConfigureAwait(false);
         Assert.IsTrue(afterCaptures.Items.Max(c => c.CaptureSequence) > beforeCaptures.Items.Max(c => c.CaptureSequence), "Durable raw capture must advance while no new solution is produced.");
         var retained = await reader.GetAsync(accepted.CaptureId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(accepted.SolutionIdentitySha256, retained.SolutionIdentitySha256);
@@ -262,7 +262,54 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             snapshot.DatabaseSha256,
             beforeCaptures,
             afterCaptures,
+            fullStack,
             resourceSamples,
+            backlog = host.Services.GetRequiredService<CaptureLaneState>().Snapshot
+        }, AstrometryBrowserJson)).ConfigureAwait(false);
+    }
+
+    private static async Task<(CameraAgentGalleryPage Captures, CameraAgentGalleryCapture Stack)> WaitForFullStackAsync(
+        ICameraAgentGallery gallery)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        while (true)
+        {
+            var captures = await gallery.GetPageAsync(new(PageSize: 20), deadline.Token).ConfigureAwait(false);
+            var stack = captures.Items.FirstOrDefault(c => c.CaptureSequence >= 5 &&
+                c.ProcessingNodes.Any(n => n.NodeId == "Telemetry" && n.Status == "Completed") &&
+                c.Artifacts.Any(a => a.Variant == "rolling-mean" && a.SourceArtifactIds.Count == 5));
+            if (stack is not null) return (captures, stack);
+            await Task.Delay(500, deadline.Token).ConfigureAwait(false);
+        }
+    }
+
+    private static async Task WriteGraphTimingsAsync(CameraAgentKestrelFixture host, CameraAgentGalleryPage captures,
+        CameraAgentGalleryCapture stack, string output)
+    {
+        var operations = host.Services.GetRequiredService<IProcessingGraphOperations>();
+        var executions = await operations.ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 20, CancellationToken.None)
+            .ConfigureAwait(false);
+        var observations = new List<object>();
+        foreach (var capture in captures.Items.Where(c => c.CaptureSequence <= stack.CaptureSequence).OrderBy(c => c.CaptureSequence))
+        {
+            var execution = executions.Single(e => e.CaptureId == capture.CaptureId);
+            var detail = await operations.ReadExecutionDetailAsync(execution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(detail);
+            observations.Add(new
+            {
+                capture.CaptureSequence,
+                capture.ExposureStartedUtc,
+                capture.DurableIngressUtc,
+                execution.StartedUtc,
+                execution.CompletedUtc,
+                rawBytes = capture.Artifacts.Single(a => a.Role == FrameArtifactRole.Raw).ByteLength,
+                outputs = capture.Artifacts.Select(a => new { a.Variant, a.ByteLength, sourceCount = a.SourceArtifactIds.Count }),
+                nodes = detail.Nodes.Select(n => new { n.NodeId, n.Status, n.Reason, elapsed = n.CompletedUtc - n.StartedUtc })
+            });
+        }
+        await File.WriteAllTextAsync(Path.Combine(output, "graph-timings.json"), JsonSerializer.Serialize(new
+        {
+            observations,
             backlog = host.Services.GetRequiredService<CaptureLaneState>().Snapshot
         }, AstrometryBrowserJson)).ConfigureAwait(false);
     }

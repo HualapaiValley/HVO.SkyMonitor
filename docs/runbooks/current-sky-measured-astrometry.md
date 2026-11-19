@@ -32,25 +32,29 @@ cutoff. Retention governs how long any result remains available.
 ## Opt-in Virtual Sky graph
 
 Use the existing explicit-v2 graph and the retained contracts documented in
-[retained astrometry](retained-astrometry.md). Keep independent raw Storage and
-an enabled retention owner. Set both measured nodes optional (`required:false`)
-and all three metadata nodes to `publication.persistence:durable-local`:
+[retained astrometry](retained-astrometry.md). Preserve the existing, required
+`ProjectedScene` node and its dependencies, including the presentation, stack,
+and Storage branches. Keep an enabled retention owner. Append three optional
+nodes (`required:false`) with `publication.persistence:durable-local`:
 
-1. `ProjectedScene`, depending on `$raw`, with `independentPrediction:true`,
-   `maximumMagnitude:5`, `maximumResults:2000`.
-2. `MeasuredStellarAssociations`, depending on that scene.
-3. `MeasuredAstrometry`, depending on both scene and measured associations,
-   with `captureStride:60` and a `catalogSelection` pin from the verified local
-   adapter (`catalogIdentitySha256`, `selectionIdentitySha256`,
+1. `AstrometryPrediction`, depending only on `$raw`, with
+   `maximumMagnitude:5` and `maximumResults:2000`.
+2. `MeasuredStellarAssociations`, depending on `AstrometryPrediction`, with
+   `useAstrometryPrediction:true`.
+3. `MeasuredAstrometry`, depending on both `AstrometryPrediction` and measured
+   associations, with `useAstrometryPrediction:true`, `captureStride:60`, and a
+   `catalogSelection` pin from the verified local adapter
+   (`catalogIdentitySha256`, `selectionIdentitySha256`,
    `maximumMagnitude:5`, `maximumEntries:2500`).
 
-`independentPrediction` builds catalog-star predictions from capture-time
-rig/site and the verified installed catalog **after raw admission**. It never
-copies or relabels VirtualSky render truth. Replay uses its original frozen
-scene. The option supports stars only; retain the default scene path for richer
-render-authoritative products. The solver still discovers correspondences from
-raw measured centroids and retains acceptance/rejection evidence. Configured
-pointing is an initial prediction, never the displayed measured answer.
+`AstrometryPrediction` builds catalog-star predictions from capture-time
+rig/site and the verified installed catalog after raw admission. Its separate
+recipe and output variant keep it out of canonical scene recovery, upload, and
+presentation. Replay pins each scene by its own producer. The solver discovers
+correspondences from raw measured centroids and retains acceptance/rejection
+evidence. Configured pointing supplies the starting prediction. Existing
+graphs that already use the single-scene `independentPrediction` option remain
+readable and retain their configured identities.
 
 Materialize the selection once to record those two identity hashes. The runtime
 resolves only the installed local adapter, verifies both hashes, package
@@ -112,9 +116,12 @@ Kepler's review/CI lifecycle and artifact qualification.
    trips, restore defaults and frozen stack export. Refresh to unsolved and
    mismatched captures: retain the correctly timestamped summary while withholding
    incompatible measured layers, diagnostics, calculators and export selections.
-   Independently verify configured/predicted overlays still operate. Keep scene
-   evidence in its existing card; do not duplicate the measured summary. Record
-   directly related regressions and list unrelated gaps separately. Check raw sequences, backlog,
+   Verify the configured image geometry, constellation lines, and visible
+   solar-system annotations against the canonical scene before and after a
+   refresh. Verify that the existing trailing stack, materialized preview,
+   and local/archive storage paths continue to produce their normal outputs.
+   Record directly related regressions and list unrelated gaps separately.
+   Check raw sequences, backlog,
    retention holds, health, errors and resource consumption. Failure leaves the
    rollout incomplete even if the container is running.
 6. On failed acceptance, disable/restore the prior graph revision through the
@@ -133,7 +140,10 @@ The Manual acceptance method
 `CurrentSkyMeasuredVirtualCaptureRefreshPreservesTimestampAndCaptureContinuityAsync`
 uses a disposable loopback Kestrel CameraAgent, owner authentication, production
 catalog validation, actual VirtualSky acquisition, durable graph publication and
-real Chromium. Set `HVO_ASTROMETRY_CATALOG_ROOT` to the approved installed catalog
+real Chromium. It uses the checked-in installer graph with disposable roots
+and test sensor settings. It exercises the rich scene and optional measurement
+together, a deliberate catalog-pin mismatch, and the installer graph alone as
+a timing baseline. Set `HVO_ASTROMETRY_CATALOG_ROOT` to the approved installed catalog
 root and `HVO_1901_EVIDENCE_ROOT` to a fresh short owned scratch path (Unix owner
 socket paths must fit 108 bytes). Serialize it with
 `flock -o /tmp/hvo-heavy-gate.lock`; run the CameraAgent.AcceptanceTests project in

@@ -9,7 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed class ProjectedSceneCaptureProcessingStep(
+internal class ProjectedSceneCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     ProjectedSceneCaptureProcessingStepOptions options,
     IProjectedSceneStagingStore stagingStore,
@@ -25,7 +25,9 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     private const string FrozenInputName = "frozen-projected-scene";
 
     public bool Enabled => true;
-    public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
+    internal virtual bool IsAstrometryPrediction => false;
+    public string RecipeName => IsAstrometryPrediction
+        ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     // The producer declaration keeps its v1 family root; expanded consumer capabilities can change plan identity.
@@ -61,7 +63,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(failureReason));
                 return;
             }
-            if (provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
+            // The raw manifest declares the canonical render scene schema, not the supplemental prediction schema.
+            if (!IsAstrometryPrediction && provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
                 !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
             {
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
@@ -69,7 +72,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             }
             context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
         }
-        else if (Options.IndependentPrediction)
+        else if (IsAstrometryPrediction || Options.IndependentPrediction)
         {
             var catalog = services?.GetService<ICelestialCatalog>();
             var locations = services?.GetService<IDeploymentLocationStore>();
@@ -152,7 +155,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
         };
         var outcome = await context.ExecuteAsync(adapter, new ProcessingExecutionRequest(
-            BuiltInProcessingRecipes.ProjectedScene,
+            RecipeName,
             JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
             ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], Options.OutputVariant,
             AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
@@ -228,7 +231,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
 
     public async ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
     {
-        if (context.SceneProvenance is not
+        if (IsAstrometryPrediction || context.SceneProvenance is not
             {
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                 ProjectedSceneStageKey: { Length: 64 } stageKey

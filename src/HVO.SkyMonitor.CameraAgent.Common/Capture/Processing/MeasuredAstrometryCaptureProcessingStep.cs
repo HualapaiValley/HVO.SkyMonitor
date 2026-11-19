@@ -24,6 +24,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.MeasuredAstrometry;
+    internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => MeasuredAstrometrySolutionV1.CurrentSchemaVersion;
@@ -32,7 +33,9 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
     public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string> { BuiltInProcessingRecipes.ProjectedScene }, new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
+            new HashSet<string> { Options.UseAstrometryPrediction
+                ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene },
+            new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { BuiltInProcessingRecipes.MeasuredStellarAssociations },
             new HashSet<string> { MeasuredStellarAssociationsV1.CurrentSchemaVersion })
@@ -125,6 +128,8 @@ public sealed class MeasuredAstrometryCaptureOptions : IValidatableObject
     public string OutputVariant { get; init; } = "measured-astrometry-v1";
     [Range(60, 1_000_000)]
     public int CaptureStride { get; init; } = 60;
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseAstrometryPrediction { get; init; }
     public AstrometryCatalogSnapshotV1? Catalog { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public MeasuredAstrometryCatalogSelection? CatalogSelection { get; init; }

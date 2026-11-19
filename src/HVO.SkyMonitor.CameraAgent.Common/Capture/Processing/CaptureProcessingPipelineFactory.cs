@@ -291,6 +291,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     layer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
                     throw new InvalidOperationException("CaptureSatelliteLayer requires its explicit prediction producer and durable local publication.");
             }
+            ValidateAstrometryPrediction(configured, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
             if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
@@ -318,11 +319,38 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
+    private static void ValidateAstrometryPrediction(
+        IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
+        bool explicitV2)
+    {
+        var predictions = configured.Where(static item => item.Step is AstrometryPredictionCaptureProcessingStep).ToArray();
+        if (predictions.Length == 0) return;
+        if (predictions.Length != 1 || !explicitV2 ||
+            predictions[0].Config is not { Required: false, Publication.Persistence: CaptureProcessingPersistenceMode.DurableLocal,
+                DependsOn: { Count: 1 } dependencies } || !IsRawDependency(dependencies[0]))
+        {
+            throw new InvalidOperationException("AstrometryPrediction requires one optional explicit node with only a raw dependency and durable local publication.");
+        }
+        var analysisNodes = configured.Where(static item => IsIndependentMeasurement(item.Step))
+            .Select(static item => item.Step.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        analysisNodes.Add(predictions[0].Step.Name);
+        foreach (var consumer in configured.Where(item => item.Config.DependsOn?.Any(analysisNodes.Contains) == true))
+        {
+            if (!IsIndependentMeasurement(consumer.Step) ||
+                consumer.Config.Required || consumer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
+                throw new InvalidOperationException("Only optional durable measured nodes configured for AstrometryPrediction may depend on its analysis branch.");
+        }
+
+        static bool IsIndependentMeasurement(ICaptureProcessingStep step) => step is
+            MeasuredStellarAssociationCaptureProcessingStep { UsesAstrometryPrediction: true } or
+            MeasuredAstrometryCaptureProcessingStep { UsesAstrometryPrediction: true };
+    }
+
     private static void ValidateProjectedSceneDependencies(
         CameraModuleConfig config,
         IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured)
     {
-        var scenes = configured.Where(static item => item.Step is ProjectedSceneCaptureProcessingStep).ToArray();
+        var scenes = configured.Where(static item => item.Step is ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false }).ToArray();
         var annotations = configured.Where(static item => item.Step is AnnotationCaptureProcessingStep).ToArray();
         var sceneBearing = string.Equals(config.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
             annotations.Any(static item =>

@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +13,127 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 public sealed partial class RetainedAstrometryBrowserAcceptanceTests
 {
     private static readonly string[] AcceptedMappingControls = ["associations", "residuals-1x", "pixel-to-sky", "equatorial-to-pixel", "horizontal-to-pixel", "configured-image-circle", "predicted-sky-annotations", "frozen-residual-export", "restore-defaults", "refresh-measured-evidence"];
+
+    private static async Task<ProjectedSceneV1> VerifyCoexistingScenesAsync(CameraAgentKestrelFixture host,
+        CameraAgentLatestAstrometry accepted, string output)
+    {
+        var store = host.Services.GetRequiredService<SqliteCaptureProcessingStore>();
+        var contentService = host.Services.GetRequiredService<ICameraAgentArtifactService>();
+        var astrometry = await host.Services.GetRequiredService<ICameraAgentRetainedAstrometryService>()
+            .GetAsync(accepted.CaptureId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(astrometry.SourceDescriptor);
+        var candidates = new List<DurableCaptureProduct>();
+        foreach (var schema in ProjectedSceneV1.SupportedSchemaVersions)
+            candidates.AddRange(await store.ReadCaptureProductsAsync(accepted.CaptureId,
+                schema, 3, CancellationToken.None).ConfigureAwait(false));
+        Assert.HasCount(2, candidates);
+        var canonicalProduct = candidates.Single(p => p.NodeId == "ProjectedScene");
+        var predictionProduct = candidates.Single(p => p.NodeId == AstrometryPredictionCaptureProcessingStep.Alias);
+        var canonical = await ReadSceneAsync(canonicalProduct).ConfigureAwait(false);
+        var prediction = await ReadSceneAsync(predictionProduct).ConfigureAwait(false);
+        Assert.AreEqual(ProjectedSceneKind.VirtualRenderAuthoritative, canonical.Kind);
+        Assert.HasCount(6, canonical.Selection.ConstellationIds);
+        Assert.HasCount(7, canonical.Selection.SolarSystemBodies);
+        Assert.IsNotEmpty(canonical.Segments);
+        Assert.AreEqual(ProjectedSceneKind.Predicted, prediction.Kind);
+        Assert.IsEmpty(prediction.Selection.ConstellationIds);
+        Assert.IsEmpty(prediction.Selection.SolarSystemBodies);
+        Assert.AreNotEqual(canonical.SceneIdentitySha256, prediction.SceneIdentitySha256);
+        Assert.AreEqual(canonical.Source, prediction.Source);
+        var canonicalUpload = await host.Services.GetRequiredService<CaptureProcessingPersistence>()
+            .FindCommittedSceneUploadAsync(astrometry.SourceDescriptor, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(canonicalUpload);
+        Assert.AreEqual(canonicalProduct.ArtifactId, canonicalUpload.Descriptor.Artifact.ArtifactId);
+        var result = await contentService.OpenContentAsync(accepted.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
+        await using var content = result.Content!;
+        Assert.AreEqual(predictionProduct.ArtifactId, content.ProductManifest!.Artifact.SourceArtifactIds[2]);
+        await File.WriteAllTextAsync(Path.Combine(output, "coexisting-scenes.json"), JsonSerializer.Serialize(new
+        {
+            canonicalProduct,
+            predictionProduct,
+            canonical.Kind,
+            canonical.Selection,
+            constellationSegments = canonical.Segments.Count,
+            solarSystemObjects = canonical.Objects.Where(o => o.Kind == CelestialObjectKind.SolarSystemBody),
+            independentKind = prediction.Kind,
+            independentSelection = prediction.Selection,
+            canonical.Source,
+            accepted.SolutionIdentitySha256
+        }, AstrometryBrowserJson)).ConfigureAwait(false);
+        return canonical;
+
+        async Task<ProjectedSceneV1> ReadSceneAsync(DurableCaptureProduct product)
+        {
+            var read = await contentService.OpenContentAsync(product.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Found, read.Status);
+            await using var lease = read.Content!;
+            var payload = new byte[checked((int)lease.ByteLength)];
+            await lease.ReadExactlyAsync(payload).ConfigureAwait(false);
+            var parsed = ProjectedSceneJson.Parse(payload);
+            Assert.IsTrue(parsed.IsValid, parsed.ErrorPath);
+            Assert.AreEqual(product.ContentIdentitySha256, parsed.Scene!.SceneIdentitySha256);
+            return parsed.Scene;
+        }
+    }
+
+    private static async Task VerifyCoexistingReplayAsync(CameraAgentKestrelFixture host,
+        CameraAgentLatestAstrometry accepted, string output)
+    {
+        var operations = host.Services.GetRequiredService<IProcessingGraphOperations>();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var live = (await operations.ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 4, deadline.Token)
+            .ConfigureAwait(false)).Single(e => e.CaptureId == accepted.CaptureId);
+        var submission = await operations.SubmitReplayAsync(
+            new(accepted.CaptureId, live.GraphRevisionId, live.PrimaryArtifactId, Reason: "Verify both frozen scenes"),
+            "issue1901-dual-scene-replay", "disposable-proof", deadline.Token).ConfigureAwait(false);
+        ProcessingGraphExecutionState? state;
+        do
+        {
+            await Task.Delay(100, deadline.Token).ConfigureAwait(false);
+            state = await operations.ReadExecutionAsync(submission.Execution.ExecutionId, deadline.Token).ConfigureAwait(false);
+        } while (state?.Status is ProcessingGraphExecutionStatus.Pending or ProcessingGraphExecutionStatus.Running);
+        Assert.IsNotNull(state);
+        Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, state.Status, state.FailureReason);
+        var replay = await operations.ReadExecutionDetailAsync(state.ExecutionId, deadline.Token).ConfigureAwait(false);
+        var original = await operations.ReadExecutionDetailAsync(live.ExecutionId, deadline.Token).ConfigureAwait(false);
+        Assert.IsNotNull(replay);
+        Assert.IsNotNull(original);
+        foreach (var id in (string[])["ProjectedScene", AstrometryPredictionCaptureProcessingStep.Alias])
+        {
+            var node = replay.Nodes.Single(n => n.NodeId == id);
+            var liveProduct = original.Nodes.Single(n => n.NodeId == id).Outputs.Single();
+            Assert.AreEqual(liveProduct.ArtifactId, node.Inputs.Single(i => i.OutputIdentitySha256 is not null).ArtifactId);
+            Assert.AreEqual(liveProduct.OutputIdentitySha256, node.Outputs.Single().OutputIdentitySha256);
+        }
+        Assert.IsTrue(replay.Nodes.Single(n => n.NodeId == "Astrometry").Outputs.Any(o => o.ArtifactId == accepted.ArtifactId));
+        Assert.IsFalse(replay.Nodes.SelectMany(n => n.Outputs).Any(o => o.Published));
+        await File.WriteAllTextAsync(Path.Combine(output, "coexisting-replay.json"), JsonSerializer.Serialize(replay, AstrometryBrowserJson))
+            .ConfigureAwait(false);
+    }
+
+    private static async Task VerifyRichSceneControlsAsync(IPage page, ProjectedSceneV1 canonical, string output)
+    {
+        await VerifySceneLayerControlsAsync(page, ["Constellation lines"]).ConfigureAwait(false);
+        var constellationGroup = await page.Locator(".sky-layer-controls label").Filter(new() { HasText = "Constellation lines" })
+            .Locator("input").GetAttributeAsync("data-layer-target").ConfigureAwait(false);
+        var constellations = page.Locator("#" + constellationGroup).Locator("line");
+        Assert.HasCount(canonical.Segments.Count, await constellations.AllAsync().ConfigureAwait(false));
+        var annotations = page.Locator(".sky-layer-controls label").Filter(new() { HasText = "Sky annotations" }).Locator("input");
+        await annotations.CheckAsync().ConfigureAwait(false);
+        var markers = await ReadMeasuredGeometryAsync(page, annotations, false).ConfigureAwait(false);
+        var bodies = canonical.Objects.Where(o => o.Kind == CelestialObjectKind.SolarSystemBody).ToArray();
+        Assert.IsNotEmpty(bodies, "The disposable capture should have visible solar-system targets.");
+        foreach (var body in bodies)
+        {
+            Assert.IsTrue(markers.Any(m => Math.Abs(m[0] - body.Pixel.X) < 1e-5 && Math.Abs(m[1] - body.Pixel.Y) < 1e-5),
+                $"The canonical annotation should contain the projected marker for {body.DisplayName}.");
+        }
+        var associations = page.Locator(".sky-layer-controls label").Filter(new() { HasText = "Measured stellar associations" }).Locator("input");
+        await associations.CheckAsync().ConfigureAwait(false);
+        await AssertAstrometryGroupAsync(page, associations, true).ConfigureAwait(false);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(output, "current-rich-scene-and-solution.png"), FullPage = true }).ConfigureAwait(false);
+    }
 
     private static async Task VerifyCurrentMeasuredControlsAsync(IPage page, CameraAgentKestrelFixture host,
         CameraAgentLatestAstrometry accepted, string output)
@@ -126,9 +249,12 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             for (var axis = 0; axis < expected[row].Length; axis++) Assert.AreEqual(expected[row][axis], actual[row][axis], 1e-5);
     }
 
-    private static async Task VerifyConfiguredPredictedControlsAsync(IPage page)
+    private static Task VerifyConfiguredPredictedControlsAsync(IPage page)
+        => VerifySceneLayerControlsAsync(page, ["Image geometry", "Sky annotations"]);
+
+    private static async Task VerifySceneLayerControlsAsync(IPage page, IReadOnlyList<string> names)
     {
-        foreach (var name in new[] { "Image geometry", "Sky annotations" })
+        foreach (var name in names)
         {
             var box = page.Locator(".sky-layer-controls label").Filter(new() { HasText = name }).Locator("input");
             await box.UncheckAsync().ConfigureAwait(false);

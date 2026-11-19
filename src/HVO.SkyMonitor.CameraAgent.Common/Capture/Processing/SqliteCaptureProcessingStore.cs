@@ -850,7 +850,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         Guid captureId,
         string? productSchemaVersion,
         int maximumCount,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? recipeName = null)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
         if (maximumCount is < 1 or > MaximumProductQueryCount) throw new ArgumentOutOfRangeException(nameof(maximumCount));
@@ -865,6 +866,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                     availability_state, availability_reason
             FROM processing_outputs AS output
             WHERE capture_id = $capture_id
+              AND ($recipe IS NULL OR json_extract(descriptor_json, '$.artifact.recipe.name') = $recipe)
               AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
                                WHERE association.output_identity_sha256 = output.output_identity_sha256)
                    OR EXISTS (SELECT 1 FROM processing_execution_outputs association
@@ -878,6 +880,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                     availability_state, availability_reason
             FROM processing_outputs AS output
             WHERE capture_id = $capture_id AND product_schema_version = $schema
+              AND ($recipe IS NULL OR json_extract(descriptor_json, '$.artifact.recipe.name') = $recipe)
               AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
                                WHERE association.output_identity_sha256 = output.output_identity_sha256)
                    OR EXISTS (SELECT 1 FROM processing_execution_outputs association
@@ -888,6 +891,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             """;
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         command.Parameters.AddWithValue("$schema", (object?)productSchemaVersion ?? DBNull.Value);
+        command.Parameters.AddWithValue("$recipe", (object?)recipeName ?? DBNull.Value);
         command.Parameters.AddWithValue("$limit", maximumCount);
         var products = new List<DurableCaptureProduct>(maximumCount);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

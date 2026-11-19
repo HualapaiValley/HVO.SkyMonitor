@@ -448,6 +448,9 @@ public static class CameraAgentServiceCollectionExtensions
             "ProjectedScene", typeof(ProjectedSceneCaptureProcessingStep),
             typeof(ProjectedSceneCaptureProcessingStepOptions), 15, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
+            AstrometryPredictionCaptureProcessingStep.Alias, typeof(AstrometryPredictionCaptureProcessingStep),
+            typeof(AstrometryPredictionCaptureProcessingStepOptions), 15, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
             "MeasuredStellarAssociations", typeof(MeasuredStellarAssociationCaptureProcessingStep),
             typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
         services.AddSingleton<CaptureSatelliteWorkStore>();

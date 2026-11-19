@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -65,7 +66,8 @@ internal sealed class ProjectedSceneRetentionGuard(
             }
         }
         var product = DurableProcessingProductManifestJson.Parse(candidate.EvidenceJson);
-        if (!SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.ProductSchemaVersion)) return false;
+        if (product.Artifact.Recipe.Name == BuiltInProcessingRecipes.AstrometryPrediction ||
+            !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.ProductSchemaVersion)) return false;
         var inventory = await store.ReadSceneConsumersAsync(candidate.CaptureId, candidate.ArtifactId, AccountBytes, cancellationToken)
             .ConfigureAwait(false);
         if (inventory is null) return true; // Missing source identity cannot authorize deletion.

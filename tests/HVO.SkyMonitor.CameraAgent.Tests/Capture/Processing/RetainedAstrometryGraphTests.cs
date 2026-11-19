@@ -175,6 +175,92 @@ public sealed partial class DurableCaptureProcessingTests
     [TestMethod]
     [TestCategory("Unit")]
     [DataRow("valid")]
+    [DataRow("no-canonical")]
+    [DataRow("two-canonical")]
+    [DataRow("required")]
+    [DataRow("memory-only")]
+    [DataRow("storage-consumer")]
+    [DataRow("indirect-storage-consumer")]
+    public void AstrometryPrediction_IsOptionalAndPreservesTheCanonicalScenePlan(string mode)
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var services = new ServiceCollection();
+            services.AddLogging();
+            services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CameraAgent:RawIngressRoot"] = root
+            }).Build());
+            using var provider = services.BuildServiceProvider();
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var baseline = CreateConfig() with
+            {
+                Module = new("VirtualSky"),
+                Pipeline = new([
+                    new("ProjectedScene", "scene", DependsOn: ["$raw"], Publication: new(CaptureProcessingPersistenceMode.DurableLocal),
+                        Options: JsonSerializer.SerializeToElement(new { constellationIds = (string[])["CAS"], solarSystemBodies = (string[])["Moon"] })),
+                    new("Storage", "storage", DependsOn: ["$raw", "scene"], Options: JsonSerializer.SerializeToElement(
+                        new FileStorageCaptureProcessingStepOptions { StorageRoot = root, QueueForUpload = false, UpdateLatestFrame = false }))
+                ], CapturePipelineSchemaVersions.ExplicitV2)
+            };
+            var prediction = new CaptureProcessingStepConfig(AstrometryPredictionCaptureProcessingStep.Alias, "prediction",
+                DependsOn: ["$raw"], Required: mode == "required",
+                Publication: new(mode == "memory-only" ? CaptureProcessingPersistenceMode.MemoryOnly : CaptureProcessingPersistenceMode.DurableLocal));
+            var steps = baseline.Pipeline.Steps.ToList();
+            if (mode == "no-canonical")
+            {
+                steps.RemoveAt(0);
+                steps[0] = steps[0] with { DependsOn = ["$raw"] };
+            }
+            if (mode == "two-canonical")
+            {
+                steps.Add(steps[0] with
+                {
+                    Id = "second-scene",
+                    Options = JsonSerializer.SerializeToElement(new { outputVariant = "other-scene" })
+                });
+            }
+            if (mode == "storage-consumer") steps[1] = steps[1] with { DependsOn = ["$raw", "scene", "prediction"] };
+            steps.Add(prediction);
+            if (mode == "indirect-storage-consumer")
+            {
+                steps.Add(new("MeasuredStellarAssociations", "measured", DependsOn: ["prediction"], Required: false,
+                    Publication: prediction.Publication, Options: JsonSerializer.SerializeToElement(new { useAstrometryPrediction = true })));
+                steps[1] = steps[1] with { DependsOn = ["$raw", "scene", "measured"] };
+            }
+            var profile = baseline with { Pipeline = baseline.Pipeline with { Steps = steps } };
+            if (mode != "valid")
+            {
+                Assert.ThrowsExactly<InvalidOperationException>(() => factory.CreateGraph(profile));
+                return;
+            }
+            var registration = provider.GetServices<CaptureProcessingStepRegistration>()
+                .Single(r => r.Alias == AstrometryPredictionCaptureProcessingStep.Alias);
+            Assert.IsFalse(registration.AutoInclude);
+            var before = factory.CreateGraph(baseline);
+            var after = factory.CreateGraph(profile);
+            try
+            {
+                Assert.HasCount(2, before.Nodes);
+                Assert.HasCount(3, after.Nodes);
+                foreach (var node in before.Nodes)
+                    Assert.AreEqual(node.PlanSha256, after.Nodes.Single(n => n.Id == node.Id).PlanSha256, node.Id);
+                Assert.AreEqual(BuiltInProcessingRecipes.ProjectedScene, after.Nodes.Single(n => n.Id == "scene").RecipeName);
+                Assert.AreEqual(BuiltInProcessingRecipes.AstrometryPrediction, after.Nodes.Single(n => n.Id == "prediction").RecipeName);
+            }
+            finally
+            {
+                before.DisposeSteps();
+                after.DisposeSteps();
+            }
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow("valid")]
     [DataRow("memory-only")]
     [DataRow("legacy")]
     [DataRow("fast-cadence")]
