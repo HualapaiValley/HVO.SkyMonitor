@@ -16,14 +16,16 @@ on each X/Y axis. Source output pixels are zero-based, X right/Y down, after
 crop/bin/flip. This explicitly local fisheye scale is not a constant for the
 whole image. Values come from the verified retained fit and Astronomy mapping.
 
-The authenticated summary lookup pages 16 assessment capture IDs at a time in
-newest exposure order using the existing capture-time and capture/product indexes
-and a keyset cursor; it does not sort the entire output history. It skips nonaccepted compact products, verifies all
+The authenticated summary lookup pages 128 compact raw metadata rows at a time
+in newest exposure order using the existing capture-time and capture/product
+indexes and a keyset cursor; it does not sort the entire output history. It
+yields between pages so no-assessment history remains cancelable. It skips
+nonaccepted compact products, verifies all
 parents of an accepted candidate through the existing retained reader, and
 returns only summary values. Current Sky imposes a five-second deadline and the
 reader's existing single-reader/no-buffer-queue gate. Busy, invalid, expired or
 missing evidence yields unavailable summary rather than invented pointing. A
-result outside one page remains discoverable; there is no fixed 16-result age
+result outside one page remains discoverable; there is no fixed result age
 cutoff. Retention governs how long any result remains available.
 
 ## Opt-in Virtual Sky graph

@@ -18,6 +18,70 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task RetainedAstrometry_MetadataPagesPreserveTiesAndSkipHistoryWithoutAssessments()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}"))
+            {
+                await connection.OpenAsync().ConfigureAwait(false);
+                using var transaction = (Microsoft.Data.Sqlite.SqliteTransaction)await connection.BeginTransactionAsync().ConfigureAwait(false);
+                // Metadata-only history deliberately has no assessment artifacts. Equal time/sequence
+                // across distinct device identities exercises the durable row-id cursor tie breaker.
+                for (var index = 0; index < SqliteCaptureProcessingStore.LatestAstrometryPageSize * 2 + 3; index++)
+                {
+                    using var command = connection.CreateCommand();
+                    command.Transaction = transaction;
+                    command.CommandText = """
+                        INSERT INTO raw_capture_assignments(capture_id,raw_artifact_id,agent_id,capture_sequence)
+                        VALUES ($id,$artifact,$agent,1);
+                        INSERT INTO raw_captures(capture_id,raw_artifact_id,agent_id,capture_sequence,
+                            descriptor_sha256,manifest_sha256,payload_sha256,payload_length,payload_relative_path,
+                            sidecar_relative_path,manifest_json,exposure_started_unix_ms,durable_ingress_unix_ms,
+                            committed_unix_ms,state,retention_hold)
+                        VALUES ($id,$artifact,$agent,1,$hash,$hash,$hash,0,$payload,$sidecar,X'7B7D',1,1,1,'committed',0);
+                        """;
+                    command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("N"));
+                    command.Parameters.AddWithValue("$artifact", Guid.NewGuid().ToString("N"));
+                    command.Parameters.AddWithValue("$agent", $"metadata-only-{index}");
+                    command.Parameters.AddWithValue("$hash", index.ToString("X64", System.Globalization.CultureInfo.InvariantCulture));
+                    command.Parameters.AddWithValue("$payload", $"metadata-{index}.bin");
+                    command.Parameters.AddWithValue("$sidecar", $"metadata-{index}.json");
+                    await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
+                await transaction.CommitAsync().ConfigureAwait(false);
+            }
+            var seen = new HashSet<Guid>();
+            AstrometryCaptureCandidate? cursor = null;
+            var pages = 0;
+            while (true)
+            {
+                var page = await store.ReadRecentAstrometryCapturesAsync(cursor, CancellationToken.None).ConfigureAwait(false);
+                if (page.Count == 0) break;
+                Assert.IsTrue(page.Count <= SqliteCaptureProcessingStore.LatestAstrometryPageSize);
+                foreach (var row in page)
+                {
+                    Assert.IsTrue(seen.Add(row.CaptureId), "Cursor repeated a capture.");
+                    Assert.IsFalse(row.HasAssessment);
+                }
+                cursor = page[^1];
+                pages++;
+            }
+            Assert.AreEqual(SqliteCaptureProcessingStore.LatestAstrometryPageSize * 2 + 3, seen.Count);
+            Assert.AreEqual(3, pages);
+            using var retained = new HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentRetainedAstrometryService(store,
+                new Moq.Mock<HVO.SkyMonitor.CameraAgent.Common.Gallery.ICameraAgentArtifactService>(Moq.MockBehavior.Strict).Object);
+            Assert.IsNull(await retained.GetLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task RetainedAstrometry_HistoryLookupSeeksExistingIndexesWithoutSortingAllOutputs()
     {
         var root = CreateTestRoot();
@@ -33,6 +97,7 @@ public sealed partial class DurableCaptureProcessingTests
             command.Parameters.AddWithValue("$exposure", long.MaxValue);
             command.Parameters.AddWithValue("$sequence", long.MaxValue);
             command.Parameters.AddWithValue("$row", long.MaxValue);
+            command.Parameters.AddWithValue("$limit", SqliteCaptureProcessingStore.LatestAstrometryPageSize);
             var details = new List<string>();
             using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
             while (await reader.ReadAsync().ConfigureAwait(false)) details.Add(reader.GetString(3));

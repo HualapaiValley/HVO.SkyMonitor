@@ -30,7 +30,7 @@ public sealed partial class CurrentSkyPageTests
         var text = cut.Find(".latest-measured-solution").TextContent;
         StringAssert.Contains(text, "Measured center RA / Dec", StringComparison.Ordinal);
         StringAssert.Contains(text, "arcsec/pixel", StringComparison.Ordinal);
-        StringAssert.Contains(text, "zero-based X right, Y down", StringComparison.Ordinal);
+        StringAssert.Contains(text, "Zero-based source output X right, Y down", StringComparison.Ordinal);
         StringAssert.Contains(text, summary.MidpointUtc.ToString("O"), StringComparison.Ordinal);
         Assert.AreEqual(previous, cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
         current = other;

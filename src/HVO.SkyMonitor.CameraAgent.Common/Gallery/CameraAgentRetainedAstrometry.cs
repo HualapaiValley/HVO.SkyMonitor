@@ -78,14 +78,19 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             AstrometryCaptureCandidate? cursor = null;
             while (true)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var captures = await store.ReadRecentAstrometryCapturesAsync(cursor, cancellationToken).ConfigureAwait(false);
                 foreach (var candidate in captures)
                 {
+                    if (!candidate.HasAssessment) continue;
                     var value = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
                     if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary) return summary;
                 }
-                if (captures.Count < 16) break;
+                if (captures.Count < SqliteCaptureProcessingStore.LatestAstrometryPageSize) break;
                 cursor = captures[^1];
+                // SQLite's provider executes synchronously. Yield between bounded metadata pages so a
+                // no-assessment history cannot monopolize the caller or prevent deadline cancellation.
+                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
             }
             return null;
         }
