@@ -75,15 +75,17 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         try
         {
             // Page compact candidates newest-first; only reconstruct accepted evidence. Caller deadlines bound history reads.
-            for (var offset = 0; ; offset = checked(offset + 16))
+            AstrometryCaptureCandidate? cursor = null;
+            while (true)
             {
-                var captures = await store.ReadRecentAstrometryCapturesAsync(offset, cancellationToken).ConfigureAwait(false);
-                foreach (var id in captures)
+                var captures = await store.ReadRecentAstrometryCapturesAsync(cursor, cancellationToken).ConfigureAwait(false);
+                foreach (var candidate in captures)
                 {
-                    var value = await ReadAsync(id, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
+                    var value = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
                     if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary) return summary;
                 }
                 if (captures.Count < 16) break;
+                cursor = captures[^1];
             }
             return null;
         }

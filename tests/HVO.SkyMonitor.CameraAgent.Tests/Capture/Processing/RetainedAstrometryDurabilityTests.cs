@@ -140,6 +140,11 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreEqual(identity, latest.SolutionIdentitySha256);
                 Assert.AreEqual(view.CaptureId, latest.CaptureId);
                 Assert.IsTrue(latest.LocalScale.XArcsecondsPerPixel > 0);
+                var page = await restartedStore.ReadRecentAstrometryCapturesAsync(null, CancellationToken.None).ConfigureAwait(false);
+                Assert.HasCount(1, page);
+                Assert.AreEqual(view.CaptureId, page[0].CaptureId);
+                Assert.IsEmpty(await restartedStore.ReadRecentAstrometryCapturesAsync(page[0], CancellationToken.None).ConfigureAwait(false));
+
             }
             else Assert.IsNull(latest);
 

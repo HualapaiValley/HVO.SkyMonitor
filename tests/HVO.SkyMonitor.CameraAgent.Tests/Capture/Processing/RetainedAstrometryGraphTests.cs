@@ -18,6 +18,35 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task RetainedAstrometry_HistoryLookupSeeksExistingIndexesWithoutSortingAllOutputs()
+    {
+        var root = CreateTestRoot();
+        try
+        {
+            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            using var store = new SqliteCaptureProcessingStore(fixture.Options);
+            await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+            using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = "EXPLAIN QUERY PLAN " + SqliteCaptureProcessingStore.LatestAstrometryQuery;
+            command.Parameters.AddWithValue("$exposure", long.MaxValue);
+            command.Parameters.AddWithValue("$sequence", long.MaxValue);
+            command.Parameters.AddWithValue("$row", long.MaxValue);
+            var details = new List<string>();
+            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+            while (await reader.ReadAsync().ConfigureAwait(false)) details.Add(reader.GetString(3));
+            var plan = string.Join("\n", details);
+            StringAssert.Contains(plan, "USING INDEX ix_raw_captures_gallery_time", StringComparison.Ordinal);
+            StringAssert.Contains(plan, "USING INDEX ix_processing_outputs_product", StringComparison.Ordinal);
+            Assert.IsFalse(plan.Contains("TEMP B-TREE", StringComparison.Ordinal), plan);
+            Assert.IsFalse(plan.Contains("SCAN output", StringComparison.Ordinal), plan);
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     [DataRow("accepted")]
     [DataRow("changed")]
     [DataRow("incomplete")]

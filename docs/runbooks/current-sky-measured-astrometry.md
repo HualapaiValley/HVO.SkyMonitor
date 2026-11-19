@@ -17,7 +17,8 @@ crop/bin/flip. This explicitly local fisheye scale is not a constant for the
 whole image. Values come from the verified retained fit and Astronomy mapping.
 
 The authenticated summary lookup pages 16 assessment capture IDs at a time in
-newest exposure order. It skips nonaccepted compact products, verifies all
+newest exposure order using the existing capture-time and capture/product indexes
+and a keyset cursor; it does not sort the entire output history. It skips nonaccepted compact products, verifies all
 parents of an accepted candidate through the existing retained reader, and
 returns only summary values. Current Sky imposes a five-second deadline and the
 reader's existing single-reader/no-buffer-queue gate. Busy, invalid, expired or
