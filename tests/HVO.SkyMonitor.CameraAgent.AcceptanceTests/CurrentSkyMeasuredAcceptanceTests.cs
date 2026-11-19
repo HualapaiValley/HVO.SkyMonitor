@@ -92,22 +92,52 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 publication = new { persistence = "durable-local" },
                 options = new { captureStride = 60, catalogSelection = selection, recipe = new MeasuredAstrometryOptions(Solver: new(MaximumCatalogMagnitude: 5)) }
             }));
-            steps.Add(JsonSerializer.SerializeToNode(new { id = "Rolling", type = "RollingCombination", dependsOn = (string[])["$raw"],
-                publication = new { persistence = "durable-local" }, options = new { windowSize = 1 } }));
+            steps.Add(JsonSerializer.SerializeToNode(new
+            {
+                id = "Rolling",
+                type = "RollingCombination",
+                dependsOn = (string[])["$raw"],
+                publication = new { persistence = "durable-local" },
+                options = new { windowSize = 1 }
+            }));
             var preview = steps.Single(n => n!["id"]!.GetValue<string>() == "Preview")!;
             preview["dependsOn"] = JsonSerializer.SerializeToNode((string[])["Rolling"]);
             preview["publication"] = JsonSerializer.SerializeToNode(new { persistence = "durable-local" });
-            steps.Add(JsonSerializer.SerializeToNode(new { id = "ScenePresentation", type = "ScenePresentationLayer", required = false,
-                dependsOn = (string[])["ProjectedScene"], publication = new { persistence = "durable-local" } }));
-            steps.Add(JsonSerializer.SerializeToNode(new { id = "EnvironmentPresentation", type = "EnvironmentPresentationLayer", required = false,
-                dependsOn = (string[])["ProjectedScene", "Preview"], publication = new { persistence = "durable-local" },
-                options = new { widthPixels = 1024, heightPixels = 1024, stackPreviewVariant = "browser-display" } }));
-            steps.Add(JsonSerializer.SerializeToNode(new { id = "OverlayManifest", type = "OverlayManifest", required = false,
-                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation"], publication = new { persistence = "durable-local" },
-                options = new { basePreviewVariant = "browser-display" } }));
-            steps.Add(JsonSerializer.SerializeToNode(new { id = "PresentationMaterializer", type = "PresentationMaterializer", required = false,
-                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"], publication = new { persistence = "durable-local" },
-                options = new { basePreviewVariant = "browser-display" } }));
+            steps.Add(JsonSerializer.SerializeToNode(new
+            {
+                id = "ScenePresentation",
+                type = "ScenePresentationLayer",
+                required = false,
+                dependsOn = (string[])["ProjectedScene"],
+                publication = new { persistence = "durable-local" }
+            }));
+            steps.Add(JsonSerializer.SerializeToNode(new
+            {
+                id = "EnvironmentPresentation",
+                type = "EnvironmentPresentationLayer",
+                required = false,
+                dependsOn = (string[])["ProjectedScene", "Preview"],
+                publication = new { persistence = "durable-local" },
+                options = new { widthPixels = 1024, heightPixels = 1024, stackPreviewVariant = "browser-display" }
+            }));
+            steps.Add(JsonSerializer.SerializeToNode(new
+            {
+                id = "OverlayManifest",
+                type = "OverlayManifest",
+                required = false,
+                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation"],
+                publication = new { persistence = "durable-local" },
+                options = new { basePreviewVariant = "browser-display" }
+            }));
+            steps.Add(JsonSerializer.SerializeToNode(new
+            {
+                id = "PresentationMaterializer",
+                type = "PresentationMaterializer",
+                required = false,
+                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"],
+                publication = new { persistence = "durable-local" },
+                options = new { basePreviewVariant = "browser-display" }
+            }));
             // Raw publication never depends on the optional analysis branch.
             steps.Single(n => n!["id"]!.GetValue<string>() == "LocalStorage")!["dependsOn"] = JsonSerializer.SerializeToNode((string[])["$raw", "Preview"]);
             await File.WriteAllTextAsync(path, document.ToJsonString()).ConfigureAwait(false);
