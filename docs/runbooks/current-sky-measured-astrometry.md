@@ -77,6 +77,38 @@ skips/failures cannot become prerequisites of raw Storage. The existing
 20-second cooperative recipe budget and serialized numerical gate apply.
 This qualification does not enable a default or installed profile.
 
+## Inspect residuals on a single exposure
+
+Keep the normal five-frame graph available in **Named graphs**. For example,
+use **Reference astrometry, NGC and satellites** for observing and
+**Single-exposure astrometry diagnostics** for inspection. Reference magnitude
+**3.25**, a **2,000** renderer-candidate limit, and **20 s** exposures are studied
+VirtualSky settings for this setup.
+
+1. From **Pipeline → Named graphs**, open the active five-frame graph and choose
+   **Draft a new revision from this one**. Set **Graph name** and **Revision
+   label**. In the rolling combination node, set **Window size** to **1**.
+   Keep the existing solve settings and catalog pin, presentation and storage
+   nodes, and NGC and satellite overlay settings.
+2. Choose **Preview plan** and check the one-frame window and retained nodes.
+   Choose **Save immutable draft**. In **Named graphs**, select **Validate**
+   and **Confirm validate** for the diagnostic revision. Once validated, use
+   **Review activate**, check the revision, and choose **Confirm activate**.
+3. Wait for the configured solve cadence to produce a new **Accepted** capture
+   from that graph. Open the
+   capture and choose **Processed → Diagnostics → Astrometric residuals**.
+   The vectors compare measured stellar positions with the solution on that
+   exposure. Rejected solves and incompatible bases withhold the vectors.
+4. In **Named graphs**, use **Review activate** and **Confirm activate** on the
+   original five-frame revision. Check that it is active before resuming normal
+   observing.
+
+With compatible retained evidence, the **Deep-sky catalog** layer marks
+expected NGC object positions. The **Predicted satellite tracks** layer draws
+predicted paths during the exposure. **Deep-sky associations** requires a
+separate measured product. In a rejected **15 s** trial, the catalog and track
+layers still drew while measured residuals were unavailable.
+
 ## Later home-docker in-place update and rollback plan
 
 This is preparation only. No home-docker access or runtime change is part of
