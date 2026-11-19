@@ -109,6 +109,8 @@ public sealed class CameraAgentHostOptionsTests
     [DataRow("display-long", nameof(CameraAgentHostOptions.DisplayName))]
     [DataRow("objects-zero", nameof(SkyMapOptions.MaximumObjects))]
     [DataRow("objects-high", nameof(SkyMapOptions.MaximumObjects))]
+    [DataRow("renderer-zero", nameof(VirtualSkyRendererOptions.RendererCandidateCap))]
+    [DataRow("renderer-high", nameof(VirtualSkyRendererOptions.RendererCandidateCap))]
     [DataRow("tiles-http", nameof(SiteMapOptions.TileTemplate))]
     [DataRow("tiles-placeholder", nameof(SiteMapOptions.TileTemplate))]
     [DataRow("tiles-relative", nameof(SiteMapOptions.TileTemplate))]
@@ -125,6 +127,8 @@ public sealed class CameraAgentHostOptionsTests
             "display-long" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", DisplayName = new string('n', 81) },
             "objects-zero" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", SkyMap = new SkyMapOptions { MaximumObjects = 0 } },
             "objects-high" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", SkyMap = new SkyMapOptions { MaximumObjects = 5001 } },
+            "renderer-zero" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", VirtualSky = new() { RendererCandidateCap = 0 } },
+            "renderer-high" => new CameraAgentHostOptions { RawIngressRoot = "raw-ingress", VirtualSky = new() { RendererCandidateCap = 100_001 } },
             "tiles-http" => WithSiteMap(new SiteMapOptions { TileTemplate = "http://tiles.example.test/{z}/{x}/{y}.png" }),
             "tiles-placeholder" => WithSiteMap(new SiteMapOptions { TileTemplate = "https://tiles.example.test/{z}/{x}.png" }),
             "tiles-relative" => WithSiteMap(new SiteMapOptions { TileTemplate = "/tiles/{z}/{x}/{y}.png" }),

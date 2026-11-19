@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using Microsoft.Extensions.Options;
@@ -308,6 +309,28 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         return await CreateRevisionAsync(
             baseConfiguration, name, revision, pipeline, idempotencyKey, actor, reason, cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    public async ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
+        CreateReferenceAstrometryRevisionAsync(
+            string basisRevisionId, string revision, double? referenceMagnitude, IAstrometricCatalogSource? catalog,
+            string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
+        ValidateRevisionName(revision, nameof(revision));
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("A camera profile must be initialized before configuring astrometry.");
+        if (referenceMagnitude is null && !string.Equals(profile.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
+        if ((profile.Rig.Readout?.PixelFormat ?? profile.Rig.Sensor.PixelFormat) is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
+            throw new InvalidOperationException("Measured astrometry requires a linear 16-bit monochrome or Bayer readout.");
+        _ = RigProjectionContextFactory.Create(profile.Rig);
+        var basis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+        var (pipeline, selection) = await ReferenceAstrometryPreset.ApplyAsync(
+            basis.Pipeline, referenceMagnitude, catalog, cancellationToken).ConfigureAwait(false);
+        var draft = await CreateRevisionAsync(profile, "Measured astrometry", revision, pipeline,
+            idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+        return (draft, selection);
     }
 
     internal async ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(

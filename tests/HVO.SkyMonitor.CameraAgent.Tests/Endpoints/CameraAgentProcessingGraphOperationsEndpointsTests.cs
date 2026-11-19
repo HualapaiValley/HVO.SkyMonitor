@@ -47,7 +47,7 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
             .Where(static endpoint => endpoint.RoutePattern.RawText?.StartsWith(
                 "/api/v1/operations/processing-graphs", StringComparison.Ordinal) == true)
             .ToArray();
-            Assert.HasCount(13, routes);
+            Assert.HasCount(14, routes);
             foreach (var route in routes)
             {
                 var methods = route.Metadata.GetMetadata<HttpMethodMetadata>()?.HttpMethods;

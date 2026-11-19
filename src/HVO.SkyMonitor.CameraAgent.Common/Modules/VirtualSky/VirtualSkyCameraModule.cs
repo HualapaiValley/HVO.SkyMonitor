@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 /// <remarks>
 /// When the host provides <paramref name="sceneObjectBound"/>, each capture reads it once and keeps that many of the
 /// brightest stars whose support crosses the frame, plus constellation endpoint stars and solar-system bodies.
-/// Without one, the module's own <see cref="VirtualSkyCameraModuleOptions.MaximumResults"/> is the limit.
+/// With no host override, the profile's configured limit or the ordinary renderer default applies.
 /// </remarks>
 public sealed class VirtualSkyCameraModule(
     TimeProvider timeProvider,
@@ -83,11 +83,7 @@ public sealed class VirtualSkyCameraModule(
         {
             _preparedVirtualCalibration = null;
         }
-        if (config.ModuleOptions is { } options)
-        {
-            _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText(), SerializerOptions)
-                ?? new VirtualSkyCameraModuleOptions();
-        }
+        _options = config.ModuleOptions?.Deserialize<VirtualSkyCameraModuleOptions>(SerializerOptions) ?? new();
 
         _options.Validate();
         ValidateRig(config.Rig, _options);
@@ -357,15 +353,14 @@ public sealed class VirtualSkyCameraModule(
         var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
             _options.MinimumStellarSignalToNoise);
         var selectedMagnitude = Math.Min(_options.MaximumMagnitude, queryCeiling ?? -30);
-        // Read once per capture, so a limit the operator saves applies to the next capture. The operator's value
-        // governs in either direction; only an explicitly exhaustive profile keeps its complete module query.
+        // Read once per capture so a limit the operator saves applies to the next exposure.
         var exhaustiveStars = _options.StellarCandidateSelection == VirtualSkyStellarCandidateSelection.Exhaustive;
         var stellarSelection = exhaustiveStars
             ? StellarCandidateSelection.Exhaustive
             : StellarCandidateSelection.BrightestSupported;
-        var stellarLimit = exhaustiveStars || sceneObjectBound is null
+        var stellarLimit = exhaustiveStars
             ? _options.MaximumResults
-            : sceneObjectBound.Current;
+            : sceneObjectBound?.VirtualSkyOverride ?? _options.BrightestCandidateCap;
         if (stellarLimit is < 1 or > 100000)
         {
             throw new InvalidOperationException("The scene object limit must be between 1 and 100000.");
@@ -1564,8 +1559,8 @@ public enum VirtualSkyIlluminationMode
 public enum VirtualSkyStellarCandidateSelection
 {
     /// <summary>
-    /// The brightest stars whose support crosses the frame during the exposure, up to the operator's scene object
-    /// limit when the host provides one and <see cref="VirtualSkyCameraModuleOptions.MaximumResults"/> otherwise,
+    /// The brightest stars whose support crosses the frame during the exposure, up to the configured host or profile
+    /// limit, defaulting to <see cref="VirtualSkyCameraModuleOptions.DefaultRendererCandidateCap"/>,
     /// plus constellation endpoint stars. Solar-system bodies are never counted.
     /// </summary>
     OperatorSceneObjectLimit,
@@ -1580,6 +1575,9 @@ public enum VirtualSkyStellarCandidateSelection
 /// <summary>Validated deterministic scene and simulated sensor parameters.</summary>
 public sealed class VirtualSkyCameraModuleOptions
 {
+    public const int DefaultRendererCandidateCap = 2000;
+    private readonly int? _maximumResults;
+
     /// <summary>Omitted default preserves existing serialized scene identities and scalar rendering.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public VirtualSkyIlluminationMode IlluminationMode { get; init; }
@@ -1592,7 +1590,13 @@ public sealed class VirtualSkyCameraModuleOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? FixedSequenceStartUtc { get; init; }
     public double MaximumMagnitude { get; init; } = 6.5;
-    public int MaximumResults { get; init; } = 32768;
+    public int MaximumResults
+    {
+        get => _maximumResults ?? 32768;
+        init => _maximumResults = value;
+    }
+
+    internal int BrightestCandidateCap => _maximumResults ?? DefaultRendererCandidateCap;
     /// <summary>
     /// The omitted default honours the operator's scene object limit; <c>Exhaustive</c> opts a profile out. The scene
     /// identity excludes the mode and binds the effective limit through the catalog query instead.

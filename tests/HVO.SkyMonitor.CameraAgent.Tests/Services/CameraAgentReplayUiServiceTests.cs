@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.Common.Security;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -412,6 +413,12 @@ public sealed class CameraAgentReplayUiServiceTests
         public ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string actor, string? reason,
             CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
+            CreateReferenceAstrometryRevisionAsync(
+                string basisRevisionId, string revision, double? referenceMagnitude, IAstrometricCatalogSource? catalog,
+                string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
         public ValueTask<ProcessingGraphRegistryState> RollbackRevisionAsync(

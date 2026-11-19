@@ -97,10 +97,10 @@ internal static class CameraAgentSettingsCatalogue
         Key = "skyMap.maximumObjects",
         Group = SkyMapGroup,
         Title = "Scene object limit",
-        Description = "How many of the brightest catalog stars the sky map shows and a virtual sky capture draws and " +
-                      "labels. Visible constellation figure stars and solar-system bodies are always included beyond " +
-                      "it. A camera profile set to an exhaustive stellar candidate selection ignores it. Clear it to " +
-                      "use the default.",
+        Description = "How many of the brightest catalog stars the sky map shows. A saved value also applies to " +
+                      "VirtualSky capture unless a separate renderer cap or exhaustive selection is configured. " +
+                      "Visible constellation figure stars and solar-system bodies are included beyond the limit. " +
+                      "Clear it to use the defaults.",
         Type = CameraAgentSettingType.Integer,
         Safety = CameraAgentSettingSafety.CaptureOutput,
         Application = CameraAgentSettingApplication.Immediate,

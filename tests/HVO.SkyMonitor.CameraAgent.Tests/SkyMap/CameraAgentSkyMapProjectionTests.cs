@@ -138,8 +138,8 @@ public sealed class CameraAgentSkyMapProjectionTests
         var configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>(StringComparer.Ordinal))
             .Build();
-        var bound = CameraAgentServiceCollectionExtensions.SkyMapObjectBound(configuration);
-        Assert.AreEqual(CameraAgentSkyMapProjection.DefaultMaximumObjects, bound());
+        var bound = CameraAgentServiceCollectionExtensions.CreateSceneObjectBound(configuration);
+        Assert.AreEqual(CameraAgentSkyMapProjection.DefaultMaximumObjects, bound.Current);
 
         foreach (var (value, expected) in new (string, int)[]
         {
@@ -153,7 +153,7 @@ public sealed class CameraAgentSkyMapProjectionTests
         })
         {
             configuration[SkyMapOptions.MaximumObjectsKey] = value;
-            Assert.AreEqual(expected, bound(), value);
+            Assert.AreEqual(expected, bound.Current, value);
         }
     }
 

@@ -6,6 +6,18 @@ the current SQLite/file publisher, replay pins, source-retention graph and
 structured-product upload contract; it introduces no database layout or recovery
 protocol conversion.
 
+`hvo-sky astrometry configure` adds the optional independent prediction and
+measurement branch to an active VirtualSky graph. It uses 3.25 for a new branch
+and keeps a coherent existing reference magnitude when the option is omitted.
+Use `--reference-magnitude MAG` to set a different depth. Compatible real camera
+profiles require that option, compatible linear 16-bit readout, and calibrated
+capture-time rig and site. The current ZWO RAW16 profile declares opaque
+sample codes and requires its own readout qualification.
+The command generates the pin from the verified installed catalog, sets the
+prediction and numerical solver depth, then activates a new graph revision.
+It preserves unrelated steps and camera settings. A missing, incomplete, or
+mismatched pinned catalog prevents the command from changing the active graph.
+
 Configure the stable `MeasuredAstrometry` alias in an **explicit v2** graph.
 Its two direct dependencies must be a durable scene producer and durable
 `MeasuredStellarAssociations` for that same scene. In a single-scene graph the

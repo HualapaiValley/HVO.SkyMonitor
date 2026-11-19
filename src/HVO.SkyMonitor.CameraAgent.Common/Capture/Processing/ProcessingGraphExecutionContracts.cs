@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -340,6 +341,11 @@ public interface IProcessingGraphOperations
         string actor,
         string? reason,
         CancellationToken cancellationToken);
+
+    ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
+        CreateReferenceAstrometryRevisionAsync(
+            string basisRevisionId, string revision, double? referenceMagnitude, IAstrometricCatalogSource? catalog,
+            string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
         string revisionId,

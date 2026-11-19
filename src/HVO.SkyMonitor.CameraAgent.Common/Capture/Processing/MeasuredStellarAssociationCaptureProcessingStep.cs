@@ -17,6 +17,7 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
     : ConfigurableCaptureProcessingStep<MeasuredStellarAssociationProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
+    internal const string Alias = "MeasuredStellarAssociations";
     public bool Enabled => Options.Enabled;
     public string RecipeName => BuiltInProcessingRecipes.MeasuredStellarAssociations;
     internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;

@@ -97,8 +97,7 @@ internal sealed class CameraAgentSettingsHarness : IDisposable
             });
             var site = harness.Own(new SettingsFileSiteProfileStore(
                 hostOptions, NullLogger<SettingsFileSiteProfileStore>.Instance, settingsFile));
-            var sceneObjects = new ConfigurationSceneObjectBound(
-                CameraAgentServiceCollectionExtensions.SkyMapObjectBound(configuration));
+            var sceneObjects = CameraAgentServiceCollectionExtensions.CreateSceneObjectBound(configuration);
 
             var camera = Camera(moduleType);
             if (illuminationMode is not null)

@@ -638,10 +638,13 @@ recorded. The legacy magnitude is treated as approximate V-like photometry,
 not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
 camera. PSF size does not change with source magnitude.
 
-The star limit for one capture comes from the host's operator scene object
-limit, `CameraAgent:SkyMap:MaximumObjects` (default 200), read once per
-capture; without a host limit it is the module's `maximumResults`. The
-geometry walks the complete merged magnitude and constellation-endpoint query
+The ordinary VirtualSky renderer defaults to 2,000 candidates per exposure.
+Set `CameraAgent:VirtualSky:RendererCandidateCap` in `appsettings.local.json`
+to set an independent integer limit from 1 through 100,000. The host reads
+that value, then any explicit `CameraAgent:SkyMap:MaximumObjects`, then the
+profile's `module.options.maximumResults`. The sky map keeps its own
+200-object default. The geometry walks the complete merged magnitude and
+constellation-endpoint query
 in magnitude-then-ID order and keeps the brightest stars whose PSF support
 crosses the frame during the exposure, up to the limit; past it, only
 constellation endpoint stars are still evaluated. Solar-system bodies and the

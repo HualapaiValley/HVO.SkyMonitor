@@ -37,7 +37,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     ];
     // Operator-facing profiles behave as an installed camera does.
     private static readonly string[] OperatorLimitProfiles =
-        ["cameraagent.sample.json", "cameraagent.standalone-production-smoke.json"];
+        ["cameraagent.standalone-production-smoke.json"];
 
     [TestMethod]
     public async Task SceneObjectLimit_CatalogLargerThanTheRigBudgetCapturesTheBrightestSupportedStars()
@@ -211,6 +211,54 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SceneObjectLimit_OrdinaryCaptureDefaultsTo2000AndRespectsOverrides(bool hosted)
+    {
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["CameraAgent:RawIngressRoot"] = Path.GetTempPath()
+        }).Build();
+        var catalog = CreateSceneLimitCatalog(40);
+        var time = ExposureTestTimeProvider.ForRendering();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<ICelestialCatalog>(catalog);
+        services.AddSingleton<TimeProvider>(time);
+        services.AddCameraAgentInfrastructure(configuration);
+        Program.AddCameraModules(services);
+        using var provider = services.BuildServiceProvider();
+
+        var sceneStore = hosted ? provider.GetRequiredService<IProjectedSceneStore>() : new ProjectedSceneStore();
+        var module = hosted
+            ? provider.GetRequiredService<ICameraModuleFactory>().Create("VirtualSky")
+            : new VirtualSkyCameraModule(time, catalog, sceneStore);
+        await using var lifetime = module.ConfigureAwait(false);
+        async Task AssertCapAsync(int cap)
+        {
+            var capture = await module.CaptureAsync(SceneLimitRequest(), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(cap.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                capture.Frame!.Metadata.Extra!["stellarMaximumCandidates"]);
+            Assert.IsNotNull(capture.Frame.Metadata.Scene);
+            Assert.IsTrue(sceneStore.TryGet(capture.Frame.Metadata.Scene.SceneId, out var scene));
+            Assert.AreEqual(cap, scene!.Request.CatalogQuery.MaximumResults);
+        }
+
+        await module.InitializeAsync(CreateSceneLimitConfig(null), CancellationToken.None).ConfigureAwait(false);
+        await AssertCapAsync(2000).ConfigureAwait(false);
+        await module.InitializeAsync(CreateSceneLimitConfig(11), CancellationToken.None).ConfigureAwait(false);
+        await AssertCapAsync(11).ConfigureAwait(false);
+        if (hosted)
+        {
+            configuration[SkyMapOptions.MaximumObjectsKey] = "9";
+            await AssertCapAsync(9).ConfigureAwait(false);
+            configuration[VirtualSkyRendererOptions.CandidateCapKey] = "7";
+            await AssertCapAsync(7).ConfigureAwait(false);
+            Assert.AreEqual(9, provider.GetRequiredService<ISceneObjectBound>().Current);
+        }
+    }
+
+    [TestMethod]
     [DataRow("virtual-asi174.full.json")]
     [DataRow("virtual-asi178mc.full.json")]
     public async Task SceneObjectLimit_HostedCanonicalWorkloadKeepsItsDepthWhenTheOperatorEditsTheLimit(string workloadProfile)
@@ -334,16 +382,16 @@ public sealed partial class VirtualSkyCameraModuleTests
     private static CaptureRequest SceneLimitRequest()
         => new(FixtureUtc, TimeSpan.FromSeconds(2), CaptureMode.Still, new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null));
 
-    private static CameraModuleConfig CreateSceneLimitConfig(int maximumResults, bool exhaustive = false, bool figures = false)
+    private static CameraModuleConfig CreateSceneLimitConfig(int? maximumResults, bool exhaustive = false, bool figures = false)
     {
         var options = new Dictionary<string, object>(StringComparer.Ordinal)
         {
             ["magnitudeZeroElectronsPerSecond"] = 1000000,
             ["maximumMagnitude"] = 6.5,
-            ["maximumResults"] = maximumResults,
             ["backgroundElectronsPerSecond"] = 0,
             ["readNoiseStandardDeviation"] = 3
         };
+        if (maximumResults is { } configured) options["maximumResults"] = configured;
         if (exhaustive) options["stellarCandidateSelection"] = "Exhaustive";
         if (figures)
         {
