@@ -3,6 +3,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -15,7 +16,7 @@ internal sealed class CaptureAstrometryExecutionGate : IDisposable
 /// <summary>Explicit sampled background work on admitted raw. Inputs come from the frozen graph and its dependencies.</summary>
 internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
     MeasuredAstrometryCaptureOptions options, CameraAgentRecipeExecutionAdapter adapter, CaptureAstrometryExecutionGate gate,
-    CaptureProcessingPersistence? persistence = null)
+    CaptureProcessingPersistence? persistence = null, IServiceProvider? services = null)
     : ConfigurableCaptureProcessingStep<MeasuredAstrometryCaptureOptions>(metadata, options), ICaptureProcessingGraphStep,
       IRequiredCaptureProcessingDependencies, IMultiOutputCaptureProcessingGraphStep, IFrozenAuxiliaryInputCaptureProcessingStep
 {
@@ -71,7 +72,10 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
         }
         else
         {
-            var input = RetainedAstrometryProducts.CreateContext(raw, measured, scene, Options.Catalog!, Options.Clock, Options.PreviousAccepted);
+            var catalog = Options.Catalog ?? await (Options.CatalogSelection
+                ?? throw new InvalidDataException("A pinned astrometry catalog is required."))
+                .ResolveAsync(services?.GetService<IAstrometricCatalogSource>(), cancellationToken).ConfigureAwait(false);
+            var input = RetainedAstrometryProducts.CreateContext(raw, measured, scene, catalog, Options.Clock, Options.PreviousAccepted);
             newContext = RetainedAstrometryProducts.CreateContextProduct(input, raw, measured, scene, OutputVariant + "-context");
             frozen = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, newContext);
         }
@@ -121,14 +125,17 @@ public sealed class MeasuredAstrometryCaptureOptions : IValidatableObject
     public string OutputVariant { get; init; } = "measured-astrometry-v1";
     [Range(60, 1_000_000)]
     public int CaptureStride { get; init; } = 60;
-    [Required]
     public AstrometryCatalogSnapshotV1? Catalog { get; init; }
+    public MeasuredAstrometryCatalogSelection? CatalogSelection { get; init; }
     public AstrometricClockFacts Clock { get; init; } = AstrometricClockFacts.NotSupplied;
     public AstrometricFrameAssessment? PreviousAccepted { get; init; }
     public MeasuredAstrometryOptions Recipe { get; init; } = new();
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if ((Catalog is null) == (CatalogSelection is null))
+            yield return new ValidationResult("Supply exactly one frozen catalog or pinned installed catalog selection.");
+        if (CatalogSelection is { } selection) selection.Validate();
         if (Catalog is not null)
         {
             if (Catalog.Stars.Count > AstrometricCatalogData.MaximumEntries)
@@ -145,4 +152,30 @@ public sealed class MeasuredAstrometryCaptureOptions : IValidatableObject
             if (!prior.HasMeasuredMapping) yield return new ValidationResult("The explicit prior must be accepted.");
         }
     }
+}
+
+/// <summary>Compact immutable pin; selected catalog rows are frozen once in the retained execution context.</summary>
+public sealed record MeasuredAstrometryCatalogSelection(string CatalogIdentitySha256, string SelectionIdentitySha256,
+    double MaximumMagnitude, int MaximumEntries = 2500)
+{
+    internal void Validate()
+    {
+        if (!double.IsFinite(MaximumMagnitude) || MaximumMagnitude is < -30 or > 30 || MaximumEntries is < 1 or > 2500 ||
+            !IsHash(CatalogIdentitySha256) || !IsHash(SelectionIdentitySha256))
+            throw new ValidationException("Invalid pinned astrometry catalog selection.");
+    }
+
+    internal async ValueTask<AstrometryCatalogSnapshotV1> ResolveAsync(IAstrometricCatalogSource? source, CancellationToken cancellationToken)
+    {
+        Validate();
+        var data = await (source ?? throw new InvalidDataException("The installed astrometry catalog adapter is unavailable."))
+            .ReadAsync(MaximumMagnitude, MaximumEntries, cancellationToken).ConfigureAwait(false);
+        if (!data.IsCompleteForRequestedMagnitude || data.Provenance is null ||
+            data.IdentitySha256 != CatalogIdentitySha256 || data.SelectionIdentitySha256 != SelectionIdentitySha256 ||
+            data.Stars.Count > MaximumEntries || data.CompletenessMagnitudeLimit < MaximumMagnitude)
+            throw new InvalidDataException("The installed astrometry catalog does not match its complete pinned selection.");
+        return new(data.Metadata, data.Stars, data.Provenance, true, data.CompletenessMagnitudeLimit, data.CoordinateModel);
+    }
+
+    private static bool IsHash(string value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 }

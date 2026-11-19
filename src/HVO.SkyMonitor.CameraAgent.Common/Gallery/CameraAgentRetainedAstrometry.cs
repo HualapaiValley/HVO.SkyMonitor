@@ -25,8 +25,28 @@ public sealed record CameraAgentRetainedAstrometry(Guid CaptureId, string Availa
     public string DiagnosticsReason { get; init; } = "Compatible measured diagnostics are unavailable.";
 }
 
+/// <summary>Summary only; cannot supply geometry to another capture.</summary>
+public sealed record CameraAgentLatestAstrometry(Guid CaptureId, Guid ArtifactId, string SolutionIdentitySha256,
+    DateTimeOffset MidpointUtc, double RightAscensionHours, double DeclinationDegrees, double RollDegrees,
+    PixelPoint ReferencePixel, AstrometricLocalPixelScale LocalScale)
+{
+    public static CameraAgentLatestAstrometry? FromVerified(CameraAgentRetainedAstrometry value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Mapping is not { } mapping || value.Solution is not { Assessment.HasMeasuredMapping: true } solution ||
+            value.ArtifactId is not { } artifact || value.SolutionIdentitySha256 != solution.SolutionIdentitySha256 ||
+            value.CaptureId != solution.Assessment.Frame.CaptureId) return null;
+        var fit = solution.Assessment.Parameters!;
+        var reference = mapping.SkyToPixel(new(fit.BoresightRightAscensionHours, fit.BoresightDeclinationDegrees));
+        if (reference is not { } pixel) return null;
+        return new(value.CaptureId, artifact, solution.SolutionIdentitySha256, solution.Assessment.Frame.MidpointUtc,
+            fit.BoresightRightAscensionHours, fit.BoresightDeclinationDegrees, fit.RollDegrees, pixel, mapping.LocalPixelScale(pixel));
+    }
+}
+
 public interface ICameraAgentRetainedAstrometryService
 {
+    ValueTask<CameraAgentLatestAstrometry?> GetLatestAcceptedAsync(CancellationToken cancellationToken) => ValueTask.FromResult<CameraAgentLatestAstrometry?>(null);
     ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken);
 }
 
@@ -49,7 +69,28 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         finally { readGate.Release(); }
     }
 
-    private async ValueTask<CameraAgentRetainedAstrometry> ReadAsync(Guid captureId, CancellationToken cancellationToken)
+    public async ValueTask<CameraAgentLatestAstrometry?> GetLatestAcceptedAsync(CancellationToken cancellationToken)
+    {
+        if (!await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return null;
+        try
+        {
+            // Page compact candidates newest-first; only reconstruct accepted evidence. Caller deadlines bound history reads.
+            for (var offset = 0; ; offset = checked(offset + 16))
+            {
+                var captures = await store.ReadRecentAstrometryCapturesAsync(offset, cancellationToken).ConfigureAwait(false);
+                foreach (var id in captures)
+                {
+                    var value = await ReadAsync(id, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
+                    if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary) return summary;
+                }
+                if (captures.Count < 16) break;
+            }
+            return null;
+        }
+        finally { readGate.Release(); }
+    }
+
+    private async ValueTask<CameraAgentRetainedAstrometry> ReadAsync(Guid captureId, CancellationToken cancellationToken, bool acceptedOnly = false)
     {
         if (captureId == Guid.Empty) return new(captureId, "Unavailable", "invalid-capture");
         try
@@ -65,6 +106,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var solution = MeasuredAstrometryJson.Parse(solutionArtifact.Payload);
             if (solution.Assessment.Frame.CaptureId != captureId || solutionProduct.SourceArtifactIds.Count != 4)
                 throw new InvalidDataException("Retained assessment source mismatch.");
+            if (acceptedOnly && !solution.Assessment.HasMeasuredMapping)
+                return new(captureId, "NotRetained", "no-accepted-mapping");
             var rawId = solution.Assessment.Frame.SourceArtifactId;
             var rawRead = await artifacts.OpenContentAsync(rawId, cancellationToken).ConfigureAwait(false);
             var rawContent = rawRead.Content ?? throw new IOException("The retained raw is unavailable.");

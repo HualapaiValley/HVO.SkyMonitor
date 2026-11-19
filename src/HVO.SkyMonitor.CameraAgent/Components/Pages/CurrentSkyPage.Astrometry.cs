@@ -7,6 +7,42 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class CurrentSkyPage
 {
     private CameraAgentRetainedAstrometry? _astrometry;
+    private CameraAgentLatestAstrometry? _latestAstrometry;
+    private long _latestAstrometryRevision;
+    private bool _latestAstrometryLoading;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional summary reads must not fail the image view.")]
+    private async Task LoadLatestAstrometryAsync()
+    {
+        if (IsArchived || _accessDenied || _disposeStarted != 0 || _latestAstrometryLoading) return;
+        _latestAstrometryLoading = true;
+        var revision = ++_latestAstrometryRevision;
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(_lifetime!.Token, deadline.Token);
+            var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token).ConfigureAwait(false);
+            await InvokeAsync(() =>
+            {
+                _latestAstrometryLoading = false;
+                if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+                if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied || IsArchived) return;
+                _latestAstrometry = result.IsSuccess ? result.Value : null;
+                StateHasChanged();
+            });
+        }
+        catch (Exception)
+        {
+            await InvokeAsync(() =>
+            {
+                _latestAstrometryLoading = false;
+                if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied) return;
+                _latestAstrometry = null;
+                StateHasChanged();
+            });
+        }
+    }
+
     private bool _astrometryLoading;
     private long _astrometryReadRevision;
     private string? _calculatorResult;
@@ -57,6 +93,7 @@ public sealed partial class CurrentSkyPage
         if (_astrometry?.SolutionIdentitySha256 != value.SolutionIdentitySha256) _calculatorResult = null;
         _astrometry = value;
         _astrometryLoading = false;
+        if (!IsArchived) _ = LoadLatestAstrometryAsync();
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional retained evidence cannot fail the image view.")]

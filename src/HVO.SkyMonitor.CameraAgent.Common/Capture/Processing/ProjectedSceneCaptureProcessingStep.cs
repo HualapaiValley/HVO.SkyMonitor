@@ -4,6 +4,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -13,7 +15,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingStore stagingStore,
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter,
-    CaptureMaintenanceGate? maintenance = null)
+    CaptureMaintenanceGate? maintenance = null,
+    IServiceProvider? services = null)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
@@ -65,6 +68,29 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 return;
             }
             context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
+        }
+        else if (Options.IndependentPrediction)
+        {
+            var catalog = services?.GetService<ICelestialCatalog>();
+            var locations = services?.GetService<IDeploymentLocationStore>();
+            // Predict independently from capture-time rig/site and installed catalog. Never relabel virtual truth.
+            if (catalog is not ICelestialCatalogMetadataSource metadata || locations is null || descriptor.Location is not { } location)
+                throw new InvalidDataException("Independent prediction requires a verified catalog and capture location history.");
+            var site = locations.Resolve(location, descriptor.Timing.ExposureStartedUtc);
+            var projection = RigProjectionContextFactory.Create(context.Config.Rig);
+            if (projection.WidthPixels != descriptor.Layout.Width || projection.HeightPixels != descriptor.Layout.Height)
+                throw new InvalidDataException("Independent prediction requires the source output geometry.");
+            var start = descriptor.Timing.ExposureStartedUtc;
+            var end = ProcessingArtifact.ResolveObservationEndedUtc(start, descriptor.Timing.ExposureEndedUtc, descriptor.Controls.EffectiveExposure);
+            var request = new VisibleSceneRequest(start + TimeSpan.FromTicks((end - start).Ticks / 2),
+                new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), projection,
+                new CatalogQuery(Options.MaximumMagnitude, Options.MaximumResults), metadata.Metadata,
+                horizonPolicy: HorizonPolicy.GeometricHorizon, projectionVersion: context.Config.Rig.Optics.CalibrationVersion,
+                algorithmVersion: Options.AstronomyAlgorithmVersion);
+            var predicted = await new VisibleSceneBuilder(catalog).BuildAsync(request, cancellationToken).ConfigureAwait(false);
+            scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predicted,
+                ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height), source,
+                context.Config.Rig.Optics.CalibrationVersion, context.Config.Rig.Optics.CalibrationVersion);
         }
         else if (provenance is
         {
@@ -232,6 +258,8 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     [Required, MinLength(1), MaxLength(128)]
     public string OutputVariant { get; init; } = "projected-scene-v1";
 
+    public bool IndependentPrediction { get; init; }
+
     [Range(-30d, 30d)]
     public double MaximumMagnitude { get; init; } = 6.5;
 
@@ -263,6 +291,8 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (IndependentPrediction && (ConstellationIds.Count > 0 || SolarSystemBodies.Count > 0 || DeepSkyEnabled || CuratedAnnotations is { Enabled: true }))
+            yield return new ValidationResult("Independent astrometry prediction supports catalog stars only.");
         _ = DeepSkySelection().ToSelection();
         if (DeepSkyEnabled && CuratedAnnotations is { Enabled: true })
             yield return new ValidationResult("Choose either the general deep-sky query or the legacy curated preset.");

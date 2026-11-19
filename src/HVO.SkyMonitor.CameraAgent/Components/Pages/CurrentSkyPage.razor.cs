@@ -374,6 +374,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 // the five-second current-sky refresh appear to have failed.
                 _ = LoadLiveRunLinkAsync(captureId, cancellationToken);
                 _ = LoadTransientAsync(captureId, cancellationToken);
+                if (_latestAstrometry is null && _astrometry?.Solution is not null) _ = LoadLatestAstrometryAsync();
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -514,6 +515,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         if (_disposeStarted != 0) return;
         _deferredLayers = null;
         _accessDenied = true;
+        _latestAstrometry = null;
+        _latestAstrometryRevision++;
         _lifetime?.Cancel();
         _layerCancellation?.Cancel();
         _viewerOpen = false;

@@ -18,6 +18,48 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow("accepted")]
+    [DataRow("changed")]
+    [DataRow("incomplete")]
+    [DataRow("missing")]
+    [DataRow("canceled")]
+    public async Task RetainedAstrometry_PinnedInstalledSelectionFailsClosed(string scenario)
+    {
+        var original = EmptyAstrometryCatalog();
+        var data = new AstrometricCatalogData(original.Metadata, original.Stars, true, 7, provenance: original.Package);
+        var pin = new MeasuredAstrometryCatalogSelection(data.IdentitySha256, data.SelectionIdentitySha256, 7);
+        var source = new Moq.Mock<IAstrometricCatalogSource>();
+        source.Setup(s => s.ReadAsync(7, 2500, Moq.It.IsAny<CancellationToken>()))
+            .Returns((double _, int _, CancellationToken token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                return ValueTask.FromResult(scenario == "incomplete"
+                    ? new AstrometricCatalogData(original.Metadata, original.Stars, false, 7, provenance: original.Package)
+                    : data);
+            });
+        if (scenario == "changed") pin = pin with { SelectionIdentitySha256 = new string('B', 64) };
+        if (scenario == "canceled")
+        {
+            using var canceled = new CancellationTokenSource();
+            await canceled.CancelAsync().ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+                await pin.ResolveAsync(source.Object, canceled.Token).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        else if (scenario != "accepted")
+            await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await pin.ResolveAsync(scenario == "missing" ? null : source.Object, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        else
+        {
+            var frozen = await pin.ResolveAsync(source.Object, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(original.Metadata, frozen.Metadata);
+            Assert.AreEqual(original.Package, frozen.Package);
+            Assert.IsTrue(frozen.Complete);
+            Assert.IsTrue(JsonSerializer.SerializeToUtf8Bytes(pin).Length < 1024);
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task RetainedAstrometry_CadenceSkipsBeforeResolvingInputsOrDispatchingRecipe()
     {
         var root = CreateTestRoot();

@@ -315,3 +315,10 @@
 .astrometry-provenance code, .astrometry-card dd { overflow-wrap: anywhere; }
 .astrometry-provenance summary { cursor: pointer; min-height: 2rem; padding-top: .5rem; }
 .pixel-sky-calculator select { min-height: 2rem; max-width: 100%; background: var(--surface); color: var(--text); }
+
+.latest-measured-solution p, .latest-measured-solution details { font-size: .7rem; line-height: 1.5; overflow-wrap: anywhere; }
+.latest-measured-solution dl { margin: .7rem 0; }
+.latest-measured-solution dl > div { padding: .4rem 0; border-top: 1px solid var(--border); }
+.latest-measured-solution dt { color: var(--muted); font-size: .6rem; text-transform: uppercase; }
+.latest-measured-solution dd { margin: .15rem 0 0; font-size: .78rem; font-weight: 700; overflow-wrap: anywhere; }
+.latest-measured-solution summary { cursor: pointer; min-height: 2rem; padding-top: .5rem; }

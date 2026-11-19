@@ -128,10 +128,21 @@ public sealed partial class DurableCaptureProcessingTests
             {
                 Assert.AreEqual("Unavailable", view.Availability);
                 Assert.IsNull(view.Solution);
+                Assert.IsNull(await astrometryReader.GetLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false));
                 return;
             }
             Assert.AreEqual("Retained", view.Availability, view.Reason);
             Assert.AreEqual(identity, view.SolutionIdentitySha256);
+            var latest = await astrometryReader.GetLatestAcceptedAsync(CancellationToken.None).ConfigureAwait(false);
+            if (outcomeScenario == "accepted")
+            {
+                Assert.IsNotNull(latest);
+                Assert.AreEqual(identity, latest.SolutionIdentitySha256);
+                Assert.AreEqual(view.CaptureId, latest.CaptureId);
+                Assert.IsTrue(latest.LocalScale.XArcsecondsPerPixel > 0);
+            }
+            else Assert.IsNull(latest);
+
             Assert.AreEqual(outcomeScenario == "accepted" ? "MeasuredFit" : "Unavailable", view.GeometryBasis);
 
             // Import the exact wire descriptors and bytes with no CameraAgent state or current catalog/configuration.

@@ -278,6 +278,8 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
+    ValueTask<OperatorUiResult<CameraAgentLatestAstrometry?>> GetLatestAcceptedAstrometryAsync(CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(null));
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
 
@@ -1188,6 +1190,15 @@ internal sealed class CameraAgentOperatorUiService(
         var selected = stages.FirstOrDefault(static slot =>
             slot.Availability == CameraAgentPresentationSlotAvailability.Available);
         return new(selected?.Stage, stages);
+    }
+
+    public async ValueTask<OperatorUiResult<CameraAgentLatestAstrometry?>> GetLatestAcceptedAstrometryAsync(CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentLatestAstrometry?>();
+        var value = retainedAstrometry is null ? null
+            : await retainedAstrometry.GetLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
+        return OperatorUiResult<CameraAgentLatestAstrometry?>.Success(value);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]
