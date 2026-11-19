@@ -332,7 +332,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var (pipeline, selection) = await ReferenceAstrometryPreset.ApplyAsync(
             basis.Pipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
         var draft = await CreateRevisionAsync(profile, ReferenceAstrometryPreset.GraphName, revision, pipeline,
-            idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
+            idempotencyKey, actor, reason, cancellationToken, referenceAstrometryPreset: true).ConfigureAwait(false);
         return (draft, selection);
     }
 
@@ -344,7 +344,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool referenceAstrometryPreset = false)
     {
         ValidateRevisionName(name, nameof(name));
         ValidateRevisionName(revision, nameof(revision));
@@ -354,7 +355,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
         return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
             candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
-                (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);
+                (_currentCaptureProfile?.Invoke() ?? profile).Pipeline), referenceAstrometryPreset).ConfigureAwait(false);
     }
 
     public async ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
@@ -375,7 +376,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             var state = await _store.ActivateRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                (revision, token) => EnsureCurrentRevisionPlansAsync(revision, profile, token)).ConfigureAwait(false);
+                (revision, preset, token) => EnsureCurrentRevisionPlansAsync(revision, profile, preset, token)).ConfigureAwait(false);
             await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
@@ -404,7 +405,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             var state = await _store.RollbackRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                (revision, token) => EnsureCurrentRevisionPlansAsync(revision, profile, token)).ConfigureAwait(false);
+                (revision, preset, token) => EnsureCurrentRevisionPlansAsync(revision, profile, preset, token)).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
         }
@@ -729,13 +730,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     }
 
     private async ValueTask EnsureCurrentRevisionPlansAsync(
-        ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile, CancellationToken cancellationToken)
+        ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile, bool referenceAstrometryPreset,
+        CancellationToken cancellationToken)
     {
         var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
             ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
         CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
         EnsureCompatibleRevisionPlans(revision, current);
-        if (string.Equals(revision.State.Name, ReferenceAstrometryPreset.GraphName, StringComparison.Ordinal))
+        if (referenceAstrometryPreset)
             await ReferenceAstrometryPreset.VerifySelectionAsync(
                 revision.Pipeline, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
     }

@@ -188,7 +188,56 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public async Task ReferenceAstrometry_ResumedActivationRejectsAReplacedCatalog()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ReferenceAstrometry_OrdinarySameNameSurvivesReopenAndSelection(bool rollback)
+    {
+        var root = Directory.CreateTempSubdirectory("hvo-astrometry-ordinary-").FullName;
+        try
+        {
+            var config = await LoadAstrometryProfileAsync("Fixtures/installer-controlled-night.json").ConfigureAwait(false);
+            var token = CancellationToken.None;
+            string ordinaryId;
+            using (var originalHost = CreateProvider(root))
+            {
+                await originalHost.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var operations = originalHost.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var basis = await operations.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
+                var ordinary = await operations.CreateRevisionAsync("Reference astrometry preset", "existing-owner-revision",
+                    config.Pipeline, "create", "test-owner", null, token).ConfigureAwait(false);
+                ordinaryId = ordinary.RevisionId;
+                _ = await operations.ValidateRevisionAsync(ordinaryId, "validate", "test-owner", null, token).ConfigureAwait(false);
+                if (rollback)
+                {
+                    // Seed a previously selected ordinary revision using the pre-preset registry policy.
+                    var store = originalHost.GetRequiredService<SqliteCaptureProcessingStore>();
+                    var selected = await store.ActivateRevisionAsync(ordinaryId, basis.StateVersion, "activate-old",
+                        "test-owner", null, token).ConfigureAwait(false);
+                    _ = await store.RollbackRevisionAsync(basis.ActiveRevisionId, selected.StateVersion, "rollback-old",
+                        "test-owner", null, token).ConfigureAwait(false);
+                }
+            }
+
+            using var reopenedHost = CreateProvider(root);
+            await reopenedHost.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var reopened = reopenedHost.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var before = await reopened.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
+            var after = rollback
+                ? await reopened.RollbackRevisionAsync(ordinaryId, before.StateVersion, "select", "test-owner", null, token).ConfigureAwait(false)
+                : await reopened.ActivateRevisionAsync(ordinaryId, before.StateVersion, "select", "test-owner", null, token).ConfigureAwait(false);
+            Assert.AreEqual(ordinaryId, after.ActiveRevisionId);
+            Assert.AreEqual(before.StateVersion + 1, after.StateVersion);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ReferenceAstrometry_ResumedSelectionRejectsAReplacedCatalog(bool rollback)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-astrometry-restart-{Guid.NewGuid():N}");
         try
@@ -197,6 +246,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var token = CancellationToken.None;
             ProcessingGraphRegistryState basis;
             string draftId;
+            string manualId;
             using (var firstHost = CreateProvider(root, configureServices: services => services.AddSingleton(CreateReferenceCatalog())))
             {
                 await firstHost.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
@@ -205,7 +255,26 @@ public sealed partial class ProcessingGraphOperationsTests
                 var (draft, _) = await operations.CreateReferenceAstrometryRevisionAsync(basis.ActiveRevisionId,
                     "pending", 3.25, "create", "test-owner", null, token).ConfigureAwait(false);
                 draftId = draft.RevisionId;
+                var (replayed, _) = await operations.CreateReferenceAstrometryRevisionAsync(basis.ActiveRevisionId,
+                    "pending", 3.25, "create", "test-owner", null, token).ConfigureAwait(false);
+                Assert.AreEqual(draftId, replayed.RevisionId);
                 _ = await operations.ValidateRevisionAsync(draftId, "validate", "test-owner", null, token).ConfigureAwait(false);
+
+                var pipeline = await operations.ReadRevisionPipelineAsync(draftId, token).ConfigureAwait(false);
+                var manual = await operations.CreateRevisionAsync(draft.Name, "manual", pipeline!,
+                    "manual-create", "test-owner", null, token).ConfigureAwait(false);
+                manualId = manual.RevisionId;
+                _ = await operations.ValidateRevisionAsync(manualId, "manual-validate", "test-owner", null, token).ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                    await operations.CreateReferenceAstrometryRevisionAsync(basis.ActiveRevisionId,
+                        "manual", 3.25, "colliding-create", "test-owner", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                if (rollback)
+                {
+                    var active = await operations.ActivateRevisionAsync(draftId, basis.StateVersion, "activate-original",
+                        "test-owner", null, token).ConfigureAwait(false);
+                    basis = await operations.RollbackRevisionAsync(basis.ActiveRevisionId, active.StateVersion, "return-to-basis",
+                        "test-owner", null, token).ConfigureAwait(false);
+                }
             }
 
             using var restarted = CreateProvider(root, configureServices: services => services.AddSingleton(CreateReferenceCatalog("replaced")));
@@ -214,8 +283,10 @@ public sealed partial class ProcessingGraphOperationsTests
             var before = await resumed.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
             Assert.AreEqual(basis.StateVersion, before.StateVersion);
             await Assert.ThrowsExactlyAsync<ReferenceAstrometryCatalogConflictException>(async () =>
-                await resumed.ActivateRevisionAsync(draftId, before.StateVersion, "activate", "test-owner", null, token)
-                    .ConfigureAwait(false)).ConfigureAwait(false);
+                _ = rollback
+                    ? await resumed.RollbackRevisionAsync(draftId, before.StateVersion, "select", "test-owner", null, token).ConfigureAwait(false)
+                    : await resumed.ActivateRevisionAsync(draftId, before.StateVersion, "select", "test-owner", null, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
             var after = await resumed.GetRegistryAsync(token).ConfigureAwait(false);
             Assert.AreEqual(basis.ActiveRevisionId, after.ActiveRevisionId);
             Assert.AreEqual(basis.StateVersion, after.StateVersion);
@@ -223,13 +294,9 @@ public sealed partial class ProcessingGraphOperationsTests
 
             // Ordinary named graphs retain their existing selection policy. Their optional pinned node still
             // rejects an incompatible catalog at execution time.
-            var pipeline = await resumed.ReadRevisionPipelineAsync(draftId, token).ConfigureAwait(false);
-            var manual = await resumed.CreateRevisionAsync("Manual astrometry", "candidate", pipeline!,
-                "manual-create", "test-owner", null, token).ConfigureAwait(false);
-            _ = await resumed.ValidateRevisionAsync(manual.RevisionId, "manual-validate", "test-owner", null, token).ConfigureAwait(false);
-            var activated = await resumed.ActivateRevisionAsync(manual.RevisionId, after.StateVersion,
+            var activated = await resumed.ActivateRevisionAsync(manualId, after.StateVersion,
                 "manual-activate", "test-owner", null, token).ConfigureAwait(false);
-            Assert.AreEqual(manual.RevisionId, activated.ActiveRevisionId);
+            Assert.AreEqual(manualId, activated.ActiveRevisionId);
         }
         finally
         {
