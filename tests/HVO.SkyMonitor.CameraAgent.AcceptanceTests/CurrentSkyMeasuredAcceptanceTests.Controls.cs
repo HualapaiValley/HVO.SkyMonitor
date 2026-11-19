@@ -85,10 +85,20 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         await AssertAstrometryGroupAsync(page, residuals, false).ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(output, "exact-frame-controls.json"), JsonSerializer.Serialize(new
         {
-            accepted.CaptureId, accepted.SolutionIdentitySha256, rawArtifactId = evidence.Solution!.Assessment.Frame.SourceArtifactId,
-            shown.BaseArtifactId, shown.ManifestIdentitySha256, shown.PresentationIdentitySha256,
-            measured, vectors, expectedMeasured, expectedVectors, expectedPixel = new { X = 560, Y = 490 }, expectedSky = expected,
-            uncertainty = "Point uncertainty withheld; no calibration mutation", controls = AcceptedMappingControls
+            accepted.CaptureId,
+            accepted.SolutionIdentitySha256,
+            rawArtifactId = evidence.Solution!.Assessment.Frame.SourceArtifactId,
+            shown.BaseArtifactId,
+            shown.ManifestIdentitySha256,
+            shown.PresentationIdentitySha256,
+            measured,
+            vectors,
+            expectedMeasured,
+            expectedVectors,
+            expectedPixel = new { X = 560, Y = 490 },
+            expectedSky = expected,
+            uncertainty = "Point uncertainty withheld; no calibration mutation",
+            controls = AcceptedMappingControls
         }, AstrometryBrowserJson)).ConfigureAwait(false);
     }
 
