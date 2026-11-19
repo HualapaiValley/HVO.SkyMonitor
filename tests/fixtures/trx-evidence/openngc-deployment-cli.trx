@@ -1,0 +1,65 @@
+<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+  <!-- Trimmed from MSTest's OpenNGC Release output. Retained test IDs, display names and execution IDs. -->
+  <Results>
+    <UnitTestResult executionId="093fe10a-6741-4bc1-af1b-8949703c248a" testId="12824e5e-1f3e-896f-a66c-de8801a2d47d" testName="InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite (True)" outcome="Passed" />
+    <UnitTestResult executionId="37964f77-119c-4bcd-8b42-c0f1e5ad5efb" testId="19c6a3f9-8a22-8748-b31b-72ddfee4d827" testName="InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery (False)" outcome="Passed" />
+    <UnitTestResult executionId="5f3ee286-745f-4c0d-9e9a-b7723040e578" testId="17a1b15c-e6f9-89a6-a0a0-3420e769db41" testName="InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState (True)" outcome="Passed" />
+    <UnitTestResult executionId="d5a1315c-b65e-4fdd-ab15-a77e3a7a1193" testId="11e81e1a-3b7b-8e34-ada5-32077d8e2c57" testName="InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent" outcome="Passed" />
+    <UnitTestResult executionId="6f5b01a6-6716-4403-bd4b-b0bc2334bdc7" testId="10d1d4b0-1ecd-8e30-a215-153fb39b8a85" testName="InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting" outcome="Passed" />
+    <UnitTestResult executionId="21e5f4b9-f67b-4a46-ba77-77191f224761" testId="125adf19-de29-8f3b-a050-5387955b786b" testName="InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState (False)" outcome="Passed" />
+    <UnitTestResult executionId="66fa62f6-9c3d-422c-ba41-ce6f64f72df9" testId="1bd509b3-cf39-8d67-a97f-40f83c0334fd" testName="InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery (True)" outcome="Passed" />
+    <UnitTestResult executionId="7a318edf-37b8-44d2-9c90-203c3fa0e112" testId="1b2d0900-4871-8429-9e60-fd312195ade0" testName="InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection (False)" outcome="Passed" />
+    <UnitTestResult executionId="fa8ae943-3c1e-4ce7-93dd-cb1fb60f0c48" testId="17503b67-d7e1-8b80-b765-a70394b16f94" testName="InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection (True)" outcome="Passed" />
+    <UnitTestResult executionId="611b55f9-e41b-4508-8b39-f4f26c9cd6eb" testId="13f2334c-e21e-8007-acc6-11cd268c54ec" testName="InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite (False)" outcome="Passed" />
+    <UnitTestResult executionId="be8a4ceb-3893-4450-bb98-b664d1812564" testId="10fbc8c9-fa11-888d-9a6b-8807cc943e09" testName="PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands" outcome="Passed" />
+  </Results>
+  <TestDefinitions>
+    <UnitTest name="InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite (False)" id="13f2334c-e21e-8007-acc6-11cd268c54ec">
+      <Execution id="611b55f9-e41b-4508-8b39-f4f26c9cd6eb" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite (True)" id="12824e5e-1f3e-896f-a66c-de8801a2d47d">
+      <Execution id="093fe10a-6741-4bc1-af1b-8949703c248a" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcLegacyResetResumeKeepsFirstComposeWrite" />
+    </UnitTest>
+    <UnitTest name="PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands" id="10fbc8c9-fa11-888d-9a6b-8807cc943e09">
+      <Execution id="be8a4ceb-3893-4450-bb98-b664d1812564" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.LifecycleContractTests" name="PublicOpenNgcBundleInstallsAndSelectsThroughTheCatalogCommands" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection (False)" id="1b2d0900-4871-8429-9e60-fd312195ade0">
+      <Execution id="7a318edf-37b8-44d2-9c90-203c3fa0e112" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery (False)" id="19c6a3f9-8a22-8748-b31b-72ddfee4d827">
+      <Execution id="37964f77-119c-4bcd-8b42-c0f1e5ad5efb" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState (True)" id="17a1b15c-e6f9-89a6-a0a0-3420e769db41">
+      <Execution id="5f3ee286-745f-4c0d-9e9a-b7723040e578" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery (True)" id="1bd509b3-cf39-8d67-a97f-40f83c0334fd">
+      <Execution id="66fa62f6-9c3d-422c-ba41-ce6f64f72df9" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcExplicitDisableAfterTwoVersionsAllowsResetRecovery" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection (True)" id="17503b67-d7e1-8b80-b765-a70394b16f94">
+      <Execution id="fa8ae943-3c1e-4ce7-93dd-cb1fb60f0c48" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcPendingPlanAndRunRefuseTheSameInvalidSelection" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting" id="10d1d4b0-1ecd-8e30-a215-153fb39b8a85">
+      <Execution id="6f5b01a6-6716-4403-bd4b-b0bc2334bdc7" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcPendingPlanReportsTheRetainedSelectionWithoutWriting" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent" id="11e81e1a-3b7b-8e34-ada5-32077d8e2c57">
+      <Execution id="d5a1315c-b65e-4fdd-ab15-a77e3a7a1193" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcLimitsReRunKeepsTheStartedMountAndRemainsIdempotent" />
+    </UnitTest>
+    <UnitTest name="InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState (False)" id="125adf19-de29-8f3b-a050-5387955b786b">
+      <Execution id="21e5f4b9-f67b-4a46-ba77-77191f224761" />
+      <TestMethod className="HVO.SkyMonitor.Deployment.Cli.Tests.InstallerFlowTests" name="InstallAsync_OpenNgcCrossImageResetRefusesWithoutChangingState" />
+    </UnitTest>
+  </TestDefinitions>
+  <ResultSummary outcome="Completed">
+    <Counters total="11" executed="11" passed="11" failed="0" notExecuted="0" />
+  </ResultSummary>
+</TestRun>

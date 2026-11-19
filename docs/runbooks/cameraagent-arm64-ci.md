@@ -201,17 +201,29 @@ update interval. Subscribe to `actions/runner` security and release notices.
 
 ## Advisory Workflow
 
-The hosted catalog job builds the exact canonical production bundle on
-`ubuntu-24.04`; the ARM64 host only downloads and installs that immutable
-bundle. The native job then:
+The hosted x64 catalog job builds the approved HYG 4.2 and standalone OpenNGC
+bundles on `ubuntu-24.04` using the pinned public inputs and repository recipes.
+It runs the approved OpenNGC catalog reader case and the eleven bundle-dependent
+installer and lifecycle cases in Release with Docker disabled. Every expected
+case and data row must report Passed in the retained TRX files. The hosted
+evidence artifact includes the producer architecture, commit, run and attempt,
+package identity, source URL, build duration and file SHA-256 checksums.
+
+The native job downloads the catalog artifact from the same workflow run,
+verifies the commit and OpenNGC file checksums, and exports both paths for the
+native tests. A native-only retry can use the original hosted artifact while it
+is retained. The OpenNGC bundle is a test input. The runtime smoke continues to
+install and verify the canonical HYG 4.2 catalog.
+
+The native job then:
 
 1. verifies native host and Docker architecture, memory, physical network link
    and transport, SSD/NVMe placement, service-account privilege, temperature,
    and throttle state;
 2. builds CameraAgent and its CameraAgent, acceptance, SQLite catalog, and
    deployment CLI Unit projects in Release with warnings as errors and runs
-   them with an invalid Docker endpoint and the production catalog bundle
-   exported, so the CLI's installer-flow cases gate rather than skip;
+   them with an invalid Docker endpoint and both catalog bundles exported,
+   requiring every selected result to pass;
 3. publishes `linux-arm64`, inspects AArch64 ELF identities, rejects test
    assemblies, writes a sorted SHA-256 manifest, waits for the production-level
    module-readiness signal, and then immediately stops the published agent
@@ -246,7 +258,8 @@ gh api --method POST repos/HualapaiValley/HVO.SkyMonitor/dispatches \
 The harness is also locally callable on a qualified native host:
 
 ```bash
-./scripts/test:cameraagent-arm64-ci /absolute/path/to/hyg-v4.2-p3-s2-r1.bundle
+HVO_OPENNGC_CATALOG_BUNDLE=/absolute/path/to/openngc-v20260501-p6-s5-r1.bundle \
+  ./scripts/test:cameraagent-arm64-ci /absolute/path/to/hyg-v4.2-p3-s2-r1.bundle
 ```
 
 Raw evidence is ignored under `TestResults/issue-381/<run>-<attempt>/`. Workflow
