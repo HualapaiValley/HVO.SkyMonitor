@@ -326,8 +326,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         var predictions = configured.Where(static item => item.Step is AstrometryPredictionCaptureProcessingStep).ToArray();
         if (predictions.Length == 0) return;
         if (predictions.Length != 1 || !explicitV2 ||
-            predictions[0].Config is not { Required: false, Publication.Persistence: CaptureProcessingPersistenceMode.DurableLocal,
-                DependsOn: { Count: 1 } dependencies } || !IsRawDependency(dependencies[0]))
+            predictions[0].Config is not
+            {
+                Required: false, Publication.Persistence: CaptureProcessingPersistenceMode.DurableLocal,
+                DependsOn: { Count: 1 } dependencies
+            } || !IsRawDependency(dependencies[0]))
         {
             throw new InvalidOperationException("AstrometryPrediction requires one optional explicit node with only a raw dependency and durable local publication.");
         }
