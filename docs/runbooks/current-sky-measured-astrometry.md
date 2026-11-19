@@ -1,6 +1,7 @@
 # Current Sky measured astrometry (#1901)
 
-Current Sky reads the latest accepted **retained** result independently of its
+Current Sky displays the latest accepted **retained** result in the existing
+Measured Image Solution / Astrometry card, semantically separate from its
 selected-image assessment. The summary identifies the result capture, midpoint
 UTC, artifact and solution hash. An unsolved newer image explicitly labels that
 result as previous evidence. Archive inspection, overlays, residual diagnostics
@@ -104,7 +105,16 @@ Kepler's review/CI lifecycle and artifact qualification.
    timestamp, artifact and solution identity with retained evidence. Observe
    multiple capture refreshes between solves; the timestamp must remain the
    solution's, with previous-capture labeling and current-image calculators and
-   measured overlays withheld when incompatible. Check raw sequences, backlog,
+   measured overlays withheld when incompatible. For an accepted compatible current
+   source, toggle Measured Stellar Associations and Astrometric Residuals and
+   inspect actual measured markers/vectors against the retained source and
+   membership. Exercise pixel-to-sky and equatorial/horizontal sky-to-pixel round
+   trips, restore defaults and frozen stack export. Refresh to unsolved and
+   mismatched captures: retain the correctly timestamped summary while withholding
+   incompatible measured layers, diagnostics, calculators and export selections.
+   Independently verify configured/predicted overlays still operate. Keep scene
+   evidence in its existing card; do not duplicate the measured summary. Record
+   directly related regressions and list unrelated gaps separately. Check raw sequences, backlog,
    retention holds, health, errors and resource consumption. Failure leaves the
    rollout incomplete even if the container is running.
 6. On failed acceptance, disable/restore the prior graph revision through the

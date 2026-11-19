@@ -322,3 +322,6 @@
 .latest-measured-solution dt { color: var(--muted); font-size: .6rem; text-transform: uppercase; }
 .latest-measured-solution dd { margin: .15rem 0 0; font-size: .78rem; font-weight: 700; overflow-wrap: anywhere; }
 .latest-measured-solution summary { cursor: pointer; min-height: 2rem; padding-top: .5rem; }
+
+.latest-measured-solution h3, .exact-frame-heading { margin: .8rem 0 .4rem; font-size: .8rem; }
+.latest-measured-solution { padding-bottom: .7rem; border-bottom: 1px solid var(--border); }

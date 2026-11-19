@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.Catalog.Sqlite;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
@@ -91,6 +92,22 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 publication = new { persistence = "durable-local" },
                 options = new { captureStride = 60, catalogSelection = selection, recipe = new MeasuredAstrometryOptions(Solver: new(MaximumCatalogMagnitude: 5)) }
             }));
+            steps.Add(JsonSerializer.SerializeToNode(new { id = "Rolling", type = "RollingCombination", dependsOn = (string[])["$raw"],
+                publication = new { persistence = "durable-local" }, options = new { windowSize = 1 } }));
+            var preview = steps.Single(n => n!["id"]!.GetValue<string>() == "Preview")!;
+            preview["dependsOn"] = JsonSerializer.SerializeToNode((string[])["Rolling"]);
+            preview["publication"] = JsonSerializer.SerializeToNode(new { persistence = "durable-local" });
+            steps.Add(JsonSerializer.SerializeToNode(new { id = "ScenePresentation", type = "ScenePresentationLayer", required = false,
+                dependsOn = (string[])["ProjectedScene"], publication = new { persistence = "durable-local" } }));
+            steps.Add(JsonSerializer.SerializeToNode(new { id = "EnvironmentPresentation", type = "EnvironmentPresentationLayer", required = false,
+                dependsOn = (string[])["ProjectedScene", "Preview"], publication = new { persistence = "durable-local" },
+                options = new { widthPixels = 1024, heightPixels = 1024, stackPreviewVariant = "browser-display" } }));
+            steps.Add(JsonSerializer.SerializeToNode(new { id = "OverlayManifest", type = "OverlayManifest", required = false,
+                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation"], publication = new { persistence = "durable-local" },
+                options = new { basePreviewVariant = "browser-display" } }));
+            steps.Add(JsonSerializer.SerializeToNode(new { id = "PresentationMaterializer", type = "PresentationMaterializer", required = false,
+                dependsOn = (string[])["Preview", "ScenePresentation", "EnvironmentPresentation", "OverlayManifest"], publication = new { persistence = "durable-local" },
+                options = new { basePreviewVariant = "browser-display" } }));
             // Raw publication never depends on the optional analysis branch.
             steps.Single(n => n!["id"]!.GetValue<string>() == "LocalStorage")!["dependsOn"] = JsonSerializer.SerializeToNode((string[])["$raw", "Preview"]);
             await File.WriteAllTextAsync(path, document.ToJsonString()).ConfigureAwait(false);
@@ -127,6 +144,13 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             await failurePage.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "no-accepted-raw-continues.png"), FullPage = true }).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "failure-evidence.json"), JsonSerializer.Serialize(new { captures, root = host.Root }, AstrometryBrowserJson)).ConfigureAwait(false);
             return;
+        }
+        var admission = host.Services.GetRequiredService<CaptureAdmissionCoordinator>();
+        using (var firstCaptureDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(1)))
+        {
+            while ((await gallery.GetPageAsync(new(PageSize: 2), firstCaptureDeadline.Token).ConfigureAwait(false)).Items.Count == 0)
+                await Task.Delay(100, firstCaptureDeadline.Token).ConfigureAwait(false);
+            await admission.PauseAsync("issue1901-proof-pause", null, "disposable-proof", "Hold accepted source for exact-frame controls", firstCaptureDeadline.Token).ConfigureAwait(false);
         }
         CameraAgentLatestAstrometry? accepted = null;
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -181,12 +205,17 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             FormattableString.Invariant($"{accepted.LocalScale.XArcsecondsPerPixel:0.####} / {accepted.LocalScale.YArcsecondsPerPixel:0.####} arcsec/pixel") })
             Assert.Contains(field, first, StringComparison.OrdinalIgnoreCase);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "latest-before-refresh.png"), FullPage = true }).ConfigureAwait(false);
+        Assert.HasCount(1, await page.Locator(".astrometry-card .latest-measured-solution").AllAsync().ConfigureAwait(false));
+        Assert.IsEmpty(await page.Locator(".sky-inspector > .latest-measured-solution").AllAsync().ConfigureAwait(false));
+        await VerifyCurrentMeasuredControlsAsync(page, host, accepted, evidenceRoot).ConfigureAwait(false);
+        await admission.ResumeAsync("issue1901-proof-resume", null, "disposable-proof", "Verify unsolved refresh and raw continuity", CancellationToken.None).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromSeconds(12)).ConfigureAwait(false);
         await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
         await summary.GetByText("For a previous capture; this is not a solve for the selected image.", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
         Assert.Contains(accepted.MidpointUtc.ToString("O"), await summary.InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
         Assert.IsTrue(await page.Locator(".pixel-sky-calculator button").First.IsDisabledAsync().ConfigureAwait(false));
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "latest-after-refresh.png"), FullPage = true }).ConfigureAwait(false);
+        await VerifyUnsolvedMeasuredControlsAsync(page, accepted, evidenceRoot).ConfigureAwait(false);
         var afterCaptures = await gallery.GetPageAsync(new(PageSize: 20), CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(afterCaptures.Items.Max(c => c.CaptureSequence) > beforeCaptures.Items.Max(c => c.CaptureSequence), "Durable raw capture must advance while no new solution is produced.");
         var retained = await reader.GetAsync(accepted.CaptureId, CancellationToken.None).ConfigureAwait(false);

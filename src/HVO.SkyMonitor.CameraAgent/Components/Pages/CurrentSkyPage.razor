@@ -255,37 +255,6 @@ else
         </div>
 
         <aside class="sky-inspector current-sky-inspector">
-            @if (!IsArchived)
-            {
-                <section class="inspector-card latest-measured-solution" aria-labelledby="latest-measured-heading">
-                    <header><div><p class="eyebrow">Retained measured evidence</p><h2 id="latest-measured-heading">Latest accepted solution</h2></div></header>
-                    @if (_latestAstrometry is { } latestSolution)
-                    {
-                        <p>@(latestSolution.CaptureId == _runCaptureId ? "For the selected capture." : "For a previous capture; this is not a solve for the selected image.")</p>
-                        <dl>
-                            <div><dt>Measured center RA / Dec</dt><dd>@FormattableString.Invariant($"{latestSolution.RightAscensionHours:0.######} h / {latestSolution.DeclinationDegrees:0.######}° (mean of date)")</dd></div>
-                            <div><dt>Measured roll</dt><dd>@FormattableString.Invariant($"{latestSolution.RollDegrees:0.######}°")</dd></div>
-                            <div><dt>Local scale X / Y</dt><dd>@(latestSolution.LocalScale.XArcsecondsPerPixel is { } sx && latestSolution.LocalScale.YArcsecondsPerPixel is { } sy ? FormattableString.Invariant($"{sx:0.####} / {sy:0.####} arcsec/pixel") : "Unavailable at this reference point")</dd></div>
-                            <div><dt>Solution capture midpoint UTC</dt><dd><time datetime="@latestSolution.MidpointUtc.ToString("O")">@latestSolution.MidpointUtc.ToString("O")</time></dd></div>
-                        </dl>
-                        <p>@FormattableString.Invariant($"Scale at measured boresight, source pixel ({latestSolution.ReferencePixel.X:0.####}, {latestSolution.ReferencePixel.Y:0.####}).")</p>
-                        <details>
-                            <summary>Scale reference, axes and retained source</summary>
-                            <p>Zero-based source output X right, Y down, after crop/bin/flip. Angular separation across ±0.5 pixel on each axis; local fisheye scale, not an image-wide constant. Roll is right-handed about boresight; zero roll is local vertical up, north-up at zenith.</p>
-                            <p><a href="@($"/gallery/{latestSolution.CaptureId:D}")">Inspect solution capture</a></p>
-                            <dl>
-                                <div><dt>Retained artifact</dt><dd><code>@latestSolution.ArtifactId</code></dd></div>
-                                <div><dt>Solution identity</dt><dd><code>@latestSolution.SolutionIdentitySha256</code></dd></div>
-                            </dl>
-                        </details>
-                    }
-                    else
-                    {
-                        <p>No accepted measured result is available from the retained search. Raw capture and selected-image inspection continue independently.</p>
-                    }
-                </section>
-            }
-
             <section class="inspector-card overlay-controls scene-panel @(ShowLayeredHero ? "" : "evidence-unavailable")" aria-labelledby="overlays-heading">
                 <header><div><p class="eyebrow">Reproducible presentation</p><h2 id="overlays-heading">Scene evidence</h2></div><span>@LayerCountLabel</span></header>
                 <p>Measured image evidence, expected sky context, and predicted diagnostics remain distinct from the base image.</p>
@@ -358,7 +327,39 @@ else
             </section>
 
             <section class="inspector-card astrometry-card" aria-labelledby="astrometry-heading" aria-busy="@(_astrometryLoading ? "true" : "false")">
-                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip @AstrometryChipClass">@AstrometryStatus</span></header>
+                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip @AstrometryChipClass" title="Assessment for the selected capture" aria-label="@($"Selected capture assessment: {AstrometryStatus}")">@AstrometryStatus</span></header>
+                @if (!IsArchived)
+                {
+                    <section class="latest-measured-solution" aria-labelledby="latest-measured-heading">
+                        <h3 id="latest-measured-heading">Latest accepted measured result</h3>
+                        @if (_latestAstrometry is { } latestSolution)
+                        {
+                            <p>@(latestSolution.CaptureId == _runCaptureId ? "For the selected capture." : "For a previous capture; this is not a solve for the selected image.")</p>
+                            <dl>
+                                <div><dt>Measured center RA / Dec</dt><dd>@FormattableString.Invariant($"{latestSolution.RightAscensionHours:0.######} h / {latestSolution.DeclinationDegrees:0.######}° (mean of date)")</dd></div>
+                                <div><dt>Measured roll</dt><dd>@FormattableString.Invariant($"{latestSolution.RollDegrees:0.######}°")</dd></div>
+                                <div><dt>Local scale X / Y</dt><dd>@(latestSolution.LocalScale.XArcsecondsPerPixel is { } sx && latestSolution.LocalScale.YArcsecondsPerPixel is { } sy ? FormattableString.Invariant($"{sx:0.####} / {sy:0.####} arcsec/pixel") : "Unavailable at this reference point")</dd></div>
+                                <div><dt>Solution capture midpoint UTC</dt><dd><time datetime="@latestSolution.MidpointUtc.ToString("O")">@latestSolution.MidpointUtc.ToString("O")</time></dd></div>
+                            </dl>
+                            <p>@FormattableString.Invariant($"Scale at measured boresight, source pixel ({latestSolution.ReferencePixel.X:0.####}, {latestSolution.ReferencePixel.Y:0.####}).")</p>
+                            <details>
+                                <summary>Scale reference, axes and retained source</summary>
+                                <p>Zero-based source output X right, Y down, after crop/bin/flip. Angular separation across ±0.5 pixel on each axis; local fisheye scale, not an image-wide constant. Roll is right-handed about boresight; zero roll is local vertical up, north-up at zenith.</p>
+                                <p><a href="@($"/gallery/{latestSolution.CaptureId:D}")">Inspect solution capture</a></p>
+                                <dl>
+                                    <div><dt>Retained artifact</dt><dd><code>@latestSolution.ArtifactId</code></dd></div>
+                                    <div><dt>Solution identity</dt><dd><code>@latestSolution.SolutionIdentitySha256</code></dd></div>
+                                </dl>
+                            </details>
+                        }
+                        else
+                        {
+                            <p>No accepted measured result is available from the retained search. Raw capture and selected-image inspection continue independently.</p>
+                        }
+                    </section>
+                }
+
+                <h3 class="exact-frame-heading">Selected capture assessment and tools</h3>
                 @if (_astrometry?.Solution is { } solution)
                 {
                     var assessment = solution.Assessment;

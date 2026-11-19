@@ -27,6 +27,8 @@ public sealed partial class CurrentSkyPageTests
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent,
             previous ? "not a solve for the selected image" : "For the selected capture", StringComparison.Ordinal));
+        Assert.HasCount(1, cut.FindAll(".astrometry-card .latest-measured-solution"));
+        Assert.IsEmpty(cut.FindAll(".sky-inspector > .latest-measured-solution"));
         var text = cut.Find(".latest-measured-solution").TextContent;
         StringAssert.Contains(text, "Measured center RA / Dec", StringComparison.Ordinal);
         StringAssert.Contains(text, "arcsec/pixel", StringComparison.Ordinal);
