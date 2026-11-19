@@ -2,7 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Claims;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Authorization;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -150,7 +149,7 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
                 {
                     var (revision, selection) = await operations.CreateReferenceAstrometryRevisionAsync(
                         request.BasisRevisionId, request.Revision, request.ReferenceMagnitude,
-                        context.RequestServices.GetService<IAstrometricCatalogSource>(), key, actor, request.Reason, token)
+                        key, actor, request.Reason, token)
                         .ConfigureAwait(false);
                     return new { revision.RevisionId, CatalogSelection = selection };
                 },
@@ -375,6 +374,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         catch (ProcessingGraphRevisionSupersededException)
         {
             return Problem(StatusCodes.Status409Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
+        }
+        catch (ReferenceAstrometryCatalogConflictException)
+        {
+            return Problem(StatusCodes.Status409Conflict, ReferenceAstrometryCatalogConflictException.SafeMessage);
         }
         catch (ProcessingGraphStoreConflictException)
         {

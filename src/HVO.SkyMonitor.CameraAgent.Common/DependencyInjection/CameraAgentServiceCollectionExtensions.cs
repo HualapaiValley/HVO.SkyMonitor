@@ -296,7 +296,8 @@ public static class CameraAgentServiceCollectionExtensions
             // Hostless graph tools have no initialized accessor; do not construct capture admission for them.
             () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
                 ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
-                : null));
+                : null,
+            () => provider.GetService<IAstrometricCatalogSource>()));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>

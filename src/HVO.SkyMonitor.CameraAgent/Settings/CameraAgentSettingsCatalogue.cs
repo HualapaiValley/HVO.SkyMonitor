@@ -19,6 +19,7 @@ internal static class CameraAgentSettingsCatalogue
     public const string SiteGroup = "site";
     public const string LocationGroup = "location";
     public const string SkyMapGroup = "skyMap";
+    public const string VirtualSkyGroup = "virtualSky";
     public const string CameraGroup = "camera";
     public const string ScheduleGroup = "schedule";
     public const string CurrentSkyGroup = "currentSky";
@@ -136,6 +137,24 @@ internal static class CameraAgentSettingsCatalogue
         Default = nameof(VirtualSkyIlluminationMode.LegacyScalarSolar)
     };
 
+    public static CameraAgentSettingDefinition RendererCandidateCap { get; } = new()
+    {
+        Key = "virtualSky.rendererCandidateCap",
+        Group = VirtualSkyGroup,
+        Title = "Renderer candidate cap",
+        Description = "Limit the brightest catalog stars considered for an ordinary VirtualSky capture. " +
+                      "Clearing the override inherits the saved sky-map limit or the camera profile's limit. " +
+                      "With neither configured, the renderer uses 2,000. Exhaustive selection uses the profile's bound.",
+        Type = CameraAgentSettingType.Integer,
+        Safety = CameraAgentSettingSafety.CaptureOutput,
+        Application = CameraAgentSettingApplication.Immediate,
+        Nullable = true,
+        Minimum = 1,
+        Maximum = VirtualSkyRendererOptions.MaximumCandidateCap,
+        Unit = "stars",
+        ConfigurationKey = VirtualSkyRendererOptions.CandidateCapKey
+    };
+
     public static CameraAgentSettingDefinition ActiveScheduleRevision { get; } = new()
     {
         Key = "schedule.activeRevision",
@@ -214,6 +233,9 @@ internal static class CameraAgentSettingsCatalogue
             "The active camera's operator choices. A change saves a new camera revision and stages a rig revision that " +
             "applies at the next CameraAgent start.",
             RigRevisionStore, [SkyLighting]),
+        new(VirtualSkyGroup, "VirtualSky renderer",
+            "Rendering limits for VirtualSky captures.",
+            SettingsFileStore, [RendererCandidateCap]),
         new(ScheduleGroup, "Capture schedule",
             "Which capture schedule revision is in effect. Schedules are edited and saved as drafts on the Schedule page.",
             ScheduleRevisionStore, [ActiveScheduleRevision]),

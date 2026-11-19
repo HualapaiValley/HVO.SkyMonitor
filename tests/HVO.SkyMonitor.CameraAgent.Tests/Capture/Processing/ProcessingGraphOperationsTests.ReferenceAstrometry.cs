@@ -45,20 +45,20 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(TimeSpan.FromSeconds(20), config.Rig.Pipeline.NightExposure);
             }
 
-            using var provider = CreateProvider(root);
+            var source = CreateReferenceCatalog();
+            using var provider = CreateProvider(root, configureServices: services => services.AddSingleton(source));
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var token = CancellationToken.None;
             await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
             var registry = await operations.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
-            var source = CreateReferenceCatalog();
             if (realCamera)
             {
                 await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
                     await operations.CreateReferenceAstrometryRevisionAsync(registry.ActiveRevisionId, "missing-depth",
-                        null, source, "invalid", "test-owner", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                        null, "invalid", "test-owner", null, token).ConfigureAwait(false)).ConfigureAwait(false);
                 await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
                     await operations.CreateReferenceAstrometryRevisionAsync(registry.ActiveRevisionId, "opaque-readout",
-                        4.5, source, "opaque", "test-owner", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                        4.5, "opaque", "test-owner", null, token).ConfigureAwait(false)).ConfigureAwait(false);
 
                 // Model a physical module that declares calibrated linear sensor codes. The current ZWO profile
                 // deliberately exposes opaque container values and cannot provide this contract.
@@ -80,7 +80,7 @@ public sealed partial class ProcessingGraphOperationsTests
             }
 
             var (draft, pin) = await operations.CreateReferenceAstrometryRevisionAsync(registry.ActiveRevisionId,
-                "configured", realCamera ? 4.5 : null, source, "create-reference", "test-owner", null, token).ConfigureAwait(false);
+                "configured", realCamera ? 4.5 : null, "create-reference", "test-owner", null, token).ConfigureAwait(false);
             var depth = realCamera ? 4.5 : 3.25;
             Assert.AreEqual(depth, pin.MaximumMagnitude);
             var selected = await pin.ResolveAsync(source, token).ConfigureAwait(false);
@@ -116,28 +116,64 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public async Task ReferenceAstrometry_PreservesCoherentCustomOptionsAndRejectsBadCatalogs()
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    [DataRow(true, false)]
+    public async Task ReferenceAstrometry_PreservesCoherentCustomOptionsAndRejectsBadCatalogs(bool changeDepth, bool stringClock)
     {
         var config = await LoadAstrometryProfileAsync("Fixtures/installer-controlled-night.json").ConfigureAwait(false);
         var source = CreateReferenceCatalog();
         var token = CancellationToken.None;
         var (generated, originalPin) = await ReferenceAstrometryPreset.ApplyAsync(config.Pipeline, 4.5, source, token).ConfigureAwait(false);
+        object synchronization = stringClock ? "Synchronized" : (int)AstrometricClockSynchronization.Synchronized;
         var custom = generated with
         {
             Steps = generated.Steps.Select(step => step.Type == "MeasuredAstrometry"
-                ? step with { Options = CaptureContractJson.SerializeToElement(new
+                ? step with
                 {
-                    useAstrometryPrediction = true, catalogSelection = originalPin, captureStride = 120,
-                    recipe = new { solver = new { maximumCatalogMagnitude = 4.5, hypothesisLimit = 120000 } }
-                }) }
+                    Options = CaptureContractJson.SerializeToElement(new
+                    {
+                        useAstrometryPrediction = true,
+                        catalogSelection = new
+                        {
+                            originalPin.CatalogIdentitySha256,
+                            originalPin.SelectionIdentitySha256,
+                            originalPin.MaximumMagnitude,
+                            originalPin.MaximumEntries,
+                            futurePinField = new { label = "keep", version = 9 }
+                        },
+                        captureStride = 120,
+                        clock = new { source = "fixture", synchronization, maximumErrorSeconds = 0.1, estimatedErrorSeconds = 0.04 },
+                        recipe = new { solver = new { maximumCatalogMagnitude = 4.5, hypothesisLimit = 120000 } }
+                    })
+                }
                 : step).ToArray()
         };
-        var (inherited, pin) = await ReferenceAstrometryPreset.ApplyAsync(custom, null, source, token).ConfigureAwait(false);
-        Assert.AreSame(custom, inherited);
-        Assert.AreEqual(originalPin, pin);
-        var (updated, newPin) = await ReferenceAstrometryPreset.ApplyAsync(custom, 3.25, source, token).ConfigureAwait(false);
-        Assert.AreNotEqual(originalPin.SelectionIdentitySha256, newPin.SelectionIdentitySha256);
+        using var provider = CreateProvider(Path.GetTempPath());
+        var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+        factory.CreateGraph(config with { Pipeline = custom }).DisposeSteps();
+        var originalOptions = custom.Steps.Single(step => step.Type == "MeasuredAstrometry").Options!.Value;
+        var (updated, newPin) = await ReferenceAstrometryPreset.ApplyAsync(
+            custom, changeDepth ? 3.25 : null, source, token).ConfigureAwait(false);
+        if (changeDepth)
+        {
+            Assert.AreNotEqual(originalPin.SelectionIdentitySha256, newPin.SelectionIdentitySha256);
+            Assert.AreEqual(3.25, newPin.MaximumMagnitude);
+        }
+        else
+        {
+            Assert.AreSame(custom, updated);
+            Assert.AreEqual(originalPin, newPin);
+        }
+        factory.CreateGraph(config with { Pipeline = updated }).DisposeSteps();
         var updatedSolver = updated.Steps.Single(step => step.Type == "MeasuredAstrometry").Options!.Value;
+        Assert.AreEqual(originalOptions.GetProperty("clock").GetRawText(), updatedSolver.GetProperty("clock").GetRawText());
+        var updatedPin = updatedSolver.GetProperty("catalogSelection");
+        Assert.AreEqual(newPin.SelectionIdentitySha256, updatedPin.GetProperty("selectionIdentitySha256").GetString());
+        Assert.AreEqual(originalOptions.GetProperty("catalogSelection").GetProperty("futurePinField").GetRawText(),
+            updatedPin.GetProperty("futurePinField").GetRawText());
+        Assert.AreEqual(newPin.MaximumMagnitude,
+            updatedSolver.GetProperty("recipe").GetProperty("solver").GetProperty("maximumCatalogMagnitude").GetDouble());
         Assert.AreEqual(120, updatedSolver.GetProperty("captureStride").GetInt32());
         Assert.AreEqual(120000, updatedSolver.GetProperty("recipe").GetProperty("solver").GetProperty("hypothesisLimit").GetInt32());
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
@@ -149,6 +185,56 @@ public sealed partial class ProcessingGraphOperationsTests
         await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () =>
             await ReferenceAstrometryPreset.ApplyAsync(config.Pipeline, double.NaN, source, token).ConfigureAwait(false))
             .ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task ReferenceAstrometry_ResumedActivationRejectsAReplacedCatalog()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-astrometry-restart-{Guid.NewGuid():N}");
+        try
+        {
+            var config = await LoadAstrometryProfileAsync("Fixtures/installer-controlled-night.json").ConfigureAwait(false);
+            var token = CancellationToken.None;
+            ProcessingGraphRegistryState basis;
+            string draftId;
+            using (var firstHost = CreateProvider(root, configureServices: services => services.AddSingleton(CreateReferenceCatalog())))
+            {
+                await firstHost.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var operations = firstHost.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                basis = await operations.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
+                var (draft, _) = await operations.CreateReferenceAstrometryRevisionAsync(basis.ActiveRevisionId,
+                    "pending", 3.25, "create", "test-owner", null, token).ConfigureAwait(false);
+                draftId = draft.RevisionId;
+                _ = await operations.ValidateRevisionAsync(draftId, "validate", "test-owner", null, token).ConfigureAwait(false);
+            }
+
+            using var restarted = CreateProvider(root, configureServices: services => services.AddSingleton(CreateReferenceCatalog("replaced")));
+            await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var resumed = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var before = await resumed.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
+            Assert.AreEqual(basis.StateVersion, before.StateVersion);
+            await Assert.ThrowsExactlyAsync<ReferenceAstrometryCatalogConflictException>(async () =>
+                await resumed.ActivateRevisionAsync(draftId, before.StateVersion, "activate", "test-owner", null, token)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            var after = await resumed.GetRegistryAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(basis.ActiveRevisionId, after.ActiveRevisionId);
+            Assert.AreEqual(basis.StateVersion, after.StateVersion);
+            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Validated, after.Revisions.Single(item => item.RevisionId == draftId).Lifecycle);
+
+            // Ordinary named graphs retain their existing selection policy. Their optional pinned node still
+            // rejects an incompatible catalog at execution time.
+            var pipeline = await resumed.ReadRevisionPipelineAsync(draftId, token).ConfigureAwait(false);
+            var manual = await resumed.CreateRevisionAsync("Manual astrometry", "candidate", pipeline!,
+                "manual-create", "test-owner", null, token).ConfigureAwait(false);
+            _ = await resumed.ValidateRevisionAsync(manual.RevisionId, "manual-validate", "test-owner", null, token).ConfigureAwait(false);
+            var activated = await resumed.ActivateRevisionAsync(manual.RevisionId, after.StateVersion,
+                "manual-activate", "test-owner", null, token).ConfigureAwait(false);
+            Assert.AreEqual(manual.RevisionId, activated.ActiveRevisionId);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     private static Task<CameraModuleConfig> LoadAstrometryProfileAsync(string path)

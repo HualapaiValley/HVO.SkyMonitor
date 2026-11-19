@@ -168,7 +168,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         string actor,
         string? reason,
         CancellationToken cancellationToken,
-        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
+        Func<ProcessingGraphRevisionSnapshot, CancellationToken, ValueTask>? ensureCompatible = null)
     {
         ValidateRevisionId(revisionId);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -198,7 +198,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new ProcessingGraphStoreConflictException("Only a validated processing graph revision can be activated.");
         }
         // Acknowledged commands above remain replayable after compiler changes; only new selections are checked.
-        ensureCompatible?.Invoke(target);
+        if (ensureCompatible is not null)
+            await ensureCompatible(target, cancellationToken).ConfigureAwait(false);
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         if (!string.Equals(state.ActiveRevisionId, revisionId, StringComparison.Ordinal))
         {
@@ -238,7 +239,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         string actor,
         string? reason,
         CancellationToken cancellationToken,
-        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
+        Func<ProcessingGraphRevisionSnapshot, CancellationToken, ValueTask>? ensureCompatible = null)
     {
         ValidateRevisionId(revisionId);
         ValidateCommand(idempotencyKey, actor, reason);
@@ -271,7 +272,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new ProcessingGraphStoreConflictException(
                 "Rollback requires the configured basic graph or a previously activated revision.");
         }
-        ensureCompatible?.Invoke(target);
+        if (ensureCompatible is not null)
+            await ensureCompatible(target, cancellationToken).ConfigureAwait(false);
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         await SetRevisionLifecycleAsync(
             connection, transaction, current.State.RevisionId, ProcessingGraphRevisionLifecycle.Validated, now,

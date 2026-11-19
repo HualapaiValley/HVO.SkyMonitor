@@ -639,10 +639,12 @@ not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
 camera. PSF size does not change with source magnitude.
 
 The ordinary VirtualSky renderer defaults to 2,000 candidates per exposure.
-Set `CameraAgent:VirtualSky:RendererCandidateCap` in `appsettings.local.json`
-to set an independent integer limit from 1 through 100,000. The host reads
-that value, then any explicit `CameraAgent:SkyMap:MaximumObjects`, then the
-profile's `module.options.maximumResults`. The sky map keeps its own
+Use `hvo-sky config set virtualSky.rendererCandidateCap=2000` to set an
+independent, version-checked limit from 1 through 100,000. CameraAgent stores it
+as `CameraAgent:VirtualSky:RendererCandidateCap` and reads it for the next exposure.
+Clear it with `hvo-sky config set virtualSky.rendererCandidateCap=` to inherit
+an explicit `CameraAgent:SkyMap:MaximumObjects` or the profile's
+`module.options.maximumResults`. The sky map keeps its own
 200-object default. The geometry walks the complete merged magnitude and
 constellation-endpoint query
 in magnitude-then-ID order and keeps the brightest stars whose PSF support

@@ -13,6 +13,9 @@ public interface ISceneObjectBound
     /// <summary>Gets the current limit, from 1 to <see cref="CameraAgentSkyMapProjection.MaximumConfigurableObjects"/>.</summary>
     int Current { get; }
 
+    /// <summary>Gets the dedicated VirtualSky renderer override, or null when capture inherits its limit.</summary>
+    int? ConfiguredRendererCandidateCap => null;
+
     /// <summary>Gets an explicit host limit for VirtualSky capture, or null to use the camera profile.</summary>
     int? VirtualSkyOverride => Current;
 }
@@ -24,5 +27,8 @@ internal sealed class ConfigurationSceneObjectBound(Func<int?> readSkyMap, Func<
     public int Current => readSkyMap() ?? CameraAgentSkyMapProjection.DefaultMaximumObjects;
 
     /// <inheritdoc />
-    public int? VirtualSkyOverride => readRenderer() ?? readSkyMap();
+    public int? ConfiguredRendererCandidateCap => readRenderer();
+
+    /// <inheritdoc />
+    public int? VirtualSkyOverride => ConfiguredRendererCandidateCap ?? readSkyMap();
 }

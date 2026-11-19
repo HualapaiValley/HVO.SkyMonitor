@@ -8,6 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 /// <summary>Builds an optional independent astrometry branch using the installed catalog.</summary>
 internal static class ReferenceAstrometryPreset
 {
+    internal const string GraphName = "Reference astrometry preset";
     private const double VirtualSkyDefaultMagnitude = 3.25;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private static readonly CaptureProcessingPublicationPolicy Durable = new(CaptureProcessingPersistenceMode.DurableLocal);
@@ -31,7 +32,7 @@ internal static class ReferenceAstrometryPreset
                 prediction.Enabled == false || measured.Enabled == false || solve.Enabled == false)
                 throw new InvalidOperationException("The existing astrometry branch must be complete and enabled.");
 
-            var solveOptions = solve.Options?.Deserialize<MeasuredAstrometryCaptureOptions>(Json);
+            var solveOptions = ReadSolveOptions(solve);
             if (solveOptions is not { UseAstrometryPrediction: true, Catalog: null, PreviousAccepted: null, CatalogSelection: { } priorPin })
                 throw new InvalidOperationException("The preset requires an independent branch with an installed catalog pin and no explicit prior.");
 
@@ -39,7 +40,8 @@ internal static class ReferenceAstrometryPreset
             _ = await priorPin.ResolveAsync(source, cancellationToken).ConfigureAwait(false);
             if (referenceMagnitude is null)
             {
-                var predictionOptions = prediction.Options?.Deserialize<AstrometryPredictionCaptureProcessingStepOptions>(Json) ?? new();
+                var predictionOptions = (AstrometryPredictionCaptureProcessingStepOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
+                    prediction.Options, typeof(AstrometryPredictionCaptureProcessingStepOptions));
                 var solver = solveOptions.Recipe.Solver ?? new();
                 if (priorPin.MaximumMagnitude != predictionOptions.MaximumMagnitude ||
                     priorPin.MaximumMagnitude != solver.MaximumCatalogMagnitude)
@@ -81,7 +83,10 @@ internal static class ReferenceAstrometryPreset
             steps[steps.IndexOf(prediction)] = prediction with { Options = JsonSerializer.SerializeToElement(predictionOptions) };
 
             var solveOptions = ReadOptions(solve);
-            solveOptions["catalogSelection"] = JsonSerializer.SerializeToNode(selection, Json);
+            var pinOptions = solveOptions["catalogSelection"]!.AsObject();
+            pinOptions["catalogIdentitySha256"] = selection.CatalogIdentitySha256;
+            pinOptions["selectionIdentitySha256"] = selection.SelectionIdentitySha256;
+            pinOptions["maximumMagnitude"] = magnitude;
             var recipe = (solveOptions["recipe"] ??= new JsonObject()).AsObject();
             var solver = (recipe["solver"] ??= new JsonObject()).AsObject();
             solver["maximumCatalogMagnitude"] = magnitude;
@@ -91,7 +96,28 @@ internal static class ReferenceAstrometryPreset
         return (pipeline with { Steps = steps }, selection);
     }
 
-    private static CaptureProcessingStepConfig? Find(List<CaptureProcessingStepConfig> steps, string alias)
+    internal static async ValueTask VerifySelectionAsync(
+        CapturePipelineConfig pipeline, IAstrometricCatalogSource? source, CancellationToken cancellationToken)
+    {
+        var solve = Find(pipeline.Steps, MeasuredAstrometryCaptureProcessingStep.Alias);
+        var selection = solve is null ? null : ReadSolveOptions(solve).CatalogSelection;
+        if (selection is null)
+            throw new ReferenceAstrometryCatalogConflictException();
+        try
+        {
+            _ = await selection.ResolveAsync(source, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new ReferenceAstrometryCatalogConflictException(ReferenceAstrometryCatalogConflictException.SafeMessage, exception);
+        }
+    }
+
+    private static MeasuredAstrometryCaptureOptions ReadSolveOptions(CaptureProcessingStepConfig step)
+        => (MeasuredAstrometryCaptureOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
+            step.Options, typeof(MeasuredAstrometryCaptureOptions));
+
+    private static CaptureProcessingStepConfig? Find(IReadOnlyList<CaptureProcessingStepConfig> steps, string alias)
         => steps.SingleOrDefault(step => string.Equals(step.Type, alias, StringComparison.OrdinalIgnoreCase));
 
     private static JsonObject ReadOptions(CaptureProcessingStepConfig step)

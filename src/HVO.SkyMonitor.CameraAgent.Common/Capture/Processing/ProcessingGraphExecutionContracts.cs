@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -344,7 +343,7 @@ public interface IProcessingGraphOperations
 
     ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
         CreateReferenceAstrometryRevisionAsync(
-            string basisRevisionId, string revision, double? referenceMagnitude, IAstrometricCatalogSource? catalog,
+            string basisRevisionId, string revision, double? referenceMagnitude,
             string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
@@ -447,6 +446,24 @@ public sealed class ProcessingGraphRevisionSupersededException : InvalidOperatio
     }
 
     public ProcessingGraphRevisionSupersededException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>A preset revision pins a catalog selection the current host cannot provide.</summary>
+public sealed class ReferenceAstrometryCatalogConflictException : InvalidOperationException
+{
+    public const string SafeMessage = "This revision's astrometry pin does not match the installed catalog. Select a compatible graph or restore the pinned catalog.";
+
+    public ReferenceAstrometryCatalogConflictException() : base(SafeMessage)
+    {
+    }
+
+    public ReferenceAstrometryCatalogConflictException(string message) : base(message)
+    {
+    }
+
+    public ReferenceAstrometryCatalogConflictException(string message, Exception innerException) : base(message, innerException)
     {
     }
 }

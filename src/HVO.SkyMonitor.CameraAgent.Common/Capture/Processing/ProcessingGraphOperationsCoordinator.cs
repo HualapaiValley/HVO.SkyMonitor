@@ -34,6 +34,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ProcessingReplayWakeup _replayWakeup;
     private readonly ICameraAgentConfigurationAccessor? _configurationAccessor;
     private readonly Func<CameraModuleConfig?>? _currentCaptureProfile;
+    private readonly Func<IAstrometricCatalogSource?>? _astrometricCatalog;
     /// <summary>
     /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
     /// compiles and persists exactly once. Lock order (see <see cref="RawIngressLifecycleLock"/>): callers that hold
@@ -57,7 +58,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         TimeProvider timeProvider,
         ProcessingReplayWakeup replayWakeup,
         ICameraAgentConfigurationAccessor? configurationAccessor = null,
-        Func<CameraModuleConfig?>? currentCaptureProfile = null)
+        Func<CameraModuleConfig?>? currentCaptureProfile = null,
+        Func<IAstrometricCatalogSource?>? astrometricCatalog = null)
     {
         _pipelineFactory = pipelineFactory;
         _store = store;
@@ -66,6 +68,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         _replayWakeup = replayWakeup;
         _configurationAccessor = configurationAccessor;
         _currentCaptureProfile = currentCaptureProfile;
+        _astrometricCatalog = astrometricCatalog;
     }
 
     public ProcessingGraphAgentCapabilities Capabilities =>
@@ -313,7 +316,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     public async ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
         CreateReferenceAstrometryRevisionAsync(
-            string basisRevisionId, string revision, double? referenceMagnitude, IAstrometricCatalogSource? catalog,
+            string basisRevisionId, string revision, double? referenceMagnitude,
             string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
@@ -327,8 +330,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         _ = RigProjectionContextFactory.Create(profile.Rig);
         var basis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
         var (pipeline, selection) = await ReferenceAstrometryPreset.ApplyAsync(
-            basis.Pipeline, referenceMagnitude, catalog, cancellationToken).ConfigureAwait(false);
-        var draft = await CreateRevisionAsync(profile, "Measured astrometry", revision, pipeline,
+            basis.Pipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+        var draft = await CreateRevisionAsync(profile, ReferenceAstrometryPreset.GraphName, revision, pipeline,
             idempotencyKey, actor, reason, cancellationToken).ConfigureAwait(false);
         return (draft, selection);
     }
@@ -372,7 +375,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             var state = await _store.ActivateRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                revision => EnsureCurrentRevisionPlans(revision, profile)).ConfigureAwait(false);
+                (revision, token) => EnsureCurrentRevisionPlansAsync(revision, profile, token)).ConfigureAwait(false);
             await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
@@ -401,7 +404,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             var state = await _store.RollbackRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                revision => EnsureCurrentRevisionPlans(revision, profile)).ConfigureAwait(false);
+                (revision, token) => EnsureCurrentRevisionPlansAsync(revision, profile, token)).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
         }
@@ -725,12 +728,16 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         return fallback ?? Volatile.Read(ref _baseConfiguration);
     }
 
-    private void EnsureCurrentRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile)
+    private async ValueTask EnsureCurrentRevisionPlansAsync(
+        ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile, CancellationToken cancellationToken)
     {
         var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
             ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
         CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
         EnsureCompatibleRevisionPlans(revision, current);
+        if (string.Equals(revision.State.Name, ReferenceAstrometryPreset.GraphName, StringComparison.Ordinal))
+            await ReferenceAstrometryPreset.VerifySelectionAsync(
+                revision.Pipeline, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
     }
 
     private void EnsureCompatibleRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig configuration)

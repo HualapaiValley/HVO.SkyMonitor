@@ -1518,7 +1518,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
-    private static object CreateOptionsInstance(JsonElement? element, Type optionsType)
+    internal static object CreateOptionsInstance(JsonElement? element, Type optionsType)
     {
         if (optionsType == typeof(EmptyProcessingStepOptions))
         {
