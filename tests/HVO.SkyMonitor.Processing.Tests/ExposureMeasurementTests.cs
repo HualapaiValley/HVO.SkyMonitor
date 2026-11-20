@@ -20,6 +20,10 @@ public sealed class ExposureMeasurementTests
         new("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
     private static readonly RecipeIdentityDescriptor RawRecipe =
         RecipeIdentityDescriptor.Create("raw", "1.0.0", "fixture-v1", JsonSerializer.SerializeToElement(new { }));
+    private static readonly JsonSerializerOptions MeasurementJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
+    };
 
     [TestMethod]
     public async Task RawStatisticsUseStoredWhiteExcludeStrideAndRetainCalibrationFailures()
@@ -319,12 +323,8 @@ public sealed class ExposureMeasurementTests
 
         ProcessingProduct Rehash(ExposureMeasurementV1 measurement)
         {
-            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-            {
-                Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
-            };
             var payload = JsonSerializer.SerializeToUtf8Bytes(
-                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(measurement, json)));
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(measurement, MeasurementJson)));
             var hash = ProcessingIdentity.ComputePayloadSha256(payload);
             return product with { Payload = payload, ChecksumSha256 = hash, ContentIdentitySha256 = hash };
         }
