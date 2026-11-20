@@ -76,7 +76,9 @@ public sealed partial class ProcessingGraphOperationsTests
         var storage = new CaptureProcessingStepConfig("Storage", "archive", DependsOn: ["projected-scene"],
             Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
             {
-                StorageRoot = Path.Combine(root, "archive"), QueueForUpload = false, UpdateLatestFrame = false
+                StorageRoot = Path.Combine(root, "archive"),
+                QueueForUpload = false,
+                UpdateLatestFrame = false
             }));
         var configuration = baseline with
         {
@@ -85,8 +87,14 @@ public sealed partial class ProcessingGraphOperationsTests
             Rig = baseline.Rig with
             {
                 Sensor = baseline.Rig.Sensor with { WidthPixels = 512, HeightPixels = 512, ResponseMode = SensorResponseMode.Monochrome },
-                Optics = baseline.Rig.Optics with { PrincipalPointX = 256, PrincipalPointY = 256, ImageCircleRadiusPixels = 232,
-                    FocalLengthXPixels = 144, FocalLengthYPixels = 144 },
+                Optics = baseline.Rig.Optics with
+                {
+                    PrincipalPointX = 256,
+                    PrincipalPointY = 256,
+                    ImageCircleRadiusPixels = 232,
+                    FocalLengthXPixels = 144,
+                    FocalLengthYPixels = 144
+                },
                 Readout = new(new(0, 0, 512, 512), 1, 1, FrameBinningAlgorithm.IdentityV1,
                     CameraPixelFormat.Mono16, 16, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.IdentityV1,
                     FrameLevelCodeSpace.StoredContainer, 0, ushort.MaxValue)
@@ -152,9 +160,12 @@ public sealed partial class ProcessingGraphOperationsTests
                 if (sharedAssociations)
                 {
                     // The earlier migration added the independent prediction while keeping the fit on the canonical scene.
-                    var earlier = legacy with { Steps = [sceneStep, .. legacy.Steps.Skip(1),
+                    var earlier = legacy with
+                    {
+                        Steps = [sceneStep, .. legacy.Steps.Skip(1),
                         new("AstrometryPrediction", "AstrometryPrediction", DependsOn: ["$raw"], Required: false, Publication: durable,
-                            Options: sceneStep.Options)] };
+                            Options: sceneStep.Options)]
+                    };
                     var previous = await operations.CreateRevisionAsync("virtualsky-scene-compatibility", activeId, earlier,
                         "previous-create", "test", null, token).ConfigureAwait(false);
                     await operations.ValidateRevisionAsync(previous.RevisionId, "previous-validate", "test", null, token).ConfigureAwait(false);
