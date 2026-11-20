@@ -32,6 +32,35 @@ public sealed class VisibleSceneCoverageTests
     }
 
     [TestMethod]
+    public void ObjectLimitPreservesBodiesAndPrioritizesEnabledConstellationEndpoints()
+    {
+        var bright = new ProjectedCelestialObject("bright", "Bright", CelestialObjectKind.Star,
+            default, default, default, default, default, new(50, 50), 1, null, "catalog", "projection", "algorithm");
+        var firstEndpoint = bright with { Id = "endpoint-1", Magnitude = 2, Pixel = new(51, 51) };
+        var secondEndpoint = firstEndpoint with { Id = "endpoint-2", Magnitude = 3, Pixel = new(52, 52) };
+        var body = bright with { Id = "body", Kind = CelestialObjectKind.SolarSystemBody, Magnitude = 4 };
+        ProjectedConstellationSegment[] segments = [new("line", firstEndpoint.Id, secondEndpoint.Id, firstEndpoint.Pixel, secondEndpoint.Pixel)];
+        var provenance = new VisibleSceneComputationProvenance("catalog-query", null, null, null);
+
+        var marked = CreateScene(includeEndpoints: true);
+        Assert.AreSame(marked, marked.WithObjectLimit(4));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => marked.WithObjectLimit(-1));
+
+        var limited = marked.WithObjectLimit(3);
+        CollectionAssert.AreEqual(new[] { firstEndpoint, secondEndpoint, body }, limited.Objects.ToArray());
+        CollectionAssert.AreEqual(segments, limited.Segments.ToArray());
+        Assert.AreSame(provenance, limited.ComputationProvenance);
+
+        var unmarked = CreateScene(includeEndpoints: false).WithObjectLimit(3);
+        CollectionAssert.AreEqual(new[] { bright, firstEndpoint, body }, unmarked.Objects.ToArray());
+
+        VisibleScene CreateScene(bool includeEndpoints) => new(new VisibleSceneRequest(
+            Utc, Observer, new EquidistantProjectionContext(0, 0, 100, 100), new CatalogQuery(6, 100), Metadata,
+            includeConstellationEndpointStars: includeEndpoints),
+            [bright, firstEndpoint, secondEndpoint, body], segments, provenance);
+    }
+
+    [TestMethod]
     public void ObserverLocation_RejectsEveryInvalidFiniteRange()
     {
         ObserverLocation[] invalid =
