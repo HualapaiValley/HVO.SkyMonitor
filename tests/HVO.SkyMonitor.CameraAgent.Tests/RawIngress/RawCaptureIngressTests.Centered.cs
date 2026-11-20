@@ -112,13 +112,14 @@ public sealed partial class RawCaptureIngressTests
                 var other = await initial.AdmitAsync(right, requestUtc).ConfigureAwait(false);
                 rightTarget = other.Manifest.CenteredExposure!.Target;
                 var slot = 100;
-                await using var first = new CenteredRunnerModule(async (attempt, request, token) =>
+                var first = new CenteredRunnerModule(async (attempt, request, token) =>
                 {
                     slot++;
                     Assert.AreEqual(slot - 100L, attempt.Ordinal);
                     await AssertDispatchedAsync(root, attempt, request.RequestedSetpoint!, slot != 101, token).ConfigureAwait(false);
                     return CenteredTraceFrame(slot, request, effectiveGain: slot == 103 ? 7 : null);
                 });
+                await using var firstModule = first.ConfigureAwait(false);
                 var host = new CaptureHostContext(left, initial.Ingress, new CenteredTraceNotifier());
                 var runner = new CameraModuleRunner(first, host, clock, NullLogger.Instance, new AstronomyEnginePlanetEphemeris());
                 await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(() => runner.RunAsync(stop.Token))
@@ -138,13 +139,14 @@ public sealed partial class RawCaptureIngressTests
                 Assert.AreEqual(requestUtc, retained.Manifest.Descriptor.Timing.RequestedStartUtc);
                 Assert.AreEqual(requestUtc.AddMilliseconds(3), retained.Manifest.Descriptor.Timing.ExposureStartedUtc);
                 Assert.AreEqual(7d, retained.Manifest.Descriptor.Controls.EffectiveGain);
-                await using var uncertain = new CenteredRunnerModule(async (attempt, request, token) =>
+                var uncertain = new CenteredRunnerModule(async (attempt, request, token) =>
                 {
                     Assert.AreEqual(target104, attempt);
                     Assert.AreEqual(7d, request.RequestedSetpoint!.Gain);
                     await AssertDispatchedAsync(root, attempt, request.RequestedSetpoint, true, token).ConfigureAwait(false);
                     throw new TimeoutException("Device changed one control before its acknowledgment was lost.");
                 });
+                await using var uncertainModule = uncertain.ConfigureAwait(false);
                 var host = new CaptureHostContext(left, restarted.Ingress, new CenteredTraceNotifier());
                 var runner = new CameraModuleRunner(uncertain, host, clock, NullLogger.Instance, new AstronomyEnginePlanetEphemeris());
                 await Assert.ThrowsExactlyAsync<TimeoutException>(() => runner.RunAsync(stop.Token)).ConfigureAwait(false);
@@ -168,7 +170,7 @@ public sealed partial class RawCaptureIngressTests
             {
                 if (nextSlot == 106) stop.Cancel();
             };
-            await using var resumed = new CenteredRunnerModule(async (attempt, request, token) =>
+            var resumed = new CenteredRunnerModule(async (attempt, request, token) =>
             {
                 nextSlot++;
                 Assert.AreNotEqual(target104.RunId, attempt.RunId);
@@ -190,6 +192,7 @@ public sealed partial class RawCaptureIngressTests
                 }
                 return CenteredTraceFrame(nextSlot, request);
             });
+            await using var resumedModule = resumed.ConfigureAwait(false);
             var resumedHost = new CaptureHostContext(left, fresh.Ingress, last);
             await new CameraModuleRunner(resumed, resumedHost, clock, NullLogger.Instance, new AstronomyEnginePlanetEphemeris())
                 .RunAsync(stop.Token).ConfigureAwait(false);
@@ -231,7 +234,7 @@ public sealed partial class RawCaptureIngressTests
         using var data = await read.ExecuteReaderAsync(token).ConfigureAwait(false);
         Assert.IsTrue(await data.ReadAsync(token).ConfigureAwait(false));
         Assert.AreEqual(settings, JsonSerializer.Deserialize<CaptureSetpoint>((byte[])data[0]));
-        Assert.AreEqual(metered, !data.IsDBNull(1));
+        Assert.AreEqual(metered, !await data.IsDBNullAsync(1, token).ConfigureAwait(false));
     }
 
     private sealed class CenteredTraceFault : IRawIngressFaultInjector
@@ -474,9 +477,10 @@ public sealed partial class RawCaptureIngressTests
                     .ConfigureAwait(false));
                 Assert.AreEqual(64L, await ScalarLongAsync(db, "SELECT COUNT(*) FROM centered_exposure_holds;").ConfigureAwait(false));
                 clock.Advance(TimeSpan.FromMinutes(2));
-                await using var recoveredHold = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1),
+                var recoveredHold = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1),
                     CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(recoveredHold);
+                await using var recoveredScope = recoveredHold.ConfigureAwait(false);
                 Assert.AreEqual(1L, await ScalarLongAsync(db, "SELECT COUNT(*) FROM centered_exposure_holds;").ConfigureAwait(false));
             }
             finally
