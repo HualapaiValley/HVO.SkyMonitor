@@ -105,6 +105,8 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         {
             throw new InvalidDataException("Incomplete registered plane group.");
         }
+        var contributorIds = Plan.Slots.Where((_, index) => Sources[index].Method is not null)
+            .Select(slot => slot.Exposure!.Linear.ArtifactId).ToArray();
         for (var index = 0; index < planes.Count; index++)
         {
             var pin = Outputs[index];
@@ -119,6 +121,9 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
                 layout.ByteLength != plane.Payload.Length || plane.ChecksumSha256 != pin.PayloadSha256 ||
                 ProcessingIdentity.ComputePayloadSha256(plane.Payload) != pin.PayloadSha256 ||
                 plane.OutputIdentitySha256 != pin.OutputIdentitySha256 ||
+                !plane.SourceArtifactIds.SequenceEqual(contributorIds) ||
+                ProcessingIdentity.CreateOutputIdentity(plane.Role, plane.Variant, plane.Recipe.IdentitySha256,
+                    plane.SourceArtifactIds) != plane.OutputIdentitySha256 ||
                 ProcessingIdentity.CreateArtifactId(plane.OutputIdentitySha256) != pin.ArtifactId ||
                 plane.TotalIntegration.Ticks != TotalIntegrationTicks)
             {

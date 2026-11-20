@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
 
@@ -100,7 +101,8 @@ public sealed record CenteredStackPlanV1(CameraKey Camera, Guid RunId, string Ge
     {
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
         AllowDuplicateProperties = false,
-        MaxDepth = 16
+        MaxDepth = 16,
+        Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
     };
 
     public ProcessingAuxiliaryInput ToAuxiliaryInput()
@@ -137,21 +139,24 @@ public sealed record CenteredStackPlanV1(CameraKey Camera, Guid RunId, string Ge
     internal static byte[] Serialize<T>(T value) => JsonSerializer.SerializeToUtf8Bytes(
         CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(value, Json)), Json);
 
-    internal static IEnumerable<CenteredStackArtifactPin> Pins(CenteredStackExposurePin exposure)
+    internal static IEnumerable<CenteredStackArtifactPin> Pins(CenteredStackExposurePin exposure) =>
+        ArtifactBounds(exposure).Select(item => item.Pin);
+
+    internal static IEnumerable<(CenteredStackArtifactPin Pin, int MaximumBytes)> ArtifactBounds(CenteredStackExposurePin exposure)
     {
-        yield return exposure.Raw;
-        yield return exposure.Linear;
-        yield return exposure.ValidityMask;
+        yield return (exposure.Raw, 16 * 1024 * 1024); // Delivered values plus row padding.
+        yield return (exposure.Linear, LinearRegisteredMean.MaximumPixels * sizeof(ushort));
+        yield return (exposure.ValidityMask, LinearRegisteredMean.MaximumPixels);
         if (exposure.Measurement is { } measurement)
         {
-            yield return measurement;
+            yield return (measurement, StructuredProcessingProductDescriptorV1.MaximumPayloadBytes);
         }
         if (exposure.Plate is { } plate)
         {
-            yield return plate.Associations;
-            yield return plate.Scene;
-            yield return plate.Context;
-            yield return plate.Solution;
+            yield return (plate.Associations, MeasuredStellarAssociationJson.MaximumPayloadBytes);
+            yield return (plate.Scene, ProjectedSceneJson.MaximumPayloadBytes);
+            yield return (plate.Context, MeasuredAstrometryJson.MaximumContextBytes);
+            yield return (plate.Solution, MeasuredAstrometryJson.MaximumSolutionBytes);
         }
     }
 

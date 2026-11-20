@@ -9,7 +9,8 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>Reads exact retained producer contracts for one frozen window, independently of the stack artifact bytes.</summary>
 public interface ICenteredStackInputReader
 {
-    ValueTask<CenteredStackQualifiedExposure?> ReadLinearAsync(ExposureKey key, Guid linearArtifactId, CancellationToken cancellationToken);
+    /// <summary>Attach independently retained custody and geometry to the in-memory pinned pixel artifact.</summary>
+    ValueTask<CenteredStackQualifiedExposure?> ReadLinearAsync(ExposureKey key, ProcessingArtifact linear, CancellationToken cancellationToken);
 }
 
 /// <summary>Explicit opt-in registration for a closed centered window.</summary>
@@ -22,7 +23,8 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
     public const string ReferenceUnavailable = "registration.reference-unavailable";
     public const string ResourceLimit = "registration.resource-limit";
     public const string EvidenceVariant = "centered-stack-evidence";
-    private const long MaximumInputBytes = 128L * 1024 * 1024;
+    // Five complete, individually bounded exposures, including both plate endpoints and the fixed measurement.
+    public const long MaximumInputBytes = 224L * 1024 * 1024;
     private readonly ICenteredStackInputReader _reader = reader ?? throw new ArgumentNullException(nameof(reader));
 
     public ProcessingRecipeDefinition Definition { get; } = new(RecipeName, "1.0.0", RecipeVersion, ProcessingOperationKind.Window);
@@ -140,7 +142,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         }
 
         var exposures = plan.Slots.Select(slot => slot.Exposure).OfType<CenteredStackExposurePin>().ToArray();
-        var pins = exposures.SelectMany(CenteredStackPlanV1.Pins).ToDictionary(pin => pin.ArtifactId);
+        var pins = exposures.SelectMany(CenteredStackPlanV1.ArtifactBounds).ToDictionary(item => item.Pin.ArtifactId);
         var artifacts = new Dictionary<Guid, ProcessingArtifact>();
         foreach (var artifact in request.Inputs)
         {
@@ -149,7 +151,11 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
                 return ProcessingOutcome.TerminalFailure(InvalidPlan, nameof(request.Inputs));
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (!pin.Matches(artifact))
+            if (artifact.Payload.Length > pin.MaximumBytes)
+            {
+                return ProcessingOutcome.TerminalFailure(ResourceLimit, nameof(request.Inputs));
+            }
+            if (!pin.Pin.Matches(artifact))
             {
                 return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidLineage, nameof(request.Inputs));
             }
@@ -288,7 +294,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         CenteredStackQualifiedExposure? retained;
         try
         {
-            retained = await _reader.ReadLinearAsync(pin.Key, pin.Linear.ArtifactId, cancellationToken).ConfigureAwait(false);
+            retained = await _reader.ReadLinearAsync(pin.Key, linear, cancellationToken).ConfigureAwait(false);
         }
         catch (IOException)
         {
@@ -449,6 +455,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         var contributors = plan.Slots.Where((_, index) => decisions[index].Reason == CenteredRegistrationReason.Contributed)
             .Select(slot => slot.Exposure!).ToArray();
         var integration = TimeSpan.FromTicks(contributors.Sum(exposure => exposure.IntegrationTicks));
+        var pixelLineage = contributors.Select(exposure => artifacts[exposure.Linear.ArtifactId]).ToArray();
         var layout = reference?.Linear.Layout;
         var isColor = layout?.PixelFormat == CameraPixelFormat.BayerRggb16;
         var algorithms = new List<ProcessingAlgorithmIdentity>
@@ -501,7 +508,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         void Add(string channel, string outputVariant, string mediaType, FrameLayoutDescriptor outputLayout, ReadOnlyMemory<byte> payload)
         {
             var product = ProcessingRecipeSupport.CreateProduct(FrameArtifactRole.Combined, outputVariant, mediaType, outputLayout,
-                payload, identity, algorithms, lineage, integration, compatibility);
+                payload, identity, algorithms, pixelLineage, integration, compatibility);
             products.Add(product);
             outputs.Add(new(channel, ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
                 product.OutputIdentitySha256, product.ChecksumSha256));

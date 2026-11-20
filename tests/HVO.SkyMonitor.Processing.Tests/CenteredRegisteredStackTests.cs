@@ -57,6 +57,8 @@ public sealed class CenteredRegisteredStackTests
         var first = Read(firstOutcome);
         var next = Read(nextOutcome);
         var planes = firstOutcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
+        var contributorIds = captures.Take(5).Select(capture => capture.Pin.Linear.ArtifactId).ToArray();
+        Assert.IsTrue(planes.All(plane => plane.SourceArtifactIds.SequenceEqual(contributorIds)));
         first.VerifyPlanes(planes);
         Assert.ThrowsExactly<InvalidDataException>(() => first.VerifyPlanes(planes.Skip(1).ToArray()));
         var stored = new byte[planes[0].Payload.Length];
@@ -193,6 +195,16 @@ public sealed class CenteredRegisteredStackTests
         Assert.AreEqual(ProcessingOutcomeStatus.RetryableFailure, missing.Status);
         Assert.AreEqual(CenteredRegisteredStackRecipe.RetainedInputsUnavailable, missing.ReasonCode);
         Assert.IsEmpty(missing.Products);
+        var missingProvenance = new ProcessingRecipeExecutor([new CenteredRegisteredStackRecipe(new ExactInputs([center.Qualified]))]);
+        var retry = await missingProvenance.ExecuteAsync(request);
+        Assert.AreEqual(ProcessingOutcomeStatus.RetryableFailure, retry.Status);
+        Assert.IsEmpty(retry.Products);
+
+        var changedGeometry = source.Qualified with { MeasurementGeometry = new(3.4, null) };
+        var different = new ProcessingRecipeExecutor([new CenteredRegisteredStackRecipe(new ExactInputs([center.Qualified, changedGeometry]))]);
+        var inconsistent = await different.ExecuteAsync(request);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, inconsistent.ReasonCode);
+        Assert.IsEmpty(inconsistent.Products);
         var tampered = await executor.ExecuteAsync(request with
         {
             Inputs = request.Inputs.Select(artifact => artifact.ArtifactId == source.Raw.ArtifactId
@@ -213,8 +225,16 @@ public sealed class CenteredRegisteredStackTests
         var center = await FromPlateFixture(centerFixture, 103, includePlate: true);
         var first = await FromPlateFixture(firstFixture, 102, includePlate: true);
         var last = await FromPlateFixture(lastFixture, 105, includePlate: false);
-        var evidence = Read(await Execute([first, center, last], 103));
+        var outcome = await Execute([first, center, last], 103);
+        var evidence = Read(outcome);
         Assert.AreEqual(CenteredStackDisposition.Registered, evidence.Disposition, Describe(evidence));
+        var planes = outcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
+        evidence.VerifyPlanes(planes);
+        var contributors = new[] { first.Pin.Linear.ArtifactId, center.Pin.Linear.ArtifactId, last.Pin.Linear.ArtifactId };
+        foreach (var plane in planes)
+        {
+            CollectionAssert.AreEqual(contributors, plane.SourceArtifactIds.ToArray());
+        }
         Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, evidence.Sources[1].Method, Describe(evidence));
         Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, evidence.Sources[4].Method, Describe(evidence));
         var retained = first.Artifacts().Concat(center.Artifacts()).ToDictionary(item => item.ArtifactId);
@@ -279,6 +299,9 @@ public sealed class CenteredRegisteredStackTests
     {
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, $"{outcome.ReasonCode} {outcome.Field}");
         var product = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        using var document = JsonDocument.Parse(product.Payload);
+        Assert.AreEqual(JsonValueKind.String, document.RootElement.GetProperty("disposition").ValueKind);
+        Assert.AreEqual(JsonValueKind.String, document.RootElement.GetProperty("plan").GetProperty("slots")[0].GetProperty("state").ValueKind);
         return CenteredRegisteredStackEvidence.Read(product);
     }
 
@@ -501,11 +524,11 @@ public sealed class CenteredRegisteredStackTests
 
     private sealed class ExactInputs(CenteredStackQualifiedExposure[] inputs) : ICenteredStackInputReader
     {
-        public ValueTask<CenteredStackQualifiedExposure?> ReadLinearAsync(ExposureKey key, Guid linearArtifactId, CancellationToken cancellationToken)
+        public ValueTask<CenteredStackQualifiedExposure?> ReadLinearAsync(ExposureKey key, ProcessingArtifact linear, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return ValueTask.FromResult(inputs.SingleOrDefault(item => item.Linear.Exposure.Key == key &&
-                item.Linear.Linear.ArtifactId == linearArtifactId));
+                item.Linear.Linear.ArtifactId == linear.ArtifactId));
         }
     }
 }
