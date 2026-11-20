@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -99,7 +100,23 @@ public sealed partial class ProcessingGraphOperationsTests
                 legacy.Parameters.AddWithValue("$plan", System.Text.Encoding.UTF8.GetBytes(System.Text.Encoding.UTF8.GetString(primary)[..^1] +
                     ",\"frozenOutputInputCounts\":{\"preview\":0},\"committedOutputCounts\":{\"preview\":1}}"));
                 await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
+
+                // The current index makes this a hybrid. A schema-8 marker alone cannot authorize migration.
+                using (var hybrid = CreateProvider(root))
+                {
+                    var store = hybrid.GetRequiredService<SqliteCaptureProcessingStore>();
+                    var exception = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                        await store.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+                    StringAssert.Contains(exception.Message, "not the canonical schema 8 definition", StringComparison.Ordinal);
+                    var operations = hybrid.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                    await RunManifestTestAssertions.ResponseAsync(operations, id, CameraAgentRunManifest.CorruptReason)
+                        .ConfigureAwait(false);
+                }
+
+                legacy.CommandText = "DROP INDEX ix_processing_outputs_astrometry_lookup;";
+                await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
+            SqliteConnection.ClearAllPools();
             for (var restart = 0; restart < 2; restart++)
             {
                 using var provider = CreateProvider(root);
