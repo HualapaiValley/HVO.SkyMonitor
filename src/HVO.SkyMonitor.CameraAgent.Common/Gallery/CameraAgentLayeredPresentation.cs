@@ -66,7 +66,7 @@ public interface ICameraAgentLayeredPresentationService
 
     /// <summary>
     /// Projects the presentation from evidence read after this call begins. Unlike <see cref="GetAsync"/>, it never
-    /// joins an in-flight read whose evidence snapshot may predate the caller.
+    /// joins an in-flight read whose evidence snapshot may predate the caller. Cancellation stops this call's reconstruction.
     /// </summary>
     ValueTask<CameraAgentLayeredPresentationResult> GetCurrentAsync(
         Guid captureId,
@@ -107,7 +107,7 @@ internal sealed class CameraAgentLayeredPresentationService(
         {
             if (!_flights.TryGetValue(captureId, out flight!))
             {
-                flight = BuildAsync(captureId);
+                flight = BuildAsync(captureId, shared: true, CancellationToken.None);
                 // A synchronous completion has already executed BuildAsync's removal. Publishing that
                 // completed task afterwards would pin stale evidence forever for this capture.
                 if (!flight.IsCompleted) _flights.Add(captureId, flight);
@@ -125,16 +125,18 @@ internal sealed class CameraAgentLayeredPresentationService(
             return Unavailable("Capture presentation is unavailable.");
         }
         // A private flight: joining a shared one could return evidence projected before this request.
-        return await BuildAsync(captureId, shared: false).WaitAsync(cancellationToken).ConfigureAwait(false);
+        return await BuildAsync(captureId, shared: false, cancellationToken).ConfigureAwait(false);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated presentation boundary returns only fixed failure states for malformed retained evidence.")]
-    private async Task<CameraAgentLayeredPresentationResult> BuildAsync(Guid captureId, bool shared = true)
+    private async Task<CameraAgentLayeredPresentationResult> BuildAsync(
+        Guid captureId, bool shared, CancellationToken cancellationToken)
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var manifests = await processingStore.ReadCaptureProductsAsync(
-                captureId, OverlayManifestV1.CurrentSchemaVersion, 2, CancellationToken.None).ConfigureAwait(false);
+                captureId, OverlayManifestV1.CurrentSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
             if (manifests.Count == 0)
             {
                 return new(CameraAgentLayeredPresentationStatus.NotRetained, Reason: "Structured layers were not retained for this capture.");
@@ -146,7 +148,7 @@ internal sealed class CameraAgentLayeredPresentationService(
 
             var manifestProduct = manifests[0];
             var manifestBytes = await ReadBytesAsync(
-                manifestProduct.ArtifactId, PresentationProcessingProducts.ManifestMediaType, CancellationToken.None)
+                manifestProduct.ArtifactId, PresentationProcessingProducts.ManifestMediaType, cancellationToken)
                 .ConfigureAwait(false);
             if (manifestBytes.Status != CameraAgentLayeredPresentationStatus.Found)
             {
@@ -171,15 +173,15 @@ internal sealed class CameraAgentLayeredPresentationService(
             {
                 try
                 {
-                    trailEvidence = await trails.GetCaptureTrailsAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                    trailEvidence = await trails.GetCaptureTrailsAsync(captureId, cancellationToken).ConfigureAwait(false);
                     var composition = await persistence.PublishTrailCompositionAsync(
-                        captureId, manifestArtifactId, trailEvidence, CancellationToken.None).ConfigureAwait(false);
+                        captureId, manifestArtifactId, trailEvidence, cancellationToken).ConfigureAwait(false);
                     trailEvidence = composition.Evidence;
                     if (composition.ManifestArtifactId != manifestArtifactId)
                     {
                         manifestArtifactId = composition.ManifestArtifactId;
                         var composedBytes = await ReadBytesAsync(manifestArtifactId,
-                            PresentationProcessingProducts.ManifestMediaType, CancellationToken.None).ConfigureAwait(false);
+                            PresentationProcessingProducts.ManifestMediaType, cancellationToken).ConfigureAwait(false);
                         if (composedBytes.Status != CameraAgentLayeredPresentationStatus.Found)
                             throw new InvalidDataException("The measured trail composition is unavailable.");
                         manifest = LayeredPresentationJson.ParseManifest(composedBytes.Content).Document
@@ -199,7 +201,7 @@ internal sealed class CameraAgentLayeredPresentationService(
             CameraAgentRetainedAstrometry? astrometricEvidence = null;
             if (astrometry is not null)
             {
-                astrometricEvidence = await astrometry.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+                astrometricEvidence = await astrometry.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
                 if (persistence is not null)
                 {
                     var beforeAstrometry = manifest;
@@ -207,13 +209,13 @@ internal sealed class CameraAgentLayeredPresentationService(
                     try
                     {
                         var composition = await persistence.PublishAstrometricCompositionAsync(captureId,
-                            manifestArtifactId, astrometricEvidence, CancellationToken.None).ConfigureAwait(false);
+                            manifestArtifactId, astrometricEvidence, cancellationToken).ConfigureAwait(false);
                         astrometricEvidence = composition.Evidence;
                         if (composition.ManifestArtifactId != manifestArtifactId)
                         {
                             manifestArtifactId = composition.ManifestArtifactId;
                             var composed = await ReadBytesAsync(manifestArtifactId,
-                                PresentationProcessingProducts.ManifestMediaType, CancellationToken.None).ConfigureAwait(false);
+                                PresentationProcessingProducts.ManifestMediaType, cancellationToken).ConfigureAwait(false);
                             manifest = LayeredPresentationJson.ParseManifest(composed.Content).Document
                                 ?? throw new InvalidDataException("Invalid astrometric composition.");
                         }
@@ -232,7 +234,7 @@ internal sealed class CameraAgentLayeredPresentationService(
                 }
             }
 
-            var baseRead = await artifacts.OpenContentAsync(manifest.BaseProduct.ArtifactId, CancellationToken.None)
+            var baseRead = await artifacts.OpenContentAsync(manifest.BaseProduct.ArtifactId, cancellationToken)
                 .ConfigureAwait(false);
             if (baseRead.Status != CameraAgentArtifactReadStatus.Found || baseRead.Content is null)
             {
@@ -263,7 +265,7 @@ internal sealed class CameraAgentLayeredPresentationService(
                     return TooLarge("The retained presentation metadata exceeds its aggregate bound.");
                 }
                 var read = await ReadBytesAsync(
-                    layer.SourceProduct.ArtifactId, PresentationLayerPayloadJson.MediaType, CancellationToken.None,
+                    layer.SourceProduct.ArtifactId, PresentationLayerPayloadJson.MediaType, cancellationToken,
                     remainingPayloadBytes)
                     .ConfigureAwait(false);
                 if (read.Status != CameraAgentLayeredPresentationStatus.Found)
@@ -287,6 +289,7 @@ internal sealed class CameraAgentLayeredPresentationService(
                 payloads.Add(payload);
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             var identity = ComputePresentationIdentity(manifest, baseChecksum);
             lock (_cacheGate)
             {
@@ -299,6 +302,7 @@ internal sealed class CameraAgentLayeredPresentationService(
             }
 
             var rendered = Render(captureId, manifest, payloads, baseChecksum);
+            cancellationToken.ThrowIfCancellationRequested();
             if (rendered.Status == CameraAgentLayeredPresentationStatus.Found && rendered.Presentation is { } presentation)
             {
                 presentation = presentation with { ManifestArtifactId = manifestArtifactId, TrailEvidence = trailEvidence, Astrometry = astrometricEvidence };
