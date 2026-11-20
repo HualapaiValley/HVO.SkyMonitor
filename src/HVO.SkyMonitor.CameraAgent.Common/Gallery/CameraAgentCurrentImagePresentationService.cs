@@ -244,7 +244,12 @@ internal sealed class CameraAgentCurrentImagePresentationService(
                 if (preview.Status == CameraAgentArtifactReadStatus.Found)
                 {
                     selectedStage ??= slot.Stage;
-                    slot = slot with { DisplayOperation = preview.Operation };
+                    slot = slot with
+                    {
+                        DisplayOperation = preview.Operation,
+                        PreviewWidth = preview.Width,
+                        PreviewHeight = preview.Height
+                    };
                     stages[index] = preview.DisplayPolicy is { } policy
                         ? slot with
                         {

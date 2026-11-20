@@ -90,7 +90,12 @@ public sealed record CameraAgentPresentationSlot(
     CameraAgentPresentationDisplayBasis DisplayBasis = CameraAgentPresentationDisplayBasis.OwnArtifact,
     string? DisplayPolicy = null,
     Guid? DisplayReferenceId = null,
-    CameraAgentPreviewOperation DisplayOperation = CameraAgentPreviewOperation.Unknown);
+    CameraAgentPreviewOperation DisplayOperation = CameraAgentPreviewOperation.Unknown)
+{
+    /// <summary>Decoded dimensions of the verified preview served by <see cref="PreviewUrl"/>.</summary>
+    public int? PreviewWidth { get; init; }
+    public int? PreviewHeight { get; init; }
+}
 
 public sealed record CameraAgentCapturePresentation(
     CameraAgentPresentationStage? SelectedStage,
