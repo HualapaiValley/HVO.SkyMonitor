@@ -33,7 +33,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { BuiltInProcessingRecipes.ProjectedScene }, new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string> { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+            new HashSet<string> { BuiltInProcessingRecipes.MeasuredStellarAssociations, ExposureAssociationProducts.RecipeName },
             new HashSet<string> { MeasuredStellarAssociationsV1.CurrentSchemaVersion })
     ];
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>

@@ -33,18 +33,26 @@ public static class ExposureMeasurementConsumers
         ArgumentNullException.ThrowIfNull(retained);
         ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(prediction);
-        ProjectedSceneJson.Validate(prediction);
         var exposure = ExposureMeasurementProducts.Read(retained, expected);
+        return AssociateValidated(retained, expected, exposure.Sources, prediction, settings, labelPolicy, cancellationToken);
+    }
+
+    internal static ExposureAssociationEvidenceV1 AssociateValidated(
+        ProcessingArtifact retained, ExposureMeasurementInputV1 expected, ExposureSourcesV1 sources,
+        ProjectedSceneV1 prediction, MeasuredStellarAssociationSettingsV1 settings,
+        StellarLabelPolicySettingsV1 labelPolicy, CancellationToken cancellationToken)
+    {
+        ProjectedSceneJson.Validate(prediction);
         var raw = expected.Raw;
         if (prediction.Kind != ProjectedSceneKind.Predicted || prediction.Source.CaptureId != raw.CaptureId ||
             prediction.Source.ArtifactId != raw.ArtifactId ||
             !ExposureMeasurementProducts.Same(prediction.Source.ArtifactIdentitySha256, raw.DescriptorSha256) ||
             !ExposureMeasurementProducts.Same(prediction.SceneIdentitySha256, ProjectedSceneJson.ComputeIdentity(prediction)) ||
+            expected.OpticalCalibrationVersion is { } version && version != prediction.Projection.CalibrationVersion ||
             prediction.CoordinateConvention != ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge ||
             prediction.ImageTransform != ProjectedSceneImageTransformV1.Identity(raw.Layout.Width, raw.Layout.Height))
             throw new InvalidDataException("Prediction differs from the measured exposure or delivered geometry.");
 
-        var sources = exposure.Sources;
         var completed = sources.Status is ExposureMeasurementStatus.Usable or ExposureMeasurementStatus.Empty ||
             sources.Reason == "all-candidates-rejected";
         var entries = MeasuredStellarAssociator.Associate(prediction, sources.Detections, sources.Exclusions,

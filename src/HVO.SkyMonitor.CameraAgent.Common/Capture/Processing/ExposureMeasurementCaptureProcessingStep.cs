@@ -74,16 +74,18 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
     }
 
     internal async ValueTask ProcessAdmittedAsync(CaptureProcessingContext context, LinearExposureLookup settled,
-        LinearExposureInputV1? linear, CancellationToken cancellationToken)
+        LinearExposureInputV1? linear, CameraRigConfig pinnedRig, CancellationToken cancellationToken)
     {
         var descriptor = context.ReconstructionDescriptor ??
             throw new InvalidDataException("Exposure measurement requires admitted raw evidence.");
         await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor);
-        var rig = context.Config.Rig;
-        var request = ExposureMeasurementBindings.Request(settled, raw, linear, Aperture(rig, descriptor.Layout),
-            rig.Sensor.PixelSizeMicrons > 0 ? rig.Sensor.PixelSizeMicrons : null);
+        if (!string.Equals(RigProjectionContextFactory.CreateProfileHashSha256(pinnedRig),
+                settled.Exposure.Geometry.RigIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Pinned exposure geometry differs from the measured capture.");
+        var request = ExposureMeasurementBindings.Request(settled, raw, linear, Aperture(pinnedRig, descriptor.Layout),
+            pinnedRig.Sensor.PixelSizeMicrons > 0 ? pinnedRig.Sensor.PixelSizeMicrons : null);
         var outcome = await adapter.ExecuteAsync(context, request, cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
     }

@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -29,6 +30,22 @@ public sealed partial class VirtualSkyCameraModuleTests
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
             var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1() : null;
+            var centeredPlan = ExposureMeasurementGraphPlan.Configure(profile.Pipeline with
+            {
+                Steps =
+                [
+                    new("Calibration", "linear", DependsOn: ["$raw"], Required: false, Publication: durable,
+                        Options: JsonSerializer.SerializeToElement(new
+                        { strategy = calibration, outputVariant = "qualified-linear", syntheticCalibration = references })),
+                    new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
+                        new FileStorageCaptureProcessingStepOptions
+                        {
+                            StorageRoot = Path.Combine(root, "storage"), QueueForUpload = false, UpdateLatestFrame = false
+                        }))
+                ]
+            });
+            var fixedStep = centeredPlan.Steps.Single(step => step.Id == ExposureMeasurementProducts.StepAlias);
+            CollectionAssert.AreEqual(new List<string> { "$raw", "linear" }, fixedStep.DependsOn!.ToArray());
             var file = camera with
             {
                 AgentId = profile.AgentId,
@@ -42,16 +59,10 @@ public sealed partial class VirtualSkyCameraModuleTests
                     asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
                     syntheticCalibration = references
                 })),
-                Pipeline = profile.Pipeline with
+                Pipeline = centeredPlan with
                 {
-                    Steps =
-                    [
-                        new("Calibration", "linear", DependsOn: ["$raw"], Publication: durable,
-                            Options: JsonSerializer.SerializeToElement(new CalibrationProcessingStepOptions
-                            { Strategy = calibration, OutputVariant = "qualified-linear", SyntheticCalibration = references })),
-                        new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias,
-                            DependsOn: ["$raw", "linear"], Publication: durable)
-                    ]
+                    // The Common fixture uses the base graph compiler and the worker's admitted primary raw.
+                    Steps = centeredPlan.Steps.Select(step => step == fixedStep ? step with { DependsOn = ["linear"] } : step).ToArray()
                 }
             };
             Guid executionId;
@@ -64,9 +75,10 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var node = plan.EffectiveNodes.Single(n => n.Id == ExposureMeasurementProducts.StepAlias);
                 Assert.IsTrue(node.Enabled);
                 Assert.IsFalse(node.Required);
-                CollectionAssert.AreEquivalent(new[] { "$raw", "linear" }, node.Dependencies!.ToArray());
+                Assert.AreEqual("linear", Assert.ContainsSingle(node.Dependencies!));
 
-                await using var module = CreateModule(now);
+                var module = CreateModule(now);
+                await using var lifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(active, CancellationToken.None).ConfigureAwait(false);
                 var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still,
                     new(TimeSpan.FromSeconds(1), 1, null, null));
@@ -148,6 +160,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         => ProcessingGraphOperationsTests.CreateProvider(root, configureServices: services =>
         {
             HVO.SkyMonitor.CameraAgent.Program.AddCameraModules(services);
+            services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
             services.AddSingleton(new CaptureProcessingStepRegistration(ExposureMeasurementProducts.StepAlias,
                 typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions), 4, AutoInclude: false));
         });

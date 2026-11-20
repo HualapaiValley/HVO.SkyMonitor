@@ -108,26 +108,13 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
             reconstruction = MonoReconstruction;
         }
         var entries = MeasuredStellarAssociator.Associate(scene, measurement, settings, policy, cancellationToken);
-        var product = new MeasuredStellarAssociationsV1(
-            MeasuredStellarAssociationsV1.CurrentSchemaVersion,
-            new MeasuredStellarAssociationSourceV1(captureId, source.ArtifactId, descriptorIdentity.ToUpperInvariant(),
-                source.Role, source.Variant, source.RecipeIdentitySha256.ToUpperInvariant(), layout.PixelFormat,
-                layout.Width, layout.Height),
-            new MeasuredStellarAssociationSceneV1(scene.SceneIdentitySha256.ToUpperInvariant(), scene.Kind,
-                scene.Catalog.Name, scene.Catalog.Version, scene.Catalog.ChecksumSha256.ToUpperInvariant(),
-                scene.Projection.CalibrationVersion, scene.Projection.AlgorithmVersion, scene.AstronomyAlgorithmVersion),
-            // The one place the measurer identity enters Processing. Astronomy/Imaging canonicalize identities in lowercase
-            // (AstrometricIdentity.RequireSha256; the #1103 measurer and its qualification report); Processing contracts
-            // are uppercase-canonical and uppercase a foreign identity where it enters (TransientTemporalBackgrounds).
+        // Astronomy and Imaging canonicalize these identities in lowercase. Processing uses uppercase on the wire.
+        var product = CreateEvidence(source, layout, captureId, descriptorIdentity, scene,
             new MeasuredStellarMeasurementV1(measurement.AlgorithmVersion,
                 measurement.SettingsIdentitySha256.ToUpperInvariant(), reconstruction, measurement.Status,
                 RoundOptional(measurement.MedianBackground), RoundOptional(measurement.MedianNoiseSigma),
                 measurement.CandidateCount, measurement.Detections.Count, measurement.Exclusions.Count),
-            new MeasuredStellarAssociationMethodV1(MeasuredStellarAssociator.AlgorithmVersion, settings,
-                StellarLabelPolicy.Version, policy),
-            entries.Associations,
-            entries.UnmatchedPredictions,
-            entries.UnassociatedDetections);
+            settings, policy, entries);
         var payload = MeasuredStellarAssociationJson.Serialize(product);
         var algorithms = Algorithms(pattern is not null);
         cancellationToken.ThrowIfCancellationRequested();
@@ -146,6 +133,25 @@ internal sealed class MeasuredStellarAssociationRecipe : IProcessingRecipe
             MeasuredStellarAssociationsV1.CurrentSchemaVersion,
             product.AssociationIdentitySha256)));
     }
+
+    internal static MeasuredStellarAssociationsV1 CreateEvidence(
+        ProcessingArtifact source, FrameLayoutDescriptor layout, Guid captureId, string descriptorIdentity,
+        ProjectedSceneV1 scene, MeasuredStellarMeasurementV1 measurement, MeasuredStellarAssociationSettingsV1 settings,
+        StellarLabelPolicySettingsV1 policy, MeasuredStellarAssociationEntries entries)
+        => new(
+            MeasuredStellarAssociationsV1.CurrentSchemaVersion,
+            new MeasuredStellarAssociationSourceV1(captureId, source.ArtifactId, descriptorIdentity.ToUpperInvariant(),
+                source.Role, source.Variant, source.RecipeIdentitySha256.ToUpperInvariant(), layout.PixelFormat,
+                layout.Width, layout.Height),
+            new MeasuredStellarAssociationSceneV1(scene.SceneIdentitySha256.ToUpperInvariant(), scene.Kind,
+                scene.Catalog.Name, scene.Catalog.Version, scene.Catalog.ChecksumSha256.ToUpperInvariant(),
+                scene.Projection.CalibrationVersion, scene.Projection.AlgorithmVersion, scene.AstronomyAlgorithmVersion),
+            measurement,
+            new MeasuredStellarAssociationMethodV1(MeasuredStellarAssociator.AlgorithmVersion, settings,
+                StellarLabelPolicy.Version, policy),
+            entries.Associations,
+            entries.UnmatchedPredictions,
+            entries.UnassociatedDetections);
 
     internal static List<ProcessingAlgorithmIdentity> Algorithms(bool cfa)
     {

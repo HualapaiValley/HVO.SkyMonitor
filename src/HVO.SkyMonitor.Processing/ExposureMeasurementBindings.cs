@@ -63,6 +63,7 @@ public static class ExposureMeasurementBindings
     /// ReadLinearAsync resolves the immutable admission-owned live step-three settlement for this exposure.
     /// The recorded revision and live execution must agree. A recomputation that produces its own linear
     /// product supplies its exact separately retained settlement to the typed reader.
+    /// Supply the aperture and pixel pitch from the capture's pinned rig evidence.
     /// </remarks>
     public static async ValueTask<ExposureMeasurementV1> ReadCommittedAsync(
         IExposureProductReader reader,

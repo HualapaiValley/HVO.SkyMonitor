@@ -14,7 +14,6 @@ namespace HVO.SkyMonitor.Processing.Tests;
 [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "MSTest handles its async tests.")]
 public sealed class ExposureMeasurementTests
 {
-    private const string CorpusVariable = "HVO_EXPOSURE_MEASUREMENT_CORPUS";
     private static readonly DateTimeOffset ExposureTime = new(2026, 11, 19, 4, 0, 0, TimeSpan.Zero);
     private static readonly ProcessingCompatibilityIdentity Compatibility =
         new("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
@@ -74,12 +73,12 @@ public sealed class ExposureMeasurementTests
         var layout = Layout(96, 96) with { StoredCodeTransform = FrameStoredCodeTransform.OpaqueContainerV1 };
         var raw = CreateRaw(layout, Generate(layout, static (_, _) => 93));
         var result = await Run(raw, null, Bind(raw, null, ExposureCalibrationDisposition.Incompatible,
-            "opaque-stored-code-mapping"));
+            FrameWhiteThreshold.OpaqueAdcReason));
         Assert.AreEqual(93, result.RawBrightness!.Mean);
         Assert.IsNull(result.RawBrightness.SensorClipping.Count);
-        Assert.AreEqual("opaque-stored-code-mapping", result.RawBrightness.SensorClipping.Reason);
+        Assert.AreEqual(FrameWhiteThreshold.OpaqueAdcReason, result.RawBrightness.SensorClipping.Reason);
         Assert.AreEqual(ExposureMeasurementStatus.Unavailable, result.Sources.Status);
-        Assert.AreEqual("opaque-stored-code-mapping", result.Sources.Reason);
+        Assert.AreEqual(FrameWhiteThreshold.OpaqueAdcReason, result.Sources.Reason);
         Assert.IsNull(result.Hfd.ValidCount);
     }
 
@@ -163,6 +162,29 @@ public sealed class ExposureMeasurementTests
         var retry = await Produce(request);
         Assert.AreEqual(product.OutputIdentitySha256, retry.OutputIdentitySha256);
         CollectionAssert.AreEqual(product.Payload.ToArray(), retry.Payload.ToArray());
+    }
+
+    [TestMethod]
+    public async Task PinnedOpticalApertureAppliesToScienceWithoutMaskingRawBrightness()
+    {
+        var layout = Layout(128, 128);
+        var onAxis = new PixelPoint(65.5, 68.5);
+        var offAxis = new PixelPoint(110.5, 110.5);
+        var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Round(91 +
+            Gaussian(x, y, onAxis, 1.5, 2100) + Gaussian(x, y, offAxis, 1.4, 2500))));
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var full = await Run(raw, linear, input);
+        var masked = await Run(raw, linear, input with
+        {
+            ApertureProjection = new(ProjectionModel.EquidistantFisheye, 64, 64, 42, 42, 128, 128,
+                ProjectionAperture.Circular, 54, 90)
+        });
+        Assert.AreEqual(full.RawBrightness, masked.RawBrightness);
+        Assert.HasCount(2, full.Sources.Detections);
+        Assert.HasCount(1, masked.Sources.Detections);
+        AssertNear(masked.Sources.Detections, onAxis, 0.15);
+        Assert.AreEqual(1, masked.Hfd.ValidCount);
     }
 
     [TestMethod]
@@ -280,6 +302,74 @@ public sealed class ExposureMeasurementTests
     }
 
     [TestMethod]
+    public async Task OrdinaryAstrometryRejectsSparseRetainedAssociationAndKeepsItsMeasurement()
+    {
+        var fixture = await MeasuredAstrometryFixture.CreateAsync();
+        var isolated = fixture.Associations.Associations
+            .Where(item => item.LabelEligible && !item.Trailed)
+            .MinBy(item => Math.Abs(item.ExpectedX - 256) + Math.Abs(item.ExpectedY - 256))!;
+        var picked = fixture.Scene.Objects.Single(item => item.Id == isolated.CatalogId);
+        var rawLayout = fixture.Raw.Layout! with
+        {
+            BlackLevel = 0,
+            StoredCodeTransform = FrameStoredCodeTransform.IdentityV1,
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+        };
+        var background = MeasuredStellarAssociationFixtures.Field(rawLayout.Width, rawLayout.Height);
+        MeasuredStellarAssociationFixtures.AddNoise(background, 1920, 2.5);
+        var raw = fixture.Raw with
+        {
+            Layout = rawLayout,
+            Payload = Generate(rawLayout, (x, y) => (ushort)Math.Round(background[y * rawLayout.Width + x] +
+                Gaussian(x, y, picked.Pixel, 1.35, 4500)))
+        };
+        var linear = await Normalize(raw);
+        var expected = Bind(raw, linear);
+        var product = await Produce(ExposureMeasurementProducts.Request(expected, raw, linear));
+        var retained = ProductArtifact(product, raw);
+        var sceneRecipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene,
+            "1.0.0", "projected-scene-v1", JsonSerializer.SerializeToElement(new { }));
+        var scene = fixture.Measured with
+        {
+            ArtifactId = Guid.NewGuid(),
+            Payload = ProjectedSceneJson.Serialize(fixture.Scene),
+            MediaType = StructuredProcessingProductContracts.ProjectedSceneMediaType,
+            RecipeDescriptor = sceneRecipe,
+            RecipeIdentitySha256 = ProcessingIdentity.CreateRecipeIdentity(sceneRecipe).IdentitySha256,
+            SchemaVersion = fixture.Scene.SchemaVersion,
+            ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
+        };
+        var matching = ExposureAssociationProducts.Associate(raw with { Payload = default }, retained, expected,
+            scene, "exposure-stellar-associations-v1");
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, matching.Status, matching.ReasonCode);
+        var associated = ProductArtifact(matching.Products.Single(), raw);
+        var evidence = MeasuredStellarAssociationJson.Parse(associated.Payload).Associations!;
+        Assert.AreEqual(picked.Id, Assert.ContainsSingle(evidence.Associations).CatalogId);
+        var context = fixture.Context with
+        {
+            MeasuredArtifactId = associated.ArtifactId,
+            MeasuredIdentitySha256 = associated.ContentIdentitySha256!,
+            MeasuredRecipeIdentitySha256 = associated.RecipeIdentitySha256,
+            ReadoutIdentitySha256 = MeasuredAstrometryJson.ComputeReadoutIdentity(rawLayout),
+            Frame = fixture.Context.Frame with
+            {
+                SourcePayloadSha256 = ProcessingIdentity.ComputePayloadSha256(raw.Payload),
+                DetectionAlgorithmVersion = evidence.Measurement.AlgorithmVersion,
+                DetectionSettingsIdentitySha256 = evidence.Measurement.SettingsIdentitySha256
+            }
+        };
+
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(fixture.Request(context, raw, associated));
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
+        var solution = MeasuredAstrometryJson.Parse(outcome.Products.Single().Payload);
+        Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
+        Assert.AreEqual(associated.ArtifactId, solution.MeasuredArtifactId);
+        var reread = ExposureMeasurementProducts.Read(retained, expected);
+        Assert.HasCount(1, reread.Sources.Detections);
+        Assert.AreEqual(1, reread.Hfd.ValidCount);
+    }
+
+    [TestMethod]
     public async Task BayerWithoutPhaseProofWithholdsSources()
     {
         var layout = Layout(128, 128, bayer: true) with { Readout = null };
@@ -293,69 +383,76 @@ public sealed class ExposureMeasurementTests
     }
 
     [TestMethod]
-    public async Task NovemberMonoCorporaRetainRawOraclesAndUnsolvedDetections()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task GeneratedGeometryUsesDeliveredCoordinatesAndIndependentColorResponse(bool bayer)
     {
-        var root = CorpusDirectory("mono-november");
-        using var oracle = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, "expected-mono.json")));
-        foreach (var frame in oracle.RootElement.EnumerateArray())
+        // Positions are delivered pixel-edge coordinates at reference exposure 103.
+        (double X, double Y, double Sigma, int Red, int Green, int Blue)[] targets =
+        [
+            (27.35, 22.55, 1.05, 2900, 300, 120),
+            (79.8, 28.25, 1.25, 220, 1480, 310),
+            (126.45, 40.65, 1.15, 210, 270, 2800),
+            (42.65, 78.1, 0.95, 1200, 1200, 1200),
+            (94.1, 91.4, 1.1, 1400, 1400, 1400),
+            (125.7, 101.45, 1.35, 1650, 1650, 1650),
+            (53.9, 48.15, 1.05, 1190, 1190, 1190),
+            (23.2, 102.4, 1.05, 1480, 1480, 1480),
+            (112.75, 67.9, 1.05, 950, 950, 950)
+        ];
+        (double X, double Y)[] shifts = [(-2, 3), (1, -1.5), (0, 0), (3, 1), (-1.5, 2), (2, -2)];
+        var layout = Layout(160, 128, bayer);
+        foreach (var shift in shifts)
         {
-            var bytes = await File.ReadAllBytesAsync(Path.Combine(root, frame.GetProperty("artifact").GetString()!));
-            Assert.AreEqual(frame.GetProperty("rawSha256").GetString(), Convert.ToHexStringLower(SHA256.HashData(bytes)));
-            var raw = CreateRaw(Layout(1936, 1216), bytes, frame.GetProperty("captureId").GetGuid());
-            var linear = await Normalize(raw);
-            var result = await Run(raw, linear, Bind(raw, linear));
-            var stats = result.RawBrightness!;
-            Assert.AreEqual(frame.GetProperty("pixelCount").GetInt64(), stats.SampleCount);
-            Assert.AreEqual(frame.GetProperty("minAdu").GetUInt16(), stats.Minimum);
-            Assert.AreEqual(frame.GetProperty("maxAdu").GetUInt16(), stats.Maximum);
-            Assert.AreEqual(frame.GetProperty("sumAdu").GetUInt64(), stats.Sum);
-            Assert.AreEqual(frame.GetProperty("zeroCount").GetInt64(), stats.ZeroCount);
-            Assert.AreEqual(frame.GetProperty("whiteLevelCount").GetInt64(), stats.SensorClipping.Count);
-            Assert.AreEqual(ExposureMeasurementStatus.Usable, result.Sources.Status, result.Sources.Reason);
-            Assert.IsNotEmpty(result.Sources.Detections);
+            var expected = targets.Select(target => new PixelPoint(target.X + shift.X, target.Y + shift.Y)).ToArray();
+            var bytes = Generate(layout, (x, y) =>
+            {
+                double sample = 91;
+                for (var index = 0; index < targets.Length; index++)
+                {
+                    var target = targets[index];
+                    // The delivered tile is explicitly B G / G R, independent of the decoder being exercised.
+                    var amplitude = !bayer ? (target.Red + target.Green + target.Blue) / 3d :
+                        (x % 2, y % 2) switch { (0, 0) => target.Blue, (1, 1) => target.Red, _ => target.Green };
+                    sample += Gaussian(x, y, expected[index], target.Sigma, amplitude);
+                }
+                return (ushort)Math.Round(sample);
+            });
+            await AssertGeometry(layout, bytes, expected, bayer);
         }
     }
 
-    [TestMethod]
-    public async Task GeometryCorporaUseDeliveredPixelsAndOddOriginChangesRealColorResponse()
+    internal static async Task AssertGeometry(FrameLayoutDescriptor layout, byte[] bytes,
+        IReadOnlyList<PixelPoint> expected, bool bayer)
     {
-        var root = CorpusDirectory("geometry");
-        using var oracle = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(root, "geometry-oracle.json")));
-        var sources = oracle.RootElement.GetProperty("sourcesAt103").EnumerateArray()
-            .Select(source => new PixelPoint(source[0].GetDouble(), source[1].GetDouble())).ToArray();
-        foreach (var frame in oracle.RootElement.GetProperty("frames").EnumerateArray())
+        var raw = CreateRaw(layout, bytes);
+        var linear = await Normalize(raw);
+        var result = await Run(raw, linear, Bind(raw, linear));
+        Assert.AreEqual(bayer ? BayerPattern.Bggr : null, result.Sources.LocalBayerPattern);
+        Assert.AreEqual(ExposureMeasurementStatus.Usable, result.Sources.Status);
+        Assert.HasCount(expected.Count, result.Sources.Detections);
+        var matched = new HashSet<int>();
+        foreach (var point in expected)
         {
-            var name = frame.GetProperty("file").GetString()!;
-            var bayer = name.StartsWith("bayer-", StringComparison.Ordinal);
-            var bytes = await File.ReadAllBytesAsync(Path.Combine(root, name));
-            Assert.AreEqual(frame.GetProperty("sha256").GetString(), Convert.ToHexStringLower(SHA256.HashData(bytes)));
-            var shift = frame.GetProperty("inputPositionMinusReference103");
-            var expected = sources.Select(source => new PixelPoint(source.X + shift[0].GetDouble(), source.Y + shift[1].GetDouble())).ToArray();
-            var layout = Layout(160, 128, bayer);
-            var raw = CreateRaw(layout, bytes);
-            var linear = await Normalize(raw);
-            var result = await Run(raw, linear, Bind(raw, linear));
-            Assert.AreEqual(bayer ? BayerPattern.Bggr : null, result.Sources.LocalBayerPattern, name);
-            Assert.AreEqual(ExposureMeasurementStatus.Usable, result.Sources.Status, name);
-            foreach (var point in expected)
-                AssertNear(result.Sources.Detections, point, bayer ? 0.65 : 0.20);
-            if (bayer)
+            var detection = Nearest(result.Sources.Detections, point);
+            Assert.IsTrue(matched.Add(detection.Index), "Each expected source needs its own detection.");
+            AssertNear(result.Sources.Detections, point, bayer ? 0.65 : 0.20);
+        }
+
+        if (bayer)
+        {
+            var red = Nearest(result.Sources.Detections, expected[0]);
+            var blue = Nearest(result.Sources.Detections, expected[2]);
+            Assert.IsGreaterThan(blue.Flux, red.Flux);
+
+            var wrong = CreateRaw(layout with
             {
-                var red = Nearest(result.Sources.Detections, expected[0]);
-                var blue = Nearest(result.Sources.Detections, expected[2]);
-                Assert.IsGreaterThan(blue.Flux, red.Flux, name);
-                if (name == "bayer-103.bin")
-                {
-                    var wrong = CreateRaw(layout with
-                    {
-                        Readout = layout.Readout! with { RoiX = 0, RoiY = 0, CfaOriginX = 0, CfaOriginY = 0 }
-                    }, bytes);
-                    var wrongLinear = await Normalize(wrong);
-                    var wrongPhase = await Run(wrong, wrongLinear, Bind(wrong, wrongLinear));
-                    Assert.IsLessThan(Nearest(wrongPhase.Sources.Detections, expected[2]).Flux,
-                        Nearest(wrongPhase.Sources.Detections, expected[0]).Flux);
-                }
-            }
+                Readout = layout.Readout! with { RoiX = 0, RoiY = 0, CfaOriginX = 0, CfaOriginY = 0 }
+            }, bytes);
+            var wrongLinear = await Normalize(wrong);
+            var wrongPhase = await Run(wrong, wrongLinear, Bind(wrong, wrongLinear));
+            Assert.IsLessThan(Nearest(wrongPhase.Sources.Detections, expected[2]).Flux,
+                Nearest(wrongPhase.Sources.Detections, expected[0]).Flux);
         }
     }
 
@@ -376,15 +473,7 @@ public sealed class ExposureMeasurementTests
     private static StellarDetection Nearest(IReadOnlyList<StellarDetection> detections, PixelPoint expected)
         => detections.MinBy(item => Math.Pow(item.Pixel.X - expected.X, 2) + Math.Pow(item.Pixel.Y - expected.Y, 2))!;
 
-    private static string CorpusDirectory(string name)
-    {
-        var root = Environment.GetEnvironmentVariable(CorpusVariable);
-        if (string.IsNullOrWhiteSpace(root))
-            Assert.Inconclusive($"Set {CorpusVariable} to the retained exposure evidence root.");
-        return Path.Combine(root!, name);
-    }
-
-    private static FrameLayoutDescriptor Layout(int width, int height, bool bayer = false)
+    internal static FrameLayoutDescriptor Layout(int width, int height, bool bayer = false)
         => new(width, height, width * 2, bayer ? CameraPixelFormat.BayerRggb16 : CameraPixelFormat.Mono16,
             FrameByteOrder.LittleEndian, 12, 16, FrameSamplePacking.ByteAligned,
             bayer ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None, 64, 4095, width * height * 2L)
@@ -405,7 +494,7 @@ public sealed class ExposureMeasurementTests
         return bytes;
     }
 
-    private static ProcessingArtifact CreateRaw(FrameLayoutDescriptor layout, byte[] bytes, Guid? capture = null)
+    internal static ProcessingArtifact CreateRaw(FrameLayoutDescriptor layout, byte[] bytes, Guid? capture = null)
         => new(Guid.NewGuid(), FrameArtifactRole.Raw, "source", ProcessingIdentity.CreateRecipeIdentity(RawRecipe).IdentitySha256,
             "application/x-hvo-frame", layout, bytes, ExposureTime, TimeSpan.FromSeconds(20), Compatibility)
         {
@@ -414,7 +503,7 @@ public sealed class ExposureMeasurementTests
             RecipeDescriptor = RawRecipe
         };
 
-    private static ExposureMeasurementInputV1 Bind(ProcessingArtifact raw, ProcessingArtifact? linear,
+    internal static ExposureMeasurementInputV1 Bind(ProcessingArtifact raw, ProcessingArtifact? linear,
         ExposureCalibrationDisposition disposition = ExposureCalibrationDisposition.NormalizationOnly, string? reason = null)
         => new(Source(raw), linear is null ? null : Source(linear), disposition, reason, Compatibility.Orientation, 2.4);
 
@@ -423,7 +512,7 @@ public sealed class ExposureMeasurementTests
             ProcessingIdentity.ComputePayloadSha256(artifact.Payload), artifact.RecipeIdentitySha256,
             artifact.Role == FrameArtifactRole.Raw ? null : artifact.ContentIdentitySha256, artifact.Layout!);
 
-    private static async Task<ProcessingArtifact> Normalize(ProcessingArtifact raw)
+    internal static async Task<ProcessingArtifact> Normalize(ProcessingArtifact raw)
         => ProductArtifact(await Produce(new(BuiltInProcessingRecipes.LinearNormalization,
             JsonSerializer.SerializeToElement(new LinearNormalizationOptions()), ProcessingInputSelector.Raw(raw.Variant),
             [raw], "qualified-linear-v1")), raw);
@@ -483,7 +572,7 @@ public sealed class ExposureMeasurementTests
         return outcome.Products.Single();
     }
 
-    private static async Task<ExposureMeasurementV1> Run(ProcessingArtifact raw, ProcessingArtifact? linear, ExposureMeasurementInputV1 input)
+    internal static async Task<ExposureMeasurementV1> Run(ProcessingArtifact raw, ProcessingArtifact? linear, ExposureMeasurementInputV1 input)
         => ExposureMeasurementProducts.Read(await Produce(ExposureMeasurementProducts.Request(input, raw, linear)));
 
     private sealed record RetainedReader(LinearExposureLookup Linear, ExposureProductLookup Product) : IExposureProductReader
