@@ -89,3 +89,25 @@ it is not permission to change a frozen window's coverage. Use the evidence
 reader to verify layout, checksums and contributor lineage when reopening, and
 retain both endpoints' plate dependencies if a published trail will use their
 map. Physical-camera accuracy is not qualified by the virtual checks.
+
+## VirtualSky evidence envelope
+
+The actual sensor-pixel comparison uses a verified equidistant VirtualSky
+catalog and retained plate pairs. The sampled cells include 1 s native
+Mono16 at 60 s spacing with three exposures, 20 s native Mono16 at 120 s
+spacing with three exposures, and 1 s native RGGB16 at 30 s spacing with
+five exposures. The native Bayer comparison scores red, green and blue
+separately. One-second Mono16 mirror and roll use the same three-exposure
+comparison. Mono16 ROI with 2×2 digital-average binning uses an independent
+delivered-coordinate grid and coverage checks at 120 s spacing.
+
+The 20 s, 60 s spacing controls exercise a partially registered Mono16
+window and a Bayer single-exposure fallback. Those controls cover rejection
+and held-out geometry where a verified map is available. The positive
+sharpness and aperture-code comparisons use isolated apertures that have
+all contributors and at least 3 px between the first and last predicted
+placements. A positive 20 s native Bayer stack, 60 s stacked exposures and
+physical-camera accuracy are outside the measured envelope. Aperture-code
+ratios characterize the selected VirtualSky cells. Integrated flux and
+automatic mixing across acquisition settings require a defined product
+policy and a separately validated recipe.

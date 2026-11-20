@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Numerics;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -19,50 +20,60 @@ public sealed class CenteredRegistrationVirtualPixelsTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
     private static readonly Guid Run = new("e473de98-45b7-4198-9aae-f22c918424ed");
-    private static readonly int[] CadenceOffsets = [-60, 0, 60];
     private const string LinearVariant = "centered-qualified";
 
     // Fix the cells, apertures and diagnostic thresholds before scoring. These are
     // VirtualSky intensity diagnostics, not a promise of integrated-flux conservation.
     [TestMethod]
-    [DataRow(1, false)]
-    [DataRow(20, false)]
-    [DataRow(1, true)]
-    [DataRow(20, true)]
-    public async Task NativeSensorPixelsCompareRegisteredAndOrdinaryMean(int seconds, bool bayer)
+    [DataRow("mono-native", 1, 60, 3)]
+    [DataRow("mono-native", 20, 60, 3)]
+    [DataRow("mono-native", 20, 120, 3)]
+    [DataRow("cfa-native", 1, 30, 5)]
+    [DataRow("cfa-native", 20, 60, 3)]
+    [DataRow("mono-roi-bin2", 1, 120, 3)]
+    [DataRow("mono-mirror", 1, 60, 3)]
+    [DataRow("mono-roll", 1, 60, 3)]
+    public async Task SensorPixelsCompareRegisteredAndOrdinaryMean(string profileName, int seconds, int cadenceSeconds, int slotCount)
     {
         var token = TestContext.CancellationToken;
+        var cadence = TimeSpan.FromSeconds(cadenceSeconds);
+        var firstSlot = -(slotCount / 2);
         var catalog = VirtualAstrometryQualificationTests.Snapshot().Catalog;
         var solverCatalog = await catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries, token).ConfigureAwait(false);
-        var profile = VirtualAstrometryFixture.Profiles(110201).Single(item => item.Name == (bayer ? "cfa-native" : "mono-native"));
+        var profile = VirtualAstrometryFixture.Profiles(110201, VirtualAstrometryFixture.Families[0])
+            .Single(item => item.Name == profileName);
         var rig = profile.Config.Rig;
+        var bayer = rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16;
         var camera = new CameraKey(profile.Config.AgentId!, profile.Name);
-        var clock = new ExposureTestTimeProvider(Epoch.AddSeconds(CadenceOffsets[0]), autoAdvance: true);
+        var clock = new ExposureTestTimeProvider(Epoch + firstSlot * cadence, autoAdvance: true);
         var module = new VirtualSkyCameraModule(clock, catalog, new ProjectedSceneStore());
         await using var lifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(profile.Config, token).ConfigureAwait(false);
         var exposure = TimeSpan.FromSeconds(seconds);
         var rows = new List<Row>();
-        foreach (var offset in CadenceOffsets)
+        for (var slot = firstSlot; slot <= -firstSlot; slot++)
         {
-            var request = VirtualAstrometryFixture.Request(Epoch.AddSeconds(offset), exposure);
+            var start = Epoch + slot * cadence;
+            var request = VirtualAstrometryFixture.Request(start, exposure) with { TargetInterval = cadence };
             var result = await module.CaptureAsync(request, token).ConfigureAwait(false);
-            var measured = await PrepareAsync(profile.Config, camera, rows.Count + 102, request, result, token).ConfigureAwait(false);
+            var measured = await PrepareAsync(profile.Config, camera, 103 + slot, request, result, token).ConfigureAwait(false);
+            Assert.AreEqual(start, measured.Pin.ExposureStartedUtc);
             rows.Add(await AddPlateAsync(measured, rig, catalog, solverCatalog, token).ConfigureAwait(false));
-            clock.Advance(TimeSpan.FromSeconds(60) - exposure);
+            clock.Advance(cadence - exposure);
         }
 
-        var slots = new CenteredStackSlot[5];
-        slots[0] = new(-2, Epoch.AddSeconds(-120), CenteredSlotState.Missing, null, null);
-        slots[4] = new(2, Epoch.AddSeconds(120), CenteredSlotState.Missing, null, null);
-        for (var i = 0; i < rows.Count; i++)
+        var slots = Enumerable.Range(-2, 5).Select(slot =>
         {
-            var row = rows[i];
-            slots[i + 1] = new(i - 1, row.Pin.ExposureStartedUtc, CenteredSlotState.Ready, row.Pin.Key.CaptureId, row.Pin);
-        }
-        var center = rows[1];
+            var index = slot - firstSlot;
+            return index < 0 || index >= rows.Count
+                ? new CenteredStackSlot(slot, Epoch + slot * cadence, CenteredSlotState.Missing, null, null)
+                : new CenteredStackSlot(slot, rows[index].Pin.ExposureStartedUtc, CenteredSlotState.Ready,
+                    rows[index].Pin.Key.CaptureId, rows[index].Pin);
+        }).ToArray();
+        var center = rows[-firstSlot];
+        var close = slots[^1].ExpectedStartUtc.AddSeconds(30);
         var plan = new CenteredStackPlanV1(camera, Run, "virtual-native-110201", center.Pin.Key.CaptureId,
-            center.Pin.Linear.ArtifactId, Epoch.AddSeconds(150), Epoch.AddSeconds(150), "fixed-three-visible-slots", slots);
+            center.Pin.Linear.ArtifactId, close, close, "fixed-virtual-sensor-series", slots);
         var artifacts = rows.SelectMany(row => new[] { row.Raw, row.Linear, row.Mask, row.Measurement }.Concat(row.Plate)).ToArray();
         var aperture = RigProjectionContextFactory.Create(rig);
         var reader = new CenteredStackRetainedInputReader(new Settlements(rows),
@@ -79,46 +90,137 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         var byId = artifacts.ToDictionary(artifact => artifact.ArtifactId);
         var planes = stack.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
         evidence.VerifyPlanes(planes, token);
-        var rejectedPlates = rows.Count(row => !row.HasVerifiedPlate);
-        if (seconds == 20 && rejectedPlates > 0)
+        TestContext.WriteLine($"retained input bytes={artifacts.Sum(artifact => (long)artifact.Payload.Length)}, artifact count={artifacts.Length}; {statuses}");
+        var rejectionControl = seconds == 20 && cadenceSeconds == 60;
+        if (rejectionControl)
         {
             // The admission-owned measurement/association pipeline is not the #1168
             // measurer. A rejected verified-exposure enrollment is not a long-stack pass.
             // This fixed cell has no valid relative fit at 60 s spacing if the plate is absent.
-            TestContext.WriteLine($"20s rejection control: {rejectedPlates}/3 plates rejected; {statuses}");
+            TestContext.WriteLine($"20s rejection control: {rows.Count(row => !row.HasVerifiedPlate)}/{rows.Count} plates rejected");
             Assert.IsTrue(evidence.Sources.Any(source => source.Plate is { AssessmentReason: not "accepted" }));
-            Assert.IsTrue(evidence.Sources.Any(source => source.Reason == CenteredRegistrationReason.RegistrationRejected));
-            foreach (var source in evidence.Sources.Where(source => source.Reason == CenteredRegistrationReason.RegistrationRejected))
+            var rejected = evidence.Sources.Where(source => source.Reason == CenteredRegistrationReason.RegistrationRejected).ToArray();
+            Assert.HasCount(bayer ? 2 : 1, rejected, statuses);
+            foreach (var source in rejected)
             {
                 Assert.IsNull(CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, source.Offset, byId));
             }
-            if (evidence.Disposition != CenteredStackDisposition.Registered)
+            if (bayer)
             {
                 Assert.AreEqual(CenteredStackDisposition.SingleExposure, evidence.Disposition);
                 return;
             }
+            var verified = Assert.ContainsSingle(evidence.Sources.Where(source => source.Offset != 0 &&
+                source.Reason == CenteredRegistrationReason.Contributed));
+            Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, verified.Method, statuses);
         }
         else
         {
-            Assert.AreEqual(3 * exposure.Ticks, evidence.TotalIntegrationTicks, statuses);
-            Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, evidence.Sources[1].Method);
-            Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, evidence.Sources[3].Method);
+            Assert.AreEqual(slotCount * exposure.Ticks, evidence.TotalIntegrationTicks, statuses);
+            foreach (var source in evidence.Sources.Where(source => source.Offset != 0 && source.CaptureId.HasValue))
+            {
+                Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, source.Method, statuses);
+            }
         }
         Assert.AreEqual(CenteredStackDisposition.Registered, evidence.Disposition, statuses);
-        var contributing = rows.Where((_, index) => evidence.Sources[index + 1].Reason == CenteredRegistrationReason.Contributed).ToArray();
+        var contributing = rows.Where(row => evidence.Sources.Any(source =>
+            source.CaptureId == row.Pin.Key.CaptureId && source.Reason == CenteredRegistrationReason.Contributed)).ToArray();
         Assert.AreEqual(contributing.Length * exposure.Ticks, evidence.TotalIntegrationTicks, statuses);
         var ordinaryRequest = new ProcessingExecutionRequest(BuiltInProcessingRecipes.RollingMean, default,
             ProcessingInputSelector.Calibrated(LinearVariant), contributing.Select(row => row.Linear).ToArray(), "ordinary");
-        var ordinary = await MeasureAsync(process, "ordinary", () => ComparePlaneAsync(ordinaryRequest, bayer, token)).ConfigureAwait(false);
-        var plane = planes.Single(product => product.Variant == (bayer ? "registered-green" : "registered-mono"));
-        if (bayer)
-        {
-            Assert.HasCount(3, planes[..^1].Select(channel => channel.ChecksumSha256).Distinct().ToArray());
-        }
+        var ordinary = await MeasureAsync(process, "ordinary", () => ComparePlanesAsync(ordinaryRequest, bayer, token)).ConfigureAwait(false);
+        var channels = bayer ? new[] { "red", "green", "blue" } : ["mono"];
+        var displayPlanes = channels.Select(channel => planes.Single(product => product.Variant == $"registered-{channel}")).ToArray();
+        Assert.HasCount(channels.Length, displayPlanes.Select(channel => channel.ChecksumSha256).Distinct().ToArray());
         var support = planes.Single(plane => plane.MediaType == CenteredRegisteredStackEvidence.SupportMediaType);
-        Assert.AreEqual((byte)0, support.Payload.Span[0]); // outside the declared optical aperture
-        Score(catalog.Query(new(5, 2000)), rig, contributing, evidence, plane, support, ordinary, exposure, byId,
-            requireSharpness: contributing.Length == 3);
+        VerifyCoverage(rig, center, evidence, support);
+        if (profileName == "mono-roi-bin2")
+        {
+            ScoreGrid(rig, center, contributing, evidence, byId);
+        }
+        else
+        {
+            Score(catalog.Query(new(5, 2000)), rig, contributing, evidence, displayPlanes, support, ordinary, exposure, byId,
+                requireSharpness: !rejectionControl);
+        }
+    }
+
+    // Binning this crop leaves too few isolated stellar apertures for the fixed photometry sample.
+    // Compare the retained map against independent rays on the delivered lattice.
+    private void ScoreGrid(CameraRigConfig rig, Row center, Row[] rows, CenteredRegisteredStackEvidence evidence,
+        IReadOnlyDictionary<Guid, ProcessingArtifact> retained)
+    {
+        var layout = center.Raw.Layout!;
+        foreach (var row in rows.Where(row => row.Pin.Key != center.Pin.Key))
+        {
+            var source = evidence.Sources.Single(item => item.CaptureId == row.Pin.Key.CaptureId);
+            var map = CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, source.Offset, retained)!;
+            var count = 0;
+            var maximumError = 0d;
+            for (var y = 1; y < 8; y++)
+            {
+                for (var x = 1; x < 8; x++)
+                {
+                    var reference = new PixelPoint(x * layout.Width / 8.0, y * layout.Height / 8.0);
+                    if (!VirtualAstrometryReference.IsApertureInterior(rig, reference, 8) ||
+                        VirtualAstrometryReference.Unproject(rig, reference) is not { } ray)
+                    {
+                        continue;
+                    }
+                    var equatorial = VirtualAstrometryReference.FromEnu(ray, center.Midpoint, VirtualAstrometryFixture.Observer);
+                    var sourceRay = VirtualAstrometryReference.ToEnu(equatorial, row.Midpoint, VirtualAstrometryFixture.Observer);
+                    if (VirtualAstrometryReference.Project(rig, sourceRay) is not { } expectedSource)
+                    {
+                        continue;
+                    }
+                    var mapped = map.SourceToReference(expectedSource);
+                    Assert.IsNotNull(mapped);
+                    maximumError = Math.Max(maximumError, VirtualAstrometryReference.Distance(reference, mapped.Value));
+                    count++;
+                }
+            }
+            TestContext.WriteLine($"ROI+bin2 source {source.Offset}: independent grid n={count}, maximum error={maximumError:F3} px");
+            Assert.IsGreaterThanOrEqualTo(24, count);
+            Assert.IsLessThan(.75, maximumError);
+        }
+    }
+
+    private void VerifyCoverage(CameraRigConfig rig, Row center, CenteredRegisteredStackEvidence evidence, ProcessingProduct support)
+    {
+        var layout = center.Raw.Layout!;
+        Assert.IsTrue(FrameWhiteThreshold.TryResolveStored(layout, out var white, out var reason), reason);
+        var counts = new int[6];
+        var outside = 0;
+        var clippedCenter = 0;
+        var centerBit = 1 << 2;
+        var mask = support.Payload.Span;
+        var raw = center.Raw.Payload.Span;
+        for (var y = 0; y < layout.Height; y++)
+        {
+            var row = raw.Slice(y * layout.StrideBytes, layout.Width * sizeof(ushort));
+            for (var x = 0; x < layout.Width; x++)
+            {
+                var bits = mask[y * layout.Width + x];
+                counts[BitOperations.PopCount((uint)bits)]++;
+                if (BinaryPrimitives.ReadUInt16LittleEndian(row[(x * sizeof(ushort))..]) >= white)
+                {
+                    Assert.AreEqual(0, bits & centerBit, $"clipped center sample ({x},{y})");
+                    clippedCenter++;
+                }
+                // Leave two pixels of clearance for independently evaluated projection and stencil boundaries.
+                if (x % 17 == 0 && y % 17 == 0 &&
+                    !VirtualAstrometryReference.IsApertureInterior(rig, new(x + .5, y + .5), -2))
+                {
+                    Assert.AreEqual((byte)0, bits, $"sample outside the reference aperture ({x},{y})");
+                    outside++;
+                }
+            }
+        }
+        Assert.IsGreaterThan(0, outside);
+        Assert.AreEqual(evidence.ValidPixelCount, counts.Skip(2).Sum());
+        Assert.IsGreaterThan(0, counts[evidence.Sources.Count(source => source.Reason == CenteredRegistrationReason.Contributed)]);
+        TestContext.WriteLine($"Coverage by contribution count 0–5: {string.Join(", ", counts)}; " +
+            $"independent exterior probes={outside}, sensor-white center exclusions={clippedCenter}");
     }
 
     private async ValueTask<T> MeasureAsync<T>(Process process, string name, Func<ValueTask<T>> operation)
@@ -136,15 +238,15 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         return value;
     }
 
-    private static async ValueTask<ReadOnlyMemory<byte>> ComparePlaneAsync(
+    private static async ValueTask<ReadOnlyMemory<byte>[]> ComparePlanesAsync(
         ProcessingExecutionRequest request, bool bayer, CancellationToken token)
     {
         var ordinary = await ProduceAsync(request, token).ConfigureAwait(false);
         if (!bayer)
         {
-            return ordinary.Payload;
+            return [ordinary.Payload];
         }
-        // The baseline averages the mosaic at detector coordinates, then reconstructs for the same green-channel score.
+        // The baseline averages the mosaic at detector coordinates, then reconstructs for each channel's score.
         var layout = ordinary.Layout!;
         var size = layout.Width * layout.Height;
         var values = new double[size];
@@ -156,28 +258,34 @@ public sealed class CenteredRegistrationVirtualPixelsTests
             mask[i] = values[i] < white;
         }
         var rgb = LinearBayerReconstruction.Reconstruct(values, mask, layout.Width, layout.Height, cancellationToken: token);
-        var green = new byte[size * 2];
-        for (var i = 0; i < size; i++)
+        return [Encode(rgb.Red), Encode(rgb.Green), Encode(rgb.Blue)];
+
+        ReadOnlyMemory<byte> Encode(ReadOnlyMemory<double> channel)
         {
-            BinaryPrimitives.WriteUInt16LittleEndian(green.AsSpan(i * 2), (ushort)Math.Round(rgb.Green.Span[i], MidpointRounding.AwayFromZero));
+            var plane = new byte[size * 2];
+            for (var i = 0; i < size; i++)
+            {
+                BinaryPrimitives.WriteUInt16LittleEndian(plane.AsSpan(i * 2),
+                    (ushort)Math.Round(channel.Span[i], MidpointRounding.AwayFromZero));
+            }
+            return plane;
         }
-        return green;
     }
 
     private void Score(IReadOnlyList<CelestialCatalogObject> catalogStars, CameraRigConfig rig, Row[] rows, CenteredRegisteredStackEvidence evidence,
-        ProcessingProduct plane, ProcessingProduct support, ReadOnlyMemory<byte> ordinary, TimeSpan exposure,
+        ProcessingProduct[] planes, ProcessingProduct support, ReadOnlyMemory<byte>[] ordinary, TimeSpan exposure,
         IReadOnlyDictionary<Guid, ProcessingArtifact> retained, bool requireSharpness)
     {
         var positions = rows.Select(row => VirtualAstrometryReference.Trails(rig, row.Midpoint, exposure, catalogStars)
             .ToDictionary(trail => trail.Star.Id, trail => trail.Mid, StringComparer.Ordinal)).ToArray();
-        var width = plane.Layout!.Width;
-        var height = plane.Layout.Height;
+        var width = support.Layout!.Width;
+        var height = support.Layout.Height;
         var slots = rows.Select(row => evidence.Sources.Single(source => source.CaptureId == row.Pin.Key.CaptureId).Offset).ToArray();
         var centerIndex = Array.IndexOf(slots, 0);
         var expectedSupport = (byte)slots.Sum(offset => 1 << (offset + 2));
         var maps = slots.Select(offset => CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, offset, retained)!).ToArray();
         var placement = new List<double>();
-        var candidate = new List<(double WidthRatio, double FluxRatio)>();
+        var candidates = planes.Select(_ => new List<(double WidthRatio, double FluxRatio)>()).ToArray();
         foreach (var star in catalogStars)
         {
             var points = positions.Select(row => row.GetValueOrDefault(star.Id)).ToArray();
@@ -197,13 +305,15 @@ public sealed class CenteredRegistrationVirtualPixelsTests
             {
                 continue;
             }
-            var mean = Profile(ordinary, width, center);
-            var registered = Profile(plane.Payload, width, center);
-            if (mean.Flux < 500 || registered.Flux < 500)
+            for (var channel = 0; channel < planes.Length; channel++)
             {
-                continue;
+                var mean = Profile(ordinary[channel], width, center);
+                var registered = Profile(planes[channel].Payload, width, center);
+                if (mean.Flux >= 500 && registered.Flux >= 500)
+                {
+                    candidates[channel].Add((registered.Width / mean.Width, registered.Flux / mean.Flux));
+                }
             }
-            candidate.Add((registered.Width / mean.Width, registered.Flux / mean.Flux));
         }
 
         Assert.IsGreaterThanOrEqualTo(8, placement.Count);
@@ -211,20 +321,23 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         TestContext.WriteLine($"Independent placement n={placement.Count}, median={mappingError:F3} px; valid pixels={evidence.ValidPixelCount}, " +
             $"support sha256={support.ChecksumSha256}");
         Assert.IsLessThan(1.25, mappingError);
-        if (!requireSharpness && candidate.Count < 8)
+        for (var channel = 0; channel < planes.Length; channel++)
         {
-            // Do not weaken the independent displacement floor because one input failed.
-            TestContext.WriteLine($"Only {candidate.Count} targets reached the predeclared 3 px displacement; " +
-                "no PSF or aperture-code qualification for this partial window.");
-            return;
+            var candidate = candidates[channel];
+            if (!requireSharpness && candidate.Count < 8)
+            {
+                TestContext.WriteLine($"Only {candidate.Count} targets reached the predeclared 3 px displacement; " +
+                    "no PSF or aperture-code qualification for this partial window.");
+                continue;
+            }
+            Assert.IsGreaterThanOrEqualTo(8, candidate.Count, planes[channel].Variant);
+            var widthRatio = Median(candidate.Select(item => item.WidthRatio));
+            var fluxRatio = Median(candidate.Select(item => item.FluxRatio));
+            TestContext.WriteLine($"{planes[channel].Variant} diagnostic n={candidate.Count}, PSF RMS width ratio={widthRatio:F3}, " +
+                $"aperture-code flux ratio={fluxRatio:F3}");
+            Assert.IsLessThan(.95, widthRatio);
+            Assert.IsTrue(fluxRatio is >= .80 and <= 1.20);
         }
-        Assert.IsGreaterThanOrEqualTo(8, candidate.Count);
-        var widthRatio = Median(candidate.Select(item => item.WidthRatio));
-        var fluxRatio = Median(candidate.Select(item => item.FluxRatio));
-        TestContext.WriteLine($"Independent photometric diagnostic n={candidate.Count}, PSF RMS width ratio={widthRatio:F3}, " +
-            $"aperture-code flux ratio={fluxRatio:F3}");
-        Assert.IsLessThan(.95, widthRatio);
-        Assert.IsTrue(fluxRatio is >= .80 and <= 1.20);
     }
 
     private static bool FullAperture(ReadOnlyMemory<byte> support, int width, PixelPoint center, byte expectedSupport)
