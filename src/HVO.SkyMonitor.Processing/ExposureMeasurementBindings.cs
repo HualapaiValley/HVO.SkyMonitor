@@ -176,7 +176,7 @@ public static class ExposureMeasurementBindings
 
         var layout = calibrated
             ? CalibrationMasterBuilder.CreateNormalizedLayout(raw.Layout)
-            : ProcessingRecipeSupport.CreatePackedLayout(raw.Layout);
+            : CenteredNormalizationLayout.CreateExpectedPackedLayout(raw.Layout);
         if (!ThresholdMatches(provenance.RawWhiteThreshold, raw.ArtifactId, raw.Layout) ||
             !ThresholdMatches(provenance.LinearWhiteThreshold, product.ArtifactId, layout))
             throw Invalid("linear clipping thresholds");

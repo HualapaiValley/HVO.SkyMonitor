@@ -106,7 +106,9 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             ExposureCalibrationDisposition.NormalizationOnly =>
                 producer is { Name: BuiltInProcessingRecipes.LinearNormalization, SemanticVersion: "1.0.0",
                     ImplementationVersion: "linear-normalization-none-v1" } &&
-                lineage.Count == 1 && linear.Layout == ProcessingRecipeSupport.CreatePackedLayout(input.Raw.Layout),
+                lineage.Count == 1 && linear.Layout == (input.Exposure is null
+                    ? ProcessingRecipeSupport.CreatePackedLayout(input.Raw.Layout)
+                    : CenteredNormalizationLayout.CreateExpectedPackedLayout(input.Raw.Layout)),
             ExposureCalibrationDisposition.ReferenceCalibrated =>
                 producer is { Name: BuiltInProcessingRecipes.ReferenceCalibration, SemanticVersion: "1.0.0",
                     ImplementationVersion: "reference-calibration-linear16-v2" } &&
