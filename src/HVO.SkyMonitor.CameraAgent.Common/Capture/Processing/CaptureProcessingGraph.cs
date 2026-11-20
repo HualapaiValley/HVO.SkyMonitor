@@ -94,6 +94,12 @@ internal interface IRequiredCaptureProcessingDependencies
     IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements { get; }
 }
 
+/// <summary>Declares a centered step with an explicit raw primary and typed produced inputs.</summary>
+/// <remarks>DependencyRequirements lists produced ports only, in declared binding order.</remarks>
+internal interface ICenteredRawPrimaryCaptureProcessingStep : IRequiredCaptureProcessingDependencies
+{
+}
+
 internal interface ICaptureProcessingArtifactConsumer
 {
     IReadOnlySet<FrameArtifactRole> AcceptedDependencyRoles { get; }

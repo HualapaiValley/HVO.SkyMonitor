@@ -13,7 +13,7 @@ internal sealed class CaptureAstrometryExecutionGate : IDisposable
 }
 
 /// <summary>Explicit sampled background work on admitted raw. Inputs come from the frozen graph and its dependencies.</summary>
-internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
+internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
     MeasuredAstrometryCaptureOptions options, CameraAgentRecipeExecutionAdapter adapter, CaptureAstrometryExecutionGate gate,
     CaptureProcessingPersistence? persistence = null)
     : ConfigurableCaptureProcessingStep<MeasuredAstrometryCaptureOptions>(metadata, options), ICaptureProcessingGraphStep,
@@ -21,6 +21,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
 {
     internal const string Alias = "MeasuredAstrometry";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    protected virtual string AssociationRecipe => BuiltInProcessingRecipes.MeasuredStellarAssociations;
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.MeasuredAstrometry;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
@@ -33,7 +34,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string> { BuiltInProcessingRecipes.ProjectedScene }, new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string> { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+            new HashSet<string> { AssociationRecipe },
             new HashSet<string> { MeasuredStellarAssociationsV1.CurrentSchemaVersion })
     ];
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
@@ -48,6 +49,12 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
+        if (context.Config.CenteredExposure is not null && !context.IsReplayExecution)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.centered-measurement-required"));
+            return;
+        }
+
         var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Astrometry requires durable raw admission.");
         if (context.Config.Pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2)
             throw new InvalidOperationException("Astrometry requires an explicit v2 graph.");
@@ -113,6 +120,15 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
         }
         finally { gate.Semaphore.Release(); }
     }
+}
+
+internal sealed class ExposureAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
+    MeasuredAstrometryCaptureOptions options, CameraAgentRecipeExecutionAdapter adapter, CaptureAstrometryExecutionGate gate,
+    CaptureProcessingPersistence persistence)
+    : MeasuredAstrometryCaptureProcessingStep(metadata, options, adapter, gate, persistence)
+{
+    internal const string CenteredAlias = "ExposureMeasuredAstrometry";
+    protected override string AssociationRecipe => ExposureAssociationProducts.RecipeName;
 }
 
 public sealed class MeasuredAstrometryCaptureOptions : IValidatableObject

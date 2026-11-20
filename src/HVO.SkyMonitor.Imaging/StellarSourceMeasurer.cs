@@ -149,17 +149,6 @@ public sealed class StellarMeasurementResult
     public double? MedianNoiseSigma { get; }
     public string AlgorithmVersion { get; } = StellarSourceMeasurer.AlgorithmVersion;
     public string SettingsIdentitySha256 { get; }
-
-    /// <summary>Projects previously validated evidence back into the shared matcher input without detecting again.</summary>
-    public static StellarMeasurementResult FromRetainedEvidence(
-        bool completed,
-        IReadOnlyList<StellarDetection> detections,
-        IReadOnlyList<StellarMeasurementExclusion> exclusions,
-        int candidateCount,
-        string? settingsIdentitySha256)
-        => new(completed ? StellarMeasurementStatus.Completed : StellarMeasurementStatus.CandidateBudgetExceeded,
-            detections.ToList(), exclusions.ToList(), candidateCount, 0, 0, 0, null, null,
-            settingsIdentitySha256 ?? string.Empty);
 }
 
 /// <summary>Bounded, host-neutral measurement of stellar sources from linear monochrome or reconstructed luminance.</summary>

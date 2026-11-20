@@ -13,7 +13,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingStore stagingStore,
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter,
-    CaptureMaintenanceGate? maintenance = null)
+    CaptureMaintenanceGate? maintenance = null,
+    CenteredExposureSceneProvider? centeredScenes = null)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
@@ -98,6 +99,19 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 throw new InvalidDataException("Projected-scene stage schema does not match capture scene evidence.");
             context.RecordCanonicalInput(StageInputName, StagedProjectedSceneDocument.CurrentSchemaVersion,
                 staged.StageIdentitySha256);
+        }
+        else if (context.CenteredExposure is { } centered && centeredScenes is not null)
+        {
+            scene = await centeredScenes.ResolvePresentationAsync(centered, descriptor, Options,
+                provenance?.VirtualExposure?.CelestialMidpointUtc, cancellationToken)
+                .ConfigureAwait(false);
+            if (scene is null)
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.Skipped("scene.frozen-input-unavailable"));
+                return;
+            }
+
+            context.RecordCanonicalInput("centered-predicted-scene", scene.SchemaVersion, scene.SceneIdentitySha256);
         }
         else
         {

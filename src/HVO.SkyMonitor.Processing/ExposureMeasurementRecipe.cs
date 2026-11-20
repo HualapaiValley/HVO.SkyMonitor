@@ -9,27 +9,9 @@ namespace HVO.SkyMonitor.Processing;
 internal static class ExposureSampleCodes
 {
     internal static ExposureClippingV1 Clipping(FrameLayoutDescriptor layout)
-    {
-        if (layout.StoredCodeTransform == FrameStoredCodeTransform.OpaqueContainerV1)
-            return new(null, null, "opaque-stored-code-mapping");
-        if (layout.WhiteLevel is not > 0 || layout.BlackLevel is { } black && black >= layout.WhiteLevel)
-            return new(null, null, "missing-or-invalid-white-level");
-
-        var white = layout.WhiteLevel.Value;
-        if (layout.LevelCodeSpace == FrameLevelCodeSpace.NativeSample)
-        {
-            white = Math.Ceiling(white);
-            white = layout.StoredCodeTransform switch
-            {
-                FrameStoredCodeTransform.LeftShiftedV1 => white * (1 << (layout.ContainerDepthBits - layout.SampleDepthBits)),
-                FrameStoredCodeTransform.FullRangeScaledV1 =>
-                    Math.Round(white * ((1 << layout.ContainerDepthBits) - 1) / ((1 << layout.SampleDepthBits) - 1)),
-                _ => white
-            };
-        }
-
-        return new(checked((ushort)Math.Ceiling(white)), 0, null);
-    }
+        => FrameWhiteThreshold.TryResolveStored(layout, out var white, out var reason)
+            ? new(white, 0, null)
+            : new(null, null, reason);
 
     internal static ushort Read16(ReadOnlySpan<byte> sample, FrameByteOrder order)
         => order == FrameByteOrder.BigEndian

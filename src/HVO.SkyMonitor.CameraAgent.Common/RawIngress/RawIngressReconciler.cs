@@ -218,7 +218,10 @@ internal sealed class RawIngressReconciler(
                 sidecar,
                 descriptor.Timing.ExposureStartedUtc,
                 descriptor.Timing.DurableIngressUtc,
-                EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest));
+                EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest))
+            {
+                CenteredExposure = manifest.CenteredExposure
+            };
             SyncFile(payloadPath);
             SyncFile(sidecarPath);
             SyncDirectory(Path.GetDirectoryName(sidecarPath)!);

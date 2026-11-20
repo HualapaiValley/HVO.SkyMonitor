@@ -421,14 +421,20 @@ internal sealed partial class RawCaptureIngress :
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
         RawCaptureGraphBinding? binding,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        CenteredExposureBindingV1? centered = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(submission);
+        if (configuration.CenteredExposure is not null && (centered is null || binding is null))
+            throw new InvalidOperationException("Centered raw admission requires a frozen graph and dispatched target.");
         if (submission.Result.Frame is not { } frame)
         {
             return null;
         }
+        if (centered is not null && frame.Metadata.Scene?.CaptureGraphRevisionId is { } renderedRevision &&
+            renderedRevision != binding?.Revision.State.RevisionId)
+            throw new RawIngressConflictException("The rendered scene does not match the reserved centered graph.");
         ArgumentException.ThrowIfNullOrWhiteSpace(configuration.AgentId);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var activity = RawIngressTelemetry.ActivitySource.StartActivity("raw-ingress.accept");
@@ -496,6 +502,8 @@ internal sealed partial class RawCaptureIngress :
                     frame.PixelData,
                     identity,
                     CancellationToken.None).ConfigureAwait(false);
+                if (manifest.CenteredExposure != centered)
+                    throw new RawIngressConflictException("Existing immutable capture differs from the centered attempt binding.");
                 if (manifest.CaptureGraphRevisionId is not null && frame.Metadata.Scene is { } retryScene &&
                     (manifest.Scene is null || !string.Equals(
                         CaptureContractJson.ComputeCanonicalJsonSha256(retryScene),
@@ -559,7 +567,7 @@ internal sealed partial class RawCaptureIngress :
             {
                 // Old immutable evidence is adopted above. Every newly published scene-bearing capture must
                 // have staged its canonical product before this boundary; a cache cannot recover after restart.
-                if (frame.Metadata.Scene is { RequiresProjectedScene: false })
+                if (centered is null && frame.Metadata.Scene is { RequiresProjectedScene: false })
                     throw new InvalidOperationException(
                         "Scene-bearing raw capture requires an enabled ProjectedScene node and durable scene staging.");
                 var previewDescriptor = RawCaptureDescriptorFactory.Create(
@@ -573,7 +581,10 @@ internal sealed partial class RawCaptureIngress :
                     previewDescriptor,
                     paths.PayloadRelativePath,
                     frame.Metadata.Scene)
-                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
+                {
+                    CaptureGraphRevisionId = binding?.Revision.State.RevisionId,
+                    CenteredExposure = centered
+                };
                 var validation = previewManifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -597,7 +608,10 @@ internal sealed partial class RawCaptureIngress :
                     descriptor,
                     paths.PayloadRelativePath,
                     frame.Metadata.Scene)
-                { CaptureGraphRevisionId = binding?.Revision.State.RevisionId };
+                {
+                    CaptureGraphRevisionId = binding?.Revision.State.RevisionId,
+                    CenteredExposure = centered
+                };
                 validation = manifest.Validate();
                 if (!validation.IsValid)
                 {
@@ -627,7 +641,10 @@ internal sealed partial class RawCaptureIngress :
                 manifestJson,
                     committedDescriptor.Timing.ExposureStartedUtc,
                     committedDescriptor.Timing.DurableIngressUtc,
-                    EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest));
+                    EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest))
+            {
+                CenteredExposure = centered
+            };
             var committedTiming = submission.Result.AcquisitionTiming is null
                 ? null
                 : submission.Result.AcquisitionTiming with
@@ -848,8 +865,11 @@ internal sealed partial class RawCaptureIngress :
                 var descriptor = manifest.Descriptor;
                 var existingEnvelope = await _journal.ReadRecoveredLaneEnvelopeAsync(entry, cancellationToken)
                     .ConfigureAwait(false);
+                var recoveredConfiguration = manifest.CenteredExposure is { } centered
+                    ? (await _journal.ReadCenteredRunAsync(centered, cancellationToken).ConfigureAwait(false)).Configuration
+                    : existingEnvelope?.Configuration ?? configuration;
                 var prepared = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
-                    (existingEnvelope?.Configuration ?? configuration) with { AgentId = descriptor.Capture.AgentId },
+                    recoveredConfiguration with { AgentId = descriptor.Capture.AgentId },
                     descriptor.Capture.CaptureId,
                     descriptor.Artifact.ArtifactId,
                     descriptor.Timing.DurableIngressUtc,

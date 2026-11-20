@@ -1,6 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
-using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -10,7 +9,7 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
     ExposureMeasurementStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<ExposureMeasurementStepOptions>(metadata, options),
-        ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
+        ICaptureProcessingGraphStep, ICenteredRawPrimaryCaptureProcessingStep
 {
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ExposureMeasurement;
@@ -63,18 +62,44 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
         };
 
         var rig = context.Config.Rig;
-        var projection = RigProjectionContextFactory.Create(rig);
-        var layout = rawDescriptor.Layout;
-        ProjectionContext? aperture = projection.WidthPixels == layout.Width && projection.HeightPixels == layout.Height
-            ? projection : null;
         var input = new ExposureMeasurementInputV1(ExposureMeasurementSourceV1.FromDescriptor(rawDescriptor),
             linearDescriptor is null ? null : ExposureMeasurementSourceV1.FromDescriptor(linearDescriptor),
             disposition, reason, raw.Compatibility.Orientation,
-            rig.Sensor.PixelSizeMicrons > 0 ? rig.Sensor.PixelSizeMicrons : null, rig.Orientation, aperture);
+            rig.Sensor.PixelSizeMicrons > 0 ? rig.Sensor.PixelSizeMicrons : null, rig.Orientation,
+            Aperture(rig, rawDescriptor.Layout));
 
         var outcome = await adapter.ExecuteAsync(context,
             ExposureMeasurementProducts.Request(input, raw, linear), cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
+    }
+
+    internal async ValueTask ProcessAdmittedAsync(CaptureProcessingContext context, LinearExposureLookup settled,
+        LinearExposureInputV1? linear, CameraRigConfig pinnedRig, CancellationToken cancellationToken)
+    {
+        var descriptor = context.ReconstructionDescriptor ??
+            throw new InvalidDataException("Exposure measurement requires admitted raw evidence.");
+        await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
+        var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
+            descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor);
+        if (!string.Equals(RigProjectionContextFactory.CreateProfileHashSha256(pinnedRig),
+                settled.Exposure.Geometry.RigIdentitySha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Pinned exposure geometry differs from the measured capture.");
+        var request = ExposureMeasurementBindings.Request(settled, raw, linear, Aperture(pinnedRig, descriptor.Layout),
+            pinnedRig.Sensor.PixelSizeMicrons > 0 ? pinnedRig.Sensor.PixelSizeMicrons : null);
+        var outcome = await adapter.ExecuteAsync(context, request, cancellationToken).ConfigureAwait(false);
+        context.AddProcessingOutcome(outcome);
+    }
+
+    private static ProjectionContext? Aperture(CameraRigConfig rig, FrameLayoutDescriptor layout)
+    {
+        var native = RigProjectionContextFactory.CreateNative(rig);
+        if (layout.Readout is { } readout)
+        {
+            return readout.NativeWidth == native.WidthPixels && readout.NativeHeight == native.HeightPixels
+                ? RigProjectionContextFactory.CreateReadoutView(native, readout)
+                : null;
+        }
+        return native.WidthPixels == layout.Width && native.HeightPixels == layout.Height ? native : null;
     }
 
     internal static (ProcessingArtifact Artifact, ReconstructionDescriptor Descriptor) BindLinear(CaptureProcessingContext context,

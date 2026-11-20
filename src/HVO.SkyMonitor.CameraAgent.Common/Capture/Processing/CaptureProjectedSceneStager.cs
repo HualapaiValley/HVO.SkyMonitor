@@ -15,6 +15,17 @@ public sealed class CaptureProjectedSceneStager(
     IConstellationTopology? topology = null,
     IPlanetEphemeris? ephemeris = null)
 {
+    private CatalogSnapshotIdentity? FrozenCatalog => catalog is ICelestialCatalogMetadataSource source
+        ? new CatalogSnapshotIdentity(source.CatalogId ?? source.Metadata.Name,
+            source.CatalogPackageVersion ?? source.Metadata.Version, source.Metadata.SchemaVersion,
+            source.PreprocessingVersion, source.Metadata.Checksum)
+        : null;
+
+    internal CenteredSceneResources FrozenResources => new(FrozenCatalog,
+        (catalog as IDeepSkyCatalogSource)?.DeepSky?.Semantics.SnapshotIdentity,
+        topology?.ArtifactSha256 ?? topology?.Metadata.SourceSha256, ephemeris?.ModelVersion,
+        RigProjectionContextFactory.AlgorithmVersion);
+
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,

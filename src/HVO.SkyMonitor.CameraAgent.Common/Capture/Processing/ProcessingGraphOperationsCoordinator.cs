@@ -33,6 +33,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ProcessingReplayWakeup _replayWakeup;
     private readonly ICameraAgentConfigurationAccessor? _configurationAccessor;
     private readonly Func<CameraModuleConfig?>? _currentCaptureProfile;
+    private readonly ICenteredExposureGraphExtension[] _centeredExtensions;
     /// <summary>
     /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
     /// compiles and persists exactly once. Lock order (see <see cref="RawIngressLifecycleLock"/>): callers that hold
@@ -56,7 +57,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         TimeProvider timeProvider,
         ProcessingReplayWakeup replayWakeup,
         ICameraAgentConfigurationAccessor? configurationAccessor = null,
-        Func<CameraModuleConfig?>? currentCaptureProfile = null)
+        Func<CameraModuleConfig?>? currentCaptureProfile = null,
+        IEnumerable<ICenteredExposureGraphExtension>? centeredExtensions = null)
     {
         _pipelineFactory = pipelineFactory;
         _store = store;
@@ -65,6 +67,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         _replayWakeup = replayWakeup;
         _configurationAccessor = configurationAccessor;
         _currentCaptureProfile = currentCaptureProfile;
+        _centeredExtensions = centeredExtensions?.ToArray() ?? [];
     }
 
     public ProcessingGraphAgentCapabilities Capabilities =>
@@ -81,6 +84,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        if (!retainedCapture && configuration.CenteredExposure is not null)
+        {
+            var pipeline = configuration.Pipeline;
+            foreach (var extension in _centeredExtensions) pipeline = extension.Configure(pipeline);
+            configuration = configuration with { Pipeline = pipeline };
+        }
         EnsureExplicitPipeline(configuration.Pipeline);
         await _configurationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -151,7 +160,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken,
         string? revisionId = null)
     {
-        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
+        if (revisionId is null || configuration.CenteredExposure is null)
+            _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
         var revision = revisionId is null
             ? await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false)
             : await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
@@ -190,12 +200,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingGraphRevisionSnapshot revision)
     {
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
-        var executionId = StableExecutionId(new
-        {
-            Class = ProcessingGraphExecutionClass.Live.ToString(),
-            CaptureId = captureId.ToString("N"),
-            RevisionId = revision.State.RevisionId
-        });
+        var executionId = GetLiveExecutionId(captureId, revision.State.RevisionId);
         var durableConfiguration = effectiveConfiguration with
         {
             Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -918,6 +923,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     private static string CanonicalText<T>(T value)
         => Encoding.UTF8.GetString(CanonicalBytes(value));
+
+    internal static Guid GetLiveExecutionId(Guid captureId, string revisionId) => StableExecutionId(new
+    {
+        Class = ProcessingGraphExecutionClass.Live.ToString(),
+        CaptureId = captureId.ToString("N"),
+        RevisionId = revisionId
+    });
 
     private static Guid StableExecutionId<T>(T value)
     {

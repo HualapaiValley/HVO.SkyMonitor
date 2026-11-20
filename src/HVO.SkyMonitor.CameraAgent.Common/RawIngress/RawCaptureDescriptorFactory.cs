@@ -25,6 +25,10 @@ internal static class RawCaptureDescriptorFactory
             submission.Request.RequestedStartUtc.ToUniversalTime().ToString("O"),
             frame.TimestampUtc.ToUniversalTime().ToString("O"),
             frame.Metadata.SourceId);
+        if (configuration.CenteredExposure is { } centered)
+        {
+            key = string.Join('\n', CenteredExposureProfile.CurrentExecutionVersion, centered.CameraId, key);
+        }
         var captureId = CreateStableGuid("capture", key);
         return (captureId, CreateStableGuid("raw-artifact", captureId.ToString("N")));
     }

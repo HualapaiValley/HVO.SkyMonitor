@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
@@ -22,6 +23,29 @@ public sealed class PipelineSummaryPageTests
     private const string RawInput = "$raw";
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
     private static readonly string[] EdgeStageKeys = ["detector-input", "frame-window", "causal-scan", "persist-candidate", "centered-window", "assess"];
+
+    [TestMethod]
+    public void FixedExposureMeasurementShowsInputsWithoutAToggle()
+    {
+        var fixedStep = Node(ExposureMeasurementProducts.StepAlias, enabled: true, required: false, order: 4,
+            [RawInput, "Calibration"]) with
+        {
+            RecipeName = BuiltInProcessingRecipes.ExposureMeasurement,
+            OutputRole = FrameArtifactRole.Metadata,
+            OutputVariant = ExposureMeasurementProducts.Variant
+        };
+        var calibration = Node("Calibration", enabled: true, required: false, order: 3, [RawInput]);
+        var steps = new[] { calibration, fixedStep };
+        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan(steps, steps))));
+        var cut = context.Render<PipelineSummaryPage>();
+        cut.WaitForElement(".ops-pipeline-graph");
+        cut.FindAll(".ops-pipeline-node.step").Single(node =>
+            node.TextContent.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal)).Click();
+        Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
+        Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
+        Assert.Contains("Calibration", cut.Find(".ops-node-facts").TextContent);
+        Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
+    }
 
     [TestMethod]
     public void Render_DrawsConfiguredGraphAndInspectsFirstStepWithoutOptionValues()

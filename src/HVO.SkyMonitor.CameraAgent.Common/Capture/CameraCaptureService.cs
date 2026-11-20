@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
@@ -37,6 +38,7 @@ public sealed class CameraCaptureService(
     ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
     CaptureProjectedSceneStager? projectedSceneStager = null,
     SqliteNamedRigProfileStore? namedRigProfiles = null,
+    SqliteCalibrationLibraryStore? calibrationLibrary = null,
     CameraModuleOwnership? moduleOwnership = null) : BackgroundService
 {
     private readonly ICameraAgentConfigurationAccessor _configurationAccessor = configurationAccessor;
@@ -127,6 +129,10 @@ public sealed class CameraCaptureService(
                 module = _moduleFactory.Create(config.ModuleType);
                 await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
                 await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
+                if (_rawCaptureIngress is RawCaptureIngress durableIngress)
+                    await durableIngress.ReconcileCenteredControlAsync(config, captureToken).ConfigureAwait(false);
+                if (config.CenteredExposure is not null && module is not ICameraBoundExposureCapture)
+                    throw new InvalidOperationException("The selected camera cannot bind centered exposure attempts.");
                 await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
                 if (prepared is not null)
                 {
@@ -164,7 +170,7 @@ public sealed class CameraCaptureService(
 
                 var hostContext = new CaptureHostContext(
                      config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
-                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger);
+                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger, calibrationLibrary);
 
                 var runner = new CameraModuleRunner(
                     module,
@@ -247,6 +253,8 @@ public sealed class CameraCaptureService(
             }
             finally
             {
+                if (_rawCaptureIngress is RawCaptureIngress durableIngress)
+                    durableIngress.RecentCenteredExposures.Deactivate(config);
                 if (module is not null)
                 {
                     // Side-path leases (focus previews) are cancelled and drained before the module is closed.
