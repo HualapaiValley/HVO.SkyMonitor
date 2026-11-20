@@ -206,19 +206,19 @@ internal static class CameraAgentProcessingExecutionProjection
                 node.Required,
                 node.PlanSha256,
                 node.Status,
-                CameraAgentReplayUiService.Sanitize(node.Reason),
+                NodeReason(node.NodeId, node.Reason),
                 node.AttemptCount,
                 node.StartedUtc,
                 node.CompletedUtc,
                 node.Inputs,
                 // Lease owners identify runner processes and stay inside the store.
-                node.Attempts.Select(static attempt => new CameraAgentProcessingNodeAttemptView(
+                node.Attempts.Select(attempt => new CameraAgentProcessingNodeAttemptView(
                     attempt.AttemptNumber,
                     attempt.StartedUtc,
                     attempt.CompletedUtc,
                     attempt.Status,
                     attempt.Outcome?.ToString(),
-                    CameraAgentReplayUiService.Sanitize(attempt.Reason),
+                    NodeReason(node.NodeId, attempt.Reason),
                     attempt.Duration,
                     attempt.ExecutionRoute.ToString())).ToArray(),
                 node.Outputs.Select(static output => output with { AvailabilityReason = CameraAgentReplayUiService.Sanitize(output.AvailabilityReason) }).ToArray())
@@ -232,6 +232,11 @@ internal static class CameraAgentProcessingExecutionProjection
                 MixedGainDiagnosticsUnavailableReason = node.MixedGainDiagnosticsUnavailableReason
             }).ToArray());
     }
+
+    private static string? NodeReason(string nodeId, string? reason)
+        => nodeId == HVO.SkyMonitor.Processing.ExposureMeasurementProducts.StepAlias &&
+            reason == ExposureMeasurementRunRead.PublicationIoReason
+            ? reason : CameraAgentReplayUiService.Sanitize(reason);
 }
 
 internal sealed class CameraAgentProcessingGraphUiService(

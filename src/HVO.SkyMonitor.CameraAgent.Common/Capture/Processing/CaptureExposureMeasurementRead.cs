@@ -5,7 +5,10 @@ using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-public sealed record ExposureMeasurementRunRead(ExposureMeasurementV1? Measurement, string? UnavailableReason, string? LinearExpiryReason = null);
+public sealed record ExposureMeasurementRunRead(ExposureMeasurementV1? Measurement, string? UnavailableReason, string? LinearExpiryReason = null)
+{
+    public const string PublicationIoReason = "measurement-publication-io";
+}
 
 /// <summary>Reads the single committed measurement linked to one recorded execution.</summary>
 public interface IExposureMeasurementRunReader

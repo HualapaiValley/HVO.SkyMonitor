@@ -290,7 +290,8 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     internal static string? FocusUnavailableReason(ExposureSourcesV1 sources, FrameLayoutDescriptor? layout)
     {
-        if (sources.Status == ExposureMeasurementStatus.Unavailable || sources.Reason is "candidate-budget-exceeded" or "insufficient-background")
+        if (sources.Status == ExposureMeasurementStatus.Unavailable ||
+            sources is { Status: ExposureMeasurementStatus.Unsuitable, Reason: "candidate-budget-exceeded" or "insufficient-background" })
             return sources.Reason;
         return layout?.Readout is { } readout && readout.BinX != readout.BinY ? "anisotropic-readout" : null;
     }

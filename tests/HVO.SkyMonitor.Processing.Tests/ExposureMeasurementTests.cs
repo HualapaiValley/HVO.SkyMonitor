@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -318,7 +319,12 @@ public sealed class ExposureMeasurementTests
 
         ProcessingProduct Rehash(ExposureMeasurementV1 measurement)
         {
-            var payload = ExposureMeasurementProducts.Serialize(measurement);
+            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+            {
+                Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
+            };
+            var payload = JsonSerializer.SerializeToUtf8Bytes(
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(measurement, json)));
             var hash = ProcessingIdentity.ComputePayloadSha256(payload);
             return product with { Payload = payload, ChecksumSha256 = hash, ContentIdentitySha256 = hash };
         }

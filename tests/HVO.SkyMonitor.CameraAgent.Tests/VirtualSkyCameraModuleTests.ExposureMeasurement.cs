@@ -295,6 +295,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var execution = await operations.ReadExecutionDetailAsync(id.Value, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(execution);
                 originalExecution = execution.Execution;
+                Assert.AreEqual(receipt.Manifest.CaptureGraphRevisionId, originalExecution.GraphRevisionId);
                 if (!fit)
                     Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "fit"));
                 var recordedMeasurement = execution.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
@@ -480,7 +481,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
             }
 
-            using var reopened = MeasurementProvider(root, location, predictionCatalog);
+            using var reopened = MeasurementProvider(root, location, new InMemoryCelestialCatalog([]));
             var restartedIngress = reopened.GetRequiredService<RawCaptureIngress>();
             await restartedIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var switched = file with { CenteredExposure = null, Rig = file.Rig with { Orientation = new RigOrientation(80, 15, 5) } };
@@ -504,7 +505,10 @@ public sealed partial class VirtualSkyCameraModuleTests
                     CancellationToken.None).ConfigureAwait(false));
                 Assert.AreEqual("TerminalFailure", fixedStage.Status);
                 Assert.AreEqual("measurement-publication-io", fixedStage.Reason);
-                CollectionAssert.AreEqual(new[] { "RetryableFailure", "TerminalFailure" }, fixedStage.Attempts.Select(attempt => attempt.Status).ToArray());
+                Assert.HasCount(2, fixedStage.Attempts);
+                Assert.AreEqual("RetryableFailure", fixedStage.Attempts[0].Status);
+                Assert.AreEqual("TerminalFailure", fixedStage.Attempts[1].Status);
+                Assert.IsTrue(fixedStage.Attempts.All(attempt => attempt.Reason == "measurement-publication-io"));
                 Assert.IsEmpty(fixedStage.Outputs);
                 Assert.IsNotNull(reopenedView.ExposureMeasurement);
                 Assert.IsNull(reopenedView.ExposureMeasurement.Measurement);

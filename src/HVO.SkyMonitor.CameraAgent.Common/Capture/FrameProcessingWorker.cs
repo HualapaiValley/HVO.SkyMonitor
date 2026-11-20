@@ -530,7 +530,7 @@ internal sealed class FrameProcessingWorker
                             // Only a successful fixed product's publication is retried here, not source reads,
                             // invalid immutable evidence, lost leases, or the SQLite node transaction.
                             logger.CaptureProcessingStepFailed(node.Id, context.Submission.CaptureStartedUtc, caught);
-                            reason = "measurement-publication-io";
+                            reason = ExposureMeasurementRunRead.PublicationIoReason;
                             status = attempt < maximumAttempts
                                 ? DurableProcessingNodeStatus.RetryableFailure
                                 : DurableProcessingNodeStatus.TerminalFailure;
