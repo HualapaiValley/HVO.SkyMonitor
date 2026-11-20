@@ -79,13 +79,20 @@ internal static class ReferenceAstrometryPreset
     private static ExistingBranch? ReadBasis(CapturePipelineConfig pipeline)
     {
         ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(pipeline);
-        var prediction = Find(pipeline.Steps, AstrometryPredictionCaptureProcessingStep.Alias);
-        var measured = Find(pipeline.Steps, MeasuredStellarAssociationCaptureProcessingStep.Alias);
-        var solve = Find(pipeline.Steps, MeasuredAstrometryCaptureProcessingStep.Alias);
-        if (prediction is null && measured is null && solve is null)
+        var solve = FindSolver(pipeline);
+        if (solve is null && !pipeline.Steps.Any(static step =>
+                HasAlias(step, AstrometryPredictionCaptureProcessingStep.Alias) ||
+                HasAlias(step, MeasuredStellarAssociationCaptureProcessingStep.Alias) ||
+                HasAlias(step, MeasuredAstrometryCaptureProcessingStep.Alias)))
             return null;
-        if (prediction is null || measured is null || solve is null ||
-            prediction.Enabled == false || measured.Enabled == false || solve.Enabled == false)
+        if (solve?.DependsOn is not { Count: 2 } dependencies)
+            throw new InvalidOperationException("The existing astrometry branch must be complete and enabled.");
+
+        // A graph may publish other associations for its canonical scene. Only the solver's inputs define this branch.
+        var prediction = FindDependency(pipeline.Steps, dependencies, AstrometryPredictionCaptureProcessingStep.Alias);
+        var measured = FindDependency(pipeline.Steps, dependencies, MeasuredStellarAssociationCaptureProcessingStep.Alias);
+        if (prediction is null || measured?.DependsOn is not { Count: 1 } measuredInputs ||
+            !string.Equals(measuredInputs[0], NodeId(prediction), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("The existing astrometry branch must be complete and enabled.");
         var options = ReadSolveOptions(solve);
         if (options is not { UseAstrometryPrediction: true, Catalog: null, PreviousAccepted: null, CatalogSelection: not null })
@@ -146,7 +153,7 @@ internal static class ReferenceAstrometryPreset
 
     internal static MeasuredAstrometryCatalogSelection ReadSelection(CapturePipelineConfig pipeline)
     {
-        var solve = Find(pipeline.Steps, MeasuredAstrometryCaptureProcessingStep.Alias);
+        var solve = FindSolver(pipeline);
         var selection = solve is null ? null : ReadSolveOptions(solve).CatalogSelection;
         return selection ?? throw new ReferenceAstrometryCatalogConflictException();
     }
@@ -169,8 +176,20 @@ internal static class ReferenceAstrometryPreset
         => (MeasuredAstrometryCaptureOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
             step.Options, typeof(MeasuredAstrometryCaptureOptions));
 
-    private static CaptureProcessingStepConfig? Find(IReadOnlyList<CaptureProcessingStepConfig> steps, string alias)
-        => steps.SingleOrDefault(step => string.Equals(step.Type, alias, StringComparison.OrdinalIgnoreCase));
+    private static CaptureProcessingStepConfig? FindSolver(CapturePipelineConfig pipeline)
+        => pipeline.Steps.SingleOrDefault(static step => step.Enabled != false &&
+            HasAlias(step, MeasuredAstrometryCaptureProcessingStep.Alias));
+
+    private static CaptureProcessingStepConfig? FindDependency(
+        IReadOnlyList<CaptureProcessingStepConfig> steps, IReadOnlyList<string> dependencies, string alias)
+        => steps.SingleOrDefault(step => step.Enabled != false && HasAlias(step, alias) &&
+            dependencies.Contains(NodeId(step), StringComparer.OrdinalIgnoreCase));
+
+    private static bool HasAlias(CaptureProcessingStepConfig step, string alias)
+        => string.Equals(step.Type, alias, StringComparison.OrdinalIgnoreCase);
+
+    private static string NodeId(CaptureProcessingStepConfig step)
+        => string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim();
 
     private static JsonObject ReadOptions(CaptureProcessingStepConfig step)
         => (JsonObject?)JsonNode.Parse(step.Options?.GetRawText() ?? "null", new JsonNodeOptions { PropertyNameCaseInsensitive = true })

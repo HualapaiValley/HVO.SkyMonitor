@@ -26,6 +26,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Current Sky resumes its retained astrometry search after an interrupted refresh and keeps selected-image diagnostics available while it checks rejected assessments. A temporary read failure preserves the displayed fit until the reader can verify the latest result again. #1901
 
+- Changing the CameraAgent astrometry reference magnitude works on graphs with a separate canonical stellar-association step and preserves that step's configuration. #1901
+
 - Equatorial-to-horizontal calculations at the zenith and nadir stay finite when floating-point rounding reaches slightly outside the sine range. #1901
 
 - Legacy VirtualSky graphs preserve their canonical scene and keep measured fits independent when annotations share stellar associations. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901

@@ -418,6 +418,8 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
         string method,
         object? requestBody = null,
         RouteValueDictionary? routeValues = null,
+        string idempotencyKey = "test-key",
+        bool antiforgeryValidated = false,
         CancellationToken cancellationToken = default)
     {
         var endpoint = ((IEndpointRouteBuilder)app).DataSources.SelectMany(static source => source.Endpoints)
@@ -433,7 +435,9 @@ public sealed partial class CameraAgentProcessingGraphOperationsEndpointsTests
             RequestAborted = cancellationToken
         };
         context.Request.Method = method;
-        context.Request.Headers["Idempotency-Key"] = "test-key";
+        context.Request.Headers["Idempotency-Key"] = idempotencyKey;
+        if (antiforgeryValidated)
+            context.Features.Set(Mock.Of<IAntiforgeryValidationFeature>(feature => feature.IsValid));
         if (routeValues is not null) context.Request.RouteValues = routeValues;
         if (requestBody is not null)
         {

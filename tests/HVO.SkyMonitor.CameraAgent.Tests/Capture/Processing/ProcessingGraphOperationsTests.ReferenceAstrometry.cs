@@ -3,11 +3,18 @@ using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Catalog.Sqlite;
+using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,11 +47,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var canonicalId = config.Pipeline.Steps.Single(step => step.Type == "ProjectedScene").Id!;
             var steps = generated.Steps.ToList();
             var measured = steps.Single(step => step.Type == "MeasuredStellarAssociations");
-            var canonicalMeasurement = measured with
-            {
-                DependsOn = [canonicalId],
-                Options = JsonSerializer.SerializeToElement(new { useAstrometryPrediction = false, outputVariant = "canonical-measurement" })
-            };
+            var canonicalMeasurement = ForCanonicalScene(measured, canonicalId);
             if (mode == "crossed")
                 steps[steps.IndexOf(measured)] = canonicalMeasurement;
             if (mode == "standalone")
@@ -79,6 +82,251 @@ public sealed partial class ProcessingGraphOperationsTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    [TestMethod]
+    public async Task ReferenceAstrometry_RequestAndActivationPreserveStandaloneMeasurement()
+    {
+        const string canonicalId = "projected-scene";
+        const string standaloneId = "StandaloneMeasurement";
+        const string predictionId = "catalog-scene";
+        const string measuredId = "catalog-measurement";
+        const string solverId = "catalog-solve";
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-astrometry-standalone");
+        var token = CancellationToken.None;
+        try
+        {
+            var requestedUtc = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds());
+            var location = DeploymentLocationSnapshot.Create("preset-site", 1, "test", null, DateTimeOffset.UnixEpoch,
+                null, 35, -115, 1100, "UTC");
+            var locations = new Mock<IDeploymentLocationStore>();
+            locations.SetupGet(store => store.Active).Returns(location);
+            locations.Setup(store => store.Resolve(It.IsAny<CaptureLocationProvenance>(), It.IsAny<DateTimeOffset?>())).Returns(location);
+            var zenith = EquatorialPrecession.PrecessToJ2000(new EquatorialPoint(
+                AstronomyTime.LocalMeanSiderealDegrees(requestedUtc, location.LongitudeDegrees) / 15, location.LatitudeDegrees), requestedUtc);
+            var source = CreateReferenceCatalog(stars:
+            [
+                new("near", "Near zenith", zenith.RightAscensionHours, zenith.DeclinationDegrees - 10, 3),
+                new("faint", "Faint star", zenith.RightAscensionHours, zenith.DeclinationDegrees + 10, 4)
+            ]);
+            var catalogData = await source.ReadAsync(5, 2500, token).ConfigureAwait(false);
+            var stars = new InMemoryCelestialCatalog(catalogData.Stars);
+            var catalog = new Mock<ICelestialCatalog>(MockBehavior.Strict);
+            var metadata = catalog.As<ICelestialCatalogMetadataSource>();
+            metadata.SetupGet(value => value.Metadata).Returns(catalogData.Metadata);
+            metadata.SetupGet(value => value.PreprocessingVersion).Returns(catalogData.Provenance!.PreprocessingVersion);
+            catalog.Setup(value => value.QueryCandidatesAsync(It.IsAny<CatalogCandidateQuery>(), It.IsAny<CancellationToken>()))
+                .Returns((CatalogCandidateQuery query, CancellationToken cancellation) => stars.QueryCandidatesAsync(query, cancellation));
+
+            var basic = CreateProjectedSceneConfiguration();
+            var config = basic with
+            {
+                Observatory = new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters, "UTC"),
+                DeploymentLocation = location,
+                Rig = basic.Rig with
+                {
+                    Sensor = basic.Rig.Sensor with { WidthPixels = 128, HeightPixels = 128, ResponseMode = SensorResponseMode.Monochrome },
+                    Optics = basic.Rig.Optics with { PrincipalPointX = 64, PrincipalPointY = 64, ImageCircleRadiusPixels = 63 },
+                    Readout = new(new SensorCrop(0, 0, 128, 128), 1, 1, FrameBinningAlgorithm.IdentityV1,
+                        CameraPixelFormat.Mono16, 16, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.IdentityV1,
+                        FrameLevelCodeSpace.StoredContainer, 0, ushort.MaxValue)
+                },
+                Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
+                {
+                    magnitudeZeroElectronsPerSecond = 50_000,
+                    backgroundElectronsPerSecond = 0,
+                    shotNoiseEnabled = false,
+                    readNoiseStandardDeviation = 0
+                })),
+                Pipeline = basic.Pipeline with
+                {
+                    Steps =
+                    [
+                        basic.Pipeline.Steps.Single() with
+                        {
+                            Publication = new(CaptureProcessingPersistenceMode.DurableLocal),
+                            Options = JsonSerializer.SerializeToElement(new { maximumMagnitude = 6.5 })
+                        },
+                        new("Storage", "archive", DependsOn: [canonicalId], Options: JsonSerializer.SerializeToElement(
+                            new FileStorageCaptureProcessingStepOptions
+                            {
+                                StorageRoot = Path.Combine(root, "archive"), QueueForUpload = false, UpdateLatestFrame = false
+                            }))
+                    ]
+                }
+            };
+            using var provider = CreateProvider(root, configureServices: services =>
+            {
+                services.AddSingleton(source);
+                services.AddSingleton(catalog.Object);
+                services.AddSingleton(locations.Object);
+            });
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(config);
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            await ingress.InitializeAsync(token).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var registry = await operations.EnsureConfiguredBasicAsync(config, token).ConfigureAwait(false);
+            var (generated, _) = await ReferenceAstrometryPreset.ApplyAsync(config.Pipeline, 3.25, source, token).ConfigureAwait(false);
+            var prediction = generated.Steps.Single(step => step.Id == "AstrometryPrediction") with { Id = predictionId };
+            var measured = generated.Steps.Single(step => step.Id == "Measured") with { Id = measuredId, DependsOn = [predictionId] };
+            var solver = generated.Steps.Single(step => step.Id == "Astrometry") with
+            {
+                Id = solverId,
+                DependsOn = [measuredId, predictionId]
+            };
+            var standalone = ForCanonicalScene(measured, canonicalId) with { Id = standaloneId };
+            var basis = await operations.CreateRevisionAsync("fixture", "standalone",
+                generated with { Steps = [.. config.Pipeline.Steps, standalone, prediction, measured, solver] },
+                "basis", "owner", null, token).ConfigureAwait(false);
+            await operations.ValidateRevisionAsync(basis.RevisionId, "validate-basis", "owner", null, token).ConfigureAwait(false);
+            registry = await operations.ActivateRevisionAsync(basis.RevisionId, registry.StateVersion,
+                "activate-basis", "owner", null, token).ConfigureAwait(false);
+
+            var app = CameraAgentProcessingGraphOperationsEndpointsTests.CreateApp(
+                operations, provider.GetRequiredService<ICameraAgentArtifactService>());
+            await using var appLifetime = app.ConfigureAwait(false);
+            var request = new { basisRevisionId = registry.ActiveRevisionId, revision = "magnitude-five", referenceMagnitude = 5.0 };
+            var response = await PostAsync("CreateCameraAgentReferenceAstrometryRevision", request, "preset").ConfigureAwait(false);
+            using var receipt = JsonDocument.Parse(response);
+            var revisionId = receipt.RootElement.GetProperty("revisionId").GetString()!;
+            var pin = receipt.RootElement.GetProperty("catalogSelection").Deserialize<MeasuredAstrometryCatalogSelection>(ReferenceAstrometryJson);
+            Assert.IsNotNull(pin);
+            Assert.AreEqual(5d, pin.MaximumMagnitude);
+            Assert.AreEqual(catalogData.SelectionIdentitySha256, pin.SelectionIdentitySha256);
+            var before = await operations.ReadRevisionSnapshotAsync(basis.RevisionId, token).ConfigureAwait(false);
+            var after = await operations.ReadRevisionSnapshotAsync(revisionId, token).ConfigureAwait(false);
+            CollectionAssert.AreEqual(before.Pipeline.Steps.Select(step => step.Id).ToArray(),
+                after.Pipeline.Steps.Select(step => step.Id).ToArray());
+            foreach (var node in before.Nodes)
+            {
+                var updated = after.Nodes.Single(value => value.NodeId == node.NodeId);
+                Assert.AreEqual(node.DependenciesJson, updated.DependenciesJson, node.NodeId);
+                Assert.AreEqual(node.InputsJson, updated.InputsJson, node.NodeId);
+                Assert.AreEqual(node.OutputsJson, updated.OutputsJson, node.NodeId);
+                if (node.NodeId is predictionId or measuredId or solverId)
+                    Assert.AreNotEqual(node.SharedPlanNodeIdentitySha256, updated.SharedPlanNodeIdentitySha256, node.NodeId);
+                else
+                    Assert.AreEqual(node.SharedPlanNodeIdentitySha256, updated.SharedPlanNodeIdentitySha256, node.NodeId);
+                if (node.NodeId is predictionId or solverId)
+                    Assert.AreNotEqual(node.PlanSha256, updated.PlanSha256, node.NodeId);
+                else
+                {
+                    Assert.AreEqual(node.PlanSha256, updated.PlanSha256, node.NodeId);
+                    Assert.AreEqual(
+                        CaptureContractJson.ComputeCanonicalJsonSha256(before.Pipeline.Steps.Single(step => step.Id == node.NodeId)),
+                        CaptureContractJson.ComputeCanonicalJsonSha256(after.Pipeline.Steps.Single(step => step.Id == node.NodeId)),
+                        node.NodeId);
+                }
+            }
+            Assert.AreEqual(5d, after.Pipeline.Steps.Single(step => step.Id == predictionId)
+                .Options!.Value.GetProperty("maximumMagnitude").GetDouble());
+            var solverOptions = after.Pipeline.Steps.Single(step => step.Id == solverId)
+                .Options!.Value.Deserialize<MeasuredAstrometryCaptureOptions>(ReferenceAstrometryJson)!;
+            Assert.AreEqual(5d, solverOptions.Recipe.Solver!.MaximumCatalogMagnitude);
+            Assert.AreEqual(pin, solverOptions.CatalogSelection);
+
+            _ = await PostAsync("ValidateCameraAgentProcessingGraphRevision", new { }, "validate", revisionId).ConfigureAwait(false);
+            var activation = new { expectedVersion = registry.StateVersion };
+            var activated = await PostAsync("ActivateCameraAgentProcessingGraphRevision", activation, "activate", revisionId)
+                .ConfigureAwait(false);
+            Assert.AreEqual(response, await PostAsync("CreateCameraAgentReferenceAstrometryRevision", request, "preset").ConfigureAwait(false));
+            Assert.AreEqual(activated, await PostAsync("ActivateCameraAgentProcessingGraphRevision", activation, "activate", revisionId)
+                .ConfigureAwait(false));
+            var active = await operations.GetRegistryAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(revisionId, active.ActiveRevisionId);
+            Assert.AreEqual(1, active.Revisions.Count(revision => revision.Name == ReferenceAstrometryPreset.GraphName));
+
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            for (var ordinal = 0; ordinal < 2; ordinal++)
+            {
+                var captureUtc = requestedUtc.AddSeconds(ordinal * 3);
+                var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(captureUtc, autoAdvance: true), catalog.Object,
+                    provider.GetRequiredService<IProjectedSceneStore>(), stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>(),
+                    graphSelection: new VirtualSkyGraphSelectionProvider(operations, enabled: true));
+                await using var moduleLifetime = module.ConfigureAwait(false);
+                await module.InitializeAsync(config, token).ConfigureAwait(false);
+                var captureRequest = new CaptureRequest(captureUtc, TimeSpan.FromSeconds(2), CaptureMode.Still);
+                var capture = await module.CaptureAsync(captureRequest, token).ConfigureAwait(false);
+                var raw = await ingress.AcceptAsync(config, new CaptureLoopSubmission(captureRequest, capture, captureUtc,
+                    captureRequest.TargetInterval, TimeSpan.Zero), token).ConfigureAwait(false);
+                Assert.IsNotNull(raw);
+                Assert.AreEqual(RawIngressOutcome.Committed, raw.Outcome);
+                Assert.AreEqual(revisionId, raw.Manifest.CaptureGraphRevisionId);
+                Assert.AreEqual(ordinal + 1L, raw.Manifest.Descriptor.Capture.CaptureSequence);
+                await CompleteLiveAsync(provider, config).ConfigureAwait(false);
+
+                var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
+                var canonical = await OutputAsync(captureId, canonicalId).ConfigureAwait(false);
+                var independent = await OutputAsync(captureId, predictionId).ConfigureAwait(false);
+                var canonicalMeasurement = await OutputAsync(captureId, standaloneId).ConfigureAwait(false);
+                var solverMeasurement = await OutputAsync(captureId, measuredId).ConfigureAwait(false);
+                Assert.AreEqual("canonical-measurement", canonicalMeasurement.Artifact.Variant);
+                var canonicalAssociation = await ReadAssociationAsync(canonicalMeasurement).ConfigureAwait(false);
+                var solverAssociation = await ReadAssociationAsync(solverMeasurement).ConfigureAwait(false);
+                Assert.AreEqual(canonical.ContentIdentitySha256, canonicalAssociation.Scene.SceneIdentitySha256);
+                Assert.AreEqual(ProjectedSceneKind.VirtualRenderAuthoritative, canonicalAssociation.Scene.Kind);
+                Assert.AreEqual(independent.ContentIdentitySha256, solverAssociation.Scene.SceneIdentitySha256);
+                Assert.AreEqual(ProjectedSceneKind.Predicted, solverAssociation.Scene.Kind);
+                var solve = await store.ReadNodeAsync(captureId, solverId, token).ConfigureAwait(false);
+                Assert.IsNotNull(solve);
+                if (ordinal == 0)
+                {
+                    Assert.AreEqual(DurableProcessingNodeStatus.Completed, solve.Status, solve.Reason);
+                    var output = solve.Outputs.Single(value => value.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
+                    var assessment = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(
+                        Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false)).Assessment;
+                    Assert.AreEqual(AstrometricAssessmentStatus.Rejected, assessment.Status);
+                    Assert.AreEqual("insufficient-detections", assessment.ReasonCode);
+                    CollectionAssert.AreEqual(new[] { raw.Manifest.Descriptor.Artifact.ArtifactId, solverMeasurement.ArtifactId, independent.ArtifactId },
+                        output.Artifact.SourceArtifactIds.Take(3).ToArray());
+                }
+                else
+                {
+                    Assert.AreEqual(DurableProcessingNodeStatus.Skipped, solve.Status);
+                    Assert.AreEqual("astrometry.capture-cadence", solve.Reason);
+                    Assert.IsEmpty(solve.Outputs);
+                }
+                Console.WriteLine($"Capture {captureId} sequence {raw.Manifest.Descriptor.Capture.CaptureSequence}: {raw.Outcome}; " +
+                    $"revision {revisionId}; solver {solve.Status} {solve.Reason}; " +
+                    $"canonical association {canonicalMeasurement.ArtifactId}; independent association {solverMeasurement.ArtifactId}");
+            }
+
+            async Task<string> PostAsync(string endpoint, object body, string key, string? target = null)
+            {
+                var (status, payload) = await CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync(
+                    app, endpoint, HttpMethods.Post, body, target is null ? null : new() { ["revisionId"] = target },
+                    idempotencyKey: key, antiforgeryValidated: true, cancellationToken: token).ConfigureAwait(false);
+                Assert.AreEqual(StatusCodes.Status200OK, status, payload);
+                return payload;
+            }
+
+            async Task<DurableProcessingOutput> OutputAsync(Guid captureId, string id)
+            {
+                var node = await store.ReadNodeAsync(captureId, id, token).ConfigureAwait(false);
+                Assert.IsNotNull(node);
+                Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status, $"{id}: {node.Reason}");
+                return node.Outputs.Single();
+            }
+
+            async Task<MeasuredStellarAssociationsV1> ReadAssociationAsync(DurableProcessingOutput output)
+            {
+                var bytes = await File.ReadAllBytesAsync(Path.Combine(root, output.PayloadRelativePath), token).ConfigureAwait(false);
+                var product = MeasuredStellarAssociationJson.Parse(bytes).Associations;
+                Assert.IsNotNull(product);
+                return product;
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static CaptureProcessingStepConfig ForCanonicalScene(CaptureProcessingStepConfig measured, string canonicalId)
+        => measured with
+        {
+            DependsOn = [canonicalId],
+            Options = JsonSerializer.SerializeToElement(new { useAstrometryPrediction = false, outputVariant = "canonical-measurement" })
+        };
 
     [TestMethod]
     [DataRow(false, false)]
@@ -624,12 +872,13 @@ public sealed partial class ProcessingGraphOperationsTests
             Observatory = new ObservatoryLocation(35.347, -113.878, 0, "America/Phoenix")
         }), NullLogger<FileCameraAgentConfigurationLoader>.Instance).LoadAsync(CancellationToken.None);
 
-    private static IAstrometricCatalogSource CreateReferenceCatalog(string version = "1", bool complete = true)
+    private static IAstrometricCatalogSource CreateReferenceCatalog(string version = "1", bool complete = true,
+        IReadOnlyList<CelestialCatalogObject>? stars = null)
     {
         var mock = new Mock<IAstrometricCatalogSource>(MockBehavior.Strict);
         var metadata = new CatalogMetadata("reference-fixture", version, new Uri("https://example.test/catalog"), new string('A', 64), "test", "1");
         var package = new AstrometricCatalogProvenance("reference-fixture", version, "fixture", "1");
-        CelestialCatalogObject[] stars = [new("bright", "Bright", 1, 30, 3), new("faint", "Faint", 2, 45, 4)];
+        stars ??= [new("bright", "Bright", 1, 30, 3), new("faint", "Faint", 2, 45, 4)];
         mock.Setup(source => source.ReadAsync(It.IsAny<double>(), 2500, It.IsAny<CancellationToken>()))
             .Returns((double depth, int _, CancellationToken token) =>
             {
