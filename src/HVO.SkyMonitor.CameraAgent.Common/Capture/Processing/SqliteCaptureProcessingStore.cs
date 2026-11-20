@@ -733,7 +733,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (outputs.Count != 0)
             NotifyAstrometryOutputsCommitted(captureId,
-                outputs.Any(static output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion), outputInserted);
+                outputs.Any(static output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion),
+                outputInserted || execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true });
     }
 
     /// <summary>
