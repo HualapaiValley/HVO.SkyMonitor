@@ -1,5 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -7,7 +7,10 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed class ExposureMeasurementCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     ExposureMeasurementStepOptions options,
-    CameraAgentRecipeExecutionAdapter adapter)
+    CameraAgentRecipeExecutionAdapter adapter,
+    RawCaptureIngress ingress,
+    CenteredExposureProductReader inputs,
+    CenteredExposureInputCustody custody)
     : ConfigurableCaptureProcessingStep<ExposureMeasurementStepOptions>(metadata, options),
         ICaptureProcessingGraphStep, ICenteredRawPrimaryCaptureProcessingStep
 {
@@ -34,85 +37,55 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var rawDescriptor = context.ReconstructionDescriptor ??
-            throw new InvalidDataException("Exposure measurement requires admitted raw evidence.");
-        await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
-        var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
-            rawDescriptor.Artifact.Variant, context.AcquisitionTiming, rawDescriptor);
+        var manifest = context.RawCapture?.Manifest ?? throw new InvalidDataException("Exposure measurement requires admitted raw.");
+        var key = CaptureExposureMeasurementReader.Key(manifest);
+        var execution = context.ProcessingExecution ?? throw new InvalidDataException("Exposure measurement requires a durable execution.");
+        var evidence = await ingress.ReadCenteredRawAsync(key, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The admitted exposure is unavailable.");
+        var liveExecution = CaptureExposureMeasurementReader.LiveExecution(key, evidence);
+        if (execution.GraphRevisionId != evidence.Run.GraphRevisionId ||
+            execution.ExecutionClass == ProcessingGraphExecutionClass.Live && execution.ExecutionId != liveExecution)
+            throw new InvalidDataException("The graph execution differs from the admitted exposure.");
 
-        var output = context.GetDependencyProducts().SingleOrDefault(product => product.Role == FrameArtifactRole.Calibrated);
-        var (linear, linearDescriptor) = output is null ? (null, null) : BindLinear(context, rawDescriptor, output);
-        var reason = output is null ? context.GetDependencyStepTelemetry()
-            .SingleOrDefault(static step => !step.Succeeded)?.ErrorMessage ?? "linear-output-unavailable" : null;
-
-        var disposition = output?.Recipe.Descriptor.Name switch
+        var settled = await inputs.ReadLinearAsync(key, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The admitted linear disposition is unavailable.");
+        if (settled.Disposition is LinearExposureDisposition.Pending or LinearExposureDisposition.Expired)
         {
-            BuiltInProcessingRecipes.ReferenceCalibration => ExposureCalibrationDisposition.ReferenceCalibrated,
-            BuiltInProcessingRecipes.LinearNormalization => ExposureCalibrationDisposition.NormalizationOnly,
-            null when reason is CalibrationLibraryReasonCodes.IncompatibleIdentity or
-                ProcessingReasonCodes.CalibrationReferenceLayoutMismatch or
-                ProcessingReasonCodes.CalibrationReferenceConditionsMismatch =>
-                ExposureCalibrationDisposition.Incompatible,
-            null when reason is CalibrationLibraryReasonCodes.Missing or CalibrationLibraryReasonCodes.Inactive or
-                ProcessingReasonCodes.MissingCalibrationProfile or ProcessingReasonCodes.MissingCalibrationReference or
-                "linear-output-unavailable" =>
-                ExposureCalibrationDisposition.Missing,
-            null => ExposureCalibrationDisposition.Failed,
-            _ => throw new InvalidDataException("The declared linear producer is unsupported.")
-        };
+            context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure(
+                settled.Disposition == LinearExposureDisposition.Pending ? "measurement.linear-pending" : "measurement.linear-expired"));
+            return;
+        }
 
-        var rig = context.Config.Rig;
-        var input = new ExposureMeasurementInputV1(ExposureMeasurementSourceV1.FromDescriptor(rawDescriptor),
-            linearDescriptor is null ? null : ExposureMeasurementSourceV1.FromDescriptor(linearDescriptor),
-            disposition, reason, raw.Compatibility.Orientation,
-            rig.Sensor.PixelSizeMicrons > 0 ? rig.Sensor.PixelSizeMicrons : null, rig.Orientation,
-            Aperture(rig, rawDescriptor.Layout));
+        if (settled.Disposition is not (LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly))
+        {
+            await ProcessAdmittedAsync(context, settled, null, evidence, cancellationToken).ConfigureAwait(false);
+            return;
+        }
 
-        var outcome = await adapter.ExecuteAsync(context,
-            ExposureMeasurementProducts.Request(input, raw, linear), cancellationToken).ConfigureAwait(false);
-        context.AddProcessingOutcome(outcome);
+        if (settled.Product is not { } exact || exact.Slot.ExecutionId != liveExecution ||
+            !context.GetDependencyProducts().Any(product => product.OutputIdentitySha256 == exact.OutputIdentitySha256))
+            throw new InvalidDataException("The linear graph input differs from the admitted publication.");
+        var lease = await custody.OpenLinearAsync(exact, TimeSpan.FromMinutes(2), cancellationToken).ConfigureAwait(false);
+        if (lease is null)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.RetryableFailure("measurement.linear-lease-unavailable"));
+            return;
+        }
+        await using var leaseLifetime = lease.ConfigureAwait(false);
+        await ProcessAdmittedAsync(context, settled, lease.Input, evidence, cancellationToken).ConfigureAwait(false);
     }
 
-    internal async ValueTask ProcessAdmittedAsync(CaptureProcessingContext context, LinearExposureLookup settled,
-        LinearExposureInputV1? linear, CameraRigConfig pinnedRig, CancellationToken cancellationToken)
+    private async ValueTask ProcessAdmittedAsync(CaptureProcessingContext context, LinearExposureLookup settled,
+        LinearExposureInputV1? linear, CenteredRawEvidence evidence, CancellationToken cancellationToken)
     {
-        var descriptor = context.ReconstructionDescriptor ??
-            throw new InvalidDataException("Exposure measurement requires admitted raw evidence.");
+        var descriptor = context.ReconstructionDescriptor!;
         await context.EnsureRawFrameAsync(cancellationToken).ConfigureAwait(false);
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor);
-        if (!string.Equals(RigProjectionContextFactory.CreateProfileHashSha256(pinnedRig),
-                settled.Exposure.Geometry.RigIdentitySha256, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("Pinned exposure geometry differs from the measured capture.");
-        var request = ExposureMeasurementBindings.Request(settled, raw, linear, Aperture(pinnedRig, descriptor.Layout),
-            pinnedRig.Sensor.PixelSizeMicrons > 0 ? pinnedRig.Sensor.PixelSizeMicrons : null);
+        var (aperture, pitch) = CaptureExposureMeasurementReader.Geometry(evidence, settled.Exposure.Geometry.Layout);
+        var request = ExposureMeasurementBindings.Request(settled, raw, linear, aperture, pitch);
         var outcome = await adapter.ExecuteAsync(context, request, cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
-    }
-
-    private static ProjectionContext? Aperture(CameraRigConfig rig, FrameLayoutDescriptor layout)
-    {
-        var native = RigProjectionContextFactory.CreateNative(rig);
-        if (layout.Readout is { } readout)
-        {
-            return readout.NativeWidth == native.WidthPixels && readout.NativeHeight == native.HeightPixels
-                ? RigProjectionContextFactory.CreateReadoutView(native, readout)
-                : null;
-        }
-        return native.WidthPixels == layout.Width && native.HeightPixels == layout.Height ? native : null;
-    }
-
-    internal static (ProcessingArtifact Artifact, ReconstructionDescriptor Descriptor) BindLinear(CaptureProcessingContext context,
-        ReconstructionDescriptor rawDescriptor, ProcessingProduct product)
-    {
-        var artifact = context.FindArtifact(product);
-        var sourceId = artifact.Frame.Metadata.SourceId ?? context.GetDependencyProducerStepId(artifact.ArtifactId) ??
-            throw new InvalidDataException("The linear output has no recorded producer.");
-        var descriptor = DerivativeDescriptorFactory.Create(rawDescriptor, artifact.ArtifactId, sourceId, product);
-        return (CameraAgentRecipeExecutionAdapter.CreateArtifact(context, product) with
-        {
-            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor)
-        }, descriptor);
     }
 }
 

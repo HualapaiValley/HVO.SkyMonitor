@@ -30,7 +30,7 @@ internal sealed partial class CaptureProcessingPersistence(
     CaptureProcessingTelemetry telemetry,
     ILogger<CaptureProcessingPersistence> logger,
     ICaptureProcessingFaultInjector? faultInjector = null) :
-    IProcessingRetentionHolds, IProcessingOutputExpiration, IExposureMeasurementRunReader
+    IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     internal string StorageRoot => _storageRoot;

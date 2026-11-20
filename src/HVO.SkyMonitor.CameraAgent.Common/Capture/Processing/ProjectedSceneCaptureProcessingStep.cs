@@ -7,7 +7,7 @@ using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed class ProjectedSceneCaptureProcessingStep(
+internal class ProjectedSceneCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     ProjectedSceneCaptureProcessingStepOptions options,
     IProjectedSceneStagingStore stagingStore,
@@ -19,13 +19,16 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
 {
+    internal const string ExposurePredictionAlias = "ExposureCatalogPrediction";
+    internal const string ExposurePredictionVariant = "exposure-catalog-prediction-v1";
     private const string StageInputName = "virtual-render-scene";
     private const string FrozenInputName = "frozen-projected-scene";
+    protected virtual bool IsExposurePrediction => false;
 
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
-    public string OutputVariant => Options.OutputVariant;
+    public string OutputVariant => IsExposurePrediction ? ExposurePredictionVariant : Options.OutputVariant;
     // The producer declaration keeps its v1 family root; expanded consumer capabilities can change plan identity.
     // Actual products carry v3 for a curated collection, v2 for resolved footprints, otherwise v1.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
@@ -59,13 +62,27 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(failureReason));
                 return;
             }
-            if (provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
+            if (!IsExposurePrediction && provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
                 !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
             {
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
                 return;
             }
             context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
+        }
+        else if (IsExposurePrediction)
+        {
+            var facts = context.CenteredExposure is { } binding && centeredScenes is not null
+                ? await centeredScenes.ReadPredictionFactsAsync(new(binding.Source.Camera, binding.Source.RunId,
+                    descriptor.Capture.CaptureId), cancellationToken).ConfigureAwait(false) : null;
+            scene = facts is not null
+                ? await centeredScenes!.ResolvePredictionsAsync(facts, cancellationToken).ConfigureAwait(false) : null;
+            if (scene is null)
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.Skipped("scene.frozen-prediction-input-unavailable"));
+                return;
+            }
+            context.RecordCanonicalInput("centered-catalog-prediction", scene.SchemaVersion, scene.SceneIdentitySha256);
         }
         else if (provenance is
         {
@@ -142,9 +159,9 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
         var outcome = await context.ExecuteAsync(adapter, new ProcessingExecutionRequest(
             BuiltInProcessingRecipes.ProjectedScene,
             JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
-            ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], Options.OutputVariant,
+            ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], OutputVariant,
             AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
-        if (context.IsReplayExecution && provenance?.RequiresProjectedScene == true &&
+        if (!IsExposurePrediction && context.IsReplayExecution && provenance?.RequiresProjectedScene == true &&
             outcome.Products.Any(product => !context.FrozenAuxiliaryInputs.Any(input =>
                 input.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))))
         {
@@ -186,8 +203,8 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             return false;
         }
         var frozen = candidates[0];
-        if (context.SceneProvenance?.RequiresProjectedScene == true &&
-            !string.Equals(frozen.Variant, Options.OutputVariant, StringComparison.Ordinal))
+        if ((IsExposurePrediction || context.SceneProvenance?.RequiresProjectedScene == true) &&
+            !string.Equals(frozen.Variant, OutputVariant, StringComparison.Ordinal))
         {
             failureReason = ProcessingReasonCodes.InvalidProjectedScene;
             return false;
@@ -199,7 +216,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
             failureReason = ProcessingReasonCodes.InvalidProjectedScene;
             return false;
         }
-        if (candidate.Source != source)
+        if (candidate.Source != source || IsExposurePrediction && candidate.Kind != ProjectedSceneKind.Predicted)
         {
             failureReason = ProcessingReasonCodes.ProjectedSceneSourceMismatch;
             return false;
@@ -216,6 +233,7 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
 
     public async ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
     {
+        if (IsExposurePrediction) return;
         if (context.SceneProvenance is not
             {
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
@@ -239,6 +257,15 @@ internal sealed class ProjectedSceneCaptureProcessingStep(
         await stagingStore.DeleteCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
     }
 
+}
+
+internal sealed class ExposureCatalogPredictionCaptureProcessingStep(
+    CaptureProcessingStepMetadata metadata, ProjectedSceneCaptureProcessingStepOptions options,
+    IProjectedSceneStagingStore stagingStore, IProjectedSceneStagingReader stagingReader,
+    CameraAgentRecipeExecutionAdapter adapter, CenteredExposureSceneProvider centeredScenes)
+    : ProjectedSceneCaptureProcessingStep(metadata, options, stagingStore, stagingReader, adapter, centeredScenes: centeredScenes)
+{
+    protected override bool IsExposurePrediction => true;
 }
 
 internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableObject

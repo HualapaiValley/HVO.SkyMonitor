@@ -486,7 +486,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 auxiliaryOutputNodes.Add(node.NodeId);
             }
             var astrometry = revision.Pipeline.Steps.Any(step => step.Enabled != false &&
-                string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias, StringComparison.OrdinalIgnoreCase)) &&
                 (string.IsNullOrWhiteSpace(step.Id) ? step.Type : step.Id.Trim()) == node.NodeId);
             if (astrometry || revision.Pipeline.Steps.Any(step => step.Enabled != false &&
                 string.Equals(step.Type, CaptureSatelliteTracksProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
@@ -551,10 +552,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         => pipeline.Steps.Any(step =>
             step.Enabled is not false &&
             (string.Equals(step.Type, ProjectedSceneStepAlias, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(step.Type, ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, StringComparison.OrdinalIgnoreCase) ||
              pipeline.SchemaVersion == CapturePipelineSchemaVersions.LegacyV1 &&
              step.Type.Contains("ProjectedSceneCaptureProcessingStep", StringComparison.Ordinal)) &&
             string.Equals(
-                string.IsNullOrWhiteSpace(step.Id) ? ProjectedSceneStepAlias : step.Id.Trim(),
+                string.IsNullOrWhiteSpace(step.Id)
+                    ? string.Equals(step.Type, ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, StringComparison.OrdinalIgnoreCase)
+                        ? ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias : ProjectedSceneStepAlias
+                    : step.Id.Trim(),
                 nodeId,
                 StringComparison.Ordinal));
 

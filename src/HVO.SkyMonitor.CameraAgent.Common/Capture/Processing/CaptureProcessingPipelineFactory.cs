@@ -322,7 +322,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured)
     {
-        var scenes = configured.Where(static item => item.Step is ProjectedSceneCaptureProcessingStep).ToArray();
+        var scenes = configured.Where(static item =>
+            item.Step is ProjectedSceneCaptureProcessingStep and not ExposureCatalogPredictionCaptureProcessingStep).ToArray();
         var annotations = configured.Where(static item => item.Step is AnnotationCaptureProcessingStep).ToArray();
         var sceneBearing = string.Equals(config.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
             annotations.Any(static item =>

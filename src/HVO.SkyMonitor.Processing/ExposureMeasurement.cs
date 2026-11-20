@@ -130,6 +130,16 @@ public static class ExposureMeasurementProducts
             InputArtifactId: raw.ArtifactId);
     }
 
+    /// <summary>Gets the admission lookup key. Consumers still verify the product against independent evidence.</summary>
+    public static ExposureKey ReadExposureKey(ProcessingArtifact retained)
+    {
+        ArgumentNullException.ThrowIfNull(retained);
+        if (retained.RecipeDescriptor is not { Name: BuiltInProcessingRecipes.ExposureMeasurement } recipe ||
+            !recipe.Options.TryGetProperty("parameters", out var parameters))
+            throw Invalid("admission lookup identity");
+        return ReadInput(parameters).Exposure ?? throw Invalid("admission lookup identity");
+    }
+
     /// <summary>Verifies the retained envelope and its identity against the caller's expected raw and linear facts.</summary>
     public static ExposureMeasurementV1 Read(ProcessingArtifact artifact, ExposureMeasurementInputV1 expected)
     {
@@ -245,7 +255,8 @@ public static class ExposureMeasurementProducts
                 string.IsNullOrWhiteSpace(camera.CameraId) || string.IsNullOrWhiteSpace(camera.AgentId) ||
                 input.RigOrientation is null || string.IsNullOrWhiteSpace(input.OpticalCalibrationVersion) ||
                 input.Step3Disposition is not { } step3 || !Enum.IsDefined(step3) || step3 == LinearExposureDisposition.Pending ||
-                input.Step3Revision is null or <= 0))
+                input.Step3Revision is <= 0 || input.Step3Revision is null &&
+                (step3 != LinearExposureDisposition.Unavailable || input.CalibrationReason != "linear.no-configured-step")))
             throw Invalid("admitted exposure");
 
         if (input.ApertureProjection is { } aperture)

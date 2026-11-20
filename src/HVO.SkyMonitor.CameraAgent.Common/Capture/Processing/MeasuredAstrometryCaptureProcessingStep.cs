@@ -49,7 +49,8 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Config.CenteredExposure is not null && !context.IsReplayExecution)
+        if (context.Config.CenteredExposure is not null && !context.IsReplayExecution &&
+            AssociationRecipe == BuiltInProcessingRecipes.MeasuredStellarAssociations)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.centered-measurement-required"));
             return;
@@ -58,7 +59,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
         var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Astrometry requires durable raw admission.");
         if (context.Config.Pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2)
             throw new InvalidOperationException("Astrometry requires an explicit v2 graph.");
-        if (!context.IsReplayExecution && (descriptor.Capture.CaptureSequence - 1) % Options.CaptureStride != 0)
+        if (!context.IsReplayExecution && (CaptureOrdinal(context, descriptor) - 1) % Options.CaptureStride != 0)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.capture-cadence"));
             return;
@@ -68,6 +69,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
         var dependencies = context.GetDependencyProducts();
         var scene = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => ProjectedSceneV1.IsSupportedSchemaVersion(p.SchemaVersion)));
         var measured = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => p.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion));
+        await ValidateMeasuredInputAsync(context, raw, measured, scene, cancellationToken).ConfigureAwait(false);
         ProcessingProduct? newContext = null;
         ProcessingArtifact frozen;
         if (context.IsReplayExecution)
@@ -120,15 +122,34 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
         }
         finally { gate.Semaphore.Release(); }
     }
+
+    protected virtual ValueTask ValidateMeasuredInputAsync(CaptureProcessingContext context, ProcessingArtifact raw,
+        ProcessingArtifact association, ProcessingArtifact scene, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    protected virtual long CaptureOrdinal(CaptureProcessingContext context, ReconstructionDescriptor descriptor) =>
+        descriptor.Capture.CaptureSequence;
 }
 
 internal sealed class ExposureAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
     MeasuredAstrometryCaptureOptions options, CameraAgentRecipeExecutionAdapter adapter, CaptureAstrometryExecutionGate gate,
-    CaptureProcessingPersistence persistence)
+    CaptureProcessingPersistence persistence, CaptureExposureMeasurementReader reader)
     : MeasuredAstrometryCaptureProcessingStep(metadata, options, adapter, gate, persistence)
 {
     internal const string CenteredAlias = "ExposureMeasuredAstrometry";
     protected override string AssociationRecipe => ExposureAssociationProducts.RecipeName;
+
+    protected override long CaptureOrdinal(CaptureProcessingContext context, ReconstructionDescriptor descriptor) =>
+        context.RawCapture?.Manifest.CenteredExposure?.Source.Ordinal ??
+        throw new InvalidDataException("Centered astrometry requires an admitted attempt ordinal.");
+
+    protected override async ValueTask ValidateMeasuredInputAsync(CaptureProcessingContext context, ProcessingArtifact raw,
+        ProcessingArtifact association, ProcessingArtifact scene, CancellationToken cancellationToken)
+    {
+        if (association.SourceArtifactIds is not { Count: 3 } lineage)
+            throw new InvalidDataException("Centered astrometry requires retained measurement lineage.");
+        var (retained, measurement) = await reader.ReadDependencyAsync(context, lineage[1], cancellationToken).ConfigureAwait(false);
+        ExposureAssociationProducts.VerifyMeasurement(association, raw, retained, measurement, scene);
+    }
 }
 
 public sealed class MeasuredAstrometryCaptureOptions : IValidatableObject

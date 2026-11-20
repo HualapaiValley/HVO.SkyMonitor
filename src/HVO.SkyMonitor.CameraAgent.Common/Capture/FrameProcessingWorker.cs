@@ -208,6 +208,12 @@ internal sealed class FrameProcessingWorker
                 }
             }
             var statuses = new Dictionary<string, DurableProcessingNodeStatus>(StringComparer.OrdinalIgnoreCase);
+            var measurement = graph.Nodes.SingleOrDefault(node => node.Step is ExposureMeasurementCaptureProcessingStep);
+            // The centered measurement remains non-fatal once settled, but must not be discarded on its first
+            // transient failure (or on the first transient failure of its pinned step-three input).
+            bool RetryCenteredMeasurement(CaptureProcessingGraphNode node) => measurement is not null &&
+                (node == measurement || measurement.Dependencies.Contains(node.Id, StringComparer.OrdinalIgnoreCase));
+
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
@@ -450,10 +456,12 @@ internal sealed class FrameProcessingWorker
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
-                    reason = "processing.optional-exhausted";
+                    if (!RetryCenteredMeasurement(node))
+                        reason = "processing.optional-exhausted";
                 }
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure &&
-                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch)
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch &&
+                    !RetryCenteredMeasurement(node))
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-degraded";

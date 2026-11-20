@@ -168,6 +168,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         if (revision.State.ValidatedUtc is null)
             throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
         EnsureLiveEligible(revision);
+        if (revisionId is null)
+            EnsureMeasurementProfile(revision.Pipeline, configuration);
         // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
         // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;
@@ -331,6 +333,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var profile = await ReadCurrentProfileAsync(baseConfiguration, cancellationToken).ConfigureAwait(false) ?? baseConfiguration;
         var snapshot = CreateRevisionSnapshot(
             profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
+        EnsureMeasurementProfile(snapshot.Pipeline, profile);
         return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
             candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
                 (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);
@@ -451,6 +454,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             var baseConfiguration = Volatile.Read(ref _baseConfiguration)
                 ?? throw new InvalidOperationException("The CameraAgent configuration has not been initialized.");
             var pipeline = CreatePipeline(proposal.Definition, baseConfiguration.Pipeline);
+            EnsureMeasurementProfile(pipeline, baseConfiguration);
             var localName = string.Concat("central-", proposal.CatalogRevisionId.ToString("N"));
             var snapshot = CreateRevisionSnapshot(
                 baseConfiguration with { Pipeline = pipeline },
@@ -545,8 +549,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     {
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         return await _store.ValidateRevisionAsync(revisionId, idempotencyKey, actor, reason, cancellationToken,
-            revision => CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline,
-                (_currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration))?.Pipeline)).ConfigureAwait(false);
+            revision =>
+            {
+                var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration);
+                CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current?.Pipeline);
+                if (current is not null)
+                    EnsureMeasurementProfile(revision.Pipeline, current);
+            }).ConfigureAwait(false);
     }
 
     public ValueTask<ProcessingGraphRegistryState> RetireRevisionAsync(
@@ -712,7 +721,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
             ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
         CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
+        EnsureMeasurementProfile(revision.Pipeline, current);
         EnsureCompatibleRevisionPlans(revision, current);
+    }
+
+    private void EnsureMeasurementProfile(CapturePipelineConfig pipeline, CameraModuleConfig configuration)
+    {
+        if (_centeredExtensions.Any(static extension => extension is ExposureMeasurementGraphPlan))
+            ExposureMeasurementGraphPlan.EnsureMatchesProfile(pipeline, configuration.CenteredExposure);
     }
 
     private void EnsureCompatibleRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig configuration)

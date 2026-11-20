@@ -8,7 +8,7 @@ internal sealed class ExposureStellarAssociationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     MeasuredStellarAssociationProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter,
-    CaptureProcessingPersistence persistence)
+    CaptureExposureMeasurementReader reader)
     : MeasuredStellarAssociationCaptureProcessingStep(metadata, options, adapter),
         ICenteredRawPrimaryCaptureProcessingStep, ICaptureProcessingGraphStep
 {
@@ -33,7 +33,6 @@ internal sealed class ExposureStellarAssociationCaptureProcessingStep(
     {
         ArgumentNullException.ThrowIfNull(context);
         var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Association requires admitted raw.");
-        var execution = context.ProcessingExecution ?? throw new InvalidDataException("Association requires a durable execution.");
         var dependencies = context.GetDependencyProducts();
         var scene = dependencies.SingleOrDefault(product => ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
         if (scene is null || ProjectedSceneJson.Parse(scene.Payload).Scene?.Kind != ProjectedSceneKind.Predicted)
@@ -43,10 +42,8 @@ internal sealed class ExposureStellarAssociationCaptureProcessingStep(
         }
 
         var product = dependencies.Single(item => item.SchemaVersion == ExposureMeasurementProducts.SchemaVersion);
-        var (retained, measurement) = await persistence.ReadMeasurementDependencyAsync(execution,
-            descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
-        if (retained.ArtifactId != ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))
-            throw new InvalidDataException("The measurement dependency differs from the committed execution.");
+        var (retained, measurement) = await reader.ReadDependencyAsync(context,
+            ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), cancellationToken).ConfigureAwait(false);
 
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor) with { Payload = ReadOnlyMemory<byte>.Empty };

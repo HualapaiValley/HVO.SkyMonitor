@@ -256,6 +256,14 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(0, read.Hfd.ValidCount);
         var byExecution = await ExposureMeasurementBindings.ReadCommittedAsync(reader, key, execution, retained, CancellationToken.None);
         Assert.AreEqual(read.Input, byExecution.Input);
+        var expired = lookup with { Disposition = LinearExposureDisposition.Expired, Reason = "retention-expired" };
+        var readAfterExpiry = await ExposureMeasurementBindings.ReadCommittedWithSourceAsync(
+            reader with { Linear = expired }, key, execution, retained, CancellationToken.None);
+        Assert.AreEqual(read.Input, readAfterExpiry.Measurement.Input);
+        Assert.AreEqual("retention-expired", readAfterExpiry.LinearExpiryReason);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.Request(expired, raw, null));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
+            reader with { Linear = expired with { Product = null, Provenance = null } }, exact, retained, CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
             reader, exact with { Slot = slot with { ExecutionId = Guid.NewGuid() } }, retained, CancellationToken.None));
         var wrongLookup = lookup with { Provenance = provenance with { LinearDescriptorSha256 = new string('F', 64) } };
