@@ -114,6 +114,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     internal const int MaximumRawBytes = 32 * 1024 * 1024;
     internal const int MaximumReadBytes = 44 * 1024 * 1024;
     private const int LatestNewSkipLimit = 4096;
+    private const int LatestPublicationRecheckLimit = 64;
     private const string TemporaryEvidenceUnavailable = "retained-evidence-temporarily-unavailable";
     private const string InvalidEvidence = "retained-evidence-invalid";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -124,8 +125,9 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     // An incremental store refresh retains the object for each unchanged capture. A changed capture
     // receives a new object even if the assessment itself still has the same artifact identity.
     private Dictionary<Guid, CandidateSkip> skippedCandidates = [];
+    private Queue<AstrometryCaptureCandidate> nonpublicCandidates = new();
 
-    private enum CandidateDisposition { Continue, Retry, SkipUntilChanged }
+    private enum CandidateDisposition { Continue, Retry, SkipUntilChanged, SkipUntilPublication }
 
     private readonly record struct CandidateProbe(CameraAgentRetainedAstrometry Evidence,
         CandidateDisposition Disposition = CandidateDisposition.Continue);
@@ -243,6 +245,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         {
             var captures = await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false);
             if (!ReferenceEquals(latestSnapshot, captures)) RefreshLatestCandidates(captures, cancellationToken);
+            await RecheckPublicationAsync(captures, cancellationToken).ConfigureAwait(false);
             var node = latestCandidates.First;
             var newSkips = 0;
             while (node is not null && newSkips < LatestNewSkipLimit)
@@ -258,9 +261,10 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 var next = node.Next;
                 // Commit a conclusive probe before the next cancellation check. Unverified
                 // failures stay on the work list so a later request can observe recovery.
-                if (probe.Disposition == CandidateDisposition.SkipUntilChanged)
+                if (probe.Disposition is CandidateDisposition.SkipUntilChanged or CandidateDisposition.SkipUntilPublication)
                 {
                     skippedCandidates.Add(candidate.CaptureId, new(candidate, probe.Evidence.LineageInvalidation));
+                    if (probe.Disposition == CandidateDisposition.SkipUntilPublication) nonpublicCandidates.Enqueue(candidate);
                     latestCandidates.Remove(node);
                     newSkips++;
                 }
@@ -326,7 +330,36 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         }
         latestCandidates = pending;
         skippedCandidates = retained;
+        nonpublicCandidates = new(nonpublicCandidates.Where(candidate =>
+            retained.TryGetValue(candidate.CaptureId, out var skip) && ReferenceEquals(skip.Candidate, candidate)));
         latestSnapshot = snapshot;
+    }
+
+    private async ValueTask RecheckPublicationAsync(IReadOnlyList<AstrometryCaptureCandidate> snapshot, CancellationToken cancellationToken)
+    {
+        if (nonpublicCandidates.Count == 0) return;
+
+        // Publication can be committed by a different store instance. Recheck a rotating
+        // batch without revisiting unrelated durable skips or dropping interrupted progress.
+        var batch = nonpublicCandidates.Take(LatestPublicationRecheckLimit).Select(static candidate => candidate.CaptureId).ToArray();
+        var changed = await store.ReadAstrometryPublicationChangesAsync(batch, cancellationToken).ConfigureAwait(false);
+        if (changed.Count > 0)
+        {
+            var pending = new LinkedList<AstrometryCaptureCandidate>();
+            foreach (var candidate in snapshot)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!skippedCandidates.ContainsKey(candidate.CaptureId) || changed.Contains(candidate.CaptureId))
+                    pending.AddLast(candidate);
+            }
+            latestCandidates = pending;
+            foreach (var captureId in changed) skippedCandidates.Remove(captureId);
+        }
+        for (var i = 0; i < batch.Length; i++)
+        {
+            var candidate = nonpublicCandidates.Dequeue();
+            if (!changed.Contains(candidate.CaptureId)) nonpublicCandidates.Enqueue(candidate);
+        }
     }
 
     private async ValueTask<CandidateProbe> ReadAsync(Guid captureId, CancellationToken cancellationToken, bool acceptedOnly = false)
@@ -340,7 +373,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             switch (assessment.Kind)
             {
                 case AstrometryAssessmentSelectionKind.Absent:
-                    return new(new(captureId, "NotRetained", "assessment-not-retained"), CandidateDisposition.SkipUntilChanged);
+                    return new(new(captureId, "NotRetained", "assessment-not-retained"), CandidateDisposition.SkipUntilPublication);
                 case AstrometryAssessmentSelectionKind.Pending:
                     return Unavailable(temporary: true);
                 case AstrometryAssessmentSelectionKind.Ambiguous:

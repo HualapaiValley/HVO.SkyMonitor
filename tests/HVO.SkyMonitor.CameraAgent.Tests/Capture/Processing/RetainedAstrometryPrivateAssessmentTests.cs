@@ -92,16 +92,17 @@ public sealed partial class DurableCaptureProcessingTests
                 await selectedReader.ReadPublicationStateAsync(Identity(far), token).ConfigureAwait(false));
             Assert.IsNull((await selectedService.GetRetainedAstrometryAsync(far.Capture.CaptureId, token).ConfigureAwait(false)).Value?.Solution);
 
-            // Retire the private evidence and reinsert the exact assessment on the public
-            // persistence path. Invalidate the same store that is serving the selected reader.
-            await EvictAndRestoreFilesAsync(far, chosenStore).ConfigureAwait(false);
+            // Reinsert the exact assessment on the public persistence path from a different
+            // store. Its notifications cannot invalidate the reader's candidate snapshot.
+            await EvictAndRestoreFilesAsync(far, store).ConfigureAwait(false);
             var repair = AstrometryGraph(first, new(new ProcessingRecipeExecutor()), gate).Nodes.Single(node => node.Id == "astrometry");
-            await chosenStore.WriteNodeAsync(far.Capture.CaptureId, repair, DurableProcessingNodeStatus.Completed,
+            await store.WriteNodeAsync(far.Capture.CaptureId, repair, DurableProcessingNodeStatus.Completed,
                 null, 2, null, null, DateTimeOffset.UtcNow, null, ProcessingOutcomeStatus.Produced, [], 0, null,
                 [far], token).ConfigureAwait(false);
             var repaired = await selectedService.GetLatestAcceptedAstrometryAsync(token).ConfigureAwait(false);
             Assert.AreEqual(far.ArtifactId, repaired.Value?.Summary?.ArtifactId);
             Assert.AreEqual(far.ContentIdentitySha256, repaired.Value?.Summary?.SolutionIdentitySha256);
+            Assert.AreSame(candidates, await chosenStore.ReadAstrometryCandidatesAsync(token).ConfigureAwait(false));
             Assert.AreEqual(CameraAgentAstrometryPublicationState.Available,
                 await selectedReader.ReadPublicationStateAsync(Identity(far), token).ConfigureAwait(false));
             using var repairedStore = new SqliteCaptureProcessingStore(first.Fixture.Options);
