@@ -61,6 +61,17 @@ public sealed class DirectCentroidRegistrationTests
         var collinear = DirectCentroidRegistration.Fit(straight, straight, 160, 160);
         Assert.IsNull(collinear.Map);
 
+        var source = Points(Positions);
+        var badHoldout = Points(Positions.Select((p, i) => i % 3 != 1 ? p : new PixelPoint(p.X + 3, p.Y + 4)));
+        var unverified = DirectCentroidRegistration.Fit(source, badHoldout, 160, 160);
+        Assert.IsNull(unverified.Map);
+        Assert.AreEqual(8, unverified.Check.Fit.Count);
+        Assert.AreEqual(0, unverified.Check.Verification.Count);
+    }
+
+    [TestMethod]
+    public void BrighterRepeatedFieldCannotHideTheGenuineFieldAmongUnrelatedPoints()
+    {
         var repeated = Positions.Where((_, index) => index is not (2 or 8))
             .Concat(Positions.Select(p => new PixelPoint(p.X + 20, p.Y)));
         Assert.IsNull(DirectCentroidRegistration.Fit(Points(repeated), Points(Positions), 180, 160).Map);
@@ -76,12 +87,27 @@ public sealed class DirectCentroidRegistrationTests
         Assert.IsNull(contested.Map);
         Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch, contested.Check.Status);
 
-        var source = Points(Positions);
-        var badHoldout = Points(Positions.Select((p, i) => i % 3 != 1 ? p : new PixelPoint(p.X + 3, p.Y + 4)));
-        var unverified = DirectCentroidRegistration.Fit(source, badHoldout, 160, 160);
-        Assert.IsNull(unverified.Map);
-        Assert.AreEqual(8, unverified.Check.Fit.Count);
-        Assert.AreEqual(0, unverified.Check.Verification.Count);
+        var corner = Enumerable.Range(1, 8).Select(index => new StellarDetection(index + 24,
+            new(154 + 4 * (index % 3), 134 + 4 * (index / 3)), 250 - index, 100, 1, 1, 0, 0));
+        StellarDetection[] crowded = [distractor, .. corner];
+        var crowdedControl = DirectCentroidRegistration.Fit([.. ranked, .. crowded], Points(Positions), 180, 160);
+        Assert.AreEqual(0, crowdedControl.Map!.Value.Tx, 1e-10);
+        var obscured = DirectCentroidRegistration.Fit([.. ranked, .. brighterAlias, .. crowded], Points(Positions), 180, 160);
+        Assert.IsNull(obscured.Map);
+        Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch, obscured.Check.Status);
+
+        var rescanned = ranked.Concat(brighterAlias).Concat(crowded)
+            .OrderBy(point => point.Pixel.Y).ThenBy(point => point.Pixel.X)
+            .Select((point, index) => point with { Index = index }).ToArray();
+        Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch,
+            DirectCentroidRegistration.Fit(rescanned, Points(Positions), 180, 160).Check.Status);
+        Assert.IsNull(DirectCentroidRegistration.Fit(Points(Positions), rescanned, 180, 160).Map);
+
+        var unbounded = Enumerable.Range(0, 192).Select(index => new StellarDetection(index + 100,
+            new(145 + index % 30, 140 + index / 30), 1, 100, 1, 1, 0, 0));
+        var overLimit = DirectCentroidRegistration.Fit([.. ranked, .. unbounded], Points(Positions), 180, 160);
+        Assert.IsNull(overLimit.Map);
+        Assert.AreEqual(DirectRegistrationStatus.AmbiguityCheckLimitExceeded, overLimit.Check.Status);
     }
 
     [TestMethod]

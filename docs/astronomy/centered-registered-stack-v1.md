@@ -52,6 +52,16 @@ the base variant, channel order and dimensions to the frozen publication.
   declared local CFA phase, at full delivered resolution, before resampling.
   Its 1-pixel border and invalid 3×3 neighborhoods do not contribute.
 
+The relative-map ambiguity check searches every eligible centroid in both
+fields after the disjoint training and holdout checks. An alternate must have
+at least eight matches, the combined minimum for the fit and holdout sets, and
+evidence inconsistent with the selected map. The ambiguity pass can only reject
+the selected map. A field over 192 eligible centroids on either side, or a
+search that uses its 250 million spatial probe budget, yields
+`AmbiguityCheckLimitExceeded`. The recipe records a registration rejection
+for that neighbor. The verified plate-pair path does not use this relative-fit
+limit.
+
 ## Result and limits
 
 The result is an arithmetic mean in the qualified input's **stored linear

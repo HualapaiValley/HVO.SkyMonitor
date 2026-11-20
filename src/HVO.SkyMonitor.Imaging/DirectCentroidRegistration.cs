@@ -24,7 +24,8 @@ public enum DirectRegistrationStatus
     NoDirectMatch,
     AmbiguousMatch,
     PoorFieldCoverage,
-    ResidualExceeded
+    ResidualExceeded,
+    AmbiguityCheckLimitExceeded
 }
 
 public sealed record RegistrationCentroidMatch(int SourceIndex, int ReferenceIndex, double ResidualPixels);
@@ -37,9 +38,11 @@ public sealed record DirectSimilarityRegistration(ImageSimilarity? Map, DirectRe
 /// <summary>Bounded pair fitting and independent point checks for direct registration.</summary>
 public static class DirectCentroidRegistration
 {
-    public const string FitVersion = "direct-centroid-similarity-v2";
+    public const string FitVersion = "direct-centroid-similarity-v3";
     public const string PlateCheckVersion = "direct-plate-centroid-check-v1";
     private const int FeatureLimit = 24;
+    private const int AmbiguityFieldLimit = 192;
+    private const int AmbiguityProbeLimit = 250_000_000;
     private const int MinimumFitCount = 5;
     private const int MinimumVerificationCount = 3;
     private const double CandidateRadius = 1.25;
@@ -57,6 +60,11 @@ public static class DirectCentroidRegistration
             return Failure(DirectRegistrationStatus.InsufficientCentroids);
         }
 
+        if (Math.Max(sources.Length, references.Length) > AmbiguityFieldLimit)
+        {
+            return Failure(DirectRegistrationStatus.AmbiguityCheckLimitExceeded);
+        }
+
         // Freeze both holdouts before generating or selecting the transform.
         // A coarse annulus keeps membership stable under ordinary small field drift when enough detections exist.
         // Sparse fields use a fixed rank split and fail closed if brightness changes leave too little shared support.
@@ -66,7 +74,7 @@ public static class DirectCentroidRegistration
         var hits = new Match[FeatureLimit];
         var refinedHits = new Match[FeatureLimit];
         Candidate? best = null;
-        _ = Search(sourceTraining, training, vetoOnly: false);
+        _ = Search(sourceTraining, training, null);
 
         if (best is null)
         {
@@ -86,49 +94,66 @@ public static class DirectCentroidRegistration
             return new(null, report);
         }
 
-        // The holdouts have now certified the candidate selected from training.
-        // Use the unsplit, bounded fields only as a veto. A missing or unrelated
-        // point can shift ranks and hide a coherent competing field from both
-        // training subsets. The veto cannot choose or change an accepted map.
-        if (Search(sources.Take(FeatureLimit).ToArray(), references.Take(FeatureLimit).ToArray(), vetoOnly: true))
-        {
-            return new(null, report with { Status = DirectRegistrationStatus.AmbiguousMatch });
-        }
+        // Check for aliases against every eligible point. Truncating by flux here
+        // could certify a brighter repeated field after excluding genuine points.
+        // Only the independent training and holdout sets can select a map.
+        hits = new Match[references.Length];
+        refinedHits = new Match[references.Length];
+        var veto = Search(sources, references, new ReferenceGrid(references, width, height));
         cancellationToken.ThrowIfCancellationRequested();
-        return new(best.Map, report);
+        return veto == DirectRegistrationStatus.Verified ? new(best.Map, report) : new(null, report with { Status = veto });
 
-        bool Search(StellarDetection[] sourceField, StellarDetection[] referenceField, bool vetoOnly)
+        DirectRegistrationStatus Search(StellarDetection[] sourceField, StellarDetection[] referenceField, ReferenceGrid? grid)
         {
             var minimumLength = Math.Min(width, height) * .12;
             var referencePairs = Pairs(referenceField, minimumLength);
             var sourcePairs = Pairs(sourceField, minimumLength);
+            sourcePairs.Sort(static (first, second) => first.Distance.CompareTo(second.Distance));
             foreach (var referencePair in referencePairs)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (var sourcePair in sourcePairs)
+                var low = Math.BitDecrement(referencePair.Distance / MaximumScale);
+                var high = Math.BitIncrement(referencePair.Distance / MinimumScale);
+                for (var index = LowerBound(sourcePairs, low); index < sourcePairs.Count; index++)
                 {
+                    var sourcePair = sourcePairs[index];
+                    if (sourcePair.Distance > high)
+                    {
+                        break;
+                    }
+                    if (grid is not null && (index & 63) == 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
                     var scale = referencePair.Distance / sourcePair.Distance;
                     if (scale is < MinimumScale or > MaximumScale)
                     {
                         continue;
                     }
-                    if (Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second, sourceField, referenceField, vetoOnly) ||
-                        Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second, sourceField, referenceField, vetoOnly))
+                    var competes = Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second, sourceField, referenceField, grid) ||
+                        Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second, sourceField, referenceField, grid);
+                    if (grid?.Exhausted == true)
                     {
-                        return true;
+                        return DirectRegistrationStatus.AmbiguityCheckLimitExceeded;
+                    }
+                    if (competes)
+                    {
+                        return DirectRegistrationStatus.AmbiguousMatch;
                     }
                 }
             }
-            return false;
+            return DirectRegistrationStatus.Verified;
         }
 
         bool Consider(StellarDetection sourceFirst, StellarDetection sourceSecond,
             StellarDetection referenceFirst, StellarDetection referenceSecond,
-            StellarDetection[] sourceField, StellarDetection[] referenceField, bool vetoOnly)
+            StellarDetection[] sourceField, StellarDetection[] referenceField, ReferenceGrid? grid)
         {
             var seed = Seed(sourceFirst.Pixel, sourceSecond.Pixel, referenceFirst.Pixel, referenceSecond.Pixel);
-            var count = MatchPoints(seed, sourceField, referenceField, hits);
-            if (count < MinimumFitCount)
+            var count = MatchPoints(seed, sourceField, referenceField, hits, grid);
+            // An alternate must have enough total correspondences to support both verification sets.
+            var minimum = grid is null ? MinimumFitCount : MinimumFitCount + MinimumVerificationCount;
+            if (count < minimum)
             {
                 return false;
             }
@@ -138,7 +163,7 @@ public static class DirectCentroidRegistration
             {
                 return false;
             }
-            var refinedCount = MatchPoints(refined, sourceField, referenceField, refinedHits);
+            var refinedCount = MatchPoints(refined, sourceField, referenceField, refinedHits, grid);
             if (refinedCount != count)
             {
                 return false;
@@ -165,10 +190,11 @@ public static class DirectCentroidRegistration
             {
                 return false;
             }
-            if (vetoOnly)
+            if (grid is not null)
             {
                 return Distinct(refined, best!.Map, width, height) &&
-                    Check(matches, width, height, MinimumFitCount, .50) == DirectRegistrationStatus.Verified;
+                    Check(matches, width, height, minimum, .55) == DirectRegistrationStatus.Verified &&
+                    Contradicts(best.Map, matches);
             }
             if (Better(count, error, best))
             {
@@ -246,10 +272,45 @@ public static class DirectCentroidRegistration
         return pairs;
     }
 
-    private static int MatchPoints<TMap>(TMap map, StellarDetection[] sources, StellarDetection[] references, Span<Match> output)
+    private static bool Contradicts(ImageSimilarity incumbent, ReadOnlySpan<Match> matches)
+    {
+        // A local fit to a subset of the same correspondences can extrapolate differently at the image corners.
+        // A competing field has at least one match that the certified map cannot explain within the match radius.
+        foreach (var match in matches)
+        {
+            var expected = incumbent.SourceToReference(match.Source.Pixel)!.Value;
+            if (DistanceSquared(expected, match.Reference.Pixel) > CandidateRadius * CandidateRadius)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int LowerBound(List<Pair> pairs, double distance)
+    {
+        var left = 0;
+        var right = pairs.Count;
+        while (left < right)
+        {
+            var middle = left + (right - left) / 2;
+            if (pairs[middle].Distance < distance)
+            {
+                left = middle + 1;
+            }
+            else
+            {
+                right = middle;
+            }
+        }
+        return left;
+    }
+
+    private static int MatchPoints<TMap>(TMap map, StellarDetection[] sources, StellarDetection[] references,
+        Span<Match> output, ReferenceGrid? grid = null)
         where TMap : IImageRegistrationMap
     {
-        Span<int> claimed = stackalloc int[FeatureLimit];
+        Span<int> claimed = stackalloc int[references.Length];
         claimed.Fill(-1);
         var count = 0;
         foreach (var source in sources)
@@ -260,25 +321,16 @@ public static class DirectCentroidRegistration
             }
             var candidate = -1;
             var squaredResidual = double.PositiveInfinity;
-            for (var index = 0; index < references.Length; index++)
+            if (grid is null)
             {
-                var distance = DistanceSquared(mapped, references[index].Pixel);
-                if (!(distance <= CandidateRadius * CandidateRadius))
+                for (var index = 0; index < references.Length; index++)
                 {
-                    continue;
+                    Probe(mapped, references, index, claimed, ref candidate, ref squaredResidual);
                 }
-                if (candidate >= 0)
-                {
-                    claimed[candidate] = -2;
-                    candidate = -2;
-                }
-                if (candidate == -2)
-                {
-                    claimed[index] = -2;
-                    continue;
-                }
-                candidate = index;
-                squaredResidual = distance;
+            }
+            else
+            {
+                grid.Probe(mapped, claimed, ref candidate, ref squaredResidual);
             }
             if (candidate >= 0)
             {
@@ -302,6 +354,90 @@ public static class DirectCentroidRegistration
             }
         }
         return write;
+    }
+
+    private static void Probe(PixelPoint mapped, StellarDetection[] references, int index, Span<int> claimed,
+        ref int candidate, ref double squaredResidual)
+    {
+        var distance = DistanceSquared(mapped, references[index].Pixel);
+        if (!(distance <= CandidateRadius * CandidateRadius))
+        {
+            return;
+        }
+        if (candidate >= 0)
+        {
+            claimed[candidate] = -2;
+            candidate = -2;
+        }
+        if (candidate == -2)
+        {
+            claimed[index] = -2;
+            return;
+        }
+        candidate = index;
+        squaredResidual = distance;
+    }
+
+    private sealed class ReferenceGrid
+    {
+        private const int Edge = 64;
+        private readonly int[] _head = new int[Edge * Edge];
+        private readonly int[] _next;
+        private readonly int[] _cellCounts = new int[Edge * Edge];
+        private readonly StellarDetection[] _references;
+        private readonly double _scaleX;
+        private readonly double _scaleY;
+        private readonly int _width;
+        private readonly int _height;
+        private int _workRemaining = AmbiguityProbeLimit;
+
+        public bool Exhausted => _workRemaining < 0;
+
+        public ReferenceGrid(StellarDetection[] references, int width, int height)
+        {
+            _references = references;
+            _width = width;
+            _height = height;
+            _scaleX = Math.Min((double)Edge / width, 1 / (2 * CandidateRadius));
+            _scaleY = Math.Min((double)Edge / height, 1 / (2 * CandidateRadius));
+            Array.Fill(_head, -1);
+            _next = new int[references.Length];
+            for (var index = 0; index < references.Length; index++)
+            {
+                var point = references[index].Pixel;
+                var cell = Cell(point.Y, _scaleY) * Edge + Cell(point.X, _scaleX);
+                _next[index] = _head[cell];
+                _head[cell] = index;
+                _cellCounts[cell]++;
+            }
+        }
+
+        public void Probe(PixelPoint mapped, Span<int> claimed, ref int candidate, ref double squaredResidual)
+        {
+            if (--_workRemaining < 0 || !(mapped.X >= -CandidateRadius && mapped.X <= _width + CandidateRadius &&
+                mapped.Y >= -CandidateRadius && mapped.Y <= _height + CandidateRadius))
+            {
+                return;
+            }
+            var left = Cell(mapped.X - CandidateRadius, _scaleX);
+            var right = Cell(mapped.X + CandidateRadius, _scaleX);
+            var top = Cell(mapped.Y - CandidateRadius, _scaleY);
+            var bottom = Cell(mapped.Y + CandidateRadius, _scaleY);
+            for (var y = top; y <= bottom; y++)
+            {
+                for (var x = left; x <= right; x++)
+                {
+                    var cell = y * Edge + x;
+                    _workRemaining -= _cellCounts[cell];
+                    for (var index = _head[cell]; index >= 0; index = _next[index])
+                    {
+                        DirectCentroidRegistration.Probe(mapped, _references, index, claimed, ref candidate, ref squaredResidual);
+                    }
+                }
+            }
+        }
+
+        private static int Cell(double coordinate, double scale) => Math.Clamp((int)(coordinate * scale), 0, Edge - 1);
     }
 
     private static DirectRegistrationStatus Check(ReadOnlySpan<Match> matches, int width, int height, int minimum, double rmsLimit)
