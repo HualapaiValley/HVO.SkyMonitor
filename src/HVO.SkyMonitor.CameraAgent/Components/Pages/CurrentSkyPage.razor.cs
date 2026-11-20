@@ -322,7 +322,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     return;
                 }
                 if (_viewerOpen) { _refreshing = false; return; }
-                if (prefetchedLayersRevision != (prefetch?.Revision ?? 0)) layers = null;
+                if (prefetchedLayersRevision != (prefetch?.Revision ?? 0) || !IsCurrentAstrometryObservation(layers))
+                    layers = null;
                 // Decide whether to switch using the same eligible projection the renderer can install.
                 if (requiresEligibleLayers &&
                     (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
@@ -632,7 +633,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     /// <summary>Reads one capture's layers within their own deadline, or null when the page stopped waiting.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
-    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
+    private async Task<ObservedAstrometryResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
     {
         try
         {
@@ -651,24 +652,24 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         }
         catch (Exception)
         {
-            return OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
-                "Structured layers are temporarily unavailable.");
+            return new(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
+                "Structured layers are temporarily unavailable."));
         }
     }
 
-    private ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> ValidateMeasuredLayersAsync(Guid captureId,
+    private ValueTask<ObservedAstrometryResult<CameraAgentLayeredPresentation>> ValidateMeasuredLayersAsync(Guid captureId,
         OperatorUiResult<CameraAgentLayeredPresentation> result, CancellationToken cancellation)
     {
         var value = result.Value;
         return value is not null && (value.Astrometry?.Solution?.Assessment.HasMeasuredMapping == true ||
             value.Layers.Any(layer => layer.Kind is AstrometricDiagnosticPresentation.AssociationsLayer or AstrometricDiagnosticPresentation.ResidualsLayer))
             ? ValidateAstrometryPublicationAsync(captureId, result, value.Astrometry, cancellation)
-            : ValueTask.FromResult(result);
+            : ValueTask.FromResult(new ObservedAstrometryResult<CameraAgentLayeredPresentation>(result));
     }
 
-    private void ApplyLayerResult(Guid captureId, long generation, OperatorUiResult<CameraAgentLayeredPresentation> result)
+    private void ApplyLayerResult(Guid captureId, long generation, ObservedAstrometryResult<CameraAgentLayeredPresentation> observed)
     {
-        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        if (observed.Kind == OperatorUiResultKind.Unauthorized)
         {
             if (!_accessDenied) RevokeAccess();
             return;
@@ -679,10 +680,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         // Retain one completed result, not a waiting task or its timeout/cancellation resources.
         if (_viewerOpen)
         {
-            _deferredLayers = (captureId, generation, result);
+            _deferredLayers = (captureId, generation, observed.Result);
             StateHasChanged();
             return;
         }
+        var result = IsCurrentAstrometryObservation(observed) ? observed.Result :
+            OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
+                "Selected measured evidence is temporarily unavailable.");
         _layerLoading = false;
         if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
         {

@@ -97,6 +97,203 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    [DataRow("matching")]
+    [DataRow("distinct")]
+    [DataRow("timeout")]
+    [DataRow("inflight-positive")]
+    public async Task ExactSelectedRejectionWithdrawsOnlyItsHeadlineAndFencesOlderHistory(string scenario)
+    {
+        var evidence = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var exact = CameraAgentLatestAstrometry.FromVerified(evidence)!;
+        var headline = scenario == "distinct" ? exact with { ArtifactId = Guid.NewGuid() } : exact;
+        var selectedRead = new DeferredAstrometryRead<CameraAgentRetainedAstrometry>();
+        var heldHistory = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(AstrometryImage(evidence)));
+        service.AstrometryHandler = (_, _) => selectedRead.Read();
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, headline)));
+        service.AstrometryPublicationHandler = (identity, _) =>
+        {
+            Assert.AreEqual(new CameraAgentAstrometryAssessmentIdentity(exact.CaptureId, exact.ArtifactId, exact.SolutionIdentitySha256), identity);
+            return scenario == "timeout"
+                ? ValueTask.FromException<OperatorUiResult<CameraAgentAstrometryPublicationState>>(new OperationCanceledException())
+                : ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(
+                    CameraAgentAstrometryPublicationState.Invalidated));
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+        await selectedRead.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        cut.WaitForAssertion(() => AssertHeadlineIsVisible(headline));
+        if (scenario == "inflight-positive")
+        {
+            service.LatestAstrometryHandler = (_, _) => heldHistory.Read();
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            await heldHistory.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        }
+        await Task.Run(() => selectedRead.Complete(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(evidence))).ConfigureAwait(false);
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+        Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        Assert.IsEmpty(cut.FindAll(".astrometry-provenance"));
+        if (scenario is "distinct" or "timeout")
+        {
+            AssertHeadlineIsVisible(headline);
+            return;
+        }
+
+        AssertHeadlineWasWithdrawn();
+        if (scenario == "inflight-positive")
+        {
+            await Task.Run(() => heldHistory.Complete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, exact)))).ConfigureAwait(false);
+            await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+            AssertHeadlineWasWithdrawn();
+        }
+
+        service.AstrometryPublicationHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Available));
+        service.AstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(evidence));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, exact)));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            AssertHeadlineIsVisible(exact);
+            Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        });
+
+        void AssertHeadlineIsVisible(CameraAgentLatestAstrometry expected)
+        {
+            var section = cut.Find(".latest-measured-solution");
+            StringAssert.Contains(section.TextContent, expected.ArtifactId.ToString(), StringComparison.Ordinal);
+            StringAssert.Contains(section.TextContent, expected.MidpointUtc.ToString("O"), StringComparison.Ordinal);
+            Assert.IsFalse(section.TextContent.Contains("temporarily unavailable", StringComparison.Ordinal));
+        }
+
+        void AssertHeadlineWasWithdrawn()
+        {
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, "temporarily unavailable", StringComparison.Ordinal);
+            Assert.IsEmpty(cut.FindAll(".latest-measured-solution time"));
+        }
+    }
+
+    [TestMethod]
+    public async Task SupersedingLatestReadKeepsItsVerifiedSelection()
+    {
+        var evidence = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var exact = CameraAgentLatestAstrometry.FromVerified(evidence)!;
+        var older = exact with { CaptureId = Guid.NewGuid(), ArtifactId = Guid.NewGuid(), MidpointUtc = exact.MidpointUtc.AddSeconds(-20) };
+        var selectedRead = new DeferredAstrometryRead<CameraAgentRetainedAstrometry>();
+        var heldHistory = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var heldRecheck = new DeferredAstrometryRead<CameraAgentAstrometryPublicationState>();
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(AstrometryImage(evidence)));
+        service.AstrometryHandler = (_, _) => selectedRead.Read();
+        service.LatestAstrometryHandler = (_, _) => heldHistory.Read();
+        var checks = 0;
+        service.AstrometryPublicationHandler = (_, _) => ++checks == 2 ? heldRecheck.Read() : ValueTask.FromResult(
+            OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Available));
+
+        var cut = context.Render<CurrentSkyPage>();
+        var timeout = TimeSpan.FromSeconds(3);
+        await selectedRead.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await heldHistory.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await Task.Run(() => selectedRead.Complete(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(evidence))).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled")));
+        await Task.Run(() => heldHistory.Complete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, older)))).ConfigureAwait(false);
+        await heldRecheck.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, exact)));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(AssertExactHeadlineAndCalculator);
+        await Task.Run(() => heldRecheck.Complete(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(
+            CameraAgentAstrometryPublicationState.Invalidated))).ConfigureAwait(false);
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+        AssertExactHeadlineAndCalculator();
+
+        void AssertExactHeadlineAndCalculator()
+        {
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, exact.ArtifactId.ToString(), StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        }
+    }
+
+    [TestMethod]
+    public async Task KnownHistoryInvalidationSurvivesASupersedingTransientRead()
+    {
+        var evidence = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var original = CameraAgentLatestAstrometry.FromVerified(evidence)!;
+        var replacement = evidence with { ArtifactId = Guid.NewGuid() };
+        var older = original with { CaptureId = Guid.NewGuid(), ArtifactId = Guid.NewGuid(), MidpointUtc = original.MidpointUtc.AddSeconds(-20) };
+        var heldLayer = new DeferredAstrometryRead<CameraAgentLayeredPresentation>();
+        var heldHistory = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var heldRecheck = new DeferredAstrometryRead<CameraAgentAstrometryPublicationState>();
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(AstrometryImage(evidence)));
+        service.AstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(evidence));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, original)));
+
+        var cut = context.Render<CurrentSkyPage>();
+        cut.WaitForAssertion(() =>
+        {
+            StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, original.ArtifactId.ToString(), StringComparison.Ordinal);
+            Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        });
+        service.PresentationHandler = (_, _) => heldLayer.Read();
+        service.LatestAstrometrySelectionHandler = (_, previous, selected) =>
+        {
+            Assert.AreEqual(original, previous);
+            Assert.AreEqual(original.ArtifactId, selected?.ArtifactId);
+            return heldHistory.Read();
+        };
+        var timeout = TimeSpan.FromSeconds(3);
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        await heldLayer.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        await heldHistory.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+
+        var replacementReads = 0;
+        service.AstrometryPublicationHandler = (identity, _) =>
+        {
+            Assert.AreEqual(replacement.ArtifactId, identity.ArtifactId);
+            return ++replacementReads == 1 ? ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(
+                CameraAgentAstrometryPublicationState.Available)) : heldRecheck.Read();
+        };
+        var layer = Layered(evidence.CaptureId, new string('D', 64)) with { Astrometry = replacement };
+        await Task.Run(() => heldLayer.Complete(OperatorUiResult<CameraAgentLayeredPresentation>.Success(layer))).ConfigureAwait(false);
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+        Assert.AreEqual(1, replacementReads);
+
+        var rejectedHistory = new CameraAgentLatestAstrometryRead(true, older)
+        {
+            PreviousSummaryQuarantined = true,
+            SelectedAssessmentInvalidated = true
+        };
+        await Task.Run(() => heldHistory.Complete(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(rejectedHistory))).ConfigureAwait(false);
+        await heldRecheck.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+        service.LatestAstrometrySelectionHandler = (_, _, selected) =>
+        {
+            Assert.AreEqual(replacement.ArtifactId, selected?.ArtifactId);
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Failure(
+                OperatorUiResultKind.Unavailable, "Temporary history read failure."));
+        };
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        await Task.Run(() => heldRecheck.Complete(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(
+            CameraAgentAstrometryPublicationState.Available))).ConfigureAwait(false);
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+        var headline = cut.Find(".latest-measured-solution");
+        StringAssert.Contains(headline.TextContent, "temporarily unavailable", StringComparison.Ordinal);
+        Assert.IsNull(headline.QuerySelector("time"), "A newer transient read must not restore or leave the already rejected headline.");
+        Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+    }
+
+    [TestMethod]
     public void BusyWithoutAPriorSummaryShowsTemporaryUnavailability()
     {
         using var context = new BunitContext();
