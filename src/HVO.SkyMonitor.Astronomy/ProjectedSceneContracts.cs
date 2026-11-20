@@ -192,6 +192,16 @@ public static class ProjectedSceneJson
         ProjectedSceneSource source,
         string projectionCalibrationVersion,
         string projectionAlgorithmVersion)
+        => CreateWithPayloadSize(kind, visibleScene, imageTransform, source, projectionCalibrationVersion, projectionAlgorithmVersion).Scene;
+
+    /// <summary>Snapshots a visible scene and measures its canonical payload, including the source and scene identities.</summary>
+    public static (ProjectedSceneV1 Scene, int PayloadBytes) CreateWithPayloadSize(
+        ProjectedSceneKind kind,
+        VisibleScene visibleScene,
+        ProjectedSceneImageTransformV1 imageTransform,
+        ProjectedSceneSource source,
+        string projectionCalibrationVersion,
+        string projectionAlgorithmVersion)
     {
         ArgumentNullException.ThrowIfNull(visibleScene);
         ArgumentNullException.ThrowIfNull(imageTransform);
@@ -289,9 +299,9 @@ public static class ProjectedSceneJson
                 .ThenBy(static item => item.PartIndex)),
             footprints.Length == 0 ? null : Freeze(footprints),
             deepSky);
-        scene = scene with { SceneIdentitySha256 = ComputeIdentity(scene) };
+        scene = scene with { SceneIdentitySha256 = ComputeIdentity(scene, out var payloadBytes) };
         Validate(scene);
-        return scene;
+        return (scene, payloadBytes);
     }
 
     public static byte[] Serialize(ProjectedSceneV1 scene)
@@ -372,11 +382,17 @@ public static class ProjectedSceneJson
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
     }
 
-    public static string ComputeIdentity(ProjectedSceneV1 scene)
+    public static string ComputeIdentity(ProjectedSceneV1 scene) => ComputeIdentity(scene, out _);
+
+    private static string ComputeIdentity(ProjectedSceneV1 scene, out int payloadBytes)
     {
         ArgumentNullException.ThrowIfNull(scene);
         var identityDocument = scene with { SceneIdentitySha256 = string.Empty };
-        return Convert.ToHexString(SHA256.HashData(SerializeCanonical(identityDocument)));
+        var bytes = SerializeCanonical(identityDocument);
+        var identity = Convert.ToHexString(SHA256.HashData(bytes));
+        // The final JSON fills in the previously empty identity string with unescaped ASCII hex.
+        payloadBytes = bytes.Length + identity.Length;
+        return identity;
     }
 
     public static void Validate(ProjectedSceneV1 scene)

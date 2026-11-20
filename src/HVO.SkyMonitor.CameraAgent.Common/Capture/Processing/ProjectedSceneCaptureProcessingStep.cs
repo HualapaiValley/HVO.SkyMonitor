@@ -54,6 +54,8 @@ internal class ProjectedSceneCaptureProcessingStep(
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, descriptorSha256);
         ProjectedSceneV1? scene;
         var provenance = context.SceneProvenance;
+        var virtualStage = string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal) &&
+            (provenance?.RequiresProjectedScene == true || provenance?.ProjectedSceneStageKey is not null);
         if (context.IsReplayExecution)
         {
             // Archived replay never consults, recreates, or recomputes the transient stage: it consumes the committed
@@ -70,9 +72,15 @@ internal class ProjectedSceneCaptureProcessingStep(
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
                 return;
             }
+            if ((IsAstrometryPrediction && scene.Kind != ProjectedSceneKind.Predicted) ||
+                (!IsAstrometryPrediction && virtualStage && scene.Kind != ProjectedSceneKind.VirtualRenderAuthoritative))
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
+                return;
+            }
             context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
         }
-        else if (IsAstrometryPrediction || Options.IndependentPrediction)
+        else if (IsAstrometryPrediction || Options.IndependentPrediction && !virtualStage)
         {
             var catalog = services?.GetService<ICelestialCatalog>();
             var locations = services?.GetService<IDeploymentLocationStore>();
@@ -121,6 +129,8 @@ internal class ProjectedSceneCaptureProcessingStep(
                 (string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal)
                     ? ProjectedSceneKind.VirtualRenderAuthoritative
                     : ProjectedSceneKind.Predicted);
+            if (virtualStage && kind != ProjectedSceneKind.VirtualRenderAuthoritative)
+                throw new InvalidDataException("VirtualSky capture evidence requires its authoritative staged scene.");
             scene = staged.Bind(source, kind);
             if (provenance.ProjectedSceneSchemaVersion is { } declaredSchema &&
                 !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
@@ -258,6 +268,8 @@ internal class ProjectedSceneCaptureProcessingStep(
 
 internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableObject
 {
+    internal const string DefaultAstronomyAlgorithmVersion = "visible-scene-iau1976-constellation-v2";
+
     [Required, MinLength(1), MaxLength(128)]
     public string OutputVariant { get; init; } = "projected-scene-v1";
 
@@ -272,7 +284,7 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     public int MaximumResults { get; init; } = 2000;
 
     [Required, MinLength(1), MaxLength(128)]
-    public string AstronomyAlgorithmVersion { get; init; } = "visible-scene-iau1976-constellation-v2";
+    public string AstronomyAlgorithmVersion { get; init; } = DefaultAstronomyAlgorithmVersion;
 
     public IReadOnlyList<string> ConstellationIds { get; init; } = [];
     public IReadOnlyList<SolarSystemBody> SolarSystemBodies { get; init; } = [];

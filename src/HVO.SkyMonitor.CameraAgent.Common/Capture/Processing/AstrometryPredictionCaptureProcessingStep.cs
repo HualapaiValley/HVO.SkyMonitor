@@ -16,7 +16,8 @@ internal sealed class AstrometryPredictionCaptureProcessingStep(
     {
         OutputVariant = AliasVariant,
         MaximumMagnitude = options.MaximumMagnitude,
-        MaximumResults = options.MaximumResults
+        MaximumResults = options.MaximumResults,
+        AstronomyAlgorithmVersion = options.AstronomyAlgorithmVersion ?? ProjectedSceneCaptureProcessingStepOptions.DefaultAstronomyAlgorithmVersion
     }, stagingStore, stagingReader, adapter, services: services)
 {
     internal const string Alias = "AstrometryPrediction";
@@ -31,4 +32,9 @@ internal sealed class AstrometryPredictionCaptureProcessingStepOptions
 
     [Range(1, ProjectedSceneJson.MaximumObjectCount)]
     public int MaximumResults { get; init; } = 2000;
+
+    // Preserve the algorithm identifier of an older single-scene configuration when it is split.
+    [MinLength(1), MaxLength(128)]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? AstronomyAlgorithmVersion { get; init; }
 }

@@ -22,6 +22,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     IDisposable
 {
     private const string ConfiguredGraphName = "configured-basic";
+    private const string VirtualSkySceneCompatibilityGraphName = "virtualsky-scene-compatibility";
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
         ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
@@ -163,6 +164,23 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         if (revision.State.ValidatedUtc is null)
             throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
         EnsureLiveEligible(revision);
+        if (!retainedCapture && revisionId is null &&
+            LegacyVirtualSkySceneGraph.FindLegacyScene(configuration, revision.Pipeline) is { } legacyScene)
+        {
+            // Bind new exposures to a validated successor. Existing raw manifests keep their original revision,
+            // and the registry's selected revision retains its identity and control-plane history.
+            var migratedId = await _store.ReadRevisionIdByNameAsync(
+                VirtualSkySceneCompatibilityGraphName, revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
+            if (migratedId is not null)
+                return await _store.ReadRevisionAsync(migratedId, cancellationToken).ConfigureAwait(false);
+            var migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(revision.Pipeline, legacyScene) };
+            var successor = CreateRevisionSnapshot(migrated,
+                VirtualSkySceneCompatibilityGraphName, revision.State.RevisionId, _timeProvider.GetUtcNow(),
+                ProcessingGraphRevisionLifecycle.Validated);
+            EnsureLiveEligible(successor);
+            await _store.InsertSceneCompatibilityRevisionAsync(successor, cancellationToken).ConfigureAwait(false);
+            return successor;
+        }
         // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
         // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;

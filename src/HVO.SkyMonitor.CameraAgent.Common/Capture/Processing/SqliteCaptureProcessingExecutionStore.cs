@@ -15,6 +15,19 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     private static readonly JsonSerializerOptions ExecutionSerializerOptions = CreateExecutionSerializerOptions();
 
+    internal async ValueTask InsertSceneCompatibilityRevisionAsync(
+        ProcessingGraphRevisionSnapshot revision, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        await InsertRevisionAsync(connection, transaction, revision, ProcessingGraphRevisionLifecycle.Validated, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     internal async ValueTask<ProcessingGraphRegistryState> UpsertConfiguredBasicRevisionAsync(
         ProcessingGraphRevisionSnapshot revision,
         CancellationToken cancellationToken)

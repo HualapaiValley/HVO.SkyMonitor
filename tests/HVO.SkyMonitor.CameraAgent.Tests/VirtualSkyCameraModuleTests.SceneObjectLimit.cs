@@ -1,11 +1,14 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.SkyMap;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -122,6 +125,91 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.IsNotEmpty(frame.Metadata.Scene.Segments!);
         Assert.IsTrue(frame.Metadata.Scene.Segments!.All(static segment =>
             segment.ConstellationId == "TST" && segment.FromObjectId == "hip-901" && segment.ToObjectId == "hip-902"));
+    }
+
+    [TestMethod]
+    public async Task SceneObjectLimit_DenseStagedCaptureBoundsPublicationWithoutChangingAdmittedRaw()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-dense-scene", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var zenith = SceneLimitZenith();
+            var stars = Enumerable.Range(0, ProjectedSceneJson.MaximumObjectCount + 1).Select(index =>
+                new CelestialCatalogObject($"star-{index:00000}", $"Test catalog source {index:00000} {new string('s', 120)}",
+                    zenith.RightAscensionHours + (index % 31 - 15) * .01,
+                    zenith.DeclinationDegrees + (index % 37 - 18) * .05, 5 + index * .00001));
+            var catalog = new InMemoryCelestialCatalog(stars.Concat([
+                new("hip-901", "Figure A", zenith.RightAscensionHours + .1, zenith.DeclinationDegrees + 2, 6, null, "901"),
+                new("hip-902", "Figure B", zenith.RightAscensionHours - .1, zenith.DeclinationDegrees - 2, 6.1, null, "902")
+            ]));
+            var topology = new InMemoryConstellationTopology([new ConstellationSegment("TST", "901", "902")],
+                new("dense-fixture", "v1", new Uri("https://example.invalid/topology"), new string('A', 64), "fixture", "v1"));
+            var ephemeris = new FixedPlanetEphemeris(new Dictionary<SolarSystemBody, SolarSystemPosition>
+            {
+                [SolarSystemBody.Moon] = new(new(zenith.RightAscensionHours + .3, zenith.DeclinationDegrees - 3), -12),
+                [SolarSystemBody.Jupiter] = new(new(zenith.RightAscensionHours - .3, zenith.DeclinationDegrees + 3), -2)
+            });
+            var sceneStore = new ProjectedSceneStore();
+            using var provider = ProcessingGraphOperationsTests.CreateProvider(root);
+            var staging = provider.GetRequiredService<IProjectedSceneStagingStore>();
+            var config = CreateSceneLimitConfig(2000, figures: true) with
+            {
+                AgentId = "dense-scene-agent",
+                Pipeline = new([new("ProjectedScene", "scene", DependsOn: ["$raw"])],
+                    CapturePipelineSchemaVersions.ExplicitV2, CapturePipelineDependencyPolicy.RejectEnabledDependent)
+            };
+            var request = SceneLimitRequest();
+            async Task<CaptureResult> CaptureAsync(IProjectedSceneStagingStore? store)
+            {
+                var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(request.RequestedStartUtc, autoAdvance: true),
+                    catalog, sceneStore, topology, ephemeris, stagingStore: store,
+                    sceneObjectBound: new MutableSceneObjectBound(ProjectedSceneJson.MaximumObjectCount + 1));
+                await using var lifetime = module.ConfigureAwait(false);
+                await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
+                return await module.CaptureAsync(request, CancellationToken.None).ConfigureAwait(false);
+            }
+
+            var full = (await CaptureAsync(null).ConfigureAwait(false)).Frame!;
+            Assert.IsTrue(sceneStore.TryGet(full.Metadata.Scene!.SceneId, out var unbounded));
+            var oldStageFailure = await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+                await staging.StageAsync(new string('A', 64), full.Metadata.Scene.SceneId, unbounded!, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(oldStageFailure.Message, "structural bounds", StringComparison.Ordinal);
+            var bounded = await CaptureAsync(staging).ConfigureAwait(false);
+            var frame = bounded.Frame!;
+            var provenance = frame.Metadata.Scene!;
+            Assert.IsTrue(provenance.RequiresProjectedScene);
+            Assert.AreEqual("10001", frame.Metadata.Extra!["stellarMaximumCandidates"]);
+            Assert.AreEqual("10003", frame.Metadata.Extra["stellarAdmittedCount"]);
+            Assert.AreEqual(full.Metadata.Extra!["stellarPredictionsSha256"], frame.Metadata.Extra["stellarPredictionsSha256"]);
+            CollectionAssert.AreEqual(full.PixelData.ToArray(), frame.PixelData.ToArray());
+            Assert.IsGreaterThan(ProjectedSceneJson.MaximumObjectCount, full.Metadata.Scene!.Objects!.Count);
+            var stage = await provider.GetRequiredService<IProjectedSceneStagingReader>()
+                .ReadAsync(provenance.ProjectedSceneStageKey!, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(stage);
+            Assert.IsLessThan(ProjectedSceneJson.MaximumObjectCount, stage.Objects.Count, "The byte limit also applies.");
+            Assert.AreEqual(10001, stage.Selection.MaximumResults);
+            var publishedIds = stage.Objects.Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
+            Assert.IsTrue(SceneLimitAlwaysPresentIds.Take(4).All(publishedIds.Contains));
+            Assert.IsNotEmpty(stage.Segments);
+            Assert.IsTrue(sceneStore.TryGet(provenance.SceneId, out var published));
+            CollectionAssert.AreEqual(stage.Objects.Select(static item => item.Id).ToArray(),
+                published!.Objects.Select(static item => item.Id).ToArray());
+
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            var receipt = await ingress.AcceptAsync(config, new CaptureLoopSubmission(request, bounded, request.RequestedStartUtc,
+                request.TargetInterval, TimeSpan.Zero), CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            var descriptor = receipt.Manifest.Descriptor;
+            var product = stage.Bind(new(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
+                CaptureContractJson.ComputeDescriptorSha256(descriptor)), ProjectedSceneKind.VirtualRenderAuthoritative);
+            Assert.IsLessThanOrEqualTo(ProjectedSceneJson.MaximumPayloadBytes, ProjectedSceneJson.Serialize(product).Length);
+            Assert.AreEqual(descriptor.Artifact.ChecksumSha256, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(frame.PixelData.Span)));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     [TestMethod]

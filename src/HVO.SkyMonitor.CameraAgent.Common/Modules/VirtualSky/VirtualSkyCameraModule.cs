@@ -370,7 +370,7 @@ public sealed class VirtualSkyCameraModule(
             new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees,
                 observatory.ElevationMeters),
             renderProjection,
-            // The limit also bounds midpoint annotation stars and enters the scene identity through this query.
+            // The midpoint query follows the renderer admission depth. Publication applies its own object budget.
             new CatalogQuery(selectedMagnitude, stellarLimit),
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
@@ -559,7 +559,7 @@ public sealed class VirtualSkyCameraModule(
                 Statistics = affected.Statistics
             };
         }
-        if (preview is null)
+        if (preview is null && stageKey is null)
         {
             sceneStore.Put(sceneId, scene);
         }
@@ -833,8 +833,11 @@ public sealed class VirtualSkyCameraModule(
         if (stageKey is null || stagingStore is null) return result;
         try
         {
-            await stagingStore.StageAsync(stageKey, sceneId, scene, cancellationToken).ConfigureAwait(false);
+            var publishedScene = await stagingStore.StageVirtualSceneAsync(stageKey, sceneId, scene, cancellationToken)
+                .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            extra["visibleObjectCount"] = publishedScene.Objects.Count.ToString(CultureInfo.InvariantCulture);
+            sceneStore.Put(sceneId, publishedScene);
             return result;
         }
         catch
