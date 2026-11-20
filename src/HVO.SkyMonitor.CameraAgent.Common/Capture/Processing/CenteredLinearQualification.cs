@@ -1,5 +1,6 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -16,7 +17,7 @@ internal static class CenteredLinearQualification
             layout.PixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
             layout.ByteOrder != FrameByteOrder.LittleEndian || layout.Packing != FrameSamplePacking.ByteAligned ||
             layout.ContainerDepthBits != 16 || !layout.Validate().IsValid ||
-            layout.BlackLevel is not { } declaredBlack ||
+            layout.BlackLevel is null ||
             layout.PixelFormat == CameraPixelFormat.BayerRggb16 &&
                 layout.Readout is not { BinX: 1, BinY: 1, CfaOriginX: not null, CfaOriginY: not null })
         {
@@ -24,15 +25,7 @@ internal static class CenteredLinearQualification
             return false;
         }
 
-        var scale = layout.LevelCodeSpace == FrameLevelCodeSpace.NativeSample
-            ? layout.StoredCodeTransform switch
-            {
-                FrameStoredCodeTransform.LeftShiftedV1 => 1 << (layout.ContainerDepthBits - layout.SampleDepthBits),
-                FrameStoredCodeTransform.FullRangeScaledV1 => ushort.MaxValue / (double)((1 << layout.SampleDepthBits) - 1),
-                _ => 1
-            }
-            : 1;
-        black = declaredBlack * scale;
+        black = CenteredNormalizationLayout.CreateWorkingLayout(layout).BlackLevel!.Value;
         white = storedWhite;
         if (black >= 0 && white <= ushort.MaxValue && white > black)
         {

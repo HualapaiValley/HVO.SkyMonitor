@@ -73,6 +73,16 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     public ProcessingGraphAgentCapabilities Capabilities =>
         ProcessingGraphAgentCapabilities.Create(_pipelineFactory.StableStepAliases);
 
+    public CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration.CenteredExposure is null || _centeredExtensions.Length == 0) return configuration;
+
+        var pipeline = configuration.Pipeline;
+        foreach (var extension in _centeredExtensions) pipeline = extension.Configure(pipeline);
+        return configuration with { Pipeline = pipeline };
+    }
+
     internal ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
         CameraModuleConfig configuration,
         CancellationToken cancellationToken)
@@ -84,17 +94,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        if (!retainedCapture && configuration.CenteredExposure is not null)
-        {
-            var pipeline = configuration.Pipeline;
-            foreach (var extension in _centeredExtensions) pipeline = extension.Configure(pipeline);
-            configuration = configuration with { Pipeline = pipeline };
-        }
+        var sourceConfiguration = configuration;
+        if (!retainedCapture) configuration = ExpandConfiguredProfile(sourceConfiguration);
         EnsureExplicitPipeline(configuration.Pipeline);
         await _configurationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            Volatile.Write(ref _baseConfiguration, configuration);
+            if (!retainedCapture || sourceConfiguration.CenteredExposure is null)
+                Volatile.Write(ref _baseConfiguration, sourceConfiguration);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
             if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal) &&
                 _configuredPipelineRetained == retainedCapture &&

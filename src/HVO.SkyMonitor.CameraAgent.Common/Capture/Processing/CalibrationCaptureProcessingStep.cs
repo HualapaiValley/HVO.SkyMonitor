@@ -201,20 +201,15 @@ internal sealed class CalibrationCaptureProcessingStep(
         {
             // No-correction keeps every sample. An explicitly declared native level on shifted/scaled
             // codes becomes its stored-space level in the working artifact; the raw descriptor is unchanged.
-            if (context.RawCapture?.Manifest.CenteredExposure is not null &&
-                input.Layout is { LevelCodeSpace: FrameLevelCodeSpace.NativeSample,
-                    StoredCodeTransform: FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 } layout &&
-                CenteredLinearQualification.TryResolveLevels(layout, out var black, out var white, out _))
+            if (context.RawCapture?.Manifest.CenteredExposure is not null && input.Layout is { } layout)
             {
-                var storedLayout = layout with
+                var storedLayout = CenteredNormalizationLayout.CreateWorkingLayout(layout);
+                if (storedLayout != layout && CenteredLinearQualification.TryResolveLevels(layout, out _, out _, out _))
                 {
-                    LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
-                    BlackLevel = black,
-                    WhiteLevel = white
-                };
-                context.RecordCanonicalInput("centered-normalization-levels", "centered-stored-levels-v1",
-                    CaptureContractJson.ComputeCanonicalJsonSha256(new { Declared = layout, Working = storedLayout }));
-                input = input with { Layout = storedLayout };
+                    context.RecordCanonicalInput("centered-normalization-levels", "centered-stored-levels-v1",
+                        CaptureContractJson.ComputeCanonicalJsonSha256(new { Declared = layout, Working = storedLayout }));
+                    input = input with { Layout = storedLayout };
+                }
             }
             outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
                 BuiltInProcessingRecipes.LinearNormalization,
