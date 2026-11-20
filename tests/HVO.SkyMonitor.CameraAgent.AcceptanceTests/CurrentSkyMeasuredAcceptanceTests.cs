@@ -161,7 +161,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             var failurePage = await failureContext.NewPageAsync().ConfigureAwait(false);
             await LoginAsync(failurePage, CameraAgentKestrelFixture.OwnerEmail, CameraAgentKestrelFixture.OwnerPassword).ConfigureAwait(false);
             await failurePage.GotoAsync("/").ConfigureAwait(false);
-            Assert.Contains("No accepted measured result", await failurePage.Locator(".latest-measured-solution").InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
+            await failurePage.Locator(".latest-measured-solution").GetByText("No accepted measured result")
+                .WaitForAsync().ConfigureAwait(false);
             Assert.IsTrue(await failurePage.Locator(".pixel-sky-calculator button").First.IsDisabledAsync().ConfigureAwait(false));
             await failurePage.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "no-accepted-raw-continues.png"), FullPage = true }).ConfigureAwait(false);
             await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "failure-evidence.json"), JsonSerializer.Serialize(new { captures, root = host.Root }, AstrometryBrowserJson)).ConfigureAwait(false);
