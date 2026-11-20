@@ -639,11 +639,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             await EnsureExecutionLeaseAsync(connection, transaction, execution, cancellationToken).ConfigureAwait(false);
         }
         var outputPublication = new bool[outputs.Count];
+        var outputInserted = false;
         for (var index = 0; index < outputs.Count; index++)
         {
             var inserted = await InsertOutputAsync(
                 connection, transaction, captureId, node.Id, outputs[index], execution is not null, cancellationToken)
                 .ConfigureAwait(false);
+            outputInserted |= inserted;
             outputPublication[index] = execution is null ||
                 execution.ExecutionClass != ProcessingGraphExecutionClass.Live && execution.AllowAutomaticPublication ||
                 !inserted && await IsOutputPublishedAsync(
@@ -729,8 +731,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        if (outputs.Any(static output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion))
-            MarkAstrometryCaptureChanged(captureId);
+        if (outputs.Count != 0)
+            NotifyAstrometryOutputsCommitted(captureId,
+                outputs.Any(static output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion), outputInserted);
     }
 
     /// <summary>

@@ -1,14 +1,19 @@
 using System.Text.Json;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal enum RetainedAstrometryDisplayState
+internal enum RetainedAstrometryLineageState
 {
     Unknown,
-    Retained,
+    Available,
+    Pending,
     Evicted,
     Quarantined
 }
+
+internal readonly record struct AstrometryLineageStates(RetainedAstrometryLineageState Previous,
+    RetainedAstrometryLineageState Selected, RetainedAstrometryLineageState Result);
 
 internal sealed record AstrometryOutputStamp(Guid ArtifactId, string ContentIdentitySha256);
 
@@ -55,6 +60,7 @@ internal sealed partial class SqliteCaptureProcessingStore
     private bool _astrometrySeedStopped;
     private HashSet<Guid>? _changedAstrometryCaptures;
     private AstrometryCaptureCandidate[]? _astrometryCandidates;
+    private readonly HashSet<Guid> _astrometryCandidateIds = [];
 
     // A committed raw release can make an assessment readable without rewriting the assessment or its inputs.
     internal void NotifyRawEvidenceRevalidated(Guid captureId) => MarkAstrometryCaptureChanged(captureId);
@@ -67,56 +73,98 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
-    internal async ValueTask<bool> IsAstrometryQuarantinedAsync(
-        Guid captureId, Guid artifactId, string solutionIdentitySha256, CancellationToken cancellationToken)
-        => await ReadAstrometryDisplayStateAsync(captureId, artifactId, solutionIdentitySha256, cancellationToken)
-            .ConfigureAwait(false) == RetainedAstrometryDisplayState.Quarantined;
-
-    internal async ValueTask<RetainedAstrometryDisplayState> ReadAstrometryDisplayStateAsync(
-        Guid captureId, Guid artifactId, string solutionIdentitySha256, CancellationToken cancellationToken)
+    private void NotifyAstrometryOutputsCommitted(Guid captureId, bool assessmentWritten, bool outputInserted)
     {
+        lock (_astrometryChangesLock)
+        {
+            // An existing fit may name an evicted input that just reappeared under the same identity.
+            if (assessmentWritten || outputInserted && _astrometryCandidateIds.Contains(captureId))
+                _changedAstrometryCaptures?.Add(captureId);
+        }
+    }
+
+    internal async ValueTask<AstrometryLineageStates> ReadAstrometryLineageAsync(
+        CameraAgentAstrometryAssessmentIdentity? previous, CameraAgentAstrometryAssessmentIdentity? selected,
+        CameraAgentAstrometryAssessmentIdentity? result, CancellationToken cancellationToken)
+    {
+        if (previous is null && selected is null && result is null) return default;
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        // The caller supplies an already verified identity. Absent durable rows indicate eviction.
-        // A present row marked Missing still belongs to the fit and can recover.
+        // One SQLite snapshot for the displayed identities and the actual result. The output identity
+        // names immutable, ordinal source rows: raw, measured associations, scene and context.
+        // Quarantine and eviction outrank recoverable unavailability anywhere in that lineage.
         command.CommandText = """
+            WITH requested(slot, capture, artifact, solution) AS (
+                VALUES (0, $previousCapture, $previousArtifact, $previousSolution),
+                       (1, $selectedCapture, $selectedArtifact, $selectedSolution),
+                       (2, $resultCapture, $resultArtifact, $resultSolution)
+            )
             SELECT CASE
-                WHEN assessment.capture_id IS NOT $capture OR assessment.role IS NOT 'Metadata'
+                WHEN requested.artifact IS NULL THEN 0
+                WHEN assessment.artifact_id IS NULL THEN 3
+                WHEN assessment.capture_id IS NOT requested.capture OR assessment.role IS NOT 'Metadata'
                   OR assessment.product_schema_version IS NOT 'measured-astrometry-solution-v1'
-                  OR assessment.content_identity_sha256 IS NOT $solution COLLATE NOCASE THEN 0
-                WHEN assessment.availability_state = 'Quarantined' THEN 3
-                ELSE COALESCE((
-                    SELECT MAX(CASE
-                        WHEN input.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 3
-                        WHEN input.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 2
-                        ELSE 1 END)
+                  OR assessment.content_identity_sha256 IS NOT requested.solution COLLATE NOCASE THEN 0
+                WHEN assessment.availability_state = 'Quarantined' THEN 4
+                ELSE (
+                    SELECT CASE WHEN COUNT(*) <> 4 THEN 0 ELSE MAX(
+                        CASE WHEN assessment.availability_state <> 'Available'
+                          OR (EXISTS (SELECT 1 FROM processing_execution_outputs
+                              WHERE output_identity_sha256 = assessment.output_identity_sha256)
+                              AND NOT EXISTS (SELECT 1 FROM processing_execution_outputs
+                              WHERE output_identity_sha256 = assessment.output_identity_sha256 AND published_flag = 1))
+                          THEN 2 ELSE 1 END,
+                        MAX(CASE
+                            WHEN input.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
+                            WHEN input.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
+                            WHEN raw.raw_artifact_id IS NOT NULL AND raw.state <> 'committed' THEN 2
+                            WHEN input.artifact_id IS NOT NULL AND (input.availability_state <> 'Available'
+                              OR (EXISTS (SELECT 1 FROM processing_execution_outputs
+                                  WHERE output_identity_sha256 = input.output_identity_sha256)
+                                  AND NOT EXISTS (SELECT 1 FROM processing_execution_outputs
+                                  WHERE output_identity_sha256 = input.output_identity_sha256 AND published_flag = 1)))
+                              THEN 2
+                            ELSE 1 END))
+                    END
                     FROM processing_output_sources source
-                    LEFT JOIN processing_outputs input ON input.artifact_id = source.source_artifact_id
-                      AND input.capture_id = assessment.capture_id
-                    LEFT JOIN raw_captures raw ON raw.raw_artifact_id = source.source_artifact_id
-                      AND raw.capture_id = assessment.capture_id
+                    LEFT JOIN processing_outputs input ON source.source_ordinal BETWEEN 1 AND 3
+                      AND input.artifact_id = source.source_artifact_id AND input.capture_id = assessment.capture_id
+                    LEFT JOIN raw_captures raw ON source.source_ordinal = 0
+                      AND raw.raw_artifact_id = source.source_artifact_id AND raw.capture_id = assessment.capture_id
                     WHERE source.output_identity_sha256 = assessment.output_identity_sha256
-                ), 1)
+                )
             END
-            FROM processing_outputs assessment
-            WHERE assessment.artifact_id = $artifact;
+            FROM requested
+            LEFT JOIN processing_outputs assessment ON assessment.artifact_id = requested.artifact
+            ORDER BY requested.slot;
             """;
-        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
-        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
-        command.Parameters.AddWithValue("$solution", solutionIdentitySha256);
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) switch
+        Bind("previous", previous);
+        Bind("selected", selected == previous ? null : selected);
+        Bind("result", result == previous || result == selected ? null : result);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var previousState = await ReadStateAsync().ConfigureAwait(false);
+        var selectedState = await ReadStateAsync().ConfigureAwait(false);
+        var resultState = await ReadStateAsync().ConfigureAwait(false);
+        if (selected == previous) selectedState = previousState;
+        if (result == previous) resultState = previousState;
+        else if (result == selected) resultState = selectedState;
+        return new(previousState, selectedState, resultState);
+
+        void Bind(string name, CameraAgentAstrometryAssessmentIdentity? identity)
         {
-            null => RetainedAstrometryDisplayState.Evicted,
-            1L => RetainedAstrometryDisplayState.Retained,
-            2L => RetainedAstrometryDisplayState.Evicted,
-            3L => RetainedAstrometryDisplayState.Quarantined,
-            _ => RetainedAstrometryDisplayState.Unknown
-        };
+            command.Parameters.AddWithValue($"${name}Capture", (object?)identity?.CaptureId.ToString("N") ?? DBNull.Value);
+            command.Parameters.AddWithValue($"${name}Artifact", (object?)identity?.ArtifactId.ToString("N") ?? DBNull.Value);
+            command.Parameters.AddWithValue($"${name}Solution", (object?)identity?.SolutionIdentitySha256 ?? DBNull.Value);
+        }
+
+        async ValueTask<RetainedAstrometryLineageState> ReadStateAsync()
+            => await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+                ? (RetainedAstrometryLineageState)reader.GetInt32(0) : RetainedAstrometryLineageState.Unknown;
     }
 
     // A deadline can prevent another SQL read. Check that the identified capture has no pending or
-    // in-flight change before carrying its known quarantine back to the previous-summary caller.
+    // in-flight change before returning its known invalidation to the caller.
     internal bool IsCurrentAstrometrySnapshotForCapture(IReadOnlyList<AstrometryCaptureCandidate> snapshot, Guid captureId)
     {
         lock (_astrometryChangesLock)
@@ -198,6 +246,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 var updated = previousSnapshot is null
                     ? new List<AstrometryCaptureCandidate>()
                     : previousSnapshot.Where(candidate => !changes.Contains(candidate.CaptureId)).ToList();
+                var queriedCaptures = new List<Guid>();
                 var observeSeed = seeding && _faultInjector != NullCaptureProcessingFaultInjector.Instance;
                 using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
                 {
@@ -208,7 +257,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                             await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null
                             : new AstrometryOutputStamp(Guid.ParseExact(reader.GetString(4), "N"), reader.GetString(5));
                         var captureId = reader.GetString(0);
-                        updated.Add(new(Guid.ParseExact(captureId, "N"), reader.GetInt64(1), reader.GetInt64(2),
+                        var id = Guid.ParseExact(captureId, "N");
+                        queriedCaptures.Add(id);
+                        updated.Add(new(id, reader.GetInt64(1), reader.GetInt64(2),
                             reader.GetInt64(3), soleOutput));
                         if (observeSeed) _faultInjector.Inject(CaptureProcessingFaultPoint.AfterAstrometrySeedRowMaterialized, captureId);
                     }
@@ -220,6 +271,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                 lock (_astrometryChangesLock)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    _astrometryCandidateIds.ExceptWith(changes);
+                    _astrometryCandidateIds.UnionWith(queriedCaptures);
                     _astrometryCandidates = snapshot;
                 }
                 return snapshot;
