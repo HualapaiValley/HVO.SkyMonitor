@@ -16,7 +16,7 @@ public sealed record CameraAgentRetainedAstrometry(Guid CaptureId, string Availa
     [JsonIgnore] public AstrometricMapping? Mapping { get; init; }
     [JsonIgnore] public AstrometricResidualDiagnostics? Diagnostics { get; init; }
     [JsonIgnore] public ReconstructionDescriptor? SourceDescriptor { get; init; }
-    internal AstrometryOutputStamp? QuarantinedAssessment { get; init; }
+    internal AstrometryLineageInvalidation? LineageInvalidation { get; init; }
     public string? CalibrationVersion { get; init; }
     public string? ProjectionModel { get; init; }
     public bool HorizontalFlip { get; init; }
@@ -71,6 +71,8 @@ public sealed record CameraAgentLatestAstrometry(Guid CaptureId, Guid ArtifactId
 /// <summary>Exact identity of a previously verified retained fit.</summary>
 public sealed record CameraAgentAstrometryAssessmentIdentity(Guid CaptureId, Guid ArtifactId, string SolutionIdentitySha256);
 
+internal sealed record AstrometryLineageInvalidation(AstrometryOutputStamp Assessment, RetainedAstrometryLineageState State);
+
 public sealed record CameraAgentLatestAstrometryRead(bool Completed, CameraAgentLatestAstrometry? Summary = null)
 {
     /// <summary>The read confirmed quarantine of the supplied previous assessment or one of its required inputs.</summary>
@@ -111,8 +113,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     private HashSet<AstrometryOutputStamp> rejectedOutputs = [];
     // An incremental store refresh retains the object for each unchanged capture. A changed capture
     // receives a new object even if the assessment itself still has the same artifact identity.
-    private Dictionary<Guid, QuarantineProof> quarantinedCandidates = [];
-    private sealed record QuarantineProof(AstrometryCaptureCandidate Candidate, AstrometryOutputStamp Assessment);
+    private Dictionary<Guid, CandidateInvalidation> invalidCandidates = [];
+    private sealed record CandidateInvalidation(AstrometryCaptureCandidate Candidate, AstrometryLineageInvalidation Lineage);
 
     public void Dispose()
     {
@@ -125,7 +127,17 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         // Do not accumulate raw buffers behind concurrent Current Sky/archive requests.
         if (!await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             return new(captureId, "Unavailable", "read-capacity");
-        try { return await ReadAsync(captureId, cancellationToken).ConfigureAwait(false); }
+        try
+        {
+            var view = await ReadAsync(captureId, cancellationToken).ConfigureAwait(false);
+            if (view.Solution is null || view.ArtifactId is not { } artifact || view.SolutionIdentitySha256 is not { } solution)
+                return view;
+
+            var lineage = await ReadLineageAsync(null, null, new(captureId, artifact, solution), cancellationToken).ConfigureAwait(false);
+            var state = lineage?.Result ?? RetainedAstrometryLineageState.Unknown;
+            return state == RetainedAstrometryLineageState.Available
+                ? view : new(captureId, "Unavailable", IsInvalid(state) ? InvalidEvidence : TemporaryEvidenceUnavailable);
+        }
         finally { readGate.Release(); }
     }
 
@@ -133,7 +145,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         => (await ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false)).Summary;
 
     public ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CancellationToken cancellationToken)
-        => ReadLatestAcceptedCoreAsync(null, null, cancellationToken);
+        => ReadLatestAcceptedAsync(null, null, cancellationToken);
 
     public ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CameraAgentLatestAstrometry? previousSummary,
         CancellationToken cancellationToken)
@@ -142,72 +154,56 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     public async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CameraAgentLatestAstrometry? previousSummary,
         CameraAgentAstrometryAssessmentIdentity? selectedAssessment, CancellationToken cancellationToken)
     {
-        if (previousSummary is null && selectedAssessment is null)
-            return await ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
-
-        var previous = previousSummary is null ? null : new CameraAgentAstrometryAssessmentIdentity(previousSummary.CaptureId,
-            previousSummary.ArtifactId, previousSummary.SolutionIdentitySha256);
-        var same = previous == selectedAssessment;
-        var initialPrevious = RetainedAstrometryDisplayState.Unknown;
-        var initialSelected = RetainedAstrometryDisplayState.Unknown;
-        var finalPrevious = RetainedAstrometryDisplayState.Unknown;
-        var finalSelected = RetainedAstrometryDisplayState.Unknown;
+        var previous = IdentityOf(previousSummary);
+        AstrometryLineageStates initial = default;
+        AstrometryLineageStates current = default;
         var read = new CameraAgentLatestAstrometryRead(false);
         try
         {
-            initialPrevious = await ReadDisplayStateAsync(previous, cancellationToken).ConfigureAwait(false);
-            initialSelected = same ? initialPrevious : await ReadDisplayStateAsync(selectedAssessment, cancellationToken).ConfigureAwait(false);
+            initial = await ReadLineageAsync(previous, selectedAssessment, null, cancellationToken).ConfigureAwait(false) ?? default;
             read = await ReadLatestAcceptedCoreAsync(previous, selectedAssessment, cancellationToken).ConfigureAwait(false);
             if (!cancellationToken.IsCancellationRequested)
-            {
-                // Retention may commit during the search, including for a selected capture outside the walk.
-                finalPrevious = await ReadDisplayStateAsync(previous, cancellationToken).ConfigureAwait(false);
-                finalSelected = same ? finalPrevious : await ReadDisplayStateAsync(selectedAssessment, cancellationToken).ConfigureAwait(false);
-            }
+                current = await ReadLineageAsync(previous, selectedAssessment, IdentityOf(read.Summary), cancellationToken).ConfigureAwait(false) ?? default;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested &&
-            (IsInvalid(initialPrevious) || IsInvalid(initialSelected) || IsInvalid(finalPrevious) ||
+            (IsInvalid(initial.Previous) || IsInvalid(initial.Selected) ||
              read.PreviousSummaryInvalidated || read.SelectedAssessmentInvalidated))
         {
             read = read with { Completed = false, Summary = null };
         }
 
-        var previousState = finalPrevious == RetainedAstrometryDisplayState.Unknown ? initialPrevious : finalPrevious;
-        var selectedState = finalSelected == RetainedAstrometryDisplayState.Unknown ? initialSelected : finalSelected;
+        var previousState = current.Previous != RetainedAstrometryLineageState.Unknown ? current.Previous :
+            read.PreviousSummaryQuarantined ? RetainedAstrometryLineageState.Quarantined :
+            read.PreviousSummaryEvicted ? RetainedAstrometryLineageState.Evicted : initial.Previous;
+        var selectedInvalid = current.Selected != RetainedAstrometryLineageState.Unknown
+            ? IsInvalid(current.Selected) : read.SelectedAssessmentInvalidated || IsInvalid(initial.Selected);
         read = read with
         {
-            PreviousSummaryQuarantined = previousState == RetainedAstrometryDisplayState.Quarantined ||
-                finalPrevious == RetainedAstrometryDisplayState.Unknown && read.PreviousSummaryQuarantined,
-            PreviousSummaryEvicted = previousState == RetainedAstrometryDisplayState.Evicted,
-            SelectedAssessmentInvalidated = IsInvalid(selectedState) ||
-                finalSelected == RetainedAstrometryDisplayState.Unknown && read.SelectedAssessmentInvalidated
+            PreviousSummaryQuarantined = previousState == RetainedAstrometryLineageState.Quarantined,
+            PreviousSummaryEvicted = previousState == RetainedAstrometryLineageState.Evicted,
+            SelectedAssessmentInvalidated = selectedInvalid
         };
-        if (read.Summary is { } summary &&
-            (read.PreviousSummaryInvalidated && Matches(previous, summary) ||
-             read.SelectedAssessmentInvalidated && Matches(selectedAssessment, summary)))
-            return read with { Completed = false, Summary = null };
-        return read;
-
-        static bool IsInvalid(RetainedAstrometryDisplayState state)
-            => state is RetainedAstrometryDisplayState.Quarantined or RetainedAstrometryDisplayState.Evicted;
-
-        static bool Matches(CameraAgentAstrometryAssessmentIdentity? identity, CameraAgentLatestAstrometry summary)
-            => identity?.CaptureId == summary.CaptureId && identity.ArtifactId == summary.ArtifactId &&
-                string.Equals(identity.SolutionIdentitySha256, summary.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
+        return read.Summary is not null && current.Result != RetainedAstrometryLineageState.Available
+            ? read with { Completed = false, Summary = null } : read;
     }
 
-    private async ValueTask<RetainedAstrometryDisplayState> ReadDisplayStateAsync(
-        CameraAgentAstrometryAssessmentIdentity? identity, CancellationToken cancellationToken)
+    private static CameraAgentAstrometryAssessmentIdentity? IdentityOf(CameraAgentLatestAstrometry? summary)
+        => summary is null ? null : new(summary.CaptureId, summary.ArtifactId, summary.SolutionIdentitySha256);
+
+    private static bool IsInvalid(RetainedAstrometryLineageState state)
+        => state is RetainedAstrometryLineageState.Quarantined or RetainedAstrometryLineageState.Evicted;
+
+    private async ValueTask<AstrometryLineageStates?> ReadLineageAsync(
+        CameraAgentAstrometryAssessmentIdentity? previous, CameraAgentAstrometryAssessmentIdentity? selected,
+        CameraAgentAstrometryAssessmentIdentity? result, CancellationToken cancellationToken)
     {
-        if (identity is null) return RetainedAstrometryDisplayState.Unknown;
         try
         {
-            return await store.ReadAstrometryDisplayStateAsync(identity.CaptureId, identity.ArtifactId,
-                identity.SolutionIdentitySha256, cancellationToken).ConfigureAwait(false);
+            return await store.ReadAstrometryLineageAsync(previous, selected, result, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
         {
-            return RetainedAstrometryDisplayState.Unknown;
+            return null;
         }
     }
 
@@ -232,11 +228,11 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                     return await CompleteLatestReadAsync(captures, summary, previous, selected, cancellationToken).ConfigureAwait(false);
 
                 var next = node.Next;
-                // Keep only confirmed quarantine and exact immutable rejection progress. Pending, ambiguous
-                // or otherwise invalid artifacts can become readable without a durable state change.
-                if (value.QuarantinedAssessment is { } quarantined)
+                // Retain durable ineligibility for this snapshot and exact immutable rejections.
+                // Open failures and pending artifacts can recover without a durable state change.
+                if (value.LineageInvalidation is { } invalidation)
                 {
-                    quarantinedCandidates.Add(candidate.CaptureId, new(candidate, quarantined));
+                    invalidCandidates.Add(candidate.CaptureId, new(candidate, invalidation));
                     latestCandidates.Remove(node);
                     newSkips++;
                 }
@@ -255,7 +251,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 : LatestRead(false, null, previous, selected);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested &&
-            (IsDisplayedAssessmentQuarantined(previous) || IsDisplayedAssessmentQuarantined(selected)))
+            (IsInvalid(CachedInvalidation(previous)) || IsInvalid(CachedInvalidation(selected))))
         {
             return LatestRead(false, null, previous, selected);
         }
@@ -268,11 +264,15 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
     private CameraAgentLatestAstrometryRead LatestRead(bool completed, CameraAgentLatestAstrometry? summary,
         CameraAgentAstrometryAssessmentIdentity? previous, CameraAgentAstrometryAssessmentIdentity? selected)
-        => new(completed, summary)
+    {
+        var previousState = CachedInvalidation(previous);
+        return new(completed, summary)
         {
-            PreviousSummaryQuarantined = IsDisplayedAssessmentQuarantined(previous),
-            SelectedAssessmentInvalidated = IsDisplayedAssessmentQuarantined(selected)
+            PreviousSummaryQuarantined = previousState == RetainedAstrometryLineageState.Quarantined,
+            PreviousSummaryEvicted = previousState == RetainedAstrometryLineageState.Evicted,
+            SelectedAssessmentInvalidated = IsInvalid(CachedInvalidation(selected))
         };
+    }
 
     private async ValueTask<CameraAgentLatestAstrometryRead> CompleteLatestReadAsync(
         IReadOnlyList<AstrometryCaptureCandidate> snapshot, CameraAgentLatestAstrometry? summary,
@@ -285,30 +285,31 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         return LatestRead(false, null, previous, selected);
     }
 
-    private bool IsDisplayedAssessmentQuarantined(CameraAgentAstrometryAssessmentIdentity? previous)
-        => previous is not null && latestSnapshot is { } snapshot &&
-           quarantinedCandidates.TryGetValue(previous.CaptureId, out var proof) &&
-           proof.Assessment.ArtifactId == previous.ArtifactId &&
-           string.Equals(proof.Assessment.ContentIdentitySha256, previous.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
-           store.IsCurrentAstrometrySnapshotForCapture(snapshot, previous.CaptureId);
+    private RetainedAstrometryLineageState CachedInvalidation(CameraAgentAstrometryAssessmentIdentity? identity)
+        => identity is not null && latestSnapshot is { } snapshot &&
+           invalidCandidates.TryGetValue(identity.CaptureId, out var proof) &&
+           proof.Lineage.Assessment.ArtifactId == identity.ArtifactId &&
+           string.Equals(proof.Lineage.Assessment.ContentIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
+           store.IsCurrentAstrometrySnapshotForCapture(snapshot, identity.CaptureId)
+               ? proof.Lineage.State : RetainedAstrometryLineageState.Unknown;
 
     private void RefreshLatestCandidates(IReadOnlyList<AstrometryCaptureCandidate> snapshot, CancellationToken cancellationToken)
     {
         var pending = new LinkedList<AstrometryCaptureCandidate>();
         var retained = new HashSet<AstrometryOutputStamp>();
-        var quarantines = new Dictionary<Guid, QuarantineProof>();
+        var invalidations = new Dictionary<Guid, CandidateInvalidation>();
         foreach (var candidate in snapshot)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (quarantinedCandidates.TryGetValue(candidate.CaptureId, out var quarantine) &&
-                ReferenceEquals(quarantine.Candidate, candidate))
-                quarantines.Add(candidate.CaptureId, quarantine);
+            if (invalidCandidates.TryGetValue(candidate.CaptureId, out var invalidation) &&
+                ReferenceEquals(invalidation.Candidate, candidate))
+                invalidations.Add(candidate.CaptureId, invalidation);
             else if (candidate.SoleOutput is { } output && rejectedOutputs.Contains(output)) retained.Add(output);
             else pending.AddLast(candidate);
         }
         latestCandidates = pending;
         rejectedOutputs = retained;
-        quarantinedCandidates = quarantines;
+        invalidCandidates = invalidations;
         latestSnapshot = snapshot;
     }
 
@@ -324,7 +325,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             if (candidates.Count == 0) return new(captureId, "NotRetained", "assessment-not-retained");
             if (candidates.Count != 1) return new(captureId, "Unavailable", "assessment-ambiguous");
             assessment = candidates[0];
-            if (assessment.AvailabilityState == "Quarantined") return Quarantined(assessment);
+            if (assessment.AvailabilityState == "Quarantined")
+                return Invalidated(assessment, RetainedAstrometryLineageState.Quarantined);
             if (assessment.AvailabilityState != "Available")
                 return await ReadFailedEvidenceAsync(TemporaryEvidenceUnavailable).ConfigureAwait(false);
             var remaining = Math.Min(maximumReadBytes, MaximumReadBytes);
@@ -454,28 +456,27 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 readGate.Release();
                 acquiredRawRead = false;
             }
-            if (assessment?.ContentIdentitySha256 is { } identity)
-            {
-                // Artifact status describes an open, not the whole lineage. An earlier missing input can
-                // mask a later quarantine, and a quarantined raw parent opens as Conflict.
-                try
-                {
-                    if (await store.IsAstrometryQuarantinedAsync(captureId, assessment.ArtifactId, identity, cancellationToken).ConfigureAwait(false))
-                        return Quarantined(assessment);
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
-                {
-                    return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
-                }
-            }
-            return new(captureId, "Unavailable", reason);
+            if (assessment?.ContentIdentitySha256 is not { } identity)
+                return new(captureId, "Unavailable", reason);
+
+            // The failed open describes one artifact. Read the complete durable lineage before
+            // deciding whether this capture is a definite skip or a candidate that should retry.
+            var lineage = await ReadLineageAsync(null, null, new(captureId, assessment.ArtifactId, identity),
+                cancellationToken).ConfigureAwait(false);
+            var state = lineage?.Result;
+            if (state is null or RetainedAstrometryLineageState.Pending)
+                return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+
+            // Malformed lineage is insufficient to authorize emission or cache a skip. The
+            // original artifact failure still describes whether this probe should retry.
+            return IsInvalid(state.Value) ? Invalidated(assessment, state.Value) : new(captureId, "Unavailable", reason);
         }
 
-        CameraAgentRetainedAstrometry Quarantined(DurableCaptureProduct product)
+        CameraAgentRetainedAstrometry Invalidated(DurableCaptureProduct product, RetainedAstrometryLineageState state)
             => new(captureId, "Unavailable", InvalidEvidence)
             {
-                QuarantinedAssessment = product.ContentIdentitySha256 is { } identity
-                    ? new(product.ArtifactId, identity) : null
+                LineageInvalidation = product.ContentIdentitySha256 is { } identity
+                    ? new(new(product.ArtifactId, identity), state) : null
             };
     }
 }
