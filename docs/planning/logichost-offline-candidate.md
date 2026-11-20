@@ -49,7 +49,7 @@ The additive `componentMetadata.logicHost` object contains exactly these fields:
 | `initializationTarget` | Exact controlled-initialization target identifier, bounded to 128 characters |
 | `generatedSqlSha256`, `seedManifestSha256` | Lowercase SHA-256 identities of the selected generated SQL and seed/recipe manifest |
 | `configurationVersion`, `objectLayoutVersion`, `checkpointFormatVersion`, `backupFormatVersion` | Integer `1`; explicit initial format declarations, without claiming lifecycle implementation or qualification |
-| `requiredCatalogId`, `requiredPackageVersion` | An exact production reference accepted by the existing approved catalog registry |
+| `requiredCatalogId`, `requiredPackageVersion` | An exact star catalog reference accepted by the existing approved production registry. Standalone deep-sky packages such as OpenNGC are refused. |
 
 Identifiers start with an ASCII letter/digit, contain only ASCII letters,
 digits, `_`, `-`, `.`, and contain no `..`. The exact object is also declared in
