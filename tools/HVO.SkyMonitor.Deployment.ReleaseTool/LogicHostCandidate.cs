@@ -110,7 +110,9 @@ internal static class LogicHostCandidate
             !ReleaseManifest.Sha256Pattern().IsMatch(Text(metadata, "generatedSqlSha256") ?? string.Empty) ||
             !ReleaseManifest.Sha256Pattern().IsMatch(Text(metadata, "seedManifestSha256") ?? string.Empty))
             throw Invalid("the LogicHost schema, initialization, SQL or seed identity is missing or malformed");
-        _ = ReleaseCatalogs.Get(Text(metadata, "requiredCatalogId"), Text(metadata, "requiredPackageVersion"));
+        var catalog = ReleaseCatalogs.Get(Text(metadata, "requiredCatalogId"), Text(metadata, "requiredPackageVersion"));
+        if (catalog.ManifestVersion == CatalogSnapshotResolver.DeepSkyManifestVersion)
+            throw Invalid("the required star catalog cannot be a standalone deep-sky catalog");
     }
 
     private static bool Identifier(string? text, int maximum)

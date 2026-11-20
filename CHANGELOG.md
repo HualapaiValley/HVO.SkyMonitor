@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
+
 - Allow runtime control after a backup is settled or fully recovered, while retaining its journal. #1878
 
 - CameraAgent lifecycle workers now report when a changed listener, credential or runtime identity requires a worker restart, including during retained receipt recovery. Refs #1818
