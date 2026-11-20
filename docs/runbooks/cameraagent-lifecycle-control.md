@@ -102,7 +102,8 @@ while the transport responds. Idle heartbeats do not write durable state or eval
      credential or runtime identity differs from the retained installation. Stop
      and restart the lifecycle worker as the recorded runtime account, then submit
      a new request. If startup refuses, retain the records and investigate the
-     reported identity or credential mismatch; do not edit the records.
+     reported listener, credential or runtime identity mismatch. Do not edit the
+     records.
 
    On either side of the pause, check capture state before resuming:
    - **Failed** `lifecycle.timeout` or `lifecycle.failed-check-capture`: an
@@ -305,9 +306,10 @@ HTTP refusal leaves its receipt pending and allows the poll heartbeat to proceed
 Diagnostics distinguish `recovery=probe-timeout`, `recovery=transport-unavailable`
 and `recovery=probe-refused status=<code>` from heartbeat or publication failures.
 The next poll retries the retained recovery; caller cancellation still stops the worker.
-During retained receipt recovery, `recovery=installer-busy` reports any installer
-error or refusal while acquiring deployment authority, other than a restart-required
-identity or credential mismatch. This includes a held deployment lock, an
+During retained receipt recovery, `recovery=installer-busy` reports installer
+errors or refusals while acquiring deployment authority, excluding listener,
+credential or runtime identity mismatches that require a worker restart
+(`recovery=restart-required`, below). This includes a held deployment lock, an
 Uninstalled instance without an incomplete reinstall or rollback, and an incomplete
 operation not eligible for the settlement exceptions above. Other retained-state
 errors or refusals can also produce it; the diagnostic alone does not identify the
