@@ -250,7 +250,8 @@ public sealed class FileCameraAgentConfigurationLoader(
             AgentId: agentId)
         {
             DeploymentLocation = location,
-            Schedule = document.Schedule
+            Schedule = document.Schedule,
+            CenteredExposure = document.CenteredExposure
         };
 
         ValidateCurrentFileContract(config);
@@ -564,4 +565,5 @@ internal sealed record CameraModuleDocument(
     CameraModuleDescriptor Module,
     CameraRigConfig Rig,
     [property: JsonRequired] CapturePipelineConfig Pipeline,
-    [property: JsonRequired] CaptureScheduleDefinition Schedule);
+    [property: JsonRequired] CaptureScheduleDefinition Schedule,
+    CenteredExposureProfile? CenteredExposure = null);

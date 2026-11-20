@@ -1,3 +1,5 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Runtime.ExceptionServices;
@@ -73,6 +75,12 @@ internal sealed class CameraModuleRunner
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         var config = _hostContext.Configuration;
+        var centered = config.CenteredExposure is not null
+            ? _hostContext as CaptureHostContext ??
+              throw new InvalidOperationException("Centered capture requires the CameraAgent durable capture host.")
+            : null;
+        var boundModule = centered is null ? null : _module as ICameraBoundExposureCapture ??
+            throw new InvalidOperationException("The selected camera cannot bind a centered exposure attempt.");
         var cadenceMode = config.Rig.Pipeline.CadenceMode;
         var targetInterval = config.Rig.Pipeline.CaptureInterval;
         var initialFailureDelay = config.Rig.Pipeline.CaptureFailureInitialDelay ?? DefaultInitialFailureDelay;
@@ -85,7 +93,7 @@ internal sealed class CameraModuleRunner
             gainControl == AutomaticControlOwnership.HostMetered;
         var automaticControlEnabled = exposureControl != AutomaticControlOwnership.Disabled ||
             gainControl != AutomaticControlOwnership.Disabled;
-        var setpointController = automaticControlEnabled
+        var setpointController = centered is null && automaticControlEnabled
             ? _module as ICameraSetpointController ?? throw new InvalidOperationException(
                 "Automatic camera control requires a module that can apply setpoints before ingress.")
             : null;
@@ -211,6 +219,31 @@ internal sealed class CameraModuleRunner
                 throw;
             }
 
+            using var acceptedAdmission = admission;
+            CenteredExposureReservation? reservation = null;
+            if (centered is not null)
+            {
+                try
+                {
+                    reservation = await centered.ReserveCenteredAsync(cancellationToken).ConfigureAwait(false);
+                    var initial = scheduleGrant?.Decision.Reason is null or CaptureScheduleAdmissionReason.LegacyCompatibility
+                        ? ExposureController.Initial(config.Rig.Pipeline,
+                            hostMetered ? ResolveSolarRegime(config, UtcNow()) : CaptureSolarRegime.Night)
+                        : ExposureController.Initial(scheduleGrant.Profile);
+                    var centeredSetpoint = await SelectCenteredSetpointAsync(centered.CenteredIngress, reservation.Pending,
+                        config, initial, exposureControl, gainControl, hostMetered, excludedRegions, cancellationToken)
+                        .ConfigureAwait(false);
+                    nextSetpoint = centeredSetpoint.Setpoint;
+                    await centered.CenteredIngress.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
+                        centeredSetpoint.Metering, centeredSetpoint.Reason, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    admission.MarkNoPublicationRequired();
+                    throw;
+                }
+            }
+
             if (_scheduleRuntimeCoordinator is not null)
             {
                 moduleDelayOverride = null;
@@ -228,6 +261,12 @@ internal sealed class CameraModuleRunner
             previousStartTimestamp = moduleCallStartedTimestamp;
             previousStartUtc = moduleCallStartedUtc;
             var request = new CaptureRequest(effectiveSchedule.RequestedStartUtc, targetInterval, captureMode, nextSetpoint);
+            if (reservation is not null)
+                request = request with
+                {
+                    BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                    BoundGraph = reservation.Revision.Pipeline
+                };
             CaptureResult? result;
             EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
             using var cycleActivity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-cycle");
@@ -240,7 +279,10 @@ internal sealed class CameraModuleRunner
                     environmentalAcquisition = await _environmentalTriggers.BeforeCaptureAsync(moduleCallStartedUtc, cancellationToken)
                         .ConfigureAwait(false);
                 }
-                result = await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false);
+                result = reservation is null
+                    ? await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false)
+                    : await boundModule!.CaptureBoundAsync(reservation.Pending.Key, request, cancellationToken)
+                        .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -253,6 +295,8 @@ internal sealed class CameraModuleRunner
                 admission.MarkNoPublicationRequired();
                 admission.Dispose();
                 _fleetRuntimeState?.CaptureFailed(ex.GetType().Name);
+                // A centered dispatch can have changed the device. Only a reconciled owner can open a fresh target.
+                if (reservation is not null) throw;
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "module-failure");
                 consecutiveFailures++;
                 recovering = true;
@@ -273,6 +317,8 @@ internal sealed class CameraModuleRunner
                 admission.MarkNoPublicationRequired();
                 admission.Dispose();
                 _fleetRuntimeState?.CaptureFailed("null-result");
+                if (reservation is not null)
+                    throw new InvalidOperationException("The centered exposure did not return its target evidence.");
                 cycleActivity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, "null-result");
                 consecutiveFailures++;
                 recovering = true;
@@ -287,7 +333,20 @@ internal sealed class CameraModuleRunner
                 }
                 continue;
             }
-            using var acceptedAdmission = admission;
+            if (reservation is not null)
+            {
+                if (result.Frame?.Layout is null || result.AcquisitionTiming is null)
+                    throw new InvalidOperationException("Centered capture requires actual layout and observed acquisition timing.");
+                var centeredSubmission = new CaptureLoopSubmission(request, result, moduleCallStartedUtc, targetInterval,
+                    _timeProvider.GetElapsedTime(moduleCallStartedTimestamp));
+                await centered!.PublishCenteredAsync(centeredSubmission, reservation, cancellationToken).ConfigureAwait(false);
+                acceptedAdmission.MarkPublished();
+                _fleetRuntimeState?.CaptureSucceeded(result,
+                    _timeProvider.GetElapsedTime(moduleCallStartedTimestamp), TimeSpan.Zero);
+                recovering = false;
+                continue;
+            }
+
             if (consecutiveFailures > 0)
             {
                 _logger.CaptureRecovered(consecutiveFailures);
@@ -492,6 +551,43 @@ internal sealed class CameraModuleRunner
         }
     }
 
+    private async Task<(CaptureSetpoint Setpoint, CaptureMeteringEvidence? Metering, string Reason)>
+        SelectCenteredSetpointAsync(
+            RawCaptureIngress ingress,
+            CenteredPendingAttempt attempt,
+            CameraModuleConfig config,
+            CaptureSetpoint initial,
+            AutomaticControlOwnership exposureControl,
+            AutomaticControlOwnership gainControl,
+            bool hostMetered,
+            MeteringRegion[] excludedRegions,
+            CancellationToken cancellationToken)
+    {
+        if (attempt.SourceCaptureId is not { } sourceCaptureId)
+            return (initial, null, "fresh-profile-settings");
+
+        var key = new ExposureKey(attempt.Key.Camera, attempt.Key.RunId, sourceCaptureId);
+        var source = await ingress.ReadCenteredRawAsync(key, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The pending control source was not admitted.");
+        if (source.Manifest.CenteredExposure?.Target != attempt.Key)
+            throw new InvalidDataException("The pending control source does not authorize this target.");
+        var descriptor = source.Manifest.Descriptor;
+        var active = initial with
+        {
+            Exposure = descriptor.Controls.EffectiveExposure,
+            Gain = descriptor.Controls.EffectiveGain
+        };
+        if (!hostMetered) return (active, null, "controls-fixed");
+        if (!CenteredLinearQualification.TryResolveLevels(descriptor.Layout, out _, out _, out var reason))
+            return (active, null, reason!);
+
+        var frame = await ingress.ReadCenteredFrameAsync(source, cancellationToken).ConfigureAwait(false);
+        var metering = Measure(config, frame, descriptor.Timing.ReadoutCompletedUtc, excludedRegions, centered: true);
+        var regime = ResolveSolarRegime(config, descriptor.Timing.ExposureStartedUtc);
+        var decision = Decide(config.Rig.Pipeline, active, active, exposureControl, gainControl, regime, metering, false);
+        return (decision.Setpoint, metering, decision.Reason.ToString());
+    }
+
     private async ValueTask<CaptureSchedule?> WaitForScheduleAsync(
         CaptureCadenceMode cadenceMode,
         TimeSpan targetInterval,
@@ -555,7 +651,8 @@ internal sealed class CameraModuleRunner
         CameraModuleConfig config,
         CameraFrame? frame,
         DateTimeOffset readoutCompletedUtc,
-        ReadOnlySpan<MeteringRegion> excludedRegions)
+        ReadOnlySpan<MeteringRegion> excludedRegions,
+        bool centered = false)
     {
         var startedUtc = Max(UtcNow(), readoutCompletedUtc);
         using var activity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-meter");
@@ -573,6 +670,13 @@ internal sealed class CameraModuleRunner
 
         var policy = config.Rig.ControlPolicy!.Metering ?? new CaptureMeteringPolicy();
         var (blackLevel, whiteLevel) = ResolveStoredLevels(frame);
+        if (centered)
+        {
+            if (!CenteredLinearQualification.TryResolveLevels(frame.Layout, out var black, out var white, out _))
+                return EmptyMetering(startedUtc, CaptureMeteringOutcome.UnsupportedFormat);
+            blackLevel = checked((ushort)Math.Floor(black));
+            whiteLevel = checked((ushort)Math.Ceiling(white));
+        }
         if (whiteLevel <= blackLevel)
         {
             blackLevel = 0;
@@ -600,7 +704,9 @@ internal sealed class CameraModuleRunner
             saturationLevel,
             region,
             imageCircle,
-            (BayerMeteringPhotosites)(int)policy.CfaSelection,
+            centered
+                ? CenteredLinearQualification.ToDeliveredPhotosites(policy.CfaSelection, frame.Layout?.Readout)
+                : (BayerMeteringPhotosites)(int)policy.CfaSelection,
             byteOrder);
         var result = SparseLinear16Meter.Measure(
             new ImageLayout(

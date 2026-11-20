@@ -593,11 +593,12 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException(
                     $"Capture processing step '{item.Step.Name}' requires a linear 16-bit input, but the configured readout emits {effectiveFormat}.");
             }
-            var centeredSupportsOpaqueEvidence = config.CenteredExposure is { } centeredProfile && centeredProfile.IsValid() &&
+            var centeredHandlesDeclaredLayout = config.CenteredExposure is { } centeredProfile && centeredProfile.IsValid() &&
                 (centeredRawPrimary || item.Step is CalibrationCaptureProcessingStep or ProjectedSceneCaptureProcessingStep) &&
-                effectiveLayout?.StoredCodeTransform == FrameStoredCodeTransform.OpaqueContainerV1;
+                (effectiveLayout?.StoredCodeTransform == FrameStoredCodeTransform.OpaqueContainerV1 ||
+                 CenteredLinearQualification.TryResolveLevels(effectiveLayout, out _, out _, out _));
             if (effectiveLayout is not null && dependencies.Length == 0 &&
-                ((!centeredSupportsOpaqueEvidence && !ProcessingStoredCodeIsSupported(effectiveLayout)) ||
+                ((!centeredHandlesDeclaredLayout && !ProcessingStoredCodeIsSupported(effectiveLayout)) ||
                  effectiveLayout.ContainerDepthBits > 8 && effectiveLayout.ByteOrder != FrameByteOrder.LittleEndian))
             {
                 throw new InvalidOperationException(

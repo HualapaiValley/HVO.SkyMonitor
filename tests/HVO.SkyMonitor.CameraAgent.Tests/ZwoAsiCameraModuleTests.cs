@@ -1068,6 +1068,46 @@ public sealed class ZwoAsiCameraModuleTests
             ConfigurationSerializerOptions)!;
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task CenteredZwoPartialWriteCannotRetryOldAttemptAndFreshAttemptSetsBothControls()
+    {
+        var native = new FakeAsiNativeApi();
+        await using var module = Module(native);
+        var settings = CreateConfig() with
+        {
+            CenteredExposure = new("physical", CenteredExposureProfile.CurrentExecutionVersion)
+        };
+        await module.InitializeAsync(settings, CancellationToken.None);
+        Assert.IsFalse(native.Calls.Any(call => call.StartsWith("Set:Exposure:", StringComparison.Ordinal) ||
+            call.StartsWith("Set:Gain:", StringComparison.Ordinal)));
+        var camera = new CameraKey(settings.AgentId!, "physical");
+        var old = new ExposureAttemptKey(camera, Guid.NewGuid(), 104, Guid.NewGuid());
+        var oldRequest = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(100), 16, null, null));
+        native.ExposureStatuses = new([AsiExposureStatus.Idle]);
+        native.ThrowAfterSetting = AsiControlType.Gain;
+        await Assert.ThrowsExactlyAsync<TimeoutException>(() => module.CaptureBoundAsync(old, oldRequest, CancellationToken.None));
+        var callsAfterUncertainSettings = native.Calls.Count;
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            module.CaptureBoundAsync(old, oldRequest, CancellationToken.None));
+        Assert.AreEqual(callsAfterUncertainSettings, native.Calls.Count);
+        Assert.IsFalse(native.Calls.Contains("StartExposure"));
+
+        var fresh = new ExposureAttemptKey(camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        native.ThrowAfterSetting = null;
+        native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+        var result = await module.CaptureBoundAsync(fresh, oldRequest with
+        {
+            RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 9, null, null)
+        }, CancellationToken.None);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(20), result.Frame!.Metadata.Exposure);
+        Assert.AreEqual(9d, result.Frame.Metadata.Gain);
+        Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
+        Assert.IsFalse(FrameWhiteThreshold.TryResolveStored(result.Frame.Layout, out _, out var reason));
+        Assert.AreEqual(FrameWhiteThreshold.OpaqueAdcReason, reason);
+    }
+
     private static CameraModuleConfig CreateConfig(CameraModuleDocument document)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -1259,6 +1299,8 @@ public sealed class ZwoAsiCameraModuleTests
         internal List<FakeCamera> Cameras { get; } = [];
         internal List<string> Calls { get; } = [];
         internal Dictionary<AsiControlType, long> ReadbackOverrides { get; } = [];
+        internal AsiControlType? ThrowAfterSetting { get; set; }
+
         internal Queue<AsiExposureStatus> ExposureStatuses { get; set; } = new([AsiExposureStatus.Success]);
         internal TaskCompletionSource ExposureStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal HashSet<int> FailOpenCameraIds { get; } = [];
@@ -1333,6 +1375,7 @@ public sealed class ZwoAsiCameraModuleTests
         {
             Calls.Add($"Set:{type}:{value}");
             _values[type] = value;
+            if (ThrowAfterSetting == type) throw new TimeoutException("Injected timeout after device write.");
         }
         public void SetRoiFormat(int cameraId, int width, int height, int bin, AsiImageType imageType)
         {
