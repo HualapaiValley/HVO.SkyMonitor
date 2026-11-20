@@ -324,9 +324,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 if (_viewerOpen) { _refreshing = false; return; }
                 if (prefetchedLayersRevision != (prefetch?.Revision ?? 0) || !IsCurrentAstrometryObservation(layers))
                     layers = null;
-                // Decide whether to switch using the same eligible projection the renderer can install.
-                if (requiresEligibleLayers &&
-                    (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
+                // An advertised projection must be available for the proposed capture. When the selected
+                // stage uses layers, the incoming image must also render that projection on its exact base.
+                if (requiresEligibleLayers && result.Value?.Presentation is { } incoming &&
+                    (layers is not { IsSuccess: true, Value: { } incomingLayers } ||
+                     incomingLayers.CaptureId != displayCaptureId ||
+                     ResolveSelection(incoming, _selectedStage) == CameraAgentPresentationStage.Annotated &&
+                     !LayersMatchDisplay(incoming, incomingLayers)))
                 {
                     change = CaptureChange.Hold;
                 }
@@ -713,16 +717,20 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private MarkupString LayerSvg => new(_layers is null ? string.Empty : Encoding.UTF8.GetString(_layers.Svg.Span));
 
     private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
-        _layers is not null &&
-        _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
-        LayerBaseMatches && SelectedSlot is not null;
+        _layers is { } layers && LayersMatchDisplay(_presentation, layers) && SelectedSlot is not null;
 
-    private bool LayerBaseMatches => _layers is not null &&
-        ProcessedBaseSlot is { DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative, DisplayArtifactId: { } displayId } &&
-        displayId == _layers.BaseArtifactId;
+    private static bool LayersMatchDisplay(CameraAgentCurrentImagePresentation? presentation, CameraAgentLayeredPresentation layers)
+        => presentation?.DisplayCapture?.CaptureId == layers.CaptureId &&
+           FindProcessedBaseSlot(presentation) is
+           {
+               DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative,
+               DisplayArtifactId: { } displayId
+           } slot && displayId == layers.BaseArtifactId &&
+           (slot.PreviewWidth is null || slot.PreviewWidth == layers.WidthPixels) &&
+           (slot.PreviewHeight is null || slot.PreviewHeight == layers.HeightPixels);
 
-    private string? LayerMessage => _layers is not null && !LayerBaseMatches
-        ? "The retained layer manifest base does not match the resolved Combined display derivative. Showing the unannotated Combined base without layers."
+    private string? LayerMessage => _layers is { } layers && !LayersMatchDisplay(_presentation, layers)
+        ? "The retained layer manifest base does not match the resolved Combined display derivative or its preview dimensions. Showing the unannotated Combined base without layers."
         : _layerMessage;
 
     // Unknown or failed layer reads are not proof that a capture has no retained layers.
@@ -736,9 +744,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     // The Processed hero and its overlays-off/pending fallback share the Combined slot's display artifact:
     // the lineage-matched retained derivative when one exists, never a generic Preview or the annotated
     // artifact. The slot's ArtifactId stays the linear Combined frame for identity and download.
-    private CameraAgentPresentationSlot? ProcessedBaseSlot => _presentation?.Stages.SingleOrDefault(slot =>
-        slot.Stage == CameraAgentPresentationStage.Combined &&
-        slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
+    private CameraAgentPresentationSlot? ProcessedBaseSlot => FindProcessedBaseSlot(_presentation);
+
+    private static CameraAgentPresentationSlot? FindProcessedBaseSlot(CameraAgentCurrentImagePresentation? presentation)
+        => presentation?.Stages.SingleOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined &&
+            slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
 
     private CameraAgentPresentationSlot? DisplaySlot => ProcessedBaseFallback
         ? ProcessedBaseSlot : SelectedSlot;
