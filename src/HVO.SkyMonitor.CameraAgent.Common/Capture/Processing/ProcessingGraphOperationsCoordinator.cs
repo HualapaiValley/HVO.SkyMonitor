@@ -406,8 +406,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             // Use the same pipeline as fresh captures. Keep the caller's basis in the receipt and leave
             // compatibility revision creation and selection to the live path.
-            var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(basisPipeline, legacyScene);
-            basisPipeline = LegacyVirtualSkySceneGraph.Migrate(basis, legacyScene, sharedFit);
+            basisPipeline = DeriveSceneCompatibilityPipeline(basis, legacyScene).Pipeline;
         }
         var (pipeline, _) = await ReferenceAstrometryPreset.ApplyAsync(
             basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
