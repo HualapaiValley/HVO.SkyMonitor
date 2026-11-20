@@ -52,6 +52,7 @@ public sealed class VirtualSkyCameraModule(
     private OpenNgcDeepSkyOptions? _deepSkyAnnotations;
     private VirtualCloudField? _cloudField;
     private VirtualTransientScenario? _transientScenario;
+    private VirtualSkyNamedPass? _namedPass;
     private ResolvedSensorReadout? _resolvedReadout;
     private readonly object _virtualCalibrationCacheLock = new();
     private readonly object _fixedSequenceLock = new();
@@ -83,18 +84,13 @@ public sealed class VirtualSkyCameraModule(
         {
             _preparedVirtualCalibration = null;
         }
-        if (config.ModuleOptions is { } options)
-        {
-            _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText(), SerializerOptions)
-                ?? new VirtualSkyCameraModuleOptions();
-        }
-
-        _options.Validate();
-        ValidateRig(config.Rig, _options);
-        _resolvedReadout = config.Rig.Readout is null
-            ? null
-            : SensorReadoutResolver.Resolve(config.Rig.Sensor, config.Rig.Readout);
-        ValidateVirtualCalibration(_options.VirtualCalibration, _resolvedReadout);
+        var (options, readout) = ValidateConfiguration(config);
+        var preparedPass = options.NamedOrbitalPass is { } namedPass
+            ? VirtualSkyNamedPass.Prepare(namedPass, config, options, readout, cancellationToken)
+            : null;
+        _options = options;
+        _resolvedReadout = readout;
+        _namedPass = preparedPass;
         _config = config;
         _curatedAnnotations = ResolveCuratedAnnotations();
         _deepSkyAnnotations = _options.DeepSky ?? ResolveDeepSkyAnnotations();
@@ -106,12 +102,6 @@ public sealed class VirtualSkyCameraModule(
             _ = _curatedAnnotations.ToSelection();
         }
         _stageProjectedScene = config.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));
-        var outputWidth = _resolvedReadout?.Layout.Width ?? config.Rig.Sensor.WidthPixels;
-        var outputHeight = _resolvedReadout?.Layout.Height ?? config.Rig.Sensor.HeightPixels;
-        if (_options.SyntheticCalibration is { } syntheticCalibration)
-        {
-            syntheticCalibration.Validate(outputWidth, outputHeight);
-        }
         if (_options.CloudScenario is { } configuredCloud)
         {
             _options.CloudScenario = configuredCloud with
@@ -122,23 +112,24 @@ public sealed class VirtualSkyCameraModule(
         _cloudField = _options.CloudScenario is null ? null : new VirtualCloudField(_options.CloudScenario);
         if (_options.TransientScenario is { } configuredTransient)
         {
-            configuredTransient.ValidateSensorBounds(config.Rig.Sensor.WidthPixels, config.Rig.Sensor.HeightPixels);
             _options.TransientScenario = configuredTransient with
             {
                 ScenarioId = configuredTransient.ComputeCanonicalScenarioId()
             };
         }
-        _transientScenario = _options.TransientScenario is null
-            ? null
-            : new VirtualTransientScenario(_options.TransientScenario);
-        ValidatePixelFormat(config, _options);
+        var transientDefinition = _namedPass?.Definition ?? _options.TransientScenario;
+        _transientScenario = transientDefinition is null ? null : new VirtualTransientScenario(transientDefinition);
         _captureSequence = 0;
         _fixedSequenceElapsedTicks = 0;
         return Task.CompletedTask;
     }
 
     void ICameraModuleConfigurationPreflight.ValidateConfiguration(CameraModuleConfig config)
-        => _ = ValidateConfiguration(config);
+    {
+        var (options, readout) = ValidateConfiguration(config);
+        if (options.NamedOrbitalPass is { } namedPass)
+            _ = VirtualSkyNamedPass.Prepare(namedPass, config, options, readout, CancellationToken.None);
+    }
 
     private static void ValidatePixelFormat(CameraModuleConfig config, VirtualSkyCameraModuleOptions options)
     {
@@ -316,9 +307,15 @@ public sealed class VirtualSkyCameraModule(
             });
         var sceneUtc = virtualExposure.CelestialMidpointUtc;
         // Deployment validity binds the operational capture, not a shifted celestial clock.
-        var observatory = config.ResolveObservatory(request.RequestedStartUtc);
+        var namedPass = preview is null ? _namedPass : null;
+        var observatory = config.ResolveObservatory(namedPass is null ? request.RequestedStartUtc : exposureStartedUtc);
+        if (namedPass is not null && VirtualSkyNamedPass.ToObserver(observatory) != namedPass.Observer)
+            throw new InvalidOperationException("The named orbital pass observer no longer matches the capture site.");
         var cloud = _cloudField is null ? null : new VirtualCloudRenderContext(_cloudField, timelineUtc, setpoint.Exposure);
-        var transient = _transientScenario is null ? null : new VirtualTransientRenderContext(_transientScenario, timelineUtc, setpoint.Exposure);
+        var transientStartUtc = namedPass is null ? timelineUtc : exposureStartedUtc;
+        var transient = _transientScenario is null || preview is not null && _namedPass is not null
+            ? null
+            : new VirtualTransientRenderContext(_transientScenario, transientStartUtc, setpoint.Exposure);
         LinearSceneRenderOptions initialRenderOptions = sensor.PixelFormat switch
         {
             CameraPixelFormat.Mono16 => CreateMonoOptions(setpoint, 0, renderProjection, cloud, transient),
@@ -479,6 +476,10 @@ public sealed class VirtualSkyCameraModule(
             sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sceneId + "\ngraph\n" + captureGraph.RevisionId)));
         sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
             CaptureContractJson.ComputeCanonicalJsonSha256(virtualExposure)))));
+        if (namedPass is not null)
+            sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
+                _options.NamedOrbitalPass!.PackageSha256, "\n", namedPass.ParametersSha256, "\n",
+                transientStartUtc.ToString("O", CultureInfo.InvariantCulture)))));
         if (preview is not null)
         {
             // A preview never shares an identity with a capture of the same instant, and binds the focus model.
@@ -570,7 +571,8 @@ public sealed class VirtualSkyCameraModule(
         }
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
-            _options.TransientScenario, timelineUtc, setpoint.Exposure);
+            transient is null ? null : namedPass?.Definition ?? _options.TransientScenario,
+            transientStartUtc, setpoint.Exposure, namedPass);
         var catalogIdentity = CatalogSceneProvenanceIdentity.For(catalog as ICelestialCatalogMetadataSource);
         var provenance = new SceneProvenance(
             sceneId,
@@ -885,19 +887,7 @@ public sealed class VirtualSkyCameraModule(
         options.TransientScenario?.ValidateSensorBounds(
             config.Rig.Sensor.WidthPixels,
             config.Rig.Sensor.HeightPixels);
-        var pixelFormat = config.Rig.Sensor.PixelFormat;
-        if (options.Asi174Sensor.Enabled && pixelFormat != CameraPixelFormat.Mono16 ||
-            options.Asi178Sensor.Enabled && pixelFormat != CameraPixelFormat.BayerRggb16 ||
-            options.Asi676Enabled && pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
-            pixelFormat == CameraPixelFormat.BayerRggb16 &&
-            !options.Asi178Sensor.Enabled && !options.Asi676Enabled && options.SyntheticCalibration is null &&
-            config.Rig.Sensor.SimulationResponse is null ||
-            options.SyntheticCalibration is not null &&
-            (pixelFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16) ||
-                options.Asi174Sensor.Enabled || options.Asi178Sensor.Enabled || options.Asi676Enabled))
-        {
-            throw new ArgumentException("The configured physical sensor model must match the raw pixel format.", nameof(config));
-        }
+        ValidatePixelFormat(config, options);
         return (options, readout);
     }
 
@@ -1478,7 +1468,9 @@ public sealed class VirtualSkyCameraModule(
             {
                 nameof(VirtualSkyCameraModuleOptions.CuratedAnnotations),
                 nameof(VirtualSkyCameraModuleOptions.DeepSky),
-                nameof(VirtualSkyCameraModuleOptions.StellarCandidateSelection)
+                nameof(VirtualSkyCameraModuleOptions.StellarCandidateSelection),
+                // Bind package content to the named capture identity without using the file path to seed sensor noise.
+                nameof(VirtualSkyCameraModuleOptions.NamedOrbitalPass)
             })
             {
                 typeInfo.Properties.Remove(typeInfo.Properties.Single(property => property.Name == name));
@@ -1520,14 +1512,15 @@ public sealed class VirtualSkyCameraModule(
     private static TransientScenarioProvenance? CreateTransientProvenance(
         VirtualTransientScenarioDefinition? definition,
         DateTimeOffset integrationStartUtc,
-        TimeSpan exposure)
+        TimeSpan exposure,
+        VirtualSkyNamedPass? namedPass)
     {
         if (definition is null)
         {
             return null;
         }
 
-        var parameters = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(definition));
+        var parameters = namedPass?.Parameters ?? CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(definition));
         return new TransientScenarioProvenance(
             definition.SchemaVersion,
             definition.ScenarioId,
@@ -1535,7 +1528,7 @@ public sealed class VirtualSkyCameraModule(
             definition.Recurrence is null
                 ? VirtualTransientScenarioDefinition.CurrentAlgorithmVersion
                 : $"{VirtualTransientScenarioDefinition.CurrentAlgorithmVersion}+{VirtualTransientRecurrenceDefinition.CurrentAlgorithmVersion}",
-            CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
+            namedPass?.ParametersSha256 ?? CaptureContractJson.ComputeCanonicalJsonSha256(parameters),
             definition.Seed,
             definition.EpochUtc,
             integrationStartUtc,
@@ -1623,6 +1616,8 @@ public sealed class VirtualSkyCameraModuleOptions
     public VirtualCloudScenarioDefinition? CloudScenario { get; set; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualTransientScenarioDefinition? TransientScenario { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualSkyNamedPassOptions? NamedOrbitalPass { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SyntheticCalibrationModelV1? SyntheticCalibration { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

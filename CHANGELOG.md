@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Opt-in VirtualSky profiles can render a checksum-pinned orbital pass through ordinary Mono16 or Bayer RGGB16 acquisition, with synthetic brightness controls and separate predicted and measured trail evidence. #1927
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Fixed

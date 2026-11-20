@@ -1,5 +1,6 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
@@ -123,13 +124,24 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters);
         var exposure = new OrbitalUtcInterval(descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc);
         // Both seams are already warmed by startup/refresh. Any cold materialization happens on this durable lane.
-        var snapshot = await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false);
+        var pin = Options.PinnedInputs;
+        var snapshot = pin is null
+            ? await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false)
+            : await snapshots.ReadExactAsync(pin.SnapshotManifestSha256, cancellationToken).ConfigureAwait(false);
         var time = await timeSource.ResolveAsync(exposure, cancellationToken).ConfigureAwait(false);
         var available = time.Source == CameraAgentOrbitalTimeDataSource.Override ? Options.OverrideTimeDataAvailableUtc :
             new[] { time.EarthOrientationProvenance?.RetrievedUtc, time.LeapSecondsProvenance?.RetrievedUtc }.Max();
         var reason = time.Data is null ? "TimeInputsUnavailable:" + time.Problem :
             available is null ? "TimeAvailabilityUnknown" : available > descriptor.Timing.DurableIngressUtc ? "TimeNotOriginallyAvailable" :
             descriptor.Layout.Readout is null ? "ReadoutGeometryUnavailable" : observer is null ? "CaptureLocationUnavailable" : null;
+        if (pin is not null)
+        {
+            if (snapshot.Snapshot?.Manifest.ManifestSha256 != pin.SnapshotManifestSha256)
+                reason ??= "PinnedSnapshotUnavailable";
+            if (time.Data?.EarthOrientationSha256 != pin.EarthOrientationSha256 ||
+                time.Data?.LeapSecondsSha256 != pin.LeapSecondsSha256)
+                reason ??= "PinnedTimeInputsUnavailable";
+        }
         if (time.Data is { } data && (data.EarthOrientationCoverage is not { } coverage ||
             coverage.StartUtc > exposure.StartUtc || coverage.EndUtc < exposure.EndUtc ||
             data.LeapTableCoverage.StartUtc > exposure.StartUtc || data.LeapTableCoverage.EndUtc < exposure.EndUtc))
@@ -206,6 +218,8 @@ public sealed class CaptureSatelliteTracksOptions : IValidatableObject
     public IReadOnlyList<string> CatalogNumbers { get; init; } = [];
     public bool AllowStaleDiagnostics { get; init; }
     public DateTimeOffset? OverrideTimeDataAvailableUtc { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureSatellitePinnedInputs? PinnedInputs { get; init; }
     public OrbitalQueryBounds Bounds { get; init; } = new(32, 120, 100_000, 32, 32, 8192, 200, 1, .1);
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
@@ -219,5 +233,11 @@ public sealed class CaptureSatelliteTracksOptions : IValidatableObject
             Bounds.MaximumSamples > 8192 || Bounds.MaximumElapsedMilliseconds > 10_000 ||
             OverrideTimeDataAvailableUtc is { Offset: var offset } && offset != TimeSpan.Zero)
             yield return new ValidationResult("Satellite bounds or time availability exceed the capture contract.");
+        if (PinnedInputs is { } pin && (!OrbitalContract.IsSha256(pin.SnapshotManifestSha256) ||
+            !OrbitalContract.IsSha256(pin.EarthOrientationSha256) || !OrbitalContract.IsSha256(pin.LeapSecondsSha256)))
+            yield return new ValidationResult("Pinned satellite inputs require three uppercase SHA-256 identities.");
     }
 }
+
+/// <summary>Exact local inputs required when a capture profile uses a frozen orbital scenario.</summary>
+public sealed record CaptureSatellitePinnedInputs(string SnapshotManifestSha256, string EarthOrientationSha256, string LeapSecondsSha256);

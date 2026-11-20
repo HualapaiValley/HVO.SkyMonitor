@@ -60,7 +60,7 @@ public sealed partial class TransientWorkerRuntimeTests
             var store = provider.GetRequiredService<SqliteTransientRuntimeStore>();
             var frames = await store.LoadWindowAsync(configuration.AgentId!, 3, [-1, 0], CancellationToken.None).ConfigureAwait(false);
             var runtime = new TransientDetectorRuntime(new InMemoryCelestialCatalog([]));
-            var sources = await runtime.CreateSourcesAsync(new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = configuration },
+            var sources = await PrepareDetectorSourcesAsync(runtime, new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = configuration },
                 new TransientDetectionOptions(), frames, CancellationToken.None).ConfigureAwait(false);
             var masks = sources[0].Masks;
             var legacy = masks.Single(m => m.Kind == TransientDetectorMaskKind.Obstruction).Mask;
@@ -84,7 +84,7 @@ public sealed partial class TransientWorkerRuntimeTests
                 profile.SiteIdentitySha256, profile.GeometryIdentitySha256, profile.Source, 90,
                 [new(0, 0), new(90, 0), new(180, 0), new(270, 0)]);
             var clearConfig = configuration with { Rig = configuration.Rig with { HorizonObstruction = clearProfile } };
-            var changedSources = await runtime.CreateSourcesAsync(new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = clearConfig },
+            var changedSources = await PrepareDetectorSourcesAsync(runtime, new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = clearConfig },
                 new TransientDetectionOptions(), frames, CancellationToken.None).ConfigureAwait(false);
             var clearMask = changedSources[0].Masks.Single(m => m.Kind == fixedMask.Kind);
             Assert.AreNotSame(changedSources[-1].Masks.Single(m => m.Kind == fixedMask.Kind).Mask, clearMask.Mask,
@@ -109,7 +109,7 @@ public sealed partial class TransientWorkerRuntimeTests
                 { Orientation = configuration.Rig.Orientation with { RollAdjustmentDegrees = 1 } }
             };
             var rejected = await Assert.ThrowsAsync<TransientWorkerExecutionException>(async () =>
-                await runtime.CreateSourcesAsync(new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = changed },
+                await PrepareDetectorSourcesAsync(runtime, new Dictionary<int, CameraModuleConfig> { [-1] = configuration, [0] = changed },
                     new TransientDetectionOptions(), frames, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
             Assert.AreEqual("transient-runtime.obstruction-revalidation-required", rejected.ReasonCode);
             Assert.IsFalse(rejected.Retryable);
