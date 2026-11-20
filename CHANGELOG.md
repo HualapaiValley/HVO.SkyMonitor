@@ -24,6 +24,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Current Sky keeps the previous image visible while it rereads advertised layers for an incoming capture after invalidation. #1901
+
 - Current Sky keeps the initial retained astrometry lookup running across refresh deadlines, resumes the search after an interrupted refresh and keeps selected-image diagnostics available while it checks rejected assessments. A temporary read failure preserves the displayed fit until the reader can verify the latest result again. Current Sky removes any displayed fit whose assessment or required input is quarantined or removed by retention. The selected image's calculator and measured overlays follow the validity of that image's own fit, including after the headline advances. A pending layer or assessment read cannot restore tools for a fit that was invalidated while it ran. Searches keep their progress past confirmed quarantines when a refresh times out. #1901
 
 - Configuring the CameraAgent astrometry reference magnitude preserves separate canonical stellar associations. The first preset reuses a solver-free graph’s existing prediction, including on generated compatibility revisions and operator-selected graphs. #1901
