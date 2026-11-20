@@ -73,12 +73,12 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
-    private void NotifyAstrometryOutputsCommitted(Guid captureId, bool assessmentWritten, bool outputInserted)
+    private void NotifyAstrometryOutputsCommitted(Guid captureId, bool assessmentWritten, bool inputMayBecomePublic)
     {
         lock (_astrometryChangesLock)
         {
-            // An existing fit may name an evicted input that just reappeared under the same identity.
-            if (assessmentWritten || outputInserted && _astrometryCandidateIds.Contains(captureId))
+            // An evicted input can reappear or gain a live association under the same identity.
+            if (assessmentWritten || inputMayBecomePublic && _astrometryCandidateIds.Contains(captureId))
                 _changedAstrometryCaptures?.Add(captureId);
         }
     }
@@ -94,6 +94,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         // One SQLite snapshot for the displayed identities and the actual result. The output identity
         // names immutable, ordinal source rows: raw, measured associations, scene and context.
         // Quarantine and eviction outrank recoverable unavailability anywhere in that lineage.
+        // An unpublished output is pending only while a live execution can publish it. A private
+        // replay copy keeps the exact evidence evicted from the public view.
         command.CommandText = """
             WITH requested(slot, capture, artifact, solution) AS (
                 VALUES (0, $previousCapture, $previousArtifact, $previousSolution),
@@ -108,31 +110,36 @@ internal sealed partial class SqliteCaptureProcessingStore
                   OR assessment.content_identity_sha256 IS NOT requested.solution COLLATE NOCASE THEN 0
                 WHEN assessment.availability_state = 'Quarantined' THEN 4
                 ELSE (
-                    SELECT CASE WHEN COUNT(*) <> 4 THEN 0 ELSE MAX(
-                        CASE WHEN assessment.availability_state <> 'Available'
-                          OR (EXISTS (SELECT 1 FROM processing_execution_outputs
-                              WHERE output_identity_sha256 = assessment.output_identity_sha256)
-                              AND NOT EXISTS (SELECT 1 FROM processing_execution_outputs
-                              WHERE output_identity_sha256 = assessment.output_identity_sha256 AND published_flag = 1))
-                          THEN 2 ELSE 1 END,
-                        MAX(CASE
-                            WHEN input.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
-                            WHEN input.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
-                            WHEN raw.raw_artifact_id IS NOT NULL AND raw.state <> 'committed' THEN 2
-                            WHEN input.artifact_id IS NOT NULL AND (input.availability_state <> 'Available'
-                              OR (EXISTS (SELECT 1 FROM processing_execution_outputs
-                                  WHERE output_identity_sha256 = input.output_identity_sha256)
-                                  AND NOT EXISTS (SELECT 1 FROM processing_execution_outputs
-                                  WHERE output_identity_sha256 = input.output_identity_sha256 AND published_flag = 1)))
-                              THEN 2
-                            ELSE 1 END))
+                    WITH lineage(ordinal, artifact) AS (
+                        SELECT -1, assessment.artifact_id
+                        UNION ALL
+                        SELECT source_ordinal, source_artifact_id
+                        FROM processing_output_sources
+                        WHERE output_identity_sha256 = assessment.output_identity_sha256
+                    )
+                    SELECT CASE WHEN COUNT(*) <> 5 THEN 0 ELSE MAX(CASE
+                        WHEN output.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
+                        WHEN output.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
+                        WHEN EXISTS (SELECT 1 FROM processing_execution_outputs
+                            WHERE output_identity_sha256 = output.output_identity_sha256)
+                          AND NOT EXISTS (SELECT 1 FROM processing_execution_outputs
+                            WHERE output_identity_sha256 = output.output_identity_sha256 AND published_flag = 1) THEN
+                            CASE WHEN EXISTS (
+                                SELECT 1
+                                FROM processing_execution_outputs association
+                                JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                                WHERE association.output_identity_sha256 = output.output_identity_sha256
+                                  AND execution.execution_class = 'Live' AND execution.allow_automatic_publication = 1
+                                  AND execution.status IN ('Pending', 'Running'))
+                            THEN 2 ELSE 3 END
+                        WHEN raw.state <> 'committed' OR output.availability_state <> 'Available' THEN 2
+                        ELSE 1 END)
                     END
-                    FROM processing_output_sources source
-                    LEFT JOIN processing_outputs input ON source.source_ordinal BETWEEN 1 AND 3
-                      AND input.artifact_id = source.source_artifact_id AND input.capture_id = assessment.capture_id
-                    LEFT JOIN raw_captures raw ON source.source_ordinal = 0
-                      AND raw.raw_artifact_id = source.source_artifact_id AND raw.capture_id = assessment.capture_id
-                    WHERE source.output_identity_sha256 = assessment.output_identity_sha256
+                    FROM lineage
+                    LEFT JOIN processing_outputs output ON (lineage.ordinal = -1 OR lineage.ordinal BETWEEN 1 AND 3)
+                      AND output.artifact_id = lineage.artifact AND output.capture_id = assessment.capture_id
+                    LEFT JOIN raw_captures raw ON lineage.ordinal = 0
+                      AND raw.raw_artifact_id = lineage.artifact AND raw.capture_id = assessment.capture_id
                 )
             END
             FROM requested

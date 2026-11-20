@@ -493,7 +493,8 @@ public sealed partial class DurableCaptureProcessingTests
 
     private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root,
         string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1,
-        MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null)
+        MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null,
+        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null)
     {
         reference ??= await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         var bytes = reference.Raw.Payload.ToArray();
@@ -533,7 +534,14 @@ public sealed partial class DurableCaptureProcessingTests
                 Layout = reference.Raw.Layout!,
                 Timing = new(StoredTime(start), StoredTime(start), StoredTime(start.AddSeconds(1)), StoredTime(start.AddSeconds(1.1)), StoredTime(start.AddSeconds(1.2))),
                 Artifact = manifest.Descriptor.Artifact with { CreatedUtc = StoredTime(start.AddSeconds(1.2)) },
-                Profiles = manifest.Descriptor.Profiles with { Processing = RawCaptureDescriptorFactory.CreateProcessingProfile(config) }
+                Profiles = manifest.Descriptor.Profiles with
+                {
+                    Processing = RawCaptureDescriptorFactory.CreateProcessingProfile(config),
+                    Rig = commit is null ? manifest.Descriptor.Profiles.Rig : manifest.Descriptor.Profiles.Rig with
+                    {
+                        Sha256 = CameraRigProfileIdentity.ComputeSha256(config.Rig)
+                    }
+                }
             }
         };
         var descriptor = manifest.Descriptor;
@@ -564,10 +572,16 @@ public sealed partial class DurableCaptureProcessingTests
         for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)
             _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(new RawIngressJournalEntry(
+        var entry = new RawIngressJournalEntry(
             descriptor.Capture.AgentId, captureSequence, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(descriptor), CaptureContractJson.ComputeManifestSha256(manifestBytes),
-            descriptor.Artifact.ChecksumSha256, bytes.Length, payloadRelativePath, sidecarRelativePath, manifestBytes, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc), CancellationToken.None).ConfigureAwait(false));
+            descriptor.Artifact.ChecksumSha256, bytes.Length, payloadRelativePath, sidecarRelativePath, manifestBytes, descriptor.Timing.ExposureStartedUtc, descriptor.Timing.DurableIngressUtc);
+        Assert.IsTrue(FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame).IsValid);
+        var submission = CreateSubmission(frame!);
+        var outcome = commit is null
+            ? await journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false)
+            : await commit(journal, entry, submission).ConfigureAwait(false);
+        Assert.AreEqual(RawIngressOutcome.Committed, outcome);
         if (hostCompatible)
         {
             var recovered = await new RawIngressReconciler(root, journal)
@@ -576,11 +590,10 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.AreEqual(0, recovered.Quarantined);
             Assert.AreEqual(0, recovered.MissingEvidence);
         }
-        Assert.IsTrue(FrameReconstructor.TryReconstruct(descriptor, bytes, out var frame).IsValid);
         var receipt = new RawCaptureReceipt(RawIngressOutcome.Committed, manifest,
             new StoredFrameReference(payloadRelativePath, Path.Combine(root, payloadRelativePath), descriptor.Timing.ExposureStartedUtc, FrameArtifactRole.Raw), CaptureContractJson.ComputeManifestSha256(manifestBytes));
         var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
-        return new(new(manifest, options, new(config, CreateSubmission(frame!), receipt)), input,
+        return new(new(manifest, options, new(config, submission, receipt)), input,
             new()
             {
                 Catalog = new(reference.Context.CatalogMetadata, reference.Context.CatalogStars, reference.Context.CatalogPackage,
