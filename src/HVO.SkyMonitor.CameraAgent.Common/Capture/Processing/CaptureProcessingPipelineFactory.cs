@@ -1161,6 +1161,20 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 optionalDependencies,
                 planNode.IdentitySha256));
         }
+        if (ordered.SingleOrDefault(node => node.Step is ExposureMeasurementCaptureProcessingStep) is { } measurement)
+        {
+            // Keep the shared graph's order for all other nodes. Its ready-batch ordering would otherwise
+            // put unrelated raw consumers (including Storage and scene construction) ahead of step 4,
+            // merely because step 4 waits for its own step-three settlement.
+            var prerequisites = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { measurement.Id };
+            for (var index = ordered.Count - 1; index >= 0; index--)
+            {
+                if (prerequisites.Contains(ordered[index].Id))
+                    prerequisites.UnionWith(ordered[index].Dependencies);
+            }
+            return ordered.Where(node => prerequisites.Contains(node.Id))
+                .Concat(ordered.Where(node => !prerequisites.Contains(node.Id))).ToList();
+        }
         return ordered;
     }
 

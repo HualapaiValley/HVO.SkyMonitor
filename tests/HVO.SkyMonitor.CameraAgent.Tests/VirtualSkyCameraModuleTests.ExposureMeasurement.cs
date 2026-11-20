@@ -193,6 +193,12 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNotNull(execution);
                 if (!fit)
                     Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "fit"));
+                var recordedMeasurement = execution.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
+                var recordedScene = execution.Nodes.Single(item => item.NodeId == "scene");
+                Assert.IsNotNull(recordedMeasurement.CompletedUtc);
+                Assert.IsNotNull(recordedScene.StartedUtc);
+                Assert.IsTrue(recordedMeasurement.CompletedUtc <= recordedScene.StartedUtc,
+                    "An unrelated scene dependency must not run ahead of step four.");
                 var detail = await ui.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsTrue(detail.IsSuccess, detail.Message);
                 var run = detail.Value!.ExposureMeasurement;
@@ -270,7 +276,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.IsNull(measurement.Input.Linear);
                     Assert.AreEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status);
                 }
-                var output = Assert.ContainsSingle(execution.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias).Outputs);
+                var output = Assert.ContainsSingle(recordedMeasurement.Outputs);
                 artifactId = output.ArtifactId;
                 digest = output.OutputIdentitySha256;
                 var published = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);

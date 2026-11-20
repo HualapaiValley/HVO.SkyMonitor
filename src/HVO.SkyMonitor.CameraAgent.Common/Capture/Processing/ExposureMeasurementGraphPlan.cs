@@ -25,7 +25,8 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
             var producers = pipeline.Steps.Where(step => step.Enabled != false && Matches(step.Type, "Calibration")).ToArray();
             string[] expected = producers.Length == 0 ? ["$raw"] : ["$raw", NodeId(producers[0])];
             if (producers.Length <= 1 &&
-                producers.All(step => !step.Required && step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal) &&
+                producers.All(step => !step.Required && step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal &&
+                    step.DependsOn is [var input] && Matches(input, "$raw")) &&
                 measurement.DependsOn is { } dependencies && dependencies.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase))
                 return;
         }
@@ -44,6 +45,8 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
             Matches(step.Type, prediction) || Matches(NodeId(step), prediction)))
             throw new InvalidOperationException("Exposure measurement and catalog prediction are supplied by the centered pipeline.");
         var calibration = pipeline.Steps.SingleOrDefault(static step => step.Enabled != false && Matches(step.Type, "Calibration"));
+        if (calibration is not null && !(calibration.DependsOn is [var input] && Matches(input, raw)))
+            throw new InvalidOperationException("Centered calibration must depend only on admitted raw.");
         IReadOnlyList<string> measurementInputs = calibration is null ? [raw] : [raw, NodeId(calibration)];
         var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
         var measured = new CaptureProcessingStepConfig(fixedStep, fixedStep, Order: 4,
