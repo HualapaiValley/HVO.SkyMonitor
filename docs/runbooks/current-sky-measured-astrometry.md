@@ -134,15 +134,21 @@ Kepler's review/CI lifecycle and artifact qualification.
    graph, catalog identity, Identity/Data Protection/provisioning paths, and
    capture sequence. Retain the inventory and current homepage evidence. Do not
    infer the deployed address or port from development defaults.
-2. Preserve existing operator configuration and all durable state. Retain a
-   tested supported backup/checkpoint and the exact previous image/artifact and
-   configuration. Run the supported installer's **upgrade plan/preflight** on
-   the existing instance. Account for all reader/schema changes between rc.1
-   and the eventual qualified image. Processing schema 10 adds the retained-fit
-   index and requires the [paired upgrade checkpoint](deployment-installer.md#swap-upgrade-and-database-snapshots).
-   The supplementary fit contract adds graph revisions without rewriting older
-   runs or changing the SQLite schema. If preflight cannot prove the upgrade and
-   recovery route, stop for Roy.
+2. Preserve existing operator configuration and all durable state. Retain the
+   exact previous image, configuration and catalog selection. On startup,
+   #1901 migrates processing schema 9 to 10 in one transaction and adds the
+   partial index `ix_processing_outputs_astrometry_lookup` for retained measured
+   solutions. Raw ingress remains at schema 16 during this migration. The
+   candidate advances `minimum-compatible-revision`, so the installer takes a
+   paired pre-upgrade checkpoint before candidate startup when crossing that
+   boundary. The supplementary fit contract creates a new graph revision for
+   fresh work and preserves previously recorded plans and SQLite rows with
+   their original identities. Run the supported installer's **upgrade plan/preflight** on the
+   existing instance. Account for other reader and schema changes between the
+   installed and qualified images. Confirm the checkpoint and recovery plan
+   before proceeding. If preflight cannot establish the upgrade and recovery
+   route, stop for Roy.
+   [Installer snapshot procedure](deployment-installer.md#swap-upgrade-and-database-snapshots)
 3. Use the existing installation's supported in-place upgrade workflow with the
    exact qualified artifact, retaining the same instance, root, address, port,
    credentials and mounts. No install/reset/uninstall operation, new instance,
@@ -171,15 +177,18 @@ Kepler's review/CI lifecycle and artifact qualification.
    Check raw sequences, backlog,
    retention holds, health, errors and resource consumption. Failure leaves the
    rollout incomplete even if the container is running.
-6. On failed acceptance, disable/restore the prior graph revision through the
-   existing profile lifecycle and use the supported installer rollback to the
-   exact previous artifact. If its reader cannot consume current state, restore
-   the paired pre-upgrade checkpoint by the supported recovery workflow; do not
-   attempt reverse migrations or a blind old-image swap. Preserve captures made
-   since the checkpoint separately before any approved restore that would lose
-   them. Verify the original listener, identity, provisioning, retained captures,
-   raw sequence continuity and homepage again. Record any recovery-point loss
-   explicitly. A failed rollback stops for Roy; it never authorizes a reset.
+6. If the protected upgrade fails before commit, the installer restores the
+   paired pre-upgrade checkpoint before restarting the exact previous image
+   with its matching configuration and catalog selection. If acceptance fails
+   after commit, stop for Roy before restoring anything. For an approved
+   recovery, preserve newer captures separately and use the installer's
+   supported recovery procedure to verify and restore the paired checkpoint
+   before starting the previous image. Restore the prior graph revision through
+   the existing profile lifecycle if needed. Verify the original listener,
+   identity, provisioning, retained captures, raw sequence continuity and
+   homepage again. Record any recovery-point loss explicitly. If recovery
+   fails, keep the instance fenced and stop for Roy.
+   [Upgrade-time checkpoint recovery](../hvo-install-contract.md#skymonitor-approved-target-upgrade-time-checkpoint-recovery)
 
 ## Reproducing development qualification
 
