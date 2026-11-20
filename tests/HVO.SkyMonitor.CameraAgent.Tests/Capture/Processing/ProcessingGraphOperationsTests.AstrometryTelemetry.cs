@@ -20,6 +20,8 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("telemetry-first")]
     [DataRow("archive-first-migrated")]
     [DataRow("bad-pin")]
+    [DataRow("prediction-io")]
+    [DataRow("prediction-io-archive-first")]
     [DataRow("archive-failure")]
     public async Task RequiredTelemetryReportsUnavailableAstrometryAndKeepsArchiving(string scenario)
     {
@@ -28,8 +30,9 @@ public sealed partial class ProcessingGraphOperationsTests
         var token = CancellationToken.None;
         var migrateLegacy = scenario == "archive-first-migrated";
         var invalidPin = scenario == "bad-pin";
+        var failPrediction = scenario is "prediction-io" or "prediction-io-archive-first";
         var failArchive = scenario == "archive-failure";
-        var archiveFirst = migrateLegacy || failArchive;
+        var archiveFirst = migrateLegacy || failArchive || scenario == "prediction-io-archive-first";
         try
         {
             var start = new DateTimeOffset(2026, 11, 20, 3, 0, 0, TimeSpan.Zero);
@@ -51,8 +54,18 @@ public sealed partial class ProcessingGraphOperationsTests
             var metadata = catalog.As<ICelestialCatalogMetadataSource>();
             metadata.SetupGet(value => value.Metadata).Returns(referenceData.Metadata);
             metadata.SetupGet(value => value.PreprocessingVersion).Returns(referenceData.Provenance!.PreprocessingVersion);
+            var predictionQueriesFailed = 0;
+            var failCatalogQueries = false;
             catalog.Setup(value => value.QueryCandidatesAsync(It.IsAny<CatalogCandidateQuery>(), It.IsAny<CancellationToken>()))
-                .Returns((CatalogCandidateQuery query, CancellationToken cancellation) => stars.QueryCandidatesAsync(query, cancellation));
+                .Returns((CatalogCandidateQuery query, CancellationToken cancellation) =>
+                {
+                    if (failCatalogQueries)
+                    {
+                        predictionQueriesFailed++;
+                        throw new IOException("Independent prediction catalog could not be read.");
+                    }
+                    return stars.QueryCandidatesAsync(query, cancellation);
+                });
 
             var basic = CreateProjectedSceneConfiguration();
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
@@ -153,7 +166,7 @@ public sealed partial class ProcessingGraphOperationsTests
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             await lanes.InitializeLanesAsync(token).ConfigureAwait(false);
             ProcessingGraphRevisionSnapshot? frozenRevision = null;
-            var frameCount = failArchive || invalidPin ? 1 : 61;
+            var frameCount = failArchive || invalidPin || failPrediction ? 1 : 61;
             for (var sequence = 1; sequence <= frameCount; sequence++)
             {
                 var utc = start.AddSeconds((sequence - 1) * 2);
@@ -203,6 +216,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
                 var lease = await lanes.ClaimAsync(standard, "telemetry-cadence", config, token).ConfigureAwait(false);
                 Assert.IsNotNull(lease);
+                // The real camera has staged its canonical scene and raw admission has committed.
+                failCatalogQueries = failPrediction;
                 var result = await handler.HandleAsync(lease.Context, token).ConfigureAwait(false);
                 if (result.Outcome == CaptureLaneHandlerOutcome.Completed)
                     await lanes.CompleteAsync(lease, token).ConfigureAwait(false);
@@ -231,18 +246,17 @@ public sealed partial class ProcessingGraphOperationsTests
                 }
 
                 var sampled = sequence is 1 or 61;
-                var expectedFit = invalidPin ? DurableProcessingNodeStatus.TerminalFailure :
+                var expectedFit = failPrediction ? DurableProcessingNodeStatus.Skipped :
+                    invalidPin ? DurableProcessingNodeStatus.TerminalFailure :
                     sampled ? DurableProcessingNodeStatus.Completed : DurableProcessingNodeStatus.Skipped;
-                var expectedReason = invalidPin ? "processing.optional-degraded" : sampled ? null : "astrometry.capture-cadence";
+                var expectedReason = failPrediction ? "processing.dependency-unavailable" :
+                    invalidPin ? "processing.optional-degraded" : sampled ? null : "astrometry.capture-cadence";
                 Assert.AreEqual(expectedFit, solved.Status);
                 Assert.AreEqual(expectedReason, solved.Reason);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome,
                     "Required Telemetry must observe the optional fit while independent Storage completes.");
                 Assert.AreEqual(0L, standardBacklog.QuarantineCount);
                 Assert.AreEqual(DurableProcessingNodeStatus.Completed, observed?.Status);
-                Assert.IsNotNull(stepTelemetry);
-                Assert.AreEqual(expectedFit == DurableProcessingNodeStatus.Completed, stepTelemetry.Succeeded);
-                Assert.AreEqual(expectedReason, stepTelemetry.ErrorMessage);
                 Assert.IsTrue(archived);
                 var annotated = (await store.ReadNodeAsync(captureId, "annotation", token).ConfigureAwait(false))!.Outputs.Single();
                 var canonical = (await store.ReadNodeAsync(captureId, "projected-scene", token).ConfigureAwait(false))!.Outputs.Single();
@@ -264,6 +278,53 @@ public sealed partial class ProcessingGraphOperationsTests
                 else Assert.IsEmpty(solved.Outputs);
                 if (sequence is 1 or 2 or 61)
                     Console.WriteLine($"{scenario} sequence={sequence} archiveSha256={archiveSha} sceneArtifact={canonical.ArtifactId:N} frozenPlanSha256={Convert.ToHexString(SHA256.HashData(frozenBefore))}");
+
+                if (failPrediction)
+                {
+                    Assert.AreEqual(1, predictionQueriesFailed);
+                    var prediction = await store.ReadNodeAsync(captureId, "AstrometryPrediction", token).ConfigureAwait(false);
+                    Assert.IsNotNull(prediction);
+                    Assert.AreEqual(DurableProcessingNodeStatus.TerminalFailure, prediction.Status);
+                    Assert.AreEqual("processing.optional-degraded", prediction.Reason);
+                    var journal = await operations.ReadExecutionDetailAsync(executionId.Value, token).ConfigureAwait(false);
+                    Assert.IsNotNull(journal);
+                    Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, journal.Execution.Status);
+                    var fitNode = journal.Nodes.Single(node => node.NodeId == solved.NodeId);
+                    var attempt = fitNode.Attempts.Single();
+                    Assert.AreEqual("Skipped", fitNode.Status, ignoreCase: true);
+                    Assert.AreEqual(expectedReason, fitNode.Reason);
+                    Assert.AreEqual(ProcessingOutcomeStatus.Skipped, attempt.Outcome);
+                    Assert.AreEqual(expectedReason, attempt.Reason);
+                    Console.WriteLine($"{scenario} execution={executionId} stored={fitNode.NodeId}/{fitNode.Status}/{fitNode.Reason} published={stepTelemetry?.Name ?? "<missing>"}/{stepTelemetry?.ErrorMessage}");
+                }
+
+                Assert.IsNotNull(stepTelemetry, "Telemetry must report the persisted fit outcome.");
+                Assert.AreEqual(solved.NodeId, stepTelemetry.Name);
+                Assert.AreEqual(expectedFit == DurableProcessingNodeStatus.Completed, stepTelemetry.Succeeded);
+                Assert.AreEqual(expectedReason, stepTelemetry.ErrorMessage);
+                if (failPrediction)
+                {
+                    Assert.AreEqual(TimeSpan.Zero, stepTelemetry.Duration);
+                    var stepsReported = telemetry.Latest!.ProcessingSteps;
+                    CollectionAssert.AreEquivalent(
+                        archiveFirst ? new[] { "archive", solved.NodeId } : [solved.NodeId],
+                        stepsReported.Select(step => step.Name).ToArray());
+                    const string inputSchema = "capture-processing-telemetry-input-v1";
+                    var canonicalInput = observed!.Inputs!.Single(input => input.Name == "dependency-telemetry");
+                    Assert.AreEqual(inputSchema, canonicalInput.SchemaVersion);
+                    Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(CaptureContractJson.SerializeToElement(new
+                    {
+                        schemaVersion = inputSchema,
+                        steps = stepsReported.Select(static step => new
+                        {
+                            step.Name,
+                            durationTicks = step.Duration.Ticks,
+                            step.Succeeded,
+                            step.ErrorMessage
+                        })
+                    })), canonicalInput.IdentitySha256);
+                    Console.WriteLine($"{scenario} dependencyTelemetrySha256={canonicalInput.IdentitySha256}");
+                }
             }
             Assert.IsNotNull(frozenRevision);
             var persisted = await operations.ReadRevisionSnapshotAsync(frozenRevision.State.RevisionId, token).ConfigureAwait(false);
