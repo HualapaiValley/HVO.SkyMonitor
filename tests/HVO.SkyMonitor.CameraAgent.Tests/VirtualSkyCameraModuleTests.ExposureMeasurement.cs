@@ -38,9 +38,14 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "clipped")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", true,
         DisplayName = "ExposureMeasurement_OperationsReopensOriginalMeasurementAfterLinearRetentionDeletion")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.LeftShiftedV1,
+        DisplayName = "ExposureMeasurement_CenteredLeftShiftedKeepsQualifiedStoredLevels")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.FullRangeScaledV1,
+        DisplayName = "ExposureMeasurement_CenteredFullRangeScaledKeepsQualifiedStoredLevels")]
     public async Task ExposureMeasurement_OrdinaryCapturePersistsAndReopensThroughStandardLane(
         CameraPixelFormat format, string calibration, bool declareReadout = true, int referenceGain = 1, bool fit = false,
-        bool interrupt = false, string signal = "star", bool expireLinear = false)
+        bool interrupt = false, string signal = "star", bool expireLinear = false,
+        FrameStoredCodeTransform transform = FrameStoredCodeTransform.RightAlignedV1)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement");
         try
@@ -55,10 +60,16 @@ public sealed partial class VirtualSkyCameraModuleTests
             var location = DeploymentLocationSnapshot.Create("measurement-test", 1, "virtual", null,
                 DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 0, "America/Phoenix");
             var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1 { Gain = referenceGain } : null;
+            (double Black, ushort White)? storedLevels = transform switch
+            {
+                FrameStoredCodeTransform.LeftShiftedV1 => (1024d, (ushort)44800),
+                FrameStoredCodeTransform.FullRangeScaledV1 => (1024.2344322344322d, (ushort)44810),
+                _ => null
+            };
             var readout = format == CameraPixelFormat.Mono16 && declareReadout && calibration != "SyntheticReferences"
                 ? new SensorReadoutProfile(new SensorCrop(0, 0, 224, 224), 1, 1, FrameBinningAlgorithm.IdentityV1,
-                    CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
-                    FrameLevelCodeSpace.NativeSample, 64, 4095)
+                    CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, transform,
+                    FrameLevelCodeSpace.NativeSample, 64, storedLevels is null ? 4095 : 2800)
                 : null;
             var steps = new List<CaptureProcessingStepConfig>
             {
@@ -102,7 +113,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             Guid executionId;
             Guid artifactId;
             string digest;
-            (ExposureProductLookup Publication, ExposureMeasurementV1 Measurement)? beforeExpiry = null;
+            ExposureProductLookup originalPublication;
+            ExposureMeasurementV1 originalMeasurement;
             using var cancellation = new CancellationTokenSource();
             var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
             using (var provider = MeasurementProvider(root, location, predictions, interruption))
@@ -213,6 +225,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual(slot.ExecutionId, lease.Context.Execution!.ExecutionId);
                 }
                 var outcome = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+                if (storedLevels is { } expectedLevels)
+                    await AssertMappedLinearAsync(provider, reader, receipt.Manifest.Descriptor, exposure, slot,
+                        transform, expectedLevels).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
                 await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
 
@@ -262,6 +277,14 @@ public sealed partial class VirtualSkyCameraModuleTests
                         Assert.IsNull(receipt.Manifest.Descriptor.CycleEvidence?.Metering,
                             "The admitted exposure and fixed statistics do not require a metering result.");
                     }
+                }
+                if (storedLevels is { } expectedStoredLevels)
+                {
+                    Assert.AreEqual(expectedStoredLevels.White, measurement.RawBrightness.SensorClipping.StoredWhite);
+                    Assert.AreEqual(expectedStoredLevels.White, measurement.LinearOutputClipping?.StoredWhite);
+                    Assert.AreEqual(codes.LongCount(value => value >= expectedStoredLevels.White),
+                        measurement.LinearOutputClipping?.Count);
+                    Assert.AreEqual(expectedStoredLevels.White, measurement.Input.Linear?.Layout.WhiteLevel);
                 }
                 if (calibration is not ("CalibrationLibrary" or "Omitted") && referenceGain == 1 && declareReadout)
                 {
@@ -339,10 +362,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
 
                 if (expireLinear)
-                {
                     await ExpireQualifiedLinearAsync(provider, root, reader, exposure, slot, measurement).ConfigureAwait(false);
-                    beforeExpiry = (published, measurement);
-                }
+                originalPublication = published;
+                originalMeasurement = measurement;
             }
 
             using var reopened = MeasurementProvider(root, location, predictions);
@@ -350,7 +372,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             await restartedIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var switched = file with { CenteredExposure = null, Rig = file.Rig with { Orientation = new RigOrientation(80, 15, 5) } };
             reopened.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(switched);
-            await restartedIngress.ReconcileCenteredControlAsync(switched, CancellationToken.None)
+            await restartedIngress.ReconcileCenteredControlAsync(switched, CancellationToken.None, originalPublication.Exposure.Camera)
                 .ConfigureAwait(false);
             var reopenedUi = MeasurementOperations(reopened, reopened.GetRequiredService<IProcessingGraphOperations>());
             var reopenedDetail = await reopenedUi.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
@@ -363,25 +385,55 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.AreEqual(digest, reopenedOutput.OutputIdentitySha256);
             var restored = reopenedView.ExposureMeasurement;
             Assert.IsNotNull(restored?.Measurement, restored?.UnavailableReason);
-            if (beforeExpiry is { } original)
-            {
-                var reader = reopened.GetRequiredService<IExposureProductReader>();
-                Assert.AreEqual(original.Publication, await reader.ReadProductAsync(original.Publication.Exposure,
-                    original.Publication.Slot, CancellationToken.None).ConfigureAwait(false));
-                Assert.AreEqual("retention-expired", restored.LinearExpiryReason);
+            var reopenedReader = reopened.GetRequiredService<IExposureProductReader>();
+            Assert.AreEqual(originalPublication, await reopenedReader.ReadProductAsync(originalPublication.Exposure,
+                originalPublication.Slot, CancellationToken.None).ConfigureAwait(false));
+            Assert.AreEqual(expireLinear ? "retention-expired" : null, restored.LinearExpiryReason);
+            Assert.AreNotEqual(switched.Rig.Orientation, restored.Measurement.Input.RigOrientation);
+            Assert.AreEqual(JsonSerializer.Serialize(originalMeasurement), JsonSerializer.Serialize(restored.Measurement),
+                "The original source, centroid positions/flux, and HFD samples and summary must survive unchanged.");
+            if (expireLinear || storedLevels is not null)
                 Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, restored.Measurement.Input.Step3Disposition);
-                Assert.AreNotEqual(switched.Rig.Orientation, restored.Measurement.Input.RigOrientation);
-                Assert.AreEqual(JsonSerializer.Serialize(original.Measurement), JsonSerializer.Serialize(restored.Measurement),
-                    "The original source, centroid positions/flux, and HFD samples and summary must survive unchanged.");
-            }
-            else
-            {
-                Assert.IsNull(restored.LinearExpiryReason);
-            }
         }
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task AssertMappedLinearAsync(ServiceProvider provider, IExposureProductReader reader,
+        ReconstructionDescriptor raw, ExposureKey exposure, ExposureProductSlot measurementSlot,
+        FrameStoredCodeTransform transform, (double Black, ushort White) expected)
+    {
+        var qualified = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(qualified?.Product, qualified?.Reason);
+        Assert.IsNotNull(qualified.Provenance);
+        Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, qualified.Disposition);
+        Assert.AreEqual(measurementSlot.ExecutionId, qualified.Product.Slot.ExecutionId);
+        Assert.AreEqual(raw.Layout, qualified.Exposure.Geometry.Layout);
+        Assert.AreEqual(transform, raw.Layout.StoredCodeTransform);
+        Assert.AreEqual(FrameLevelCodeSpace.NativeSample, raw.Layout.LevelCodeSpace);
+        Assert.AreEqual(2800d, raw.Layout.WhiteLevel);
+        Assert.AreEqual((double)expected.White, qualified.Provenance.RawWhiteThreshold?.StoredWhiteLevel);
+        Assert.AreEqual((double)expected.White, qualified.Provenance.LinearWhiteThreshold?.StoredWhiteLevel);
+        Assert.AreEqual(raw.Artifact.ChecksumSha256, qualified.Provenance.LinearPayloadSha256,
+            "Normalization only must not change tight-row samples.");
+
+        var input = await provider.GetRequiredService<CenteredExposureInputCustody>()
+            .OpenLinearAsync(qualified.Product, TimeSpan.FromMinutes(1), CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(input);
+        await using (input.ConfigureAwait(false))
+        {
+            var layout = input.Input.Linear.Layout;
+            Assert.IsNotNull(layout);
+            Assert.AreEqual(expected.Black, layout.BlackLevel!.Value, 1e-10);
+            Assert.AreEqual(raw.Layout with
+            {
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
+                BlackLevel = layout.BlackLevel,
+                WhiteLevel = expected.White
+            }, layout, "Only the level representation can differ on an already packed frame.");
+            Assert.AreEqual(raw.Artifact.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(input.Input.Linear.Payload));
         }
     }
 
