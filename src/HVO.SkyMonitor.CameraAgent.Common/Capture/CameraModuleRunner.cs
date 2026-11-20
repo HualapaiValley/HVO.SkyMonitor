@@ -230,9 +230,21 @@ internal sealed class CameraModuleRunner
                         ? ExposureController.Initial(config.Rig.Pipeline,
                             hostMetered ? ResolveSolarRegime(config, UtcNow()) : CaptureSolarRegime.Night)
                         : ExposureController.Initial(scheduleGrant.Profile);
-                    var centeredSetpoint = await SelectCenteredSetpointAsync(centered.CenteredIngress, reservation.Pending,
-                        config, initial, exposureControl, gainControl, hostMetered, excludedRegions, cancellationToken)
-                        .ConfigureAwait(false);
+                    (CaptureSetpoint Setpoint, CaptureMeteringEvidence? Metering, string Reason) centeredSetpoint;
+                    try
+                    {
+                        centeredSetpoint = await SelectCenteredSetpointAsync(centered.CenteredIngress, reservation.Pending,
+                            config, initial, exposureControl, gainControl, hostMetered, excludedRegions, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception exception) when (reservation.Pending.SourceCaptureId is not null &&
+                        exception is IOException or InvalidDataException or UnauthorizedAccessException)
+                    {
+                        await centered.CenteredIngress.ExpireCenteredPendingAsync(reservation.Pending.Key, cancellationToken)
+                            .ConfigureAwait(false);
+                        admission.MarkNoPublicationRequired();
+                        continue;
+                    }
                     nextSetpoint = centeredSetpoint.Setpoint;
                     await centered.CenteredIngress.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
                         centeredSetpoint.Metering, centeredSetpoint.Reason, cancellationToken).ConfigureAwait(false);
@@ -569,7 +581,7 @@ internal sealed class CameraModuleRunner
         var key = new ExposureKey(attempt.Key.Camera, attempt.Key.RunId, sourceCaptureId);
         var source = await ingress.ReadCenteredRawAsync(key, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException("The pending control source was not admitted.");
-        if (source.Manifest.CenteredExposure?.Target != attempt.Key)
+        if (!source.IsCommitted || source.Manifest.CenteredExposure?.Target != attempt.Key)
             throw new InvalidDataException("The pending control source does not authorize this target.");
         var descriptor = source.Manifest.Descriptor;
         var active = initial with

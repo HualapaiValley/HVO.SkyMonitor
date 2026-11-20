@@ -166,7 +166,7 @@ public sealed class CaptureProjectedSceneStager(
         };
     }
 
-    private static ProjectedSceneCaptureProcessingStepOptions? ResolveOptions(CameraModuleConfig config)
+    internal static ProjectedSceneCaptureProcessingStepOptions? ResolveOptions(CameraModuleConfig config)
     {
         var step = config.Pipeline.Steps.FirstOrDefault(static candidate =>
             candidate.Enabled is not false && string.Equals(candidate.Type, "ProjectedScene", StringComparison.OrdinalIgnoreCase));

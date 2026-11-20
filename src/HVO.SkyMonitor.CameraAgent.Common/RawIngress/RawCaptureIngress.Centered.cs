@@ -35,7 +35,7 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
 
         var after = RecentCenteredExposures.ReadActive(camera);
         var current = journal.IsOpen && before == after && after.RunId == journal.Run.RunId &&
-            (after.ObservedHead is null || after.ObservedHead == journal.Head?.Exposure);
+            after.ObservedHead == journal.Head?.Exposure;
         return new(camera, journal.Run.RunId, journal.Run.GraphRevisionId,
             journal.Run.Configuration.CenteredExposure?.ExecutionVersion, journal.Head,
             current ? after.Occupancy : null, CenteredRecentExposureIndex.CapacityPerCamera, journal.Holds,
@@ -43,15 +43,20 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             current ? null : "runtime.live-buffer-unobserved");
     }
 
-    internal async Task ReconcileCenteredControlAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
+    internal async Task ReconcileCenteredControlAsync(
+        CameraModuleConfig configuration, CancellationToken cancellationToken, CameraKey? previousCamera = null)
     {
         var centered = configuration.CenteredExposure;
-        if (centered is not null && (!centered.IsValid() || configuration.DeploymentLocation is null))
+        if (centered is not null && (!centered.IsValid() || string.IsNullOrWhiteSpace(configuration.AgentId) ||
+            configuration.DeploymentLocation is null))
             throw new InvalidOperationException("Centered exposure requires a valid camera identity and authorized site.");
-        if (configuration.AgentId is { } agentId)
-            await _journal.ExpireCenteredRunsAsync(agentId, centered?.CameraId,
-                centered is null ? "profile-switched-to-legacy" : "target-progress-unknown", centered is not null,
-                cancellationToken).ConfigureAwait(false);
+        var currentCamera = centered is null ? null : new CameraKey(configuration.AgentId!, centered.CameraId);
+        if (previousCamera is not null && previousCamera != currentCamera)
+            await _journal.ExpireCenteredRunsAsync(previousCamera.AgentId, previousCamera.CameraId,
+                "profile-replaced", uncertainOnly: false, cancellationToken).ConfigureAwait(false);
+        if (currentCamera is not null)
+            await _journal.ExpireCenteredRunsAsync(currentCamera.AgentId, currentCamera.CameraId,
+                "target-progress-unknown", uncertainOnly: true, cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task<CenteredExposureReservation> ReserveCenteredAsync(
@@ -83,6 +88,7 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         var snapshot = new CenteredRunSnapshot(camera, pending?.Key.RunId ?? Guid.NewGuid(), revision.State.RevisionId,
             configuration with
             {
+                Pipeline = revision.Pipeline,
                 Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
                 DeploymentLocation = null,
                 DeploymentLocationRedacted = true
@@ -127,6 +133,9 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         CancellationToken cancellationToken)
         => _journal.DispatchCenteredAttemptAsync(attempt, settings, evidence, reason, cancellationToken);
 
+    internal Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+        => _journal.ExpireCenteredPendingAsync(attempt, cancellationToken);
+
     internal async Task<RawCaptureReceipt> AcceptCenteredAsync(
         CameraModuleConfig configuration,
         CaptureLoopSubmission submission,
@@ -161,9 +170,8 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
     internal Task<CenteredRawEvidence?> ReadCenteredRawAsync(ExposureKey key, CancellationToken cancellationToken)
         => _journal.ReadCenteredRawAsync(key, cancellationToken);
 
-    internal bool CenteredFrameFilesExist(ArtifactManifestV2 manifest)
+    internal bool CenteredFrameFilesExist(ReconstructionDescriptor descriptor)
     {
-        var descriptor = manifest.Descriptor;
         var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.PayloadAbsolutePath);
@@ -172,6 +180,9 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
 
     internal async Task<CameraFrame> ReadCenteredFrameAsync(CenteredRawEvidence evidence, CancellationToken cancellationToken)
     {
+        if (!evidence.IsCommitted)
+            throw new InvalidDataException("The centered raw source is not available as committed evidence.");
+
         var descriptor = evidence.Manifest.Descriptor;
         var paths = _files.GetPaths(descriptor.Timing.ExposureStartedUtc, descriptor.Artifact.ArtifactId);
         RawIngressFileStore.EnsureNoSymbolicLinks(_options.RawIngressRoot, paths.SidecarAbsolutePath);

@@ -35,6 +35,7 @@ public sealed record ExposureProductLookup(
     string? Reason);
 
 /// <summary>Exact step-three result, including a disposition when qualified pixels are unavailable.</summary>
+/// <remarks>An expired product can retain its original qualified provenance and identity as archival evidence.</remarks>
 public sealed record LinearExposureLookup(
     ExposureInputV1 Exposure,
     LinearExposureDisposition Disposition,

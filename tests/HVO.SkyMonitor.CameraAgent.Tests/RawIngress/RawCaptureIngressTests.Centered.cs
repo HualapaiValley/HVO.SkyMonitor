@@ -54,8 +54,14 @@ public sealed partial class RawCaptureIngressTests
             Assert.IsNotNull(retained.AcquisitionHead);
             Assert.IsNull(retained.BufferOccupancy);
             Assert.AreEqual(1, retained.Holds!.PendingMeteringCount);
+            await restarted.Ingress.ReserveCenteredAsync(config, CenteredTestResources, null, CancellationToken.None)
+                .ConfigureAwait(false);
+            var resumedBeforeFirstFrame = await restarted.Ingress.ReadCurrentAsync(camera, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.AreEqual(CenteredRuntimeEvidenceBasis.RetainedJournal, resumedBeforeFirstFrame.Basis);
+            Assert.IsNull(resumedBeforeFirstFrame.BufferOccupancy);
             await restarted.Ingress.ReconcileCenteredControlAsync(config with { CenteredExposure = null },
-                CancellationToken.None).ConfigureAwait(false);
+                CancellationToken.None, camera).ConfigureAwait(false);
             await restarted.Ingress.ReserveCenteredAsync(config, CenteredTestResources, null, CancellationToken.None)
                 .ConfigureAwait(false);
             var switched = await restarted.Ingress.ReadCurrentAsync(camera, CancellationToken.None).ConfigureAwait(false);
@@ -68,6 +74,202 @@ public sealed partial class RawCaptureIngressTests
     }
     private static readonly CaptureSetpoint CenteredTestSettings = new(TimeSpan.FromMilliseconds(10), 5, null, null);
     private static readonly CenteredSceneResources CenteredTestResources = new(null, null, null, null, "fixture");
+
+    [TestMethod]
+    public async Task CenteredRunnerRecovers103AndNeverApplies104DecisionTo105()
+    {
+        var root = CreateRoot();
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try
+        {
+            var left = CenteredConfiguration("left");
+            left = left with { Rig = left.Rig with
+            {
+                ControlPolicy = new()
+                {
+                    ExposureControl = AutomaticControlOwnership.HostMetered,
+                    GainControl = AutomaticControlOwnership.Disabled
+                },
+                Pipeline = left.Rig.Pipeline with
+                {
+                    DayExposure = CenteredTestSettings.Exposure,
+                    NightExposure = CenteredTestSettings.Exposure,
+                    DayGain = CenteredTestSettings.Gain,
+                    NightGain = CenteredTestSettings.Gain,
+                    CadenceMode = CaptureCadenceMode.Continuous
+                }
+            } };
+            var right = CenteredConfiguration("right");
+            var camera = new CameraKey(left.AgentId!, "left");
+            ExposureKey raw103;
+            ExposureAttemptKey target104;
+            ExposureAttemptKey rightTarget;
+            var requestUtc = Timestamp(1);
+            var clock = new FixedTimeProvider(requestUtc);
+
+            using (var initial = new CenteredFixture(root, new CenteredTraceFault()))
+            {
+                var other = await initial.AdmitAsync(right, requestUtc).ConfigureAwait(false);
+                rightTarget = other.Manifest.CenteredExposure!.Target;
+                var slot = 100;
+                await using var first = new CenteredRunnerModule(async (attempt, request, token) =>
+                {
+                    slot++;
+                    Assert.AreEqual(slot - 100L, attempt.Ordinal);
+                    await AssertDispatchedAsync(root, attempt, request.RequestedSetpoint!, slot != 101, token).ConfigureAwait(false);
+                    return CenteredTraceFrame(slot, request, effectiveGain: slot == 103 ? 7 : null);
+                });
+                var host = new CaptureHostContext(left, initial.Ingress, new CenteredTraceNotifier());
+                var runner = new CameraModuleRunner(first, host, clock, NullLogger.Instance, new AstronomyEnginePlanetEphemeris());
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(() => runner.RunAsync(stop.Token))
+                    .ConfigureAwait(false);
+                Assert.AreEqual(103, slot);
+            }
+
+            using (var restarted = new CenteredFixture(root))
+            {
+                await restarted.Ingress.InitializeAsync(stop.Token).ConfigureAwait(false);
+                await restarted.Ingress.ReconcileCenteredControlAsync(left, stop.Token).ConfigureAwait(false);
+                var head = await restarted.Ingress.ReadCurrentAsync(camera, stop.Token).ConfigureAwait(false);
+                raw103 = head.AcquisitionHead!.Exposure;
+                var retained = await restarted.Ingress.ReadCenteredRawAsync(raw103, stop.Token).ConfigureAwait(false);
+                target104 = retained!.Manifest.CenteredExposure!.Target;
+                Assert.AreEqual(4L, target104.Ordinal);
+                Assert.AreEqual(requestUtc, retained.Manifest.Descriptor.Timing.RequestedStartUtc);
+                Assert.AreEqual(requestUtc.AddMilliseconds(3), retained.Manifest.Descriptor.Timing.ExposureStartedUtc);
+                Assert.AreEqual(7d, retained.Manifest.Descriptor.Controls.EffectiveGain);
+                await using var uncertain = new CenteredRunnerModule(async (attempt, request, token) =>
+                {
+                    Assert.AreEqual(target104, attempt);
+                    Assert.AreEqual(7d, request.RequestedSetpoint!.Gain);
+                    await AssertDispatchedAsync(root, attempt, request.RequestedSetpoint, true, token).ConfigureAwait(false);
+                    throw new TimeoutException("Device changed one control before its acknowledgment was lost.");
+                });
+                var host = new CaptureHostContext(left, restarted.Ingress, new CenteredTraceNotifier());
+                var runner = new CameraModuleRunner(uncertain, host, clock, NullLogger.Instance, new AstronomyEnginePlanetEphemeris());
+                await Assert.ThrowsExactlyAsync<TimeoutException>(() => runner.RunAsync(stop.Token)).ConfigureAwait(false);
+            }
+
+            using var fresh = new CenteredFixture(root);
+            await fresh.Ingress.InitializeAsync(stop.Token).ConfigureAwait(false);
+            await fresh.Ingress.ReconcileCenteredControlAsync(left, stop.Token).ConfigureAwait(false);
+            var otherPending = await fresh.Ingress.ReserveCenteredAsync(right, CenteredTestResources, null, stop.Token)
+                .ConfigureAwait(false);
+            Assert.AreEqual(rightTarget, otherPending.Pending.Key);
+            var read = new CenteredExposureProductReader(fresh.Ingress, fresh.Store);
+            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+            var persistence = new CaptureProcessingPersistence(fresh.Options, fresh.Store, storage, fresh.Telemetry,
+                NullLogger<CaptureProcessingPersistence>.Instance);
+            using var handler = new StandardCaptureLaneHandler(fresh.Factory, persistence, fresh.Telemetry,
+                NullLogger<StandardCaptureLaneHandler>.Instance, fresh.Ingress, fresh.Options);
+            var nextSlot = 104;
+            var last = new CenteredTraceNotifier();
+            last.Committed = () =>
+            {
+                if (nextSlot == 106) stop.Cancel();
+            };
+            await using var resumed = new CenteredRunnerModule(async (attempt, request, token) =>
+            {
+                nextSlot++;
+                Assert.AreNotEqual(target104.RunId, attempt.RunId);
+                Assert.AreEqual(CenteredTestSettings, request.RequestedSetpoint);
+                await AssertDispatchedAsync(root, attempt, request.RequestedSetpoint!, nextSlot == 106, token).ConfigureAwait(false);
+                if (nextSlot == 105)
+                {
+                    var lane = fresh.Policy.Definitions.Single(definition => definition.Name == "standard");
+                    for (var index = 0; index < 4; index++)
+                    {
+                        var lease = await fresh.Ingress.ClaimAsync(lane, "trace-worker", left, token).ConfigureAwait(false);
+                        Assert.IsNotNull(lease);
+                        var result = await handler.HandleAsync(lease.Context, token).ConfigureAwait(false);
+                        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+                        await fresh.Ingress.CompleteAsync(lease, token).ConfigureAwait(false);
+                    }
+                    Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly,
+                        (await read.ReadLinearAsync(raw103, token).ConfigureAwait(false))!.Disposition);
+                }
+                return CenteredTraceFrame(nextSlot, request);
+            });
+            var resumedHost = new CaptureHostContext(left, fresh.Ingress, last);
+            await new CameraModuleRunner(resumed, resumedHost, clock, NullLogger.Instance, new AstronomyEnginePlanetEphemeris())
+                .RunAsync(stop.Token).ConfigureAwait(false);
+            Assert.AreEqual(106, nextSlot);
+            using var db = await OpenJournalAsync(root).ConfigureAwait(false);
+            Assert.AreEqual(6L, await ScalarLongAsync(db, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarLongAsync(db, """
+                SELECT COUNT(*) FROM centered_exposure_attempts
+                WHERE ordinal=4 AND status='expired' AND reason='target-progress-unknown' AND capture_id IS NULL;
+                """).ConfigureAwait(false));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    private static CaptureResult CenteredTraceFrame(int slot, CaptureRequest request, double? effectiveGain = null)
+    {
+        var observed = request.RequestedStartUtc.AddMilliseconds(slot - 100);
+        var fixture = CenteredSubmission(observed).Result;
+        var frame = fixture.Frame!;
+        var settings = request.RequestedSetpoint!;
+        var ended = observed + settings.Exposure;
+        return fixture with
+        {
+            Frame = frame with { Metadata = frame.Metadata with { Gain = effectiveGain ?? settings.Gain, Exposure = settings.Exposure } },
+            AcquisitionTiming = new(observed, ended, ended.AddMilliseconds(1))
+        };
+    }
+
+    private static async Task AssertDispatchedAsync(
+        string root, ExposureAttemptKey attempt, CaptureSetpoint settings, bool metered, CancellationToken token)
+    {
+        using var db = await OpenJournalAsync(root).ConfigureAwait(false);
+        using var read = db.CreateCommand();
+        read.CommandText = """
+            SELECT requested_json, metering_json FROM centered_exposure_attempts
+            WHERE attempt_id = $id AND status = 'dispatched' AND capture_id IS NULL;
+            """;
+        read.Parameters.AddWithValue("$id", attempt.AttemptId.ToString("N"));
+        using var data = await read.ExecuteReaderAsync(token).ConfigureAwait(false);
+        Assert.IsTrue(await data.ReadAsync(token).ConfigureAwait(false));
+        Assert.AreEqual(settings, JsonSerializer.Deserialize<CaptureSetpoint>((byte[])data[0]));
+        Assert.AreEqual(metered, !data.IsDBNull(1));
+    }
+
+    private sealed class CenteredTraceFault : IRawIngressFaultInjector
+    {
+        private int _commits;
+        public bool IsEnabled(RawIngressFaultPoint point) => point == RawIngressFaultPoint.AfterJournalCommit;
+        public void Inject(RawIngressFaultPoint point)
+        {
+            if (point == RawIngressFaultPoint.AfterJournalCommit && ++_commits == 4)
+                throw new InjectedRawIngressFaultException();
+        }
+    }
+
+    private sealed class CenteredTraceNotifier : ICaptureDistributor
+    {
+        internal Action? Committed { get; set; }
+        public void NotifyCommittedCapture() => Committed?.Invoke();
+        public ValueTask ProcessEphemeralAsync(
+            CameraModuleConfig configuration, CaptureLoopSubmission submission, CancellationToken cancellationToken)
+            => ValueTask.CompletedTask;
+    }
+
+    private sealed class CenteredRunnerModule(
+        Func<ExposureAttemptKey, CaptureRequest, CancellationToken, Task<CaptureResult>> capture)
+        : ICameraModule, ICameraBoundExposureCapture
+    {
+        public string Id => "centered-trace";
+        public string DisplayName => Id;
+        public string ModuleType => Id;
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+            => throw new AssertFailedException("Centered acquisition must use the bound module entry point.");
+        public Task<CaptureResult> CaptureBoundAsync(
+            ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
+            => capture(attempt, request, cancellationToken);
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     [TestMethod]
     public async Task CenteredInterleavedSameAgentModelAndTimestampsAreDistinctAndIdempotent()
@@ -105,6 +307,11 @@ public sealed partial class RawCaptureIngressTests
                 .ConfigureAwait(false);
             Assert.AreEqual(second.Manifest.CenteredExposure!.Target, nextB.Pending.Key);
             Assert.AreEqual(second.Manifest.Descriptor.Capture.CaptureId, nextB.Pending.SourceCaptureId);
+            await setup.Ingress.ReconcileCenteredControlAsync(left with { CenteredExposure = null },
+                CancellationToken.None, a.Pending.Key.Camera).ConfigureAwait(false);
+            Assert.AreEqual(nextB.Pending.Key,
+                (await setup.Ingress.ReserveCenteredAsync(right, CenteredTestResources, null, CancellationToken.None)
+                    .ConfigureAwait(false)).Pending.Key);
 
             var freshA = await setup.Ingress.ReserveCenteredAsync(left, CenteredTestResources, null, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -171,7 +378,8 @@ public sealed partial class RawCaptureIngressTests
         var root = CreateRoot();
         try
         {
-            using var setup = new CenteredFixture(root);
+            var clock = new ExposureTestTimeProvider(DateTimeOffset.UtcNow);
+            using var setup = new CenteredFixture(root, timeProvider: clock);
             var config = CenteredConfiguration("camera");
             var first = await setup.AdmitAsync(config, Timestamp(1)).ConfigureAwait(false);
             var key = new ExposureKey(first.Manifest.CenteredExposure!.Source.Camera,
@@ -211,7 +419,32 @@ public sealed partial class RawCaptureIngressTests
             Assert.HasCount(1, changes);
             Assert.AreEqual(settled.Product, changes[0].Product);
 
-            var custody = new CenteredExposureInputCustody(setup.Ingress, reader, setup.Store, persistence, TimeProvider.System);
+            var graph = setup.Factory.CreateRetainedGraph(config);
+            try
+            {
+                var node = graph.Nodes.Single(node => node.Id == settled.Product.Slot.Producer);
+                var evidence = await setup.Store.ReadNodeAsync(key.CaptureId, node.Id, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(evidence);
+                var settlements = CenteredExposureProductReader.CreateSettlements(first.Manifest, node, evidence.Status,
+                    evidence.Reason, evidence.Outputs, evidence.Inputs!);
+                Assert.HasCount(1, settlements);
+                Task WriteAsync(CenteredProductSettlement settlement)
+                    => setup.Store.WriteNodeAsync(key.CaptureId, node, evidence.Status, evidence.Reason, evidence.Attempt,
+                        evidence.ProcessingProfileIdentitySha256, evidence.StartedUtc, evidence.CompletedUtc, evidence.Duration,
+                        evidence.Outcome, evidence.Inputs!, lease.WorkId, lease.LeaseToken, evidence.Outputs,
+                        lease.Context.Execution, ProcessingNodeExecutionRoute.InProcess, CancellationToken.None, [settlement]).AsTask();
+                var versionAfterSettling = setup.Changes.Version;
+                await WriteAsync(settlements[0]).ConfigureAwait(false);
+                Assert.AreEqual(versionAfterSettling, setup.Changes.Version);
+                await Assert.ThrowsExactlyAsync<InvalidDataException>(() =>
+                    WriteAsync(settlements[0] with { PayloadSha256 = new string('A', 64) })).ConfigureAwait(false);
+                Assert.AreEqual(settled.Product, (await reader.ReadLinearAsync(key, CancellationToken.None)
+                    .ConfigureAwait(false))!.Product);
+                Assert.AreEqual(versionAfterSettling, setup.Changes.Version);
+            }
+            finally { graph.DisposeSteps(); }
+
+            var custody = new CenteredExposureInputCustody(setup.Ingress, reader, setup.Store, persistence, clock);
             var holdA = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
                 .ConfigureAwait(false);
             var holdB = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
@@ -226,6 +459,58 @@ public sealed partial class RawCaptureIngressTests
             await holdA.DisposeAsync().ConfigureAwait(false);
             Assert.AreEqual(1L, await ScalarLongAsync(db, "SELECT COUNT(*) FROM centered_exposure_holds;").ConfigureAwait(false));
             await setup.Ingress.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+
+            var peak = new List<CenteredExposureInputLease>();
+            try
+            {
+                for (var i = 0; i < 63; i++)
+                {
+                    var hold = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
+                        .ConfigureAwait(false);
+                    Assert.IsNotNull(hold);
+                    peak.Add(hold);
+                }
+                Assert.IsNull(await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
+                    .ConfigureAwait(false));
+                Assert.AreEqual(64L, await ScalarLongAsync(db, "SELECT COUNT(*) FROM centered_exposure_holds;").ConfigureAwait(false));
+                clock.Advance(TimeSpan.FromMinutes(2));
+                await using var recoveredHold = await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1),
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(recoveredHold);
+                Assert.AreEqual(1L, await ScalarLongAsync(db, "SELECT COUNT(*) FROM centered_exposure_holds;").ConfigureAwait(false));
+            }
+            finally
+            {
+                foreach (var hold in peak) await hold.DisposeAsync().ConfigureAwait(false);
+            }
+
+            var saved = await setup.Store.ReadOutputByArtifactIdAsync(settled.Product.ArtifactId, CancellationToken.None)
+                .ConfigureAwait(false);
+            Assert.IsNotNull(saved);
+            var operation = new ProcessingLifecycleOperation("delete:centered-test", "delete", settled.Product.OutputIdentitySha256,
+                saved.PayloadRelativePath, saved.SidecarRelativePath, "processing-deletion-tombstones/centered-test",
+                "retention-expired", 0);
+            await setup.Store.PlanLifecycleOperationAsync(operation, CancellationToken.None).ConfigureAwait(false);
+            await new DerivedProductReconciler(root, setup.Store).RunAsync(CancellationToken.None).ConfigureAwait(false);
+
+            Assert.IsNull(await setup.Store.ReadOutputByArtifactIdAsync(settled.Product.ArtifactId, CancellationToken.None)
+                .ConfigureAwait(false));
+            Assert.IsFalse(File.Exists(Path.Combine(root, saved.PayloadRelativePath)));
+            Assert.IsFalse(File.Exists(Path.Combine(root, saved.SidecarRelativePath)));
+            var expired = await reader.ReadLinearAsync(key, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(LinearExposureDisposition.Expired, expired!.Disposition);
+            Assert.AreEqual("retention-expired", expired.Reason);
+            Assert.AreEqual(settled.Product, expired.Product);
+            Assert.AreEqual(settled.Revision, expired.Revision);
+            Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, expired.Provenance!.Disposition);
+            Assert.AreEqual(settled.Provenance.RawArtifactId, expired.Provenance.RawArtifactId);
+            Assert.AreEqual(settled.Provenance.RawDescriptorSha256, expired.Provenance.RawDescriptorSha256);
+            Assert.AreEqual(settled.Provenance.RawPayloadSha256, expired.Provenance.RawPayloadSha256);
+            Assert.AreEqual(settled.Provenance.LinearDescriptorSha256, expired.Provenance.LinearDescriptorSha256);
+            Assert.AreEqual(settled.Provenance.LinearPayloadSha256, expired.Provenance.LinearPayloadSha256);
+            Assert.AreEqual(settled.Provenance.OutputIdentitySha256, expired.Provenance.OutputIdentitySha256);
+            Assert.IsNull(await custody.OpenLinearAsync(settled.Product, TimeSpan.FromMinutes(1), CancellationToken.None)
+                .ConfigureAwait(false));
         }
         finally { DeleteRoot(root); }
     }
@@ -292,6 +577,40 @@ public sealed partial class RawCaptureIngressTests
             {
                 ExecutionId = replay.Execution.ExecutionId
             }, CancellationToken.None).ConfigureAwait(false));
+        }
+        finally { DeleteRoot(root); }
+    }
+
+    [TestMethod]
+    public async Task CenteredLinearReaderRecoversOriginalTerminalLaneFailureWithoutOutput()
+    {
+        var root = CreateRoot();
+        try
+        {
+            var config = CenteredConfiguration("camera");
+            ExposureKey key;
+            using (var initial = new CenteredFixture(root))
+            {
+                var admitted = await initial.AdmitAsync(config, Timestamp(1)).ConfigureAwait(false);
+                var source = admitted.Manifest.CenteredExposure!.Source;
+                key = new(source.Camera, source.RunId, admitted.Manifest.Descriptor.Capture.CaptureId);
+                var lane = initial.Policy.Definitions.Single(definition => definition.Name == "standard");
+                var lease = await initial.Ingress.ClaimAsync(lane, "fault-worker", config, CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(lease);
+                Assert.AreEqual(CaptureLaneHandlerOutcome.TerminalFailure, await initial.Ingress.FailAsync(
+                    lease, CaptureLaneHandlerResult.Terminal("fixture.linear-before-node"), CancellationToken.None)
+                    .ConfigureAwait(false));
+            }
+
+            using var resumed = new CenteredFixture(root);
+            var read = new CenteredExposureProductReader(resumed.Ingress, resumed.Store);
+            var disposition = await read.ReadLinearAsync(key, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(disposition);
+            Assert.AreEqual(LinearExposureDisposition.Failed, disposition.Disposition);
+            Assert.AreEqual("fixture.linear-before-node", disposition.Reason);
+            Assert.IsNull(disposition.Product);
+            Assert.IsNull(disposition.Provenance);
         }
         finally { DeleteRoot(root); }
     }
@@ -444,7 +763,8 @@ public sealed partial class RawCaptureIngressTests
             var reserved = await setup.DispatchAsync(centered).ConfigureAwait(false);
             var legacy = centered with { CenteredExposure = null };
             var legacySubmission = CenteredSubmission(Timestamp(2));
-            await setup.Ingress.ReconcileCenteredControlAsync(legacy, CancellationToken.None).ConfigureAwait(false);
+            await setup.Ingress.ReconcileCenteredControlAsync(legacy, CancellationToken.None, reserved.Pending.Key.Camera)
+                .ConfigureAwait(false);
             var inFlight = await setup.Ingress.AcceptCenteredAsync(centered, CenteredSubmission(Timestamp(1)),
                 reserved, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(reserved.Revision.State.RevisionId, inFlight.Manifest.CaptureGraphRevisionId);
@@ -685,7 +1005,7 @@ public sealed partial class RawCaptureIngressTests
         internal RawCaptureIngress Ingress { get; }
         internal CaptureLanePolicy Policy { get; }
 
-        internal CenteredFixture(string root, IRawIngressFaultInjector? fault = null)
+        internal CenteredFixture(string root, IRawIngressFaultInjector? fault = null, TimeProvider? timeProvider = null)
         {
             Options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
             {
@@ -699,13 +1019,14 @@ public sealed partial class RawCaptureIngressTests
                 [new("Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, false),
                  new("CenteredProbe", typeof(CenteredProbeStep), typeof(CenteredProbeOptions), 30, false)],
                 NullLogger<CaptureProcessingPipelineFactory>.Instance, Telemetry);
-            Store = new(Options, centeredProductChanges: Changes);
+            timeProvider ??= TimeProvider.System;
+            Store = new(Options, timeProvider, centeredProductChanges: Changes);
             _replayWakeup = new(Options);
-            GraphOperations = new(Factory, Store, Options, TimeProvider.System, _replayWakeup);
-            var state = new RawIngressState(TimeProvider.System);
+            GraphOperations = new(Factory, Store, Options, timeProvider, _replayWakeup);
+            var state = new RawIngressState(timeProvider);
             _rawTelemetry = new(state);
             Policy = new(Options);
-            Ingress = new(Options, new FixedCapacityProvider(long.MaxValue), state, TimeProvider.System, _rawTelemetry,
+            Ingress = new(Options, new FixedCapacityProvider(long.MaxValue), state, timeProvider, _rawTelemetry,
                 NullLogger<RawCaptureIngress>.Instance, fault ?? new NullRawIngressFaultInjector(),
                 Policy, graphOperations: GraphOperations);
         }

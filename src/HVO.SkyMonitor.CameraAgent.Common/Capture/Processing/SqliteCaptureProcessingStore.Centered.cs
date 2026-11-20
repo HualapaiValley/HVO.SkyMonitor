@@ -13,10 +13,12 @@ internal sealed partial class SqliteCaptureProcessingStore
                product.execution_id, product.producer, product.schema_version, product.variant,
                product.output_identity, product.disposition, product.reason, product.provenance_json,
                output.artifact_id, product.payload_sha256, output.content_identity_sha256,
-               output.availability_state, output.availability_reason
+               output.availability_state, output.availability_reason,
+               raw.raw_artifact_id, raw.descriptor_sha256, raw.payload_sha256
         FROM centered_exposure_products product
         JOIN centered_exposure_attempts attempt ON attempt.capture_id = product.capture_id
         JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+        JOIN raw_captures raw ON raw.capture_id = product.capture_id
         LEFT JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
         """;
 
@@ -76,7 +78,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$schema", slot.SchemaVersion);
         command.Parameters.AddWithValue("$variant", slot.Variant);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadCenteredLookup(reader) : null;
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadCenteredLookup(reader, out _) : null;
     }
 
     internal async Task<IReadOnlyList<ExposureProductLookup>> ReadCenteredProductsAfterAsync(
@@ -99,11 +101,12 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var products = new List<ExposureProductLookup>(maximumCount);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            products.Add(ReadCenteredLookup(reader));
+            products.Add(ReadCenteredLookup(reader, out _));
         return products;
     }
 
-    internal async Task<(ExposureProductLookup? Product, LinearInputProvenanceV1? Provenance, string? UnavailableReason)>
+    internal async Task<(ExposureProductLookup? Product, LinearInputProvenanceV1? Provenance,
+        LinearExposureDisposition Fallback, string? UnavailableReason)>
         ReadCenteredLinearAsync(ExposureKey key, CenteredRawEvidence raw, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -131,17 +134,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                return (ReadCenteredLookup(reader), await reader.IsDBNullAsync(12, cancellationToken).ConfigureAwait(false) ? null :
-                    JsonSerializer.Deserialize<LinearInputProvenanceV1>(
-                        await reader.GetFieldValueAsync<byte[]>(12, cancellationToken).ConfigureAwait(false)), null);
+            {
+                var product = ReadCenteredLookup(reader, out var provenance);
+                return (product, provenance, LinearExposureDisposition.Pending, null);
+            }
         }
 
         command.CommandText = """
-            SELECT CASE WHEN node.status IN ('Skipped','TerminalFailure')
-                           THEN COALESCE(node.reason, 'linear.no-output')
-                        WHEN execution.status IN ('Completed','Expired','Failed','Cancelled')
-                           THEN COALESCE(execution.failure_reason, 'linear.plan-did-not-produce')
-                        ELSE NULL END
+            SELECT execution.status, execution.failure_reason, node.status, node.reason
             FROM processing_executions execution
             LEFT JOIN processing_execution_nodes node
               ON node.execution_id = execution.execution_id AND node.node_id = $node
@@ -150,7 +150,23 @@ internal sealed partial class SqliteCaptureProcessingStore
               AND execution.execution_id = $execution
               AND execution.primary_artifact_id = $raw AND execution.graph_revision_id = $graph;
             """;
-        return (null, null, await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string);
+        using var fallback = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await fallback.ReadAsync(cancellationToken).ConfigureAwait(false))
+            return (null, null, LinearExposureDisposition.Pending, null);
+
+        var executionStatus = fallback.GetString(0);
+        var executionReason = fallback.IsDBNull(1) ? null : fallback.GetString(1);
+        var nodeStatus = fallback.IsDBNull(2) ? null : fallback.GetString(2);
+        var nodeReason = fallback.IsDBNull(3) ? null : fallback.GetString(3);
+        return (executionStatus, nodeStatus) switch
+        {
+            ("Expired", _) => (null, null, LinearExposureDisposition.Expired, executionReason ?? "linear.execution-expired"),
+            ("Failed", _) or (_, "TerminalFailure") =>
+                (null, null, LinearExposureDisposition.Failed, nodeReason ?? executionReason ?? "linear.execution-failed"),
+            ("Completed" or "Cancelled", _) or (_, "Skipped") =>
+                (null, null, LinearExposureDisposition.Unavailable, nodeReason ?? executionReason ?? "linear.plan-did-not-produce"),
+            _ => (null, null, LinearExposureDisposition.Pending, null)
+        };
     }
 
     internal async Task<bool> TryHoldCenteredInputAsync(
@@ -196,7 +212,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
-    private static ExposureProductLookup ReadCenteredLookup(SqliteDataReader reader)
+    private static ExposureProductLookup ReadCenteredLookup(SqliteDataReader reader, out LinearInputProvenanceV1? provenance)
     {
         var exposure = new ExposureKey(new(reader.GetString(3), reader.GetString(4)),
             Guid.ParseExact(reader.GetString(2), "N"), Guid.ParseExact(reader.GetString(1), "N"));
@@ -204,6 +220,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             reader.GetString(6), reader.GetString(7), reader.GetString(8));
         var availability = Enum.Parse<ExposureProductAvailability>(reader.GetString(10));
         var reason = reader.IsDBNull(11) ? null : reader.GetString(11);
+        provenance = null;
         ExposureProductRef? output = null;
         if (availability == ExposureProductAvailability.Available)
         {
@@ -225,6 +242,45 @@ internal sealed partial class SqliteCaptureProcessingStore
                 reason = reader.IsDBNull(17) ? "product.retained-output-unavailable" : reader.GetString(17);
         }
 
+        if (slot.SchemaVersion == CenteredExposureProductReader.LinearSchemaVersion &&
+            availability is ExposureProductAvailability.Available or ExposureProductAvailability.Expired)
+        {
+            provenance = ReadOriginalLinearProvenance(reader);
+            if (provenance is null)
+            {
+                availability = ExposureProductAvailability.MissingEvidence;
+                reason = "linear.original-provenance-mismatch";
+                output = null;
+            }
+            else
+            {
+                output ??= new(exposure, slot, provenance.LinearArtifactId, provenance.OutputIdentitySha256,
+                    provenance.LinearPayloadSha256, reader.IsDBNull(15) ? null : reader.GetString(15));
+            }
+        }
+
         return new(exposure, slot, availability, reader.GetInt64(0), output, reason);
+    }
+
+    private static LinearInputProvenanceV1? ReadOriginalLinearProvenance(SqliteDataReader reader)
+    {
+        if (reader.IsDBNull(9) || reader.IsDBNull(12) || reader.IsDBNull(14)) return null;
+        LinearInputProvenanceV1? saved;
+        try
+        {
+            saved = JsonSerializer.Deserialize<LinearInputProvenanceV1>(reader.GetFieldValue<byte[]>(12));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+        if (saved is not { Disposition: LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly } ||
+            saved.RawArtifactId.ToString("N") != reader.GetString(18) ||
+            saved.RawDescriptorSha256 != reader.GetString(19) || saved.RawPayloadSha256 != reader.GetString(20) ||
+            saved.OutputIdentitySha256 != reader.GetString(9) || saved.LinearPayloadSha256 != reader.GetString(14) ||
+            saved.LinearArtifactId == Guid.Empty ||
+            !reader.IsDBNull(13) && saved.LinearArtifactId.ToString("N") != reader.GetString(13))
+            return null;
+        return saved;
     }
 }
