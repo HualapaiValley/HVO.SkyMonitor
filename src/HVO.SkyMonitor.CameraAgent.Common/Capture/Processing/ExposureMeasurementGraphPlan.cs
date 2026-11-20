@@ -28,11 +28,32 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
                 producers.All(step => !step.Required && step.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal &&
                     step.DependsOn is [var input] && Matches(input, "$raw")) &&
                 measurement.DependsOn is { } dependencies && dependencies.SequenceEqual(expected, StringComparer.OrdinalIgnoreCase))
+            {
+                EnsureIndependentPrediction(pipeline);
                 return;
+            }
         }
 
         throw new ProcessingGraphStoreConflictException(
             "The graph does not match the capture profile's fixed exposure measurement. Select a compatible graph or roll back to configured-basic.");
+    }
+
+    private static void EnsureIndependentPrediction(CapturePipelineConfig pipeline)
+    {
+        const string prediction = ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias;
+        var producers = pipeline.Steps.Where(step => Matches(step.Type, prediction) || Matches(NodeId(step), prediction)).ToArray();
+        var consumers = pipeline.Steps.Where(step => step.Enabled != false &&
+            (Matches(step.Type, ExposureAssociationProducts.StepAlias) || Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias))).ToArray();
+        if (producers.Length == 0 && consumers.Length == 0)
+            return;
+        if (producers is [var producer] && Matches(producer.Type, prediction) && NodeId(producer) == prediction &&
+            producer.Enabled != false && !producer.Required && producer.DependsOn is [var raw] && Matches(raw, "$raw") &&
+            producer.Publication?.Persistence == CaptureProcessingPersistenceMode.DurableLocal &&
+            consumers.All(step => step.DependsOn?.Contains(prediction, StringComparer.OrdinalIgnoreCase) == true))
+            return;
+
+        throw new ProcessingGraphStoreConflictException(
+            "Centered association and astrometry require the fixed, durable exposure catalog prediction from admitted raw.");
     }
 
     public CapturePipelineConfig Configure(CapturePipelineConfig pipeline)

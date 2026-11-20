@@ -3,6 +3,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -27,7 +28,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     private static readonly string[] MeasurementDependencies = ["$raw", "linear"];
 
     [TestMethod]
-    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true)]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true,
+        DisplayName = "ExposureMeasurement_RejectsFitAndReplaysItsOriginalAssessmentAfterRestart")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true)]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", false, 10)]
@@ -50,11 +52,13 @@ public sealed partial class VirtualSkyCameraModuleTests
         0, "expired", DisplayName = "ExposureMeasurement_OperationsRecognizesDeletedMeasurementSlot")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
         0, "corrupt", DisplayName = "ExposureMeasurement_OperationsRecognizesCorruptCommittedJournal")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
+        0, "", true, DisplayName = "ExposureMeasurement_RemainsAvailableWhenIndependentCatalogIsUnavailable")]
     public async Task ExposureMeasurement_OrdinaryCapturePersistsAndReopensThroughStandardLane(
         CameraPixelFormat format, string calibration, bool declareReadout = true, int referenceGain = 1, bool fit = false,
         bool interrupt = false, string signal = "star", bool expireLinear = false,
         FrameStoredCodeTransform transform = FrameStoredCodeTransform.RightAlignedV1, int publicationFailures = 0,
-        string archiveFault = "")
+        string archiveFault = "", bool noPredictionCatalog = false)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement");
         try
@@ -66,6 +70,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(now, -113.878) / 15d;
             var predictionStar = new CelestialCatalogObject("independent-star", "Independent Star", rightAscension, 35.347, 0, 0.65);
             var predictions = new MeasurementPredictionCatalog(predictionStar);
+            ICelestialCatalog predictionCatalog = noPredictionCatalog ? new InMemoryCelestialCatalog([]) : predictions;
             var location = DeploymentLocationSnapshot.Create("measurement-test", 1, "virtual", null,
                 DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 0, "America/Phoenix");
             var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1 { Gain = referenceGain } : null;
@@ -128,7 +133,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
             var publication = publicationFailures > 0 ? new MeasurementPublicationIo(publicationFailures) : null;
             var laneClock = publication is not null ? new ExposureTestTimeProvider(now.AddMinutes(1)) : null;
-            using (var provider = MeasurementProvider(root, location, predictions, (ICaptureProcessingFaultInjector?)interruption ?? publication,
+            using (var provider = MeasurementProvider(root, location, predictionCatalog, (ICaptureProcessingFaultInjector?)interruption ?? publication,
                 laneClock))
             {
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
@@ -304,7 +309,6 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual("TerminalFailure", recordedMeasurement.Status);
                     Assert.AreEqual("measurement-publication-io", recordedMeasurement.Reason);
                     Assert.IsEmpty(recordedMeasurement.Outputs);
-                    Assert.AreEqual(0, recordedMeasurement.CommittedOutputCount);
                     foreach (var dependent in execution.Nodes.Where(item => item.NodeId is "associated" or "fit"))
                     {
                         Assert.AreEqual("Skipped", dependent.Status);
@@ -423,7 +427,19 @@ public sealed partial class VirtualSkyCameraModuleTests
                     var notifications = await reader.ReadProductsAfterAsync(exposure.Camera, 0, 128, CancellationToken.None)
                         .ConfigureAwait(false);
                     Assert.AreEqual(published, Assert.ContainsSingle(notifications.Where(product => product.Slot == slot)));
-                    if (fit)
+                    if (fit && noPredictionCatalog)
+                    {
+                        var prediction = execution.Nodes.Single(item => item.NodeId == ExposureCatalogPredictionProducts.StepAlias);
+                        Assert.AreEqual("Skipped", prediction.Status);
+                        Assert.AreEqual("scene.frozen-prediction-input-unavailable", prediction.Reason);
+                        foreach (var dependent in execution.Nodes.Where(item => item.NodeId is "associated" or "fit"))
+                        {
+                            Assert.AreEqual("Skipped", dependent.Status);
+                            Assert.AreEqual("processing.dependency-unavailable", dependent.Reason);
+                            Assert.IsEmpty(dependent.Outputs);
+                        }
+                    }
+                    else if (fit)
                     {
                         var association = execution.Nodes.Single(item => item.NodeId == "associated");
                         Assert.AreEqual("Completed", association.Status, association.Reason);
@@ -439,6 +455,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                             .ConfigureAwait(false));
                         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
                         Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
+                        if (publicationFailures == 0)
+                            await AssertNamedPredictionDependenciesAsync(provider, active, operations, originalExecution.GraphRevisionId).ConfigureAwait(false);
                     }
 
                     if (expireLinear)
@@ -462,7 +480,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
             }
 
-            using var reopened = MeasurementProvider(root, location, predictions);
+            using var reopened = MeasurementProvider(root, location, predictionCatalog);
             var restartedIngress = reopened.GetRequiredService<RawCaptureIngress>();
             await restartedIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var switched = file with { CenteredExposure = null, Rig = file.Rig with { Orientation = new RigOrientation(80, 15, 5) } };
@@ -491,6 +509,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNotNull(reopenedView.ExposureMeasurement);
                 Assert.IsNull(reopenedView.ExposureMeasurement.Measurement);
                 Assert.AreEqual("measurement-publication-io", reopenedView.ExposureMeasurement.UnavailableReason);
+                var journal = await reopenedOperations.ReadRunManifestAsync(originalExecution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsNotNull(journal);
+                Assert.AreEqual(0, journal.Nodes.Single(item => item.NodeId == fixedStage.NodeId).CommittedOutputCount);
                 var slot = new ExposureProductSlot(originalExecution.ExecutionId, fixedStage.NodeId,
                     ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
                 Assert.IsNull(await reopenedReader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
@@ -526,11 +547,144 @@ public sealed partial class VirtualSkyCameraModuleTests
                 "The original source, centroid positions/flux, and HFD samples and summary must survive unchanged.");
             if (expireLinear || storedLevels is not null)
                 Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, restored.Measurement.Input.Step3Disposition);
+            if (fit && publicationFailures == 0 && !noPredictionCatalog)
+                await AssertRejectedAssessmentReplayAsync(reopened, originalExecution, originalMeasurement).ConfigureAwait(false);
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task AssertNamedPredictionDependenciesAsync(ServiceProvider provider, CameraModuleConfig active,
+        IProcessingGraphOperations graphs, string revisionId)
+    {
+        var pipeline = await graphs.ReadRevisionPipelineAsync(revisionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(pipeline);
+        const string prediction = ExposureCatalogPredictionProducts.StepAlias;
+        var legitimate = await graphs.CreateRevisionAsync("independent-science", "1", pipeline,
+            "independent-science-create", "measurement-test", null, CancellationToken.None).ConfigureAwait(false);
+        await graphs.ValidateRevisionAsync(legitimate.RevisionId, "independent-science-validate", "measurement-test", null,
+            CancellationToken.None).ConfigureAwait(false);
+        var original = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+        var activated = await graphs.ActivateRevisionAsync(legitimate.RevisionId, original.StateVersion,
+            "independent-science-activate", "measurement-test", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(legitimate.RevisionId, activated.ActiveRevisionId);
+        await graphs.RollbackRevisionAsync(original.ActiveRevisionId, activated.StateVersion, "independent-science-rollback",
+            "measurement-test", null, CancellationToken.None).ConfigureAwait(false);
+
+        foreach (var consumerId in new[] { "associated", "fit" })
+        {
+            var consumer = pipeline.Steps.Single(step => step.Id == consumerId);
+            Assert.Contains(prediction, consumer.DependsOn!);
+            var wrong = pipeline with
+            {
+                Steps = [.. pipeline.Steps.Select(step => step == consumer
+                    ? step with { DependsOn = [.. consumer.DependsOn!.Select(id => id == prediction ? "scene" : id)] }
+                    : step)]
+            };
+            await AssertRejectedAsync(wrong, "presentation-as-" + consumerId).ConfigureAwait(false);
+        }
+        var impostor = pipeline with
+        {
+            Steps = [.. pipeline.Steps.Where(step => step.Id != "scene").Select(step => step.Id == prediction
+                ? step with { Type = "ProjectedScene" } : step)]
+        };
+        await AssertRejectedAsync(impostor, "presentation-fixed-id").ConfigureAwait(false);
+        var before = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+        var historical = await StoragePolicyRawIngressIntegrationTests.SeedLegacyRevisionAsync(provider, active, impostor)
+            .ConfigureAwait(false);
+        var state = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(before.ActiveRevisionId, state.ActiveRevisionId);
+        var failedActivation = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+            await graphs.ActivateRevisionAsync(historical, state.StateVersion, "invalid-science-activation", "measurement-test",
+                null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        Assert.Contains("fixed, durable exposure catalog prediction", failedActivation.Message);
+        var unchanged = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(state.ActiveRevisionId, unchanged.ActiveRevisionId);
+        Assert.AreEqual(state.StateVersion, unchanged.StateVersion);
+
+        async Task AssertRejectedAsync(CapturePipelineConfig wrong, string name)
+        {
+            var failure = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.CreateRevisionAsync(name, "1", wrong, name, "measurement-test", null, CancellationToken.None)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.Contains("fixed, durable exposure catalog prediction", failure.Message);
+        }
+    }
+
+    private static async Task AssertRejectedAssessmentReplayAsync(ServiceProvider provider, ProcessingGraphExecutionState original,
+        ExposureMeasurementV1 originalMeasurement)
+    {
+        var token = CancellationToken.None;
+        var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+        var live = await graphs.ReadExecutionDetailAsync(original.ExecutionId, token).ConfigureAwait(false);
+        Assert.IsNotNull(live);
+        var requested = await graphs.SubmitReplayAsync(new(original.CaptureId, original.GraphRevisionId, original.PrimaryArtifactId),
+            "measurement-rejected-fit-replay", "measurement-test", token).ConfigureAwait(false);
+        Assert.AreNotEqual(original.ExecutionId, requested.Execution.ExecutionId);
+        var lease = await store.ClaimReplayAsync("measurement-rejected-fit", token).ConfigureAwait(false);
+        Assert.IsNotNull(lease);
+        var execution = new ProcessingExecutionContext(lease.Execution.ExecutionId, ProcessingGraphExecutionClass.Replay,
+            lease.Execution.GraphRevisionId, lease.Execution.LocalPlanIdentitySha256, false, lease.WorkId, lease.LeaseToken,
+            lease.LeaseOwner, lease.Execution.DeadlineUtc, lease.ClaimCount);
+        var graph = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().CreateRetainedGraph(lease.Configuration);
+        try
+        {
+            var result = await FrameProcessingWorker.ProcessGraphItemAsync(
+                new(lease.Configuration, lease.Submission, lease.RawCapture, lease.WorkId, lease.LeaseToken, execution), graph,
+                persistence, provider.GetRequiredService<CaptureProcessingTelemetry>(), lease.Execution.AttemptCount,
+                NullLogger.Instance, token, durableAttempt: lease.ClaimCount,
+                frozenPlanSuperseded: !lease.Revision.IsCompiledBy(graph)).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            var completed = await store.CompleteReplayAsync(lease, result, token).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, completed.Status);
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+
+        var replay = await graphs.ReadExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false);
+        Assert.IsNotNull(replay);
+        Assert.AreEqual(original.GraphRevisionId, replay.Execution.GraphRevisionId);
+        foreach (var step in new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, "associated", "fit" })
+        {
+            var liveNode = live.Nodes.Single(node => node.NodeId == step);
+            var replayed = replay.Nodes.Single(node => node.NodeId == step);
+            Assert.AreEqual("Completed", replayed.Status, step + " " + replayed.Reason);
+            Assert.HasCount(liveNode.Outputs.Count, replayed.Outputs);
+            foreach (var output in replayed.Outputs)
+            {
+                Assert.IsFalse(output.Published);
+                var expected = liveNode.Outputs.Single(item => item.Variant == output.Variant);
+                Assert.AreEqual(expected.ArtifactId, output.ArtifactId);
+                Assert.AreEqual(expected.OutputIdentitySha256, output.OutputIdentitySha256);
+                CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), output.SourceArtifactIds.ToArray());
+            }
+        }
+
+        var associationId = Assert.ContainsSingle(replay.Nodes.Single(node => node.NodeId == "associated").Outputs).ArtifactId;
+        var associationRow = await store.ReadOutputByArtifactIdAsync(associationId, token).ConfigureAwait(false);
+        Assert.IsNotNull(associationRow);
+        var association = Assert.ContainsSingle(await persistence.RestoreWindowInputsAsync([associationRow], token).ConfigureAwait(false));
+        var members = MeasuredStellarAssociationJson.Parse(association.Payload).Associations!;
+        var detectionIds = members.Associations.Select(item => item.DetectionIndex)
+            .Concat(members.UnassociatedDetections.Select(item => item.DetectionIndex)).Order().ToArray();
+        CollectionAssert.AreEqual(originalMeasurement.Sources.Detections.Select(item => item.Index).ToArray(), detectionIds);
+        var solutionId = replay.Nodes.Single(node => node.NodeId == "fit").Outputs.Single(output => output.Variant == "measured-astrometry-v1").ArtifactId;
+        var solutionRow = await store.ReadOutputByArtifactIdAsync(solutionId, token).ConfigureAwait(false);
+        Assert.IsNotNull(solutionRow);
+        var restored = Assert.ContainsSingle(await persistence.RestoreWindowInputsAsync([solutionRow], token).ConfigureAwait(false));
+        var solution = MeasuredAstrometryJson.Parse(restored.Payload);
+        Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
+        Assert.AreEqual(associationId, solution.MeasuredArtifactId);
+        var ui = MeasurementOperations(provider, graphs);
+        var reopened = await ui.GetExecutionDetailAsync(replay.Execution.ExecutionId, token).ConfigureAwait(false);
+        Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+        Assert.AreEqual(JsonSerializer.Serialize(originalMeasurement), JsonSerializer.Serialize(reopened.Value?.ExposureMeasurement?.Measurement));
     }
 
     private static async Task AssertMappedLinearAsync(ServiceProvider provider, IExposureProductReader reader,

@@ -50,7 +50,7 @@ internal sealed class CaptureExposureMeasurementReader(
                     return Unavailable(slot);
                 if (item is not null)
                     return new(null, item.AvailabilityReason ?? "measurement-unavailable");
-                if (node.CommittedOutputCount > 0)
+                if (node.Status == "Completed" || node.CommittedOutputCount > 0)
                     return new(null, "measurement-unreadable");
                 return run.Status is ProcessingGraphExecutionStatus.Pending or ProcessingGraphExecutionStatus.Running &&
                     node.Status is "Pending" or "Running" or "RetryableFailure"
@@ -119,11 +119,7 @@ internal sealed class CaptureExposureMeasurementReader(
         if (!string.Equals(RigProjectionContextFactory.CreateProfileHashSha256(rig), evidence.Manifest.Descriptor.Profiles.Rig.Sha256,
                 StringComparison.OrdinalIgnoreCase) || layout != evidence.Manifest.Descriptor.Layout)
             throw new InvalidDataException("The measurement geometry differs from the admitted rig or readout.");
-        var native = RigProjectionContextFactory.CreateNative(rig);
-        ProjectionContext? aperture = layout.Readout is { } readout
-            ? readout.NativeWidth == native.WidthPixels && readout.NativeHeight == native.HeightPixels
-                ? RigProjectionContextFactory.CreateReadoutView(native, readout) : null
-            : native.WidthPixels == layout.Width && native.HeightPixels == layout.Height ? native : null;
+        var aperture = RigProjectionContextFactory.CreateDeliveredView(rig, layout);
         return (aperture, rig.Sensor.PixelSizeMicrons > 0 ? rig.Sensor.PixelSizeMicrons : null);
     }
 }

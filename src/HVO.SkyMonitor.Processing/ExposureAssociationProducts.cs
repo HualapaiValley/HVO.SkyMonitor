@@ -37,20 +37,12 @@ public static class ExposureAssociationProducts
         ArgumentException.ThrowIfNullOrWhiteSpace(variant);
         cancellationToken.ThrowIfCancellationRequested();
         var source = expected.Raw;
-        var scene = ProjectedSceneJson.Parse(sceneArtifact.Payload).Scene;
         if (raw.Role != FrameArtifactRole.Raw || raw.CaptureId != source.CaptureId ||
             raw.ArtifactId != source.ArtifactId || !ExposureMeasurementProducts.Same(raw.DescriptorIdentitySha256, source.DescriptorSha256) ||
-            raw.Layout != source.Layout || !ExposureMeasurementProducts.Same(raw.RecipeIdentitySha256, source.RecipeSha256) ||
-            sceneArtifact is not { Role: FrameArtifactRole.Metadata, ProductKind: ProcessingProductKind.Metadata } ||
-            sceneArtifact.MediaType != StructuredProcessingProductContracts.ProjectedSceneMediaType ||
-            sceneArtifact.SourceArtifactIds is not { Count: 1 } sceneSources || sceneSources[0] != source.ArtifactId ||
-            sceneArtifact.RecipeDescriptor is not { Name: BuiltInProcessingRecipes.ProjectedScene } sceneProducer ||
-            !ExposureMeasurementProducts.Same(ProcessingIdentity.CreateRecipeIdentity(sceneProducer).IdentitySha256,
-                sceneArtifact.RecipeIdentitySha256) ||
-            sceneArtifact.CaptureId != source.CaptureId || scene is null || sceneArtifact.SchemaVersion != scene.SchemaVersion ||
-            !ExposureMeasurementProducts.Same(sceneArtifact.ContentIdentitySha256, scene.SceneIdentitySha256))
+            raw.Layout != source.Layout || !ExposureMeasurementProducts.Same(raw.RecipeIdentitySha256, source.RecipeSha256))
             return ProcessingOutcome.TerminalFailure("association.exposure-or-scene-binding-mismatch");
 
+        var scene = ExposureCatalogPredictionProducts.Read(sceneArtifact, raw, expected);
         var measured = ExposureMeasurementProducts.Read(retained, expected).Sources;
         if (measured.Status == ExposureMeasurementStatus.Unavailable ||
             measured.Status == ExposureMeasurementStatus.Unsuitable && measured.Reason != "all-candidates-rejected")
@@ -122,6 +114,7 @@ public static class ExposureAssociationProducts
             !ExposureMeasurementProducts.Same(evidence.AssociationIdentitySha256, association.ContentIdentitySha256))
             throw new InvalidDataException("The association differs from the retained exposure inputs.");
 
+        _ = ExposureCatalogPredictionProducts.Read(prediction, raw, measurement.Input);
         var binding = ProcessingRecipeSupport.ParseOptions<AssociationBinding>(association.RecipeDescriptor!.Options);
         if (!ExposureMeasurementProducts.Same(binding.MeasurementIdentitySha256, retained.ContentIdentitySha256) ||
             !ExposureMeasurementProducts.Same(binding.SceneIdentitySha256, prediction.ContentIdentitySha256) ||

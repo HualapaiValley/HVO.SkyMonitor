@@ -503,10 +503,13 @@ internal sealed partial class SqliteCaptureProcessingStore
                       AND EXISTS (SELECT 1 FROM processing_execution_outputs association
                           JOIN processing_executions execution ON execution.execution_id = association.execution_id
                           WHERE association.output_identity_sha256 = output.output_identity_sha256
-                            AND execution.execution_class = 'Live' AND execution.capture_id = output.capture_id)
+                            AND association.node_id = output.node_id
+                            AND execution.execution_class = 'Live' AND execution.capture_id = output.capture_id
+                            AND execution.primary_artifact_id = $raw)
                     ORDER BY output.output_identity_sha256 LIMIT 4;
                     """;
                 satellite.Parameters.AddWithValue("$capture", source.RawCapture.Manifest.Descriptor.Capture.CaptureId.ToString("N"));
+                satellite.Parameters.AddWithValue("$raw", source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId.ToString("N"));
                 satellite.Parameters.AddWithValue("$node", node.NodeId);
                 var inputSchema = astrometry ? MeasuredAstrometryContextV1.CurrentSchemaVersion : CaptureSatelliteProducts.InputSchema;
                 satellite.Parameters.AddWithValue("$input", inputSchema);
@@ -599,7 +602,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                   FROM processing_execution_outputs association
                   JOIN processing_executions execution ON execution.execution_id = association.execution_id
                   WHERE association.output_identity_sha256 = output.output_identity_sha256
+                    AND association.node_id = output.node_id
                     AND execution.capture_id = output.capture_id
+                    AND execution.primary_artifact_id = $raw
                     AND execution.execution_class = 'Live')
             ORDER BY output.output_identity_sha256;
             """;

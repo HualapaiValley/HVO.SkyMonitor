@@ -34,8 +34,9 @@ internal sealed class ExposureStellarAssociationCaptureProcessingStep(
         ArgumentNullException.ThrowIfNull(context);
         var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Association requires admitted raw.");
         var dependencies = context.GetDependencyProducts();
-        var scene = dependencies.SingleOrDefault(product => ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
-        if (scene is null || ProjectedSceneJson.Parse(scene.Payload).Scene?.Kind != ProjectedSceneKind.Predicted)
+        var scene = dependencies.SingleOrDefault(product => product.Variant == ExposureCatalogPredictionProducts.Variant &&
+            ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
+        if (scene is null)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("association.independent-prediction-unavailable"));
             return;
@@ -48,6 +49,11 @@ internal sealed class ExposureStellarAssociationCaptureProcessingStep(
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor) with { Payload = ReadOnlyMemory<byte>.Empty };
         var predicted = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, scene);
+        if (context.GetDependencyProducerStepId(predicted.ArtifactId) != ExposureCatalogPredictionProducts.StepAlias)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure("association.independent-prediction-producer-mismatch"));
+            return;
+        }
         var outcome = ExposureAssociationProducts.Associate(raw, retained, measurement.Input, predicted, OutputVariant,
             new(Options.Association, Options.LabelPolicy), cancellationToken);
         context.RecordConsumedArtifacts([context.Artifacts.Raw], [product, scene]);

@@ -543,31 +543,7 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var output in outputs)
         {
             var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
-            var observationStartedUtc = output.Descriptor?.Timing.ExposureStartedUtc;
-            DateTimeOffset? observationEndedUtc = observationStartedUtc is { } startedUtc && output.Descriptor is { } descriptor
-                ? ProcessingArtifact.ResolveObservationEndedUtc(
-                    startedUtc, descriptor.Timing.ExposureEndedUtc, restored.Product.TotalIntegration)
-                : null;
-            artifacts.Add(new ProcessingArtifact(
-                restored.ArtifactId,
-                restored.Product.Role,
-                restored.Product.Variant,
-                restored.Product.Recipe.IdentitySha256,
-                restored.Product.MediaType,
-                restored.Product.Layout,
-                restored.Product.Payload,
-                restored.CreatedUtc,
-                restored.Product.TotalIntegration,
-                restored.Product.Compatibility,
-                CaptureSequence: output.CaptureSequence,
-                ObservationStartedUtc: observationStartedUtc,
-                ObservationEndedUtc: observationEndedUtc)
-            {
-                ProductKind = restored.Product.Kind,
-                SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
-                RecipeDescriptor = restored.Product.Recipe.Descriptor
-            });
+            artifacts.Add(CreateProcessingArtifact(output, restored));
         }
         return artifacts;
     }

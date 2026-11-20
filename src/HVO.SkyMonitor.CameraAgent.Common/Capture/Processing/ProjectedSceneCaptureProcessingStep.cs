@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -19,8 +18,7 @@ internal class ProjectedSceneCaptureProcessingStep(
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
 {
-    internal const string ExposurePredictionAlias = "ExposureCatalogPrediction";
-    internal const string ExposurePredictionVariant = "exposure-catalog-prediction-v1";
+    internal const string ExposurePredictionAlias = ExposureCatalogPredictionProducts.StepAlias;
     private const string StageInputName = "virtual-render-scene";
     private const string FrozenInputName = "frozen-projected-scene";
     protected virtual bool IsExposurePrediction => false;
@@ -28,7 +26,7 @@ internal class ProjectedSceneCaptureProcessingStep(
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
-    public string OutputVariant => IsExposurePrediction ? ExposurePredictionVariant : Options.OutputVariant;
+    public string OutputVariant => IsExposurePrediction ? ExposureCatalogPredictionProducts.Variant : Options.OutputVariant;
     // The producer declaration keeps its v1 family root; expanded consumer capabilities can change plan identity.
     // Actual products carry v3 for a curated collection, v2 for resolved footprints, otherwise v1.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
@@ -136,7 +134,6 @@ internal class ProjectedSceneCaptureProcessingStep(
             return;
         }
 
-        var payload = ProjectedSceneJson.Serialize(scene);
         var raw = new ProcessingArtifact(
             descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,
             ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
@@ -150,22 +147,13 @@ internal class ProjectedSceneCaptureProcessingStep(
             CaptureId = descriptor.Capture.CaptureId,
             DescriptorIdentitySha256 = descriptorSha256
         };
-        var auxiliary = new ProcessingAuxiliaryInput(
-            "scene", ProcessingAuxiliaryInputKind.CanonicalJson, SchemaVersion: scene.SchemaVersion,
-            IdentitySha256: scene.SceneIdentitySha256, Payload: payload)
-        {
-            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
-        };
-        var outcome = await context.ExecuteAsync(adapter, new ProcessingExecutionRequest(
-            BuiltInProcessingRecipes.ProjectedScene,
-            JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
-            ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], OutputVariant,
-            AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
-        if (!IsExposurePrediction && context.IsReplayExecution && provenance?.RequiresProjectedScene == true &&
+        var request = ExposureCatalogPredictionProducts.Request(raw, scene) with { OutputVariant = OutputVariant };
+        var outcome = await context.ExecuteAsync(adapter, request, cancellationToken).ConfigureAwait(false);
+        if (context.IsReplayExecution && (IsExposurePrediction || provenance?.RequiresProjectedScene == true) &&
             outcome.Products.Any(product => !context.FrozenAuxiliaryInputs.Any(input =>
                 input.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))))
         {
-            // Compact captures have one immutable geometry artifact, including across replay/configuration changes.
+            // The frozen geometry artifact is immutable across replay and configuration changes.
             context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
             return;
         }

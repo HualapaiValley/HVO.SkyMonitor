@@ -77,14 +77,7 @@ internal sealed class CenteredExposureSceneProvider(
         if (locations is null) return null;
         var site = locations.Resolve(facts.Location, timing.ExposureStartedUtc);
         if (!site.IsEffectiveAt(effectiveUtc)) return null;
-        var native = RigProjectionContextFactory.CreateNative(facts.Rig);
-        if (facts.Layout.Readout is { } geometry &&
-            (geometry.NativeWidth != native.WidthPixels || geometry.NativeHeight != native.HeightPixels))
-            return null;
-        var projection = facts.Layout.Readout is { } readout
-            ? RigProjectionContextFactory.CreateReadoutView(native, readout)
-            : RigProjectionContextFactory.Create(facts.Rig);
-        if (projection.WidthPixels != facts.Layout.Width || projection.HeightPixels != facts.Layout.Height)
+        if (RigProjectionContextFactory.CreateDeliveredView(facts.Rig, facts.Layout) is not { } projection)
             return null;
 
         var request = new VisibleSceneRequest(virtualPresentationEpoch ?? effectiveUtc,

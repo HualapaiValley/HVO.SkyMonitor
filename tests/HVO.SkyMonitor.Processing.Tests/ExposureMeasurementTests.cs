@@ -390,7 +390,8 @@ public sealed class ExposureMeasurementTests
     [TestMethod]
     public async Task AssociationFittingAndRegistrationReuseTheRetainedPositionsWithoutPixels()
     {
-        var scene = await MeasuredStellarAssociationFixtures.StarFieldAsync(("catalog:zenith", 0, 0, 2));
+        var fixtureScene = await MeasuredStellarAssociationFixtures.StarFieldAsync(("catalog:zenith", 0, 0, 2));
+        var scene = WithProjection(fixtureScene, fixtureScene.Projection with { AlgorithmVersion = fixtureScene.Projection.CalibrationVersion });
         var predicted = MeasuredStellarAssociationFixtures.Pixel(scene, "catalog:zenith");
         var matched = new PixelPoint(predicted.X + 0.2, predicted.Y + 0.3);
         var unassociated = new PixelPoint(61.25, 86.4);
@@ -401,7 +402,11 @@ public sealed class ExposureMeasurementTests
             Gaussian(x, y, matched, 1.35, 2500) + Gaussian(x, y, unassociated, 1.35, 1800))),
             scene.Source.CaptureId) with { ArtifactId = scene.Source.ArtifactId, DescriptorIdentitySha256 = scene.Source.ArtifactIdentitySha256 };
         var linear = await Normalize(raw);
-        var input = Bind(raw, linear);
+        var input = Bind(raw, linear) with
+        {
+            ApertureProjection = ProjectedSceneJson.ToProjectionContext(scene.Projection),
+            OpticalCalibrationVersion = scene.Projection.CalibrationVersion
+        };
         var artifact = ProductArtifact(await Produce(ExposureMeasurementProducts.Request(input, raw, linear)), raw);
         var associations = ExposureMeasurementConsumers.Associate(artifact, input, scene, new(), new());
         var association = Assert.ContainsSingle(associations.Entries.Associations);
@@ -417,6 +422,41 @@ public sealed class ExposureMeasurementTests
         AssertNear(registration, unassociated, 0.15);
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementConsumers.AstrometryDetections(artifact, input,
             associations with { MeasurementArtifactId = Guid.NewGuid() }));
+
+        var request = ExposureCatalogPredictionProducts.Request(raw, scene);
+        var prediction = ProductArtifact(await Produce(request), raw);
+        var canonical = ExposureAssociationProducts.Associate(raw, artifact, input, prediction, ExposureAssociationProducts.Variant);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, canonical.Status, canonical.ReasonCode);
+        var retained = ProductArtifact(Assert.ContainsSingle(canonical.Products), raw);
+        var measured = ExposureMeasurementProducts.Read(artifact, input);
+        var associationMember = Assert.ContainsSingle(MeasuredStellarAssociationJson.Parse(retained.Payload).Associations!.Associations);
+        Assert.AreEqual(association.DetectionIndex, associationMember.DetectionIndex);
+        ExposureAssociationProducts.VerifyMeasurement(retained, raw, artifact, measured, prediction);
+
+        var display = ProductArtifact(await Produce(request with { OutputVariant = "projected-scene-v1" }), raw);
+        Reject(display);
+        var unrelatedId = prediction with { ArtifactId = Guid.NewGuid() };
+        Reject(unrelatedId);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureAssociationProducts.VerifyMeasurement(retained, raw, artifact, measured, unrelatedId));
+        var geometry = scene.Projection;
+        foreach (var projection in new[]
+        {
+            geometry with { HorizontalFlip = !geometry.HorizontalFlip },
+            geometry with { PrincipalPointX = geometry.PrincipalPointX + 1, PrincipalPointY = geometry.PrincipalPointY - 1 },
+            geometry with { FocalLengthXPixels = geometry.FocalLengthXPixels + 10 },
+            geometry with { RollDegrees = geometry.RollDegrees + 3 },
+            geometry with { EnforceSensorBounds = !geometry.EnforceSensorBounds },
+            geometry with { AlgorithmVersion = "other-projection" }
+        })
+        {
+            var altered = WithProjection(scene, projection);
+            var substitute = ProductArtifact(await Produce(ExposureCatalogPredictionProducts.Request(raw, altered)), raw);
+            Assert.AreNotEqual(prediction.ArtifactId, substitute.ArtifactId);
+            Reject(substitute);
+        }
+
+        void Reject(ProcessingArtifact candidate) => Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureAssociationProducts.Associate(raw, artifact, input, candidate, ExposureAssociationProducts.Variant));
     }
 
     [TestMethod]
@@ -442,21 +482,15 @@ public sealed class ExposureMeasurementTests
                 Gaussian(x, y, picked.Pixel, 1.35, 4500)))
         };
         var linear = await Normalize(raw);
-        var expected = Bind(raw, linear);
+        var prediction = WithProjection(fixture.Scene, fixture.Scene.Projection with { AlgorithmVersion = fixture.Scene.Projection.CalibrationVersion });
+        var expected = Bind(raw, linear) with
+        {
+            ApertureProjection = ProjectedSceneJson.ToProjectionContext(prediction.Projection),
+            OpticalCalibrationVersion = prediction.Projection.CalibrationVersion
+        };
         var product = await Produce(ExposureMeasurementProducts.Request(expected, raw, linear));
         var retained = ProductArtifact(product, raw);
-        var sceneRecipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene,
-            "1.0.0", "projected-scene-v1", JsonSerializer.SerializeToElement(new { }));
-        var scene = fixture.Measured with
-        {
-            ArtifactId = Guid.NewGuid(),
-            Payload = ProjectedSceneJson.Serialize(fixture.Scene),
-            MediaType = StructuredProcessingProductContracts.ProjectedSceneMediaType,
-            RecipeDescriptor = sceneRecipe,
-            RecipeIdentitySha256 = ProcessingIdentity.CreateRecipeIdentity(sceneRecipe).IdentitySha256,
-            SchemaVersion = fixture.Scene.SchemaVersion,
-            ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
-        };
+        var scene = ProductArtifact(await Produce(ExposureCatalogPredictionProducts.Request(raw, prediction)), raw);
         var matching = ExposureAssociationProducts.Associate(raw with { Payload = default }, retained, expected,
             scene, "exposure-stellar-associations-v1");
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, matching.Status, matching.ReasonCode);
@@ -482,7 +516,7 @@ public sealed class ExposureMeasurementTests
             }
         };
 
-        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(fixture.Request(context, raw, associated));
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync((fixture with { Scene = prediction }).Request(context, raw, associated));
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
         var solution = MeasuredAstrometryJson.Parse(outcome.Products.Single().Payload);
         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
@@ -490,6 +524,24 @@ public sealed class ExposureMeasurementTests
         var reread = ExposureMeasurementProducts.Read(retained, expected);
         Assert.HasCount(1, reread.Sources.Detections);
         Assert.AreEqual(1, reread.Hfd.ValidCount);
+    }
+
+    private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)
+    {
+        var projector = ProjectorFactory.Create(ProjectedSceneJson.ToProjectionContext(projection));
+        var basis = CameraBasis.Create(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees,
+            projection.RollDegrees, projection.HorizontalFlip);
+        var projected = scene with
+        {
+            Projection = projection,
+            Objects = scene.Objects.Select(item => item with
+            {
+                Pixel = projector.Project(item.ApparentHorizontal)!.Value,
+                CameraDirection = basis.ToCamera(CameraBasis.FromHorizontal(item.ApparentHorizontal)),
+                ProjectionVersion = projection.AlgorithmVersion
+            }).ToArray()
+        };
+        return projected with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(projected) };
     }
 
     [TestMethod]
