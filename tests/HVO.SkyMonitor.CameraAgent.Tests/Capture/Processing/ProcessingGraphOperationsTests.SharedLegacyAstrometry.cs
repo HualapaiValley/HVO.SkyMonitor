@@ -251,9 +251,16 @@ public sealed partial class ProcessingGraphOperationsTests
             var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
             Assert.AreEqual(liveId, selected.State.RevisionId);
             CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
-            Assert.AreEqual(activeId, (await reopened.GetRegistryAsync(token).ConfigureAwait(false)).ActiveRevisionId);
+            var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
             if (previousId is not null)
             {
+                Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, selected.State.Name);
+                await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                    await reopened.RetireRevisionAsync(liveId, reopenedRegistry.StateVersion,
+                        "retire-effective-shared-fit", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                Assert.AreEqual(reopenedRegistry.StateVersion,
+                    (await reopened.GetRegistryAsync(token).ConfigureAwait(false)).StateVersion);
                 var old = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: true, token, previousId).ConfigureAwait(false);
                 Assert.AreEqual(previousId, old.State.RevisionId);
                 CollectionAssert.AreEqual(new[] { "projected-scene", measurementId },

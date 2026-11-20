@@ -22,8 +22,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     IDisposable
 {
     private const string ConfiguredGraphName = "configured-basic";
-    private const string VirtualSkySceneCompatibilityGraphName = "virtualsky-scene-compatibility";
-    private const string VirtualSkySharedFitCompatibilityGraphName = "virtualsky-shared-fit-compatibility";
+    internal const string VirtualSkySceneCompatibilityGraphName = "virtualsky-scene-compatibility";
+    internal const string VirtualSkySharedFitCompatibilityGraphName = "virtualsky-shared-fit-compatibility";
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
         ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
@@ -52,6 +52,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private string? _configuredPipelineIdentity;
     private bool _configuredPipelineRetained;
     private SupersessionCheck? _supersessionCheck;
+    private SceneCompatibilityCandidate? _sceneCompatibilityCandidate;
     private string? _configuredModuleType;
 
     public ProcessingGraphOperationsCoordinator(
@@ -171,25 +172,57 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             // Bind new exposures to a validated successor. Existing raw manifests keep their original revision,
             // and the registry's selected revision retains its identity and control-plane history.
-            var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(revision.Pipeline, legacyScene);
-            // A previously stored successor remains available to its bound captures. New captures with a
-            // shared fit need a distinct successor so an earlier migration cannot silently keep the broken wiring.
-            var compatibilityGraphName = sharedFit is null ? VirtualSkySceneCompatibilityGraphName : VirtualSkySharedFitCompatibilityGraphName;
-            var migratedId = await _store.ReadRevisionIdByNameAsync(
-                compatibilityGraphName, revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
-            if (migratedId is not null)
-                return await _store.ReadRevisionAsync(migratedId, cancellationToken).ConfigureAwait(false);
-            var migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(revision, legacyScene, sharedFit) };
-            var successor = CreateRevisionSnapshot(migrated,
-                compatibilityGraphName, revision.State.RevisionId, _timeProvider.GetUtcNow(),
-                ProcessingGraphRevisionLifecycle.Validated, compilation: CaptureProcessingGraphCompilation.ActiveProfile);
-            EnsureLiveEligible(successor);
-            await _store.InsertSceneCompatibilityRevisionAsync(successor, cancellationToken).ConfigureAwait(false);
-            return successor;
+            return await ResolveSceneCompatibilityRevisionAsync(configuration, revision, legacyScene, cancellationToken)
+                .ConfigureAwait(false);
         }
         // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
         // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;
+    }
+
+    private async ValueTask<ProcessingGraphRevisionSnapshot> ResolveSceneCompatibilityRevisionAsync(
+        CameraModuleConfig configuration,
+        ProcessingGraphRevisionSnapshot source,
+        CaptureProcessingStepConfig legacyScene,
+        CancellationToken cancellationToken)
+    {
+        var sourceId = source.State.RevisionId;
+        var cached = Volatile.Read(ref _sceneCompatibilityCandidate);
+        var preferred = cached is not null && cached.SourceId == sourceId && ReferenceEquals(cached.Configuration, configuration)
+            ? cached : null;
+        CameraModuleConfig? migrated = null;
+        var compatibilityGraphName = VirtualSkySceneCompatibilityGraphName;
+        for (var generation = preferred?.Generation ?? 0; ; generation++)
+        {
+            if (preferred is null)
+            {
+                if (migrated is null)
+                {
+                    var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(source.Pipeline, legacyScene);
+                    // The earlier scene successor remains bound to its historical captures.
+                    if (sharedFit is not null)
+                        compatibilityGraphName = VirtualSkySharedFitCompatibilityGraphName;
+                    migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(source, legacyScene, sharedFit) };
+                }
+                var name = generation == 0 ? sourceId : FormattableString.Invariant($"{sourceId}-{generation}");
+                var expected = CreateRevisionSnapshot(migrated, compatibilityGraphName,
+                    name, _timeProvider.GetUtcNow(), ProcessingGraphRevisionLifecycle.Validated,
+                    compilation: CaptureProcessingGraphCompilation.ActiveProfile);
+                EnsureLiveEligible(expected);
+                preferred = new(sourceId, configuration, generation, expected);
+            }
+            // Cache the compiled expectation. SQLite still verifies identity and lifecycle on every selection.
+            var selected = await _store.TryEnsureSceneCompatibilityRevisionAsync(preferred.Expected, cancellationToken)
+                .ConfigureAwait(false);
+            if (selected is not null)
+            {
+                Volatile.Write(ref _sceneCompatibilityCandidate, preferred);
+                return selected;
+            }
+            // An occupied name may belong to a retired revision or different immutable content. Keep its history
+            // and use the next deterministic name so a restart can discover the same replacement.
+            preferred = null;
+        }
     }
 
     internal async ValueTask EnsureLiveStoragePolicyAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
@@ -1075,6 +1108,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string RevisionId,
         CameraModuleConfig BaseConfiguration,
         ProcessingActiveRevisionSupersession? Result);
+
+    private sealed record SceneCompatibilityCandidate(
+        string SourceId,
+        CameraModuleConfig Configuration,
+        int Generation,
+        ProcessingGraphRevisionSnapshot Expected);
 
     private sealed class DisposableProcessingGraph(CaptureProcessingGraph value) : IDisposable
     {

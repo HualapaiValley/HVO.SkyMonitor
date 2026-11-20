@@ -15,17 +15,53 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     private static readonly JsonSerializerOptions ExecutionSerializerOptions = CreateExecutionSerializerOptions();
 
-    internal async ValueTask InsertSceneCompatibilityRevisionAsync(
-        ProcessingGraphRevisionSnapshot revision, CancellationToken cancellationToken)
+    internal async ValueTask<ProcessingGraphRevisionSnapshot?> TryEnsureSceneCompatibilityRevisionAsync(
+        ProcessingGraphRevisionSnapshot expected, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var existing = await ReadSceneCompatibilityRevisionAsync(connection, null, expected, cancellationToken)
+            .ConfigureAwait(false);
+        if (existing.Occupied) return existing.Eligible;
+
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
-        await InsertRevisionAsync(connection, transaction, revision, ProcessingGraphRevisionLifecycle.Validated, cancellationToken)
+        existing = await ReadSceneCompatibilityRevisionAsync(connection, transaction, expected, cancellationToken)
             .ConfigureAwait(false);
+        if (!existing.Occupied)
+        {
+            await InsertRevisionAsync(connection, transaction, expected, ProcessingGraphRevisionLifecycle.Validated, cancellationToken)
+                .ConfigureAwait(false);
+            existing = (true, await ReadRevisionAsync(connection, transaction, expected.State.RevisionId, cancellationToken)
+                .ConfigureAwait(false));
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return existing.Eligible;
+    }
+
+    private static async ValueTask<(bool Occupied, ProcessingGraphRevisionSnapshot? Eligible)> ReadSceneCompatibilityRevisionAsync(
+        SqliteConnection connection,
+        SqliteTransaction? transaction,
+        ProcessingGraphRevisionSnapshot expected,
+        CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = RevisionSelectSql + " WHERE graph_name = $name AND revision_name = $revision;";
+        command.Parameters.AddWithValue("$name", expected.State.Name);
+        command.Parameters.AddWithValue("$revision", expected.State.Revision);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return (false, null);
+        var state = ReadRevisionState(reader);
+        if (state.RevisionId != expected.State.RevisionId ||
+            state.Lifecycle is not (ProcessingGraphRevisionLifecycle.Validated or ProcessingGraphRevisionLifecycle.Active) ||
+            state.ValidatedUtc is null || state.RetiredUtc is not null)
+        {
+            return (true, null);
+        }
+        var stored = await ReadRevisionSnapshotAsync(reader, state, cancellationToken).ConfigureAwait(false);
+        return (true, HasSameRevisionContent(stored, expected) ? stored : null);
     }
 
     internal async ValueTask<ProcessingGraphRegistryState> UpsertConfiguredBasicRevisionAsync(
@@ -434,6 +470,15 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (revision.State.Lifecycle == ProcessingGraphRevisionLifecycle.Retired)
         {
             throw new ProcessingGraphStoreConflictException("The processing graph revision is already retired.");
+        }
+        // The registry names the source revision. Both the original and replacement names encode that source.
+        if (revision.State.Name is (ProcessingGraphOperationsCoordinator.VirtualSkySceneCompatibilityGraphName or
+                ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName) &&
+            (revision.State.Revision == state.ActiveRevisionId ||
+             revision.State.Revision.StartsWith(state.ActiveRevisionId + "-", StringComparison.Ordinal)))
+        {
+            throw new ProcessingGraphStoreConflictException(
+                "A compatibility revision for the selected processing graph cannot be retired.");
         }
         if (await IsAcceptedDeliveredRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false))
         {
@@ -1366,21 +1411,24 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
         var stored = await ReadRevisionAsync(
             connection, transaction, revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(stored.State.Name, revision.State.Name, StringComparison.Ordinal) ||
-            !string.Equals(stored.State.Revision, revision.State.Revision, StringComparison.Ordinal) ||
-            !string.Equals(stored.State.DefinitionIdentitySha256, revision.State.DefinitionIdentitySha256, StringComparison.Ordinal) ||
-            !string.Equals(stored.State.SharedPlanIdentitySha256, revision.State.SharedPlanIdentitySha256, StringComparison.Ordinal) ||
-            !string.Equals(stored.State.LocalPlanIdentitySha256, revision.State.LocalPlanIdentitySha256, StringComparison.Ordinal) ||
-            !stored.PipelineJson.AsSpan().SequenceEqual(revision.PipelineJson) ||
-            !stored.DefinitionJson.AsSpan().SequenceEqual(revision.DefinitionJson) ||
-            !stored.FrozenPlanJson.AsSpan().SequenceEqual(revision.FrozenPlanJson) ||
-            !stored.Nodes.SequenceEqual(revision.Nodes))
+        if (!HasSameRevisionContent(stored, revision))
         {
             throw new ProcessingGraphStoreConflictException(
                 "The processing graph revision identity has different immutable content.");
         }
         return inserted;
     }
+
+    private static bool HasSameRevisionContent(ProcessingGraphRevisionSnapshot stored, ProcessingGraphRevisionSnapshot expected)
+        => stored.State.Name == expected.State.Name &&
+           stored.State.Revision == expected.State.Revision &&
+           stored.State.DefinitionIdentitySha256 == expected.State.DefinitionIdentitySha256 &&
+           stored.State.SharedPlanIdentitySha256 == expected.State.SharedPlanIdentitySha256 &&
+           stored.State.LocalPlanIdentitySha256 == expected.State.LocalPlanIdentitySha256 &&
+           stored.PipelineJson.AsSpan().SequenceEqual(expected.PipelineJson) &&
+           stored.DefinitionJson.AsSpan().SequenceEqual(expected.DefinitionJson) &&
+           stored.FrozenPlanJson.AsSpan().SequenceEqual(expected.FrozenPlanJson) &&
+           stored.Nodes.SequenceEqual(expected.Nodes);
 
     private static async ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionAsync(
         SqliteConnection connection,
@@ -1397,7 +1445,14 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             throw new KeyNotFoundException("The processing graph revision was not found.");
         }
-        var state = ReadRevisionState(reader);
+        return await ReadRevisionSnapshotAsync(reader, ReadRevisionState(reader), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<ProcessingGraphRevisionSnapshot> ReadRevisionSnapshotAsync(
+        SqliteDataReader reader,
+        ProcessingGraphRevisionState state,
+        CancellationToken cancellationToken)
+    {
         var pipelineJson = await reader.GetFieldValueAsync<byte[]>(11, cancellationToken).ConfigureAwait(false);
         var definitionJson = await reader.GetFieldValueAsync<byte[]>(12, cancellationToken).ConfigureAwait(false);
         var frozenPlanJson = await reader.GetFieldValueAsync<byte[]>(13, cancellationToken).ConfigureAwait(false);
