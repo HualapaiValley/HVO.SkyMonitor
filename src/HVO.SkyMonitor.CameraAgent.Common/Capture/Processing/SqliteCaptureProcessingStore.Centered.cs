@@ -155,9 +155,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             return (null, null, LinearExposureDisposition.Pending, null);
 
         var executionStatus = fallback.GetString(0);
-        var executionReason = fallback.IsDBNull(1) ? null : fallback.GetString(1);
-        var nodeStatus = fallback.IsDBNull(2) ? null : fallback.GetString(2);
-        var nodeReason = fallback.IsDBNull(3) ? null : fallback.GetString(3);
+        var executionReason = await fallback.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : fallback.GetString(1);
+        var nodeStatus = await fallback.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) ? null : fallback.GetString(2);
+        var nodeReason = await fallback.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) ? null : fallback.GetString(3);
         return (executionStatus, nodeStatus) switch
         {
             ("Expired", _) => (null, null, LinearExposureDisposition.Expired, executionReason ?? "linear.execution-expired"),
