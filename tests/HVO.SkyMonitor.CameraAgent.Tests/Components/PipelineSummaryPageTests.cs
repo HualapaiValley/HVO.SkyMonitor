@@ -134,11 +134,16 @@ public sealed class PipelineSummaryPageTests
             Assert.AreEqual(stagedResponse.Pending.Plan.EffectiveSha256,
                 JsonSerializer.Deserialize<CaptureProcessingPlanPreview>(preview.Body, json)!.EffectiveSha256);
 
-            var disabled = basis.Profile with { ProcessingSteps = [.. basis.Profile.ProcessingSteps,
-                new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, DependsOn: [RawInput, "linear"], Enabled: false)] };
+            var disabled = basis.Profile with
+            {
+                ProcessingSteps = [.. basis.Profile.ProcessingSteps,
+                new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, DependsOn: [RawInput, "linear"], Enabled: false)]
+            };
             var rejected = await invoke(host, "StageCameraAgentSchedule", "POST", new
             {
-                Profile = disabled, BasisRevisionId = basis.RevisionId, ExpectedVersion = pending.Version
+                Profile = disabled,
+                BasisRevisionId = basis.RevisionId,
+                ExpectedVersion = pending.Version
             }, null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(422, rejected.Status, rejected.Body);
             var unchanged = await runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);

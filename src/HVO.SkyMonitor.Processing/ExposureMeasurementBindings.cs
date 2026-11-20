@@ -14,8 +14,11 @@ public static class ExposureMeasurementBindings
     {
         ArgumentNullException.ThrowIfNull(settled);
         var exposure = settled.Exposure;
-        var unconfigured = settled is { Disposition: LinearExposureDisposition.Unavailable, Revision: null,
-            Product: null, Provenance: null, Reason: "linear.no-configured-step" };
+        var unconfigured = settled is
+        {
+            Disposition: LinearExposureDisposition.Unavailable, Revision: null,
+            Product: null, Provenance: null, Reason: "linear.no-configured-step"
+        };
         if (exposure is null || (!unconfigured && settled.Revision is null or <= 0) || !exposure.Raw.Validate().IsValid ||
             exposure.Raw.Artifact.Role != FrameArtifactRole.Raw ||
             exposure.Key.CaptureId != exposure.Raw.Capture.CaptureId ||

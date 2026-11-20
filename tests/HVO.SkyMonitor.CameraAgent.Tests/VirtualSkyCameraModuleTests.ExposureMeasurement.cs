@@ -117,7 +117,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 DeploymentLocation = location,
                 Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
                 {
-                    seed = 1920, fixedSequenceStartUtc = now, illuminationMode = "ControlledNight",
+                    seed = 1920,
+                    fixedSequenceStartUtc = now,
+                    illuminationMode = "ControlledNight",
                     asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
                     syntheticCalibration = references,
                     backgroundElectronsPerSecond = signal == "clipped" ? 1_000_000d : (double?)null

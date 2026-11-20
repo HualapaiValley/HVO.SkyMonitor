@@ -49,7 +49,8 @@ public sealed class ProcessingExecutionPagesTests
         {
             Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(
                 Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)),
-                "shared", "local", [node]) { ExposureMeasurement = new(measurement, null) }
+                "shared", "local", [node])
+            { ExposureMeasurement = new(measurement, null) }
         });
         var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
         cut.WaitForElement("section[aria-label='Exposure measurements']");

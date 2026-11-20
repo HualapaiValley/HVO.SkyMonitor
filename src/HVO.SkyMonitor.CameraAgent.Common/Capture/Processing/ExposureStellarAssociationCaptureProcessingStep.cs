@@ -47,7 +47,8 @@ internal sealed class ExposureStellarAssociationCaptureProcessingStep(
             ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), cancellationToken).ConfigureAwait(false);
 
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
-            descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor) with { Payload = ReadOnlyMemory<byte>.Empty };
+            descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor) with
+        { Payload = ReadOnlyMemory<byte>.Empty };
         var predicted = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, scene);
         if (context.GetDependencyProducerStepId(predicted.ArtifactId) != ExposureCatalogPredictionProducts.StepAlias)
         {

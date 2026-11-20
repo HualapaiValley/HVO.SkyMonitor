@@ -152,11 +152,11 @@ public sealed class ExposureMeasurementTests
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained,
             input with { Raw = input.Raw with { DescriptorSha256 = new string('B', 64) } }));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained with
-            { ContentIdentitySha256 = new string('A', 64) }, input));
+        { ContentIdentitySha256 = new string('A', 64) }, input));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained with
-            { SourceArtifactIds = [raw.ArtifactId] }, input));
+        { SourceArtifactIds = [raw.ArtifactId] }, input));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained with
-            { CaptureId = Guid.NewGuid() }, input));
+        { CaptureId = Guid.NewGuid() }, input));
 
         var ambiguous = await executor.ExecuteAsync(request with { Inputs = [raw, linear with { Payload = new byte[linear.Payload.Length] }] });
         Assert.AreEqual("measurement.linear-binding-mismatch", ambiguous.ReasonCode);
@@ -201,7 +201,8 @@ public sealed class ExposureMeasurementTests
         var usable = new PixelPoint(89.5, 132.5);
         var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Min(4095, Math.Round(180 +
             Gaussian(x, y, rawClipped, 1.2, 4600) + Gaussian(x, y, outputClipped, 1.4, 3100) +
-            Gaussian(x, y, usable, 1.5, 2400))))) with { Conditions = new(10, 0, -10) };
+            Gaussian(x, y, usable, 1.5, 2400))))) with
+        { Conditions = new(10, 0, -10) };
         var product = await Produce(ReferenceCalibration(raw));
         var linear = ProductArtifact(product, raw);
         var result = await Run(raw, linear, Bind(raw, linear, ExposureCalibrationDisposition.ReferenceCalibrated));
@@ -235,7 +236,8 @@ public sealed class ExposureMeasurementTests
                 return 4095;
             var wing = !bayer && y == clippedY && x is >= 65 and <= 79 ? 8 : 0;
             return (ushort)(Math.Round(180 + Gaussian(x, y, star, 1.5, bayer ? 2400 : 3000)) + wing);
-        })) with { Conditions = new(10, 0, -10) };
+        })) with
+        { Conditions = new(10, 0, -10) };
         var linear = ProductArtifact(await Produce(ReferenceCalibration(raw,
             (x, y) => x == clippedX && y == clippedY ? (ushort)1 : (ushort)0)), raw);
         var result = await Run(raw, linear, Bind(raw, linear, ExposureCalibrationDisposition.ReferenceCalibrated));
@@ -406,7 +408,8 @@ public sealed class ExposureMeasurementTests
         MeasuredStellarAssociationFixtures.AddNoise(background, 1920, 2.5);
         var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Round(background[y * layout.Width + x] +
             Gaussian(x, y, matched, 1.35, 2500) + Gaussian(x, y, unassociated, 1.35, 1800))),
-            scene.Source.CaptureId) with { ArtifactId = scene.Source.ArtifactId, DescriptorIdentitySha256 = scene.Source.ArtifactIdentitySha256 };
+            scene.Source.CaptureId) with
+        { ArtifactId = scene.Source.ArtifactId, DescriptorIdentitySha256 = scene.Source.ArtifactIdentitySha256 };
         var linear = await Normalize(raw);
         var input = Bind(raw, linear) with
         {
