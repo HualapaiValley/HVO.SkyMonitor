@@ -1,0 +1,61 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Processing;
+
+namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+
+internal sealed class ExposureStellarAssociationCaptureProcessingStep(
+    CaptureProcessingStepMetadata metadata,
+    MeasuredStellarAssociationProcessingStepOptions options,
+    CameraAgentRecipeExecutionAdapter adapter,
+    CaptureProcessingPersistence persistence)
+    : MeasuredStellarAssociationCaptureProcessingStep(metadata, options, adapter),
+        ICenteredRawPrimaryCaptureProcessingStep, ICaptureProcessingGraphStep
+{
+    public override string RecipeName => ExposureAssociationProducts.RecipeName;
+    public ProcessingRecipeDefinition SharedOutputRecipe => ExposureAssociationProducts.Definition;
+    public string SharedStepVersion => ExposureAssociationProducts.ImplementationVersion;
+    public ProcessingOperationKind? SharedOperationKind => ProcessingOperationKind.Analyzer;
+
+    public override IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } =
+        new HashSet<FrameArtifactRole> { FrameArtifactRole.Raw, FrameArtifactRole.Metadata };
+
+    public override IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
+    [
+        .. base.DependencyRequirements,
+        new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
+            new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ExposureMeasurement },
+            new HashSet<string>(StringComparer.Ordinal) { ExposureMeasurementProducts.SchemaVersion },
+            ExposureMeasurementProducts.Variant)
+    ];
+
+    public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Association requires admitted raw.");
+        var execution = context.ProcessingExecution ?? throw new InvalidDataException("Association requires a durable execution.");
+        var dependencies = context.GetDependencyProducts();
+        var scene = dependencies.SingleOrDefault(product => ProjectedSceneV1.IsSupportedSchemaVersion(product.SchemaVersion));
+        if (scene is null || ProjectedSceneJson.Parse(scene.Payload).Scene?.Kind != ProjectedSceneKind.Predicted)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped("association.independent-prediction-unavailable"));
+            return;
+        }
+
+        var product = dependencies.Single(item => item.SchemaVersion == ExposureMeasurementProducts.SchemaVersion);
+        var (retained, measurement) = await persistence.ReadMeasurementDependencyAsync(execution,
+            descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
+        if (retained.ArtifactId != ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))
+            throw new InvalidDataException("The measurement dependency differs from the committed execution.");
+
+        var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
+            descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor) with { Payload = ReadOnlyMemory<byte>.Empty };
+        var predicted = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, scene);
+        var outcome = ExposureAssociationProducts.Associate(raw, retained, measurement.Input, predicted, OutputVariant,
+            new(Options.Association, Options.LabelPolicy), cancellationToken);
+        context.RecordConsumedArtifacts([context.Artifacts.Raw], [product, scene]);
+        context.RecordExecutionRoute(ProcessingNodeExecutionRoute.InProcess);
+        context.RecordExecutionOutcome(outcome);
+        context.AddProcessingOutcome(outcome);
+    }
+}

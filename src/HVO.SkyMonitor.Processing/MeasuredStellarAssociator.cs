@@ -305,6 +305,20 @@ public static class MeasuredStellarAssociator
         new(star.Id, Round(star.Magnitude, ValueDecimals), Round(star.Pixel.X, PositionDecimals),
             Round(star.Pixel.Y, PositionDecimals), reason);
 
+    internal static bool MatchesDetection(MeasuredStellarAssociationV1 member, IReadOnlyList<StellarDetection> detections)
+    {
+        if (member.DetectionIndex < 0 || member.DetectionIndex >= detections.Count)
+            return false;
+        var detection = detections[member.DetectionIndex];
+        var covariance = detection.CentroidCovariance;
+        return member.MeasuredX == Round(detection.Pixel.X, PositionDecimals) &&
+               member.MeasuredY == Round(detection.Pixel.Y, PositionDecimals) &&
+               member.Flux == Round(detection.Flux, ValueDecimals) && member.SignalToNoise == Round(detection.SignalToNoise) &&
+               member.CovarianceXX == Round(covariance?.XX) && member.CovarianceXY == Round(covariance?.XY) &&
+               member.CovarianceYY == Round(covariance?.YY) && member.SaturatedSampleCount == detection.SaturatedSampleCount &&
+               member.Trailed == detection.Conditions.HasFlag(StellarSourceConditions.Trailed);
+    }
+
     /// <summary>Squared Mahalanobis residual under the prediction variance plus the source's centroid covariance.</summary>
     private static double NormalizedSquared(StellarDetection detection, PixelPoint expected, double predictionSigma)
     {

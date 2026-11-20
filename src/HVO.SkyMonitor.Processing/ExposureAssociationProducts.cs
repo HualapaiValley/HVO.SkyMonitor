@@ -107,6 +107,31 @@ public static class ExposureAssociationProducts
         return ExposureMeasurementProducts.Same(binding.SceneIdentitySha256, scene.SceneIdentitySha256);
     }
 
+    /// <summary>Validates the fitter's association against its committed source measurement and prediction.</summary>
+    public static void VerifyMeasurement(ProcessingArtifact association, ProcessingArtifact raw, ProcessingArtifact retained,
+        ExposureMeasurementV1 measurement, ProcessingArtifact prediction)
+    {
+        ArgumentNullException.ThrowIfNull(association);
+        ArgumentNullException.ThrowIfNull(raw);
+        ArgumentNullException.ThrowIfNull(retained);
+        ArgumentNullException.ThrowIfNull(measurement);
+        ArgumentNullException.ThrowIfNull(prediction);
+        if (!Matches(association, raw) || association.SourceArtifactIds![1] != retained.ArtifactId ||
+            association.SourceArtifactIds[2] != prediction.ArtifactId ||
+            MeasuredStellarAssociationJson.Parse(association.Payload).Associations is not { } evidence ||
+            !ExposureMeasurementProducts.Same(evidence.AssociationIdentitySha256, association.ContentIdentitySha256))
+            throw new InvalidDataException("The association differs from the retained exposure inputs.");
+
+        var binding = ProcessingRecipeSupport.ParseOptions<AssociationBinding>(association.RecipeDescriptor!.Options);
+        if (!ExposureMeasurementProducts.Same(binding.MeasurementIdentitySha256, retained.ContentIdentitySha256) ||
+            !ExposureMeasurementProducts.Same(binding.SceneIdentitySha256, prediction.ContentIdentitySha256) ||
+            !ExposureMeasurementProducts.Same(evidence.Measurement.SettingsIdentitySha256, measurement.Sources.SettingsSha256) ||
+            evidence.Method.Settings != binding.Settings || evidence.Method.LabelPolicy != binding.LabelPolicy ||
+            evidence.Measurement.DetectionCount != measurement.Sources.Detections.Count ||
+            evidence.Associations.Any(member => !MeasuredStellarAssociator.MatchesDetection(member, measurement.Sources.Detections)))
+            throw new InvalidDataException("The association uses different measured stellar evidence.");
+    }
+
     private sealed record AssociationBinding(Guid RawArtifactId, Guid MeasurementArtifactId, string MeasurementIdentitySha256,
         Guid PredictionArtifactId, string SceneIdentitySha256, MeasuredStellarAssociationSettingsV1 Settings,
         StellarLabelPolicySettingsV1 LabelPolicy);

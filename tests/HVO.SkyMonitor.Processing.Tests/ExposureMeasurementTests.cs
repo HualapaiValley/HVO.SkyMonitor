@@ -347,6 +347,11 @@ public sealed class ExposureMeasurementTests
         var associated = ProductArtifact(matching.Products.Single(), raw);
         var evidence = MeasuredStellarAssociationJson.Parse(associated.Payload).Associations!;
         Assert.AreEqual(picked.Id, Assert.ContainsSingle(evidence.Associations).CatalogId);
+        var verified = ExposureMeasurementProducts.Read(retained, expected);
+        ExposureAssociationProducts.VerifyMeasurement(associated, raw, retained, verified, scene);
+        var wrongSource = verified.Sources.Detections[0] with { Flux = verified.Sources.Detections[0].Flux * 2 };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureAssociationProducts.VerifyMeasurement(associated, raw, retained,
+            verified with { Sources = verified.Sources with { Detections = [wrongSource] } }, scene));
         var context = fixture.Context with
         {
             MeasuredArtifactId = associated.ArtifactId,

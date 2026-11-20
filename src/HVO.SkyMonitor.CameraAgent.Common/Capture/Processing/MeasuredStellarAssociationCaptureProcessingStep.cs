@@ -10,7 +10,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 /// Measures the linear raw capture inside the windows predicted by its own committed projected scene. The scene product
 /// is bound as canonical JSON exactly as LogicHost binds its resolved scene, so both hosts derive the same identity.
 /// </summary>
-internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
+internal class MeasuredStellarAssociationCaptureProcessingStep(
     CaptureProcessingStepMetadata metadata,
     MeasuredStellarAssociationProcessingStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter)
@@ -18,13 +18,13 @@ internal sealed class MeasuredStellarAssociationCaptureProcessingStep(
       ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
     public bool Enabled => Options.Enabled;
-    public string RecipeName => BuiltInProcessingRecipes.MeasuredStellarAssociations;
+    public virtual string RecipeName => BuiltInProcessingRecipes.MeasuredStellarAssociations;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => MeasuredStellarAssociationsV1.CurrentSchemaVersion;
     public string? OutputMediaType => StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType;
-    public IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
-    public IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
+    public virtual IReadOnlySet<FrameArtifactRole> AcceptedInputRoles { get; } = new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata };
+    public virtual IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
             new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },

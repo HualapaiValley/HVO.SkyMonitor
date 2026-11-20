@@ -29,9 +29,11 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16, "None")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences")]
+    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", false, 10)]
+    [DataRow(CameraPixelFormat.Mono16, "None", false)]
     [DataRow(CameraPixelFormat.Mono16, "CalibrationLibrary")]
     public async Task ExposureMeasurement_OrdinaryCapturePersistsAndReopensThroughStandardLane(
-        CameraPixelFormat format, string calibration)
+        CameraPixelFormat format, string calibration, bool declareReadout = true, int referenceGain = 1)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement");
         try
@@ -40,7 +42,12 @@ public sealed partial class VirtualSkyCameraModuleTests
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
-            var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1() : null;
+            var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1 { Gain = referenceGain } : null;
+            var readout = format == CameraPixelFormat.Mono16 && declareReadout && calibration == "None"
+                ? new SensorReadoutProfile(new SensorCrop(0, 0, 224, 224), 1, 1, FrameBinningAlgorithm.IdentityV1,
+                    CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, FrameStoredCodeTransform.RightAlignedV1,
+                    FrameLevelCodeSpace.NativeSample, 0, 4095, 64)
+                : null;
             var pipeline = profile.Pipeline with
             {
                 Steps =
@@ -60,7 +67,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             {
                 AgentId = profile.AgentId,
                 Schedule = profile.Schedule,
-                Rig = camera.Rig with { ControlPolicy = profile.Rig.ControlPolicy },
+                Rig = camera.Rig with { ControlPolicy = profile.Rig.ControlPolicy, Readout = readout },
                 DeploymentLocation = DeploymentLocationSnapshot.Create("measurement-test", 1, "virtual",
                     null, DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 0, "America/Phoenix"),
                 Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
@@ -146,17 +153,26 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var sum = Enumerable.Range(0, pixels.Length / sizeof(ushort))
                     .Sum(index => (long)BinaryPrimitives.ReadUInt16LittleEndian(pixels.Span[(index * sizeof(ushort))..]));
                 Assert.AreEqual((ulong)sum, measurement.RawBrightness.Sum);
-                if (calibration != "CalibrationLibrary")
+                if (calibration != "CalibrationLibrary" && referenceGain == 1)
                 {
                     Assert.AreEqual(calibration == "None" ? ExposureCalibrationDisposition.NormalizationOnly :
                         ExposureCalibrationDisposition.ReferenceCalibrated, measurement.Input.Calibration,
                         measurement.Input.CalibrationReason);
                     Assert.IsNotNull(measurement.Input.Linear);
-                    Assert.AreNotEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status, measurement.Sources.Reason);
+                    if (declareReadout)
+                        Assert.AreNotEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status, measurement.Sources.Reason);
+                    else
+                    {
+                        Assert.IsNull(measurement.RawBrightness.SensorClipping.Count);
+                        Assert.AreEqual(FrameWhiteThreshold.UnavailableReason, measurement.Sources.Reason);
+                    }
                 }
                 else
                 {
-                    Assert.AreEqual(ExposureCalibrationDisposition.Missing, measurement.Input.Calibration, measurement.Input.CalibrationReason);
+                    var expected = referenceGain != 1 ? ExposureCalibrationDisposition.Incompatible : ExposureCalibrationDisposition.Missing;
+                    Assert.AreEqual(expected, measurement.Input.Calibration, measurement.Input.CalibrationReason);
+                    if (referenceGain != 1)
+                        Assert.AreEqual(ProcessingReasonCodes.CalibrationReferenceConditionsMismatch, measurement.Input.CalibrationReason);
                     Assert.IsNull(measurement.Input.Linear);
                     Assert.AreEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status);
                 }
