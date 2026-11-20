@@ -419,8 +419,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         // Use the capture-compatible producers while keeping the caller's immutable basis in the receipt.
         var basisPipeline = legacyScene is null ? basis.Pipeline : DeriveSceneCompatibilityPipeline(basis, legacyScene).Pipeline;
         var (pipeline, _) = await ReferenceAstrometryPreset.ApplyAsync(
-            basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken, basis,
-            reuseCompatiblePrediction: legacyScene is not null).ConfigureAwait(false);
+            basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken, basis).ConfigureAwait(false);
         var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
             ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
         var committed = await _store.InsertReferenceAstrometryRevisionAsync(

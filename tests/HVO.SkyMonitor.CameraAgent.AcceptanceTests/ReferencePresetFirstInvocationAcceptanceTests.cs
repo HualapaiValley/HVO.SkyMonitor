@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -33,17 +34,26 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
     public Task FirstReferencePresetReusesPredictionWithOccupiedVariantAsync(string shape)
         => VerifyFirstReferencePresetAsync("2", "ControlledNight", 3.25, shape);
 
-    private static async Task VerifyFirstReferencePresetAsync(string generation, string mode, double? magnitude, string shape)
+    [TestMethod]
+    [DataRow("effective")]
+    [DataRow("activated-effective")]
+    [DataRow("activated-declared")]
+    public Task FirstReferencePresetFromSolverFreePredictionAsync(string basisKind)
+        => VerifyFirstReferencePresetAsync("2", "ControlledNight", 3.25, "legacy-collision-annotation", basisKind);
+
+    private static async Task VerifyFirstReferencePresetAsync(
+        string generation, string mode, double? magnitude, string shape, string? basisKind = null)
     {
         var fixtureRoot = Path.Combine(AppContext.BaseDirectory, "Fixtures");
         var catalogRoot = Environment.GetEnvironmentVariable("HVO_ASTROMETRY_CATALOG_ROOT");
         var evidenceDirectory = Environment.GetEnvironmentVariable("HVO_1901_EVIDENCE_ROOT");
         Assert.IsFalse(string.IsNullOrWhiteSpace(catalogRoot));
         Assert.IsFalse(string.IsNullOrWhiteSpace(evidenceDirectory));
-        var evidenceRoot = Path.Combine(evidenceDirectory, $"{generation}-{mode}-{shape}");
+        var evidenceRoot = Path.Combine(evidenceDirectory, basisKind ?? $"{generation}-{mode}-{shape}");
         Directory.CreateDirectory(evidenceRoot);
         var collision = shape is "legacy-collision" or "legacy-collision-annotation";
-        var legacy = shape == "legacy-scene" || collision;
+        var declared = basisKind == "activated-declared";
+        var legacy = !declared && (shape == "legacy-scene" || collision);
         await using var host = await CameraAgentKestrelFixture.CreateAsync(prepareRoot: async root =>
         {
             var fixture = mode == "ControlledNight"
@@ -56,14 +66,16 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             JsonNode Find(string id) => steps.Single(step => step!["id"]!.GetValue<string>() == id)!;
             Find("LocalStorage")["options"]!["storageRoot"] = root;
             Find("ArchiveStorage")["options"]!["storageRoot"] = Path.Combine(root, "archive");
-            if (legacy)
+            if (legacy || declared)
             {
-                Find("ProjectedScene")["options"] = new JsonObject
+                var scene = new JsonObject
                 {
                     ["outputVariant"] = collision ? "astrometry-prediction-v1" : "projected-scene-v1",
-                    ["independentPrediction"] = true,
                     ["maximumMagnitude"] = 4.5
                 };
+                if (legacy)
+                    scene["independentPrediction"] = true;
+                Find("ProjectedScene")["options"] = scene;
             }
             if (collision)
                 ConfigureFirstPresetFitFixture(config);
@@ -124,15 +136,41 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.AreEqual(legacy, effectiveBasis is not null && effectiveBasis != basis);
         if (collision)
         {
-            await using var basisConnection = await OpenPresetJournalAsync(host.Root).ConfigureAwait(false);
-            var effective = await ReadPresetDefinitionAsync(basisConnection, effectiveBasis!).ConfigureAwait(false);
-            var prediction = effective.GetProperty("nodes").EnumerateArray()
-                .Single(node => node.GetProperty("stepAlias").GetString() == "AstrometryPrediction");
-            Assert.AreEqual("astrometry-prediction-v1-1", prediction.GetProperty("outputs")[0].GetProperty("variant").GetString());
             await host.Services.GetRequiredService<CaptureAdmissionCoordinator>()
                 .PauseAsync("preset-proof-pause", null, "test", null, CancellationToken.None).ConfigureAwait(false);
         }
+
+        var sourceBasis = basis;
+        if (declared)
+            effectiveBasis = await CreateDeclaredPredictionBasisAsync(client, host, sourceBasis, evidenceRoot).ConfigureAwait(false);
+        if (basisKind is "activated-effective" or "activated-declared")
+        {
+            await SendPresetRequestAsync(client, evidenceRoot, "activate-basis", $"/revisions/{effectiveBasis}/activate",
+                "activate-first-basis", new { expectedVersion = version }).ConfigureAwait(false);
+            registry = await ReadPresetRegistryAsync(client, evidenceRoot, "active-basis").ConfigureAwait(false);
+            basis = registry.GetProperty("activeRevisionId").GetString()!;
+            version = registry.GetProperty("stateVersion").GetInt64();
+            Assert.AreEqual(effectiveBasis, basis);
+        }
+        else if (basisKind == "effective")
+        {
+            basis = effectiveBasis!;
+        }
+
+        if (collision)
+        {
+            await using var basisConnection = await OpenPresetJournalAsync(host.Root).ConfigureAwait(false);
+            var effective = await ReadPresetDefinitionAsync(basisConnection, effectiveBasis!).ConfigureAwait(false);
+            var basisNodes = effective.GetProperty("nodes").EnumerateArray().ToArray();
+            Assert.IsFalse(basisNodes.Any(node => node.GetProperty("stepAlias").GetString() == "MeasuredAstrometry"));
+            var prediction = basisNodes.Single(node => node.GetProperty("stepAlias").GetString() == "AstrometryPrediction");
+            Assert.AreEqual(declared ? "operator-reference-prediction" : "astrometry-prediction-v1-1",
+                prediction.GetProperty("outputs")[0].GetProperty("variant").GetString());
+            await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "basis-definition.json"), effective.GetRawText()).ConfigureAwait(false);
+        }
         var request = new { basisRevisionId = basis, revision = "reference-astrometry-first", referenceMagnitude = magnitude, reason = "first invocation probe" };
+        await File.WriteAllTextAsync(Path.Combine(evidenceRoot, "first-request.json"),
+            JsonSerializer.Serialize(request, AstrometryBrowserJson)).ConfigureAwait(false);
         var create = await SendPresetRequestAsync(client, evidenceRoot, "create", "/revisions/reference-astrometry", "first-create", request).ConfigureAwait(false);
         var revision = create.GetProperty("revisionId").GetString()!;
         var path = "/revisions/" + revision;
@@ -160,13 +198,15 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.AreEqual(revision, restarted.GetProperty("activeRevisionId").GetString());
         var retry = await SendPresetRequestAsync(reopened, evidenceRoot, "restart-retry", "/revisions/reference-astrometry", "first-create", request).ConfigureAwait(false);
         Assert.AreEqual(create.GetRawText(), retry.GetRawText());
-        if (legacy)
+        if (legacy || declared)
         {
+            var differentBasis = basisKind is null ? effectiveBasis : sourceBasis;
             await SendPresetRequestAsync(reopened, evidenceRoot, "changed-basis-retry", "/revisions/reference-astrometry",
-                "first-create", new { basisRevisionId = effectiveBasis, request.revision, request.referenceMagnitude, request.reason },
+                "first-create", new { basisRevisionId = differentBasis, request.revision, request.referenceMagnitude, request.reason },
                 HttpStatusCode.Conflict).ConfigureAwait(false);
         }
-        var installedDefinition = await VerifyPersistedPresetAsync(host.Root, evidenceRoot, basis, effectiveBasis, revision, mode, legacy, depth, selection)
+        var installedDefinition = await VerifyPersistedPresetAsync(
+            host.Root, evidenceRoot, effectiveBasis ?? basis, revision, mode, legacy || declared, depth, selection)
             .ConfigureAwait(false);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(75));
         if (collision)
@@ -216,6 +256,35 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         var activeAgain = await SendPresetRequestAsync(reopened, evidenceRoot, "activate-again", $"/revisions/{secondRevision}/activate",
             "second-activate", new { expectedVersion = restarted.GetProperty("stateVersion").GetInt64(), request.reason }).ConfigureAwait(false);
         Assert.AreEqual(secondRevision, activeAgain.GetProperty("activeRevisionId").GetString());
+    }
+
+    private static async Task<string> CreateDeclaredPredictionBasisAsync(
+        HttpClient client, CameraAgentKestrelFixture host, string sourceBasis, string evidenceRoot)
+    {
+        var operations = host.Services.GetRequiredService<IProcessingGraphOperations>();
+        var original = await operations.ReadRevisionPipelineAsync(sourceBasis, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(original);
+        var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
+        var pipeline = original with
+        {
+            Steps =
+            [
+                .. original.Steps,
+                new("AstrometryPrediction", "OperatorPrediction",
+                    Options: JsonSerializer.SerializeToElement(new { outputVariant = "operator-reference-prediction", maximumMagnitude = 4.5, maximumResults = 2000 }),
+                    DependsOn: ["$raw"], Required: false, Publication: durable),
+                new("MeasuredStellarAssociations", "OperatorAssociations",
+                    Options: JsonSerializer.SerializeToElement(new { outputVariant = "operator-reference-associations", useAstrometryPrediction = true }),
+                    DependsOn: ["OperatorPrediction"], Required: false, Publication: durable)
+            ]
+        };
+        var created = await SendPresetRequestAsync(client, evidenceRoot, "create-basis", "/revisions",
+            "create-first-basis", new { name = "Operator solver-free graph", revision = "operator-first-basis", pipeline })
+            .ConfigureAwait(false);
+        var id = created.GetProperty("revisionId").GetString()!;
+        await SendPresetRequestAsync(client, evidenceRoot, "validate-basis", $"/revisions/{id}/validate",
+            "validate-first-basis", new { }).ConfigureAwait(false);
+        return id;
     }
 
     private static void ConfigureFirstPresetFitFixture(JsonNode config)
@@ -275,7 +344,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
     }
 
     private static async Task<JsonElement> VerifyPersistedPresetAsync(
-        string root, string evidenceRoot, string basis, string? effectiveBasis, string revision, string mode, bool legacy, double depth,
+        string root, string evidenceRoot, string basis, string revision, string mode, bool hadPrediction, double depth,
         JsonElement selection)
     {
         await using var connection = await OpenPresetJournalAsync(root).ConfigureAwait(false);
@@ -290,7 +359,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.AreEqual(6.5, renderer.GetProperty("maximumMagnitude").GetDouble());
         Assert.AreEqual(2000, renderer.GetProperty("maximumResults").GetInt32());
 
-        var original = await ReadPresetDefinitionAsync(connection, effectiveBasis ?? basis).ConfigureAwait(false);
+        var original = await ReadPresetDefinitionAsync(connection, basis).ConfigureAwait(false);
         var installed = await ReadPresetDefinitionAsync(connection, revision).ConfigureAwait(false);
         var nodes = installed.GetProperty("nodes").EnumerateArray().ToArray();
         var originalNodes = original.GetProperty("nodes").EnumerateArray().ToArray();
@@ -298,16 +367,24 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         {
             var id = node.GetProperty("id").GetString();
             var current = nodes.Single(n => n.GetProperty("id").GetString() == id);
-            if (legacy && node.GetProperty("stepAlias").GetString() == "AstrometryPrediction")
+            if (hadPrediction && node.GetProperty("stepAlias").GetString() == "AstrometryPrediction")
             {
-                Assert.IsTrue(JsonElement.DeepEquals(node.GetProperty("outputs"), current.GetProperty("outputs")));
+                var expected = JsonNode.Parse(node.GetRawText())!;
+                expected["effectiveOptions"]!["maximumMagnitude"] = depth;
+                Assert.IsTrue(JsonElement.DeepEquals(JsonSerializer.SerializeToElement(expected), current), $"Prediction {id} changed beyond magnitude.");
                 continue;
             }
             Assert.IsTrue(JsonElement.DeepEquals(node, current), $"Existing node {id} changed.");
         }
-        Assert.HasCount(originalNodes.Length + (legacy ? 2 : 3), nodes);
+        Assert.HasCount(originalNodes.Length + (hadPrediction ? 2 : 3), nodes);
         var prediction = nodes.Single(n => n.GetProperty("stepAlias").GetString() == "AstrometryPrediction");
         var solver = nodes.Single(n => n.GetProperty("stepAlias").GetString() == "MeasuredAstrometry");
+        var predictionId = prediction.GetProperty("id").GetString();
+        var solverDependencies = solver.GetProperty("dependencies").EnumerateArray()
+            .Select(dependency => dependency.GetProperty("producerId").GetString()).ToArray();
+        Assert.Contains(predictionId, solverDependencies);
+        var measurement = nodes.Single(n => n.GetProperty("id").GetString() == solverDependencies.Single(id => id != predictionId));
+        Assert.AreEqual(predictionId, measurement.GetProperty("dependencies").EnumerateArray().Single().GetProperty("producerId").GetString());
         var predictionOptions = prediction.GetProperty("effectiveOptions");
         var solverOptions = solver.GetProperty("effectiveOptions");
         Assert.AreEqual(depth, predictionOptions.GetProperty("maximumMagnitude").GetDouble());
