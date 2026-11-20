@@ -34,11 +34,12 @@ internal static class LegacyVirtualSkySceneGraph
         sceneOptions.Remove("independentPrediction");
 
         var usedIds = pipeline.Steps.Select(NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var usedMetadataVariants = ReadMetadataVariants(revision);
         var prediction = pipeline.Steps.SingleOrDefault(static step =>
             IsEnabledAlias(step, AstrometryPredictionCaptureProcessingStep.Alias));
         if (prediction is null)
         {
-            var predictionId = ChooseUnused(AstrometryPredictionCaptureProcessingStep.Alias, usedIds);
+            var predictionId = ReserveUnused(AstrometryPredictionCaptureProcessingStep.Alias, usedIds);
             var predictionOptions = sceneOptions.Where(static entry =>
                 string.Equals(entry.Key, "maximumMagnitude", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(entry.Key, "maximumResults", StringComparison.OrdinalIgnoreCase) ||
@@ -46,12 +47,15 @@ internal static class LegacyVirtualSkySceneGraph
                 .ToDictionary(static entry => entry.Key, static entry => entry.Value, StringComparer.OrdinalIgnoreCase);
             // The legacy node defaulted to 6.5, while the explicit prediction defaults to 5.
             predictionOptions.TryAdd("maximumMagnitude", JsonSerializer.SerializeToElement(6.5));
+            var variant = ReserveUnused(AstrometryPredictionCaptureProcessingStep.AliasVariant, usedMetadataVariants);
+            // Omit the default override to keep existing non-colliding successor identities.
+            if (variant != AstrometryPredictionCaptureProcessingStep.AliasVariant)
+                predictionOptions["outputVariant"] = JsonSerializer.SerializeToElement(variant);
             prediction = new(AstrometryPredictionCaptureProcessingStep.Alias, predictionId,
                 Options: JsonSerializer.SerializeToElement(predictionOptions), DependsOn: ["$raw"], Required: false,
                 Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
         }
 
-        usedIds.Add(NodeId(prediction));
         var canonicalId = NodeId(canonical);
         var measuredIds = FindMeasurements(pipeline, canonical);
         var hasExternalConsumer = HasExternalConsumer(pipeline, measuredIds);
@@ -67,10 +71,10 @@ internal static class LegacyVirtualSkySceneGraph
             var associationsId = NodeId(fitAssociations);
             if (pipeline.Steps.Any(step => step.Enabled != false && step != sharedFit && DependsOn(step, associationsId)))
             {
-                var variant = ChooseUnused("astrometry-prediction-associations-v1", ReadMetadataVariants(revision));
+                var variant = ReserveUnused("astrometry-prediction-associations-v1", usedMetadataVariants);
                 privateAssociations = MoveToPrediction(fitAssociations, [NodeId(prediction)], variant) with
                 {
-                    Id = ChooseUnused("astrometry-prediction-associations", usedIds)
+                    Id = ReserveUnused("astrometry-prediction-associations", usedIds)
                 };
             }
         }
@@ -133,10 +137,10 @@ internal static class LegacyVirtualSkySceneGraph
             .ToHashSet(StringComparer.Ordinal);
     }
 
-    private static string ChooseUnused(string preferred, HashSet<string> used)
+    private static string ReserveUnused(string preferred, HashSet<string> used)
     {
         var selected = preferred;
-        for (var suffix = 1; used.Contains(selected); suffix++)
+        for (var suffix = 1; !used.Add(selected); suffix++)
             selected = FormattableString.Invariant($"{preferred}-{suffix}");
         return selected;
     }

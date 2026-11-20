@@ -14,7 +14,7 @@ internal sealed class AstrometryPredictionCaptureProcessingStep(
     IServiceProvider services)
     : ProjectedSceneCaptureProcessingStep(metadata, new ProjectedSceneCaptureProcessingStepOptions
     {
-        OutputVariant = AliasVariant,
+        OutputVariant = options.OutputVariant ?? AliasVariant,
         MaximumMagnitude = options.MaximumMagnitude,
         MaximumResults = options.MaximumResults,
         AstronomyAlgorithmVersion = options.AstronomyAlgorithmVersion ?? ProjectedSceneCaptureProcessingStepOptions.DefaultAstronomyAlgorithmVersion
@@ -27,6 +27,10 @@ internal sealed class AstrometryPredictionCaptureProcessingStep(
 
 internal sealed class AstrometryPredictionCaptureProcessingStepOptions
 {
+    [MinLength(1), MaxLength(128)]
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? OutputVariant { get; init; }
+
     [Range(-30d, 30d)]
     public double MaximumMagnitude { get; init; } = 5;
 
