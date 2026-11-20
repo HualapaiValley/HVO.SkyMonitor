@@ -30,6 +30,9 @@ internal enum AstrometryAssessmentSelectionKind
 internal readonly record struct AstrometryAssessmentSelection(AstrometryAssessmentSelectionKind Kind,
     Guid ArtifactId = default, string? ContentIdentitySha256 = null, string? AvailabilityState = null);
 
+internal readonly record struct AstrometrySkipCheck(Guid CaptureId, AstrometryAssessmentSelectionKind Selection,
+    AstrometryOutputStamp? Assessment = null, RetainedAstrometryLineageState Lineage = RetainedAstrometryLineageState.Unknown);
+
 internal sealed partial class SqliteCaptureProcessingStore
 {
     // All retained assessment rows seed the work list. This indexed query does not inspect
@@ -68,6 +71,38 @@ internal sealed partial class SqliteCaptureProcessingStore
                   AND execution.execution_class = 'Live' AND execution.allow_automatic_publication = 1
                   AND execution.status IN ('Pending', 'Running')) THEN 2
             ELSE 3
+        END
+        """;
+
+    private const string AstrometryExactLineageState = $"""
+        CASE
+            WHEN requested.artifact IS NULL THEN 0
+            WHEN assessment.artifact_id IS NULL THEN 3
+            WHEN assessment.capture_id IS NOT requested.capture OR assessment.role IS NOT 'Metadata'
+              OR assessment.product_schema_version IS NOT 'measured-astrometry-solution-v1'
+              OR assessment.content_identity_sha256 IS NOT requested.solution COLLATE NOCASE THEN 0
+            WHEN assessment.availability_state = 'Quarantined' THEN 4
+            ELSE (
+                WITH lineage(ordinal, artifact) AS (
+                    SELECT -1, assessment.artifact_id
+                    UNION ALL
+                    SELECT source_ordinal, source_artifact_id
+                    FROM processing_output_sources
+                    WHERE output_identity_sha256 = assessment.output_identity_sha256
+                )
+                SELECT CASE WHEN COUNT(*) <> 5 THEN 0 ELSE MAX(CASE
+                    WHEN output.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
+                    WHEN output.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
+                    WHEN raw.raw_artifact_id IS NOT NULL THEN CASE WHEN raw.state = 'committed' THEN 1 ELSE 2 END
+                    ELSE MAX({AstrometryOutputPublication},
+                        CASE WHEN output.availability_state = 'Available' THEN 1 ELSE 2 END) END)
+                END
+                FROM lineage
+                LEFT JOIN processing_outputs output ON (lineage.ordinal = -1 OR lineage.ordinal BETWEEN 1 AND 3)
+                  AND output.artifact_id = lineage.artifact AND output.capture_id = assessment.capture_id
+                LEFT JOIN raw_captures raw ON lineage.ordinal = 0
+                  AND raw.raw_artifact_id = lineage.artifact AND raw.capture_id = assessment.capture_id
+            )
         END
         """;
 
@@ -114,22 +149,61 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
-    internal async ValueTask<HashSet<Guid>> ReadAstrometryPublicationChangesAsync(
-        IReadOnlyList<Guid> captures, CancellationToken cancellationToken)
+    internal async ValueTask<HashSet<Guid>> ReadAstrometrySkipChangesAsync(
+        IReadOnlyList<AstrometrySkipCheck> checks, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
+        // Compare the selection and any exact lineage proof in the same journal snapshot.
+        // The batch is bounded and each requested capture uses the assessment index.
         command.CommandText = $"""
-            SELECT requested.value
-            FROM json_each($captures) requested
-            WHERE EXISTS (
-                SELECT 1 FROM processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup
-                WHERE output.capture_id = requested.value AND output.role = 'Metadata'
+            WITH requested(capture, selection, artifact, solution, lineage) AS MATERIALIZED (
+                SELECT json_extract(value, '$.capture'), json_extract(value, '$.selection'),
+                       json_extract(value, '$.artifact'), json_extract(value, '$.solution'),
+                       json_extract(value, '$.lineage')
+                FROM json_each($checks)
+            ), outputs AS MATERIALIZED (
+                SELECT requested.capture, output.artifact_id, output.content_identity_sha256,
+                       {AstrometryOutputPublication} AS publication
+                FROM requested
+                CROSS JOIN processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup
+                WHERE output.capture_id = requested.capture AND output.role = 'Metadata'
                   AND output.product_schema_version = 'measured-astrometry-solution-v1'
-                  AND {AstrometryOutputPublication} IN (1, 2));
+            ), observed AS (
+                SELECT requested.capture,
+                       COUNT(*) FILTER (WHERE outputs.publication = 1) AS public_count,
+                       COUNT(*) FILTER (WHERE outputs.publication = 2) AS pending_count,
+                       COUNT(*) FILTER (WHERE outputs.publication = 1 AND outputs.artifact_id = requested.artifact
+                           AND outputs.content_identity_sha256 = requested.solution COLLATE NOCASE) AS exact_public
+                FROM requested
+                LEFT JOIN outputs ON outputs.capture = requested.capture
+                GROUP BY requested.capture
+            )
+            SELECT requested.capture
+            FROM requested
+            JOIN observed ON observed.capture = requested.capture
+            LEFT JOIN processing_outputs assessment ON assessment.artifact_id = requested.artifact
+            WHERE CASE requested.selection
+                WHEN $absent THEN observed.public_count > 0 OR observed.pending_count > 0
+                WHEN $ambiguous THEN observed.public_count < 2
+                ELSE CASE
+                    WHEN observed.public_count <> 1 OR observed.exact_public <> 1 THEN 1
+                    WHEN requested.lineage = 0 THEN assessment.availability_state IS NOT 'Available'
+                    ELSE ({AstrometryExactLineageState}) <> requested.lineage
+                END
+            END;
             """;
-        command.Parameters.AddWithValue("$captures", JsonSerializer.Serialize(captures.Select(static capture => capture.ToString("N"))));
+        command.Parameters.AddWithValue("$absent", (int)AstrometryAssessmentSelectionKind.Absent);
+        command.Parameters.AddWithValue("$ambiguous", (int)AstrometryAssessmentSelectionKind.Ambiguous);
+        command.Parameters.AddWithValue("$checks", JsonSerializer.Serialize(checks.Select(static check => new
+        {
+            capture = check.CaptureId.ToString("N"),
+            selection = (int)check.Selection,
+            artifact = check.Assessment?.ArtifactId.ToString("N"),
+            solution = check.Assessment?.ContentIdentitySha256,
+            lineage = (int)check.Lineage
+        })));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var changed = new HashSet<Guid>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -189,35 +263,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                        (1, $selectedCapture, $selectedArtifact, $selectedSolution),
                        (2, $resultCapture, $resultArtifact, $resultSolution)
             )
-            SELECT CASE
-                WHEN requested.artifact IS NULL THEN 0
-                WHEN assessment.artifact_id IS NULL THEN 3
-                WHEN assessment.capture_id IS NOT requested.capture OR assessment.role IS NOT 'Metadata'
-                  OR assessment.product_schema_version IS NOT 'measured-astrometry-solution-v1'
-                  OR assessment.content_identity_sha256 IS NOT requested.solution COLLATE NOCASE THEN 0
-                WHEN assessment.availability_state = 'Quarantined' THEN 4
-                ELSE (
-                    WITH lineage(ordinal, artifact) AS (
-                        SELECT -1, assessment.artifact_id
-                        UNION ALL
-                        SELECT source_ordinal, source_artifact_id
-                        FROM processing_output_sources
-                        WHERE output_identity_sha256 = assessment.output_identity_sha256
-                    )
-                    SELECT CASE WHEN COUNT(*) <> 5 THEN 0 ELSE MAX(CASE
-                        WHEN output.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
-                        WHEN output.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
-                        WHEN raw.raw_artifact_id IS NOT NULL THEN CASE WHEN raw.state = 'committed' THEN 1 ELSE 2 END
-                        ELSE MAX({AstrometryOutputPublication},
-                            CASE WHEN output.availability_state = 'Available' THEN 1 ELSE 2 END) END)
-                    END
-                    FROM lineage
-                    LEFT JOIN processing_outputs output ON (lineage.ordinal = -1 OR lineage.ordinal BETWEEN 1 AND 3)
-                      AND output.artifact_id = lineage.artifact AND output.capture_id = assessment.capture_id
-                    LEFT JOIN raw_captures raw ON lineage.ordinal = 0
-                      AND raw.raw_artifact_id = lineage.artifact AND raw.capture_id = assessment.capture_id
-                )
-            END
+            SELECT {AstrometryExactLineageState}
             FROM requested
             LEFT JOIN processing_outputs assessment ON assessment.artifact_id = requested.artifact
             ORDER BY requested.slot;

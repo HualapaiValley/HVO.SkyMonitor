@@ -114,7 +114,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     internal const int MaximumRawBytes = 32 * 1024 * 1024;
     internal const int MaximumReadBytes = 44 * 1024 * 1024;
     private const int LatestNewSkipLimit = 4096;
-    private const int LatestPublicationRecheckLimit = 64;
+    private const int LatestSkipRecheckLimit = 64;
     private const string TemporaryEvidenceUnavailable = "retained-evidence-temporarily-unavailable";
     private const string InvalidEvidence = "retained-evidence-invalid";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -125,12 +125,10 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     // An incremental store refresh retains the object for each unchanged capture. A changed capture
     // receives a new object even if the assessment itself still has the same artifact identity.
     private Dictionary<Guid, CandidateSkip> skippedCandidates = [];
-    private Queue<AstrometryCaptureCandidate> nonpublicCandidates = new();
-
-    private enum CandidateDisposition { Continue, Retry, SkipUntilChanged, SkipUntilPublication }
+    private Queue<AstrometrySkipCheck> skipsToRecheck = new();
 
     private readonly record struct CandidateProbe(CameraAgentRetainedAstrometry Evidence,
-        CandidateDisposition Disposition = CandidateDisposition.Continue);
+        AstrometrySkipCheck? Skip = null, bool Retry = false);
 
     private sealed record CandidateSkip(AstrometryCaptureCandidate Candidate, AstrometryLineageInvalidation? Lineage);
 
@@ -245,7 +243,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         {
             var captures = await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false);
             if (!ReferenceEquals(latestSnapshot, captures)) RefreshLatestCandidates(captures, cancellationToken);
-            await RecheckPublicationAsync(captures, cancellationToken).ConfigureAwait(false);
+            await RecheckSkipsAsync(captures, cancellationToken).ConfigureAwait(false);
             var node = latestCandidates.First;
             var newSkips = 0;
             while (node is not null && newSkips < LatestNewSkipLimit)
@@ -253,7 +251,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 cancellationToken.ThrowIfCancellationRequested();
                 var candidate = node.Value;
                 var probe = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
-                if (probe.Disposition == CandidateDisposition.Retry)
+                if (probe.Retry)
                     return LatestRead(false, null, previous, selected);
                 if (CameraAgentLatestAstrometry.FromVerified(probe.Evidence) is { } summary)
                     return await CompleteLatestReadAsync(captures, summary, previous, selected, cancellationToken).ConfigureAwait(false);
@@ -261,10 +259,10 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 var next = node.Next;
                 // Commit a conclusive probe before the next cancellation check. Unverified
                 // failures stay on the work list so a later request can observe recovery.
-                if (probe.Disposition is CandidateDisposition.SkipUntilChanged or CandidateDisposition.SkipUntilPublication)
+                if (probe.Skip is { } skip)
                 {
                     skippedCandidates.Add(candidate.CaptureId, new(candidate, probe.Evidence.LineageInvalidation));
-                    if (probe.Disposition == CandidateDisposition.SkipUntilPublication) nonpublicCandidates.Enqueue(candidate);
+                    skipsToRecheck.Enqueue(skip);
                     latestCandidates.Remove(node);
                     newSkips++;
                 }
@@ -330,19 +328,18 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         }
         latestCandidates = pending;
         skippedCandidates = retained;
-        nonpublicCandidates = new(nonpublicCandidates.Where(candidate =>
-            retained.TryGetValue(candidate.CaptureId, out var skip) && ReferenceEquals(skip.Candidate, candidate)));
+        skipsToRecheck = new(skipsToRecheck.Where(check => retained.ContainsKey(check.CaptureId)));
         latestSnapshot = snapshot;
     }
 
-    private async ValueTask RecheckPublicationAsync(IReadOnlyList<AstrometryCaptureCandidate> snapshot, CancellationToken cancellationToken)
+    private async ValueTask RecheckSkipsAsync(IReadOnlyList<AstrometryCaptureCandidate> snapshot, CancellationToken cancellationToken)
     {
-        if (nonpublicCandidates.Count == 0) return;
+        if (skipsToRecheck.Count == 0) return;
 
-        // Publication can be committed by a different store instance. Recheck a rotating
-        // batch without revisiting unrelated durable skips or dropping interrupted progress.
-        var batch = nonpublicCandidates.Take(LatestPublicationRecheckLimit).Select(static candidate => candidate.CaptureId).ToArray();
-        var changed = await store.ReadAstrometryPublicationChangesAsync(batch, cancellationToken).ConfigureAwait(false);
+        // Another store can change public selection or restore its inputs without updating
+        // our snapshot. Recheck only a bounded batch of metadata proofs, without opening artifacts.
+        var batch = skipsToRecheck.Take(LatestSkipRecheckLimit).ToArray();
+        var changed = await store.ReadAstrometrySkipChangesAsync(batch, cancellationToken).ConfigureAwait(false);
         if (changed.Count > 0)
         {
             var pending = new LinkedList<AstrometryCaptureCandidate>();
@@ -357,8 +354,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         }
         for (var i = 0; i < batch.Length; i++)
         {
-            var candidate = nonpublicCandidates.Dequeue();
-            if (!changed.Contains(candidate.CaptureId)) nonpublicCandidates.Enqueue(candidate);
+            var check = skipsToRecheck.Dequeue();
+            if (!changed.Contains(check.CaptureId)) skipsToRecheck.Enqueue(check);
         }
     }
 
@@ -373,11 +370,13 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             switch (assessment.Kind)
             {
                 case AstrometryAssessmentSelectionKind.Absent:
-                    return new(new(captureId, "NotRetained", "assessment-not-retained"), CandidateDisposition.SkipUntilPublication);
+                    return new(new(captureId, "NotRetained", "assessment-not-retained"),
+                        new(captureId, AstrometryAssessmentSelectionKind.Absent));
                 case AstrometryAssessmentSelectionKind.Pending:
                     return Unavailable(temporary: true);
                 case AstrometryAssessmentSelectionKind.Ambiguous:
-                    return new(new(captureId, "Unavailable", "assessment-ambiguous"), CandidateDisposition.SkipUntilChanged);
+                    return new(new(captureId, "Unavailable", "assessment-ambiguous"),
+                        new(captureId, AstrometryAssessmentSelectionKind.Ambiguous));
             }
             if (assessment.AvailabilityState == "Quarantined")
                 return Invalidated(assessment, RetainedAstrometryLineageState.Quarantined);
@@ -398,11 +397,13 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             {
                 if (!solution.Assessment.HasMeasuredMapping)
                     return new(new(captureId, "NotRetained", "no-accepted-mapping", solutionArtifact.ArtifactId,
-                        solution.SolutionIdentitySha256), CandidateDisposition.SkipUntilChanged);
+                        solution.SolutionIdentitySha256),
+                        new(captureId, AstrometryAssessmentSelectionKind.Public,
+                            new(solutionArtifact.ArtifactId, solution.SolutionIdentitySha256)));
                 // Rejection probes read one bounded metadata object. Only raw reconstruction contends with the
                 // selected-frame reader for the larger raw-read allowance.
                 acquiredRawRead = await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
-                if (!acquiredRawRead) return new(new(captureId, "Unavailable", "read-capacity"), CandidateDisposition.Retry);
+                if (!acquiredRawRead) return new(new(captureId, "Unavailable", "read-capacity"), Retry: true);
             }
             var rawId = solution.Assessment.Frame.SourceArtifactId;
             var rawRead = await OpenArtifactAsync(rawId).ConfigureAwait(false);
@@ -530,13 +531,17 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
         CandidateProbe Unavailable(bool temporary)
             => new(new(captureId, "Unavailable", temporary ? TemporaryEvidenceUnavailable : InvalidEvidence),
-                temporary ? CandidateDisposition.Retry : CandidateDisposition.Continue);
+                Retry: temporary);
 
         CandidateProbe Invalidated(AstrometryAssessmentSelection product, RetainedAstrometryLineageState state)
-            => new(new CameraAgentRetainedAstrometry(captureId, "Unavailable", InvalidEvidence)
+        {
+            if (product.ContentIdentitySha256 is not { } identity)
+                return Unavailable(temporary: false);
+            var stamp = new AstrometryOutputStamp(product.ArtifactId, identity);
+            return new(new CameraAgentRetainedAstrometry(captureId, "Unavailable", InvalidEvidence)
             {
-                LineageInvalidation = product.ContentIdentitySha256 is { } identity
-                    ? new(new(product.ArtifactId, identity), state) : null
-            }, CandidateDisposition.SkipUntilChanged);
+                LineageInvalidation = new(stamp, state)
+            }, new(captureId, AstrometryAssessmentSelectionKind.Public, stamp, state));
+        }
     }
 }
