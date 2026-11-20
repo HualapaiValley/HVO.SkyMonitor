@@ -57,6 +57,13 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(expected, result.Kind.ToString());
         Assert.IsFalse(result.Message?.Contains("private-path", StringComparison.Ordinal) ?? false);
         retained.Verify(value => value.GetAsync(id, CancellationToken.None), scenario == "denied" ? Times.Never() : Times.Once());
+        if (scenario == "denied")
+        {
+            var identity = new CameraAgentAstrometryAssessmentIdentity(id, Guid.NewGuid(), new string('A', 64));
+            var observation = await service.ReadAstrometryPublicationStateAsync(identity, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Unauthorized, observation.Kind);
+            retained.Verify(value => value.ReadPublicationStateAsync(identity, CancellationToken.None), Times.Never());
+        }
     }
 
     [TestMethod]

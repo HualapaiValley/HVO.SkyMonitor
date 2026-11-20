@@ -32,7 +32,7 @@ public sealed partial class CurrentSkyPageTests
             Assert.AreEqual(AstrometricAssessmentStatus.Accepted, retained.Assessment.Status);
             Assert.AreEqual(calibration.ReadoutIdentitySha256, retained.ReadoutIdentitySha256);
             return new(retained.Assessment.Frame.CaptureId, "Retained", retained.Assessment.ReasonCode,
-                SolutionIdentitySha256: retained.SolutionIdentitySha256, GeometryBasis: "MeasuredFit", Solution: retained)
+                ArtifactId: new Guid("0091238e-e0e8-8112-9fea-60631ad0f753"), SolutionIdentitySha256: retained.SolutionIdentitySha256, GeometryBasis: "MeasuredFit", Solution: retained)
             {
                 Mapping = new AstrometricMapping(calibration, retained.Assessment),
                 CalibrationVersion = calibration.CalibrationVersion,
@@ -170,11 +170,78 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
     }
     [TestMethod]
+    [DataRow("indeterminate")]
+    [DataRow("capture-switch")]
+    [DataRow("newer-invalidation")]
+    public async Task SelectedMeasurementPublicationRequiresAnEligibleCurrentObservation(string interleaving)
+    {
+        var switchCapture = interleaving == "capture-switch";
+        var invalidate = interleaving == "newer-invalidation";
+        var accepted = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var identity = new CameraAgentAstrometryAssessmentIdentity(accepted.CaptureId, accepted.ArtifactId!.Value, accepted.SolutionIdentitySha256!);
+        var first = AstrometryImage(accepted);
+        var current = first;
+        var pending = new DeferredAstrometryRead<CameraAgentAstrometryPublicationState>();
+        using var context = new BunitContext();
+        var service = Configure(context);
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
+        service.AstrometryHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(
+            id == accepted.CaptureId ? accepted : new(id, "NotRetained", "assessment-not-retained")));
+        var checks = 0;
+        CancellationToken firstObservation = default;
+        service.AstrometryPublicationHandler = (actual, cancellation) =>
+        {
+            Assert.AreEqual(identity, actual);
+            if (++checks != 1)
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(invalidate
+                    ? CameraAgentAstrometryPublicationState.Invalidated : CameraAgentAstrometryPublicationState.Available));
+            firstObservation = cancellation;
+            return pending.Read();
+        };
+
+        var cut = context.Render<CurrentSkyPage>();
+        await pending.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        if (switchCapture)
+        {
+            var next = OperatorUiTestData.CurrentImage();
+            current = next with { DisplayCapture = next.DisplayCapture! with { ExposureStartedUtc = first.DisplayCapture!.ExposureStartedUtc.AddMinutes(1) } };
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        }
+        if (invalidate)
+        {
+            service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                Layered(id, new string('D', 64)) with { Astrometry = accepted }));
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            Assert.AreEqual(2, checks);
+            Assert.IsTrue(firstObservation.IsCancellationRequested);
+        }
+
+        var state = interleaving == "indeterminate" ? CameraAgentAstrometryPublicationState.Indeterminate : CameraAgentAstrometryPublicationState.Available;
+        await Task.Run(() => pending.Complete(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(state))).ConfigureAwait(false);
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual("Unavailable", cut.Find(".astrometry-card .state-chip").TextContent));
+        Assert.IsEmpty(cut.FindAll(".astrometry-provenance"));
+        Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+
+        if (interleaving == "indeterminate")
+        {
+            await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            cut.WaitForAssertion(() => Assert.IsFalse(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled")));
+            Assert.AreEqual(2, checks);
+        }
+    }
+
+    [TestMethod]
     public async Task MeasuredTogglesUseFrozenTypedManifestAndKeepExpectedLayerIndependent()
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(WithStructuredBase()));
+        var measurement = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var structured = WithStructuredBase();
+        var capture = AstrometryImage(measurement).DisplayCapture;
+        var image = structured with { DisplayCapture = capture, LatestCapture = capture };
+        service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(image));
         var associationId = new string('E', 64);
         var residualId = new string('F', 64);
         service.PresentationHandler = (id, _) =>
@@ -182,6 +249,7 @@ public sealed partial class CurrentSkyPageTests
             var p = Layered(id, new string('D', 64)) with { ManifestArtifactId = Guid.NewGuid() };
             return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(p with
             {
+                Astrometry = measurement,
                 Layers = [.. p.Layers,
                     new(associationId, AstrometricDiagnosticPresentation.AssociationsLayer, "measured-associations", 600, false, 1_000_000, "v1", "v1"),
                     new(residualId, AstrometricDiagnosticPresentation.ResidualsLayer, "measured-residuals", 610, false, 1_000_000, "v1", "v1")]
@@ -272,7 +340,7 @@ public sealed partial class CurrentSkyPageTests
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(
             image with { DisplayCapture = capture, LatestCapture = capture }));
         // Complete on the renderer, allowing the awaiting continuation to finish synchronously before assertions.
-        var pending = new DeferredAstrometryRead();
+        var pending = new DeferredAstrometryRead<CameraAgentRetainedAstrometry>();
         var standaloneReads = 0;
         service.AstrometryHandler = (_, _) => { standaloneReads++; return pending.Read(); };
         var enriched = accepted with { CompatibleBaseArtifactId = image.Stages.Single(s => s.Stage == CameraAgentPresentationStage.Combined).DisplayArtifactId };
@@ -419,24 +487,26 @@ public sealed partial class CurrentSkyPageTests
 
     // A controllable service completion drives the actual component continuation on the renderer and
     // lets the test observe its final state without sleeps or a race against a detached read task.
-    private sealed class DeferredAstrometryRead : IValueTaskSource<OperatorUiResult<CameraAgentRetainedAstrometry>>
+    private sealed class DeferredAstrometryRead<T> : IValueTaskSource<OperatorUiResult<T>>
     {
         private Action<object?>? _continuation;
         private object? _state;
-        private OperatorUiResult<CameraAgentRetainedAstrometry>? _result;
+        private OperatorUiResult<T>? _result;
         private Exception? _error;
         private bool _completed;
-        public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> Read() => new(this, 0);
+        internal TaskCompletionSource Awaiting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ValueTask<OperatorUiResult<T>> Read() => new(this, 0);
         public ValueTaskSourceStatus GetStatus(short token) => _completed ? ValueTaskSourceStatus.Succeeded : ValueTaskSourceStatus.Pending;
-        public OperatorUiResult<CameraAgentRetainedAstrometry> GetResult(short token) => _error is { } error ? throw error : _result!;
+        public OperatorUiResult<T> GetResult(short token) => _error is { } error ? throw error : _result!;
         public void OnCompleted(Action<object?> continuation, object? state, short token, ValueTaskSourceOnCompletedFlags flags)
         {
             _continuation = continuation;
             _state = state;
+            Awaiting.TrySetResult();
         }
-        public void Complete(OperatorUiResult<CameraAgentRetainedAstrometry>? result = null, Exception? error = null)
+        public void Complete(OperatorUiResult<T>? result = null, Exception? error = null)
         {
-            Assert.IsNotNull(_continuation, "The initial missing-layer response must start the pending standalone read.");
+            Assert.IsNotNull(_continuation, "The pending read must be awaiting delivery.");
             _result = result;
             _error = error;
             _completed = true;
