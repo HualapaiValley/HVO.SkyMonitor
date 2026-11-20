@@ -240,7 +240,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         Assert.IsTrue(fullStack.ProcessingNodes.Any(n => n.NodeId == "Astrometry" && n.Status == "Skipped"));
         Assert.IsTrue(fullStack.Artifacts.Any(a => a.Variant == "installer-annotated-preview" && a.Availability == "Available"));
         await page.Locator("button.refresh-link").ClickAsync().ConfigureAwait(false);
-        await summary.GetByText("For a previous capture; this is not a solve for the selected image.", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
+        await summary.GetByText("For a different capture.", new() { Exact = true }).WaitForAsync().ConfigureAwait(false);
         Assert.Contains(accepted.MidpointUtc.ToString("O"), await summary.InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
         Assert.IsTrue(await page.Locator(".pixel-sky-calculator button").First.IsDisabledAsync().ConfigureAwait(false));
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceRoot, "latest-after-refresh.png"), FullPage = true }).ConfigureAwait(false);

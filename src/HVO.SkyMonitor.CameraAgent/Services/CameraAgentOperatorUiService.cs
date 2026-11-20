@@ -1196,9 +1196,12 @@ internal sealed class CameraAgentOperatorUiService(
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
             return Denied<CameraAgentLatestAstrometry?>();
-        var value = retainedAstrometry is null ? null
-            : await retainedAstrometry.GetLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
-        return OperatorUiResult<CameraAgentLatestAstrometry?>.Success(value);
+        var read = retainedAstrometry is null ? new CameraAgentLatestAstrometryRead(true)
+            : await retainedAstrometry.ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
+        return read.Completed
+            ? OperatorUiResult<CameraAgentLatestAstrometry?>.Success(read.Summary)
+            : OperatorUiResult<CameraAgentLatestAstrometry?>.Failure(OperatorUiResultKind.Unavailable,
+                "The latest accepted measured result is temporarily unavailable.");
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]

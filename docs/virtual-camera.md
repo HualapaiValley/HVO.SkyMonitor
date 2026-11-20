@@ -667,9 +667,9 @@ depth never depends on a host setting: the W1/W2 canonical workloads
 (`cameraagent.standalone-w6.json`, `cameraagent.standalone-w6-mono8.json`),
 the split-host `*.full.json` modules, `cameraagent.asi178mc-comparison.json`
 and the `virtual-asi174-mono8-roi-bin4.json` readout fixture. The
-operator-facing `cameraagent.sample.json` and
-`cameraagent.standalone-production-smoke.json` follow the operator limit, as an
-installed camera does.
+operator-facing `cameraagent.sample.json` sets a camera profile limit of 2,000.
+The standalone production smoke profile sets 32,768. An explicit host renderer
+limit or legacy sky-map override takes precedence for either profile.
 
 `stellar-exposure-iau1976-bounded-midpoint-v1` projects the complete bounded
 selection over the exact celestial interval, including off-frame centers whose

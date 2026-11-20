@@ -334,14 +334,26 @@ else
                         <h3 id="latest-measured-heading">Latest accepted measured result</h3>
                         @if (_latestAstrometry is { } latestSolution)
                         {
-                            <p>@(latestSolution.CaptureId == _runCaptureId ? "For the selected capture." : "For a previous capture; this is not a solve for the selected image.")</p>
+                            @if (_latestAstrometryReadSucceeded is false)
+                            {
+                                <p>The latest result is temporarily unavailable. Showing the previously verified result.</p>
+                            }
+                            <p>@(_runCaptureId switch
+                            {
+                                null => "No image is selected. This result is from a retained capture.",
+                                var selected when selected == latestSolution.CaptureId => "For the selected capture.",
+                                _ => "For a different capture."
+                            })</p>
                             <dl>
                                 <div><dt>Measured center RA / Dec</dt><dd>@FormattableString.Invariant($"{latestSolution.RightAscensionHours:0.######} h / {latestSolution.DeclinationDegrees:0.######}° (mean of date)")</dd></div>
                                 <div><dt>Measured roll</dt><dd>@FormattableString.Invariant($"{latestSolution.RollDegrees:0.######}°")</dd></div>
-                                <div><dt>Local scale X / Y</dt><dd>@(latestSolution.LocalScale.XArcsecondsPerPixel is { } sx && latestSolution.LocalScale.YArcsecondsPerPixel is { } sy ? FormattableString.Invariant($"{sx:0.####} / {sy:0.####} arcsec/pixel") : "Unavailable at this reference point")</dd></div>
+                                <div><dt>Local scale X / Y</dt><dd>@(latestSolution.LocalScale.XArcsecondsPerPixel is { } sx && latestSolution.LocalScale.YArcsecondsPerPixel is { } sy ? FormattableString.Invariant($"{sx:0.####} / {sy:0.####} arcsec/pixel") : "Unavailable for this readout")</dd></div>
                                 <div><dt>Solution capture midpoint UTC</dt><dd><time datetime="@latestSolution.MidpointUtc.ToString("O")">@latestSolution.MidpointUtc.ToString("O")</time></dd></div>
                             </dl>
-                            <p>@FormattableString.Invariant($"Scale at measured boresight, source pixel ({latestSolution.ReferencePixel.X:0.####}, {latestSolution.ReferencePixel.Y:0.####}).")</p>
+                            @if (latestSolution.ReferencePixel is { } referencePixel)
+                            {
+                                <p>@FormattableString.Invariant($"Scale at {latestSolution.ScaleReference}, source pixel ({referencePixel.X:0.####}, {referencePixel.Y:0.####}).")</p>
+                            }
                             <details>
                                 <summary>Scale reference, axes and retained source</summary>
                                 <p>Zero-based source output X right, Y down, after crop/bin/flip. Angular separation across ±0.5 pixel on each axis; local fisheye scale, not an image-wide constant. Roll is right-handed about boresight; zero roll is local vertical up, north-up at zenith.</p>
@@ -352,9 +364,17 @@ else
                                 </dl>
                             </details>
                         }
-                        else
+                        else if (_latestAstrometryReadSucceeded is true)
                         {
                             <p>No accepted measured result is available from the retained search. Raw capture and selected-image inspection continue independently.</p>
+                        }
+                        else if (_latestAstrometryReadSucceeded is false)
+                        {
+                            <p>The latest accepted measured result is temporarily unavailable.</p>
+                        }
+                        else
+                        {
+                            <p>Checking retained measured results.</p>
                         }
                     </section>
                 }

@@ -28,8 +28,10 @@ public sealed record CameraAgentRetainedAstrometry(Guid CaptureId, string Availa
 /// <summary>Summary only; cannot supply geometry to another capture.</summary>
 public sealed record CameraAgentLatestAstrometry(Guid CaptureId, Guid ArtifactId, string SolutionIdentitySha256,
     DateTimeOffset MidpointUtc, double RightAscensionHours, double DeclinationDegrees, double RollDegrees,
-    PixelPoint ReferencePixel, AstrometricLocalPixelScale LocalScale)
+    PixelPoint? ReferencePixel, AstrometricLocalPixelScale LocalScale)
 {
+    public string? ScaleReference { get; init; }
+
     public static CameraAgentLatestAstrometry? FromVerified(CameraAgentRetainedAstrometry value)
     {
         ArgumentNullException.ThrowIfNull(value);
@@ -37,16 +39,41 @@ public sealed record CameraAgentLatestAstrometry(Guid CaptureId, Guid ArtifactId
             value.ArtifactId is not { } artifact || value.SolutionIdentitySha256 != solution.SolutionIdentitySha256 ||
             value.CaptureId != solution.Assessment.Frame.CaptureId) return null;
         var fit = solution.Assessment.Parameters!;
-        var reference = mapping.SkyToPixel(new(fit.BoresightRightAscensionHours, fit.BoresightDeclinationDegrees));
-        if (reference is not { } pixel) return null;
+        var reference = ScaleAt(mapping.SkyToPixel(new(fit.BoresightRightAscensionHours, fit.BoresightDeclinationDegrees)), "measured boresight")
+            ?? ScaleAt(new PixelPoint((value.WidthPixels - 1) / 2d, (value.HeightPixels - 1) / 2d), "source image center");
+        if (reference is null && value.Diagnostics is { } diagnostics)
+        {
+            foreach (var residual in diagnostics.Residuals)
+            {
+                reference = ScaleAt(residual.Measured, "measured star");
+                if (reference is not null) break;
+            }
+        }
+
         return new(value.CaptureId, artifact, solution.SolutionIdentitySha256, solution.Assessment.Frame.MidpointUtc,
-            fit.BoresightRightAscensionHours, fit.BoresightDeclinationDegrees, fit.RollDegrees, pixel, mapping.LocalPixelScale(pixel));
+            fit.BoresightRightAscensionHours, fit.BoresightDeclinationDegrees, fit.RollDegrees,
+            reference?.Pixel, reference?.Scale ?? new(null, null))
+        { ScaleReference = reference?.Label };
+
+        ScaleSample? ScaleAt(PixelPoint? point, string label)
+        {
+            if (point is not { } pixel || pixel.X < 0 || pixel.Y < 0 ||
+                pixel.X >= value.WidthPixels || pixel.Y >= value.HeightPixels || mapping.PixelToSky(pixel) is null) return null;
+            var scale = mapping.LocalPixelScale(pixel);
+            return scale is { XArcsecondsPerPixel: not null, YArcsecondsPerPixel: not null } ? new(pixel, scale, label) : null;
+        }
     }
+
+    private sealed record ScaleSample(PixelPoint Pixel, AstrometricLocalPixelScale Scale, string Label);
 }
+
+public sealed record CameraAgentLatestAstrometryRead(bool Completed, CameraAgentLatestAstrometry? Summary = null);
 
 public interface ICameraAgentRetainedAstrometryService
 {
     ValueTask<CameraAgentLatestAstrometry?> GetLatestAcceptedAsync(CancellationToken cancellationToken) => ValueTask.FromResult<CameraAgentLatestAstrometry?>(null);
+    async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CancellationToken cancellationToken)
+        => new(true, await GetLatestAcceptedAsync(cancellationToken).ConfigureAwait(false));
     ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken);
 }
 
@@ -70,29 +97,21 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     }
 
     public async ValueTask<CameraAgentLatestAstrometry?> GetLatestAcceptedAsync(CancellationToken cancellationToken)
+        => (await ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false)).Summary;
+
+    public async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CancellationToken cancellationToken)
     {
-        if (!await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return null;
+        if (!await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return new(false);
         try
         {
-            // Page compact candidates newest-first; only reconstruct accepted evidence. Caller deadlines bound history reads.
-            AstrometryCaptureCandidate? cursor = null;
-            while (true)
+            var captures = await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var candidate in captures)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var captures = await store.ReadRecentAstrometryCapturesAsync(cursor, cancellationToken).ConfigureAwait(false);
-                foreach (var candidate in captures)
-                {
-                    if (!candidate.HasAssessment) continue;
-                    var value = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
-                    if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary) return summary;
-                }
-                if (captures.Count < SqliteCaptureProcessingStore.LatestAstrometryPageSize) break;
-                cursor = captures[^1];
-                // SQLite's provider executes synchronously. Yield between bounded metadata pages so a
-                // no-assessment history cannot monopolize the caller or prevent deadline cancellation.
-                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                var value = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
+                if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary) return new(true, summary);
             }
-            return null;
+            return new(true);
         }
         finally { readGate.Release(); }
     }

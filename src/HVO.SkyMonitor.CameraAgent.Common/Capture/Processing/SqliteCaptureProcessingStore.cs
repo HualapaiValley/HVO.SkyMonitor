@@ -718,6 +718,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (outputs.Any(static output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion))
+            MarkAstrometryCaptureChanged(captureId);
     }
 
     /// <summary>
@@ -1599,6 +1601,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
+        Guid? removedAstrometryCapture = null;
         if (operation.OutputIdentitySha256 is { } output)
         {
             string? owningCapture = null;
@@ -1607,13 +1610,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             {
                 using var owner = connection.CreateCommand();
                 owner.Transaction = transaction;
-                owner.CommandText = "SELECT capture_id, node_id FROM processing_outputs WHERE output_identity_sha256 = $output;";
+                owner.CommandText = "SELECT capture_id, node_id, product_schema_version FROM processing_outputs WHERE output_identity_sha256 = $output;";
                 owner.Parameters.AddWithValue("$output", output);
                 using var ownerReader = await owner.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 if (await ownerReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     owningCapture = ownerReader.GetString(0);
                     owningNode = ownerReader.GetString(1);
+                    if (!await ownerReader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) &&
+                        ownerReader.GetString(2) == MeasuredAstrometrySolutionV1.CurrentSchemaVersion)
+                        removedAstrometryCapture = Guid.ParseExact(owningCapture, "N");
                 }
             }
             using var update = connection.CreateCommand();
@@ -1668,6 +1674,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$id", operation.OperationId);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (removedAstrometryCapture is { } captureId) MarkAstrometryCaptureChanged(captureId);
     }
 
     internal async ValueTask DeleteLifecycleOperationAsync(string operationId, CancellationToken cancellationToken)
@@ -3697,6 +3704,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     public void Dispose()
     {
+        _astrometryCandidateGate.Dispose();
         _initializeGate.Dispose();
     }
 

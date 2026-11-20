@@ -366,6 +366,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 // read; immutable retained assessments (including rejection/budget outcomes) need no polling.
                 if (result.IsSuccess && previouslyDisplayedCaptureId == _runCaptureId &&
                     _layers?.Astrometry is { Solution: null }) _ = RefreshMeasuredEvidenceAsync();
+                if (result.IsSuccess) _ = LoadLatestAstrometryAsync();
                 StateHasChanged();
             }).ConfigureAwait(false);
             if (!_accessDenied && _disposeStarted == 0 && refreshedCaptureId is { } captureId)
@@ -374,7 +375,6 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 // the five-second current-sky refresh appear to have failed.
                 _ = LoadLiveRunLinkAsync(captureId, cancellationToken);
                 _ = LoadTransientAsync(captureId, cancellationToken);
-                if (_latestAstrometry is null && _astrometry?.Solution is not null) _ = LoadLatestAstrometryAsync();
             }
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

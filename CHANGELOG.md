@@ -14,9 +14,17 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent Current Sky shows the latest accepted retained measured pointing, rotation, local pixel scale and capture time, with previous-capture results kept separate from selected-image diagnostics. Virtual Sky can measure astrometry alongside its existing scene overlays. #1901
 
+- CameraAgent owners can configure a pinned measured-astrometry reference depth with `hvo-sky astrometry configure` and set the independent `virtualSky.rendererCandidateCap` renderer limit. New VirtualSky astrometry presets default to magnitude 3.25. #1901
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
+### Changed
+
+- Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
+
 ### Fixed
+
+- Equatorial-to-horizontal calculations at the zenith and nadir stay finite when floating-point rounding reaches slightly outside the sine range. #1901
 
 - Allow runtime control after a backup is settled or fully recovered, while retaining its journal. #1878
 

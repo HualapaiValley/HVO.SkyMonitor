@@ -10,6 +10,7 @@ public sealed partial class CurrentSkyPage
     private CameraAgentLatestAstrometry? _latestAstrometry;
     private long _latestAstrometryRevision;
     private bool _latestAstrometryLoading;
+    private bool? _latestAstrometryReadSucceeded;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional summary reads must not fail the image view.")]
     private async Task LoadLatestAstrometryAsync()
@@ -27,7 +28,9 @@ public sealed partial class CurrentSkyPage
                 _latestAstrometryLoading = false;
                 if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                 if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied || IsArchived) return;
-                _latestAstrometry = result.IsSuccess ? result.Value : null;
+                var completed = result.IsSuccess && !bounded.IsCancellationRequested;
+                _latestAstrometryReadSucceeded = completed;
+                if (completed) _latestAstrometry = result.Value;
                 StateHasChanged();
             });
         }
@@ -36,8 +39,8 @@ public sealed partial class CurrentSkyPage
             await InvokeAsync(() =>
             {
                 _latestAstrometryLoading = false;
-                if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied) return;
-                _latestAstrometry = null;
+                if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied || IsArchived) return;
+                _latestAstrometryReadSucceeded = false;
                 StateHasChanged();
             });
         }
@@ -93,7 +96,6 @@ public sealed partial class CurrentSkyPage
         if (_astrometry?.SolutionIdentitySha256 != value.SolutionIdentitySha256) _calculatorResult = null;
         _astrometry = value;
         _astrometryLoading = false;
-        if (!IsArchived) _ = LoadLatestAstrometryAsync();
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional retained evidence cannot fail the image view.")]

@@ -3,49 +3,51 @@
 Current Sky displays the latest accepted **retained** result in the existing
 Measured Image Solution / Astrometry card, semantically separate from its
 selected-image assessment. The summary identifies the result capture, midpoint
-UTC, artifact and solution hash. An unsolved newer image explicitly labels that
-result as previous evidence. Archive inspection, overlays, residual diagnostics
-and pixel/sky calculators continue to require the selected capture's compatible
-mapping. No fit runs in a browser or read request; no fitted calibration is
+UTC, artifact and solution hash. The card identifies when the result belongs to
+a different capture and can show it when no image is selected. Archive
+inspection, overlays, residual diagnostics and pixel/sky calculators continue
+to require the selected capture's compatible mapping. No fit runs in a browser or read request; no fitted calibration is
 activated automatically.
 
 Center RA/Dec are the accepted boresight in mean-of-date coordinates at exposure
 midpoint. Roll is the retained native right-handed rotation about boresight;
 zero roll puts local vertical up, with north-up at zenith. The local scale is the
-angular separation between points ±0.5 source pixel from the measured boresight
-on each X/Y axis. Source output pixels are zero-based, X right/Y down, after
-crop/bin/flip. This explicitly local fisheye scale is not a constant for the
-whole image. Values come from the verified retained fit and Astronomy mapping.
+angular separation between points ±0.5 source pixel on each X/Y axis. The card
+names the reference point. It tries the measured boresight first, then the
+source image center and a measured star if the readout crop or aperture prevents
+calculation at the earlier points. The accepted pointing and rotation remain
+visible when no scale is available. Source output pixels are zero-based,
+X right/Y down, after crop/bin/flip. The scale describes the named pixel
+neighborhood, and the values come from the verified retained fit.
 
-The authenticated summary lookup pages 128 compact raw metadata rows at a time
-in newest exposure order using the existing capture-time and capture/product
-indexes and a keyset cursor; it does not sort the entire output history. It
-yields between pages so no-assessment history remains cancelable. It skips
-nonaccepted compact products, verifies all
-parents of an accepted candidate through the existing retained reader, and
-returns only summary values. Current Sky imposes a five-second deadline and the
-reader's existing single-reader/no-buffer-queue gate. Busy, invalid, expired or
-missing evidence yields unavailable summary rather than invented pointing. A
-result outside one page remains discoverable; there is no fixed result age
-cutoff. Retention governs how long any result remains available.
+The summary refresh runs independently of image selection. It looks up retained
+solution candidates in newest exposure order, verifies an accepted candidate
+and its source evidence, and returns summary values. Current Sky reports a
+temporary read failure while keeping an already verified result and its timestamp.
+A completed search with no verifiable accepted fit clears that summary.
+Retention governs how long a result remains available.
 
 ## Opt-in Virtual Sky graph
 
 Use the existing explicit-v2 graph and the retained contracts documented in
-[retained astrometry](retained-astrometry.md). Preserve the existing, required
+[retained astrometry](retained-astrometry.md). The owner command
+`hvo-sky astrometry configure --reference-magnitude 3.25` derives the pinned
+reference settings for an existing compatible graph. A new VirtualSky preset
+defaults to 3.25. Preserve the existing, required
 `ProjectedScene` node and its dependencies, including the presentation, stack,
 and Storage branches. Keep an enabled retention owner. Append three optional
 nodes (`required:false`) with `publication.persistence:durable-local`:
 
 1. `AstrometryPrediction`, depending only on `$raw`, with
-   `maximumMagnitude:5` and `maximumResults:2000`.
+   `maximumMagnitude:3.25` and `maximumResults:2000`.
 2. `MeasuredStellarAssociations`, depending on `AstrometryPrediction`, with
    `useAstrometryPrediction:true`.
 3. `MeasuredAstrometry`, depending on both `AstrometryPrediction` and measured
    associations, with `useAstrometryPrediction:true`, `captureStride:60`, and a
    `catalogSelection` pin from the verified local adapter
    (`catalogIdentitySha256`, `selectionIdentitySha256`,
-   `maximumMagnitude:5`, `maximumEntries:2500`).
+   `maximumMagnitude:3.25`, `maximumEntries:2500`). Set
+   `recipe.solver.maximumCatalogMagnitude:3.25` to match the pin and prediction.
 
 `AstrometryPrediction` builds catalog-star predictions from capture-time
 rig/site and the verified installed catalog after raw admission. Its separate
@@ -62,7 +64,7 @@ provenance and completeness, and freezes the rows in the existing durable
 context. A changed/missing/truncated catalog fails the optional node. Replay
 uses the original frozen context without consulting the current catalog. The
 existing inline `catalog` snapshot remains supported; supply exactly one of
-`catalog` and `catalogSelection`. The compact pin keeps a full magnitude-5
+`catalog` and `catalogSelection`. The compact pin keeps the full catalog
 selection out of the shared 64 KiB graph-node options envelope without raising
 that bound.
 
@@ -70,8 +72,11 @@ Build the astrometry snapshot through the local catalog adapter, including
 package provenance and its completeness declaration. The qualified catalog is
 HYG 4.2 production package `hyg-v4.2-p3-s2-r1`, 119,625 database rows, SHA-256
 `B51D18B722199E89AA8FE4622EBE507346C75EFFB375E546881452A263F0B9E2`;
-its complete magnitude-5 selection contains 1,637 stars, below the 2,500-row
-contract bound. Do not manufacture completeness or download during execution.
+its complete magnitude-3.25 selection contains 226 stars, below the 2,500-row
+contract bound. For a magnitude-5 profile, use
+`hvo-sky astrometry configure --reference-magnitude 5` or set the prediction,
+pin and solver magnitudes all to 5. This HYG selection contains 1,637 stars.
+Use the installed catalog's verified completeness during execution.
 Five-second capture and stride 60 sample one solve per five minutes. Optional
 skips/failures cannot become prerequisites of raw Storage. The existing
 20-second cooperative recipe budget and serialized numerical gate apply.
