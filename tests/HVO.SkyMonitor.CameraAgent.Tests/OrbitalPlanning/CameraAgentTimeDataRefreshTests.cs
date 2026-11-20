@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Automation;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
@@ -31,6 +32,9 @@ public sealed class CameraAgentTimeDataRefreshTests
 
     private static byte[] BundledLeap => File.ReadAllBytes(Path.Combine(CameraAgentPinnedOrbitalTimeSource.BundledDirectory,
         CameraAgentTimeDataSources.LeapSecondsFile));
+
+    private static DateTimeOffset DayBeforeBundledPredictions
+        => OrbitalTimeData.FromFinals2000A(BundledEop, BundledLeap).EarthOrientationPredictedCoverage!.StartUtc.AddDays(-1);
 
     [TestMethod]
     public async Task ClientAcceptsOnlyBounded200ResponsesAsync()
@@ -491,8 +495,8 @@ public sealed class CameraAgentTimeDataRefreshTests
     public async Task AdoptingAPairRetrievedAfterTheDailyUpdateKeepsTheRestOfTheDayCoveredAsync()
     {
         // USNO's daily update (about 17:11Z) leaves only rapid (I) rows for the current UTC day, which planning treats as a
-        // gap. The committed snapshot is such a download: retrieved after the 2026-10-21 update, it covers from 2026-10-22.
-        var day = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero);
+        // gap. Use the day before the bundled predictions begin so the scenario follows each refreshed snapshot.
+        var day = DayBeforeBundledPredictions;
         using var host = new Host(day.AddHours(12));
         var earlier = await host.Store.AdoptAsync(Candidate(PredictedOn(BundledEop, day), WithLaterExpiry(BundledLeap, 50)),
             day.AddHours(-12), TestContext.CancellationToken).ConfigureAwait(false);
@@ -762,8 +766,8 @@ public sealed class CameraAgentTimeDataRefreshTests
     [TestMethod]
     public async Task TheStatusSaysSoWhenNoVerifiedPairCoversTheCurrentTimeAndPlanningFailsAsync()
     {
-        // The committed snapshot, retrieved after the 2026-10-21 update, is the only pair: it cannot evaluate the rest of that day.
-        var day = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero);
+        // The bundled snapshot is the only pair. It cannot evaluate the afternoon before its predictions begin.
+        var day = DayBeforeBundledPredictions;
         using var host = new Host(day.AddHours(18));
         Assert.AreEqual(CameraAgentSatellitePlanningOutcome.TimeInputsUnavailable, (await PlanAsync(host, host.Clock.Now).ConfigureAwait(false)).Outcome);
         var status = await host.Operations.GetStatusAsync(TestContext.CancellationToken).ConfigureAwait(false);
