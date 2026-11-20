@@ -3756,8 +3756,29 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     public void Dispose()
     {
-        _astrometryCandidateGate.Dispose();
-        _initializeGate.Dispose();
+        Task? seed;
+        Task cancellation;
+        lock (_astrometryChangesLock)
+        {
+            if (_astrometrySeedStopped) return;
+            _astrometrySeedStopped = true;
+            seed = _astrometrySeed;
+            cancellation = _astrometrySeedLifetime.CancelAsync();
+        }
+
+        try
+        {
+            cancellation.GetAwaiter().GetResult();
+        }
+        finally
+        {
+            // The worker uses the store gates and its own SQLite connection. Join it before
+            // disposing the gates so cancellation always releases the reader inside the worker.
+            seed?.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing).GetAwaiter().GetResult();
+            _astrometrySeedLifetime.Dispose();
+            _astrometryCandidateGate.Dispose();
+            _initializeGate.Dispose();
+        }
     }
 
     private const string SchemaSql = """
