@@ -114,6 +114,29 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
+    internal async ValueTask<HashSet<Guid>> ReadAstrometryPublicationChangesAsync(
+        IReadOnlyList<Guid> captures, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT requested.value
+            FROM json_each($captures) requested
+            WHERE EXISTS (
+                SELECT 1 FROM processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup
+                WHERE output.capture_id = requested.value AND output.role = 'Metadata'
+                  AND output.product_schema_version = 'measured-astrometry-solution-v1'
+                  AND {AstrometryOutputPublication} IN (1, 2));
+            """;
+        command.Parameters.AddWithValue("$captures", JsonSerializer.Serialize(captures.Select(static capture => capture.ToString("N"))));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var changed = new HashSet<Guid>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            changed.Add(Guid.ParseExact(reader.GetString(0), "N"));
+        return changed;
+    }
+
     private readonly SemaphoreSlim _astrometryCandidateGate = new(1, 1);
     private readonly object _astrometryChangesLock = new();
     private readonly CancellationTokenSource _astrometrySeedLifetime = new();
