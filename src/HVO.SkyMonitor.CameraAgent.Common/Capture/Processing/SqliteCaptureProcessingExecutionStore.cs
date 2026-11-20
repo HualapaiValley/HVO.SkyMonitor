@@ -16,51 +16,77 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     private static readonly JsonSerializerOptions ExecutionSerializerOptions = CreateExecutionSerializerOptions();
 
-    internal async ValueTask<ProcessingGraphRevisionSnapshot?> TryEnsureSceneCompatibilityRevisionAsync(
-        ProcessingGraphRevisionSnapshot expected, CancellationToken cancellationToken)
+    internal async ValueTask<ProcessingGraphRevisionSnapshot> EnsureSceneCompatibilityRevisionAsync(
+        SceneCompatibilityRevisionSearch search, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        var existing = await ReadSceneCompatibilityRevisionAsync(connection, null, expected, cancellationToken)
-            .ConfigureAwait(false);
-        if (existing.Occupied) return existing.Eligible;
+#pragma warning disable CA1849
+        using (var readTransaction = connection.BeginTransaction(deferred: true))
+#pragma warning restore CA1849
+        {
+            var (_, selected) = await FindSceneCompatibilityRevisionAsync(connection, readTransaction, search, cancellationToken)
+                .ConfigureAwait(false);
+            if (selected is not null) return selected;
+        }
 
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
-        existing = await ReadSceneCompatibilityRevisionAsync(connection, transaction, expected, cancellationToken)
+        // A writer may have filled the free name or validated an earlier draft since the read snapshot.
+        var (name, current) = await FindSceneCompatibilityRevisionAsync(connection, transaction, search, cancellationToken)
             .ConfigureAwait(false);
-        if (!existing.Occupied)
+        if (current is null)
         {
+            var expected = search.ExpectedRevision!(name);
             await InsertRevisionAsync(connection, transaction, expected, ProcessingGraphRevisionLifecycle.Validated, cancellationToken)
                 .ConfigureAwait(false);
-            existing = (true, await ReadRevisionAsync(connection, transaction, expected.State.RevisionId, cancellationToken)
-                .ConfigureAwait(false));
+            current = await ReadRevisionAsync(connection, transaction, expected.State.RevisionId, cancellationToken)
+                .ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return existing.Eligible;
+        return current;
+    }
+
+    private static async ValueTask<(string Name, ProcessingGraphRevisionSnapshot? Selected)> FindSceneCompatibilityRevisionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        SceneCompatibilityRevisionSearch search,
+        CancellationToken cancellationToken)
+    {
+        for (var generation = 0; ; generation++)
+        {
+            var name = generation == 0 ? search.SourceId : FormattableString.Invariant($"{search.SourceId}-{generation}");
+            var expected = search.ExpectedRevision?.Invoke(name);
+            var (occupied, eligible) = await ReadSceneCompatibilityRevisionAsync(
+                connection, transaction, search.GraphName, name, expected, cancellationToken).ConfigureAwait(false);
+            // Live selection creates a revision at the first free name, before considering any later generation.
+            if (!occupied || eligible is not null && search.MatchesFrozen?.Invoke(eligible) != false)
+                return (name, eligible);
+        }
     }
 
     private static async ValueTask<(bool Occupied, ProcessingGraphRevisionSnapshot? Eligible)> ReadSceneCompatibilityRevisionAsync(
         SqliteConnection connection,
-        SqliteTransaction? transaction,
-        ProcessingGraphRevisionSnapshot expected,
+        SqliteTransaction transaction,
+        string graphName,
+        string name,
+        ProcessingGraphRevisionSnapshot? expected,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = RevisionSelectSql + " WHERE graph_name = $name AND revision_name = $revision;";
-        command.Parameters.AddWithValue("$name", expected.State.Name);
-        command.Parameters.AddWithValue("$revision", expected.State.Revision);
+        command.Parameters.AddWithValue("$name", graphName);
+        command.Parameters.AddWithValue("$revision", name);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return (false, null);
         var state = ReadRevisionState(reader);
-        if (state.RevisionId != expected.State.RevisionId || !IsValidatedCompatibilityRevision(state))
-        {
+        if (!IsValidatedCompatibilityRevision(state) || expected is not null && state.RevisionId != expected.State.RevisionId)
             return (true, null);
-        }
+
         var stored = await ReadRevisionSnapshotAsync(reader, state, cancellationToken).ConfigureAwait(false);
-        return (true, HasSameRevisionContent(stored, expected) ? stored : null);
+        return (true, expected is null || HasSameRevisionContent(stored, expected) ? stored : null);
     }
 
     private static bool IsValidatedCompatibilityRevision(ProcessingGraphRevisionState state)
@@ -458,8 +484,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
-        Func<ProcessingGraphRevisionSnapshot, ProcessingGraphRevisionSnapshot, CancellationToken, ValueTask<bool>>
-            isLiveCompatibilityRevision,
+        Func<ProcessingGraphRevisionSnapshot, ProcessingGraphRevisionSnapshot, CancellationToken,
+            ValueTask<SceneCompatibilityRevisionSearch?>> createCompatibilitySearch,
         CancellationToken cancellationToken)
     {
         ValidateRevisionId(revisionId);
@@ -494,10 +520,16 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             var source = await ReadRevisionAsync(connection, transaction, state.ActiveRevisionId, cancellationToken)
                 .ConfigureAwait(false);
-            if (await isLiveCompatibilityRevision(source, revision, cancellationToken).ConfigureAwait(false))
+            var search = await createCompatibilitySearch(source, revision, cancellationToken).ConfigureAwait(false);
+            if (search is not null)
             {
-                throw new ProcessingGraphStoreConflictException(
-                    "A compatibility revision for the selected processing graph cannot be retired.");
+                var (_, selected) = await FindSceneCompatibilityRevisionAsync(connection, transaction, search, cancellationToken)
+                    .ConfigureAwait(false);
+                if (selected?.State.RevisionId == revisionId)
+                {
+                    throw new ProcessingGraphStoreConflictException(
+                        "A compatibility revision for the selected processing graph cannot be retired.");
+                }
             }
         }
         if (await IsAcceptedDeliveredRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false))
@@ -1902,3 +1934,9 @@ internal sealed partial class SqliteCaptureProcessingStore
 
 
 }
+
+internal sealed record SceneCompatibilityRevisionSearch(
+    string GraphName,
+    string SourceId,
+    Func<string, ProcessingGraphRevisionSnapshot>? ExpectedRevision = null,
+    Func<ProcessingGraphRevisionSnapshot, bool>? MatchesFrozen = null);

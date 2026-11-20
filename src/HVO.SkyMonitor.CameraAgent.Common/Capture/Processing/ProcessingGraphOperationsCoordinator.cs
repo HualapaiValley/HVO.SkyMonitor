@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.ComponentModel.DataAnnotations;
 using System.Text;
@@ -180,7 +181,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         return revision;
     }
 
-    private async ValueTask<ProcessingGraphRevisionSnapshot> ResolveSceneCompatibilityRevisionAsync(
+    private ValueTask<ProcessingGraphRevisionSnapshot> ResolveSceneCompatibilityRevisionAsync(
         CameraModuleConfig configuration,
         ProcessingGraphRevisionSnapshot source,
         CaptureProcessingStepConfig legacyScene,
@@ -188,39 +189,27 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     {
         var sourceId = source.State.RevisionId;
         var cached = Volatile.Read(ref _sceneCompatibilityCandidate);
-        var preferred = cached is not null && cached.SourceId == sourceId && ReferenceEquals(cached.Configuration, configuration)
-            ? cached : null;
-        CameraModuleConfig? migrated = null;
-        var compatibilityGraphName = VirtualSkySceneCompatibilityGraphName;
-        for (var generation = preferred?.Generation ?? 0; ; generation++)
+        if (cached is null || cached.Search.SourceId != sourceId || !ReferenceEquals(cached.Configuration, configuration))
         {
-            if (preferred is null)
-            {
-                if (migrated is null)
-                {
-                    var derivation = DeriveSceneCompatibilityPipeline(source, legacyScene);
-                    compatibilityGraphName = derivation.GraphName;
-                    migrated = configuration with { Pipeline = derivation.Pipeline };
-                }
-                var name = generation == 0 ? sourceId : FormattableString.Invariant($"{sourceId}-{generation}");
-                var expected = CreateRevisionSnapshot(migrated, compatibilityGraphName,
-                    name, _timeProvider.GetUtcNow(), ProcessingGraphRevisionLifecycle.Validated,
-                    compilation: CaptureProcessingGraphCompilation.ActiveProfile);
-                EnsureLiveEligible(expected);
-                preferred = new(sourceId, configuration, generation, expected);
-            }
-            // Cache the compiled expectation. SQLite still verifies identity and lifecycle on every selection.
-            var selected = await _store.TryEnsureSceneCompatibilityRevisionAsync(preferred.Expected, cancellationToken)
-                .ConfigureAwait(false);
-            if (selected is not null)
-            {
-                Volatile.Write(ref _sceneCompatibilityCandidate, preferred);
-                return selected;
-            }
-            // An occupied name may belong to a retired revision or different immutable content. Keep its history
-            // and use the next deterministic name so a restart can discover the same replacement.
-            preferred = null;
+            var (graphName, pipeline) = DeriveSceneCompatibilityPipeline(source, legacyScene);
+            var migrated = configuration with { Pipeline = pipeline };
+            var expectations = new ConcurrentDictionary<string, ProcessingGraphRevisionSnapshot>(StringComparer.Ordinal);
+            cached = new(configuration, new SceneCompatibilityRevisionSearch(graphName, sourceId, name =>
+                expectations.GetOrAdd(name, revision => CreateSceneCompatibilitySnapshot(migrated, graphName, revision))));
+            Volatile.Write(ref _sceneCompatibilityCandidate, cached);
         }
+
+        // Cache the compilation only. A previously skipped draft can be validated while the host is running.
+        return _store.EnsureSceneCompatibilityRevisionAsync(cached.Search, cancellationToken);
+    }
+
+    private ProcessingGraphRevisionSnapshot CreateSceneCompatibilitySnapshot(
+        CameraModuleConfig configuration, string graphName, string revision)
+    {
+        var snapshot = CreateRevisionSnapshot(configuration, graphName, revision, _timeProvider.GetUtcNow(),
+            ProcessingGraphRevisionLifecycle.Validated, compilation: CaptureProcessingGraphCompilation.ActiveProfile);
+        EnsureLiveEligible(snapshot);
+        return snapshot;
     }
 
     internal async ValueTask EnsureLiveStoragePolicyAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
@@ -662,9 +651,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string? reason,
         CancellationToken cancellationToken)
         => _store.RetireRevisionAsync(
-            revisionId, expectedVersion, idempotencyKey, actor, reason, IsLiveSceneCompatibilityRevisionAsync, cancellationToken);
+            revisionId, expectedVersion, idempotencyKey, actor, reason, CreateRetirementCompatibilitySearchAsync, cancellationToken);
 
-    private async ValueTask<bool> IsLiveSceneCompatibilityRevisionAsync(
+    private async ValueTask<SceneCompatibilityRevisionSearch?> CreateRetirementCompatibilitySearchAsync(
         ProcessingGraphRevisionSnapshot source,
         ProcessingGraphRevisionSnapshot candidate,
         CancellationToken cancellationToken)
@@ -672,24 +661,32 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         var legacyScene = profile is null ? LegacyVirtualSkySceneGraph.FindLegacyScene(source.Pipeline)
             : LegacyVirtualSkySceneGraph.FindLegacyScene(profile, source.Pipeline);
-        if (legacyScene is null) return false;
+        if (legacyScene is null) return null;
 
         var (graphName, pipeline) = DeriveSceneCompatibilityPipeline(source, legacyScene);
         var state = candidate.State;
-        if (state.Name != graphName || !candidate.PipelineJson.AsSpan().SequenceEqual(CanonicalBytes(pipeline)))
-            return false;
+        var pipelineJson = CanonicalBytes(pipeline);
+        if (state.Name != graphName || !candidate.PipelineJson.AsSpan().SequenceEqual(pipelineJson))
+            return null;
 
-        if (profile is null)
+        if (profile is not null)
         {
-            // The journal can be reopened before a camera profile is available. Verify the derivation using the
-            // frozen source pipeline and the candidate's immutable revision identity in that interval.
-            return state.RevisionId == ComputeRevisionId(
-                state.Name, state.Revision, state.DefinitionIdentitySha256, state.SharedPlanIdentitySha256, state.LocalPlanIdentitySha256);
+            var migrated = profile with { Pipeline = pipeline };
+            return new(graphName, source.State.RevisionId,
+                name => CreateSceneCompatibilitySnapshot(migrated, graphName, name));
         }
 
-        var expected = CreateRevisionSnapshot(profile with { Pipeline = pipeline }, graphName, state.Revision, state.CreatedUtc,
-            ProcessingGraphRevisionLifecycle.Validated, compilation: CaptureProcessingGraphCompilation.ActiveProfile);
-        return SqliteCaptureProcessingStore.HasSameRevisionContent(candidate, expected);
+        // Before a profile loads, use frozen derivation evidence. An earlier revision compiled under a
+        // different plan cannot establish that the candidate would be skipped by the live compiler.
+        return new(graphName, source.State.RevisionId, MatchesFrozen: stored =>
+            stored.State.DefinitionIdentitySha256 == state.DefinitionIdentitySha256 &&
+            stored.State.SharedPlanIdentitySha256 == state.SharedPlanIdentitySha256 &&
+            stored.State.LocalPlanIdentitySha256 == state.LocalPlanIdentitySha256 &&
+            stored.PipelineJson.AsSpan().SequenceEqual(pipelineJson) &&
+            stored.DefinitionJson.AsSpan().SequenceEqual(candidate.DefinitionJson) &&
+            stored.Nodes.SequenceEqual(candidate.Nodes) &&
+            stored.State.RevisionId == ComputeRevisionId(stored.State.Name, stored.State.Revision,
+                state.DefinitionIdentitySha256, state.SharedPlanIdentitySha256, state.LocalPlanIdentitySha256));
     }
 
     private static (string GraphName, CapturePipelineConfig Pipeline) DeriveSceneCompatibilityPipeline(
@@ -1154,10 +1151,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingActiveRevisionSupersession? Result);
 
     private sealed record SceneCompatibilityCandidate(
-        string SourceId,
         CameraModuleConfig Configuration,
-        int Generation,
-        ProcessingGraphRevisionSnapshot Expected);
+        SceneCompatibilityRevisionSearch Search);
 
     private sealed class DisposableProcessingGraph(CaptureProcessingGraph value) : IDisposable
     {
