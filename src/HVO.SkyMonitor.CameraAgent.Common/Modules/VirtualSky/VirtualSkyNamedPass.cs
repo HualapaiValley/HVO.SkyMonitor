@@ -223,9 +223,11 @@ internal sealed class VirtualSkyNamedPass
         var configured = namedOption.ValueKind == JsonValueKind.Object;
         var requiresLineage = configured || scene?.VirtualExposure?.TimeMapping is
             VirtualExposureTimeMapping.ShutterUtc or VirtualExposureTimeMapping.FixedCelestialAndShutterUtc;
+        if (!requiresLineage)
+            return true;
         if (scene?.TransientScenario?.Parameters is not { ValueKind: JsonValueKind.Object } parameters ||
             !parameters.TryGetProperty("sourcePackageSha256", out var package))
-            return !requiresLineage;
+            return false;
         if (package.ValueKind != JsonValueKind.String || !OrbitalContract.IsSha256(package.GetString()) ||
             !parameters.TryGetProperty(PredictionLineageProperty, out var value))
             return false;

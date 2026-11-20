@@ -304,8 +304,10 @@ public sealed class NamedOrbitalPassCaptureTests
     [DataRow(false, false, false, "missing-marker")]
     [DataRow(false, false, false, "missing-inputs")]
     [DataRow(false, false, false, "null-inputs")]
+    [DataRow(false, false, false, "ordinary-transient")]
+    [DataRow(false, false, false, "generic-package-hash")]
     public async Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord,
-        bool crossesSelectionBoundary, string? lineageFault)
+        bool crossesSelectionBoundary, string? metadataCase)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -319,8 +321,18 @@ public sealed class NamedOrbitalPassCaptureTests
             var input = await PreparePackageAsync(root, fixture, config, ct,
                 selectionBoundary: crossesSelectionBoundary ? shutter : null).ConfigureAwait(false);
             var ingressRoot = Path.Combine(root, "ingress");
+            var genericPackageHash = metadataCase == "generic-package-hash";
+            var ordinaryTransient = genericPackageHash || metadataCase == "ordinary-transient";
             config = ConfigureGraph(config, input, ingressRoot, wrongExpectedRecord,
-                omitGraphPin: crossesSelectionBoundary || lineageFault is not null);
+                omitGraphPin: crossesSelectionBoundary || metadataCase is not null);
+            if (ordinaryTransient)
+            {
+                var options = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
+                Assert.IsTrue(options.Remove("namedOrbitalPass"));
+                if (genericPackageHash)
+                    options["transientScenario"]!["sourcePackageSha256"] = input.PackageSha256;
+                config = config with { Module = config.Module with { Options = JsonSerializer.SerializeToElement(options, Json) } };
+            }
             if (clouds)
             {
                 var options = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
@@ -356,14 +368,25 @@ public sealed class NamedOrbitalPassCaptureTests
             clock.Advance(Exposure);
             var capture = await exposureTask.ConfigureAwait(false);
             var rendered = capture.Frame!.Metadata.Scene!;
-            Assert.AreEqual(shutter, rendered.VirtualExposure!.ScenarioStartUtc);
+            var expectedScenarioStart = ordinaryTransient ? requested : shutter;
+            Assert.AreEqual(expectedScenarioStart, rendered.VirtualExposure!.ScenarioStartUtc);
             Assert.AreEqual(requested, rendered.VirtualExposure.RequestedStartUtc);
-            Assert.AreEqual(shutter, rendered.TransientScenario!.IntegrationStartUtc);
+            Assert.AreEqual(expectedScenarioStart, rendered.TransientScenario!.IntegrationStartUtc);
             Assert.AreEqual(clouds ? shutter : (DateTimeOffset?)null, rendered.CloudScenario?.IntegrationStartUtc);
-            Assert.IsFalse(VirtualSkyNamedPass.TryReadPredictionLineage(config, null, out _));
+            Assert.AreEqual(ordinaryTransient, VirtualSkyNamedPass.TryReadPredictionLineage(config, null, out _));
             Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, rendered, out var lineage));
             var bright = input.Tracks[(3, CatalogNumbers[0])];
-            Assert.AreEqual(bright.Lineage.RecordSha256, lineage!.Inputs.ExpectedRecords![CatalogNumbers[0]]);
+            if (ordinaryTransient)
+            {
+                Assert.AreEqual(genericPackageHash, rendered.TransientScenario.Parameters.TryGetProperty("sourcePackageSha256", out var hash));
+                if (genericPackageHash)
+                    Assert.AreEqual(input.PackageSha256, hash.GetString());
+                Assert.IsNull(lineage);
+            }
+            else
+            {
+                Assert.AreEqual(bright.Lineage.RecordSha256, lineage!.Inputs.ExpectedRecords![CatalogNumbers[0]]);
+            }
             if (crossesSelectionBoundary)
             {
                 var pixels = capture.Frame.PixelData.ToArray();
@@ -371,12 +394,13 @@ public sealed class NamedOrbitalPassCaptureTests
                 var darkCodes = SampleCorridor(pixels, input.Tracks[(3, CatalogNumbers[1])], false);
                 Assert.IsGreaterThan(50, brightCodes.RedOrMonoMedian - darkCodes.RedOrMonoMedian);
             }
-            if (lineageFault is not null)
+            var malformedLineage = metadataCase is not null && !ordinaryTransient;
+            if (malformedLineage)
             {
                 // Persist an internally consistent raw sidecar with incomplete named-pass metadata.
                 var scenario = rendered.TransientScenario;
                 var parameters = JsonNode.Parse(scenario.Parameters.GetRawText())!.AsObject();
-                switch (lineageFault)
+                switch (metadataCase)
                 {
                     case "missing-marker":
                         Assert.IsTrue(parameters.Remove("sourcePackageSha256"));
@@ -433,7 +457,7 @@ public sealed class NamedOrbitalPassCaptureTests
             var prediction = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
                 Path.Combine(ingressRoot, status.PayloadRelativePath), ct).ConfigureAwait(false));
             Assert.AreEqual(new OrbitalUtcInterval(shutter, shutter + Exposure), prediction.Exposure);
-            var expectedReason = lineageFault is not null ? "NamedPassPredictionLineageUnavailable" :
+            var expectedReason = malformedLineage ? "NamedPassPredictionLineageUnavailable" :
                 crossesSelectionBoundary ? "PinnedRecordSelectionMismatch" :
                 wrongExpectedRecord ? "NamedPassPredictionInputsMismatch" : "None";
             Assert.AreEqual(expectedReason == "None" ? 2 : 0, prediction.TrackCount);
