@@ -200,6 +200,162 @@ public sealed partial class ProcessingGraphOperationsTests
         }
     }
 
+    [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    [DataRow(true, true)]
+    public async Task SceneCompatibilitySuccessorRetirementFollowsTheFirstEligibleGeneration(bool collision, bool restartBeforeRetire)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-scene-generation");
+        var token = CancellationToken.None;
+        const string actor = "test";
+        const string retireUnused = "retire-unused-generation";
+        try
+        {
+            var configuration = CreateSceneCompatibilityConfiguration(root);
+            var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+            ProcessingGraphRegistryState state;
+            ProcessingGraphRevisionState unused;
+            RawCaptureReceipt first;
+            string effectiveId;
+
+            using (var provider = CreateSceneCompatibilityProvider(root))
+            {
+                await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+                var coordinator = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var registry = await coordinator.EnsureConfiguredBasicAsync(configuration, token).ConfigureAwait(false);
+                var source = await CreateValidatedAsync(operations, "test-legacy", "1", configuration.Pipeline, "source").ConfigureAwait(false);
+                state = await operations.ActivateRevisionAsync(
+                    source.RevisionId, registry.StateVersion, "activate-source", actor, null, token).ConfigureAwait(false);
+
+                const string compatibilityGraph = "virtualsky-scene-compatibility";
+                if (collision)
+                {
+                    _ = await CreateValidatedAsync(operations, compatibilityGraph, source.RevisionId, configuration.Pipeline,
+                        "collision").ConfigureAwait(false);
+                }
+
+                first = await CaptureWithSceneCompatibilityAsync(provider, configuration, now).ConfigureAwait(false);
+                effectiveId = first.Manifest.CaptureGraphRevisionId!;
+                var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                var effective = await store.ReadRevisionAsync(effectiveId, token).ConfigureAwait(false);
+                Assert.AreEqual(compatibilityGraph, effective.State.Name);
+                Assert.AreEqual(collision ? source.RevisionId + "-1" : source.RevisionId, effective.State.Revision);
+                Assert.AreEqual(ProcessingGraphRevisionLifecycle.Validated, effective.State.Lifecycle);
+
+                unused = await CreateValidatedAsync(operations, compatibilityGraph,
+                    source.RevisionId + (collision ? "-2" : "-1"), effective.Pipeline, "copy").ConfigureAwait(false);
+                Assert.AreNotEqual(effectiveId, unused.RevisionId);
+                Assert.AreEqual(effective.State.DefinitionIdentitySha256, unused.DefinitionIdentitySha256);
+                Assert.AreEqual(effective.State.SharedPlanIdentitySha256, unused.SharedPlanIdentitySha256);
+                Assert.AreEqual(effective.State.LocalPlanIdentitySha256, unused.LocalPlanIdentitySha256);
+                CollectionAssert.AreEqual(effective.PipelineJson,
+                    (await store.ReadRevisionAsync(unused.RevisionId, token).ConfigureAwait(false)).PipelineJson);
+
+                var fresh = await CaptureWithSceneCompatibilityAsync(provider, configuration, now.AddSeconds(2)).ConfigureAwait(false);
+                Assert.AreEqual(effectiveId, fresh.Manifest.CaptureGraphRevisionId);
+                if (!restartBeforeRetire)
+                    await RetireUnusedAsync(operations).ConfigureAwait(false);
+            }
+
+            using var reopened = CreateSceneCompatibilityProvider(root);
+            await reopened.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var reopenedOperations = reopened.GetRequiredService<IProcessingGraphOperations>();
+            if (restartBeforeRetire)
+                await RetireUnusedAsync(reopenedOperations).ConfigureAwait(false);
+            var retry = await reopenedOperations.RetireRevisionAsync(
+                unused.RevisionId, state.StateVersion, retireUnused, actor, null, token).ConfigureAwait(false);
+            Assert.AreEqual(state.StateVersion + 1, retry.StateVersion);
+            Assert.AreEqual(state.ActiveRevisionId, retry.ActiveRevisionId);
+            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Retired,
+                retry.Revisions.Single(value => value.RevisionId == unused.RevisionId).Lifecycle);
+            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await reopenedOperations.RetireRevisionAsync(effectiveId, retry.StateVersion, "retire-effective-after-reopen",
+                    actor, null, token).ConfigureAwait(false)).ConfigureAwait(false);
+            var afterRestart = await CaptureWithSceneCompatibilityAsync(reopened, configuration, now.AddSeconds(4)).ConfigureAwait(false);
+            Assert.AreEqual(effectiveId, afterRestart.Manifest.CaptureGraphRevisionId);
+            await AssertSceneCompatibilityReplayAsync(reopened, first).ConfigureAwait(false);
+            await AssertSceneCompatibilityReplayAsync(reopened, afterRestart, "replay-fresh-scene").ConfigureAwait(false);
+
+            async Task RetireUnusedAsync(IProcessingGraphOperations operations)
+            {
+                var current = await operations.GetRegistryAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(state.StateVersion, current.StateVersion);
+                Assert.AreEqual(state.ActiveRevisionId, current.ActiveRevisionId);
+                await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                    await operations.RetireRevisionAsync(effectiveId, current.StateVersion, "retire-effective-generation",
+                        actor, null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                var retired = await operations.RetireRevisionAsync(
+                    unused.RevisionId, current.StateVersion, retireUnused, actor, null, token).ConfigureAwait(false);
+                Assert.AreEqual(current.StateVersion + 1, retired.StateVersion);
+                Assert.AreEqual(current.ActiveRevisionId, retired.ActiveRevisionId);
+                Assert.AreEqual(ProcessingGraphRevisionLifecycle.Retired,
+                    retired.Revisions.Single(value => value.RevisionId == unused.RevisionId).Lifecycle);
+            }
+
+            async Task<ProcessingGraphRevisionState> CreateValidatedAsync(
+                IProcessingGraphOperations operations, string name, string revision, CapturePipelineConfig pipeline, string key)
+            {
+                var created = await operations.CreateRevisionAsync(name, revision, pipeline, "create-" + key, actor, null, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, created.Lifecycle);
+                var validated = await operations.ValidateRevisionAsync(created.RevisionId, "validate-" + key, actor, null, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphRevisionLifecycle.Validated, validated.Lifecycle);
+                return validated;
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task SceneCompatibilitySuccessorPrefersAnEarlierGenerationOnceItIsValidated()
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-scene-generation-validation");
+        var token = CancellationToken.None;
+        const string actor = "test";
+        try
+        {
+            var configuration = CreateSceneCompatibilityConfiguration(root);
+            var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+            using var provider = CreateSceneCompatibilityProvider(root);
+            await provider.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+            var coordinator = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            var template = await coordinator.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
+            var registry = await operations.GetRegistryAsync(token).ConfigureAwait(false);
+            var source = await operations.CreateRevisionAsync(
+                "test-legacy", "1", configuration.Pipeline, "create-source", actor, null, token).ConfigureAwait(false);
+            await operations.ValidateRevisionAsync(source.RevisionId, "validate-source", actor, null, token).ConfigureAwait(false);
+            await operations.ActivateRevisionAsync(source.RevisionId, registry.StateVersion, "activate-source", actor, null, token)
+                .ConfigureAwait(false);
+
+            var zero = await operations.CreateRevisionAsync(template.State.Name, source.RevisionId, template.Pipeline,
+                "create-zero", actor, null, token).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Draft, zero.Lifecycle);
+            var fallback = await CaptureWithSceneCompatibilityAsync(provider, configuration, now).ConfigureAwait(false);
+            var fallbackRevision = (await operations.GetRegistryAsync(token).ConfigureAwait(false)).Revisions.Single(
+                value => value.RevisionId == fallback.Manifest.CaptureGraphRevisionId);
+            Assert.AreEqual(source.RevisionId + "-1", fallbackRevision.Revision);
+
+            await operations.ValidateRevisionAsync(zero.RevisionId, "validate-zero", actor, null, token).ConfigureAwait(false);
+            var fresh = await CaptureWithSceneCompatibilityAsync(provider, configuration, now.AddSeconds(2)).ConfigureAwait(false);
+            Assert.AreEqual(zero.RevisionId, fresh.Manifest.CaptureGraphRevisionId);
+            await AssertSceneCompatibilityReplayAsync(provider, fallback).ConfigureAwait(false);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static ServiceProvider CreateSceneCompatibilityProvider(string root)
     {
         var catalog = new Mock<ICelestialCatalog>();
@@ -282,12 +438,13 @@ public sealed partial class ProcessingGraphOperationsTests
         return receipt;
     }
 
-    private static async Task AssertSceneCompatibilityReplayAsync(ServiceProvider provider, RawCaptureReceipt receipt)
+    private static async Task AssertSceneCompatibilityReplayAsync(
+        ServiceProvider provider, RawCaptureReceipt receipt, string idempotencyKey = "replay-compatible-scene")
     {
         var descriptor = receipt.Manifest.Descriptor;
         var completed = await ExecuteReplayAsync(provider,
             new(descriptor.Capture.CaptureId, receipt.Manifest.CaptureGraphRevisionId!, descriptor.Artifact.ArtifactId),
-            "replay-compatible-scene").ConfigureAwait(false);
+            idempotencyKey).ConfigureAwait(false);
         Assert.AreEqual(receipt.Manifest.CaptureGraphRevisionId, completed.Execution.GraphRevisionId);
         var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
         foreach (var nodeId in new[] { "projected-scene", AstrometryPredictionCaptureProcessingStep.Alias })
