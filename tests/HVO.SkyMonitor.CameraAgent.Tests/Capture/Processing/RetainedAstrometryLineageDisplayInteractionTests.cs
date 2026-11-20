@@ -56,6 +56,9 @@ public sealed partial class DurableCaptureProcessingTests
             var interruptFallback = 0;
             var fallbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var fallbackInterrupted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var holdSelectedRevalidation = false;
+            var selectedRevalidationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseSelectedRevalidation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             CameraAgentRetainedAstrometry? selected = null;
             var wrapped = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
             wrapped.Setup(value => value.OpenContentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -86,6 +89,12 @@ public sealed partial class DurableCaptureProcessingTests
                             Assert.AreEqual(1, reconciled.Quarantined);
                         }
                     }
+                    if (id == newest.ArtifactId && holdSelectedRevalidation)
+                    {
+                        // The exact reader already owns its raw-buffer permit when it opens the assessment.
+                        selectedRevalidationStarted.TrySetResult();
+                        await releaseSelectedRevalidation.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                    }
                     if (id == older.ArtifactId && Interlocked.Exchange(ref interruptFallback, 0) == 1)
                     {
                         fallbackStarted.TrySetResult();
@@ -114,9 +123,14 @@ public sealed partial class DurableCaptureProcessingTests
             ui.AstrometryHandler = async (captureId, cancellation) =>
             {
                 await serializedReads.WaitAsync(cancellation).ConfigureAwait(false);
-                try { return await service.GetRetainedAstrometryAsync(captureId, cancellation).ConfigureAwait(false); }
+                try
+                {
+                    holdSelectedRevalidation = !mixedInputs && initialSelectedRead.Task.IsCompleted;
+                    return await service.GetRetainedAstrometryAsync(captureId, cancellation).ConfigureAwait(false);
+                }
                 finally
                 {
+                    holdSelectedRevalidation = false;
                     serializedReads.Release();
                     initialSelectedRead.TrySetResult();
                 }
@@ -178,8 +192,31 @@ public sealed partial class DurableCaptureProcessingTests
                 StringAssert.Contains(summary, earlier.MidpointUtc.ToString("O"), StringComparison.Ordinal);
                 AssertSelectedFitCleared();
             }, TimeSpan.FromSeconds(5));
-            Assert.AreEqual(earlier, CameraAgentLatestAstrometry.FromVerified(
-                (await service.GetRetainedAstrometryAsync(older.Capture.CaptureId, token).ConfigureAwait(false)).Value!));
+            using var verificationDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            if (!mixedInputs)
+            {
+                try
+                {
+                    await selectedRevalidationStarted.Task.WaitAsync(verificationDeadline.Token).ConfigureAwait(false);
+                    var busy = await service.GetRetainedAstrometryAsync(older.Capture.CaptureId, verificationDeadline.Token).ConfigureAwait(false);
+                    Assert.IsTrue(busy.IsSuccess);
+                    Assert.AreEqual("Unavailable", busy.Value?.Availability);
+                    Assert.AreEqual("read-capacity", busy.Value?.Reason);
+                    Assert.IsNull(CameraAgentLatestAstrometry.FromVerified(busy.Value!));
+                }
+                finally { releaseSelectedRevalidation.TrySetResult(); }
+            }
+
+            // Rendering the fallback can precede completion of the new selected-frame read.
+            await serializedReads.WaitAsync(verificationDeadline.Token).ConfigureAwait(false);
+            try
+            {
+                var exactOlder = await service.GetRetainedAstrometryAsync(older.Capture.CaptureId, verificationDeadline.Token).ConfigureAwait(false);
+                Assert.IsTrue(exactOlder.IsSuccess);
+                Assert.AreEqual(earlier, CameraAgentLatestAstrometry.FromVerified(exactOlder.Value!),
+                    $"Exact older fit unavailable: {exactOlder.Value?.Availability}/{exactOlder.Value?.Reason}");
+            }
+            finally { serializedReads.Release(); }
 
             if (mixedInputs)
             {
