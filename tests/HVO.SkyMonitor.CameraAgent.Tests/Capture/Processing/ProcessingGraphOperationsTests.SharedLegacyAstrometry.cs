@@ -23,6 +23,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("storage-fit-failure")]
     [DataRow("isolated")]
     [DataRow("annotation-preset")]
+    [DataRow("annotation-occupied-prediction-storage-preset")]
     public async Task LegacyVirtualSkyFitUsesPredictionAndPreservesExistingConsumers(string consumer)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-legacy-shared-fit");
@@ -30,14 +31,16 @@ public sealed partial class ProcessingGraphOperationsTests
         const string measurementId = "astrometry-prediction-associations";
         const string privateMeasurementVariant = "astrometry-prediction-associations-v1";
         const string predictionVariant = AstrometryPredictionCaptureProcessingStep.AliasVariant;
-        var occupiedPrediction = consumer == "annotation-occupied-prediction";
+        var combined = consumer == "annotation-occupied-prediction-storage-preset";
+        var occupiedPrediction = consumer == "annotation-occupied-prediction" || combined;
         var measurementVariant = occupiedPrediction ? predictionVariant : privateMeasurementVariant;
         var previewId = occupiedPrediction ? "astrometryprediction" : "preview";
         var predictionId = occupiedPrediction ? "AstrometryPrediction-1" : AstrometryPredictionCaptureProcessingStep.Alias;
-        var configurePreset = consumer == "annotation-preset";
+        var configurePreset = consumer == "annotation-preset" || combined;
         var sharedAssociations = consumer == "annotation" || configurePreset || occupiedPrediction;
         var failedFit = consumer == "storage-fit-failure";
-        var sharedFit = consumer == "storage" || failedFit;
+        var sharedFit = consumer == "storage" || failedFit || combined;
+        var fitMeasurementId = sharedAssociations ? measurementId + "-1" : measurementId;
         var archiveRoot = Path.Combine(root, "archive");
         var requestedUtc = new DateTimeOffset(2026, 11, 20, 3, 0, 0, TimeSpan.Zero);
         var celestialUtc = requestedUtc.AddSeconds(1);
@@ -215,7 +218,6 @@ public sealed partial class ProcessingGraphOperationsTests
                 var successor = await store.ReadRevisionAsync(liveId, token).ConfigureAwait(false);
                 successorPipeline = successor.PipelineJson;
                 var fit = successor.Pipeline.Steps.Single(step => step.Id == "fit");
-                var fitMeasurementId = sharedAssociations ? measurementId + "-1" : measurementId;
                 Assert.AreEqual(sharedAssociations ? 8 : 7, successor.Pipeline.Steps.Count);
                 CollectionAssert.AreEqual(new[] { predictionId, fitMeasurementId }, fit.DependsOn!.ToArray());
                 var predictionStep = successor.Pipeline.Steps.Single(step => step.Id == predictionId);
@@ -314,7 +316,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     await CheckCadenceEvidenceAsync(provider, receipt,
                         failedFit ? DurableProcessingNodeStatus.TerminalFailure : DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
-                    await CaptureCadenceFrameAsync(provider, module, liveId, 2).ConfigureAwait(false);
+                    if (!combined)
+                        await CaptureCadenceFrameAsync(provider, module, liveId, 2).ConfigureAwait(false);
                 }
 
                 async Task<DurableProcessingOutput> ReadOutputAsync(string nodeId, string? recipe = null)
@@ -366,19 +369,11 @@ public sealed partial class ProcessingGraphOperationsTests
                         Assert.IsFalse(replayed.Published, nodeId);
                     }
 
-                    var nextUtc = requestedUtc.AddSeconds(10);
+                    var nextUtc = requestedUtc.AddSeconds(2);
                     var module = CreateModule(restarted, nextUtc);
                     await using var moduleLifetime = module.ConfigureAwait(false);
                     await module.InitializeAsync(configuration, token).ConfigureAwait(false);
-                    var next = await CaptureAndAdmitAsync(restarted, module, nextUtc).ConfigureAwait(false);
-                    Assert.AreEqual(2L, next.Manifest.Descriptor.Capture.CaptureSequence);
-                    Assert.AreEqual(liveId, next.Manifest.CaptureGraphRevisionId);
-                    await CompleteLiveAsync(restarted, configuration).ConfigureAwait(false);
-                    var nextFit = await restarted.GetRequiredService<SqliteCaptureProcessingStore>()
-                        .ReadNodeAsync(next.Manifest.Descriptor.Capture.CaptureId, "fit", token).ConfigureAwait(false);
-                    Assert.IsNotNull(nextFit);
-                    Assert.AreEqual(DurableProcessingNodeStatus.Skipped, nextFit.Status);
-                    Assert.AreEqual("astrometry.capture-cadence", nextFit.Reason);
+                    await CaptureCadenceFrameAsync(restarted, module, liveId, 2).ConfigureAwait(false);
                 }
                 if (previousId is not null)
                 {
@@ -396,9 +391,16 @@ public sealed partial class ProcessingGraphOperationsTests
                 if (configurePreset)
                 {
                     Console.WriteLine($"Accepted fit on effective revision {liveId}; registry basis {activeId} after restart.");
-                    presetReceipt = await ConfigureSharedLegacyAstrometryAsync(root, configuration, restarted, selected, activeId, measurementId,
+                    var (receipt, capture) = await ConfigureSharedLegacyAstrometryAsync(root, configuration, restarted, selected, activeId, measurementId,
+                        predictionId, combined ? 2 : 1,
                         fitCatalog, captureUtc => CreateModule(restarted, captureUtc),
-                        requestedUtc.AddSeconds(3), token).ConfigureAwait(false);
+                        requestedUtc.AddSeconds(4), token).ConfigureAwait(false);
+                    presetReceipt = receipt;
+                    if (combined)
+                    {
+                        await CheckCadenceEvidenceAsync(restarted, capture, DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+                        Assert.HasCount(3, Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories));
+                    }
                 }
             }
             if (presetReceipt is not null)
@@ -415,13 +417,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             var utc = requestedUtc.AddSeconds((sequence - 1) * 2);
             // Distinct exposure samples give each capture its own durable outputs.
-            var request = new CaptureRequest(utc, TimeSpan.FromSeconds(2), CaptureMode.Still,
-                new CaptureSetpoint(TimeSpan.FromSeconds(2) + TimeSpan.FromMilliseconds(sequence - 1), 1, null, null));
-            var capture = await camera.CaptureAsync(request, token).ConfigureAwait(false);
-            var ingress = host.GetRequiredService<IRawCaptureIngress>();
-            var receipt = await ingress.AcceptAsync(configuration, new CaptureLoopSubmission(request, capture,
-                utc, request.TargetInterval, TimeSpan.Zero), token).ConfigureAwait(false);
-            Assert.IsNotNull(receipt);
+            var receipt = await CaptureAndAdmitAsync(host, camera, utc, sequence).ConfigureAwait(false);
             Assert.AreEqual((long)sequence, receipt.Manifest.Descriptor.Capture.CaptureSequence);
             Assert.AreEqual(expectedRevisionId, receipt.Manifest.CaptureGraphRevisionId);
             await CompleteLiveAsync(host, configuration).ConfigureAwait(false);
@@ -442,14 +438,20 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual("processing.optional-degraded", fit.Reason);
             var scene = (await ReadCadenceNodeAsync("projected-scene", DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
             var annotated = (await ReadCadenceNodeAsync("annotation", DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
-            var prediction = (await ReadCadenceNodeAsync(AstrometryPredictionCaptureProcessingStep.Alias, DurableProcessingNodeStatus.Completed)
+            var prediction = (await ReadCadenceNodeAsync(predictionId, DurableProcessingNodeStatus.Completed)
                 .ConfigureAwait(false)).Outputs.Single();
-            var measured = (await ReadCadenceNodeAsync(measurementId, DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
+            var measured = (await ReadCadenceNodeAsync(fitMeasurementId, DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
             var archive = await ReadCadenceNodeAsync("archive", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
             Assert.IsEmpty(archive.Outputs, "Storage selects producer outputs and does not produce scientific artifacts.");
             Assert.Contains(scene.ArtifactId, annotated.Artifact.SourceArtifactIds!);
             Assert.DoesNotContain(prediction.ArtifactId, annotated.Artifact.SourceArtifactIds!);
             Assert.DoesNotContain(measured.ArtifactId, annotated.Artifact.SourceArtifactIds!);
+            if (sharedAssociations)
+            {
+                var canonicalMeasurement = (await ReadCadenceNodeAsync(measurementId, DurableProcessingNodeStatus.Completed)
+                    .ConfigureAwait(false)).Outputs.Single();
+                Assert.Contains(canonicalMeasurement.ArtifactId, annotated.Artifact.SourceArtifactIds!);
+            }
             var canonical = ProjectedSceneJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, scene.PayloadRelativePath), token)
                 .ConfigureAwait(false)).Scene!;
             Assert.AreEqual(ProjectedSceneKind.VirtualRenderAuthoritative, canonical.Kind);
@@ -493,10 +495,11 @@ public sealed partial class ProcessingGraphOperationsTests
             }
         }
 
-        async Task<RawCaptureReceipt> CaptureAndAdmitAsync(ServiceProvider provider, VirtualSkyCameraModule module, DateTimeOffset start)
+        async Task<RawCaptureReceipt> CaptureAndAdmitAsync(
+            ServiceProvider provider, VirtualSkyCameraModule module, DateTimeOffset start, int sequence = 1)
         {
             var request = new CaptureRequest(start, TimeSpan.FromSeconds(2), CaptureMode.Still,
-                new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null));
+                new CaptureSetpoint(TimeSpan.FromSeconds(2) + TimeSpan.FromMilliseconds(sequence - 1), 1, null, null));
             var capture = await module.CaptureAsync(request, token).ConfigureAwait(false);
             var receipt = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(configuration,
                 new CaptureLoopSubmission(request, capture, start, request.TargetInterval, TimeSpan.Zero), token).ConfigureAwait(false);

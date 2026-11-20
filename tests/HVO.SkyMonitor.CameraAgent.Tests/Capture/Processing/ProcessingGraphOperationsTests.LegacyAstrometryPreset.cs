@@ -18,12 +18,12 @@ public sealed partial class ProcessingGraphOperationsTests
     private const string LegacyPresetCreateEndpoint = "CreateCameraAgentReferenceAstrometryRevision";
     private const string LegacyPresetCreateKey = "legacy-preset-create";
 
-    private static async Task<string> ConfigureSharedLegacyAstrometryAsync(
+    private static async Task<(string Receipt, RawCaptureReceipt Capture)> ConfigureSharedLegacyAstrometryAsync(
         string root, CameraModuleConfig configuration, ServiceProvider provider, ProcessingGraphRevisionSnapshot successor,
-        string sourceRevisionId, string canonicalMeasurementId, AstrometricCatalogData catalog,
+        string sourceRevisionId, string canonicalMeasurementId, string predictionId, int lastCaptureSequence,
+        AstrometricCatalogData catalog,
         Func<DateTimeOffset, VirtualSkyCameraModule> createCamera, DateTimeOffset captureUtc, CancellationToken token)
     {
-        const string predictionId = "AstrometryPrediction";
         const string fitId = "fit";
         var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
         var artifacts = provider.GetRequiredService<ICameraAgentArtifactService>();
@@ -60,7 +60,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Assert.AreEqual(original.DependenciesJson, saved.DependenciesJson, original.NodeId);
             Assert.AreEqual(original.InputsJson, saved.InputsJson, original.NodeId);
             Assert.AreEqual(original.OutputsJson, saved.OutputsJson, original.NodeId);
-            if (original.NodeId is not (predictionId or fitId))
+            if (original.NodeId != predictionId && original.NodeId != fitId)
             {
                 Assert.AreEqual(original, saved, original.NodeId);
                 Assert.AreEqual(
@@ -92,13 +92,13 @@ public sealed partial class ProcessingGraphOperationsTests
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(token).ConfigureAwait(false);
         Assert.IsNotNull(configuration.AgentId);
-        for (var sequence = 2; sequence <= 60; sequence++)
+        for (var sequence = lastCaptureSequence + 1; sequence <= 60; sequence++)
             _ = await journal.ReserveIdentityAsync(configuration.AgentId, Guid.NewGuid(), Guid.NewGuid(), token).ConfigureAwait(false);
         var module = createCamera(captureUtc);
         await using var moduleLifetime = module.ConfigureAwait(false);
         await module.InitializeAsync(configuration, token).ConfigureAwait(false);
         var captureRequest = new CaptureRequest(captureUtc, TimeSpan.FromSeconds(2), CaptureMode.Still,
-            new CaptureSetpoint(TimeSpan.FromSeconds(2), 1, null, null));
+            new CaptureSetpoint(TimeSpan.FromSeconds(2.06), 1, null, null));
         var capture = await module.CaptureAsync(captureRequest, token).ConfigureAwait(false);
         var raw = await provider.GetRequiredService<IRawCaptureIngress>().AcceptAsync(configuration,
             new CaptureLoopSubmission(captureRequest, capture, captureUtc, captureRequest.TargetInterval, TimeSpan.Zero), token).ConfigureAwait(false);
@@ -125,7 +125,7 @@ public sealed partial class ProcessingGraphOperationsTests
         Assert.DoesNotContain(solution.MeasuredArtifactId, annotation.Artifact.SourceArtifactIds);
         Console.WriteLine($"Preset {revisionId}; accepted capture {captureId} sequence 61; solution {solution.SolutionIdentitySha256}; canonical association {canonicalMeasurement.ArtifactId}.");
 
-        return creation.Body;
+        return (creation.Body, raw);
 
         async Task<DurableProcessingOutput> ReadOutputAsync(string nodeId, string? recipe = null)
         {
