@@ -17,41 +17,102 @@ internal readonly record struct AstrometryLineageStates(RetainedAstrometryLineag
 
 internal sealed record AstrometryOutputStamp(Guid ArtifactId, string ContentIdentitySha256);
 
-internal sealed record AstrometryCaptureCandidate(
-    Guid CaptureId, long ExposureUtc, long Sequence, long RowId, AstrometryOutputStamp? SoleOutput);
+internal sealed record AstrometryCaptureCandidate(Guid CaptureId, long ExposureUtc, long Sequence, long RowId);
+
+internal enum AstrometryAssessmentSelectionKind
+{
+    Absent,
+    Pending,
+    Public,
+    Ambiguous
+}
+
+internal readonly record struct AstrometryAssessmentSelection(AstrometryAssessmentSelectionKind Kind,
+    Guid ArtifactId = default, string? ContentIdentitySha256 = null, string? AvailabilityState = null);
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
-    // Seed this read model from retained solution outputs once. A capture can be a candidate before its output is
-    // published. Each read still checks current publication, availability and exact evidence through the retained reader.
+    // All retained assessment rows seed the work list. This indexed query does not inspect
+    // publication for the entire archive. Each probe classifies current selection on demand.
     internal const string LatestAstrometryQuery = """
-        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id,
-               candidate.sole_artifact, candidate.sole_content
+        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id
         FROM (
-            SELECT output.capture_id,
-                   CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
-                       THEN MIN(output.artifact_id) END AS sole_artifact,
-                   CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
-                       THEN MIN(output.content_identity_sha256) END AS sole_content
+            SELECT DISTINCT output.capture_id
             FROM processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup
             WHERE output.role = 'Metadata' AND output.product_schema_version = 'measured-astrometry-solution-v1'
-            GROUP BY output.capture_id
         ) candidate
         CROSS JOIN raw_captures raw ON raw.capture_id = candidate.capture_id;
         """;
 
     private const string RefreshAstrometryCandidatesQuery = """
-        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id,
-               CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
-                   THEN MIN(output.artifact_id) END,
-               CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
-                   THEN MIN(output.content_identity_sha256) END
+        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id
         FROM json_each($captures) changed
         CROSS JOIN raw_captures raw ON raw.capture_id = changed.value
         CROSS JOIN processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup ON output.capture_id = raw.capture_id
           AND output.role = 'Metadata' AND output.product_schema_version = 'measured-astrometry-solution-v1'
         GROUP BY raw.capture_id;
         """;
+
+    // Legacy or already published evidence is public. An unpublished execution can
+    // supply public evidence only if a live writer can still complete its publication.
+    private const string AstrometryOutputPublication = """
+        CASE
+            WHEN NOT EXISTS (SELECT 1 FROM processing_execution_outputs
+                WHERE output_identity_sha256 = output.output_identity_sha256)
+              OR EXISTS (SELECT 1 FROM processing_execution_outputs
+                WHERE output_identity_sha256 = output.output_identity_sha256 AND published_flag = 1) THEN 1
+            WHEN EXISTS (
+                SELECT 1 FROM processing_execution_outputs association
+                JOIN processing_executions execution ON execution.execution_id = association.execution_id
+                WHERE association.output_identity_sha256 = output.output_identity_sha256
+                  AND execution.execution_class = 'Live' AND execution.allow_automatic_publication = 1
+                  AND execution.status IN ('Pending', 'Running')) THEN 2
+            ELSE 3
+        END
+        """;
+
+    internal async ValueTask<AstrometryAssessmentSelection> ReadAstrometryAssessmentAsync(
+        Guid captureId, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            WITH assessments AS MATERIALIZED (
+                SELECT output.artifact_id, output.content_identity_sha256, output.availability_state,
+                       {AstrometryOutputPublication} AS publication
+                FROM processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup
+                WHERE output.capture_id = $capture AND output.role = 'Metadata'
+                  AND output.product_schema_version = 'measured-astrometry-solution-v1'
+            )
+            SELECT artifact_id, content_identity_sha256, availability_state, publication
+            FROM assessments WHERE publication IN (1, 2)
+            ORDER BY publication LIMIT 2;
+            """;
+        var capture = captureId.ToString("N");
+        command.Parameters.AddWithValue("$capture", capture);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var selection = await ReadSelectionAsync().ConfigureAwait(false);
+        if (_faultInjector != NullCaptureProcessingFaultInjector.Instance)
+            _faultInjector.Inject(CaptureProcessingFaultPoint.AfterAstrometryAssessmentLookup, capture);
+        return selection;
+
+        async ValueTask<AstrometryAssessmentSelection> ReadSelectionAsync()
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                return new(AstrometryAssessmentSelectionKind.Absent);
+            if (reader.GetInt32(3) == (int)RetainedAstrometryLineageState.Pending)
+                return new(AstrometryAssessmentSelectionKind.Pending);
+
+            var selected = new AstrometryAssessmentSelection(AstrometryAssessmentSelectionKind.Public,
+                Guid.ParseExact(reader.GetString(0), "N"),
+                await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1),
+                reader.GetString(2));
+            return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
+                   reader.GetInt32(3) == (int)RetainedAstrometryLineageState.Available
+                ? new(AstrometryAssessmentSelectionKind.Ambiguous) : selected;
+        }
+    }
 
     private readonly SemaphoreSlim _astrometryCandidateGate = new(1, 1);
     private readonly object _astrometryChangesLock = new();
@@ -64,6 +125,9 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     // A committed raw release can make an assessment readable without rewriting the assessment or its inputs.
     internal void NotifyRawEvidenceRevalidated(Guid captureId) => MarkAstrometryCaptureChanged(captureId);
+
+    internal void NotifyLiveAstrometryPublished(Guid captureId)
+        => NotifyAstrometryOutputsCommitted(captureId, assessmentWritten: false, inputMayBecomePublic: true);
 
     private void MarkAstrometryCaptureChanged(Guid captureId)
     {
@@ -96,7 +160,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         // Quarantine and eviction outrank recoverable unavailability anywhere in that lineage.
         // An unpublished output is pending only while a live execution can publish it. A private
         // replay copy keeps the exact evidence evicted from the public view.
-        command.CommandText = """
+        command.CommandText = $"""
             WITH requested(slot, capture, artifact, solution) AS (
                 VALUES (0, $previousCapture, $previousArtifact, $previousSolution),
                        (1, $selectedCapture, $selectedArtifact, $selectedSolution),
@@ -120,20 +184,9 @@ internal sealed partial class SqliteCaptureProcessingStore
                     SELECT CASE WHEN COUNT(*) <> 5 THEN 0 ELSE MAX(CASE
                         WHEN output.availability_state = 'Quarantined' OR raw.state = 'quarantined' THEN 4
                         WHEN output.artifact_id IS NULL AND raw.raw_artifact_id IS NULL THEN 3
-                        WHEN EXISTS (SELECT 1 FROM processing_execution_outputs
-                            WHERE output_identity_sha256 = output.output_identity_sha256)
-                          AND NOT EXISTS (SELECT 1 FROM processing_execution_outputs
-                            WHERE output_identity_sha256 = output.output_identity_sha256 AND published_flag = 1) THEN
-                            CASE WHEN EXISTS (
-                                SELECT 1
-                                FROM processing_execution_outputs association
-                                JOIN processing_executions execution ON execution.execution_id = association.execution_id
-                                WHERE association.output_identity_sha256 = output.output_identity_sha256
-                                  AND execution.execution_class = 'Live' AND execution.allow_automatic_publication = 1
-                                  AND execution.status IN ('Pending', 'Running'))
-                            THEN 2 ELSE 3 END
-                        WHEN raw.state <> 'committed' OR output.availability_state <> 'Available' THEN 2
-                        ELSE 1 END)
+                        WHEN raw.raw_artifact_id IS NOT NULL THEN CASE WHEN raw.state = 'committed' THEN 1 ELSE 2 END
+                        ELSE MAX({AstrometryOutputPublication},
+                            CASE WHEN output.availability_state = 'Available' THEN 1 ELSE 2 END) END)
                     END
                     FROM lineage
                     LEFT JOIN processing_outputs output ON (lineage.ordinal = -1 OR lineage.ordinal BETWEEN 1 AND 3)
@@ -260,14 +313,11 @@ internal sealed partial class SqliteCaptureProcessingStore
                     while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var soleOutput = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ||
-                            await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null
-                            : new AstrometryOutputStamp(Guid.ParseExact(reader.GetString(4), "N"), reader.GetString(5));
                         var captureId = reader.GetString(0);
                         var id = Guid.ParseExact(captureId, "N");
                         queriedCaptures.Add(id);
                         updated.Add(new(id, reader.GetInt64(1), reader.GetInt64(2),
-                            reader.GetInt64(3), soleOutput));
+                            reader.GetInt64(3)));
                         if (observeSeed) _faultInjector.Inject(CaptureProcessingFaultPoint.AfterAstrometrySeedRowMaterialized, captureId);
                     }
                 }

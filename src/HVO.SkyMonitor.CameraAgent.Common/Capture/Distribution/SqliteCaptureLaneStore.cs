@@ -20,7 +20,8 @@ internal sealed class SqliteCaptureLaneStore(
     TimeProvider timeProvider,
     ICaptureLaneFaultInjector faultInjector,
     Action<TimeSpan>? lockWaitRecorder = null,
-    Action? evidenceInvalidated = null) : ICaptureLaneStore
+    Action? evidenceInvalidated = null,
+    Action<Guid>? liveAstrometryPublished = null) : ICaptureLaneStore
 {
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
@@ -445,6 +446,8 @@ internal sealed class SqliteCaptureLaneStore(
             }
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            if (lease.Context.Execution is { AllowAutomaticPublication: true })
+                liveAstrometryPublished?.Invoke(lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterCompletionCommit);
         }
         finally
