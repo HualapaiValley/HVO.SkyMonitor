@@ -19,13 +19,15 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("annotation")]
     [DataRow("storage")]
     [DataRow("isolated")]
+    [DataRow("annotation-preset")]
     public async Task LegacyVirtualSkyFitUsesPredictionAndPreservesExistingConsumers(string consumer)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-legacy-shared-fit");
         var token = CancellationToken.None;
         const string measurementId = "astrometry-prediction-associations";
         const string measurementVariant = "astrometry-prediction-associations-v1";
-        var sharedAssociations = consumer == "annotation";
+        var configurePreset = consumer == "annotation-preset";
+        var sharedAssociations = consumer is "annotation" or "annotation-preset";
         var sharedFit = consumer == "storage";
         var requestedUtc = new DateTimeOffset(2026, 11, 20, 3, 0, 0, TimeSpan.Zero);
         var celestialUtc = requestedUtc.AddSeconds(1);
@@ -138,12 +140,7 @@ public sealed partial class ProcessingGraphOperationsTests
             string liveId;
             byte[] successorPipeline;
             string? previousId = null;
-            using (var provider = CreateProvider(root, configureServices: services =>
-            {
-                services.AddSingleton(installedCatalog.Object);
-                services.AddSingleton(fitCatalogSource.Object);
-                services.AddSingleton(locationStore.Object);
-            }))
+            using (var provider = CreateProvider(root, configureServices: AddCaptureServices))
             {
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -256,32 +253,55 @@ public sealed partial class ProcessingGraphOperationsTests
                     => await File.ReadAllBytesAsync(Path.Combine(root, (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).PayloadRelativePath), token)
                         .ConfigureAwait(false);
             }
-            using var restarted = CreateProvider(root);
-            await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
-            var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-            var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
-            Assert.AreEqual(liveId, selected.State.RevisionId);
-            CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
-            var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
-            if (previousId is not null)
+            string? presetReceipt = null;
+            using (var restarted = CreateProvider(root, configureServices: configurePreset ? AddCaptureServices : null))
             {
-                Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, selected.State.Name);
-                await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                    await reopened.RetireRevisionAsync(liveId, reopenedRegistry.StateVersion,
-                        "retire-effective-shared-fit", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
-                Assert.AreEqual(reopenedRegistry.StateVersion,
-                    (await reopened.GetRegistryAsync(token).ConfigureAwait(false)).StateVersion);
-                var old = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: true, token, previousId).ConfigureAwait(false);
-                Assert.AreEqual(previousId, old.State.RevisionId);
-                CollectionAssert.AreEqual(new[] { "projected-scene", measurementId },
-                    old.Pipeline.Steps.Single(step => step.Id == "fit").DependsOn!.ToArray());
+                await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
+                Assert.AreEqual(liveId, selected.State.RevisionId);
+                CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
+                var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
+                if (previousId is not null)
+                {
+                    Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, selected.State.Name);
+                    await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                        await reopened.RetireRevisionAsync(liveId, reopenedRegistry.StateVersion,
+                            "retire-effective-shared-fit", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                    Assert.AreEqual(reopenedRegistry.StateVersion,
+                        (await reopened.GetRegistryAsync(token).ConfigureAwait(false)).StateVersion);
+                    var old = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: true, token, previousId).ConfigureAwait(false);
+                    Assert.AreEqual(previousId, old.State.RevisionId);
+                    CollectionAssert.AreEqual(new[] { "projected-scene", measurementId },
+                        old.Pipeline.Steps.Single(step => step.Id == "fit").DependsOn!.ToArray());
+                }
+                if (configurePreset)
+                {
+                    Console.WriteLine($"Accepted fit on effective revision {liveId}; registry basis {activeId} after restart.");
+                    presetReceipt = await ConfigureSharedLegacyAstrometryAsync(root, configuration, restarted, selected, activeId, measurementId,
+                        fitCatalog, captureUtc => new VirtualSkyCameraModule(new ExposureTestTimeProvider(captureUtc, autoAdvance: true),
+                            catalog, restarted.GetRequiredService<IProjectedSceneStore>(), topology, ephemeris.Object,
+                            stagingStore: restarted.GetRequiredService<IProjectedSceneStagingStore>(),
+                            graphSelection: new VirtualSkyGraphSelectionProvider(reopened, enabled: true)),
+                        requestedUtc.AddSeconds(3), token).ConfigureAwait(false);
+                }
             }
+            if (presetReceipt is not null)
+                await VerifySharedLegacyPresetReceiptAfterRestartAsync(root, configuration,
+                    activeId, liveId, presetReceipt, token).ConfigureAwait(false);
         }
         finally
         {
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
+        }
+
+        void AddCaptureServices(IServiceCollection services)
+        {
+            services.AddSingleton(installedCatalog.Object);
+            services.AddSingleton(fitCatalogSource.Object);
+            services.AddSingleton(locationStore.Object);
         }
     }
 }
