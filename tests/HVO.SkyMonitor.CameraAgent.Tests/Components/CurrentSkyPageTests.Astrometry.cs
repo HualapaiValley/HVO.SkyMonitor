@@ -342,6 +342,81 @@ public sealed partial class CurrentSkyPageTests
         Assert.IsEmpty(cut.FindAll(".astrometry-provenance"));
     }
 
+    [TestMethod]
+    public async Task PrefetchedCurrentSkyLayersCannotCrossAnInvalidatedFitLifetime()
+    {
+        var fit = (await AstrometryEvidenceAsync().ConfigureAwait(false)) with { ArtifactId = Guid.NewGuid() };
+        var summary = CameraAgentLatestAstrometry.FromVerified(fit)!;
+        using var context = new BunitContext();
+        var ui = Configure(context);
+        context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
+            .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
+        var current = WithStructuredBase();
+        var incomingCapture = current.DisplayCapture! with
+        {
+            CaptureId = fit.CaptureId,
+            ExposureStartedUtc = fit.Solution!.Assessment.Frame.ExposureStartUtc
+        };
+        var incoming = current with { DisplayCapture = incomingCapture, LatestCapture = incomingCapture };
+        var combined = incoming.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        var pending = new TaskCompletionSource<OperatorUiResult<CameraAgentLayeredPresentation>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invalidation = new TaskCompletionSource<OperatorUiResult<CameraAgentLatestAstrometryRead>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var prefetchStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var latestReads = 0;
+        var freshReads = 0;
+        ui.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
+        ui.LatestAstrometryHandler = (_, _) => ++latestReads switch
+        {
+            1 => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary))),
+            2 => new(invalidation.Task),
+            _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)))
+        };
+        ui.PresentationHandler = (id, _) =>
+        {
+            if (id != fit.CaptureId)
+                return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(id, new string('D', 64))));
+            prefetchStarted.TrySetResult();
+            return new(pending.Task);
+        };
+        ui.CurrentPresentationHandler = (id, _) =>
+        {
+            freshReads++;
+            var unavailable = new CameraAgentRetainedAstrometry(id, "NotRetained", "assessment-not-retained");
+            return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                Layered(id, new string('E', 64)) with { Astrometry = unavailable }));
+        };
+
+        var page = context.Render<CurrentSkyPage>();
+        page.WaitForAssertion(() => StringAssert.Contains(page.Find(".latest-measured-solution").TextContent,
+            summary.SolutionIdentitySha256, StringComparison.Ordinal));
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(2, latestReads);
+        current = incoming;
+        var switchCapture = page.Find("button.refresh-link").ClickAsync();
+        try
+        {
+            await prefetchStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            invalidation.SetResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(
+                new(true) { PreviousSummaryEvicted = true }));
+            page.WaitForAssertion(() => Assert.IsFalse(page.Find(".latest-measured-solution").TextContent
+                .Contains(summary.SolutionIdentitySha256, StringComparison.Ordinal)));
+        }
+        finally
+        {
+            pending.TrySetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                Layered(fit.CaptureId, new string('D', 64)) with { Astrometry = fit with { CompatibleBaseArtifactId = combined.DisplayArtifactId } }));
+            invalidation.TrySetResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
+            await switchCapture.ConfigureAwait(false);
+        }
+
+        page.WaitForAssertion(() =>
+        {
+            Assert.AreEqual(1, freshReads);
+            Assert.AreEqual("Unavailable", page.Find(".astrometry-card .state-chip").TextContent);
+            Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        });
+    }
+
     // A controllable service completion drives the actual component continuation on the renderer and
     // lets the test observe its final state without sleeps or a race against a detached read task.
     private sealed class DeferredAstrometryRead : IValueTaskSource<OperatorUiResult<CameraAgentRetainedAstrometry>>

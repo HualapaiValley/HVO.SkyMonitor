@@ -268,6 +268,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             if (result.IsSuccess && result.Value is { } view)
                 await InvokeAsync(() => change = ClassifyCaptureChange(view, manual, started)).ConfigureAwait(false);
             // The next capture arrives with its overlays in hand, so a change never shows a half-loaded page.
+            var prefetchedLayersRevision = Volatile.Read(ref _retainedAstrometryInvalidationRevision);
             var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
                 ? await ReadLayersAsync(nextCaptureId, timeout.Token).ConfigureAwait(false)
                 : null;
@@ -301,6 +302,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     return;
                 }
                 if (_viewerOpen) { _refreshing = false; return; }
+                if (prefetchedLayersRevision != _retainedAstrometryInvalidationRevision) layers = null;
                 var previouslyDisplayedCaptureId = _runCaptureId;
                 if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
                 {
@@ -535,46 +537,51 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The optional read only uses the captured cancellation token; its generation guard discards late results.")]
-    private void ResetLayers(Guid? captureId, CancellationToken cancellationToken)
+    private void ResetLayers(Guid? captureId, CancellationToken cancellationToken, bool discardDisplayedEvidence = true)
     {
         Interlocked.Increment(ref _layerGeneration);
-        _bindGeneration++;
         var previous = _layerCancellation;
-        _layerCancellation = null;
+        _layerCancellation = captureId is not null ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
+        _deferredLayers = null;
+        _layerLoading = false;
+        _astrometryLoading = false;
+        _saving = false;
+        _saveMessage = null;
+        _saveError = null;
+        _savedArtifactUrl = null;
+        _savedOriginalUrl = null;
+        if (discardDisplayedEvidence)
+        {
+            _bindGeneration++;
+            _layers = null;
+            ClearAstrometry();
+            _layerMessage = null;
+            _selectedLayers = new(StringComparer.Ordinal);
+            _layerInteractive = false;
+            _layerImageFailed = false;
+            _layerPreviewAttempt = 0;
+            _layersNotRetained = false;
+            _bindLayers = false;
+        }
+        else if (_layers is not null && !_layerInteractive)
+        {
+            _bindLayers = true;
+        }
+
+        // Publish the replacement lifetime and clear the old view state before cancellation can run continuations.
         if (previous is not null)
         {
             previous.Cancel();
             previous.Dispose();
         }
-        _layers = null;
-        ClearAstrometry();
-        _deferredLayers = null;
-        _layerMessage = null;
-        _saveMessage = null;
-        _saveError = null;
-        _savedArtifactUrl = null;
-        _savedOriginalUrl = null;
-        _selectedLayers = new(StringComparer.Ordinal);
-        _layerInteractive = false;
-        _layerImageFailed = false;
-        _layerPreviewAttempt = 0;
-        _layerLoading = false;
-        _layersNotRetained = false;
-        _saving = false;
-        _bindLayers = false;
-        if (captureId is { } id)
-        {
-            var next = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            _layerCancellation = next;
-        }
     }
 
-    private void TryLoadLayers(Guid? captureId, bool requireCurrent = false)
+    private void TryLoadLayers(Guid? captureId)
     {
         if (captureId is not { } id || _layers is not null || _layerLoading || _accessDenied || _viewerOpen ||
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
-        _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token, requireCurrent);
+        _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
     }
 
     private async Task RefreshMeasuredEvidenceAsync()
@@ -585,9 +592,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         await LoadLayersAsync(_layers.CaptureId, Volatile.Read(ref _layerGeneration), cancellation.Token);
     }
 
-    private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation, bool requireCurrent = false)
+    private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
     {
-        var result = await ReadLayersAsync(captureId, cancellation, requireCurrent).ConfigureAwait(false);
+        var result = await ReadLayersAsync(captureId, cancellation).ConfigureAwait(false);
         if (result is null || Volatile.Read(ref _disposeStarted) != 0 ||
             cancellation.IsCancellationRequested && result.Kind != OperatorUiResultKind.Unauthorized) return;
         await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
@@ -595,14 +602,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     /// <summary>Reads one capture's layers within their own deadline, or null when the page stopped waiting.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
-    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation, bool requireCurrent = false)
+    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
     {
         try
         {
             using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
-            return requireCurrent
+            // A shared flight may have started before invalidation, even on a later manual refresh.
+            return Volatile.Read(ref _retainedAstrometryInvalidationRevision) != 0
                 ? await OperatorService.GetCurrentLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false)
                 : await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
         }
