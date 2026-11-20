@@ -204,6 +204,7 @@ public sealed partial class CurrentSkyPageTests
     [TestMethod]
     [DataRow("different-base")]
     [DataRow("ambiguous-derivative")]
+    [DataRow("sustained-mismatch")]
     [DataRow("missing-base")]
     [DataRow("preview-dimensions")]
     [DataRow("combined-selected")]
@@ -230,7 +231,7 @@ public sealed partial class CurrentSkyPageTests
         };
         var offered = scenario switch
         {
-            "ambiguous-derivative" or "combined-selected" => eligible with
+            "ambiguous-derivative" or "sustained-mismatch" or "combined-selected" => eligible with
             {
                 DisplayBasis = CameraAgentPresentationDisplayBasis.OwnArtifact,
                 DisplayArtifactId = linearBase,
@@ -273,6 +274,52 @@ public sealed partial class CurrentSkyPageTests
         Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
         Assert.AreEqual(firstUrl, page.Find(".sky-layer-canvas img").GetAttribute("src"));
         Assert.IsFalse(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+        if (scenario == "sustained-mismatch")
+        {
+            var newer = Next(first, Guid.NewGuid(), shown.CaptureSequence + 2);
+            current = WithBase(newer, offered, true) with { ProcessingPending = true };
+            await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
+            Assert.IsFalse(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+
+            current = current with { ProcessingPending = false, MinimumRefreshInterval = TimeSpan.FromSeconds(45) };
+            clock.Advance(TimeSpan.FromSeconds(15));
+            var read = service.CurrentSkyHandler;
+            var tick = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            service.CurrentSkyHandler = async token =>
+            {
+                var result = await read(token).ConfigureAwait(false);
+                tick.TrySetResult();
+                return result;
+            };
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await tick.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            page.WaitForAssertion(() => Assert.IsFalse(page.Find("button.refresh-link").HasAttribute("disabled")));
+            Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
+
+            clock.Advance(TimeSpan.FromSeconds(15));
+            page.WaitForAssertion(() =>
+            {
+                Assert.AreEqual(CaptureLink(newer), page.Find(".layers-link").GetAttribute("href"));
+                Assert.AreEqual(offered.PreviewUrl!.OriginalString, page.Find(".capture-image img").GetAttribute("src"));
+                Assert.IsEmpty(page.FindAll(".sky-layer-workspace"));
+                StringAssert.Contains(page.Find(".sky-layer-unavailable").TextContent, "manifest base does not match", StringComparison.Ordinal);
+                Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+            });
+            current = WithBase(second, eligible, true);
+            await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            Assert.AreEqual(CaptureLink(newer), page.Find(".layers-link").GetAttribute("href"));
+            current = WithBase(newer, eligible, true);
+            await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            page.WaitForAssertion(() =>
+            {
+                Assert.AreEqual(CaptureLink(newer), page.Find(".layers-link").GetAttribute("href"));
+                StringAssert.Contains(page.Find(".sky-layer-canvas img").GetAttribute("src"), secondBase.ToString("D"), StringComparison.Ordinal);
+                Assert.IsFalse(page.Find(".sky-layer-save button").HasAttribute("disabled"));
+            });
+            return;
+        }
+
         // Other cases repair the same proposed capture. The ambiguous capture can also be passed over by rotation.
         var recovered = scenario == "ambiguous-derivative"
             ? Next(first, Guid.NewGuid(), shown.CaptureSequence + 2)

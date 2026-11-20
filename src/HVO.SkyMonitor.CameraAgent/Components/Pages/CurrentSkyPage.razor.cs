@@ -94,6 +94,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private int _refreshRequested;
     private int _manualRefreshRequested;
     private long _lastCaptureChangeTimestamp;
+    private bool _gaveDisplayMismatchOneRefresh;
+    private bool _showingBaseOnlyForMismatch;
     private IncomingLayerPrefetch? _incomingLayerPrefetch;
     private int _disposeStarted;
 
@@ -138,6 +140,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         if (_accessDenied || _disposeStarted != 0 || ArchivedView is not { } archive || ReferenceEquals(archive, _appliedArchive)) return;
         _appliedArchive = archive;
+        _showingBaseOnlyForMismatch = false;
         var capture = archive.Capture;
         var sameCapture = _runCaptureId == capture.CaptureId;
         _runCaptureId = capture.CaptureId;
@@ -324,15 +327,28 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 if (_viewerOpen) { _refreshing = false; return; }
                 if (prefetchedLayersRevision != (prefetch?.Revision ?? 0) || !IsCurrentAstrometryObservation(layers))
                     layers = null;
-                // An advertised projection must be available for the proposed capture. When the selected
-                // stage uses layers, the incoming image must also render that projection on its exact base.
-                if (requiresEligibleLayers && result.Value?.Presentation is { } incoming &&
-                    (layers is not { IsSuccess: true, Value: { } incomingLayers } ||
-                     incomingLayers.CaptureId != displayCaptureId ||
-                     ResolveSelection(incoming, _selectedStage) == CameraAgentPresentationStage.Annotated &&
-                     !LayersMatchDisplay(incoming, incomingLayers)))
+                var baseOnly = false;
+                if (change == CaptureChange.Switch && result.Value?.Presentation is { } incoming)
                 {
-                    change = CaptureChange.Hold;
+                    if (requiresEligibleLayers &&
+                        (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
+                    {
+                        change = CaptureChange.Hold;
+                    }
+                    else if (requiresEligibleLayers && layers?.Value is { } projection &&
+                        ResolveSelection(incoming, _selectedStage) == CameraAgentPresentationStage.Annotated &&
+                        !LayersMatchDisplay(incoming, projection))
+                    {
+                        // Give transient incompatibility one eligible refresh to heal. A stream of newer
+                        // incompatible captures shares that grace instead of restarting it on every capture.
+                        if (_gaveDisplayMismatchOneRefresh) baseOnly = true;
+                        else change = CaptureChange.Hold;
+                        _gaveDisplayMismatchOneRefresh = true;
+                    }
+                    else
+                    {
+                        _gaveDisplayMismatchOneRefresh = false;
+                    }
                 }
                 var previouslyDisplayedCaptureId = _runCaptureId;
                 if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
@@ -358,8 +374,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         _lineageArtifactId = null;
                         _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
+                        _showingBaseOnlyForMismatch = baseOnly;
                         _lastCaptureChangeTimestamp = started;
-                        if (layers is not null && displayCaptureId is { } shownCaptureId)
+                        if (!baseOnly && layers is not null && displayCaptureId is { } shownCaptureId)
                             ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
                     }
                     var combinedId = _facts?.CombinedLineage?.ArtifactId;
@@ -703,6 +720,12 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
                 "Selected measured evidence is temporarily unavailable.");
         _layerLoading = false;
+        if (_showingBaseOnlyForMismatch)
+        {
+            if (!result.IsSuccess || result.Value is not { } compatible || !LayersMatchDisplay(_presentation, compatible)) return;
+            _showingBaseOnlyForMismatch = false;
+            _gaveDisplayMismatchOneRefresh = false;
+        }
         if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
         {
             _layers = value;
@@ -740,9 +763,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
            (slot.PreviewWidth is null || slot.PreviewWidth == layers.WidthPixels) &&
            (slot.PreviewHeight is null || slot.PreviewHeight == layers.HeightPixels);
 
-    private string? LayerMessage => _layers is { } layers && !LayersMatchDisplay(_presentation, layers)
-        ? "The retained layer manifest base does not match the resolved Combined display derivative or its preview dimensions. Showing the unannotated Combined base without layers."
-        : _layerMessage;
+    private string? LayerMessage => _showingBaseOnlyForMismatch
+        ? "The retained layer manifest base does not match an eligible preview. Showing a standard image without selectable layers."
+        : _layers is { } layers && !LayersMatchDisplay(_presentation, layers)
+            ? "The retained layer manifest base does not match the resolved Combined display derivative or its preview dimensions. Showing the unannotated Combined base without layers."
+            : _layerMessage;
 
     // Unknown or failed layer reads are not proof that a capture has no retained layers.
     private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated && !_layersNotRetained;
@@ -762,7 +787,12 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
 
     private CameraAgentPresentationSlot? DisplaySlot => ProcessedBaseFallback
-        ? ProcessedBaseSlot : SelectedSlot;
+        ? ProcessedBaseSlot ?? (_showingBaseOnlyForMismatch ? FindPlainPreview() : null)
+        : SelectedSlot;
+
+    private CameraAgentPresentationSlot? FindPlainPreview() => _presentation?.Stages.FirstOrDefault(static slot =>
+        slot.Stage is CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Raw &&
+        slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null) ?? SelectedSlot;
 
     private string? DisplayContentUrl => DisplaySlot?.ArtifactId is { } artifactId
         ? FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content")

@@ -24,6 +24,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901
+
 - Current Sky keeps the previous layered image and its tools until an incoming capture has layers that match its rendered display base. #1901
 
 - Current Sky keeps the previous image visible while it rereads advertised layers for an incoming capture after invalidation. #1901

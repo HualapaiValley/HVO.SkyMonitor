@@ -113,6 +113,8 @@ public interface ICameraAgentCapturePresentationProjector
     /// rather than surface as a broken stage.
     /// </summary>
     CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture);
+    CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture, Guid manifestBaseArtifactId)
+        => ProjectWithRetainedDisplay(capture);
 }
 
 public sealed record CameraAgentCurrentImagePresentation(
