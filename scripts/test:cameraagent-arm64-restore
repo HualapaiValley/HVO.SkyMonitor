@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Replay the advisory's restore step with disposable catalog artifacts."""
+
+import argparse
+from contextlib import closing
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import sqlite3
+import subprocess
+import tarfile
+import tempfile
+
+import yaml
+
+
+REPO = Path(__file__).resolve().parents[1]
+SPEC = Path("src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json")
+HYG = Path("build/hyg-v4.2-p3-s2-r1.bundle")
+OPENNGC = Path("openngc/openngc-v20260501-p6-s5-r1.bundle")
+DATABASE = OPENNGC / "openngc.sqlite"
+REJECTION = "Restored OpenNGC database does not match the approved SHA-256 and length."
+RUN_ID = "1899"
+
+
+def replay(shell, workspace, catalog, head, label, *, attempt="1", producer_run=RUN_ID, refusal=None):
+    (catalog / "openngc-fixture.json").write_text(json.dumps({
+        "headSha": head, "runId": producer_run, "producerAttempt": "1",
+    }))
+    members = sorted(str(path.relative_to(catalog)) for path in (catalog / OPENNGC).iterdir())
+    (catalog / "openngc.sha256").write_text(subprocess.check_output(
+        ["sha256sum", *members], cwd=catalog, text=True,
+    ))
+    runner = catalog.parent / label
+    download = runner / f"hyg-v42-contract-artifact-{RUN_ID}-{attempt}"
+    download.mkdir(parents=True)
+    with tarfile.open(download / "catalog-contracts.tar.gz", "w:gz") as archive:
+        archive.add(catalog, arcname=".")
+    evidence = runner / f"arm64-workflow-start-{RUN_ID}-{attempt}"
+    evidence.mkdir()
+    github_env = runner / "github-env"
+    github_env.touch()
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", shell],
+        cwd=workspace, capture_output=True, text=True,
+        env={**os.environ, "RUNNER_TEMP": str(runner), "GITHUB_SHA": head,
+             "GITHUB_RUN_ID": RUN_ID, "GITHUB_RUN_ATTEMPT": attempt, "GITHUB_ENV": str(github_env)},
+    )
+    log = result.stdout + result.stderr
+    if refusal:
+        transfer_checked = refusal != REJECTION or f"{DATABASE}: OK" in log
+        unpublished = not github_env.stat().st_size and not any(evidence.iterdir())
+        if result.returncode != 1 or refusal not in log or not transfer_checked or not unpublished:
+            raise SystemExit(
+                f"{label}: expected refusal before export or evidence copy ({refusal}), "
+                f"got exit {result.returncode}\n{log}"
+            )
+    else:
+        restored = runner / f"hyg-v42-contracts-{RUN_ID}-{attempt}"
+        expected = (
+            f"HVO_PRODUCTION_CATALOG_BUNDLE={restored / HYG}\n"
+            f"HVO_OPENNGC_CATALOG_BUNDLE={restored / OPENNGC}\n"
+        )
+        if result.returncode or github_env.read_text() != expected or any(
+            (evidence / name).read_bytes() != (catalog / name).read_bytes()
+            for name in ("openngc-fixture.json", "openngc.sha256")
+        ):
+            raise SystemExit(f"{label}: expected both bundle paths and producer evidence\n{log}")
+    print(f"ARM64 catalog restore {label}: {'refused' if refusal else 'accepted'} as expected")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pinned-bundles", nargs=2, metavar=("HYG", "OPENNGC"), type=Path)
+    args = parser.parse_args()
+    workflow = yaml.safe_load((REPO / ".github/workflows/cameraagent-arm64.yml").read_text())
+    shell = next(step["run"] for step in workflow["jobs"]["cameraagent-arm64"]["steps"]
+                 if step["name"] == "Restore exact production catalog contract")
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
+
+    with tempfile.TemporaryDirectory(prefix="arm64-restore-") as temporary:
+        root = Path(temporary)
+        checkout = root / "checkout"
+        spec = checkout / SPEC
+        spec.parent.mkdir(parents=True)
+        catalog = root / "catalog"
+        (catalog / HYG).mkdir(parents=True)
+        database = catalog / DATABASE
+        database.parent.mkdir(parents=True)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("CREATE TABLE fixture (value TEXT)")
+            connection.execute("INSERT INTO fixture VALUES ('approved')")
+        original = database.read_bytes()
+        pin = {"relativePath": database.name, "sha256": hashlib.sha256(original).hexdigest(),
+               "length": len(original)}
+        registry = {"specifications": [{"catalogId": "openngc-production", "database": pin}]}
+        spec.write_text(json.dumps(registry))
+
+        replay(shell, checkout, catalog, head, "synthetic-first-attempt")
+        replay(shell, checkout, catalog, head, "synthetic-native-only-retry", attempt="2")
+        replay(shell, checkout, catalog, head, "different-run", producer_run="1900",
+               refusal="OpenNGC bundle provenance does not match the workflow run and commit.")
+
+        # Preserve the byte length and regenerate the ledger to isolate the approved hash check.
+        changed = original.replace(b"approved", b"modified", 1)
+        if changed == original or len(changed) != len(original):
+            raise SystemExit("Synthetic database mutation must change bytes without changing length.")
+        database.write_bytes(changed)
+        replay(shell, checkout, catalog, head, "changed-database-regenerated-ledger", refusal=REJECTION)
+        database.write_bytes(original)
+
+        # A matching transfer ledger and approved digest still require the approved length.
+        pin["length"] += 1
+        spec.write_text(json.dumps(registry))
+        replay(shell, checkout, catalog, head, "wrong-approved-length", refusal=REJECTION)
+
+        if args.pinned_bundles:
+            catalog = root / "pinned"
+            for source, destination in zip(args.pinned_bundles, (HYG, OPENNGC), strict=True):
+                shutil.copytree(source, catalog / destination)
+            replay(shell, REPO, catalog, head, "pinned-native-only-retry", attempt="2")
+            database = catalog / DATABASE
+            database.chmod(0o600)
+            with database.open("ab") as stream:
+                stream.write(b"\x00")
+            replay(shell, REPO, catalog, head, "changed-pinned-database-regenerated-ledger", refusal=REJECTION)
+
+
+if __name__ == "__main__":
+    main()

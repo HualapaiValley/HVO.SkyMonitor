@@ -311,6 +311,24 @@ cp -- "$input" "$results/$name"
 
     changed = copy.deepcopy(cli)
     results = changed.find("./{*}Results")
+    repeated = copy.deepcopy(results[0])
+    repeated.set("executionId", "00000000-0000-0000-0000-000000000001")
+    results.append(repeated)
+    counters = changed.find("./{*}ResultSummary/{*}Counters")
+    for attribute in ("total", "executed", "passed"):
+        counters.set(attribute, "12")
+    check("extra passing row", changed, 1, "12 results, every one Passed", "executed=12 passed=12",
+          "missing OpenNGC cases []; unexpected or repeated cases", repeated.attrib["testName"])
+
+    changed = copy.deepcopy(cli)
+    definitions = changed.find("./{*}TestDefinitions")
+    repeated = copy.deepcopy(definitions[0])
+    definitions.append(repeated)
+    check("duplicate definition", changed, 1, "11 results, every one Passed", green,
+          f"duplicate testId definition {repeated.attrib['id']}")
+
+    changed = copy.deepcopy(cli)
+    results = changed.find("./{*}Results")
     removed = results[0].attrib["testName"]
     results.remove(results[0])
     counters = changed.find("./{*}ResultSummary/{*}Counters")
