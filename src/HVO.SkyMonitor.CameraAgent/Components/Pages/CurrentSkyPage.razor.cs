@@ -569,12 +569,12 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         }
     }
 
-    private void TryLoadLayers(Guid? captureId)
+    private void TryLoadLayers(Guid? captureId, bool requireCurrent = false)
     {
         if (captureId is not { } id || _layers is not null || _layerLoading || _accessDenied || _viewerOpen ||
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
-        _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
+        _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token, requireCurrent);
     }
 
     private async Task RefreshMeasuredEvidenceAsync()
@@ -585,9 +585,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         await LoadLayersAsync(_layers.CaptureId, Volatile.Read(ref _layerGeneration), cancellation.Token);
     }
 
-    private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation)
+    private async Task LoadLayersAsync(Guid captureId, long generation, CancellationToken cancellation, bool requireCurrent = false)
     {
-        var result = await ReadLayersAsync(captureId, cancellation).ConfigureAwait(false);
+        var result = await ReadLayersAsync(captureId, cancellation, requireCurrent).ConfigureAwait(false);
         if (result is null || Volatile.Read(ref _disposeStarted) != 0 ||
             cancellation.IsCancellationRequested && result.Kind != OperatorUiResultKind.Unauthorized) return;
         await InvokeAsync(() => ApplyLayerResult(captureId, generation, result)).ConfigureAwait(false);
@@ -595,14 +595,16 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     /// <summary>Reads one capture's layers within their own deadline, or null when the page stopped waiting.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
-    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
+    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation, bool requireCurrent = false)
     {
         try
         {
             using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
-            return await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
+            return requireCurrent
+                ? await OperatorService.GetCurrentLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false)
+                : await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {

@@ -19,31 +19,26 @@ public sealed partial class CurrentSkyPage
         _latestAstrometryLoading = true;
         var revision = ++_latestAstrometryRevision;
         var previous = _latestAstrometry;
+        // A held image may have a different retained fit from the global headline.
+        var selected = RetainedIdentity(_layers?.Astrometry) ?? RetainedIdentity(_astrometry);
         try
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(_lifetime!.Token, deadline.Token);
-            var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token, previous).ConfigureAwait(false);
+            var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token, previous, selected).ConfigureAwait(false);
             await InvokeAsync(() =>
             {
                 _latestAstrometryLoading = false;
                 if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                 if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied || IsArchived) return;
                 var read = result.Value;
-                if (read?.PreviousSummaryQuarantined == true && previous is not null)
+                if (read?.PreviousSummaryInvalidated == true && previous is not null)
                 {
                     _latestAstrometry = null;
-                    if (MatchesPrevious(_layers?.Astrometry, previous))
-                    {
-                        // Discard the composed measured overlays and reload the same image's retained layers.
-                        ResetLayers(previous.CaptureId, _lifetime.Token);
-                        TryLoadLayers(previous.CaptureId);
-                    }
-                    else if (MatchesPrevious(_astrometry, previous))
-                    {
-                        ApplyAstrometry(previous.CaptureId, new(previous.CaptureId, "Unavailable", "retained-evidence-invalid"));
-                    }
+                    InvalidateSelectedAssessment(new(previous.CaptureId, previous.ArtifactId, previous.SolutionIdentitySha256));
                 }
+                if (read?.SelectedAssessmentInvalidated == true && selected is not null)
+                    InvalidateSelectedAssessment(selected);
                 var completed = read?.Completed == true && result.IsSuccess && !bounded.IsCancellationRequested;
                 _latestAstrometryReadSucceeded = completed;
                 if (completed) _latestAstrometry = read!.Summary;
@@ -62,9 +57,28 @@ public sealed partial class CurrentSkyPage
         }
     }
 
-    private static bool MatchesPrevious(CameraAgentRetainedAstrometry? value, CameraAgentLatestAstrometry previous)
-        => value is not null && value.CaptureId == previous.CaptureId && value.ArtifactId == previous.ArtifactId &&
-            string.Equals(value.SolutionIdentitySha256, previous.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
+    private void InvalidateSelectedAssessment(CameraAgentAstrometryAssessmentIdentity identity)
+    {
+        if (Matches(_layers?.Astrometry, identity))
+        {
+            // Replace the measured overlays with a projection begun after invalidation. A shared
+            // layer read that started before quarantine or eviction can still hold the old fit.
+            ResetLayers(identity.CaptureId, _lifetime!.Token);
+            TryLoadLayers(identity.CaptureId, requireCurrent: true);
+        }
+        else if (Matches(_astrometry, identity))
+        {
+            ClearAstrometry();
+        }
+    }
+
+    private static CameraAgentAstrometryAssessmentIdentity? RetainedIdentity(CameraAgentRetainedAstrometry? value)
+        => value is { Solution.Assessment.HasMeasuredMapping: true, ArtifactId: { } artifact, SolutionIdentitySha256: { } hash }
+            ? new(value.CaptureId, artifact, hash) : null;
+
+    private static bool Matches(CameraAgentRetainedAstrometry? value, CameraAgentAstrometryAssessmentIdentity identity)
+        => value is not null && value.CaptureId == identity.CaptureId && value.ArtifactId == identity.ArtifactId &&
+            string.Equals(value.SolutionIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
     private bool _astrometryLoading;
     private long _astrometryReadRevision;

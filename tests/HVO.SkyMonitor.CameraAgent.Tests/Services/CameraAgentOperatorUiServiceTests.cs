@@ -870,13 +870,14 @@ public sealed class CameraAgentOperatorUiServiceTests
     }
 
     internal static ICameraAgentOperatorUiService CreateAuthorizedRetainedAstrometryService(
-        ICameraAgentRetainedAstrometryService retainedAstrometry)
+        ICameraAgentRetainedAstrometryService retainedAstrometry, ICameraAgentLayeredPresentationService? layers = null)
     {
         var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
         var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
         authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
             .ReturnsAsync(AuthorizationResult.Success());
-        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object, retainedAstrometry: retainedAstrometry);
+        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            layers: layers, retainedAstrometry: retainedAstrometry);
     }
 
     private static CameraAgentOperatorUiService CreateService(
