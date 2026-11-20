@@ -272,7 +272,11 @@ public sealed partial class DurableCaptureProcessingTests
         ProcessingArtifact Artifact(ProcessingProduct product) => new(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
             product.Role, product.Variant, product.Recipe.IdentitySha256, product.MediaType, product.Layout, product.Payload, raw.CreatedUtc,
             product.TotalIntegration, product.Compatibility, raw.CaptureSequence, product.SourceArtifactIds, raw.ObservationStartedUtc, raw.ObservationEndedUtc)
-        { CaptureId = raw.CaptureId, ProductKind = product.Kind, SchemaVersion = product.SchemaVersion,
-            ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256 };
+        {
+            CaptureId = raw.CaptureId,
+            ProductKind = product.Kind,
+            SchemaVersion = product.SchemaVersion,
+            ContentIdentitySha256 = product.ContentIdentitySha256 ?? product.OutputIdentitySha256
+        };
     }
 }
