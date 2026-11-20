@@ -1,11 +1,20 @@
-# AgentControl review bodies
+# Historical AgentControl review bodies
 
-A review that should be posted as `hvo-agentcontrol[bot]` is committed here on the
-PR branch as `PR-<number>-R<round>-<head8>.md`, beginning with the line
-`REVIEW PR-<number>-R<round>-<head8>`, and then posted by dispatching the
-`AgentControl` workflow with `operation=post-review`. The file is read from the PR
-head by the workflow, so the review text is part of the reviewed range.
+The `hvo-agentcontrol[bot]` reviewer role and its `post-review` publication route
+are retired for formal review. Formal review begins after draft checks pass on
+the exact PR head. Kepler publishes reviewer output verbatim under the operator
+account, links the reviewer sessions, and relays verification records before
+Ready. Follow the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md)
+and the [common policy](../../docs/development/policy/common.md#authority-and-precedence).
 
-Files here are records, not code; they are excluded from every gate that derives a
-file set. Delete a file after its review has been posted if the PR would otherwise
-carry it into the base branch.
+The AgentControl App still opens or refreshes draft PRs for
+[nightly promotion to `main`](../../docs/development-v1.md#promotion-to-main).
+
+## Historical publication format
+
+Review bodies were committed here on the PR branch as
+`PR-<number>-R<round>-<head8>.md` and began with the line
+`REVIEW PR-<number>-R<round>-<head8>`. The manually dispatched `post-review`
+operation read the review body from the PR head and posted it as
+`hvo-agentcontrol[bot]`. The comment recorded the dispatcher, PR head SHA, and
+workflow run URL. See the [historical workflow](../../.github/workflows/agentcontrol.yml).
