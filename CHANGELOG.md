@@ -34,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - New CameraAgent execution details show the measured fit as optional for Storage and Telemetry, while keeping each run's original graph evidence available for replay. #1901
 
+- Required CameraAgent Telemetry reports skipped or failed optional astrometry fits while standard capture and archiving continue. #1901
+
 - VirtualSky continues capturing when a saved graph already uses the default astrometry prediction output name. Migration assigns the prediction a free name and preserves the existing output. #1901
 
 - CameraAgent resumes raw capture and canonical processing after restarting with a saved graph whose astrometry solver and associations use different scenes. Live solves are skipped with a processing warning. #1901
