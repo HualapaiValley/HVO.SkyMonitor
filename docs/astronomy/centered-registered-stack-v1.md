@@ -7,6 +7,27 @@ reference capture and qualified linear artifact at offset zero. The recipe
 does not choose a cadence, extend a deadline, find a current calibration, or
 replace the reference. Registration does not publish a live view.
 
+## Closure and readback
+
+At close, construct artifact pins with `CenteredStackArtifactPin.FromHeader`
+from committed descriptor and journal fields plus the committed payload checksum.
+Use `CenteredStackRetainedInputReader.BindCommittedMeasurement` on the exact
+cutoff-visible step-three settlement and the pinned rig geometry. Pass the
+result and the artifact pins to `CenteredStackExposurePin.FromCommitted`.
+This pins the measurement reason, delivered linear layout and complete artifact
+header without opening pixel files. A plan missing an envelope digest or its
+linear layout requires reconstruction from verified committed metadata.
+
+For exposures with a complete valid lattice, `CenteredStackValidityMask.PinAllValid`
+streams the checksum without reading or allocating a pixel plane during closure.
+Use `OpenAllValid` against the frozen pin after acquiring the raw and linear
+custody. A nonuniform mask must have its own committed payload and checksum.
+The same canonical artifact headers must be used at close and reopen.
+
+Reopen the evidence by its committed identity and plan digest. Its reader binds
+the base variant, channel order and dimensions to the frozen publication.
+`VerifyPlanes` checks the recipe, exact layout, payload and lineage of each plane.
+
 ## Alignment and pixels
 
 - Coordinates are delivered-image pixel edges, with the center of pixel

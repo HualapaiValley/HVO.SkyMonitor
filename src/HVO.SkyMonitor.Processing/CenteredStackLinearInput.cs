@@ -11,7 +11,7 @@ internal static class CenteredStackLinearInput
     {
         var provenance = qualified.Provenance;
         var descriptor = qualified.Exposure.Raw;
-        if (raw.Role != FrameArtifactRole.Raw || linear.Role != FrameArtifactRole.Calibrated ||
+        if (raw.Role != FrameArtifactRole.Raw || linear.Role != FrameArtifactRole.Calibrated || pin.LinearLayout != linear.Layout ||
             qualified.Exposure.Key != pin.Key || qualified.Linear.ArtifactId != linear.ArtifactId ||
             descriptor.Capture.CaptureId != pin.Key.CaptureId || descriptor.Capture.AgentId != pin.Key.Camera.AgentId ||
             !descriptor.Validate().IsValid || descriptor.Layout != raw.Layout || descriptor.Layout != qualified.Exposure.Geometry.Layout ||

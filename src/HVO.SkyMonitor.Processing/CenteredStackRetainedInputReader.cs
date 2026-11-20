@@ -35,22 +35,38 @@ public sealed class CenteredStackRetainedInputReader(
         {
             return null;
         }
-        var measurement = ExposureMeasurementBindings.FromAdmitted(committed, geometry.ApertureProjection,
-            geometry.NativePixelPitchMicrometers);
-        if (measurement.Linear is not { } expected || linear.Layout is not { } layout ||
-            linear.DescriptorIdentitySha256 != provenance.LinearDescriptorSha256)
+        if (linear.Layout is not { } layout || linear.DescriptorIdentitySha256 != provenance.LinearDescriptorSha256)
         {
             throw new InvalidDataException("The committed linear layout or descriptor is unavailable.");
         }
-        if (expected.Layout != layout)
+        return new(new(committed.Exposure, linear, provenance), BindCommittedMeasurement(committed, layout, geometry));
+    }
+
+    /// <summary>
+    /// Constructs the exact measurement expectation from a cutoff-visible step-three settlement,
+    /// its committed linear layout and the pinned rig, without reading any artifact payload.
+    /// </summary>
+    public static ExposureMeasurementInputV1 BindCommittedMeasurement(LinearExposureLookup committed,
+        FrameLayoutDescriptor committedLinearLayout, CenteredStackMeasurementGeometry geometry)
+    {
+        ArgumentNullException.ThrowIfNull(committed);
+        ArgumentNullException.ThrowIfNull(committedLinearLayout);
+        ArgumentNullException.ThrowIfNull(geometry);
+        var measurement = ExposureMeasurementBindings.FromAdmitted(committed, geometry.ApertureProjection,
+            geometry.NativePixelPitchMicrometers);
+        if (measurement.Linear is not { } expected)
+        {
+            throw new InvalidDataException("Centered registration requires an exact qualified linear settlement.");
+        }
+        if (expected.Layout != committedLinearLayout)
         {
             if (committed.Disposition != LinearExposureDisposition.QualifiedNormalizationOnly ||
-                !CenteredStackLinearInput.MatchesNormalizationLayout(committed.Exposure.Raw.Layout, layout))
+                !CenteredStackLinearInput.MatchesNormalizationLayout(committed.Exposure.Raw.Layout, committedLinearLayout))
             {
                 throw new InvalidDataException("The committed linear layout differs from the admitted readout.");
             }
-            measurement = measurement with { Linear = expected with { Layout = layout } };
+            measurement = measurement with { Linear = expected with { Layout = committedLinearLayout } };
         }
-        return new(new(committed.Exposure, linear, provenance), measurement);
+        return measurement;
     }
 }

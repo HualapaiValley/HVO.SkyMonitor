@@ -65,6 +65,27 @@ public sealed class CenteredRegisteredStackTests
         Assert.ThrowsExactly<InvalidDataException>(() => first.VerifyPlanes(altered));
         altered[0] = planes[0] with { Layout = planes[0].Layout! with { ByteOrder = FrameByteOrder.BigEndian } };
         Assert.ThrowsExactly<InvalidDataException>(() => first.VerifyPlanes(altered));
+        altered[0] = planes[0] with
+        {
+            Recipe = planes[0].Recipe with { Descriptor = planes[0].Recipe.Descriptor with { SemanticVersion = "99.0.0" } }
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => first.VerifyPlanes(altered));
+        var retained = firstOutcome.Products.Single(product => product.SchemaVersion == CenteredRegisteredStackEvidence.CurrentSchemaVersion);
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(
+            RewriteEvidence(retained, json => { json["width"] = Height; json["height"] = Width; })));
+        if (bayer)
+        {
+            Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(RewriteEvidence(retained, json =>
+            {
+                var outputs = json["outputs"]!.AsArray();
+                var red = outputs[0]!.DeepClone();
+                var blue = outputs[2]!.DeepClone();
+                red["channel"] = "blue";
+                blue["channel"] = "red";
+                outputs[0] = blue;
+                outputs[2] = red;
+            })));
+        }
         Assert.AreEqual(CenteredStackDisposition.Registered, first.Disposition);
         Assert.AreEqual(CenteredStackDisposition.Registered, next.Disposition);
         Assert.AreEqual(5, first.Sources.Count(source => source.Reason == CenteredRegistrationReason.Contributed), Describe(first));
@@ -321,6 +342,47 @@ public sealed class CenteredRegisteredStackTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task MetadataOnlyClosureMatchesReopenedPinsAndRejectsLegacyMissingEnvelope()
+    {
+        const int height = Height + 1;
+        var center = await BuildCapture(103, new byte[Width * height * 2], bayer: false, height: height,
+            measurementReason: "qualified-committed");
+        var linear = center.Qualified.Linear.Linear;
+        var rawHeader = CenteredStackArtifactHeader.FromArtifact(center.Raw);
+        var linearHeader = CenteredStackArtifactHeader.FromArtifact(linear);
+        Assert.AreEqual(center.Pin.Raw, CenteredStackArtifactPin.FromHeader(rawHeader, center.Pin.Raw.PayloadSha256));
+        Assert.AreEqual(center.Pin.Linear, CenteredStackArtifactPin.FromHeader(linearHeader, center.Pin.Linear.PayloadSha256));
+        Assert.AreNotEqual(center.Pin.Linear,
+            CenteredStackArtifactPin.FromHeader(linearHeader with { RecipeDescriptor = null }, center.Pin.Linear.PayloadSha256));
+        Assert.AreNotEqual(center.Pin.Linear, CenteredStackArtifactPin.From(linear with { Payload = new byte[] { 1 } }));
+        var maskPin = CenteredStackValidityMask.PinAllValid(rawHeader, linearHeader);
+        Assert.AreEqual(center.Pin.ValidityMask, maskPin);
+        var mask = CenteredStackValidityMask.OpenAllValid(rawHeader, linearHeader, maskPin, linear.CreatedUtc);
+        Assert.AreEqual(maskPin, CenteredStackArtifactPin.From(mask));
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredStackValidityMask.OpenAllValid(rawHeader,
+            linearHeader with { Compatibility = linearHeader.Compatibility with { Rig = "changed" } }, maskPin, linear.CreatedUtc));
+
+        var settled = Settlement(center.Qualified.Linear, measurementReason: "qualified-committed");
+        var expected = CenteredStackRetainedInputReader.BindCommittedMeasurement(settled, linear.Layout!, new(2.4, null));
+        Assert.AreEqual("qualified-committed", expected.CalibrationReason);
+        Assert.AreEqual(center.Pin, CenteredStackExposurePin.FromCommitted(settled.Exposure, settled.Provenance!, expected,
+            center.Pin.Raw, center.Pin.Linear, maskPin, center.Pin.Measurement));
+
+        var (request, executor) = Request([center], 103);
+        var auxiliary = request.AuxiliaryInputs!.Single();
+        var plan = JsonNode.Parse(auxiliary.Payload.Span)!;
+        Assert.IsTrue(plan["slots"]![2]!["exposure"]!["raw"]!.AsObject().Remove("envelopeSha256"));
+        var legacy = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(plan)));
+        var rejected = await executor.ExecuteAsync(request with
+        {
+            AuxiliaryInputs = [auxiliary with { Payload = legacy, IdentitySha256 = ProcessingIdentity.ComputePayloadSha256(legacy) }]
+        });
+        Assert.AreEqual(CenteredRegisteredStackRecipe.InvalidPlan, rejected.ReasonCode);
+        Assert.IsEmpty(rejected.Products);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task RetainedPlatesAndRelativeEndpointsShareOneWindowAndReopen()
     {
         var centerFixture = await MeasuredAstrometryFixture.CreateAtAsync(0);
@@ -419,6 +481,15 @@ public sealed class CenteredRegisteredStackTests
             }
         }
         return sum;
+    }
+
+    private static ProcessingProduct RewriteEvidence(ProcessingProduct product, Action<JsonNode> rewrite)
+    {
+        var node = JsonNode.Parse(product.Payload.Span)!;
+        rewrite(node);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(node)));
+        var checksum = ProcessingIdentity.ComputePayloadSha256(bytes);
+        return product with { Payload = bytes, ChecksumSha256 = checksum, ContentIdentitySha256 = checksum };
     }
 
     private static CenteredRegisteredStackEvidence Read(ProcessingOutcome outcome)

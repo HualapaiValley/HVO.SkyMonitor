@@ -13,6 +13,7 @@ public sealed class DirectCentroidRegistrationTests
         new(94.1, 91.4), new(125.7, 101.45), new(53.9, 48.15), new(23.2, 102.4),
         new(112.75, 67.9), new(65.3, 114.45), new(141.4, 74.45), new(54.1, 19.95)
     ];
+    private static readonly int[] MissingSiteTrueRanks = [0, 1, 3, 5, 4, 6, 9, 7, 11, 10];
 
     [TestMethod]
     public void RecoversQuarterTurn_VerifiesDistinctHeldOutPoints_RejectsReflection()
@@ -63,6 +64,17 @@ public sealed class DirectCentroidRegistrationTests
         var repeated = Positions.Where((_, index) => index is not (2 or 8))
             .Concat(Positions.Select(p => new PixelPoint(p.X + 20, p.Y)));
         Assert.IsNull(DirectCentroidRegistration.Fit(Points(repeated), Points(Positions), 180, 160).Map);
+
+        var ranked = MissingSiteTrueRanks.Select((index, rank) => new StellarDetection(index, Positions[index],
+            200 - rank, 100, 1, 1, 0, 0)).ToArray();
+        var correct = DirectCentroidRegistration.Fit(ranked, Points(Positions), 180, 160);
+        Assert.AreEqual(0, correct.Map!.Value.Tx, 1e-10);
+        var brighterAlias = Positions.Select((point, index) => new StellarDetection(index + 12,
+            new(point.X + 20, point.Y), 300 - index, 100, 1, 1, 0, 0));
+        var distractor = new StellarDetection(24, new(170, 148), 250, 100, 1, 1, 0, 0);
+        var contested = DirectCentroidRegistration.Fit([.. ranked, .. brighterAlias, distractor], Points(Positions), 180, 160);
+        Assert.IsNull(contested.Map);
+        Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch, contested.Check.Status);
 
         var source = Points(Positions);
         var badHoldout = Points(Positions.Select((p, i) => i % 3 != 1 ? p : new PixelPoint(p.X + 3, p.Y + 4)));

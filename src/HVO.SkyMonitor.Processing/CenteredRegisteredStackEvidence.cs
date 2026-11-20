@@ -65,6 +65,9 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
     public const string LinearUnits = "calibrated-stored-code-unit-weight-mean-v1";
     public const string SupportMediaType = "application/x-hvo-centered-slot-support";
 
+    private string? RecipeSha256 { get; init; }
+    private string? BaseVariant { get; init; }
+
     /// <summary>Reads an exact retained evidence product and validates its canonical plan and product identity.</summary>
     public static CenteredRegisteredStackEvidence Read(ProcessingProduct retained)
     {
@@ -75,7 +78,7 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             retained.ChecksumSha256 != ProcessingIdentity.ComputePayloadSha256(retained.Payload) ||
             retained.Recipe.Descriptor.Name != CenteredRegisteredStackRecipe.RecipeName ||
             retained.Recipe.Descriptor.ImplementationVersion != CenteredRegisteredStackRecipe.RecipeVersion ||
-            ProcessingIdentity.CreateRecipeIdentity(retained.Recipe.Descriptor).IdentitySha256 != retained.Recipe.IdentitySha256 ||
+            !HasRecipe(retained.Recipe, retained.Recipe.IdentitySha256) ||
             retained.OutputIdentitySha256 != ProcessingIdentity.CreateOutputIdentity(retained.Role, retained.Variant,
                 retained.Recipe.IdentitySha256, retained.SourceArtifactIds))
         {
@@ -98,7 +101,14 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         {
             throw new InvalidDataException("Retained registration lineage or integration differs from its plan.");
         }
+        var suffix = "-" + CenteredRegisteredStackRecipe.EvidenceVariant;
+        if (!retained.Variant.EndsWith(suffix, StringComparison.Ordinal) || retained.Variant.Length == suffix.Length)
+        {
+            throw new InvalidDataException("Invalid retained registration variant.");
+        }
+        evidence = evidence with { RecipeSha256 = retained.Recipe.IdentitySha256, BaseVariant = retained.Variant[..^suffix.Length] };
         evidence.ValidateMembership();
+        evidence.ValidateOutputPins();
         return evidence;
     }
 
@@ -107,12 +117,13 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
     {
         ArgumentNullException.ThrowIfNull(planes);
         cancellationToken.ThrowIfCancellationRequested();
+        ValidateMembership();
+        ValidateOutputPins();
         if (planes.Count != Outputs.Count)
         {
             throw new InvalidDataException("Incomplete registered plane group.");
         }
-        var contributorIds = Plan.Slots.Where((_, index) => Sources[index].Method is not null)
-            .Select(slot => slot.Exposure!.Linear.ArtifactId).ToArray();
+        var contributorIds = ContributorIds();
         for (var index = 0; index < planes.Count; index++)
         {
             var pin = Outputs[index];
@@ -121,7 +132,8 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             var media = support ? SupportMediaType : "application/x-hvo-linear-frame";
             var layout = PlaneLayout(Width, Height, support);
             if (plane.Kind != ProcessingProductKind.PixelData || plane.Role != FrameArtifactRole.Combined ||
-                plane.MediaType != media || plane.Layout != layout ||
+                plane.MediaType != media || plane.Layout != layout || plane.Variant != PlaneVariant(pin.Channel) ||
+                !HasRecipe(plane.Recipe, RecipeSha256) ||
                 layout.ByteLength != plane.Payload.Length || plane.ChecksumSha256 != pin.PayloadSha256 ||
                 ProcessingIdentity.ComputePayloadSha256(plane.Payload) != pin.PayloadSha256 ||
                 plane.OutputIdentitySha256 != pin.OutputIdentitySha256 ||
@@ -216,6 +228,7 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         var center = Plan.Slots[2].Exposure;
         var midpoint = center?.ExposureStartedUtc.AddTicks((center.ExposureEndedUtc - center.ExposureStartedUtc).Ticks / 2);
         if (total != TotalIntegrationTicks || ReferenceMidpointUtc != midpoint ||
+            Width != (center?.LinearLayout.Width ?? 0) || Height != (center?.LinearLayout.Height ?? 0) ||
             FirstExposureUtc != contributors.FirstOrDefault()?.ExposureStartedUtc ||
             LastExposureUtc != contributors.LastOrDefault()?.ExposureEndedUtc ||
             !registered && (Outputs.Count != 0 || ValidPixelCount != 0) ||
@@ -224,7 +237,7 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
                 (members is not (0 or 4) || members == 0 && Sources[2].Reason != CenteredRegistrationReason.NoValidSamples) ||
             registered && ((members & 4) == 0 || ContributorsAt(members) < 2 ||
                 Width < 1 || Height < 1 || (long)Width * Height > LinearRegisteredMean.MaximumPixels ||
-                ValidPixelCount <= 0 || ValidPixelCount > Width * Height || !ValidChannels()))
+                ValidPixelCount <= 0 || ValidPixelCount > Width * Height || !ValidChannels(center?.LinearLayout.PixelFormat)))
         {
             throw new InvalidDataException("Invalid registered disposition or integration.");
         }
@@ -243,11 +256,44 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         return members;
     }
 
-    private bool ValidChannels()
+    private bool ValidChannels(CameraPixelFormat? sourceFormat)
     {
         var names = Outputs.Select(output => output?.Channel).ToArray();
-        return names.SequenceEqual(new[] { "mono", "support" }) ||
-            names.SequenceEqual(new[] { "red", "green", "blue", "support" });
+        return sourceFormat switch
+        {
+            CameraPixelFormat.Mono16 => names.SequenceEqual(new[] { "mono", "support" }),
+            CameraPixelFormat.BayerRggb16 => names.SequenceEqual(new[] { "red", "green", "blue", "support" }),
+            _ => false
+        };
+    }
+
+    private static bool HasRecipe(ProcessingRecipeIdentity recipe, string? expected) =>
+        recipe.IdentitySha256 == expected &&
+        recipe.Descriptor.OptionsSha256 == CaptureContractJson.ComputeCanonicalJsonSha256(recipe.Descriptor.Options) &&
+        ProcessingIdentity.CreateRecipeIdentity(recipe.Descriptor).IdentitySha256 == expected;
+
+    private Guid[] ContributorIds() => Plan.Slots.Where((_, index) => Sources[index].Method is not null)
+        .Select(slot => slot.Exposure!.Linear.ArtifactId).ToArray();
+
+    private string PlaneVariant(string channel) => BaseVariant + "-" + channel;
+
+    private void ValidateOutputPins()
+    {
+        if (RecipeSha256 is null || BaseVariant is null)
+        {
+            throw new InvalidDataException("Read the retained evidence envelope before validating its output planes.");
+        }
+        var contributors = ContributorIds();
+        foreach (var pin in Outputs)
+        {
+            var identity = ProcessingIdentity.CreateOutputIdentity(FrameArtifactRole.Combined,
+                PlaneVariant(pin.Channel), RecipeSha256, contributors);
+            if (pin.OutputIdentitySha256 != identity || pin.ArtifactId != ProcessingIdentity.CreateArtifactId(identity) ||
+                pin.PayloadSha256 is not { Length: 64 } || !pin.PayloadSha256.All(Uri.IsHexDigit))
+            {
+                throw new InvalidDataException("A registered plane pin does not match its declared channel and publication.");
+            }
+        }
     }
 
     public static int ContributorsAt(byte support)

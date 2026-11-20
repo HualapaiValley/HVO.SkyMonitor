@@ -37,7 +37,7 @@ public sealed record DirectSimilarityRegistration(ImageSimilarity? Map, DirectRe
 /// <summary>Bounded pair fitting and independent point checks for direct registration.</summary>
 public static class DirectCentroidRegistration
 {
-    public const string FitVersion = "direct-centroid-similarity-v1";
+    public const string FitVersion = "direct-centroid-similarity-v2";
     public const string PlateCheckVersion = "direct-plate-centroid-check-v1";
     private const int FeatureLimit = 24;
     private const int MinimumFitCount = 5;
@@ -57,18 +57,16 @@ public static class DirectCentroidRegistration
             return Failure(DirectRegistrationStatus.InsufficientCentroids);
         }
 
-        // Freeze both holdouts before generating, testing or comparing hypotheses.
+        // Freeze both holdouts before generating or selecting the transform.
         // A coarse annulus keeps membership stable under ordinary small field drift when enough detections exist.
         // Sparse fields use a fixed rank split and fail closed if brightness changes leave too little shared support.
         var dense = Math.Min(sources.Length, references.Length) > FeatureLimit;
         var (training, heldOut) = Partition(references, width, height, dense);
         var (sourceTraining, sourceHeldOut) = Partition(sources, width, height, dense);
-        var referencePairs = Pairs(training, Math.Min(width, height) * .12);
-        var sourcePairs = Pairs(sourceTraining, Math.Min(width, height) * .12);
         var hits = new Match[FeatureLimit];
         var refinedHits = new Match[FeatureLimit];
         Candidate? best = null;
-        _ = Search(compareAgainstWinner: false);
+        _ = Search(sourceTraining, training, vetoOnly: false);
 
         if (best is null)
         {
@@ -79,20 +77,31 @@ public static class DirectCentroidRegistration
         {
             return Failure(trainingStatus, best.Fit);
         }
-        if (Search(compareAgainstWinner: true))
-        {
-            return Failure(DirectRegistrationStatus.AmbiguousMatch, best.Fit);
-        }
-
         var count = MatchPoints(best.Map, sourceHeldOut, heldOut, hits);
         var verification = hits.AsSpan(0, count);
         var status = Check(verification, width, height, MinimumVerificationCount, .55);
         var report = Report(status, best.Fit, verification);
-        cancellationToken.ThrowIfCancellationRequested();
-        return new(status == DirectRegistrationStatus.Verified ? best.Map : null, report);
-
-        bool Search(bool compareAgainstWinner)
+        if (status != DirectRegistrationStatus.Verified)
         {
+            return new(null, report);
+        }
+
+        // The holdouts have now certified the candidate selected from training.
+        // Use the unsplit, bounded fields only as a veto. A missing or unrelated
+        // point can shift ranks and hide a coherent competing field from both
+        // training subsets. The veto cannot choose or change an accepted map.
+        if (Search(sources.Take(FeatureLimit).ToArray(), references.Take(FeatureLimit).ToArray(), vetoOnly: true))
+        {
+            return new(null, report with { Status = DirectRegistrationStatus.AmbiguousMatch });
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return new(best.Map, report);
+
+        bool Search(StellarDetection[] sourceField, StellarDetection[] referenceField, bool vetoOnly)
+        {
+            var minimumLength = Math.Min(width, height) * .12;
+            var referencePairs = Pairs(referenceField, minimumLength);
+            var sourcePairs = Pairs(sourceField, minimumLength);
             foreach (var referencePair in referencePairs)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -103,8 +112,8 @@ public static class DirectCentroidRegistration
                     {
                         continue;
                     }
-                    if (Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second, compareAgainstWinner) ||
-                        Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second, compareAgainstWinner))
+                    if (Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second, sourceField, referenceField, vetoOnly) ||
+                        Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second, sourceField, referenceField, vetoOnly))
                     {
                         return true;
                     }
@@ -114,10 +123,11 @@ public static class DirectCentroidRegistration
         }
 
         bool Consider(StellarDetection sourceFirst, StellarDetection sourceSecond,
-            StellarDetection referenceFirst, StellarDetection referenceSecond, bool compareAgainstWinner)
+            StellarDetection referenceFirst, StellarDetection referenceSecond,
+            StellarDetection[] sourceField, StellarDetection[] referenceField, bool vetoOnly)
         {
             var seed = Seed(sourceFirst.Pixel, sourceSecond.Pixel, referenceFirst.Pixel, referenceSecond.Pixel);
-            var count = MatchPoints(seed, sourceTraining, training, hits);
+            var count = MatchPoints(seed, sourceField, referenceField, hits);
             if (count < MinimumFitCount)
             {
                 return false;
@@ -128,7 +138,7 @@ public static class DirectCentroidRegistration
             {
                 return false;
             }
-            var refinedCount = MatchPoints(refined, sourceTraining, training, refinedHits);
+            var refinedCount = MatchPoints(refined, sourceField, referenceField, refinedHits);
             if (refinedCount != count)
             {
                 return false;
@@ -151,12 +161,11 @@ public static class DirectCentroidRegistration
                 usedFirst |= match.Source.Index == sourceFirst.Index && match.Reference.Index == referenceFirst.Index;
                 usedSecond |= match.Source.Index == sourceSecond.Index && match.Reference.Index == referenceSecond.Index;
             }
-            // Neither endpoint of the winning training seed is eligible for verification.
             if (!usedFirst || !usedSecond)
             {
                 return false;
             }
-            if (compareAgainstWinner)
+            if (vetoOnly)
             {
                 return Distinct(refined, best!.Map, width, height) &&
                     Check(matches, width, height, MinimumFitCount, .50) == DirectRegistrationStatus.Verified;
