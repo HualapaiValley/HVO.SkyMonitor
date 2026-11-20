@@ -84,6 +84,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     internal const int MaximumReadBytes = 44 * 1024 * 1024;
     private const int LatestNewRejectionLimit = 4096;
     private const string TemporaryEvidenceUnavailable = "retained-evidence-temporarily-unavailable";
+    private const string InvalidEvidence = "retained-evidence-invalid";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim readGate = new(1, 1);
     private readonly SemaphoreSlim latestGate = new(1, 1);
@@ -180,9 +181,11 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 MeasuredAstrometrySolutionV1.CurrentSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) return new(captureId, "NotRetained", "assessment-not-retained");
             if (candidates.Count != 1) return new(captureId, "Unavailable", "assessment-ambiguous");
-            if (candidates[0].AvailabilityState != "Available") return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+            var assessment = candidates[0];
+            if (assessment.AvailabilityState == "Quarantined") return new(captureId, "Unavailable", InvalidEvidence);
+            if (assessment.AvailabilityState != "Available") return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
             var remaining = Math.Min(maximumReadBytes, MaximumReadBytes);
-            var (solutionArtifact, solutionProduct) = await ReadProductAsync(candidates[0].ArtifactId,
+            var (solutionArtifact, solutionProduct) = await ReadProductAsync(assessment.ArtifactId,
                 MeasuredAstrometryJson.MaximumSolutionBytes).ConfigureAwait(false);
             var solution = MeasuredAstrometryJson.Parse(solutionArtifact.Payload);
             if (solution.Assessment.Frame.CaptureId != captureId || solutionProduct.SourceArtifactIds.Count != 4)
@@ -274,6 +277,10 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 var result = await artifacts.OpenContentAsync(id, cancellationToken).ConfigureAwait(false);
                 if (result.Status != CameraAgentArtifactReadStatus.Unavailable) return result;
                 if (result.Content is { } content) await content.DisposeAsync().ConfigureAwait(false);
+                // Unavailable can also mean reconciliation quarantined a required input or the assessment
+                // changed after candidate discovery. Only a confirmed quarantine lets the search advance.
+                if (await store.ReadOutputByArtifactIdAsync(id, cancellationToken).ConfigureAwait(false) is { AvailabilityState: "Quarantined" })
+                    throw new InvalidDataException("The retained artifact is quarantined.");
                 throw new IOException("The retained artifact is temporarily unavailable.");
             }
 
@@ -289,7 +296,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         }
         catch (Exception exception) when (exception is InvalidDataException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
         {
-            return new(captureId, "Unavailable", "retained-evidence-invalid");
+            return new(captureId, "Unavailable", InvalidEvidence);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
         {
