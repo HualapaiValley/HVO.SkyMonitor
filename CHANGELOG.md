@@ -30,7 +30,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Equatorial-to-horizontal calculations at the zenith and nadir stay finite when floating-point rounding reaches slightly outside the sine range. #1901
 
-- Legacy VirtualSky graphs preserve their canonical scene and keep measured fits independent when annotations share stellar associations. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901
+- Legacy VirtualSky graphs preserve their canonical scene and keep measured fits independent when annotations share stellar associations. Between fits or after a fit failure, Storage continues archiving images with their retained canonical scene. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901
 
 - CameraAgent resumes raw capture and canonical processing after restarting with a saved graph whose astrometry solver and associations use different scenes. Live solves are skipped with a processing warning. #1901
 
