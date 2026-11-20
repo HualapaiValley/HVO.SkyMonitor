@@ -1165,10 +1165,10 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     throw new InvalidOperationException($"Capture processing step '{item.Step.Name}' dependency assignment changed during ordering.");
                 optionalDependencies = optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
-            else if (item.Step is FileStorageCaptureProcessingStep)
+            else if (item.Step is FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep)
             {
-                // Keep the declared fit and its artifact selectors in the frozen plan. A sampled fit is supplementary
-                // at execution time; its absence must not suppress Storage's required image or scene inputs.
+                // A sampled fit is supplementary. Storage retains its required image and scene inputs, and
+                // Telemetry can report the fit's skip or failure without treating it as its own failure.
                 optionalDependencies = dependencies
                     .Where(dependency => nodesById[dependency] is
                     { Config.Required: false, Step: MeasuredAstrometryCaptureProcessingStep })
