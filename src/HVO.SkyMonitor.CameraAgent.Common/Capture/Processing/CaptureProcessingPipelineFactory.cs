@@ -574,6 +574,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             var dependencies = explicitV2
                 ? declaredDependencies.Where(static dependency => !IsRawDependency(dependency)).ToArray()
                 : declaredDependencies.ToArray();
+            var centeredRawPrimary = item.Step is ICenteredRawPrimaryCaptureProcessingStep;
+            if (centeredRawPrimary &&
+                (!explicitV2 || config.CenteredExposure is not { } centered || !centered.IsValid() ||
+                 declaredDependencies.Count(IsRawDependency) != 1 || !graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw) ||
+                 ((ICenteredRawPrimaryCaptureProcessingStep)item.Step).DependencyRequirements.Any(requirement =>
+                     requirement.Roles is null || requirement.Roles.Contains(FrameArtifactRole.Raw) ||
+                     !requirement.Roles.IsSubsetOf(graphStep.AcceptedInputRoles))))
+            {
+                throw new InvalidOperationException(
+                    $"Capture processing step '{item.Step.Name}' requires a centered raw primary and produced-only dependency requirements.");
+            }
+
             var effectiveFormat = effectiveLayout?.PixelFormat ?? config.Rig.Sensor.PixelFormat;
             if (RequiresLinear16(graphStep.RecipeName) &&
                 effectiveFormat is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
@@ -581,8 +593,11 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 throw new InvalidOperationException(
                     $"Capture processing step '{item.Step.Name}' requires a linear 16-bit input, but the configured readout emits {effectiveFormat}.");
             }
+            var centeredSupportsOpaqueEvidence = config.CenteredExposure is { } centeredProfile && centeredProfile.IsValid() &&
+                (centeredRawPrimary || item.Step is CalibrationCaptureProcessingStep or ProjectedSceneCaptureProcessingStep) &&
+                effectiveLayout?.StoredCodeTransform == FrameStoredCodeTransform.OpaqueContainerV1;
             if (effectiveLayout is not null && dependencies.Length == 0 &&
-                (!ProcessingStoredCodeIsSupported(effectiveLayout) ||
+                ((!centeredSupportsOpaqueEvidence && !ProcessingStoredCodeIsSupported(effectiveLayout)) ||
                  effectiveLayout.ContainerDepthBits > 8 && effectiveLayout.ByteOrder != FrameByteOrder.LittleEndian))
             {
                 throw new InvalidOperationException(
@@ -592,7 +607,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             {
                 continue;
             }
-            if (usesRaw)
+            if (usesRaw && !centeredRawPrimary)
             {
                 if (dependencies.Length != 0 || !graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw))
                 {
@@ -601,7 +616,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 }
                 continue;
             }
-            if (dependencies.Length == 0)
+            if (dependencies.Length == 0 && !centeredRawPrimary)
             {
                 if (!graphStep.AcceptedInputRoles.Contains(FrameArtifactRole.Raw))
                 {
@@ -622,7 +637,9 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 .ToArray();
             if (item.Step is IRequiredCaptureProcessingDependencies required)
             {
-                if (!TryAssignRequiredDependencies(matching, required.DependencyRequirements, out _))
+                if (!TryAssignRequiredDependencies(centeredRawPrimary
+                    ? producers.Cast<ICaptureProcessingGraphStep>().ToArray() : matching,
+                    required.DependencyRequirements, out _))
                 {
                     throw new InvalidOperationException(
                         $"Capture processing step '{item.Step.Name}' does not have its required dependency inputs.");
@@ -905,17 +922,26 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     {
         if (step is IRequiredCaptureProcessingDependencies required)
         {
-            return required.DependencyRequirements.Select((requirement, index) => new ProcessingGraphInputContract(
-                requirement.Roles.ToImmutableArray(),
-                [],
-                requirement.Variant is null ? [] : [requirement.Variant],
-                requirement.RecipeNames?.Select(ResolveSharedInputRecipeName).ToImmutableArray() ?? [],
-                requirement.SchemaVersions?.ToImmutableArray() ?? [],
-                requirement.Required,
-                index == 0 ? "input" : $"input-{index}",
-                index == 0
-                    ? ProcessingGraphInputBindingKind.PrimaryArtifact
-                    : ProcessingGraphInputBindingKind.AuxiliaryArtifact)).ToImmutableArray();
+            var centeredRaw = step is ICenteredRawPrimaryCaptureProcessingStep;
+            var producedPorts = required.DependencyRequirements.Select((requirement, index) =>
+            {
+                var port = centeredRaw ? index + 1 : index;
+                return new ProcessingGraphInputContract(
+                    requirement.Roles.ToImmutableArray(),
+                    [],
+                    requirement.Variant is null ? [] : [requirement.Variant],
+                    requirement.RecipeNames?.Select(ResolveSharedInputRecipeName).ToImmutableArray() ?? [],
+                    requirement.SchemaVersions?.ToImmutableArray() ?? [],
+                    requirement.Required,
+                    port == 0 ? "input" : $"input-{port}",
+                    port == 0
+                        ? ProcessingGraphInputBindingKind.PrimaryArtifact
+                        : ProcessingGraphInputBindingKind.AuxiliaryArtifact);
+            });
+            return centeredRaw
+                ? [new([FrameArtifactRole.Raw], [ProcessingProductKind.PixelData], ["source"], [], [], true,
+                    "input", ProcessingGraphInputBindingKind.PrimaryArtifact), .. producedPorts]
+                : producedPorts.ToImmutableArray();
         }
         if (step is ICompoundCaptureProcessingGraphStep compound)
         {
@@ -977,14 +1003,17 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
     {
         if (step is not IRequiredCaptureProcessingDependencies required ||
-            dependencies.Any(IsRawDependency))
+            step is not ICenteredRawPrimaryCaptureProcessingStep && dependencies.Any(IsRawDependency))
         {
             return new(StringComparer.Ordinal);
         }
-        var producerSteps = dependencies.Select(dependency =>
+        var producers = step is ICenteredRawPrimaryCaptureProcessingStep
+            ? dependencies.Where(static dependency => !IsRawDependency(dependency)).ToArray()
+            : dependencies;
+        var producerSteps = producers.Select(dependency =>
             (ICaptureProcessingGraphStep)nodesById[dependency].Step).ToArray();
         return TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes)
-            ? optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.Ordinal)
+            ? optionalIndexes.Select(index => producers[index]).ToHashSet(StringComparer.Ordinal)
             : new(StringComparer.Ordinal);
     }
 

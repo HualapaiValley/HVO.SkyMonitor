@@ -12,6 +12,9 @@ public sealed record LocalCaptureProfileDefinition(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     CapturePipelineDependencyPolicy DependencyPolicy = CapturePipelineDependencyPolicy.LegacyInference)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredExposureProfile? CenteredExposure { get; init; }
+
     public const string LegacySchemaVersion = "cameraagent-local-profile-v1";
     public const string CurrentSchemaVersion = "cameraagent-local-profile-v2";
 
@@ -41,7 +44,7 @@ public sealed record LocalCaptureProfileDefinition(
             configuration.Rig,
             configuration.Pipeline.Steps,
             schedule,
-            CapturePipelineDependencyPolicy.RejectEnabledDependent);
+            CapturePipelineDependencyPolicy.RejectEnabledDependent) { CenteredExposure = configuration.CenteredExposure };
     }
 
     public static LocalCaptureProfileDefinition CreateForConfiguration(
@@ -72,7 +75,7 @@ public sealed record LocalCaptureProfileDefinition(
             configuration.Rig,
             configuration.Pipeline.Steps,
             schedule,
-            configuration.Pipeline.DependencyPolicy);
+            configuration.Pipeline.DependencyPolicy) { CenteredExposure = configuration.CenteredExposure };
     }
 
     public CameraModuleConfig ApplyTo(CameraModuleConfig configuration)
@@ -91,7 +94,8 @@ public sealed record LocalCaptureProfileDefinition(
                 ProcessingSteps,
                 explicitV2 ? CapturePipelineSchemaVersions.ExplicitV2 : CapturePipelineSchemaVersions.LegacyV1,
                 DependencyPolicy),
-            Schedule = Schedule
+            Schedule = Schedule,
+            CenteredExposure = CenteredExposure
         };
     }
 
