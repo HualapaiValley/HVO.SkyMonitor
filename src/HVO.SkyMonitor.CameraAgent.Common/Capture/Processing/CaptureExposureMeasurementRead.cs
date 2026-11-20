@@ -14,7 +14,8 @@ public interface IExposureMeasurementRunReader
 }
 
 internal sealed class CaptureExposureMeasurementReader(
-    CaptureProcessingPersistence persistence, RawCaptureIngress ingress, IExposureProductReader products)
+    CaptureProcessingPersistence persistence, RawCaptureIngress ingress, IExposureProductReader products,
+    SqliteCaptureProcessingStore store)
     : IExposureMeasurementRunReader
 {
     internal async ValueTask<(ProcessingArtifact Artifact, ExposureMeasurementV1 Measurement)> ReadDependencyAsync(
@@ -36,17 +37,28 @@ internal sealed class CaptureExposureMeasurementReader(
         var node = execution.Nodes.SingleOrDefault(candidate => candidate.NodeId == ExposureMeasurementProducts.StepAlias);
         if (node is null)
             return null;
+        var run = execution.Execution;
         var item = node.Outputs.SingleOrDefault(output => output.Role == FrameArtifactRole.Metadata &&
             output.Variant == ExposureMeasurementProducts.Variant);
-        if (item is null)
-            return new(null, node.Reason ?? (node.Status is "Pending" or "Running" ? "measurement-pending" : "measurement-not-recorded"));
-        if (item.AvailabilityState != "Available")
-            return new(null, item.AvailabilityReason ?? "measurement-unavailable");
 
         try
         {
+            if (item is null || item.AvailabilityState != "Available")
+            {
+                var slot = await store.ReadLiveMeasurementSlotAsync(run, cancellationToken).ConfigureAwait(false);
+                if (slot is not null)
+                    return Unavailable(slot);
+                if (item is not null)
+                    return new(null, item.AvailabilityReason ?? "measurement-unavailable");
+                if (node.CommittedOutputCount > 0)
+                    return new(null, "measurement-unreadable");
+                return run.Status is ProcessingGraphExecutionStatus.Pending or ProcessingGraphExecutionStatus.Running &&
+                    node.Status is "Pending" or "Running" or "RetryableFailure"
+                    ? new(null, "measurement-pending")
+                    : new(null, node.Reason ?? run.FailureReason ?? "measurement-not-recorded");
+            }
+
             var artifact = await persistence.RestoreMeasurementAsync(item.ArtifactId, cancellationToken).ConfigureAwait(false);
-            var run = execution.Execution;
             if (artifact.CaptureId != run.CaptureId ||
                 !item.SourceArtifactIds.SequenceEqual(artifact.SourceArtifactIds ?? []) ||
                 ProcessingIdentity.CreateOutputIdentity(artifact.Role, artifact.Variant,
@@ -68,6 +80,16 @@ internal sealed class CaptureExposureMeasurementReader(
             return new(null, "measurement-unreadable");
         }
     }
+
+    private static ExposureMeasurementRunRead Unavailable(ExposureProductLookup slot) => slot.Availability switch
+    {
+        ExposureProductAvailability.Expired => new(null, slot.Reason ?? "measurement-expired"),
+        ExposureProductAvailability.Pending => new(null, "measurement-pending"),
+        ExposureProductAvailability.Failed or ExposureProductAvailability.Incompatible or ExposureProductAvailability.Unavailable
+            => new(null, slot.Reason ?? "measurement-unavailable"),
+        // A settled Available slot without a readable output is missing evidence, not an empty measurement.
+        _ => new(null, "measurement-unreadable")
+    };
 
     private async ValueTask<(ExposureMeasurementV1 Measurement, string? LinearExpiryReason)> ReadExactAsync(ExposureKey key, string revisionId,
         ProcessingGraphExecutionClass executionClass, Guid executionId, ProcessingArtifact artifact, CancellationToken cancellationToken)
@@ -103,6 +125,40 @@ internal sealed class CaptureExposureMeasurementReader(
                 ? RigProjectionContextFactory.CreateReadoutView(native, readout) : null
             : native.WidthPixels == layout.Width && native.HeightPixels == layout.Height ? native : null;
         return (aperture, rig.Sensor.PixelSizeMicrons > 0 ? rig.Sensor.PixelSizeMicrons : null);
+    }
+}
+
+internal sealed partial class SqliteCaptureProcessingStore
+{
+    internal async ValueTask<ExposureProductLookup?> ReadLiveMeasurementSlotAsync(
+        ProcessingGraphExecutionState execution, CancellationToken cancellationToken)
+    {
+        if (execution.ExecutionClass != ProcessingGraphExecutionClass.Live ||
+            execution.ExecutionId != ProcessingGraphOperationsCoordinator.GetLiveExecutionId(execution.CaptureId, execution.GraphRevisionId))
+            return null;
+
+        // Once retention removes the output row, only the exact execution-owned product settlement knows it expired.
+        // Do not recover a key from a different execution's artifact, and never select by capture alone.
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = CenteredProductProjection + """
+             JOIN processing_executions owning_execution ON owning_execution.execution_id = product.execution_id
+             WHERE product.capture_id = $capture AND product.execution_id = $execution AND raw.raw_artifact_id = $raw
+               AND owning_execution.capture_id = $capture AND owning_execution.primary_artifact_id = $raw
+               AND owning_execution.graph_revision_id = $graph AND owning_execution.execution_class = 'Live'
+               AND owning_execution.trigger_kind = 'capture' AND owning_execution.allow_automatic_publication = 1
+               AND product.producer = $producer AND product.schema_version = $schema AND product.variant = $variant;
+            """;
+        command.Parameters.AddWithValue("$capture", execution.CaptureId.ToString("N"));
+        command.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
+        command.Parameters.AddWithValue("$raw", execution.PrimaryArtifactId.ToString("N"));
+        command.Parameters.AddWithValue("$graph", execution.GraphRevisionId);
+        command.Parameters.AddWithValue("$producer", ExposureMeasurementProducts.StepAlias);
+        command.Parameters.AddWithValue("$schema", ExposureMeasurementProducts.SchemaVersion);
+        command.Parameters.AddWithValue("$variant", ExposureMeasurementProducts.Variant);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadCenteredLookup(reader, out _) : null;
     }
 }
 

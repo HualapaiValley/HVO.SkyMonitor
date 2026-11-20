@@ -42,10 +42,19 @@ public sealed partial class VirtualSkyCameraModuleTests
         DisplayName = "ExposureMeasurement_CenteredLeftShiftedKeepsQualifiedStoredLevels")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.FullRangeScaledV1,
         DisplayName = "ExposureMeasurement_CenteredFullRangeScaledKeepsQualifiedStoredLevels")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 1,
+        DisplayName = "ExposureMeasurement_PublicationIoRetriesOnceAndFencesThePreviousLease")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 2,
+        DisplayName = "ExposureMeasurement_PublicationIoStopsAtTheExistingAttemptBound")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
+        0, "expired", DisplayName = "ExposureMeasurement_OperationsRecognizesDeletedMeasurementSlot")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
+        0, "corrupt", DisplayName = "ExposureMeasurement_OperationsRecognizesCorruptCommittedJournal")]
     public async Task ExposureMeasurement_OrdinaryCapturePersistsAndReopensThroughStandardLane(
         CameraPixelFormat format, string calibration, bool declareReadout = true, int referenceGain = 1, bool fit = false,
         bool interrupt = false, string signal = "star", bool expireLinear = false,
-        FrameStoredCodeTransform transform = FrameStoredCodeTransform.RightAlignedV1)
+        FrameStoredCodeTransform transform = FrameStoredCodeTransform.RightAlignedV1, int publicationFailures = 0,
+        string archiveFault = "")
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement");
         try
@@ -117,7 +126,10 @@ public sealed partial class VirtualSkyCameraModuleTests
             ExposureMeasurementV1 originalMeasurement;
             using var cancellation = new CancellationTokenSource();
             var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
-            using (var provider = MeasurementProvider(root, location, predictions, interruption))
+            var publication = publicationFailures > 0 ? new MeasurementPublicationIo(publicationFailures) : null;
+            var laneClock = publication is not null ? new ExposureTestTimeProvider(now.AddMinutes(1)) : null;
+            using (var provider = MeasurementProvider(root, location, predictions, (ICaptureProcessingFaultInjector?)interruption ?? publication,
+                laneClock))
             {
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<IProcessingGraphOperations>();
@@ -192,6 +204,14 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var reader = provider.GetRequiredService<IExposureProductReader>();
                 var slot = new ExposureProductSlot(lease.Context.Execution!.ExecutionId, ExposureMeasurementProducts.StepAlias,
                     ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+                if (calibration != "Omitted")
+                {
+                    var unsettled = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(LinearExposureDisposition.Pending, unsettled?.Disposition);
+                    Assert.IsNull(await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
+                    var pending = await ui.GetExecutionDetailAsync(slot.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual("measurement-pending", pending.Value?.ExposureMeasurement?.UnavailableReason);
+                }
                 var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
                 if (interruption is not null)
                 {
@@ -225,6 +245,32 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual(slot.ExecutionId, lease.Context.Execution!.ExecutionId);
                 }
                 var outcome = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+                if (publication is not null)
+                {
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, outcome.Outcome, outcome.Reason);
+                    Assert.AreEqual("measurement-publication-io", outcome.Reason);
+                    Assert.IsNull(await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
+                    var failedAttempt = await operations.ReadExecutionDetailAsync(slot.ExecutionId, CancellationToken.None).ConfigureAwait(false);
+                    var retry = failedAttempt!.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
+                    Assert.AreEqual("RetryableFailure", retry.Status);
+                    Assert.IsEmpty(retry.Outputs);
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure,
+                        await laneStore.FailAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false));
+                    Assert.IsNull(await laneStore.ClaimAsync(lane, "publication-retry", active, CancellationToken.None).ConfigureAwait(false));
+                    laneClock!.Advance(TimeSpan.FromSeconds(2));
+
+                    var stale = lease;
+                    lease = await laneStore.ClaimAsync(lane, "publication-retry", active, CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(lease);
+                    Assert.AreEqual(2, lease.Attempt);
+                    Assert.AreEqual(slot.ExecutionId, lease.Context.Execution!.ExecutionId);
+                    Assert.AreNotEqual(stale.LeaseToken, lease.LeaseToken);
+                    await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
+                        await handler.HandleAsync(stale.Context, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+                    Assert.AreEqual(1, publication.Attempts);
+                    Assert.IsNull(await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
+                    outcome = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+                }
                 if (storedLevels is { } expectedLevels)
                     await AssertMappedLinearAsync(provider, reader, receipt.Manifest.Descriptor, exposure, slot,
                         transform, expectedLevels).ConfigureAwait(false);
@@ -240,6 +286,26 @@ public sealed partial class VirtualSkyCameraModuleTests
                 if (!fit)
                     Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "fit"));
                 var recordedMeasurement = execution.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
+                if (publication is not null)
+                {
+                    Assert.AreEqual(2, publication.Attempts);
+                    Assert.AreEqual(2, recordedMeasurement.AttemptCount);
+                    Assert.AreEqual("RetryableFailure", recordedMeasurement.Attempts[0].Status);
+                }
+                if (publicationFailures == 2)
+                {
+                    Assert.AreEqual("TerminalFailure", recordedMeasurement.Status);
+                    Assert.AreEqual("measurement-publication-io", recordedMeasurement.Reason);
+                    Assert.IsEmpty(recordedMeasurement.Outputs);
+                    Assert.IsNull(await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
+                    Assert.IsNull(await laneStore.ClaimAsync(lane, "unexpected-third-attempt", active, CancellationToken.None)
+                        .ConfigureAwait(false));
+                    var stillQualified = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, stillQualified?.Disposition);
+                    var unavailable = await ui.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual("measurement-publication-io", unavailable.Value?.ExposureMeasurement?.UnavailableReason);
+                    return;
+                }
                 var recordedScene = execution.Nodes.Single(item => item.NodeId == "scene");
                 Assert.IsNotNull(recordedMeasurement.CompletedUtc);
                 Assert.IsNotNull(recordedScene.StartedUtc);
@@ -363,6 +429,20 @@ public sealed partial class VirtualSkyCameraModuleTests
 
                 if (expireLinear)
                     await ExpireQualifiedLinearAsync(provider, root, reader, exposure, slot, measurement).ConfigureAwait(false);
+                if (archiveFault == "expired")
+                {
+                    await ExpireOnlyProductAsync(provider, root, artifactId).ConfigureAwait(false);
+                    var expired = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(ExposureProductAvailability.Expired, expired?.Availability);
+                    Assert.AreEqual("retention-expired", expired?.Reason);
+                    Assert.AreEqual(published.Revision, expired?.Revision);
+                    Assert.AreEqual(published.Exposure, expired?.Exposure);
+                }
+                else if (archiveFault == "corrupt")
+                {
+                    // Mutate the journaled run snapshot, not the current configuration or the committed step-four payload.
+                    await CorruptMeasurementRunSnapshotAsync(root, exposure).ConfigureAwait(false);
+                }
                 originalPublication = published;
                 originalMeasurement = measurement;
             }
@@ -379,6 +459,22 @@ public sealed partial class VirtualSkyCameraModuleTests
             Assert.IsTrue(reopenedDetail.IsSuccess, reopenedDetail.Message);
             var reopenedView = reopenedDetail.Value!;
             Assert.AreEqual(executionId, reopenedView.Execution.ExecutionId);
+            Assert.AreEqual(originalPublication.Exposure.CaptureId, reopenedView.Execution.CaptureId);
+            Assert.AreEqual(originalMeasurement.Input.Raw.ArtifactId, reopenedView.Execution.PrimaryArtifactId);
+            if (archiveFault is "expired" or "corrupt")
+            {
+                var unavailable = reopenedView.ExposureMeasurement;
+                Assert.IsNotNull(unavailable);
+                Assert.IsNull(unavailable.Measurement);
+                Assert.AreEqual(archiveFault == "expired" ? "retention-expired" : "measurement-unreadable",
+                    unavailable.UnavailableReason);
+                var fixedStage = reopenedView.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
+                if (archiveFault == "expired")
+                    Assert.IsEmpty(fixedStage.Outputs, "The deleted output row can no longer supply a joined result.");
+                else
+                    Assert.AreEqual(artifactId, Assert.ContainsSingle(fixedStage.Outputs).ArtifactId);
+                return;
+            }
             var reopenedOutput = Assert.ContainsSingle(reopenedView.Nodes.Single(
                 item => item.NodeId == ExposureMeasurementProducts.StepAlias).Outputs);
             Assert.AreEqual(artifactId, reopenedOutput.ArtifactId);
@@ -440,7 +536,6 @@ public sealed partial class VirtualSkyCameraModuleTests
     private static async Task ExpireQualifiedLinearAsync(ServiceProvider provider, string root, IExposureProductReader reader,
         ExposureKey exposure, ExposureProductSlot measurementSlot, ExposureMeasurementV1 measurement)
     {
-        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
         var custody = provider.GetRequiredService<CenteredExposureInputCustody>();
         var qualified = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(qualified?.Product);
@@ -460,27 +555,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 ProcessingIdentity.ComputePayloadSha256(input.Input.Linear.Payload));
         }
 
-        var stored = await store.ReadOutputByArtifactIdAsync(qualified.Product.ArtifactId, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNotNull(stored);
-        var payload = Path.Combine(root, stored.PayloadRelativePath);
-        var sidecar = Path.Combine(root, stored.SidecarRelativePath);
-        Assert.IsTrue(File.Exists(payload));
-        Assert.IsTrue(File.Exists(sidecar));
-
-        // Expire the real linear output while keeping the rest of the isolated test archive, including step four.
-        var cutoff = DateTimeOffset.UtcNow.AddMinutes(1);
-        var outputs = await store.ReadAvailableExpirationPageAsync(cutoff, null, null, 32, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsNull(outputs.NextTimestamp);
-        var retainedPaths = outputs.Items.Where(item => item.ArtifactId != qualified.Product.ArtifactId)
-            .SelectMany(item => new[] { Path.Combine(root, item.PayloadRelativePath), Path.Combine(root, item.SidecarRelativePath) })
-            .ToHashSet(StringComparer.Ordinal);
-        var deleted = await provider.GetRequiredService<CaptureProcessingPersistence>()
-            .ExpireOutputsAsync(root, cutoff, retainedPaths, CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(2, deleted);
-        Assert.IsFalse(File.Exists(payload));
-        Assert.IsFalse(File.Exists(sidecar));
-        Assert.IsNull(await store.ReadOutputByArtifactIdAsync(qualified.Product.ArtifactId, CancellationToken.None).ConfigureAwait(false));
-
+        await ExpireOnlyProductAsync(provider, root, qualified.Product.ArtifactId).ConfigureAwait(false);
         var expired = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(expired);
         Assert.AreEqual(LinearExposureDisposition.Expired, expired.Disposition);
@@ -494,9 +569,36 @@ public sealed partial class VirtualSkyCameraModuleTests
         Assert.IsNull(reopened, "An archived identity must not permit new pixel custody.");
     }
 
+    private static async Task ExpireOnlyProductAsync(ServiceProvider provider, string root, Guid artifactId)
+    {
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var stored = await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNotNull(stored);
+        var payload = Path.Combine(root, stored.PayloadRelativePath);
+        var sidecar = Path.Combine(root, stored.SidecarRelativePath);
+        Assert.IsTrue(File.Exists(payload));
+        Assert.IsTrue(File.Exists(sidecar));
+
+        // Expire the named product while keeping the rest of the isolated test archive.
+        var cutoff = DateTimeOffset.UtcNow.AddMinutes(1);
+        var outputs = await store.ReadAvailableExpirationPageAsync(cutoff, null, null, 32, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(outputs.NextTimestamp);
+        var retainedPaths = outputs.Items.Where(item => item.ArtifactId != artifactId)
+            .SelectMany(item => new[] { Path.Combine(root, item.PayloadRelativePath), Path.Combine(root, item.SidecarRelativePath) })
+            .ToHashSet(StringComparer.Ordinal);
+        var deleted = await provider.GetRequiredService<CaptureProcessingPersistence>()
+            .ExpireOutputsAsync(root, cutoff, retainedPaths, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(2, deleted);
+        Assert.IsFalse(File.Exists(payload));
+        Assert.IsFalse(File.Exists(sidecar));
+        Assert.IsNull(await store.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false));
+    }
+
     private static ServiceProvider MeasurementProvider(string root, DeploymentLocationSnapshot location, ICelestialCatalog catalog,
-        ICaptureProcessingFaultInjector? fault = null)
-        => ProcessingGraphOperationsTests.CreateProvider(root, configureServices: services =>
+        ICaptureProcessingFaultInjector? fault = null, TimeProvider? timeProvider = null)
+        => ProcessingGraphOperationsTests.CreateProvider(root,
+            timeProvider is null ? null : new Dictionary<string, string?> { ["CameraAgent:CaptureDistribution:MaximumAttempts"] = "2" },
+            timeProvider, configureServices: services =>
         {
             HVO.SkyMonitor.CameraAgent.Program.AddCameraModules(services);
             services.AddSingleton(catalog);
@@ -506,6 +608,29 @@ public sealed partial class VirtualSkyCameraModuleTests
             if (fault is not null)
                 services.AddSingleton(fault);
         });
+
+    private static async Task CorruptMeasurementRunSnapshotAsync(string root, ExposureKey exposure)
+    {
+        using var database = new Microsoft.Data.Sqlite.SqliteConnection(
+            new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder { DataSource = Path.Combine(root, "journal", "raw-ingress.db") }.ToString());
+        await database.OpenAsync().ConfigureAwait(false);
+        using var update = database.CreateCommand();
+        update.CommandText = "UPDATE centered_exposure_runs SET snapshot_json = X'7B7D' WHERE run_id = $run;";
+        update.Parameters.AddWithValue("$run", exposure.RunId.ToString("N"));
+        Assert.AreEqual(1, await update.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
+    private sealed class MeasurementPublicationIo(int failures) : ICaptureProcessingFaultInjector
+    {
+        public int Attempts { get; private set; }
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (nodeId == ExposureMeasurementProducts.StepAlias && point == CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit &&
+                ++Attempts <= failures)
+                throw new IOException("Injected transient step-four publication I/O.");
+        }
+    }
 
     private sealed class MeasurementCommitInterruption(CancellationTokenSource cancellation) : ICaptureProcessingFaultInjector
     {
