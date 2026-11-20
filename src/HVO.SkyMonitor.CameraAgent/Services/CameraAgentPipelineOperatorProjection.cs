@@ -26,21 +26,24 @@ internal static class CameraAgentPipelineOperatorProjection
     internal static CameraAgentPipelineOperatorState CreateState(
         CaptureScheduleOperatorState state,
         CameraModuleConfig currentConfiguration,
-        ICaptureProcessingPipelineFactory pipelineFactory)
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs)
         => new(
-            CreateRevision(state.ActiveRevision, currentConfiguration, pipelineFactory),
+            CreateRevision(state.ActiveRevision, currentConfiguration, pipelineFactory, graphs),
             state.PendingRevision is null
                 ? null
-                : CreateRevision(state.PendingRevision, currentConfiguration, pipelineFactory));
+                : CreateRevision(state.PendingRevision, currentConfiguration, pipelineFactory, graphs));
 
     internal static CaptureProcessingPlanPreview Preview(
         LocalCaptureProfileDefinition profile,
         CameraModuleConfig currentConfiguration,
-        ICaptureProcessingPipelineFactory pipelineFactory)
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(currentConfiguration);
         ArgumentNullException.ThrowIfNull(pipelineFactory);
+        ArgumentNullException.ThrowIfNull(graphs);
         var validation = LocalCaptureProfileContract.Validate(profile);
         if (!validation.IsValid)
         {
@@ -48,7 +51,7 @@ internal static class CameraAgentPipelineOperatorProjection
                 $"The local capture profile is invalid ({validation.FieldPath}).",
                 nameof(profile));
         }
-        return pipelineFactory.PreviewPlan(profile.ApplyTo(currentConfiguration));
+        return PreviewConfiguredProfile(profile, currentConfiguration, pipelineFactory, graphs);
     }
 
     internal static LocalCaptureProfileDefinition Toggle(
@@ -69,6 +72,11 @@ internal static class CameraAgentPipelineOperatorProjection
         if (nodeId.Length > 128)
         {
             throw new InvalidOperationException("The processing node identifier is invalid.");
+        }
+        if (profile.CenteredExposure is not null &&
+            string.Equals(nodeId, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Exposure measurement is a fixed step.");
         }
         var matches = profile.ProcessingSteps
             .Select((step, index) => (Step: step, Index: index))
@@ -105,6 +113,10 @@ internal static class CameraAgentPipelineOperatorProjection
         {
             return "The processing node was not found in the desired graph.";
         }
+        if (exception.Message.Contains("fixed step", StringComparison.Ordinal))
+        {
+            return "Exposure measurement is a fixed step.";
+        }
         return exception.Message.Contains("dependency cycle", StringComparison.Ordinal)
             ? "The desired graph contains a dependency cycle."
             : "The desired graph is invalid for this CameraAgent.";
@@ -113,11 +125,17 @@ internal static class CameraAgentPipelineOperatorProjection
     private static CameraAgentPipelineRevisionPlan CreateRevision(
         CaptureScheduleRevisionSnapshot revision,
         CameraModuleConfig currentConfiguration,
-        ICaptureProcessingPipelineFactory pipelineFactory)
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs)
         => new(
             revision.RevisionId,
             revision.RevisionNumber,
             revision.ProfileSha256,
             LocalCaptureProfileContract.Validate(revision.Profile).IsValid,
-            pipelineFactory.PreviewPlan(revision.Profile.ApplyTo(currentConfiguration)));
+            PreviewConfiguredProfile(revision.Profile, currentConfiguration, pipelineFactory, graphs));
+
+    private static CaptureProcessingPlanPreview PreviewConfiguredProfile(
+        LocalCaptureProfileDefinition profile, CameraModuleConfig currentConfiguration,
+        ICaptureProcessingPipelineFactory pipelineFactory, IProcessingGraphOperations graphs)
+        => pipelineFactory.PreviewPlan(graphs.ExpandConfiguredProfile(profile.ApplyTo(currentConfiguration)));
 }
