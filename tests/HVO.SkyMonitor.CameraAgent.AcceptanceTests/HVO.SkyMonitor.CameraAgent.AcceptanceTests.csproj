@@ -35,6 +35,8 @@
     <None Include="..\fixtures\cameraagent.browser.json" Link="Fixtures\cameraagent.browser.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="../fixtures/installer-configuration-defaults/installer-defaults-1.camera-module.json" Link="Fixtures/installer-defaults-1.camera-module.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../fixtures/virtual-sky/installer-controlled-night.json" Link="Fixtures/installer-controlled-night.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../fixtures/installer-configuration-defaults/installer-defaults-2.camera-module.json" Link="Fixtures/installer-defaults-2.camera-module.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\fixtures\cameraagent.integration.json" Link="Fixtures\cameraagent.integration.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

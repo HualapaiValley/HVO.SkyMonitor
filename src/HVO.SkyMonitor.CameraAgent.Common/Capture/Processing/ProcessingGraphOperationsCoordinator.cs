@@ -400,16 +400,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
         EnsureReferenceAstrometryReadout(profile.Rig);
         var basis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
-        var basisPipeline = basis.Pipeline;
-        if (LegacyVirtualSkySceneGraph.FindLegacyScene(profile, basisPipeline) is { } legacyScene &&
-            ReferenceAstrometryPreset.FindSolver(basisPipeline) is not null)
-        {
-            // Use the same pipeline as fresh captures. Keep the caller's basis in the receipt and leave
-            // compatibility revision creation and selection to the live path.
-            basisPipeline = DeriveSceneCompatibilityPipeline(basis, legacyScene).Pipeline;
-        }
+        var legacyScene = LegacyVirtualSkySceneGraph.FindLegacyScene(profile, basis.Pipeline);
+        // Use the capture-compatible producers while keeping the caller's immutable basis in the receipt.
+        var basisPipeline = legacyScene is null ? basis.Pipeline : DeriveSceneCompatibilityPipeline(basis, legacyScene).Pipeline;
         var (pipeline, _) = await ReferenceAstrometryPreset.ApplyAsync(
-            basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+            basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken, basis,
+            reuseCompatiblePrediction: legacyScene is not null).ConfigureAwait(false);
         var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
             ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
         var committed = await _store.InsertReferenceAstrometryRevisionAsync(

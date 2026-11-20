@@ -131,16 +131,16 @@ internal static class LegacyVirtualSkySceneGraph
         };
     }
 
-    private static HashSet<string> ReadMetadataVariants(ProcessingGraphRevisionSnapshot revision)
+    internal static HashSet<string> ReadMetadataVariants(ProcessingGraphRevisionSnapshot revision)
     {
         var definition = ProcessingGraphJson.Parse(revision.DefinitionJson).Definition
-            ?? throw new InvalidDataException("The validated legacy graph definition is invalid.");
+            ?? throw new InvalidDataException("The persisted processing graph definition is invalid.");
         return definition.Nodes.SelectMany(static node => node.Outputs)
             .Where(static output => output.Role == FrameArtifactRole.Metadata).Select(static output => output.Variant)
             .ToHashSet(StringComparer.Ordinal);
     }
 
-    private static string ReserveUnused(string preferred, HashSet<string> used)
+    internal static string ReserveUnused(string preferred, HashSet<string> used)
     {
         var selected = preferred;
         for (var suffix = 1; !used.Add(selected); suffix++)
