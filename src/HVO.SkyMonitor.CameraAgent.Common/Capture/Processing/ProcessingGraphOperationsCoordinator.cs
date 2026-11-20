@@ -402,8 +402,17 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
         EnsureReferenceAstrometryReadout(profile.Rig);
         var basis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+        var basisPipeline = basis.Pipeline;
+        if (LegacyVirtualSkySceneGraph.FindLegacyScene(profile, basisPipeline) is { } legacyScene &&
+            ReferenceAstrometryPreset.FindSolver(basisPipeline) is not null)
+        {
+            // Use the same pipeline as fresh captures. Keep the caller's basis in the receipt and leave
+            // compatibility revision creation and selection to the live path.
+            var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(basisPipeline, legacyScene);
+            basisPipeline = LegacyVirtualSkySceneGraph.Migrate(basis, legacyScene, sharedFit);
+        }
         var (pipeline, _) = await ReferenceAstrometryPreset.ApplyAsync(
-            basis.Pipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+            basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
         var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
             ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
         var committed = await _store.InsertReferenceAstrometryRevisionAsync(

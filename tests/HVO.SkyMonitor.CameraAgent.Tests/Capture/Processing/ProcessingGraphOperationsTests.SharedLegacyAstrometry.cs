@@ -22,6 +22,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("storage")]
     [DataRow("storage-fit-failure")]
     [DataRow("isolated")]
+    [DataRow("annotation-preset")]
     public async Task LegacyVirtualSkyFitUsesPredictionAndPreservesExistingConsumers(string consumer)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-legacy-shared-fit");
@@ -33,7 +34,8 @@ public sealed partial class ProcessingGraphOperationsTests
         var measurementVariant = occupiedPrediction ? predictionVariant : privateMeasurementVariant;
         var previewId = occupiedPrediction ? "astrometryprediction" : "preview";
         var predictionId = occupiedPrediction ? "AstrometryPrediction-1" : AstrometryPredictionCaptureProcessingStep.Alias;
-        var sharedAssociations = consumer == "annotation" || occupiedPrediction;
+        var configurePreset = consumer == "annotation-preset";
+        var sharedAssociations = consumer == "annotation" || configurePreset || occupiedPrediction;
         var failedFit = consumer == "storage-fit-failure";
         var sharedFit = consumer == "storage" || failedFit;
         var archiveRoot = Path.Combine(root, "archive");
@@ -327,68 +329,81 @@ public sealed partial class ProcessingGraphOperationsTests
                     => await File.ReadAllBytesAsync(Path.Combine(root, (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).PayloadRelativePath), token)
                         .ConfigureAwait(false);
             }
-            using var restarted = CreateProvider(root, configureServices: sharedFit || occupiedPrediction ? AddCaptureServices : null);
-            await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
-            var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
-            var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
-            Assert.AreEqual(liveId, selected.State.RevisionId);
-            CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
-            var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
-            if (consumer == "storage")
+            string? presetReceipt = null;
+            using (var restarted = CreateProvider(root, configureServices: sharedFit || occupiedPrediction || configurePreset ? AddCaptureServices : null))
             {
-                var resumedModule = CreateModule(restarted, requestedUtc.AddSeconds(4));
-                await using var resumedLifetime = resumedModule.ConfigureAwait(false);
-                await resumedModule.InitializeAsync(configuration, token).ConfigureAwait(false);
-                for (var sequence = 3; sequence <= 61; sequence++)
-                    await CaptureCadenceFrameAsync(restarted, resumedModule, liveId, sequence).ConfigureAwait(false);
-                var archiveFiles = Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories);
-                Assert.HasCount(61, archiveFiles);
-                Assert.IsTrue(archiveFiles.All(path => Path.GetFileName(Path.GetDirectoryName(path)) == nameof(FrameArtifactRole.AnnotatedPreview)));
-                Assert.IsFalse(Directory.Exists(Path.Combine(archiveRoot, "derived")));
-            }
-            if (occupiedPrediction)
-            {
-                var replay = await ExecuteReplayAsync(restarted, new(captureId, liveId, rawId, Reason: "prediction variant collision"),
-                    "replay-prediction-variant").ConfigureAwait(false);
-                Assert.AreEqual(liveId, replay.Execution.GraphRevisionId);
-                foreach (var (nodeId, liveOutput) in replayOutputs)
+                await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
+                Assert.AreEqual(liveId, selected.State.RevisionId);
+                CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
+                var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
+                if (consumer == "storage")
                 {
-                    var replayed = replay.Nodes.Single(node => node.NodeId == nodeId).Outputs
-                        .Single(output => output.Variant == liveOutput.Artifact.Variant);
-                    Assert.AreEqual(liveOutput.ArtifactId, replayed.ArtifactId, nodeId);
-                    Assert.AreEqual(liveOutput.OutputIdentitySha256, replayed.OutputIdentitySha256, nodeId);
-                    Assert.AreEqual(liveOutput.Artifact.ChecksumSha256, replayed.PayloadSha256, nodeId);
-                    Assert.IsFalse(replayed.Published, nodeId);
+                    var resumedModule = CreateModule(restarted, requestedUtc.AddSeconds(4));
+                    await using var resumedLifetime = resumedModule.ConfigureAwait(false);
+                    await resumedModule.InitializeAsync(configuration, token).ConfigureAwait(false);
+                    for (var sequence = 3; sequence <= 61; sequence++)
+                        await CaptureCadenceFrameAsync(restarted, resumedModule, liveId, sequence).ConfigureAwait(false);
+                    var archiveFiles = Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories);
+                    Assert.HasCount(61, archiveFiles);
+                    Assert.IsTrue(archiveFiles.All(path => Path.GetFileName(Path.GetDirectoryName(path)) == nameof(FrameArtifactRole.AnnotatedPreview)));
+                    Assert.IsFalse(Directory.Exists(Path.Combine(archiveRoot, "derived")));
                 }
+                if (occupiedPrediction)
+                {
+                    var replay = await ExecuteReplayAsync(restarted, new(captureId, liveId, rawId, Reason: "prediction variant collision"),
+                        "replay-prediction-variant").ConfigureAwait(false);
+                    Assert.AreEqual(liveId, replay.Execution.GraphRevisionId);
+                    foreach (var (nodeId, liveOutput) in replayOutputs)
+                    {
+                        var replayed = replay.Nodes.Single(node => node.NodeId == nodeId).Outputs
+                            .Single(output => output.Variant == liveOutput.Artifact.Variant);
+                        Assert.AreEqual(liveOutput.ArtifactId, replayed.ArtifactId, nodeId);
+                        Assert.AreEqual(liveOutput.OutputIdentitySha256, replayed.OutputIdentitySha256, nodeId);
+                        Assert.AreEqual(liveOutput.Artifact.ChecksumSha256, replayed.PayloadSha256, nodeId);
+                        Assert.IsFalse(replayed.Published, nodeId);
+                    }
 
-                var nextUtc = requestedUtc.AddSeconds(10);
-                var module = CreateModule(restarted, nextUtc);
-                await using var moduleLifetime = module.ConfigureAwait(false);
-                await module.InitializeAsync(configuration, token).ConfigureAwait(false);
-                var next = await CaptureAndAdmitAsync(restarted, module, nextUtc).ConfigureAwait(false);
-                Assert.AreEqual(2L, next.Manifest.Descriptor.Capture.CaptureSequence);
-                Assert.AreEqual(liveId, next.Manifest.CaptureGraphRevisionId);
-                await CompleteLiveAsync(restarted, configuration).ConfigureAwait(false);
-                var nextFit = await restarted.GetRequiredService<SqliteCaptureProcessingStore>()
-                    .ReadNodeAsync(next.Manifest.Descriptor.Capture.CaptureId, "fit", token).ConfigureAwait(false);
-                Assert.IsNotNull(nextFit);
-                Assert.AreEqual(DurableProcessingNodeStatus.Skipped, nextFit.Status);
-                Assert.AreEqual("astrometry.capture-cadence", nextFit.Reason);
+                    var nextUtc = requestedUtc.AddSeconds(10);
+                    var module = CreateModule(restarted, nextUtc);
+                    await using var moduleLifetime = module.ConfigureAwait(false);
+                    await module.InitializeAsync(configuration, token).ConfigureAwait(false);
+                    var next = await CaptureAndAdmitAsync(restarted, module, nextUtc).ConfigureAwait(false);
+                    Assert.AreEqual(2L, next.Manifest.Descriptor.Capture.CaptureSequence);
+                    Assert.AreEqual(liveId, next.Manifest.CaptureGraphRevisionId);
+                    await CompleteLiveAsync(restarted, configuration).ConfigureAwait(false);
+                    var nextFit = await restarted.GetRequiredService<SqliteCaptureProcessingStore>()
+                        .ReadNodeAsync(next.Manifest.Descriptor.Capture.CaptureId, "fit", token).ConfigureAwait(false);
+                    Assert.IsNotNull(nextFit);
+                    Assert.AreEqual(DurableProcessingNodeStatus.Skipped, nextFit.Status);
+                    Assert.AreEqual("astrometry.capture-cadence", nextFit.Reason);
+                }
+                if (previousId is not null)
+                {
+                    Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, selected.State.Name);
+                    await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                        await reopened.RetireRevisionAsync(liveId, reopenedRegistry.StateVersion,
+                            "retire-effective-shared-fit", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+                    Assert.AreEqual(reopenedRegistry.StateVersion,
+                        (await reopened.GetRegistryAsync(token).ConfigureAwait(false)).StateVersion);
+                    var old = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: true, token, previousId).ConfigureAwait(false);
+                    Assert.AreEqual(previousId, old.State.RevisionId);
+                    CollectionAssert.AreEqual(new[] { "projected-scene", measurementId },
+                        old.Pipeline.Steps.Single(step => step.Id == "fit").DependsOn!.ToArray());
+                }
+                if (configurePreset)
+                {
+                    Console.WriteLine($"Accepted fit on effective revision {liveId}; registry basis {activeId} after restart.");
+                    presetReceipt = await ConfigureSharedLegacyAstrometryAsync(root, configuration, restarted, selected, activeId, measurementId,
+                        fitCatalog, captureUtc => CreateModule(restarted, captureUtc),
+                        requestedUtc.AddSeconds(3), token).ConfigureAwait(false);
+                }
             }
-            if (previousId is not null)
-            {
-                Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, selected.State.Name);
-                await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
-                    await reopened.RetireRevisionAsync(liveId, reopenedRegistry.StateVersion,
-                        "retire-effective-shared-fit", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
-                Assert.AreEqual(reopenedRegistry.StateVersion,
-                    (await reopened.GetRegistryAsync(token).ConfigureAwait(false)).StateVersion);
-                var old = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: true, token, previousId).ConfigureAwait(false);
-                Assert.AreEqual(previousId, old.State.RevisionId);
-                CollectionAssert.AreEqual(new[] { "projected-scene", measurementId },
-                    old.Pipeline.Steps.Single(step => step.Id == "fit").DependsOn!.ToArray());
-            }
+            if (presetReceipt is not null)
+                await VerifySharedLegacyPresetReceiptAfterRestartAsync(root, configuration,
+                    activeId, liveId, presetReceipt, token).ConfigureAwait(false);
         }
         finally
         {

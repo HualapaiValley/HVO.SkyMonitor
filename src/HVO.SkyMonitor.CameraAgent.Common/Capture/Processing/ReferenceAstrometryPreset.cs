@@ -176,7 +176,7 @@ internal static class ReferenceAstrometryPreset
         => (MeasuredAstrometryCaptureOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
             step.Options, typeof(MeasuredAstrometryCaptureOptions));
 
-    private static CaptureProcessingStepConfig? FindSolver(CapturePipelineConfig pipeline)
+    internal static CaptureProcessingStepConfig? FindSolver(CapturePipelineConfig pipeline)
         => pipeline.Steps.SingleOrDefault(static step => step.Enabled != false &&
             HasAlias(step, MeasuredAstrometryCaptureProcessingStep.Alias));
 
