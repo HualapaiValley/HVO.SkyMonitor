@@ -279,7 +279,8 @@ internal interface ICameraAgentOperatorUiService
         CancellationToken cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
-        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null)
+        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null,
+        CameraAgentAstrometryAssessmentIdentity? selectedAssessment = null)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
@@ -287,6 +288,9 @@ internal interface ICameraAgentOperatorUiService
     ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
         Guid captureId,
         CancellationToken cancellationToken);
+
+    ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetCurrentLayeredPresentationAsync(
+        Guid captureId, CancellationToken cancellationToken) => GetLayeredPresentationAsync(captureId, cancellationToken);
 
     ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(
         Guid captureId,
@@ -1194,12 +1198,13 @@ internal sealed class CameraAgentOperatorUiService(
     }
 
     public async ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
-        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null)
+        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null,
+        CameraAgentAstrometryAssessmentIdentity? selectedAssessment = null)
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
             return Denied<CameraAgentLatestAstrometryRead>();
         var read = retainedAstrometry is null ? new CameraAgentLatestAstrometryRead(true)
-            : await retainedAstrometry.ReadLatestAcceptedAsync(previousSummary, cancellationToken).ConfigureAwait(false);
+            : await retainedAstrometry.ReadLatestAcceptedAsync(previousSummary, selectedAssessment, cancellationToken).ConfigureAwait(false);
         return read.Completed
             ? OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(read)
             : new(OperatorUiResultKind.Unavailable, read, "The latest accepted measured result is temporarily unavailable.");
@@ -1226,10 +1231,15 @@ internal sealed class CameraAgentOperatorUiService(
         }
     }
 
+    public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
+        Guid captureId, CancellationToken cancellationToken) => ReadLayersAsync(captureId, current: false, cancellationToken);
+
+    public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetCurrentLayeredPresentationAsync(
+        Guid captureId, CancellationToken cancellationToken) => ReadLayersAsync(captureId, current: true, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The operator boundary logs internal failures and returns only fixed, sanitized states.")]
-    public async ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
-        Guid captureId,
-        CancellationToken cancellationToken)
+    private async ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> ReadLayersAsync(
+        Guid captureId, bool current, CancellationToken cancellationToken)
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
         {
@@ -1237,7 +1247,9 @@ internal sealed class CameraAgentOperatorUiService(
         }
         try
         {
-            var result = await layeredPresentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+            var result = current
+                ? await layeredPresentations.GetCurrentAsync(captureId, cancellationToken).ConfigureAwait(false)
+                : await layeredPresentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
             return result.Status == CameraAgentLayeredPresentationStatus.Found && result.Presentation is { } presentation
                 ? OperatorUiResult<CameraAgentLayeredPresentation>.Success(presentation)
                 : OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
