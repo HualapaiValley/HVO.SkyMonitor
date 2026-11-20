@@ -59,6 +59,7 @@ internal sealed partial class RawCaptureIngress :
     private readonly IProjectedSceneStagingReconciler? _projectedSceneStaging;
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle;
     private readonly ProcessingGraphOperationsCoordinator? _graphOperations;
+    private readonly SqliteCaptureProcessingStore? _processingStore;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -76,7 +77,8 @@ internal sealed partial class RawCaptureIngress :
         IProjectedSceneStagingReconciler? projectedSceneStaging = null,
         ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
         ProcessingGraphOperationsCoordinator? graphOperations = null,
-        Capture.CaptureMaintenanceGate? maintenanceGate = null)
+        Capture.CaptureMaintenanceGate? maintenanceGate = null,
+        SqliteCaptureProcessingStore? processingStore = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -92,6 +94,7 @@ internal sealed partial class RawCaptureIngress :
         _projectedSceneStaging = projectedSceneStaging;
         _projectedSceneLifecycle = projectedSceneLifecycle;
         _graphOperations = graphOperations;
+        _processingStore = processingStore;
         _maintenanceGate = maintenanceGate;
         if (maintenanceGate is not null) maintenanceGate.CaptureRunning += RunDeferredMaintenance;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();

@@ -43,6 +43,8 @@ internal sealed partial class RawCaptureIngress
                 var receipt = await _journal.ReleaseEvidenceAsync(
                     target, action, idempotencyKey, actor, reason, entry => RevalidateEvidenceAsync(entry, cancellationToken),
                     cancellationToken).ConfigureAwait(false);
+                if (action == RawEvidenceReleaseAction.Revalidate && !receipt.Duplicate)
+                    _processingStore?.NotifyRawEvidenceRevalidated(target.CaptureId);
                 activity?.SetTag("duplicate", receipt.Duplicate);
                 activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
                 RequireReconciliation();

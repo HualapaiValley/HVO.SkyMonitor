@@ -248,18 +248,17 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     {
         if (captureId == Guid.Empty) return new(captureId, "Unavailable", "invalid-capture");
         var acquiredRawRead = false;
-        AstrometryOutputStamp? quarantinedAssessment = null;
+        DurableCaptureProduct? assessment = null;
         try
         {
             var candidates = await store.ReadCaptureProductsAsync(captureId,
                 MeasuredAstrometrySolutionV1.CurrentSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) return new(captureId, "NotRetained", "assessment-not-retained");
             if (candidates.Count != 1) return new(captureId, "Unavailable", "assessment-ambiguous");
-            var assessment = candidates[0];
-            if (assessment.AvailabilityState == "Quarantined")
-                return new(captureId, "Unavailable", InvalidEvidence)
-                { QuarantinedAssessment = new(assessment.ArtifactId, assessment.ContentIdentitySha256 ?? string.Empty) };
-            if (assessment.AvailabilityState != "Available") return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+            assessment = candidates[0];
+            if (assessment.AvailabilityState == "Quarantined") return Quarantined(assessment);
+            if (assessment.AvailabilityState != "Available")
+                return await ReadFailedEvidenceAsync(TemporaryEvidenceUnavailable).ConfigureAwait(false);
             var remaining = Math.Min(maximumReadBytes, MaximumReadBytes);
             var (solutionArtifact, solutionProduct) = await ReadProductAsync(assessment.ArtifactId,
                 MeasuredAstrometryJson.MaximumSolutionBytes).ConfigureAwait(false);
@@ -353,14 +352,6 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 var result = await artifacts.OpenContentAsync(id, cancellationToken).ConfigureAwait(false);
                 if (result.Status != CameraAgentArtifactReadStatus.Unavailable) return result;
                 if (result.Content is { } content) await content.DisposeAsync().ConfigureAwait(false);
-                // Unavailable can also mean reconciliation quarantined a required input or the assessment
-                // changed after candidate discovery. Only a confirmed quarantine lets the search advance.
-                if (await store.ReadOutputByArtifactIdAsync(id, cancellationToken).ConfigureAwait(false) is
-                    { AvailabilityState: "Quarantined" } unavailable && unavailable.Capture.CaptureId == captureId)
-                {
-                    quarantinedAssessment = new(assessment.ArtifactId, assessment.ContentIdentitySha256 ?? string.Empty);
-                    throw new InvalidDataException("The retained artifact is quarantined.");
-                }
                 throw new IOException("The retained artifact is temporarily unavailable.");
             }
 
@@ -376,15 +367,47 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         }
         catch (Exception exception) when (exception is InvalidDataException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
         {
-            return new(captureId, "Unavailable", InvalidEvidence) { QuarantinedAssessment = quarantinedAssessment };
+            return await ReadFailedEvidenceAsync(InvalidEvidence).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
         {
-            return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+            return await ReadFailedEvidenceAsync(TemporaryEvidenceUnavailable).ConfigureAwait(false);
         }
         finally
         {
             if (acquiredRawRead) readGate.Release();
         }
+
+        async ValueTask<CameraAgentRetainedAstrometry> ReadFailedEvidenceAsync(string reason)
+        {
+            // The artifact reads and their leases have ended. The journal lookup needs no raw-read allowance.
+            if (acquiredRawRead)
+            {
+                readGate.Release();
+                acquiredRawRead = false;
+            }
+            if (assessment?.ContentIdentitySha256 is { } identity)
+            {
+                // Artifact status describes an open, not the whole lineage. An earlier missing input can
+                // mask a later quarantine, and a quarantined raw parent opens as Conflict.
+                try
+                {
+                    if (await store.IsAstrometryQuarantinedAsync(captureId, assessment.ArtifactId, identity, cancellationToken).ConfigureAwait(false))
+                        return Quarantined(assessment);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
+                {
+                    return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+                }
+            }
+            return new(captureId, "Unavailable", reason);
+        }
+
+        CameraAgentRetainedAstrometry Quarantined(DurableCaptureProduct product)
+            => new(captureId, "Unavailable", InvalidEvidence)
+            {
+                QuarantinedAssessment = product.ContentIdentitySha256 is { } identity
+                    ? new(product.ArtifactId, identity) : null
+            };
     }
 }
