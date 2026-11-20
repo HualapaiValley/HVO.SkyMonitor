@@ -27,6 +27,26 @@ frame; raw ingress binds the same revision, even if activation changes during
 the exposure. Legacy captures do not gain this optional field. Existing storage-neutral Astronomy contracts own query
 and projection behavior; SQLite remains in the optional infrastructure adapter.
 
+## License excerpt and package version
+
+Package version `openngc-v20260501-p6-s5-r1` continues to identify the
+original published bundle bytes. Its `LICENSE-OPENNGC.md` is 660 bytes with
+SHA-256 `7ff72fb2626b78a755e8adf18903f582d32fa3d766da99cf2847c23316f876fb`.
+Existing bundles verify against these same pins in the
+[approved catalog registry](../../src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json).
+
+The text labeled “verbatim” in the bundled notice quotes lines 2–8 of the
+upstream file with Markdown indentation. It includes the upstream name,
+contact and source, followed by the `Files: *` stanza with the copyright and
+`CC-BY-SA-4.0` license identifier. It omits the first line,
+`Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/`,
+which identifies the Debian copyright file format. See the pinned
+[upstream `.reuse/dep5`](https://github.com/mattiaverga/OpenNGC/blob/36cb178a0f69dba8bfc03a99c10512831edf1c6b/.reuse/dep5#L1-L8).
+
+The composed HYG 4.4 + OpenNGC package `hyg-v4.4-openngc-v20260501-p5-s4-r1`
+contains the same excerpt in the OpenNGC section of its separately pinned
+[license notice](hyg-v44-openngc-license.md#openngc-v20260501-deep-sky-component).
+
 ## Selection and presentation
 
 NGC, Messier and IC query options form a union, deduplicated by canonical object
