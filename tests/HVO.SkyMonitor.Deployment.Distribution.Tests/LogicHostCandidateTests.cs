@@ -25,6 +25,22 @@ public sealed class LogicHostCandidateTests
     }
 
     [TestMethod]
+    [DataRow("hyg-v42-production", "hyg-v4.2-p3-s2-r1", null)]
+    [DataRow("hyg-v44-openngc-production", "hyg-v4.4-openngc-v20260501-p5-s4-r1", null)]
+    [DataRow("openngc-production", "openngc-v20260501-p6-s5-r1", "the required star catalog cannot be a standalone deep-sky catalog")]
+    [DataRow("unknown-production", "hyg-v4.2-p3-s2-r1", "not an approved production catalog")]
+    public async Task Verify_RequiredCatalog_AcceptsOnlyApprovedStarCatalogs(string catalogId, string packageVersion, string? refusal)
+    {
+        using var fixture = new CandidateFixture(catalogId: catalogId, packageVersion: packageVersion);
+        var before = fixture.Snapshot();
+        if (refusal is null)
+            Assert.AreEqual(0, await ReleaseProgram.Main(["verify-logichost-candidate", "--from", fixture.Root]));
+        else
+            await AssertRefusedAsync(fixture, refusal);
+        CollectionAssert.AreEqual(before, fixture.Snapshot());
+    }
+
+    [TestMethod]
     [DataRow("manifest-missing")]
     [DataRow("checksums-missing")]
     [DataRow("manifest-altered")]
@@ -335,7 +351,9 @@ public sealed class LogicHostCandidateTests
         public JsonObject Document { get; }
         public string ImageId { get; }
 
-        public CandidateFixture(string? fault = null, string platform = "linux/amd64")
+        public CandidateFixture(
+            string? fault = null, string platform = "linux/amd64",
+            string catalogId = "hyg-v42-production", string packageVersion = "hyg-v4.2-p3-s2-r1")
         {
             archiveName = $"skymonitor-logichost-{OciReleaseFixture.Version}-{platform.Replace('/', '-')}.oci.tar";
             var metadata = JsonNode.Parse("""
@@ -343,9 +361,10 @@ public sealed class LogicHostCandidateTests
                  "migrationId":"20260828153943_InitialBaseline","initializationTarget":"fixture-target",
                  "generatedSqlSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                  "seedManifestSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                 "configurationVersion":1,"objectLayoutVersion":1,"checkpointFormatVersion":1,"backupFormatVersion":1,
-                 "requiredCatalogId":"hyg-v42-production","requiredPackageVersion":"hyg-v4.2-p3-s2-r1"}
+                 "configurationVersion":1,"objectLayoutVersion":1,"checkpointFormatVersion":1,"backupFormatVersion":1}
                 """)!;
+            metadata["requiredCatalogId"] = catalogId;
+            metadata["requiredPackageVersion"] = packageVersion;
             // Reuse the existing build fixture; assemble the distribution archive independently of its writer.
             using var input = OciReleaseFixture.Create();
             input.Build(platforms: [platform], singleManifest: fault is not ("image-index-schema" or "image-index-schema-missing" or "image-index-schema-type" or "image-index-valid"), labels: (_, labels) =>
