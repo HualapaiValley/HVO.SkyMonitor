@@ -2,6 +2,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -18,6 +19,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("annotation")]
     [DataRow("storage")]
+    [DataRow("storage-fit-failure")]
     [DataRow("isolated")]
     public async Task LegacyVirtualSkyFitUsesPredictionAndPreservesExistingConsumers(string consumer)
     {
@@ -26,7 +28,9 @@ public sealed partial class ProcessingGraphOperationsTests
         const string measurementId = "astrometry-prediction-associations";
         const string measurementVariant = "astrometry-prediction-associations-v1";
         var sharedAssociations = consumer == "annotation";
-        var sharedFit = consumer == "storage";
+        var failedFit = consumer == "storage-fit-failure";
+        var sharedFit = consumer == "storage" || failedFit;
+        var archiveRoot = Path.Combine(root, "archive");
         var requestedUtc = new DateTimeOffset(2026, 11, 20, 3, 0, 0, TimeSpan.Zero);
         var celestialUtc = requestedUtc.AddSeconds(1);
         var location = DeploymentLocationSnapshot.Create("legacy-shared-site", 1, "test", null,
@@ -76,7 +80,7 @@ public sealed partial class ProcessingGraphOperationsTests
         var storage = new CaptureProcessingStepConfig("Storage", "archive", DependsOn: ["projected-scene"],
             Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
             {
-                StorageRoot = Path.Combine(root, "archive"),
+                StorageRoot = archiveRoot,
                 QueueForUpload = false,
                 UpdateLatestFrame = false
             }));
@@ -121,29 +125,38 @@ public sealed partial class ProcessingGraphOperationsTests
                 new("MeasuredAstrometry", "fit", DependsOn: ["projected-scene", measurementId], Required: false,
                     Options: JsonSerializer.SerializeToElement(new MeasuredAstrometryCaptureOptions
                     {
-                        CatalogSelection = new(fitCatalog.IdentitySha256, fitCatalog.SelectionIdentitySha256, 4.5),
+                        CatalogSelection = new(fitCatalog.IdentitySha256, failedFit ? new string('F', 64) : fitCatalog.SelectionIdentitySha256, 4.5),
                         Recipe = new(new(MaximumCatalogMagnitude: 4.5))
                     }), Publication: durable),
                 new("Preview", "preview", Options: JsonSerializer.SerializeToElement(new { outputEncoding = "Packed" }),
                     DependsOn: ["$raw"], Publication: durable),
                 new("Annotation", "annotation",
                     Options: JsonSerializer.SerializeToElement(new { requireProjectedSceneDependency = true, constellationIds = LegacySceneConstellations }),
-                    DependsOn: sharedAssociations ? ["preview", "projected-scene", measurementId] : ["preview", "projected-scene"], Publication: durable),
+                    DependsOn: sharedAssociations ? ["preview", "projected-scene", measurementId] : ["preview", "projected-scene"],
+                    Publication: sharedFit ? null : durable),
                 storage with { DependsOn = sharedFit ? ["projected-scene", "annotation", "fit"] : ["projected-scene", "annotation"] }
             ]
         };
+        ServiceProvider CreateFixtureProvider() => CreateProvider(root, configureServices: services =>
+        {
+            services.AddSingleton(installedCatalog.Object);
+            services.AddSingleton(fitCatalogSource.Object);
+            services.AddSingleton(locationStore.Object);
+        });
+
+        VirtualSkyCameraModule CreateModule(ServiceProvider host, DateTimeOffset startUtc)
+            => new(new ExposureTestTimeProvider(startUtc, autoAdvance: true), catalog,
+                host.GetRequiredService<IProjectedSceneStore>(), topology, ephemeris.Object,
+                stagingStore: host.GetRequiredService<IProjectedSceneStagingStore>(),
+                graphSelection: new VirtualSkyGraphSelectionProvider(host.GetRequiredService<ProcessingGraphOperationsCoordinator>(), enabled: true));
+
         try
         {
             string activeId;
             string liveId;
             byte[] successorPipeline;
             string? previousId = null;
-            using (var provider = CreateProvider(root, configureServices: services =>
-            {
-                services.AddSingleton(installedCatalog.Object);
-                services.AddSingleton(fitCatalogSource.Object);
-                services.AddSingleton(locationStore.Object);
-            }))
+            using (var provider = CreateFixtureProvider())
             {
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -172,10 +185,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     previousId = previous.RevisionId;
                 }
 
-                var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(requestedUtc, autoAdvance: true), catalog,
-                    provider.GetRequiredService<IProjectedSceneStore>(), topology, ephemeris.Object,
-                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>(),
-                    graphSelection: new VirtualSkyGraphSelectionProvider(operations, enabled: true));
+                var module = CreateModule(provider, requestedUtc);
                 await using var moduleLifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(configuration, token).ConfigureAwait(false);
                 var request = new CaptureRequest(requestedUtc, TimeSpan.FromSeconds(2), CaptureMode.Still,
@@ -208,6 +218,21 @@ public sealed partial class ProcessingGraphOperationsTests
                 await CompleteLiveAsync(provider, configuration).ConfigureAwait(false);
                 Assert.AreEqual(rawSha, Sha256OfFile(rawPath));
                 Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ChecksumSha256, rawSha);
+                if (sharedFit)
+                {
+                    var runtime = provider.GetRequiredService<ICaptureProcessingPipelineFactory>()
+                        .CreateRetainedGraph(configuration with { Pipeline = successor.Pipeline });
+                    try
+                    {
+                        Assert.IsTrue(successor.IsCompiledBy(runtime));
+                        var archiveNode = runtime.Nodes.Single(node => node.Id == "archive");
+                        Assert.IsTrue(archiveNode.Required);
+                        Assert.IsNotNull(archiveNode.OptionalDependencies);
+                        Assert.HasCount(1, archiveNode.OptionalDependencies);
+                        Assert.Contains("fit", archiveNode.OptionalDependencies);
+                    }
+                    finally { runtime.DisposeSteps(); }
+                }
 
                 var captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
                 var canonical = ProjectedSceneJson.Parse(await ReadPayloadAsync("projected-scene").ConfigureAwait(false)).Scene!;
@@ -225,10 +250,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.AreEqual(sharedAssociations ? measurementVariant + "-1" : measurementVariant, measuredOutput.Artifact.Variant);
                 var measured = MeasuredStellarAssociationJson.Parse(await ReadPayloadAsync(fitMeasurementId).ConfigureAwait(false)).Associations!;
                 Assert.AreEqual(prediction.SceneIdentitySha256, measured.Scene.SceneIdentitySha256);
-                var solution = MeasuredAstrometryJson.Parse(await ReadPayloadAsync("fit", BuiltInProcessingRecipes.MeasuredAstrometry).ConfigureAwait(false));
-                Assert.AreEqual(prediction.SceneIdentitySha256, solution.SceneIdentitySha256);
-                Assert.AreEqual(measuredOutput.ArtifactId, solution.MeasuredArtifactId);
-                Assert.IsTrue(solution.Assessment.HasMeasuredMapping, solution.Assessment.ReasonCode);
+                if (!failedFit)
+                {
+                    var solution = MeasuredAstrometryJson.Parse(await ReadPayloadAsync("fit", BuiltInProcessingRecipes.MeasuredAstrometry).ConfigureAwait(false));
+                    Assert.AreEqual(prediction.SceneIdentitySha256, solution.SceneIdentitySha256);
+                    Assert.AreEqual(measuredOutput.ArtifactId, solution.MeasuredArtifactId);
+                    Assert.IsTrue(solution.Assessment.HasMeasuredMapping, solution.Assessment.ReasonCode);
+                }
 
                 var annotation = await ReadOutputAsync("annotation").ConfigureAwait(false);
                 var canonicalOutput = await ReadOutputAsync("projected-scene").ConfigureAwait(false);
@@ -244,6 +272,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsNotNull(archive);
                 Assert.AreEqual(DurableProcessingNodeStatus.Completed, archive.Status, archive.Reason);
 
+                if (sharedFit || consumer == "isolated")
+                {
+                    await CheckCadenceEvidenceAsync(provider, receipt,
+                        failedFit ? DurableProcessingNodeStatus.TerminalFailure : DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+                    await CaptureCadenceFrameAsync(provider, module, liveId, 2).ConfigureAwait(false);
+                }
+
                 async Task<DurableProcessingOutput> ReadOutputAsync(string nodeId, string? recipe = null)
                 {
                     var node = await store.ReadNodeAsync(captureId, nodeId, token).ConfigureAwait(false);
@@ -256,7 +291,7 @@ public sealed partial class ProcessingGraphOperationsTests
                     => await File.ReadAllBytesAsync(Path.Combine(root, (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).PayloadRelativePath), token)
                         .ConfigureAwait(false);
             }
-            using var restarted = CreateProvider(root);
+            using var restarted = CreateFixtureProvider();
             await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
             var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
@@ -264,6 +299,18 @@ public sealed partial class ProcessingGraphOperationsTests
             CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
             var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
             Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
+            if (consumer == "storage")
+            {
+                var resumedModule = CreateModule(restarted, requestedUtc.AddSeconds(4));
+                await using var resumedLifetime = resumedModule.ConfigureAwait(false);
+                await resumedModule.InitializeAsync(configuration, token).ConfigureAwait(false);
+                for (var sequence = 3; sequence <= 61; sequence++)
+                    await CaptureCadenceFrameAsync(restarted, resumedModule, liveId, sequence).ConfigureAwait(false);
+                var archiveFiles = Directory.GetFiles(archiveRoot, "*.bin", SearchOption.AllDirectories);
+                Assert.HasCount(61, archiveFiles);
+                Assert.IsTrue(archiveFiles.All(path => Path.GetFileName(Path.GetDirectoryName(path)) == nameof(FrameArtifactRole.AnnotatedPreview)));
+                Assert.IsFalse(Directory.Exists(Path.Combine(archiveRoot, "derived")));
+            }
             if (previousId is not null)
             {
                 Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, selected.State.Name);
@@ -282,6 +329,88 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
+        }
+
+        async Task CaptureCadenceFrameAsync(ServiceProvider host, VirtualSkyCameraModule camera, string expectedRevisionId, int sequence)
+        {
+            var utc = requestedUtc.AddSeconds((sequence - 1) * 2);
+            // Distinct exposure samples give each capture its own durable outputs.
+            var request = new CaptureRequest(utc, TimeSpan.FromSeconds(2), CaptureMode.Still,
+                new CaptureSetpoint(TimeSpan.FromSeconds(2) + TimeSpan.FromMilliseconds(sequence - 1), 1, null, null));
+            var capture = await camera.CaptureAsync(request, token).ConfigureAwait(false);
+            var ingress = host.GetRequiredService<IRawCaptureIngress>();
+            var receipt = await ingress.AcceptAsync(configuration, new CaptureLoopSubmission(request, capture,
+                utc, request.TargetInterval, TimeSpan.Zero), token).ConfigureAwait(false);
+            Assert.IsNotNull(receipt);
+            Assert.AreEqual((long)sequence, receipt.Manifest.Descriptor.Capture.CaptureSequence);
+            Assert.AreEqual(expectedRevisionId, receipt.Manifest.CaptureGraphRevisionId);
+            await CompleteLiveAsync(host, configuration).ConfigureAwait(false);
+            await CheckCadenceEvidenceAsync(host, receipt, sequence == 61 ? DurableProcessingNodeStatus.Completed :
+                DurableProcessingNodeStatus.Skipped).ConfigureAwait(false);
+        }
+
+        async Task CheckCadenceEvidenceAsync(ServiceProvider host, RawCaptureReceipt receipt, DurableProcessingNodeStatus expectedFit)
+        {
+            var capture = receipt.Manifest.Descriptor.Capture;
+            var rawSha = Sha256OfFile(receipt.StoredFrame.AbsolutePath);
+            Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ChecksumSha256, rawSha);
+            var store = host.GetRequiredService<SqliteCaptureProcessingStore>();
+            var fit = await ReadCadenceNodeAsync("fit", expectedFit).ConfigureAwait(false);
+            if (expectedFit == DurableProcessingNodeStatus.Skipped)
+                Assert.AreEqual("astrometry.capture-cadence", fit.Reason);
+            if (expectedFit == DurableProcessingNodeStatus.TerminalFailure)
+                Assert.AreEqual("processing.optional-degraded", fit.Reason);
+            var scene = (await ReadCadenceNodeAsync("projected-scene", DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
+            var annotated = (await ReadCadenceNodeAsync("annotation", DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
+            var prediction = (await ReadCadenceNodeAsync(AstrometryPredictionCaptureProcessingStep.Alias, DurableProcessingNodeStatus.Completed)
+                .ConfigureAwait(false)).Outputs.Single();
+            var measured = (await ReadCadenceNodeAsync(measurementId, DurableProcessingNodeStatus.Completed).ConfigureAwait(false)).Outputs.Single();
+            var archive = await ReadCadenceNodeAsync("archive", DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
+            Assert.IsEmpty(archive.Outputs, "Storage selects producer outputs and does not produce scientific artifacts.");
+            Assert.Contains(scene.ArtifactId, annotated.Artifact.SourceArtifactIds!);
+            Assert.DoesNotContain(prediction.ArtifactId, annotated.Artifact.SourceArtifactIds!);
+            Assert.DoesNotContain(measured.ArtifactId, annotated.Artifact.SourceArtifactIds!);
+            var canonical = ProjectedSceneJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, scene.PayloadRelativePath), token)
+                .ConfigureAwait(false)).Scene!;
+            Assert.AreEqual(ProjectedSceneKind.VirtualRenderAuthoritative, canonical.Kind);
+            Assert.IsTrue(canonical.Objects.Any(value => value.Id == "solar-system:Moon"));
+            Assert.IsTrue(canonical.Segments.Any(value => value.ConstellationId == "CAS"));
+            if (expectedFit == DurableProcessingNodeStatus.Completed)
+            {
+                Assert.HasCount(2, fit.Outputs);
+                var solutionOutput = fit.Outputs.Single(value => value.Artifact.Recipe.Name == BuiltInProcessingRecipes.MeasuredAstrometry);
+                var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, solutionOutput.PayloadRelativePath), token)
+                    .ConfigureAwait(false));
+                Assert.AreEqual(prediction.ContentIdentitySha256, solution.SceneIdentitySha256);
+                Assert.AreEqual(measured.ArtifactId, solution.MeasuredArtifactId);
+                Assert.IsTrue(solution.Assessment.HasMeasuredMapping, solution.Assessment.ReasonCode);
+            }
+            else Assert.IsEmpty(fit.Outputs);
+
+            if (sharedFit)
+            {
+                var selected = fit.Outputs.Select(output => (Guid?)output.ArtifactId)
+                    .Append(scene.ArtifactId).Append(annotated.ArtifactId).ToArray();
+                Assert.IsNotNull(archive.Inputs);
+                CollectionAssert.AreEquivalent(selected, archive.Inputs.Select(input => input.ArtifactId).ToArray());
+                var image = Directory.GetFiles(archiveRoot, $"*-{annotated.ArtifactId:N}.bin", SearchOption.AllDirectories).Single();
+                Assert.AreEqual(annotated.Artifact.ChecksumSha256, Sha256OfFile(image));
+                Assert.IsTrue(File.Exists(Path.ChangeExtension(image, ".json")));
+            }
+            var standard = (await host.GetRequiredService<ICaptureLaneStore>().ReadBacklogsAsync(token).ConfigureAwait(false))
+                .Single(lane => lane.Lane == "standard");
+            Assert.AreEqual(0L, standard.QuarantineCount);
+            Assert.AreEqual(0L, standard.PendingCount);
+            if (capture.CaptureSequence <= 3 || capture.CaptureSequence >= 60)
+                Console.WriteLine($"{consumer} sequence={capture.CaptureSequence} raw={rawSha} fit={fit.Status}/{fit.Reason} fitOutputs={fit.Outputs.Count} archive={archive.Status} annotation={annotated.Artifact.ChecksumSha256} terminal=0 quarantine={standard.QuarantineCount}");
+
+            async Task<DurableProcessingNode> ReadCadenceNodeAsync(string nodeId, DurableProcessingNodeStatus status)
+            {
+                var node = await store.ReadNodeAsync(capture.CaptureId, nodeId, token).ConfigureAwait(false);
+                Assert.IsNotNull(node);
+                Assert.AreEqual(status, node.Status, $"{nodeId}: {node.Reason}");
+                return node;
+            }
         }
     }
 }
