@@ -297,7 +297,8 @@ public static class CameraAgentServiceCollectionExtensions
             // Hostless graph tools have no initialized accessor; do not construct capture admission for them.
             () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
                 ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
-                : null));
+                : null,
+            provider.GetServices<ICenteredExposureGraphExtension>()));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>
@@ -329,7 +330,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.AddSingleton<ICameraAgentRetainedAstrometryService, CameraAgentRetainedAstrometryService>();
         services.AddSingleton<CaptureProcessingPersistence>();
-        services.AddSingleton<IExposureMeasurementRunReader>(provider => provider.GetRequiredService<CaptureProcessingPersistence>());
+        services.AddExposureMeasurement();
         services.AddSingleton<SqliteNightlyProductStore>();
         services.AddSingleton<INightlyProductCatalog>(static provider =>
             provider.GetRequiredService<SqliteNightlyProductStore>());

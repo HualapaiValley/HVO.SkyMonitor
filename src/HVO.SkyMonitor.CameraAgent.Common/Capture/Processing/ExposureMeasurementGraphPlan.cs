@@ -4,9 +4,9 @@ using HVO.SkyMonitor.Processing;
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 /// <summary>Contributes the fixed measurement node and translates the selected optional association branch.</summary>
-internal static class ExposureMeasurementGraphPlan
+internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExtension
 {
-    internal static CapturePipelineConfig Configure(CapturePipelineConfig pipeline)
+    public CapturePipelineConfig Configure(CapturePipelineConfig pipeline)
     {
         ArgumentNullException.ThrowIfNull(pipeline);
         const string raw = "$raw";
@@ -19,16 +19,23 @@ internal static class ExposureMeasurementGraphPlan
         var measured = new CaptureProcessingStepConfig(fixedStep, fixedStep, Order: 4,
             DependsOn: measurementInputs, Required: false, Enabled: true, Publication: durable);
 
-        var steps = pipeline.Steps.Select(step => Matches(step.Type, "MeasuredStellarAssociations")
-            ? step with
+        var steps = pipeline.Steps.Select(step =>
+        {
+            if (Matches(step.Type, "MeasuredStellarAssociations"))
             {
-                Type = ExposureAssociationProducts.StepAlias,
-                Id = NodeId(step),
-                Required = false,
-                DependsOn = (step.DependsOn ?? []).Concat([raw, fixedStep]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
-                Publication = durable
+                return step with
+                {
+                    Type = ExposureAssociationProducts.StepAlias,
+                    Id = NodeId(step),
+                    Required = false,
+                    DependsOn = (step.DependsOn ?? []).Concat([raw, fixedStep]).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+                    Publication = durable
+                };
             }
-            : step).Append(measured).ToArray();
+            return Matches(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias)
+                ? step with { Type = ExposureAstrometryCaptureProcessingStep.CenteredAlias, Id = NodeId(step) }
+                : step;
+        }).Append(measured).ToArray();
         return pipeline with { Steps = steps };
     }
 

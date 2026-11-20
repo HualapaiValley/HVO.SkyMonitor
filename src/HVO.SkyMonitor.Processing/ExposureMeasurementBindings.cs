@@ -76,22 +76,54 @@ public static class ExposureMeasurementBindings
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(exact);
         ArgumentNullException.ThrowIfNull(retained);
-        if (exact.Slot is not { Producer: ExposureMeasurementProducts.StepAlias,
-                SchemaVersion: ExposureMeasurementProducts.SchemaVersion, Variant: ExposureMeasurementProducts.Variant } ||
-            exact.Slot.ExecutionId == Guid.Empty || exact.ArtifactId != retained.ArtifactId ||
-            !Same(exact.ContentIdentitySha256, retained.ContentIdentitySha256) ||
-            !Same(exact.PayloadSha256, retained.ContentIdentitySha256) ||
-            !Same(exact.OutputIdentitySha256, ProcessingIdentity.CreateOutputIdentity(retained.Role,
+        if (exact.Slot is null || exact.Slot != Slot(exact.Slot.ExecutionId))
+            throw Invalid("measurement reference");
+
+        return await ReadCommittedCoreAsync(reader, exact.Exposure, exact.Slot, retained, exact,
+            aperture, nativePixelPitchMicrometers, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Resolves the fixed measurement slot from the owning execution and validates its retained payload.</summary>
+    public static ValueTask<ExposureMeasurementV1> ReadCommittedAsync(
+        IExposureProductReader reader,
+        ExposureKey exposure,
+        Guid executionId,
+        ProcessingArtifact retained,
+        CancellationToken cancellationToken,
+        ProjectionContext? aperture = null,
+        double? nativePixelPitchMicrometers = null)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(exposure);
+        ArgumentNullException.ThrowIfNull(retained);
+        return ReadCommittedCoreAsync(reader, exposure, Slot(executionId), retained, null,
+            aperture, nativePixelPitchMicrometers, cancellationToken);
+    }
+
+    private static ExposureProductSlot Slot(Guid executionId) => new(executionId,
+        ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+
+    private static async ValueTask<ExposureMeasurementV1> ReadCommittedCoreAsync(IExposureProductReader reader,
+        ExposureKey exposure, ExposureProductSlot slot, ProcessingArtifact retained, ExposureProductRef? exact,
+        ProjectionContext? aperture, double? nativePixelPitchMicrometers, CancellationToken cancellationToken)
+    {
+        if (slot.ExecutionId == Guid.Empty)
+            throw Invalid("measurement reference");
+        var committed = await reader.ReadProductAsync(exposure, slot, cancellationToken).ConfigureAwait(false);
+        if (committed is not { Availability: ExposureProductAvailability.Available, Revision: > 0 } ||
+            committed.Product is not { } product || product.Exposure != exposure || product.Slot != slot ||
+            committed.Exposure != exposure || committed.Slot != slot || exact is not null && product != exact)
+            throw Invalid("measurement is unavailable or differs from the requested slot");
+        if (product.ArtifactId != retained.ArtifactId ||
+            !Same(product.ContentIdentitySha256, retained.ContentIdentitySha256) ||
+            !Same(product.PayloadSha256, retained.ContentIdentitySha256) ||
+            !Same(product.OutputIdentitySha256, ProcessingIdentity.CreateOutputIdentity(retained.Role,
                 retained.Variant, retained.RecipeIdentitySha256, retained.SourceArtifactIds ?? [])))
             throw Invalid("measurement reference");
 
-        var committed = await reader.ReadProductAsync(exact.Exposure, exact.Slot, cancellationToken).ConfigureAwait(false);
-        if (committed is not { Availability: ExposureProductAvailability.Available, Revision: > 0 } ||
-            committed.Product != exact || committed.Exposure != exact.Exposure || committed.Slot != exact.Slot)
-            throw Invalid("measurement is unavailable or differs from the requested slot");
-        var linear = await reader.ReadLinearAsync(exact.Exposure, cancellationToken).ConfigureAwait(false);
-        if (linear is null || linear.Exposure.Key != exact.Exposure ||
-            linear.Product is { } inputProduct && inputProduct.Slot.ExecutionId != exact.Slot.ExecutionId)
+        var linear = await reader.ReadLinearAsync(exposure, cancellationToken).ConfigureAwait(false);
+        if (linear is null || linear.Exposure.Key != exposure ||
+            linear.Product is { } inputProduct && inputProduct.Slot.ExecutionId != slot.ExecutionId)
             throw Invalid("admitted input is unavailable");
         return ExposureMeasurementProducts.Read(retained, FromAdmitted(linear, aperture, nativePixelPitchMicrometers));
     }

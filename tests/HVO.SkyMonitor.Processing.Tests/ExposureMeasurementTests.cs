@@ -254,6 +254,8 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(1320, read.Input.PixelScaleArcseconds);
         Assert.AreEqual(ExposureMeasurementStatus.Empty, read.Sources.Status);
         Assert.AreEqual(0, read.Hfd.ValidCount);
+        var byExecution = await ExposureMeasurementBindings.ReadCommittedAsync(reader, key, execution, retained, CancellationToken.None);
+        Assert.AreEqual(read.Input, byExecution.Input);
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
             reader, exact with { Slot = slot with { ExecutionId = Guid.NewGuid() } }, retained, CancellationToken.None));
         var wrongLookup = lookup with { Provenance = provenance with { LinearDescriptorSha256 = new string('F', 64) } };

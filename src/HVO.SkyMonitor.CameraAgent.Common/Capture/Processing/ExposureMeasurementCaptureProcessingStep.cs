@@ -9,7 +9,7 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
     ExposureMeasurementStepOptions options,
     CameraAgentRecipeExecutionAdapter adapter)
     : ConfigurableCaptureProcessingStep<ExposureMeasurementStepOptions>(metadata, options),
-        ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
+        ICaptureProcessingGraphStep, ICenteredRawPrimaryCaptureProcessingStep
 {
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.ExposureMeasurement;

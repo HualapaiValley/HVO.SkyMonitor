@@ -1,19 +1,30 @@
 using System.Buffers.Binary;
+using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
 
 public sealed partial class VirtualSkyCameraModuleTests
 {
+    private static readonly string[] MeasurementDependencies = ["$raw", "linear"];
+
     [TestMethod]
     [DataRow(CameraPixelFormat.Mono16, "None")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None")]
@@ -30,22 +41,21 @@ public sealed partial class VirtualSkyCameraModuleTests
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
             var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1() : null;
-            var centeredPlan = ExposureMeasurementGraphPlan.Configure(profile.Pipeline with
+            var pipeline = profile.Pipeline with
             {
                 Steps =
                 [
                     new("Calibration", "linear", DependsOn: ["$raw"], Required: false, Publication: durable,
                         Options: JsonSerializer.SerializeToElement(new
                         { strategy = calibration, outputVariant = "qualified-linear", syntheticCalibration = references })),
+                    new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false, Publication: durable),
                     new("Storage", "storage", DependsOn: ["$raw"], Options: JsonSerializer.SerializeToElement(
                         new FileStorageCaptureProcessingStepOptions
                         {
                             StorageRoot = Path.Combine(root, "storage"), QueueForUpload = false, UpdateLatestFrame = false
                         }))
                 ]
-            });
-            var fixedStep = centeredPlan.Steps.Single(step => step.Id == ExposureMeasurementProducts.StepAlias);
-            CollectionAssert.AreEqual(new List<string> { "$raw", "linear" }, fixedStep.DependsOn!.ToArray());
+            };
             var file = camera with
             {
                 AgentId = profile.AgentId,
@@ -59,11 +69,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                     asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
                     syntheticCalibration = references
                 })),
-                Pipeline = centeredPlan with
-                {
-                    // The Common fixture uses the base graph compiler and the worker's admitted primary raw.
-                    Steps = centeredPlan.Steps.Select(step => step == fixedStep ? step with { DependsOn = ["linear"] } : step).ToArray()
-                }
+                CenteredExposure = new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion),
+                Pipeline = pipeline
             };
             Guid executionId;
             Guid artifactId;
@@ -71,13 +78,26 @@ public sealed partial class VirtualSkyCameraModuleTests
             using (var provider = MeasurementProvider(root))
             {
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
-                var plan = provider.GetRequiredService<ICaptureProcessingPipelineFactory>().PreviewPlan(active);
+                var operations = provider.GetRequiredService<IProcessingGraphOperations>();
+                var ui = MeasurementOperations(provider, operations);
+                var configured = await ui.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(configured.IsSuccess, configured.Message);
+                var revision = await ui.GetRevisionDetailAsync(configured.Value!.ConfiguredBasicRevisionId, CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.IsTrue(revision.IsSuccess, revision.Message);
+                var plan = revision.Value!.Plan;
+                Assert.IsNotNull(plan);
                 var node = plan.EffectiveNodes.Single(n => n.Id == ExposureMeasurementProducts.StepAlias);
                 Assert.IsTrue(node.Enabled);
                 Assert.IsFalse(node.Required);
-                Assert.AreEqual("linear", Assert.ContainsSingle(node.Dependencies!));
+                CollectionAssert.AreEqual(MeasurementDependencies, node.Dependencies!.ToArray());
 
-                var module = CreateModule(now);
+                var rightAscension = AstronomyTime.LocalMeanSiderealDegrees(now, -113.878) / 15d;
+                var catalog = new InMemoryCelestialCatalog([
+                    new CelestialCatalogObject("fixture-star", "Fixture Star", rightAscension, 35.347, 0, 0.65)
+                ]);
+                var module = new VirtualSkyCameraModule(ExposureTestTimeProvider.ForRendering(), catalog, new ProjectedSceneStore(),
+                    stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
                 await using var lifetime = module.ConfigureAwait(false);
                 await module.InitializeAsync(active, CancellationToken.None).ConfigureAwait(false);
                 var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still,
@@ -88,6 +108,12 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var receipt = await ingress.AcceptAsync(active, new(request, capture, now, request.TargetInterval,
                     request.TargetInterval), CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(receipt);
+                if (references is not null)
+                {
+                    var rawCalibration = receipt.Manifest.Descriptor.Profiles.Calibration;
+                    Assert.IsTrue(CalibrationCaptureProcessingStep.MatchesSyntheticCalibrationModel(receipt.Manifest.Descriptor, references),
+                        $"Raw calibration profile {rawCalibration.Name}/{rawCalibration.Version}/{rawCalibration.Sha256}");
+                }
 
                 var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
                 await laneStore.InitializeLanesAsync(CancellationToken.None).ConfigureAwait(false);
@@ -99,7 +125,6 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
                 await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
 
-                var operations = provider.GetRequiredService<IProcessingGraphOperations>();
                 var id = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None)
                     .ConfigureAwait(false);
                 Assert.IsNotNull(id);
@@ -108,8 +133,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNotNull(execution);
                 Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "MeasuredAstrometry"),
                     "The retained results exist when the optional fit was never scheduled.");
-                var run = await provider.GetRequiredService<IExposureMeasurementRunReader>().ReadAsync(execution, CancellationToken.None)
-                    .ConfigureAwait(false);
+                var detail = await ui.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(detail.IsSuccess, detail.Message);
+                var run = detail.Value!.ExposureMeasurement;
                 Assert.IsNotNull(run?.Measurement, run?.UnavailableReason);
                 var measurement = run.Measurement;
                 Assert.AreEqual(receipt.Manifest.Descriptor.Layout, measurement.Input.Raw.Layout);
@@ -123,7 +149,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 if (calibration != "CalibrationLibrary")
                 {
                     Assert.AreEqual(calibration == "None" ? ExposureCalibrationDisposition.NormalizationOnly :
-                        ExposureCalibrationDisposition.ReferenceCalibrated, measurement.Input.Calibration);
+                        ExposureCalibrationDisposition.ReferenceCalibrated, measurement.Input.Calibration,
+                        measurement.Input.CalibrationReason);
                     Assert.IsNotNull(measurement.Input.Linear);
                     Assert.AreNotEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status, measurement.Sources.Reason);
                 }
@@ -161,7 +188,20 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             HVO.SkyMonitor.CameraAgent.Program.AddCameraModules(services);
             services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
-            services.AddSingleton(new CaptureProcessingStepRegistration(ExposureMeasurementProducts.StepAlias,
-                typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions), 4, AutoInclude: false));
         });
+
+    private static CameraAgentProcessingGraphUiService MeasurementOperations(ServiceProvider provider, IProcessingGraphOperations operations)
+    {
+        var authentication = new Mock<AuthenticationStateProvider>();
+        authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(
+            new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity("test"))));
+        var authorization = new Mock<IAuthorizationService>();
+        authorization.Setup(service => service.AuthorizeAsync(It.IsAny<ClaimsPrincipal>(), It.IsAny<object?>(), It.IsAny<string>()))
+            .ReturnsAsync(AuthorizationResult.Success());
+        return new(authentication.Object, authorization.Object, operations,
+            provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
+            provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+            provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>(), TimeProvider.System,
+            NullLogger<CameraAgentProcessingGraphUiService>.Instance, provider.GetRequiredService<IExposureMeasurementRunReader>());
+    }
 }
