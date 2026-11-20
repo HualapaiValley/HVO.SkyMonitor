@@ -116,11 +116,11 @@ public sealed partial class DurableCaptureProcessingTests
                 AssertHeadline(expectedNewest, holdEarlierImage);
                 AssertTools(available: true);
             }, timeout);
-            await page.Find(".pixel-sky-calculator input").ChangeAsync("280").ConfigureAwait(false);
-            await page.FindAll(".pixel-sky-calculator input")[1].ChangeAsync("240").ConfigureAwait(false);
-            await page.Find("form.pixel-sky-calculator").SubmitAsync().ConfigureAwait(false);
+            await page.InvokeAsync(() => page.Find(".pixel-sky-calculator input").ChangeAsync("280")).ConfigureAwait(false);
+            await page.InvokeAsync(() => page.FindAll(".pixel-sky-calculator input")[1].ChangeAsync("240")).ConfigureAwait(false);
+            await page.InvokeAsync(() => page.Find("form.pixel-sky-calculator").SubmitAsync()).ConfigureAwait(false);
             StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
-            await page.Find($"input[data-layer-target='{residual.DomGroupId}']").ChangeAsync(true).ConfigureAwait(false);
+            await page.InvokeAsync(() => page.Find($"input[data-layer-target='{residual.DomGroupId}']").ChangeAsync(true)).ConfigureAwait(false);
 
             var latestPath = Path.Combine(root, newest.PayloadRelativePath);
             using (File.Open(latestPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
