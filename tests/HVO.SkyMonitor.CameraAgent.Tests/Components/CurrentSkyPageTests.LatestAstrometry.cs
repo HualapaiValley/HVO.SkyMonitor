@@ -25,7 +25,7 @@ public sealed partial class CurrentSkyPageTests
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
         service.AstrometryHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(
             previous ? new(id, "NotRetained", "assessment-not-retained") : evidence));
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(summary));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent,
             previous ? "For a different capture" : "For the selected capture", StringComparison.Ordinal));
@@ -59,16 +59,16 @@ public sealed partial class CurrentSkyPageTests
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
         service.AstrometryHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(
             id == evidence.CaptureId ? evidence : new(id, "NotRetained", "assessment-not-retained")));
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(summary));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent,
             summary.SolutionIdentitySha256, StringComparison.Ordinal));
 
         var next = current.DisplayCapture! with { CaptureId = Guid.NewGuid() };
         current = current with { DisplayCapture = next, LatestCapture = next };
-        service.LatestAstrometryHandler = _ => deadline
-            ? ValueTask.FromException<OperatorUiResult<CameraAgentLatestAstrometry?>>(new OperationCanceledException())
-            : ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Failure(OperatorUiResultKind.Unavailable, "Astrometry read capacity is unavailable."));
+        service.LatestAstrometryHandler = (_, _) => deadline
+            ? ValueTask.FromException<OperatorUiResult<CameraAgentLatestAstrometryRead>>(new OperationCanceledException())
+            : ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Failure(OperatorUiResultKind.Unavailable, "Astrometry read capacity is unavailable."));
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
@@ -79,7 +79,7 @@ public sealed partial class CurrentSkyPageTests
             Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
         });
 
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(summary));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() =>
         {
@@ -89,7 +89,7 @@ public sealed partial class CurrentSkyPageTests
             StringAssert.Contains(text, summary.SolutionIdentitySha256, StringComparison.Ordinal);
         });
 
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(null));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent,
             "No accepted measured result", StringComparison.Ordinal));
@@ -101,8 +101,8 @@ public sealed partial class CurrentSkyPageTests
     {
         using var context = new BunitContext();
         var service = Configure(context);
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(
-            OperatorUiResult<CameraAgentLatestAstrometry?>.Failure(OperatorUiResultKind.Unavailable, "Astrometry read capacity is unavailable."));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(
+            OperatorUiResult<CameraAgentLatestAstrometryRead>.Failure(OperatorUiResultKind.Unavailable, "Astrometry read capacity is unavailable."));
         var cut = context.Render<CurrentSkyPage>();
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent,
             "temporarily unavailable", StringComparison.Ordinal));
@@ -119,7 +119,7 @@ public sealed partial class CurrentSkyPageTests
         var service = Configure(context);
         var current = WithoutDisplayImage(AstrometryImage(evidence));
         service.CurrentImageHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentImagePresentation>.Success(current));
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(summary));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
 
         var cut = context.Render<CurrentSkyPage>();
 
@@ -164,7 +164,7 @@ public sealed partial class CurrentSkyPageTests
                 DisplayCapture = next.Presentation.DisplayCapture! with { ExposureStartedUtc = summary.MidpointUtc }
             }
         };
-        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(summary));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
         clock.Advance(TimeSpan.FromSeconds(15));
 
         cut.WaitForAssertion(() =>

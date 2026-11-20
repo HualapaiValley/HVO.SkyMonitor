@@ -56,6 +56,36 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
+    internal async ValueTask<bool> IsAstrometryQuarantinedAsync(
+        Guid captureId, Guid artifactId, string solutionIdentitySha256, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        // Check the exact displayed assessment and the inputs it names. Missing evidence can recover.
+        command.CommandText = """
+            SELECT EXISTS (
+                SELECT 1 FROM processing_outputs assessment
+                WHERE assessment.artifact_id = $artifact AND assessment.capture_id = $capture
+                  AND assessment.role = 'Metadata' AND assessment.product_schema_version = 'measured-astrometry-solution-v1'
+                  AND assessment.content_identity_sha256 = $solution COLLATE NOCASE
+                  AND (assessment.availability_state = 'Quarantined' OR EXISTS (
+                      SELECT 1 FROM processing_output_sources source
+                      LEFT JOIN processing_outputs input ON input.artifact_id = source.source_artifact_id
+                        AND input.capture_id = assessment.capture_id
+                      LEFT JOIN raw_captures raw ON raw.raw_artifact_id = source.source_artifact_id
+                        AND raw.capture_id = assessment.capture_id
+                      WHERE source.output_identity_sha256 = assessment.output_identity_sha256
+                        AND (input.availability_state = 'Quarantined' OR raw.state = 'quarantined')
+                  ))
+            );
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$artifact", artifactId.ToString("N"));
+        command.Parameters.AddWithValue("$solution", solutionIdentitySha256);
+        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L;
+    }
+
     internal async ValueTask<IReadOnlyList<AstrometryCaptureCandidate>> ReadAstrometryCandidatesAsync(
         CancellationToken cancellationToken)
     {

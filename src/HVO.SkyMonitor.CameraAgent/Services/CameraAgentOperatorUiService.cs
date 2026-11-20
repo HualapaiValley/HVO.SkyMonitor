@@ -278,8 +278,9 @@ internal interface ICameraAgentOperatorUiService
         Guid captureId,
         CancellationToken cancellationToken);
 
-    ValueTask<OperatorUiResult<CameraAgentLatestAstrometry?>> GetLatestAcceptedAstrometryAsync(CancellationToken cancellationToken)
-        => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(null));
+    ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
+        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
 
@@ -1192,16 +1193,16 @@ internal sealed class CameraAgentOperatorUiService(
         return new(selected?.Stage, stages);
     }
 
-    public async ValueTask<OperatorUiResult<CameraAgentLatestAstrometry?>> GetLatestAcceptedAstrometryAsync(CancellationToken cancellationToken)
+    public async ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
+        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null)
     {
         if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
-            return Denied<CameraAgentLatestAstrometry?>();
+            return Denied<CameraAgentLatestAstrometryRead>();
         var read = retainedAstrometry is null ? new CameraAgentLatestAstrometryRead(true)
-            : await retainedAstrometry.ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
+            : await retainedAstrometry.ReadLatestAcceptedAsync(previousSummary, cancellationToken).ConfigureAwait(false);
         return read.Completed
-            ? OperatorUiResult<CameraAgentLatestAstrometry?>.Success(read.Summary)
-            : OperatorUiResult<CameraAgentLatestAstrometry?>.Failure(OperatorUiResultKind.Unavailable,
-                "The latest accepted measured result is temporarily unavailable.");
+            ? OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(read)
+            : new(OperatorUiResultKind.Unavailable, read, "The latest accepted measured result is temporarily unavailable.");
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The authenticated read returns only fixed failure states.")]
