@@ -71,6 +71,14 @@ public sealed record CameraAgentLatestAstrometry(Guid CaptureId, Guid ArtifactId
 /// <summary>Exact identity of a previously verified retained fit.</summary>
 public sealed record CameraAgentAstrometryAssessmentIdentity(Guid CaptureId, Guid ArtifactId, string SolutionIdentitySha256);
 
+/// <summary>Publication eligibility of one exact retained measurement and its required inputs.</summary>
+public enum CameraAgentAstrometryPublicationState
+{
+    Indeterminate,
+    Available,
+    Invalidated
+}
+
 internal sealed record AstrometryLineageInvalidation(AstrometryOutputStamp Assessment, RetainedAstrometryLineageState State);
 
 public sealed record CameraAgentLatestAstrometryRead(bool Completed, CameraAgentLatestAstrometry? Summary = null)
@@ -94,6 +102,9 @@ public interface ICameraAgentRetainedAstrometryService
     ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CameraAgentLatestAstrometry? previousSummary,
         CameraAgentAstrometryAssessmentIdentity? selectedAssessment, CancellationToken cancellationToken)
         => ReadLatestAcceptedAsync(previousSummary, cancellationToken);
+    ValueTask<CameraAgentAstrometryPublicationState> ReadPublicationStateAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
+        => ValueTask.FromResult(CameraAgentAstrometryPublicationState.Indeterminate);
     ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken);
 }
 
@@ -120,6 +131,18 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     {
         latestGate.Dispose();
         readGate.Dispose();
+    }
+
+    public async ValueTask<CameraAgentAstrometryPublicationState> ReadPublicationStateAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
+    {
+        var states = await ReadLineageAsync(null, null, identity, cancellationToken).ConfigureAwait(false);
+        return states?.Result switch
+        {
+            RetainedAstrometryLineageState.Available => CameraAgentAstrometryPublicationState.Available,
+            RetainedAstrometryLineageState.Quarantined or RetainedAstrometryLineageState.Evicted => CameraAgentAstrometryPublicationState.Invalidated,
+            _ => CameraAgentAstrometryPublicationState.Indeterminate
+        };
     }
 
     public async ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken)

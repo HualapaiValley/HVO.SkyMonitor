@@ -285,6 +285,10 @@ internal interface ICameraAgentOperatorUiService
     ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
         => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(captureId, "NotRetained", "assessment-not-retained")));
 
+    ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
+        => ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Indeterminate));
+
     ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(
         Guid captureId,
         CancellationToken cancellationToken);
@@ -1229,6 +1233,16 @@ internal sealed class CameraAgentOperatorUiService(
             logger.LogWarning(exception, "CameraAgent retained astrometry UI read failed.");
             return Unavailable<CameraAgentRetainedAstrometry>("Retained astrometry is temporarily unavailable.");
         }
+    }
+
+    public async ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
+    {
+        if (!await IsAuthorizedAsync(CameraAgentAuthorizationPolicyNames.OperationsReadV1).ConfigureAwait(false))
+            return Denied<CameraAgentAstrometryPublicationState>();
+        var state = retainedAstrometry is null ? CameraAgentAstrometryPublicationState.Indeterminate
+            : await retainedAstrometry.ReadPublicationStateAsync(identity, cancellationToken).ConfigureAwait(false);
+        return OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(state);
     }
 
     public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(

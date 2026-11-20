@@ -316,6 +316,11 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
         CameraAgentAstrometryAssessmentIdentity? selectedAssessment = null)
         => LatestAstrometrySelectionHandler is { } handler ? handler(cancellationToken, previousSummary, selectedAssessment)
             : LatestAstrometryHandler(cancellationToken, previousSummary);
+    internal Func<CameraAgentAstrometryAssessmentIdentity, CancellationToken, ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>>> AstrometryPublicationHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Available));
+    public ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
+        => AstrometryPublicationHandler(identity, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>> AstrometryHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(id, "NotRetained", "assessment-not-retained")));
     public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)

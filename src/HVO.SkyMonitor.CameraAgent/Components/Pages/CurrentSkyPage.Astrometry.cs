@@ -85,6 +85,48 @@ public sealed partial class CurrentSkyPage
         => value is not null && value.CaptureId == identity.CaptureId && value.ArtifactId == identity.ArtifactId &&
             string.Equals(value.SolutionIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unverified optional measurement is never published.")]
+    private async ValueTask<OperatorUiResult<T>> ValidateAstrometryPublicationAsync<T>(
+        Guid captureId, OperatorUiResult<T> result, CameraAgentRetainedAstrometry? evidence, CancellationToken cancellation)
+    {
+        if (!result.IsSuccess) return result;
+        if (RetainedIdentity(evidence) is { } identity && identity.CaptureId == captureId)
+        {
+            var generation = Volatile.Read(ref _layerGeneration);
+            try
+            {
+                // The response has arrived but has not yet reached the view. Check its exact inputs
+                // without reconstructing the fit or competing for the raw reader.
+                var observation = await OperatorService.ReadAstrometryPublicationStateAsync(identity, cancellation).ConfigureAwait(false);
+                if (observation.Kind == OperatorUiResultKind.Unauthorized)
+                    return OperatorUiResult<T>.Failure(OperatorUiResultKind.Unauthorized, observation.Message ?? "Access denied.");
+                if (!cancellation.IsCancellationRequested && observation.IsSuccess)
+                {
+                    if (observation.Value == CameraAgentAstrometryPublicationState.Available) return result;
+                    if (observation.Value == CameraAgentAstrometryPublicationState.Invalidated)
+                        await InvokeAsync(() => WithdrawObservedSelectedFit(identity, generation, cancellation)).ConfigureAwait(false);
+                }
+            }
+            catch (Exception)
+            {
+                // A failed point read can recover on the next refresh. Existing verified evidence
+                // remains visible until the reader confirms that its exact lineage is invalid.
+            }
+        }
+        return OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, "Selected measured evidence is temporarily unavailable.");
+    }
+
+    private void WithdrawObservedSelectedFit(CameraAgentAstrometryAssessmentIdentity identity, long generation, CancellationToken cancellation)
+    {
+        if (generation != _layerGeneration || cancellation.IsCancellationRequested ||
+            _disposeStarted != 0 || _accessDenied || _runCaptureId != identity.CaptureId) return;
+
+        // There may only be pending evidence. A positive check started before this observation
+        // must retire with the same lifetime even when no fit has reached the renderer.
+        InvalidateSelectedAssessment(identity);
+        StateHasChanged();
+    }
+
     private bool _astrometryLoading;
     private long _astrometryReadRevision;
     private string? _calculatorResult;
@@ -148,6 +190,8 @@ public sealed partial class CurrentSkyPage
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             var result = await OperatorService.GetRetainedAstrometryAsync(captureId, bounded.Token).ConfigureAwait(false);
+            if (result.Value?.Solution?.Assessment.HasMeasuredMapping == true)
+                result = await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false);
             await InvokeAsync(() =>
             {
                 // Authorization revocation is never hidden by a late response or by a changed capture.

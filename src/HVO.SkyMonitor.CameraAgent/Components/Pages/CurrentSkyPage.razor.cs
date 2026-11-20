@@ -610,9 +610,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
             // A shared flight may have started before invalidation, even on a later manual refresh.
-            return Volatile.Read(ref _retainedAstrometryInvalidationRevision) != 0
+            var result = Volatile.Read(ref _retainedAstrometryInvalidationRevision) != 0
                 ? await OperatorService.GetCurrentLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false)
                 : await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
+            return await ValidateMeasuredLayersAsync(captureId, result, bounded.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -623,6 +624,16 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             return OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
                 "Structured layers are temporarily unavailable.");
         }
+    }
+
+    private ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> ValidateMeasuredLayersAsync(Guid captureId,
+        OperatorUiResult<CameraAgentLayeredPresentation> result, CancellationToken cancellation)
+    {
+        var value = result.Value;
+        return value is not null && (value.Astrometry?.Solution?.Assessment.HasMeasuredMapping == true ||
+            value.Layers.Any(layer => layer.Kind is AstrometricDiagnosticPresentation.AssociationsLayer or AstrometricDiagnosticPresentation.ResidualsLayer))
+            ? ValidateAstrometryPublicationAsync(captureId, result, value.Astrometry, cancellation)
+            : ValueTask.FromResult(result);
     }
 
     private void ApplyLayerResult(Guid captureId, long generation, OperatorUiResult<CameraAgentLayeredPresentation> result)
@@ -1366,13 +1377,19 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     public Task ViewerClosedAsync()
     {
         if (_disposeStarted != 0) return Task.CompletedTask;
-        return InvokeAsync(() =>
+        return InvokeAsync(async () =>
         {
             _viewerOpen = false;
             var pending = _deferredLayers;
             _deferredLayers = null;
-            if (pending is { } result) ApplyLayerResult(result.CaptureId, result.Generation, result.Result);
-            StateHasChanged();
+            if (pending is { } result && _layerCancellation is { IsCancellationRequested: false } layerLifetime)
+            {
+                using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+                using var bounded = CancellationTokenSource.CreateLinkedTokenSource(layerLifetime.Token, deadline.Token);
+                var validated = await ValidateMeasuredLayersAsync(result.CaptureId, result.Result, bounded.Token);
+                ApplyLayerResult(result.CaptureId, result.Generation, validated);
+            }
+            if (_disposeStarted == 0) StateHasChanged();
         });
     }
 
