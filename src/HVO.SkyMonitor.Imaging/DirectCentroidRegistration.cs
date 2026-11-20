@@ -57,80 +57,88 @@ public static class DirectCentroidRegistration
             return Failure(DirectRegistrationStatus.InsufficientCentroids);
         }
 
-        // Partition the reference detections before searching. The holdout never selects, tunes or ranks a fit.
-        // Endpoints used to fit the winning map are also barred from the source holdout.
-        var training = references.Where((_, index) => index % 3 != 1).ToArray();
-        var heldOut = references.Where((_, index) => index % 3 == 1).ToArray();
+        // Freeze both holdouts before generating, testing or comparing hypotheses.
+        // A coarse annulus keeps membership stable under ordinary small field drift when enough detections exist.
+        // Sparse fields use a fixed rank split and fail closed if brightness changes leave too little shared support.
+        var dense = Math.Min(sources.Length, references.Length) > FeatureLimit;
+        var (training, heldOut) = Partition(references, width, height, dense);
+        var (sourceTraining, sourceHeldOut) = Partition(sources, width, height, dense);
         var referencePairs = Pairs(training, Math.Min(width, height) * .12);
-        var sourcePairs = Pairs(sources, Math.Min(width, height) * .12);
+        var sourcePairs = Pairs(sourceTraining, Math.Min(width, height) * .12);
         var hits = new Match[FeatureLimit];
         var refinedHits = new Match[FeatureLimit];
         Candidate? best = null;
-        Candidate? alternate = null;
-        foreach (var referencePair in referencePairs)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            foreach (var sourcePair in sourcePairs)
-            {
-                var scale = referencePair.Distance / sourcePair.Distance;
-                if (scale is < MinimumScale or > MaximumScale)
-                {
-                    continue;
-                }
-                Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second);
-                Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second);
-            }
-        }
+        _ = Search(compareAgainstWinner: false);
 
         if (best is null)
         {
             return Failure(DirectRegistrationStatus.NoDirectMatch);
         }
-        if (alternate is not null && alternate.Fit.Length >= best.Fit.Length - 1)
-        {
-            return Failure(DirectRegistrationStatus.AmbiguousMatch, best.Fit);
-        }
-
         var trainingStatus = Check(best.Fit, width, height, MinimumFitCount, .50);
         if (trainingStatus != DirectRegistrationStatus.Verified)
         {
             return Failure(trainingStatus, best.Fit);
         }
-        var used = best.Fit.Select(match => match.Source.Index).ToHashSet();
-        var remaining = sources.Where(point => !used.Contains(point.Index)).ToArray();
-        var count = MatchPoints(best.Map, remaining, heldOut, hits);
+        if (Search(compareAgainstWinner: true))
+        {
+            return Failure(DirectRegistrationStatus.AmbiguousMatch, best.Fit);
+        }
+
+        var count = MatchPoints(best.Map, sourceHeldOut, heldOut, hits);
         var verification = hits.AsSpan(0, count);
         var status = Check(verification, width, height, MinimumVerificationCount, .55);
         var report = Report(status, best.Fit, verification);
         cancellationToken.ThrowIfCancellationRequested();
         return new(status == DirectRegistrationStatus.Verified ? best.Map : null, report);
 
-        void Consider(StellarDetection sourceFirst, StellarDetection sourceSecond,
-            StellarDetection referenceFirst, StellarDetection referenceSecond)
+        bool Search(bool compareAgainstWinner)
+        {
+            foreach (var referencePair in referencePairs)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                foreach (var sourcePair in sourcePairs)
+                {
+                    var scale = referencePair.Distance / sourcePair.Distance;
+                    if (scale is < MinimumScale or > MaximumScale)
+                    {
+                        continue;
+                    }
+                    if (Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second, compareAgainstWinner) ||
+                        Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second, compareAgainstWinner))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        bool Consider(StellarDetection sourceFirst, StellarDetection sourceSecond,
+            StellarDetection referenceFirst, StellarDetection referenceSecond, bool compareAgainstWinner)
         {
             var seed = Seed(sourceFirst.Pixel, sourceSecond.Pixel, referenceFirst.Pixel, referenceSecond.Pixel);
-            var count = MatchPoints(seed, sources, training, hits);
+            var count = MatchPoints(seed, sourceTraining, training, hits);
             if (count < MinimumFitCount)
             {
-                return;
+                return false;
             }
             var refined = Refine(hits.AsSpan(0, count));
             var scaleSquared = refined.A * refined.A + refined.B * refined.B;
             if (!double.IsFinite(scaleSquared) || scaleSquared is < MinimumScale * MinimumScale or > MaximumScale * MaximumScale)
             {
-                return;
+                return false;
             }
-            var refinedCount = MatchPoints(refined, sources, training, refinedHits);
+            var refinedCount = MatchPoints(refined, sourceTraining, training, refinedHits);
             if (refinedCount != count)
             {
-                return;
+                return false;
             }
             for (var index = 0; index < count; index++)
             {
                 if (refinedHits[index].Source.Index != hits[index].Source.Index ||
                     refinedHits[index].Reference.Index != hits[index].Reference.Index)
                 {
-                    return;
+                    return false;
                 }
             }
             var matches = refinedHits.AsSpan(0, count);
@@ -146,29 +154,18 @@ public static class DirectCentroidRegistration
             // Neither endpoint of the winning training seed is eligible for verification.
             if (!usedFirst || !usedSecond)
             {
-                return;
+                return false;
+            }
+            if (compareAgainstWinner)
+            {
+                return count >= best!.Fit.Length - 1 && Distinct(refined, best.Map, width, height) &&
+                    Check(matches, width, height, MinimumFitCount, .50) == DirectRegistrationStatus.Verified;
             }
             if (Better(count, error, best))
             {
-                var previous = best;
                 best = new(refined, matches.ToArray(), error);
-                if (previous is not null && Distinct(refined, previous.Map, width, height))
-                {
-                    if (alternate is null || !Distinct(refined, alternate.Map, width, height) ||
-                        Better(previous.Fit.Length, previous.SquaredError, alternate))
-                    {
-                        alternate = previous;
-                    }
-                }
-                else if (alternate is not null && !Distinct(refined, alternate.Map, width, height))
-                {
-                    alternate = null;
-                }
             }
-            else if (best is not null && Better(count, error, alternate) && Distinct(refined, best.Map, width, height))
-            {
-                alternate = new(refined, matches.ToArray(), error);
-            }
+            return false;
         }
     }
 
@@ -179,7 +176,9 @@ public static class DirectCentroidRegistration
         ArgumentNullException.ThrowIfNull(map);
         cancellationToken.ThrowIfCancellationRequested();
         var hits = new Match[FeatureLimit];
-        var count = MatchPoints(map, Select(source, width, height), Select(reference, width, height), hits);
+        var sources = Select(source, width, height).Take(FeatureLimit).ToArray();
+        var references = Select(reference, width, height).Take(FeatureLimit).ToArray();
+        var count = MatchPoints(map, sources, references, hits);
         var verification = hits.AsSpan(0, count);
         var status = Check(verification, width, height, MinimumFitCount + MinimumVerificationCount, .55);
         cancellationToken.ThrowIfCancellationRequested();
@@ -199,8 +198,24 @@ public static class DirectCentroidRegistration
                 point.Pixel.X >= .5 && point.Pixel.X <= width - .5 && point.Pixel.Y >= .5 && point.Pixel.Y <= height - .5)
             .OrderByDescending(point => point.Flux)
             .ThenBy(point => point.Index)
-            .Take(FeatureLimit)
             .ToArray();
+    }
+
+    private static (StellarDetection[] Training, StellarDetection[] Holdout) Partition(
+        StellarDetection[] points, int width, int height, bool dense)
+    {
+        if (!dense)
+        {
+            var selected = points.Take(FeatureLimit).ToArray();
+            return (selected.Where((_, index) => index % 3 != 1).ToArray(),
+                selected.Where((_, index) => index % 3 == 1).ToArray());
+        }
+        var center = new PixelPoint(width / 2.0, height / 2.0);
+        var radius = .33 * Math.Min(width, height);
+        var inner = (radius - 1) * (radius - 1);
+        var outer = (radius + 1) * (radius + 1);
+        return (points.Where(point => DistanceSquared(point.Pixel, center) < inner).Take(FeatureLimit).ToArray(),
+            points.Where(point => DistanceSquared(point.Pixel, center) > outer).Take(FeatureLimit).ToArray());
     }
 
     private static List<Pair> Pairs(StellarDetection[] points, double minimumLength)

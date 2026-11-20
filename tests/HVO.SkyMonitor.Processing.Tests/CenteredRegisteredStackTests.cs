@@ -233,7 +233,7 @@ public sealed class CenteredRegisteredStackTests
         var contributors = new[] { first.Pin.Linear.ArtifactId, center.Pin.Linear.ArtifactId, last.Pin.Linear.ArtifactId };
         foreach (var plane in planes)
         {
-            CollectionAssert.AreEqual(contributors, plane.SourceArtifactIds.ToArray());
+            CollectionAssert.AreEqual(contributors, plane.SourceArtifactIds.ToArray(), Describe(evidence));
         }
         Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, evidence.Sources[1].Method, Describe(evidence));
         Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, evidence.Sources[4].Method, Describe(evidence));
@@ -364,7 +364,9 @@ public sealed class CenteredRegisteredStackTests
             rawDescriptor.Artifact.MediaType, layout, pixels, end, integration, Compatible, sequence, [],
             time, end, new(10, 0, -10))
         {
-            CaptureId = rawSource.CaptureId, DescriptorIdentitySha256 = rawSource.DescriptorSha256, RecipeDescriptor = RawRecipe
+            CaptureId = rawSource.CaptureId,
+            DescriptorIdentitySha256 = rawSource.DescriptorSha256,
+            RecipeDescriptor = RawRecipe
         };
         var reference = calibrate ? ReferenceCalibration(raw) : null;
         var linearProduct = await Produce(reference ?? new(BuiltInProcessingRecipes.LinearNormalization, default,
@@ -481,11 +483,18 @@ public sealed class CenteredRegisteredStackTests
     private static ProcessingArtifact Artifact(ProcessingProduct product, ProcessingArtifact raw) =>
         raw with
         {
-            ArtifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256), Role = product.Role,
-            Variant = product.Variant, RecipeIdentitySha256 = product.Recipe.IdentitySha256,
-            MediaType = product.MediaType, Layout = product.Layout, Payload = product.Payload,
-            SourceArtifactIds = product.SourceArtifactIds, ProductKind = product.Kind, SchemaVersion = product.SchemaVersion,
-            ContentIdentitySha256 = product.ContentIdentitySha256, RecipeDescriptor = product.Recipe.Descriptor,
+            ArtifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256),
+            Role = product.Role,
+            Variant = product.Variant,
+            RecipeIdentitySha256 = product.Recipe.IdentitySha256,
+            MediaType = product.MediaType,
+            Layout = product.Layout,
+            Payload = product.Payload,
+            SourceArtifactIds = product.SourceArtifactIds,
+            ProductKind = product.Kind,
+            SchemaVersion = product.SchemaVersion,
+            ContentIdentitySha256 = product.ContentIdentitySha256,
+            RecipeDescriptor = product.Recipe.Descriptor,
             DescriptorIdentitySha256 = MeasuredAstrometryFixture.Hash(product.OutputIdentitySha256)
         };
 

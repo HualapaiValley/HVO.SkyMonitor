@@ -25,9 +25,20 @@ public sealed record CenteredStackArtifactPin(Guid ArtifactId, string ProducerSh
             ProcessingIdentity.ComputePayloadSha256(artifact.Payload), artifact.DescriptorIdentitySha256, artifact.ContentIdentitySha256,
             ProcessingIdentity.ComputePayloadSha256(CenteredStackPlanV1.Serialize(new
             {
-                artifact.Role, artifact.Variant, artifact.MediaType, artifact.Layout, artifact.CaptureId, artifact.CaptureSequence,
-                artifact.Integration, artifact.ObservationStartedUtc, artifact.ObservationEndedUtc, artifact.Conditions,
-                artifact.Compatibility, artifact.SourceArtifactIds, artifact.ProductKind, artifact.SchemaVersion
+                artifact.Role,
+                artifact.Variant,
+                artifact.MediaType,
+                artifact.Layout,
+                artifact.CaptureId,
+                artifact.CaptureSequence,
+                artifact.Integration,
+                artifact.ObservationStartedUtc,
+                artifact.ObservationEndedUtc,
+                artifact.Conditions,
+                artifact.Compatibility,
+                artifact.SourceArtifactIds,
+                artifact.ProductKind,
+                artifact.SchemaVersion
             })));
     }
 

@@ -192,8 +192,10 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
             resolved[slot] = loaded.Exposure;
             decisions[slot] = decisions[slot] with
             {
-                Reason = loaded.Reason, Plate = PlateEvidence(loaded.Exposure?.Plate),
-                MeasurementStatus = loaded.Exposure?.MeasurementStatus, MeasurementReason = loaded.Exposure?.MeasurementReason
+                Reason = loaded.Reason,
+                Plate = PlateEvidence(loaded.Exposure?.Plate),
+                MeasurementStatus = loaded.Exposure?.MeasurementStatus,
+                MeasurementReason = loaded.Exposure?.MeasurementReason
             };
         }
         var reference = resolved[2];
@@ -260,7 +262,10 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
             {
                 decisions[slot] = decisions[slot] with
                 {
-                    Reason = CenteredRegistrationReason.NoSharedSupport, Method = null, Similarity = null, SupportedPixels = 0
+                    Reason = CenteredRegistrationReason.NoSharedSupport,
+                    Method = null,
+                    Similarity = null,
+                    SupportedPixels = 0
                 };
             }
         }

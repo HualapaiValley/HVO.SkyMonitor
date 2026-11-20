@@ -92,6 +92,12 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         {
             throw new InvalidDataException("Invalid retained registration evidence.");
         }
+        var expectedLineage = evidence.Plan.Slots.Select(slot => slot.Exposure).OfType<CenteredStackExposurePin>()
+            .SelectMany(CenteredStackPlanV1.Pins).Select(pin => pin.ArtifactId);
+        if (!retained.SourceArtifactIds.SequenceEqual(expectedLineage) || retained.TotalIntegration.Ticks != evidence.TotalIntegrationTicks)
+        {
+            throw new InvalidDataException("Retained registration lineage or integration differs from its plan.");
+        }
         evidence.ValidateMembership();
         return evidence;
     }
@@ -185,7 +191,9 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
                     (index == 2 && source.Reason == CenteredRegistrationReason.Contributed) ||
                 (source.Method == CenteredRegistrationMethod.VerifiedCentroidSimilarity) != source.Similarity.HasValue ||
                 source.Method == CenteredRegistrationMethod.VerifiedPlatePair && source.Plate is null ||
-                source.Method.HasValue && slot.Exposure is null)
+                source.Method.HasValue && (slot.Exposure is null || source.SupportedPixels <= 0) ||
+                source.Method is null && source.SupportedPixels != 0 ||
+                source.SupportedPixels > (long)Width * Height)
             {
                 throw new InvalidDataException("Invalid registered membership.");
             }
@@ -196,7 +204,12 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         }
         var members = PublishedSlotBits();
         var registered = Disposition == CenteredStackDisposition.Registered;
-        if (total != TotalIntegrationTicks ||
+        var contributors = Plan.Slots.Where((_, index) => (members & (1 << index)) != 0).Select(slot => slot.Exposure!).ToArray();
+        var center = Plan.Slots[2].Exposure;
+        var midpoint = center?.ExposureStartedUtc.AddTicks((center.ExposureEndedUtc - center.ExposureStartedUtc).Ticks / 2);
+        if (total != TotalIntegrationTicks || ReferenceMidpointUtc != midpoint ||
+            FirstExposureUtc != contributors.FirstOrDefault()?.ExposureStartedUtc ||
+            LastExposureUtc != contributors.LastOrDefault()?.ExposureEndedUtc ||
             !registered && (Outputs.Count != 0 || ValidPixelCount != 0) ||
             Disposition == CenteredStackDisposition.NoReference && members != 0 ||
             Disposition == CenteredStackDisposition.SingleExposure && members != 4 ||

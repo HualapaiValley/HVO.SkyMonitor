@@ -36,8 +36,11 @@ public static class CenteredStackValidityMask
         return new(ProcessingIdentity.CreateArtifactId(output), FrameArtifactRole.Metadata, SchemaVersion, recipe.IdentitySha256,
             MediaType, null, bytes, linear.CreatedUtc, raw.Integration, linear.Compatibility, raw.CaptureSequence, lineage)
         {
-            CaptureId = raw.CaptureId, ProductKind = ProcessingProductKind.Metadata,
-            SchemaVersion = SchemaVersion, ContentIdentitySha256 = hash, RecipeDescriptor = recipe.Descriptor
+            CaptureId = raw.CaptureId,
+            ProductKind = ProcessingProductKind.Metadata,
+            SchemaVersion = SchemaVersion,
+            ContentIdentitySha256 = hash,
+            RecipeDescriptor = recipe.Descriptor
         };
     }
 

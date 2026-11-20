@@ -120,8 +120,11 @@ internal static class CenteredStackLinearInput
     }
 
     private static bool SupportedLayout(FrameLayoutDescriptor? layout, int payloadLength) =>
-        layout is { Readout: not null, ContainerDepthBits: 16, Packing: FrameSamplePacking.ByteAligned,
-            ByteOrder: FrameByteOrder.LittleEndian, BlackLevel: not null, WhiteLevel: not null } &&
+        layout is
+        {
+            Readout: not null, ContainerDepthBits: 16, Packing: FrameSamplePacking.ByteAligned,
+            ByteOrder: FrameByteOrder.LittleEndian, BlackLevel: not null, WhiteLevel: not null
+        } &&
         layout.PixelFormat is CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16 &&
         layout.Validate().IsValid && layout.ByteLength == payloadLength &&
         layout.StoredCodeTransform != FrameStoredCodeTransform.OpaqueContainerV1 &&
