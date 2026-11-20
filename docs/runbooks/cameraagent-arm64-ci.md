@@ -203,12 +203,16 @@ update interval. Subscribe to `actions/runner` security and release notices.
 
 The hosted x64 catalog job builds the approved HYG 4.2 and standalone OpenNGC
 bundles on `ubuntu-24.04` using the pinned public inputs and repository recipes.
-It runs the approved OpenNGC catalog reader case and the eleven bundle-dependent
-installer and lifecycle cases in Release with Docker disabled. Every expected
-case and data row must report Passed in the retained TRX files. The
+Before archiving the catalog for the native job, the hosted contract phase
+replays the native restore with disposable synthetic fixtures and copies of the
+approved bundles. It verifies same-run retry and refusal of changed database
+bytes even with a regenerated transfer ledger. It then runs the approved
+OpenNGC catalog reader case and the eleven bundle-dependent installer and
+lifecycle cases in Release with Docker disabled. Every expected case and data
+row must report Passed in the retained TRX files. The
 `hosted-openngc-contracts-<run-id>-<attempt>` artifact retains all 12 results,
-producer architecture, commit, run and attempt, package identity, source URL,
-build duration, and file SHA-256 checksums.
+the restore replay log, producer architecture, commit, run and attempt,
+package identity, source URL, build duration, and file SHA-256 checksums.
 
 The native job downloads the catalog artifact from the same workflow run and
 checks its run ID and commit. The bundled SHA-256 ledger checks transfer

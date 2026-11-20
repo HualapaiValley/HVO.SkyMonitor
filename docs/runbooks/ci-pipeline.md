@@ -819,10 +819,14 @@ responsibility in [CameraAgent ARM64 CI Runner](cameraagent-arm64-ci.md#workload
 There is no pull-request trigger; the advisory is not aggregated by `Required CI`.
 
 The hosted x64 job builds the approved HYG 4.2 and standalone OpenNGC bundles
-from pinned public inputs. It requires 12 focused passing OpenNGC results with
-Docker disabled, one catalog reader case and eleven installer and lifecycle
-cases. The `hosted-openngc-contracts-<run-id>-<attempt>` artifact retains the TRX
-files, producer metadata and checksum ledger for 30 days.
+from pinned public inputs. Before archiving the catalog for native transfer, it
+replays the native restore with synthetic fixtures and copies of the approved
+bundles. The replay checks same-run retry and refusal of changed database bytes
+with a regenerated transfer ledger. The job also requires 12 focused passing
+OpenNGC results with Docker disabled, one catalog reader case and eleven
+installer and lifecycle cases. The
+`hosted-openngc-contracts-<run-id>-<attempt>` artifact retains the restore replay
+log, TRX files, producer metadata and checksum ledger for 30 days.
 
 The native job checks the restored artifact's run ID and commit. The bundled
 SHA-256 ledger checks transfer integrity. Before exporting the test bundle

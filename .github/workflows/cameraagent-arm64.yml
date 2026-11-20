@@ -71,9 +71,10 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-      - name: Run hosted OpenNGC catalog, installer, and lifecycle contracts
+      - name: Run hosted OpenNGC restore, catalog, installer, and lifecycle contracts
         id: openngc-contracts
         timeout-minutes: 5
+        shell: bash
         env:
           HVO_PRODUCTION_CATALOG_BUNDLE: ${{ runner.temp }}/hyg-v42-contracts/build/hyg-v4.2-p3-s2-r1.bundle
           HVO_OPENNGC_CATALOG_BUNDLE: ${{ runner.temp }}/hyg-v42-contracts/openngc/openngc-v20260501-p6-s5-r1.bundle
@@ -81,6 +82,11 @@ jobs:
           evidence="$RUNNER_TEMP/openngc-contract-evidence"
           mkdir -p "$evidence"
           cp "$RUNNER_TEMP/hyg-v42-contracts/"{openngc-fixture.json,openngc.sha256} "$evidence/"
+          python3 -m pip install --require-hashes --only-binary=:all: --no-deps \
+            --target "$RUNNER_TEMP/hvo-pyyaml" -r scripts/ci/pyyaml-requirements.txt
+          PYTHONPATH="$RUNNER_TEMP/hvo-pyyaml" ./scripts/test:cameraagent-arm64-restore \
+            --pinned-bundles "$HVO_PRODUCTION_CATALOG_BUNDLE" "$HVO_OPENNGC_CATALOG_BUNDLE" \
+            2>&1 | tee "$evidence/arm64-restore-replay.log"
           ./scripts/test:openngc-contracts "$evidence"
       - name: Upload hosted OpenNGC contract evidence
         if: ${{ !cancelled() && (steps.openngc-contracts.outcome == 'success' || steps.openngc-contracts.outcome == 'failure') }}
