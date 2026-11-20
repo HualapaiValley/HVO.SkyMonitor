@@ -96,7 +96,8 @@ internal sealed partial class SqliteCaptureProcessingStore
     private static bool HasSceneCompatibilityNameFor(ProcessingGraphRevisionState state, string sourceId)
     {
         if (state.Name is not (ProcessingGraphOperationsCoordinator.VirtualSkySceneCompatibilityGraphName or
-                ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName))
+                ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName or
+                ProcessingGraphOperationsCoordinator.AstrometryConsumerCompatibilityGraphName))
             return false;
 
         var name = state.Revision.AsSpan();

@@ -21,6 +21,7 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("annotation-occupied-prediction")]
     [DataRow("storage")]
     [DataRow("storage-fit-failure")]
+    [DataRow("historical-storage-telemetry-plan")]
     [DataRow("isolated")]
     [DataRow("annotation-preset")]
     [DataRow("annotation-occupied-prediction-storage-preset")]
@@ -39,7 +40,8 @@ public sealed partial class ProcessingGraphOperationsTests
         var configurePreset = consumer == "annotation-preset" || combined;
         var sharedAssociations = consumer == "annotation" || configurePreset || occupiedPrediction;
         var failedFit = consumer == "storage-fit-failure";
-        var sharedFit = consumer == "storage" || failedFit || combined;
+        var historicalPlan = consumer == "historical-storage-telemetry-plan";
+        var sharedFit = consumer == "storage" || failedFit || combined || historicalPlan;
         var fitMeasurementId = sharedAssociations ? measurementId + "-1" : measurementId;
         var archiveRoot = Path.Combine(root, "archive");
         var requestedUtc = new DateTimeOffset(2026, 11, 20, 3, 0, 0, TimeSpan.Zero);
@@ -153,6 +155,13 @@ public sealed partial class ProcessingGraphOperationsTests
                 storage with { DependsOn = sharedFit ? ["projected-scene", "annotation", "fit"] : ["projected-scene", "annotation"] }
             ]
         };
+        if (historicalPlan)
+        {
+            legacy = legacy with
+            {
+                Steps = [.. legacy.Steps, new("Telemetry", "telemetry", DependsOn: ["archive", "fit"])]
+            };
+        }
         void AddCaptureServices(IServiceCollection services)
         {
             services.AddSingleton(installedCatalog.Object);
@@ -174,8 +183,18 @@ public sealed partial class ProcessingGraphOperationsTests
             Guid rawId;
             byte[] successorPipeline;
             string? previousId = null;
+            Guid? offCadenceCaptureId = null;
+            ProcessingGraphRevisionSnapshot? predecessorRevision = null;
             var replayOutputs = new Dictionary<string, DurableProcessingOutput>(StringComparer.Ordinal);
-            using (var provider = CreateProvider(root, configureServices: AddCaptureServices))
+            using (var provider = CreateProvider(root, configureServices: services =>
+            {
+                AddCaptureServices(services);
+                if (historicalPlan)
+                {
+                    services.AddSingleton<ICaptureProcessingPipelineFactory>(services =>
+                        new HistoricalAstrometryPlanFactory(ActivatorUtilities.CreateInstance<CaptureProcessingPipelineFactory>(services)));
+                }
+            }))
             {
                 var ingress = provider.GetRequiredService<IRawCaptureIngress>();
                 await ingress.InitializeAsync(token).ConfigureAwait(false);
@@ -218,7 +237,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 var successor = await store.ReadRevisionAsync(liveId, token).ConfigureAwait(false);
                 successorPipeline = successor.PipelineJson;
                 var fit = successor.Pipeline.Steps.Single(step => step.Id == "fit");
-                Assert.AreEqual(sharedAssociations ? 8 : 7, successor.Pipeline.Steps.Count);
+                Assert.AreEqual((sharedAssociations ? 8 : 7) + (historicalPlan ? 1 : 0), successor.Pipeline.Steps.Count);
                 CollectionAssert.AreEqual(new[] { predictionId, fitMeasurementId }, fit.DependsOn!.ToArray());
                 var predictionStep = successor.Pipeline.Steps.Single(step => step.Id == predictionId);
                 Assert.AreEqual(occupiedPrediction, predictionStep.Options!.Value.TryGetProperty("outputVariant", out _));
@@ -316,8 +335,21 @@ public sealed partial class ProcessingGraphOperationsTests
                 {
                     await CheckCadenceEvidenceAsync(provider, receipt,
                         failedFit ? DurableProcessingNodeStatus.TerminalFailure : DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
-                    if (!combined)
-                        await CaptureCadenceFrameAsync(provider, module, liveId, 2).ConfigureAwait(false);
+                    if (historicalPlan)
+                    {
+                        // Select the predecessor's already migrated graph as a named revision before restarting.
+                        registry = await operations.ActivateRevisionAsync(liveId, registry.StateVersion,
+                            "predecessor-activate", "test", null, token).ConfigureAwait(false);
+                        activeId = registry.ActiveRevisionId;
+                        Assert.AreEqual(liveId, activeId);
+                        predecessorRevision = await store.ReadRevisionAsync(liveId, token).ConfigureAwait(false);
+                        replayOutputs.Add("fit", await ReadOutputAsync("fit", BuiltInProcessingRecipes.MeasuredAstrometry).ConfigureAwait(false));
+                    }
+                    else if (!combined)
+                    {
+                        var offCadence = await CaptureCadenceFrameAsync(provider, module, liveId, 2).ConfigureAwait(false);
+                        offCadenceCaptureId = offCadence.Manifest.Descriptor.Capture.CaptureId;
+                    }
                 }
 
                 async Task<DurableProcessingOutput> ReadOutputAsync(string nodeId, string? recipe = null)
@@ -332,18 +364,38 @@ public sealed partial class ProcessingGraphOperationsTests
                     => await File.ReadAllBytesAsync(Path.Combine(root, (await ReadOutputAsync(nodeId, recipe).ConfigureAwait(false)).PayloadRelativePath), token)
                         .ConfigureAwait(false);
             }
+            if (historicalPlan)
+                await UsePreviousAstrometryLookupSchemaAsync(root, token).ConfigureAwait(false);
             string? presetReceipt = null;
             using (var restarted = CreateProvider(root, configureServices: sharedFit || occupiedPrediction || configurePreset ? AddCaptureServices : null))
             {
                 await restarted.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
                 var reopened = restarted.GetRequiredService<ProcessingGraphOperationsCoordinator>();
                 var selected = await reopened.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
-                Assert.AreEqual(liveId, selected.State.RevisionId);
+                if (historicalPlan)
+                {
+                    Assert.AreNotEqual(liveId, selected.State.RevisionId);
+                    Assert.AreEqual(ProcessingGraphOperationsCoordinator.AstrometryConsumerCompatibilityGraphName, selected.State.Name);
+                }
+                else Assert.AreEqual(liveId, selected.State.RevisionId);
                 CollectionAssert.AreEqual(successorPipeline, selected.PipelineJson);
                 var reopenedRegistry = await reopened.GetRegistryAsync(token).ConfigureAwait(false);
                 Assert.AreEqual(activeId, reopenedRegistry.ActiveRevisionId);
+                if (historicalPlan)
+                {
+                    await AssertHistoricalAstrometryReplayAsync(restarted, predecessorRevision!, captureId, rawId,
+                        replayOutputs["fit"], token).ConfigureAwait(false);
+                    var module = CreateModule(restarted, requestedUtc.AddSeconds(2));
+                    await using var moduleLifetime = module.ConfigureAwait(false);
+                    await module.InitializeAsync(configuration, token).ConfigureAwait(false);
+                    var offCadence = await CaptureCadenceFrameAsync(restarted, module, selected.State.RevisionId, 2).ConfigureAwait(false);
+                    liveId = selected.State.RevisionId;
+                    offCadenceCaptureId = offCadence.Manifest.Descriptor.Capture.CaptureId;
+                }
                 if (consumer == "storage")
                 {
+                    await AssertSupplementaryStoragePlanAsync(reopened, selected, offCadenceCaptureId!.Value, token)
+                        .ConfigureAwait(false);
                     var resumedModule = CreateModule(restarted, requestedUtc.AddSeconds(4));
                     await using var resumedLifetime = resumedModule.ConfigureAwait(false);
                     await resumedModule.InitializeAsync(configuration, token).ConfigureAwait(false);
@@ -403,6 +455,17 @@ public sealed partial class ProcessingGraphOperationsTests
                     }
                 }
             }
+            if (historicalPlan)
+            {
+                using var restartedAgain = CreateProvider(root, configureServices: AddCaptureServices);
+                await restartedAgain.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var operations = restartedAgain.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var selected = await operations.SelectLiveRevisionAsync(configuration, retainedCapture: false, token).ConfigureAwait(false);
+                Assert.AreEqual(liveId, selected.State.RevisionId);
+                Assert.AreEqual(activeId, (await operations.GetRegistryAsync(token).ConfigureAwait(false)).ActiveRevisionId);
+                await AssertSupplementaryStoragePlanAsync(operations, selected, offCadenceCaptureId!.Value, token)
+                    .ConfigureAwait(false);
+            }
             if (presetReceipt is not null)
                 await VerifySharedLegacyPresetReceiptAfterRestartAsync(root, configuration,
                     activeId, liveId, presetReceipt, token).ConfigureAwait(false);
@@ -413,7 +476,7 @@ public sealed partial class ProcessingGraphOperationsTests
             Directory.Delete(root, recursive: true);
         }
 
-        async Task CaptureCadenceFrameAsync(ServiceProvider host, VirtualSkyCameraModule camera, string expectedRevisionId, int sequence)
+        async Task<RawCaptureReceipt> CaptureCadenceFrameAsync(ServiceProvider host, VirtualSkyCameraModule camera, string expectedRevisionId, int sequence)
         {
             var utc = requestedUtc.AddSeconds((sequence - 1) * 2);
             // Distinct exposure samples give each capture its own durable outputs.
@@ -423,6 +486,7 @@ public sealed partial class ProcessingGraphOperationsTests
             await CompleteLiveAsync(host, configuration).ConfigureAwait(false);
             await CheckCadenceEvidenceAsync(host, receipt, sequence == 61 ? DurableProcessingNodeStatus.Completed :
                 DurableProcessingNodeStatus.Skipped).ConfigureAwait(false);
+            return receipt;
         }
 
         async Task CheckCadenceEvidenceAsync(ServiceProvider host, RawCaptureReceipt receipt, DurableProcessingNodeStatus expectedFit)
