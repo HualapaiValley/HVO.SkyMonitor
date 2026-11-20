@@ -18,19 +18,35 @@ public sealed partial class CurrentSkyPage
         if (IsArchived || _accessDenied || _disposeStarted != 0 || _latestAstrometryLoading) return;
         _latestAstrometryLoading = true;
         var revision = ++_latestAstrometryRevision;
+        var previous = _latestAstrometry;
         try
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(_lifetime!.Token, deadline.Token);
-            var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token).ConfigureAwait(false);
+            var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token, previous).ConfigureAwait(false);
             await InvokeAsync(() =>
             {
                 _latestAstrometryLoading = false;
                 if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                 if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied || IsArchived) return;
-                var completed = result.IsSuccess && !bounded.IsCancellationRequested;
+                var read = result.Value;
+                if (read?.PreviousSummaryQuarantined == true && previous is not null)
+                {
+                    _latestAstrometry = null;
+                    if (MatchesPrevious(_layers?.Astrometry, previous))
+                    {
+                        // Discard the composed measured overlays and reload the same image's retained layers.
+                        ResetLayers(previous.CaptureId, _lifetime.Token);
+                        TryLoadLayers(previous.CaptureId);
+                    }
+                    else if (MatchesPrevious(_astrometry, previous))
+                    {
+                        ApplyAstrometry(previous.CaptureId, new(previous.CaptureId, "Unavailable", "retained-evidence-invalid"));
+                    }
+                }
+                var completed = read?.Completed == true && result.IsSuccess && !bounded.IsCancellationRequested;
                 _latestAstrometryReadSucceeded = completed;
-                if (completed) _latestAstrometry = result.Value;
+                if (completed) _latestAstrometry = read!.Summary;
                 StateHasChanged();
             });
         }
@@ -45,6 +61,10 @@ public sealed partial class CurrentSkyPage
             });
         }
     }
+
+    private static bool MatchesPrevious(CameraAgentRetainedAstrometry? value, CameraAgentLatestAstrometry previous)
+        => value is not null && value.CaptureId == previous.CaptureId && value.ArtifactId == previous.ArtifactId &&
+            string.Equals(value.SolutionIdentitySha256, previous.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
     private bool _astrometryLoading;
     private long _astrometryReadRevision;

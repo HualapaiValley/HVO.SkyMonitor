@@ -67,13 +67,18 @@ public sealed record CameraAgentLatestAstrometry(Guid CaptureId, Guid ArtifactId
     private sealed record ScaleSample(PixelPoint Pixel, AstrometricLocalPixelScale Scale, string Label);
 }
 
-public sealed record CameraAgentLatestAstrometryRead(bool Completed, CameraAgentLatestAstrometry? Summary = null);
+public sealed record CameraAgentLatestAstrometryRead(bool Completed, CameraAgentLatestAstrometry? Summary = null)
+{
+    public bool PreviousSummaryQuarantined { get; init; }
+}
 
 public interface ICameraAgentRetainedAstrometryService
 {
     ValueTask<CameraAgentLatestAstrometry?> GetLatestAcceptedAsync(CancellationToken cancellationToken) => ValueTask.FromResult<CameraAgentLatestAstrometry?>(null);
     async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CancellationToken cancellationToken)
         => new(true, await GetLatestAcceptedAsync(cancellationToken).ConfigureAwait(false));
+    ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CameraAgentLatestAstrometry? previousSummary,
+        CancellationToken cancellationToken) => ReadLatestAcceptedAsync(cancellationToken);
     ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken);
 }
 
@@ -109,6 +114,30 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
     public async ValueTask<CameraAgentLatestAstrometry?> GetLatestAcceptedAsync(CancellationToken cancellationToken)
         => (await ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false)).Summary;
+
+    public async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CameraAgentLatestAstrometry? previousSummary,
+        CancellationToken cancellationToken)
+    {
+        if (previousSummary is null) return await ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
+
+        var quarantined = false;
+        try
+        {
+            // An interrupted candidate search cannot undo a durable decision about the displayed assessment.
+            quarantined = await store.IsAstrometryQuarantinedAsync(previousSummary.CaptureId, previousSummary.ArtifactId,
+                previousSummary.SolutionIdentitySha256, cancellationToken).ConfigureAwait(false);
+            var read = await ReadLatestAcceptedAsync(cancellationToken).ConfigureAwait(false);
+            return quarantined ? read with { PreviousSummaryQuarantined = true } : read;
+        }
+        catch (OperationCanceledException) when (quarantined)
+        {
+            return new(false) { PreviousSummaryQuarantined = true };
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
+        {
+            return new(false) { PreviousSummaryQuarantined = quarantined };
+        }
+    }
 
     public async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CancellationToken cancellationToken)
     {

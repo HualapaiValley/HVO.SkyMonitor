@@ -47,7 +47,7 @@ public sealed partial class DurableCaptureProcessingTests
             bool callerCanceledWhileSeedPaused;
             CameraAgentLatestAstrometry? expected;
             using var retryDeadline = new CancellationTokenSource();
-            Task<OperatorUiResult<CameraAgentLatestAstrometry?>>? retry = null;
+            Task<OperatorUiResult<CameraAgentLatestAstrometryRead>>? retry = null;
             try
             {
                 await pause.Entered.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
@@ -84,7 +84,7 @@ public sealed partial class DurableCaptureProcessingTests
             }
             var next = await retry.ConfigureAwait(false);
             Assert.IsTrue(next.IsSuccess, next.Message);
-            Assert.AreEqual(expected, next.Value);
+            Assert.AreEqual(expected, next.Value?.Summary);
             Console.WriteLine($"Retry verified the same solution after {clock.Elapsed.TotalMilliseconds:F0} ms; materialized captures: {string.Join(", ", pause.Rows)}.");
             Assert.HasCount(2, pause.Rows, "The original seed must finish without reading any row twice.");
             Assert.IsTrue(callerCanceledWhileSeedPaused, "A page deadline must release the caller even if SQLite has not returned.");

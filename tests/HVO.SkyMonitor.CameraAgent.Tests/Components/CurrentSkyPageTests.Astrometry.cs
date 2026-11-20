@@ -56,7 +56,7 @@ public sealed partial class CurrentSkyPageTests
         };
     }
 
-    private static CameraAgentCurrentImagePresentation AstrometryImage(CameraAgentRetainedAstrometry evidence)
+    internal static CameraAgentCurrentImagePresentation AstrometryImage(CameraAgentRetainedAstrometry evidence)
     {
         var p = OperatorUiTestData.CurrentImage();
         var frame = evidence.Solution!.Assessment.Frame;
