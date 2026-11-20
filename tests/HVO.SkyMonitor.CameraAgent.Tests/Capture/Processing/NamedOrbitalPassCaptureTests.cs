@@ -759,7 +759,7 @@ public sealed class NamedOrbitalPassCaptureTests
                         }
                     });
                 }
-                if (!bundledTime && number == "56838" && index == 3)
+                if (number == "56838" && index == 3)
                 {
                     // Compatible projection/time from retained virtual-camera/tracks/starlink-56838/track-03.json.
                     Assert.AreEqual(291.5576252182425, prediction.Samples[0].Pixel!.Value.X, 1e-6);
