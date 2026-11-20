@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -79,6 +80,10 @@ internal static class CameraAgentPipelineOperatorProjection
         if (matches.Length != 1)
         {
             throw new InvalidOperationException("The processing node was not found in the desired graph.");
+        }
+        if (string.Equals(matches[0].Step.Type, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Exposure measurement is a fixed step.");
         }
         var steps = profile.ProcessingSteps.ToArray();
         steps[matches[0].Index] = matches[0].Step with { Enabled = enabled };

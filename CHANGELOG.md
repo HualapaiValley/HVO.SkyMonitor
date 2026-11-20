@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Fixed

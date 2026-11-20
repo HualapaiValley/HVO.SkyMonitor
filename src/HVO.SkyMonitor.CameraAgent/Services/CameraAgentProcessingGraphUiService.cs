@@ -154,6 +154,7 @@ internal sealed record CameraAgentProcessingExecutionDetailView(
     IReadOnlyList<CameraAgentProcessingNodeView> Nodes)
 {
     public string? ManifestUnavailableReason { get; init; } = CameraAgentRunManifest.MissingReason;
+    public ExposureMeasurementRunRead? ExposureMeasurement { get; init; }
 }
 
 /// <summary>A stored graph revision with its immutable definition and the plan it compiles to today.</summary>
@@ -241,7 +242,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     ICameraAgentConfigurationAccessor configurationAccessor,
     CaptureScheduleRuntimeCoordinator? scheduleRuntime,
     TimeProvider timeProvider,
-    ILogger<CameraAgentProcessingGraphUiService> logger) : ICameraAgentProcessingGraphUiService
+    ILogger<CameraAgentProcessingGraphUiService> logger,
+    IExposureMeasurementRunReader? exposureMeasurementReader = null) : ICameraAgentProcessingGraphUiService
 {
     public IReadOnlyList<string> StepAliases => pipelineFactory.StableStepAliases;
 
@@ -271,7 +273,9 @@ internal sealed class CameraAgentProcessingGraphUiService(
             if (read is null) return null;
             return CameraAgentProcessingExecutionProjection.Detail(read.Detail, timeProvider.GetUtcNow()) with
             {
-                ManifestUnavailableReason = ManifestUnavailableReason(read)
+                ManifestUnavailableReason = ManifestUnavailableReason(read),
+                ExposureMeasurement = exposureMeasurementReader is null ? null :
+                    await exposureMeasurementReader.ReadAsync(read.Detail, token).ConfigureAwait(false)
             };
         }, "The execution could not be read.", cancellationToken, "The execution was not found.");
 

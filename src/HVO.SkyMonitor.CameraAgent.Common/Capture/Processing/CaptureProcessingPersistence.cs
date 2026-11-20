@@ -29,7 +29,8 @@ internal sealed partial class CaptureProcessingPersistence(
     IFrameStorageService frameStorage,
     CaptureProcessingTelemetry telemetry,
     ILogger<CaptureProcessingPersistence> logger,
-    ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
+    ICaptureProcessingFaultInjector? faultInjector = null) :
+    IProcessingRetentionHolds, IProcessingOutputExpiration, IExposureMeasurementRunReader
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     internal string StorageRoot => _storageRoot;
@@ -958,7 +959,11 @@ internal sealed partial class CaptureProcessingPersistence(
         }
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
         DecodedImage? encodedImage = null;
-        if (product.Role == FrameArtifactRole.Metadata)
+        if (product.MediaType == ExposureMeasurementProducts.MediaType)
+        {
+            _ = ExposureMeasurementProducts.VerifyRawBinding(ExposureMeasurementProducts.Read(product), sourceDescriptor);
+        }
+        else if (product.Role == FrameArtifactRole.Metadata)
         {
             try
             {
@@ -1217,6 +1222,11 @@ internal sealed partial class CaptureProcessingPersistence(
             SchemaVersion = manifest.ProductSchemaVersion,
             ContentIdentitySha256 = manifest.ContentIdentitySha256
         };
+        if (product.MediaType == ExposureMeasurementProducts.MediaType &&
+            ExposureMeasurementProducts.Read(product).Input.Raw.CaptureId != output.Capture.CaptureId)
+        {
+            throw new InvalidDataException("The exposure measurement differs from the durable capture.");
+        }
         return new RestoredProcessingOutput(
             manifest.Artifact.ArtifactId,
             manifest.Artifact.CreatedUtc,

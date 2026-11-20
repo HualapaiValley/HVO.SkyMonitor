@@ -203,6 +203,8 @@ else
                     <div><dt>Runs on</dt><dd>@(stage.Central ? "LogicHost" : "CameraAgent transient worker")</dd></div>
                     <div><dt>Live state</dt><dd>@StageState(_transients, stage)</dd></div>
                 </dl>
+                @if (!IsExposureMeasurement(selected))
+                {
                 <div class="pipeline-inspector-actions">
                     <a id="pipeline-open-transients" class="button secondary" href="/operations/transients">Open Transients</a>
                 </div>
@@ -243,6 +245,7 @@ else
                     }
                 </div>
                 <p class="ops-inspector-footnote">A change is saved as a new immutable revision and applied at the next capture boundary. Earlier revisions stay available in <a href="/operations/schedule">Schedule</a> for rollback.</p>
+                }
             }
         </aside>
     </section>

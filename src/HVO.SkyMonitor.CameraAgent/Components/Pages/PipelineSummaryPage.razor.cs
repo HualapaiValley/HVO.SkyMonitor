@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -911,11 +912,19 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private static string StepFacts(CaptureProcessingPlanNode node)
         => string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
 
+    private static bool IsExposureMeasurement(CaptureProcessingPlanNode node) =>
+        string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
+
     private static string StepKind(CaptureProcessingPlanNode node)
-        => string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
+        => IsExposureMeasurement(node) ? "Fixed step" :
+            string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
 
     private static string StepDescription(CaptureProcessingPlanNode node)
     {
+        if (IsExposureMeasurement(node))
+        {
+            return "Records raw brightness, measured centroids and half-flux diameter for each exposure as inputs permit.";
+        }
         if (!node.Enabled)
         {
             return "This step is off. It stays in the configured graph and is left out of the effective graph until it is turned back on.";
