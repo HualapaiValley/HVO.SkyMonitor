@@ -294,6 +294,30 @@ public sealed partial class CurrentSkyPageTests
     }
 
     [TestMethod]
+    public async Task BusyHistoryCoalescesRepeatedManualRefreshesWithoutRetryingItsOwnFailure()
+    {
+        using var context = new BunitContext();
+        var service = Configure(context);
+        var pending = new DeferredAstrometryRead<CameraAgentLatestAstrometryRead>();
+        var failed = new OperatorUiResult<CameraAgentLatestAstrometryRead>(OperatorUiResultKind.Unavailable, new(false));
+        var reads = 0;
+        service.LatestAstrometryHandler = (_, _) => Interlocked.Increment(ref reads) == 1
+            ? pending.Read() : ValueTask.FromResult(failed);
+
+        var cut = context.Render<CurrentSkyPage>();
+        await pending.Awaiting.Task.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        for (var click = 0; click < 3; click++)
+            await cut.InvokeAsync(() => cut.Find("button.refresh-link").ClickAsync()).ConfigureAwait(false);
+        Assert.AreEqual(1, Volatile.Read(ref reads));
+
+        await cut.InvokeAsync(() => pending.Complete(failed)).ConfigureAwait(false);
+        cut.WaitForAssertion(() => Assert.AreEqual(2, Volatile.Read(ref reads)));
+        await cut.InvokeAsync(static () => { }).ConfigureAwait(false);
+        Assert.AreEqual(2, Volatile.Read(ref reads));
+        StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent, "temporarily unavailable", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void BusyWithoutAPriorSummaryShowsTemporaryUnavailability()
     {
         using var context = new BunitContext();

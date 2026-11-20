@@ -400,9 +400,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     // Pending selected evidence and the history scan share the raw-read permit. Give the
                     // history scan a chance to finish before starting this tick's optional selected retry.
                     if (previouslyDisplayedCaptureId == _runCaptureId && _layers?.Astrometry is { Solution: null })
-                        _ = RefreshPendingAstrometryAsync(_layerGeneration);
+                        _ = RefreshPendingAstrometryAsync(_layerGeneration, manual);
                     else
-                        _ = LoadLatestAstrometryAsync();
+                        _ = LoadLatestAstrometryAsync(manual);
                 }
                 StateHasChanged();
             }).ConfigureAwait(false);
@@ -623,9 +623,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
     }
 
-    private async Task RefreshPendingAstrometryAsync(long generation)
+    private async Task RefreshPendingAstrometryAsync(long generation, bool manual)
     {
-        await LoadLatestAstrometryAsync();
+        await LoadLatestAstrometryAsync(manual);
         if (generation == _layerGeneration && _layers?.Astrometry is { Solution: null })
             await RefreshMeasuredEvidenceAsync();
     }

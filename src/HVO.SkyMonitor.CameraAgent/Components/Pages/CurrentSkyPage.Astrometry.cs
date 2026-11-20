@@ -12,12 +12,20 @@ public sealed partial class CurrentSkyPage
     private long _retainedAstrometryInvalidationRevision;
     private long _astrometryObservationRevision;
     private bool _latestAstrometryLoading;
+    private bool _latestAstrometryRefreshQueued;
     private bool? _latestAstrometryReadSucceeded;
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional summary reads must not fail the image view.")]
-    private async Task LoadLatestAstrometryAsync()
+    private async Task LoadLatestAstrometryAsync(bool manual = false)
     {
-        if (IsArchived || _accessDenied || _disposeStarted != 0 || _latestAstrometryLoading) return;
+        if (IsArchived || _accessDenied || _disposeStarted != 0) return;
+        if (_latestAstrometryLoading)
+        {
+            _latestAstrometryRefreshQueued |= manual;
+            return;
+        }
+
+        _latestAstrometryRefreshQueued = false;
         _latestAstrometryLoading = true;
         var revision = ++_latestAstrometryRevision;
         var previous = _latestAstrometry;
@@ -29,8 +37,12 @@ public sealed partial class CurrentSkyPage
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(_lifetime!.Token, deadline.Token);
             var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token, previous, selected).ConfigureAwait(false);
-            await InvokeAsync(() => ApplyLatestAstrometryReadAsync(result, previous, selected, selectedRevision,
-                invalidationRevision, revision, bounded.Token));
+            await InvokeAsync(async () =>
+            {
+                await ApplyLatestAstrometryReadAsync(result, previous, selected, selectedRevision,
+                    invalidationRevision, revision, bounded.Token);
+                ReplayQueuedLatestAstrometryRefresh(revision);
+            });
         }
         catch (Exception)
         {
@@ -40,8 +52,17 @@ public sealed partial class CurrentSkyPage
                 _latestAstrometryLoading = false;
                 _latestAstrometryReadSucceeded = false;
                 StateHasChanged();
+                ReplayQueuedLatestAstrometryRefresh(revision);
             });
         }
+    }
+
+    private void ReplayQueuedLatestAstrometryRefresh(long revision)
+    {
+        // Even a successful read can have verified its result before the explicit refresh.
+        // A new read consumes the queued request and takes its own current identities and deadline.
+        if (IsCurrentLatestAstrometryRead(revision) && _latestAstrometryRefreshQueued)
+            _ = LoadLatestAstrometryAsync();
     }
 
     private async Task ApplyLatestAstrometryReadAsync(OperatorUiResult<CameraAgentLatestAstrometryRead> result,

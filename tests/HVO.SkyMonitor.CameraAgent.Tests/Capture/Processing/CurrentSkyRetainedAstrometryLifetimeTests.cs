@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Tests.Services;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Processing.Tests;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -20,6 +21,7 @@ public sealed partial class DurableCaptureProcessingTests
     [DataRow("layer")]
     [DataRow("standalone")]
     [DataRow("unrelated")]
+    [DataRow("unrelated-materialized")]
     [DataRow("repair")]
     public async Task CurrentSkyRejectsOutstandingWorkAfterRetainedFitInvalidation(string scenario)
     {
@@ -37,7 +39,8 @@ public sealed partial class DurableCaptureProcessingTests
             var second = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,
                 reference: await MeasuredAstrometryFixture.CreateAtAsync(20).ConfigureAwait(false), prior: (1, 1)).ConfigureAwait(false);
             var newest = await ProduceLatestReadFixtureAsync(second, store, persistence, telemetry, gate).ConfigureAwait(false);
-            var unrelated = scenario == "unrelated";
+            var holdMaterializedHistory = scenario == "unrelated-materialized";
+            var unrelated = scenario == "unrelated" || holdMaterializedHistory;
             var pendingStandalone = scenario == "standalone";
             var fixture = unrelated ? first : second;
             var selected = unrelated ? older : newest;
@@ -46,7 +49,29 @@ public sealed partial class DurableCaptureProcessingTests
 
             using var artifacts = new CameraAgentArtifactService(first.Fixture.Options, store, new CameraAgentPreviewEncoder());
             using var layerReader = new CameraAgentRetainedAstrometryService(store, artifacts);
-            using var latestReader = new CameraAgentRetainedAstrometryService(store, artifacts);
+            var historyRequests = 0;
+            var historyHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseHistory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var preEvictionResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentLatestAstrometryRead>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            ICameraAgentArtifactService historyArtifacts = artifacts;
+            if (scenario == "unrelated")
+            {
+                var checkpoint = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
+                checkpoint.Setup(reader => reader.OpenContentAsync(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+                    .Returns(async (Guid id, CancellationToken cancellation) =>
+                    {
+                        if (Volatile.Read(ref historyRequests) == 2 && id == newest.Artifact.SourceArtifactIds[0])
+                        {
+                            // The history scan has already chosen its candidate snapshot and acquired the raw permit.
+                            historyHeld.TrySetResult();
+                            await releaseHistory.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                        }
+                        return await artifacts.OpenContentAsync(id, cancellation).ConfigureAwait(false);
+                    });
+                historyArtifacts = checkpoint.Object;
+            }
+            using var latestReader = new CameraAgentRetainedAstrometryService(store, historyArtifacts);
             var layers = new CameraAgentLayeredPresentationService(store, artifacts, persistence: persistence, astrometry: layerReader);
             var service = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(latestReader, layers);
             // Keep the deliberately interleaved selected and headline reads from competing for
@@ -105,8 +130,22 @@ public sealed partial class DurableCaptureProcessingTests
                 heldToken = cancellation;
                 return heldStandalone.Read();
             };
-            ui.LatestAstrometrySelectionHandler = (cancellation, previous, assessment) =>
-                service.GetLatestAcceptedAstrometryAsync(cancellation, previous, assessment);
+            ui.AstrometryPublicationHandler = service.ReadAstrometryPublicationStateAsync;
+            ui.LatestAstrometrySelectionHandler = async (cancellation, previous, assessment) =>
+            {
+                var request = Interlocked.Increment(ref historyRequests);
+                var response = await service.GetLatestAcceptedAstrometryAsync(cancellation, previous, assessment).ConfigureAwait(false);
+                if (unrelated && request == 2)
+                {
+                    preEvictionResponse.TrySetResult(response);
+                    if (holdMaterializedHistory)
+                    {
+                        historyHeld.TrySetResult();
+                        await releaseHistory.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                    }
+                }
+                return response;
+            };
             var page = context.Render<CurrentSkyPage>();
             var timeout = TimeSpan.FromSeconds(8);
             page.WaitForAssertion(() =>
@@ -123,6 +162,7 @@ public sealed partial class DurableCaptureProcessingTests
                 StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent, "mean of date", StringComparison.Ordinal);
                 await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
                 Assert.IsTrue(heldLayer.IsPending);
+                if (unrelated) await historyHeld.Task.WaitAsync(timeout).ConfigureAwait(false);
             }
             else Assert.IsTrue(heldStandalone.IsPending);
 
@@ -150,7 +190,21 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsNull(await store.ReadOutputByArtifactIdAsync(newest.ArtifactId, token).ConfigureAwait(false));
             }
             Assert.IsFalse(File.Exists(asset));
-            await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+            try
+            {
+                await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+                if (unrelated) Assert.AreEqual(2, Volatile.Read(ref historyRequests));
+            }
+            finally { releaseHistory.TrySetResult(); }
+            if (unrelated)
+            {
+                var response = await preEvictionResponse.Task.WaitAsync(timeout).ConfigureAwait(false);
+                Assert.IsNotNull(response.Value);
+                Assert.AreEqual(holdMaterializedHistory, response.Value.Completed);
+                Assert.AreEqual(holdMaterializedHistory ? newest.ArtifactId : (Guid?)null, response.Value.Summary?.ArtifactId);
+                Assert.AreEqual(!holdMaterializedHistory, response.Value.PreviousSummaryEvicted);
+                Assert.IsFalse(response.Value.SelectedAssessmentInvalidated);
+            }
             page.WaitForAssertion(() =>
             {
                 var headline = page.Find(".latest-measured-solution").TextContent;
@@ -161,6 +215,8 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.AreEqual(!unrelated, page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
                 Assert.AreEqual(unrelated ? 1 : 0, page.FindAll(".astrometry-calculator-result").Count);
             }, timeout);
+
+            if (unrelated) Assert.AreEqual(3, Volatile.Read(ref historyRequests));
 
             // Deliver the already captured payload on the renderer, even if its token was canceled.
             // This exercises the continuation guards rather than depending on a cooperative service.
@@ -174,7 +230,7 @@ public sealed partial class DurableCaptureProcessingTests
                 Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"),
                     "Completing pre-invalidation standalone work must not restore an invalidated mapping.");
             }
-            await page.Find("button[title='Show Processed image']").ClickAsync().ConfigureAwait(false);
+            await page.InvokeAsync(() => page.Find("button[title='Show Processed image']").ClickAsync()).ConfigureAwait(false);
             if (!pendingStandalone && !heldToken.IsCancellationRequested)
             {
                 // A live response did not hit the cancellation guard. Wait until the component has applied
