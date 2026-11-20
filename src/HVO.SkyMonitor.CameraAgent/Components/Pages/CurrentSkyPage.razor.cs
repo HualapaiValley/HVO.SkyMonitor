@@ -395,11 +395,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 _refreshDeadlineMessage = null;
                 _initialLoading = false;
                 _refreshing = false;
-                // Optional astrometry can finish after display layers. Poll only an unchanged capture's pending
-                // read; immutable retained assessments (including rejection/budget outcomes) need no polling.
-                if (result.IsSuccess && previouslyDisplayedCaptureId == _runCaptureId &&
-                    _layers?.Astrometry is { Solution: null }) _ = RefreshMeasuredEvidenceAsync();
-                if (result.IsSuccess) _ = LoadLatestAstrometryAsync();
+                if (result.IsSuccess)
+                {
+                    // Pending selected evidence and the history scan share the raw-read permit. Give the
+                    // history scan a chance to finish before starting this tick's optional selected retry.
+                    if (previouslyDisplayedCaptureId == _runCaptureId && _layers?.Astrometry is { Solution: null })
+                        _ = RefreshPendingAstrometryAsync(_layerGeneration);
+                    else
+                        _ = LoadLatestAstrometryAsync();
+                }
                 StateHasChanged();
             }).ConfigureAwait(false);
             if (!_accessDenied && _disposeStarted == 0 && refreshedCaptureId is { } captureId)
@@ -617,6 +621,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
+    }
+
+    private async Task RefreshPendingAstrometryAsync(long generation)
+    {
+        await LoadLatestAstrometryAsync();
+        if (generation == _layerGeneration && _layers?.Astrometry is { Solution: null })
+            await RefreshMeasuredEvidenceAsync();
     }
 
     private async Task RefreshMeasuredEvidenceAsync()
