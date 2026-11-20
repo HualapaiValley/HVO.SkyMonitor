@@ -322,7 +322,14 @@ public sealed class CenteredRegisteredStackTests
         }).ToArray();
         var plan = new CenteredStackPlanV1(Camera, Run, "test-generation", slots[2].CaptureId,
             slots[2].Exposure?.Linear.ArtifactId, Time(center + 3), Time(center + 3), "cadence-test-closure", slots);
-        var reader = new ExactInputs(captures.Select(item => item.Qualified).ToArray());
+        var qualified = captures.Select(item => item.Qualified).ToArray();
+        ICenteredStackInputReader reader = qualified.Any(item => item.MeasurementCalibrationReason is not null)
+            ? new ExactInputs(qualified)
+            : new CenteredStackRetainedInputReader(new ProductBook(qualified), (exposure, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                return ValueTask.FromResult(qualified.SingleOrDefault(item => item.Linear.Exposure.Key == exposure.Key)?.MeasurementGeometry);
+            });
         var artifacts = captures.OrderBy(item => item.Pin.CaptureSequence).SelectMany(item => item.Artifacts()).ToArray();
         return (CenteredRegisteredStackRecipe.CreateRequest(plan, "qualified", "display", artifacts),
             new ProcessingRecipeExecutor([new CenteredRegisteredStackRecipe(reader)]));
@@ -520,6 +527,32 @@ public sealed class CenteredRegisteredStackTests
                 yield return artifact;
             }
         }
+    }
+
+    private sealed class ProductBook(CenteredStackQualifiedExposure[] inputs) : IExposureProductReader
+    {
+        public ValueTask<LinearExposureLookup?> ReadLinearAsync(ExposureKey key, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var qualified = inputs.SingleOrDefault(item => item.Linear.Exposure.Key == key)?.Linear;
+            if (qualified is null)
+            {
+                return ValueTask.FromResult<LinearExposureLookup?>(null);
+            }
+            var provenance = qualified.Provenance;
+            var product = new ExposureProductRef(key, new(Run, "Calibration", "test-linear", qualified.Linear.Variant),
+                provenance.LinearArtifactId, provenance.OutputIdentitySha256, provenance.LinearPayloadSha256, null);
+            return ValueTask.FromResult<LinearExposureLookup?>(new(qualified.Exposure, provenance.Disposition, 1, product, provenance, null));
+        }
+
+        public ValueTask<ExposureInputV1?> ReadExposureAsync(ExposureKey key, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<ExposureProductLookup?> ReadProductAsync(ExposureKey key, ExposureProductSlot slot, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public ValueTask<IReadOnlyList<ExposureProductLookup>> ReadProductsAfterAsync(CameraKey camera, long afterRevision,
+            int maximumCount, CancellationToken cancellationToken) => throw new NotSupportedException();
     }
 
     private sealed class ExactInputs(CenteredStackQualifiedExposure[] inputs) : ICenteredStackInputReader

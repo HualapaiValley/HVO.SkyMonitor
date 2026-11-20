@@ -296,6 +296,10 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         {
             retained = await _reader.ReadLinearAsync(pin.Key, linear, cancellationToken).ConfigureAwait(false);
         }
+        catch (InvalidDataException)
+        {
+            return (null, CenteredRegistrationReason.RetainedInputMismatch);
+        }
         catch (IOException)
         {
             return (null, CenteredRegistrationReason.RetainedInputMissing);
