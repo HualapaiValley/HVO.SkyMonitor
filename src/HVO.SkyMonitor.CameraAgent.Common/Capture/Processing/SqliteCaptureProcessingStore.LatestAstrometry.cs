@@ -56,6 +56,17 @@ internal sealed partial class SqliteCaptureProcessingStore
         }
     }
 
+    // A deadline can prevent another SQL read. Check that the identified capture has no pending or
+    // in-flight change before carrying its known quarantine back to the previous-summary caller.
+    internal bool IsCurrentAstrometrySnapshotForCapture(IReadOnlyList<AstrometryCaptureCandidate> snapshot, Guid captureId)
+    {
+        lock (_astrometryChangesLock)
+        {
+            return ReferenceEquals(snapshot, _astrometryCandidates) && _astrometryCandidateGate.CurrentCount != 0 &&
+                   _changedAstrometryCaptures is { } changes && !changes.Contains(captureId);
+        }
+    }
+
     internal async ValueTask<IReadOnlyList<AstrometryCaptureCandidate>> ReadAstrometryCandidatesAsync(
         CancellationToken cancellationToken)
     {

@@ -24,7 +24,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- Current Sky keeps the initial retained astrometry lookup running across refresh deadlines, resumes the search after an interrupted refresh and keeps selected-image diagnostics available while it checks rejected assessments. A temporary read failure preserves the displayed fit until the reader can verify the latest result again. If the latest fit or one of its required inputs is quarantined, Current Sky shows the next verified fit or clears the summary. #1901
+- Current Sky keeps the initial retained astrometry lookup running across refresh deadlines, resumes the search after an interrupted refresh and keeps selected-image diagnostics available while it checks rejected assessments. A temporary read failure preserves the displayed fit until the reader can verify the latest result again. If the latest fit or one of its required inputs is quarantined, Current Sky shows the next verified fit or clears the summary. Searches keep their progress past confirmed quarantines when a refresh times out. #1901
 
 - Changing the CameraAgent astrometry reference magnitude preserves separate canonical stellar associations, including on legacy VirtualSky graphs that capture through a compatibility revision. #1901
 

@@ -580,6 +580,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (deterministic && unavailable.Any(static output => output.State == "Quarantined"))
+            MarkAstrometryCaptureChanged(captureId);
         return deterministic ? UnavailableNodeResolution.Reexecute : UnavailableNodeResolution.Terminal;
     }
 
@@ -1236,12 +1238,20 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
+            WITH prior AS MATERIALIZED (
+                SELECT output_identity_sha256, availability_state
+                FROM processing_outputs
+                WHERE output_identity_sha256 = $output
+            )
             UPDATE processing_outputs
             SET availability_state = $state, availability_reason = $reason,
                 unavailable_unix_ms = CASE WHEN $state = 'Available' THEN NULL ELSE COALESCE(unavailable_unix_ms, $now) END,
                 quarantine_relative_path = CASE WHEN $state = 'Available' THEN NULL ELSE quarantine_relative_path END
-            WHERE output_identity_sha256 = $output
-            RETURNING CASE WHEN product_schema_version = $astrometry THEN capture_id END;
+            WHERE output_identity_sha256 IN (SELECT output_identity_sha256 FROM prior)
+            RETURNING CASE
+                WHEN (SELECT availability_state FROM prior) <> $state
+                 AND (product_schema_version = $astrometry OR (SELECT availability_state FROM prior) = 'Quarantined')
+                THEN capture_id END;
             """;
         command.Parameters.AddWithValue("$state", state);
         command.Parameters.AddWithValue("$reason", (object?)reason ?? DBNull.Value);
@@ -1439,7 +1449,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             await update.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        if (!unchanged && productSchema == MeasuredAstrometrySolutionV1.CurrentSchemaVersion)
+        if ((!unchanged && productSchema == MeasuredAstrometrySolutionV1.CurrentSchemaVersion) ||
+            (currentState == "Quarantined" && (state != "Quarantined" || deterministic)))
             MarkAstrometryCaptureChanged(Guid.ParseExact(captureId, "N"));
         return new(deterministic);
     }
@@ -1628,15 +1639,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             {
                 using var owner = connection.CreateCommand();
                 owner.Transaction = transaction;
-                owner.CommandText = "SELECT capture_id, node_id, product_schema_version FROM processing_outputs WHERE output_identity_sha256 = $output;";
+                owner.CommandText = "SELECT capture_id, node_id, product_schema_version, availability_state FROM processing_outputs WHERE output_identity_sha256 = $output;";
                 owner.Parameters.AddWithValue("$output", output);
                 using var ownerReader = await owner.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
                 if (await ownerReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     owningCapture = ownerReader.GetString(0);
                     owningNode = ownerReader.GetString(1);
-                    if (!await ownerReader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) &&
-                        ownerReader.GetString(2) == MeasuredAstrometrySolutionV1.CurrentSchemaVersion)
+                    if ((!await ownerReader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false) &&
+                         ownerReader.GetString(2) == MeasuredAstrometrySolutionV1.CurrentSchemaVersion) ||
+                        (operation.Kind == "delete" && ownerReader.GetString(3) == "Quarantined"))
                         changedAstrometryCapture = Guid.ParseExact(owningCapture, "N");
                 }
             }
