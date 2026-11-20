@@ -80,22 +80,22 @@ public sealed partial class CurrentSkyPage
         if (SameIdentity(previousInvalid, selectedInvalid)) selectedInvalid = null;
 
         var requiresFreshSummary = _retainedAstrometryInvalidationRevision != requestedInvalidationRevision;
-        var renewedSelection = _astrometryReadRevision != requestedSelectionRevision ? SelectedMeasurementIdentity() : null;
-        var rejectedSummary = false;
+        var rejectedSummary = SameIdentity(summary, previousInvalid) || SameIdentity(summary, selectedInvalid);
         var reloadReportedSelection = false;
         var hasReportedInvalidation = previousInvalid is not null || selectedInvalid is not null;
-        ApplyReportedInvalidation(ref previousInvalid);
-        ApplyReportedInvalidation(ref selectedInvalid);
+        // An exact rejection suspends matching tools before any asynchronous recheck. A fresh
+        // authorized layer or standalone read can install a repaired fit, including the same identity.
+        if (previousInvalid is not null) reloadReportedSelection |= InvalidateAstrometryEvidence(previousInvalid);
+        if (selectedInvalid is not null) reloadReportedSelection |= InvalidateAstrometryEvidence(selectedInvalid);
         var reportedInvalidationRevision = _retainedAstrometryInvalidationRevision;
-        // Reported invalidations are committed before another history read can supersede this one.
-        // A renewed publication of the same identity needs an exact check before we withdraw it.
-        _latestAstrometryLoading = previousInvalid is not null || selectedInvalid is not null;
         if (hasReportedInvalidation)
         {
             StateHasChanged();
             if (reloadReportedSelection) TryLoadLayers(_runCaptureId);
         }
 
+        // Keep the bounded history flight active until its exact observations are applied.
+        // A newer manual refresh is queued even while this response is awaiting a point check.
         while (IsCurrentLatestAstrometryRead(revision))
         {
             var selected = SelectedMeasurementIdentity();
@@ -124,8 +124,6 @@ public sealed partial class CurrentSkyPage
             var completed = read?.Completed == true && result.IsSuccess && !cancellation.IsCancellationRequested &&
                 !rejectedSummary && summaryState == CameraAgentAstrometryPublicationState.Available;
             var reloadSelected = false;
-            ApplyInvalidation(previousInvalid);
-            ApplyInvalidation(selectedInvalid);
             var currentInvalid = selectedState == CameraAgentAstrometryPublicationState.Invalidated ? selected : null;
             if (!SameIdentity(currentInvalid, previousInvalid) && !SameIdentity(currentInvalid, selectedInvalid))
                 ApplyInvalidation(currentInvalid);
@@ -145,21 +143,8 @@ public sealed partial class CurrentSkyPage
                 if (identity is null || selectedState == CameraAgentAstrometryPublicationState.Available &&
                     SameIdentity(identity, selected)) return;
                 if (SameIdentity(identity, summary)) completed = false;
-                reloadSelected |= InvalidateSelectedAssessment(identity);
+                reloadSelected |= InvalidateAstrometryEvidence(identity);
             }
-        }
-
-        void ApplyReportedInvalidation(ref CameraAgentAstrometryAssessmentIdentity? pending)
-        {
-            if (pending is not { } identity) return;
-            if (SameIdentity(renewedSelection, identity))
-            {
-                WithdrawLatestAstrometry(identity);
-                return;
-            }
-            rejectedSummary |= SameIdentity(summary, identity);
-            reloadReportedSelection |= InvalidateSelectedAssessment(identity);
-            pending = null;
         }
     }
 
@@ -176,13 +161,14 @@ public sealed partial class CurrentSkyPage
         => first is not null && second is not null && first.CaptureId == second.CaptureId && first.ArtifactId == second.ArtifactId &&
            string.Equals(first.SolutionIdentitySha256, second.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
 
-    private bool InvalidateSelectedAssessment(CameraAgentAstrometryAssessmentIdentity identity)
+    private bool InvalidateAstrometryEvidence(CameraAgentAstrometryAssessmentIdentity identity, bool retryIncomingPrefetch = true)
     {
         Interlocked.Increment(ref _retainedAstrometryInvalidationRevision);
         Interlocked.Increment(ref _astrometryObservationRevision);
         WithdrawLatestAstrometry(identity);
         // A confirmed invalidation only fences a pending switch to the affected capture.
-        if (Volatile.Read(ref _incomingLayerPrefetch) is { } prefetch && prefetch.CaptureId == identity.CaptureId)
+        if (retryIncomingPrefetch &&
+            Volatile.Read(ref _incomingLayerPrefetch) is { } prefetch && prefetch.CaptureId == identity.CaptureId)
             prefetch.Invalidate();
         if (_runCaptureId != identity.CaptureId) return false;
 
@@ -267,7 +253,7 @@ public sealed partial class CurrentSkyPage
                 if (observation.Value == CameraAgentAstrometryPublicationState.Invalidated)
                 {
                     var withdrawn = false;
-                    await InvokeAsync(() => withdrawn = WithdrawObservedSelectedFit(identity, generation, revision, cancellation)).ConfigureAwait(false);
+                    await InvokeAsync(() => withdrawn = ApplyObservedAstrometryInvalidation(identity, generation, revision, cancellation)).ConfigureAwait(false);
                     if (!withdrawn && revision != Volatile.Read(ref _astrometryObservationRevision) &&
                         generation == Volatile.Read(ref _layerGeneration)) continue;
                 }
@@ -277,15 +263,15 @@ public sealed partial class CurrentSkyPage
         return new(OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, "Selected measured evidence is temporarily unavailable."));
     }
 
-    private bool WithdrawObservedSelectedFit(CameraAgentAstrometryAssessmentIdentity identity, long generation,
+    private bool ApplyObservedAstrometryInvalidation(CameraAgentAstrometryAssessmentIdentity identity, long generation,
         long revision, CancellationToken cancellation)
     {
         if (generation != _layerGeneration || revision != _astrometryObservationRevision || cancellation.IsCancellationRequested ||
-            _disposeStarted != 0 || _accessDenied ||
-            _runCaptureId != identity.CaptureId && !SameIdentity(SummaryIdentity(_latestAstrometry), identity)) return false;
+            _disposeStarted != 0 || _accessDenied) return false;
 
-        // There may only be pending evidence. End the selected lifetime and withdraw any matching headline.
-        InvalidateSelectedAssessment(identity);
+        // An incoming fit can be invalid before either view has installed it. Fence outstanding
+        // history without restarting the same prefetch whose result is already being rejected.
+        InvalidateAstrometryEvidence(identity, retryIncomingPrefetch: false);
         StateHasChanged();
         return true;
     }
