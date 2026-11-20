@@ -56,6 +56,9 @@ internal sealed partial class SqliteCaptureProcessingStore
     private HashSet<Guid>? _changedAstrometryCaptures;
     private AstrometryCaptureCandidate[]? _astrometryCandidates;
 
+    // A committed raw release can make an assessment readable without rewriting the assessment or its inputs.
+    internal void NotifyRawEvidenceRevalidated(Guid captureId) => MarkAstrometryCaptureChanged(captureId);
+
     private void MarkAstrometryCaptureChanged(Guid captureId)
     {
         lock (_astrometryChangesLock)
