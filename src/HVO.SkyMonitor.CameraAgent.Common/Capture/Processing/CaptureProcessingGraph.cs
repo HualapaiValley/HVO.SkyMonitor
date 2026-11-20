@@ -152,11 +152,18 @@ public sealed class CaptureProcessingGraph
 
     internal CaptureProcessingGraph(
         IReadOnlyList<CaptureProcessingGraphNode> nodes,
-        ProcessingGraphExecutionPlan? sharedPlan)
+        ProcessingGraphExecutionPlan? sharedPlan,
+        Lazy<ProcessingGraphExecutionPlan>? previousAstrometryPlan = null)
     {
         Nodes = nodes;
         SharedPlan = sharedPlan;
+        _previousAstrometryPlan = previousAstrometryPlan;
     }
+
+    private readonly Lazy<ProcessingGraphExecutionPlan>? _previousAstrometryPlan;
+
+    // Earlier revisions froze the fit edge as required. Recompile that exact identity only when comparing retained work.
+    internal ProcessingGraphExecutionPlan? PreviousAstrometryPlan => _previousAstrometryPlan?.Value;
 
     public IReadOnlyList<CaptureProcessingGraphNode> Nodes { get; }
 

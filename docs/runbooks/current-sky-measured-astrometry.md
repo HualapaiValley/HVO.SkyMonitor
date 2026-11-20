@@ -80,9 +80,14 @@ contract bound. For a magnitude-5 profile, use
 `hvo-sky astrometry configure --reference-magnitude 5` or set the prediction,
 pin and solver magnitudes all to 5. This HYG selection contains 1,637 stars.
 Use the installed catalog's verified completeness during execution.
-Five-second capture and stride 60 sample one solve per five minutes. Optional
-skips/failures cannot become prerequisites of raw Storage. The existing
-20-second cooperative recipe budget and serialized numerical gate apply.
+Five-second capture and stride 60 sample one solve per five minutes. New graph
+revisions record the declared fit as a supplementary input to Storage and as a
+supplementary outcome for Telemetry. Storage archives its required image and
+canonical-scene inputs between solves, and Telemetry can report the fit's outcome.
+Other declared inputs remain required. Fresh work on an older compatible named
+revision uses an append-only successor. Historical runs and archived replay
+keep their original frozen definitions and identities. The existing 20-second
+cooperative recipe budget and serialized numerical gate apply.
 This qualification does not enable a default or installed profile.
 
 ## Inspect residuals on a single exposure
@@ -133,9 +138,11 @@ Kepler's review/CI lifecycle and artifact qualification.
    tested supported backup/checkpoint and the exact previous image/artifact and
    configuration. Run the supported installer's **upgrade plan/preflight** on
    the existing instance. Account for all reader/schema changes between rc.1
-   and the eventual qualified image; #1901 introduces no schema conversion but
-   does not establish compatibility for other intervening changes. If preflight
-   cannot prove the upgrade and recovery route, stop for Roy.
+   and the eventual qualified image. Processing schema 10 adds the retained-fit
+   index and requires the [paired upgrade checkpoint](deployment-installer.md#swap-upgrade-and-database-snapshots).
+   The supplementary fit contract adds graph revisions without rewriting older
+   runs or changing the SQLite schema. If preflight cannot prove the upgrade and
+   recovery route, stop for Roy.
 3. Use the existing installation's supported in-place upgrade workflow with the
    exact qualified artifact, retaining the same instance, root, address, port,
    credentials and mounts. No install/reset/uninstall operation, new instance,

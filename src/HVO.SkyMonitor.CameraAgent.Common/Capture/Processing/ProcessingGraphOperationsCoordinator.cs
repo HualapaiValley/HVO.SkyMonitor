@@ -24,6 +24,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private const string ConfiguredGraphName = "configured-basic";
     internal const string VirtualSkySceneCompatibilityGraphName = "virtualsky-scene-compatibility";
     internal const string VirtualSkySharedFitCompatibilityGraphName = "virtualsky-shared-fit-compatibility";
+    internal const string AstrometryConsumerCompatibilityGraphName = "astrometry-consumer-compatibility";
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
         ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
@@ -167,23 +168,25 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         if (revision.State.ValidatedUtc is null)
             throw new ProcessingGraphStoreConflictException("A live capture requires a validated immutable graph revision.");
         EnsureLiveEligible(revision);
-        if (!retainedCapture && revisionId is null &&
-            LegacyVirtualSkySceneGraph.FindLegacyScene(configuration, revision.Pipeline) is { } legacyScene)
+        if (!retainedCapture && revisionId is null)
         {
-            // Bind new exposures to a validated successor. Existing raw manifests keep their original revision,
-            // and the registry's selected revision retains its identity and control-plane history.
-            return await ResolveSceneCompatibilityRevisionAsync(configuration, revision, legacyScene, cancellationToken)
-                .ConfigureAwait(false);
+            // A successor applies only to new exposures. Recovery and replay use the original bound revision.
+            var legacyScene = LegacyVirtualSkySceneGraph.FindLegacyScene(configuration, revision.Pipeline);
+            if (legacyScene is not null || revision.HasHistoricalAstrometryConsumerEdge())
+            {
+                return await ResolveLiveCompatibilityRevisionAsync(configuration, revision, legacyScene, cancellationToken)
+                    .ConfigureAwait(false);
+            }
         }
         // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
         // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;
     }
 
-    private async ValueTask<ProcessingGraphRevisionSnapshot> ResolveSceneCompatibilityRevisionAsync(
+    private async ValueTask<ProcessingGraphRevisionSnapshot> ResolveLiveCompatibilityRevisionAsync(
         CameraModuleConfig configuration,
         ProcessingGraphRevisionSnapshot source,
-        CaptureProcessingStepConfig legacyScene,
+        CaptureProcessingStepConfig? legacyScene,
         CancellationToken cancellationToken)
     {
         var sourceId = source.State.RevisionId;
@@ -198,14 +201,28 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             {
                 if (migrated is null)
                 {
-                    var derivation = DeriveSceneCompatibilityPipeline(source, legacyScene);
-                    compatibilityGraphName = derivation.GraphName;
-                    migrated = configuration with { Pipeline = derivation.Pipeline };
+                    if (legacyScene is not null)
+                    {
+                        var derivation = DeriveSceneCompatibilityPipeline(source, legacyScene);
+                        compatibilityGraphName = derivation.GraphName;
+                        migrated = configuration with { Pipeline = derivation.Pipeline };
+                    }
+                    else
+                    {
+                        migrated = configuration with { Pipeline = source.Pipeline };
+                        if (!CanUpgradeAstrometryConsumerPlan(migrated, source))
+                        {
+                            return source;
+                        }
+                        compatibilityGraphName = AstrometryConsumerCompatibilityGraphName;
+                    }
                 }
                 var name = generation == 0 ? sourceId : FormattableString.Invariant($"{sourceId}-{generation}");
                 var expected = CreateRevisionSnapshot(migrated, compatibilityGraphName,
                     name, _timeProvider.GetUtcNow(), ProcessingGraphRevisionLifecycle.Validated,
-                    compilation: CaptureProcessingGraphCompilation.ActiveProfile);
+                    compilation: legacyScene is null
+                        ? CaptureProcessingGraphCompilation.RetainedCapture
+                        : CaptureProcessingGraphCompilation.ActiveProfile);
                 EnsureLiveEligible(expected);
                 preferred = new(sourceId, configuration, generation, expected);
             }
@@ -220,6 +237,21 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             // An occupied name may belong to a retired revision or different immutable content. Keep its history
             // and use the next deterministic name so a restart can discover the same replacement.
             preferred = null;
+        }
+    }
+
+    private bool CanUpgradeAstrometryConsumerPlan(
+        CameraModuleConfig configuration, ProcessingGraphRevisionSnapshot source)
+    {
+        try
+        {
+            using var graph = new DisposableProcessingGraph(_pipelineFactory.CreateRetainedGraph(configuration));
+            return source.MatchesPreviousAstrometryPlan(graph.Value);
+        }
+        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception) || exception is InvalidOperationException)
+        {
+            // An unrelated compilation failure is still handled by the standard lane after raw admission.
+            return false;
         }
     }
 
@@ -676,10 +708,21 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
         var legacyScene = profile is null ? LegacyVirtualSkySceneGraph.FindLegacyScene(source.Pipeline)
             : LegacyVirtualSkySceneGraph.FindLegacyScene(profile, source.Pipeline);
-        if (legacyScene is null) return false;
-
-        var (graphName, pipeline) = DeriveSceneCompatibilityPipeline(source, legacyScene);
         var state = candidate.State;
+        string graphName;
+        CapturePipelineConfig pipeline;
+        if (legacyScene is not null)
+        {
+            (graphName, pipeline) = DeriveSceneCompatibilityPipeline(source, legacyScene);
+        }
+        else if (state.Name == AstrometryConsumerCompatibilityGraphName &&
+                 source.HasHistoricalAstrometryConsumerEdge() && !candidate.HasHistoricalAstrometryConsumerEdge())
+        {
+            graphName = AstrometryConsumerCompatibilityGraphName;
+            pipeline = source.Pipeline;
+        }
+        else return false;
+
         if (state.Name != graphName || !candidate.PipelineJson.AsSpan().SequenceEqual(CanonicalBytes(pipeline)))
             return false;
 
@@ -692,7 +735,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         }
 
         var expected = CreateRevisionSnapshot(profile with { Pipeline = pipeline }, graphName, state.Revision, state.CreatedUtc,
-            ProcessingGraphRevisionLifecycle.Validated, compilation: CaptureProcessingGraphCompilation.ActiveProfile);
+            ProcessingGraphRevisionLifecycle.Validated, compilation: legacyScene is null
+                ? CaptureProcessingGraphCompilation.RetainedCapture
+                : CaptureProcessingGraphCompilation.ActiveProfile);
         return SqliteCaptureProcessingStore.HasSameRevisionContent(candidate, expected);
     }
 
