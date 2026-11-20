@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.Processing.Tests;
@@ -22,12 +23,13 @@ public sealed class CenteredRegisteredStackTests
     private static readonly ProcessingCompatibilityIdentity Compatible = new("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
     private static readonly RecipeIdentityDescriptor RawRecipe = RecipeIdentityDescriptor.Create("capture", "1.0.0", "test",
         JsonSerializer.SerializeToElement(new { }));
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task IndependentGeometryCorpusUsesActualMeasurementAndSeparateBaseMaps(bool bayer)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    [DataRow(true, true)]
+    public async Task IndependentGeometryCorpusUsesActualMeasurementAndSeparateBaseMaps(bool bayer, bool calibrate)
     {
         var root = Environment.GetEnvironmentVariable("HVO_REGISTRATION_GEOMETRY");
         if (string.IsNullOrWhiteSpace(root))
@@ -47,13 +49,20 @@ public sealed class CenteredRegisteredStackTests
             }
             var pixels = await File.ReadAllBytesAsync(Path.Combine(root!, name));
             Assert.AreEqual(row.GetProperty("sha256").GetString()!.ToUpperInvariant(), ProcessingIdentity.ComputePayloadSha256(pixels));
-            captures.Add(await BuildCapture(row.GetProperty("frame").GetInt32(), pixels, bayer));
+            captures.Add(await BuildCapture(row.GetProperty("frame").GetInt32(), pixels, bayer, calibrate: calibrate));
         }
 
         var firstOutcome = await Execute(captures.Take(5).ToArray(), 103);
         var nextOutcome = await Execute(captures.Skip(1).ToArray(), 104);
         var first = Read(firstOutcome);
         var next = Read(nextOutcome);
+        var planes = firstOutcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
+        first.VerifyPlanes(planes);
+        Assert.ThrowsExactly<InvalidDataException>(() => first.VerifyPlanes(planes.Skip(1).ToArray()));
+        var stored = new byte[planes[0].Payload.Length];
+        var altered = planes.ToArray();
+        altered[0] = altered[0] with { Payload = stored };
+        Assert.ThrowsExactly<InvalidDataException>(() => first.VerifyPlanes(altered));
         Assert.AreEqual(CenteredStackDisposition.Registered, first.Disposition);
         Assert.AreEqual(CenteredStackDisposition.Registered, next.Disposition);
         Assert.AreEqual(5, first.Sources.Count(source => source.Reason == CenteredRegistrationReason.Contributed), Describe(first));
@@ -71,8 +80,10 @@ public sealed class CenteredRegisteredStackTests
         foreach (var heldPosition in sourcePlacement)
         {
             var sampleOn105 = new PixelPoint(heldPosition.X - dxFirst, heldPosition.Y - dyFirst);
-            var a = match.MapToReference(sampleOn105)!.Value;
-            var b = nextMatch.MapToReference(sampleOn105)!.Value;
+            var a = CenteredRegisteredStackRecipe.ReconstructSourceMap(first, match.Offset, new Dictionary<Guid, ProcessingArtifact>())!
+                .SourceToReference(sampleOn105)!.Value;
+            var b = CenteredRegisteredStackRecipe.ReconstructSourceMap(next, nextMatch.Offset, new Dictionary<Guid, ProcessingArtifact>())!
+                .SourceToReference(sampleOn105)!.Value;
             var tolerance = bayer ? .65 : .30;
             Assert.AreEqual(heldPosition.X, a.X, tolerance);
             Assert.AreEqual(heldPosition.Y, a.Y, tolerance);
@@ -94,21 +105,22 @@ public sealed class CenteredRegisteredStackTests
         CollectionAssert.AreEqual(firstOutcome.Products.Select(product => product.OutputIdentitySha256).ToArray(),
             repeated.Products.Select(product => product.OutputIdentitySha256).ToArray());
 
+        var background = calibrate ? Math.Round((91d - 64) * ushort.MaxValue / (4095 - 64)) : 91;
         if (bayer)
         {
             var red = Channel(firstOutcome, "red");
             var green = Channel(firstOutcome, "green");
             var blue = Channel(firstOutcome, "blue");
-            Assert.IsGreaterThan(2 * Signal(blue, sourcePlacement[0]), Signal(red, sourcePlacement[0]));
-            Assert.IsGreaterThan(2 * Signal(red, sourcePlacement[2]), Signal(blue, sourcePlacement[2]));
+            Assert.IsGreaterThan(2 * Signal(blue, sourcePlacement[0], background), Signal(red, sourcePlacement[0], background));
+            Assert.IsGreaterThan(2 * Signal(red, sourcePlacement[2], background), Signal(blue, sourcePlacement[2], background));
             Assert.AreNotEqual(red.ChecksumSha256, green.ChecksumSha256);
             Assert.AreNotEqual(blue.ChecksumSha256, green.ChecksumSha256);
         }
         else
         {
-            Assert.IsGreaterThan(200, Signal(Channel(firstOutcome, "mono"), sourcePlacement[0]));
+            Assert.IsGreaterThan(200, Signal(Channel(firstOutcome, "mono"), sourcePlacement[0], background));
         }
-        TestContext.WriteLine($"{(bayer ? "Bayer" : "Mono")} direct max per-axis error {maxError:F4} px, support {first.ValidPixelCount}/{Width * Height}, checksum {support.ChecksumSha256}");
+        TestContext.WriteLine($"{(bayer ? "Bayer" : "Mono")} {(calibrate ? "reference-calibrated" : "normalization-only")} direct max per-axis error {maxError:F4} px, support {first.ValidPixelCount}/{Width * Height}, checksum {support.ChecksumSha256}");
     }
 
     [TestMethod]
@@ -122,7 +134,7 @@ public sealed class CenteredRegisteredStackTests
         var evidence = Read(outcome);
         Assert.AreEqual(CenteredStackDisposition.SingleExposure, evidence.Disposition);
         Assert.AreEqual(CenteredRegistrationReason.MeasurementEmpty, evidence.Sources[4].Reason);
-        Assert.IsNull(evidence.Sources[4].MapToReference(new(55.5, 45.5)));
+        Assert.IsNull(CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, 2, new Dictionary<Guid, ProcessingArtifact>()));
         Assert.AreEqual(TimeSpan.TicksPerSecond, evidence.TotalIntegrationTicks);
         Assert.HasCount(1, outcome.Products);
 
@@ -149,7 +161,7 @@ public sealed class CenteredRegisteredStackTests
         var request = new[] { center with { Pin = center.Pin with { Measurement = null } }, tampered };
         var evidence = Read(await Execute(request, 103));
         Assert.AreEqual(CenteredRegistrationReason.InvalidMeasurement, evidence.Sources[4].Reason);
-        Assert.IsNull(evidence.Sources[4].MapToReference(new(55.5, 45.5)));
+        Assert.IsNull(CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, 2, new Dictionary<Guid, ProcessingArtifact>()));
     }
 
     [TestMethod]
@@ -167,6 +179,78 @@ public sealed class CenteredRegisteredStackTests
         await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () => await executor.ExecuteAsync(request, cancel.Token));
     }
 
+    [TestMethod]
+    public async Task PinnedInputLossIsRetryableAndMetadataDriftProducesNoProducts()
+    {
+        var pixels = Generate(static (_, _) => 91);
+        var center = await BuildCapture(103, pixels, false, measurementReason: "qualified-fixture");
+        var source = await BuildCapture(105, pixels, false, measurementReason: "qualified-fixture");
+        var (request, executor) = Request([center, source], 103);
+        var missing = await executor.ExecuteAsync(request with
+        {
+            Inputs = request.Inputs.Where(artifact => artifact.ArtifactId != source.Measurement.ArtifactId).ToArray()
+        });
+        Assert.AreEqual(ProcessingOutcomeStatus.RetryableFailure, missing.Status);
+        Assert.AreEqual(CenteredRegisteredStackRecipe.RetainedInputsUnavailable, missing.ReasonCode);
+        Assert.IsEmpty(missing.Products);
+        var tampered = await executor.ExecuteAsync(request with
+        {
+            Inputs = request.Inputs.Select(artifact => artifact.ArtifactId == source.Raw.ArtifactId
+                ? artifact with { Compatibility = artifact.Compatibility with { Rig = "other" } } : artifact).ToArray()
+        });
+        Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, tampered.ReasonCode);
+        Assert.IsEmpty(tampered.Products);
+        var restored = Read(await executor.ExecuteAsync(request));
+        Assert.AreEqual(CenteredRegistrationReason.MeasurementEmpty, restored.Sources[4].Reason);
+    }
+
+    [TestMethod]
+    public async Task RetainedPlatesAndRelativeEndpointsShareOneWindowAndReopen()
+    {
+        var centerFixture = await MeasuredAstrometryFixture.CreateAtAsync(0);
+        var firstFixture = await MeasuredAstrometryFixture.CreateAtAsync(-2);
+        var lastFixture = await MeasuredAstrometryFixture.CreateAtAsync(4);
+        var center = await FromPlateFixture(centerFixture, 103, includePlate: true);
+        var first = await FromPlateFixture(firstFixture, 102, includePlate: true);
+        var last = await FromPlateFixture(lastFixture, 105, includePlate: false);
+        var evidence = Read(await Execute([first, center, last], 103));
+        Assert.AreEqual(CenteredStackDisposition.Registered, evidence.Disposition, Describe(evidence));
+        Assert.AreEqual(CenteredRegistrationMethod.VerifiedPlatePair, evidence.Sources[1].Method, Describe(evidence));
+        Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, evidence.Sources[4].Method, Describe(evidence));
+        var retained = first.Artifacts().Concat(center.Artifacts()).ToDictionary(item => item.ArtifactId);
+        var map = CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, -1, retained)!;
+        var independentCheck = evidence.Sources[1].PairCheck!.Verification;
+        Assert.IsGreaterThanOrEqualTo(8, independentCheck.Count);
+        var source = ExposureMeasurementProducts.Read(first.Measurement,
+            MeasurementBinding(first)).Sources.Detections[independentCheck[0].SourceIndex].Pixel;
+        var reference = ExposureMeasurementProducts.Read(center.Measurement,
+            MeasurementBinding(center)).Sources.Detections[independentCheck[0].ReferenceIndex].Pixel;
+        var mapped = map.SourceToReference(source)!.Value;
+        Assert.AreEqual(reference.X, mapped.X, .85);
+        Assert.AreEqual(reference.Y, mapped.Y, .85);
+        Assert.IsNotNull(evidence.Sources[1].Plate?.UncertaintyReason);
+        retained.Remove(first.Pin.Plate!.Context.ArtifactId);
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, -1, retained));
+
+        var (associations, scene, context) = (center.PlateArtifacts[0], center.PlateArtifacts[1], center.PlateArtifacts[2]);
+        var rejected = await Produce(RetainedAstrometryProducts.Request(center.Raw, associations, scene, context,
+            MeasuredAstrometryFixture.Options with
+            {
+                Solver = MeasuredAstrometryFixture.Options.Solver! with { ColdBudgetMilliseconds = .000001 }
+            }, "solve"));
+        Assert.IsFalse(MeasuredAstrometryJson.Parse(rejected.Payload).Assessment.HasMeasuredMapping);
+        var rejectedArtifact = Artifact(rejected, center.Raw);
+        var rejectedCenter = center with
+        {
+            Pin = center.Pin with { Plate = center.Pin.Plate! with { Solution = CenteredStackArtifactPin.From(rejectedArtifact) } },
+            PlateArtifacts = [associations, scene, context, rejectedArtifact]
+        };
+        var fallback = Read(await Execute([first, rejectedCenter, last], 103));
+        Assert.AreEqual(CenteredStackDisposition.Registered, fallback.Disposition, Describe(fallback));
+        Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, fallback.Sources[1].Method, Describe(fallback));
+        Assert.IsNotNull(fallback.Sources[2].Plate?.AssessmentReason);
+    }
+
     public TestContext TestContext { get; set; } = null!;
 
     private static string Describe(CenteredRegisteredStackEvidence evidence) =>
@@ -175,7 +259,7 @@ public sealed class CenteredRegisteredStackTests
     private static ProcessingProduct Channel(ProcessingOutcome outcome, string channel) =>
         outcome.Products.Single(product => product.Variant == "display-" + channel);
 
-    private static double Signal(ProcessingProduct plane, PixelPoint position)
+    private static double Signal(ProcessingProduct plane, PixelPoint position, double background)
     {
         var sum = 0.0;
         for (var y = (int)position.Y - 3; y <= (int)position.Y + 3; y++)
@@ -184,7 +268,7 @@ public sealed class CenteredRegisteredStackTests
             {
                 if (Math.Pow(x + .5 - position.X, 2) + Math.Pow(y + .5 - position.Y, 2) <= 9)
                 {
-                    sum += BinaryPrimitives.ReadUInt16LittleEndian(plane.Payload.Span[((y * Width + x) * 2)..]) - 91;
+                    sum += BinaryPrimitives.ReadUInt16LittleEndian(plane.Payload.Span[((y * Width + x) * 2)..]) - background;
                 }
             }
         }
@@ -195,7 +279,7 @@ public sealed class CenteredRegisteredStackTests
     {
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, $"{outcome.ReasonCode} {outcome.Field}");
         var product = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
-        return JsonSerializer.Deserialize<CenteredRegisteredStackEvidence>(product.Payload.Span, Json)!;
+        return CenteredRegisteredStackEvidence.Read(product);
     }
 
     private static async Task<ProcessingOutcome> Execute(Capture[] captures, int center)
@@ -209,31 +293,33 @@ public sealed class CenteredRegisteredStackTests
         var slots = Enumerable.Range(center - 2, 5).Select(sequence =>
         {
             var capture = captures.SingleOrDefault(item => item.Pin.CaptureSequence == sequence);
-            return new CenteredStackSlot(sequence - center, Time(sequence).AddSeconds(.5),
+            return new CenteredStackSlot(sequence - center, Time(sequence),
                 capture is null ? CenteredSlotState.Missing : CenteredSlotState.Ready,
                 capture?.Pin.Key.CaptureId, capture?.Pin);
         }).ToArray();
-        var plan = new CenteredStackPlanV1(Camera, Run, slots[2].CaptureId ?? Guid.NewGuid(),
-            slots[2].Exposure?.Linear.ArtifactId, Time(center + 3), "cadence-test-v1", slots);
+        var plan = new CenteredStackPlanV1(Camera, Run, "test-generation", slots[2].CaptureId,
+            slots[2].Exposure?.Linear.ArtifactId, Time(center + 3), Time(center + 3), "cadence-test-closure", slots);
         var reader = new ExactInputs(captures.Select(item => item.Qualified).ToArray());
         var artifacts = captures.OrderBy(item => item.Pin.CaptureSequence).SelectMany(item => item.Artifacts()).ToArray();
         return (CenteredRegisteredStackRecipe.CreateRequest(plan, "qualified", "display", artifacts),
             new ProcessingRecipeExecutor([new CenteredRegisteredStackRecipe(reader)]));
     }
 
-    private static async Task<Capture> BuildCapture(int sequence, byte[] pixels, bool bayer)
+    private static async Task<Capture> BuildCapture(int sequence, byte[] pixels, bool bayer,
+        int width = Width, int height = Height, DateTimeOffset? observation = null, string? measurementReason = null,
+        bool calibrate = false)
     {
-        var layout = new FrameLayoutDescriptor(Width, Height, Width * 2,
+        var layout = new FrameLayoutDescriptor(width, height, width * 2,
             bayer ? CameraPixelFormat.BayerRggb16 : CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian,
             12, 16, FrameSamplePacking.ByteAligned, bayer ? ColorFilterArrayPattern.Rggb : ColorFilterArrayPattern.None,
             64, 4095, pixels.Length)
         {
             StoredCodeTransform = FrameStoredCodeTransform.RightAlignedV1,
             LevelCodeSpace = FrameLevelCodeSpace.NativeSample,
-            Readout = bayer ? new(Width + 2, Height + 2, 1, 1, Width, Height, 1, 1, FrameBinningAlgorithm.IdentityV1, 1, 1)
-                : new(Width, Height, 0, 0, Width, Height, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
+            Readout = bayer ? new(width + 2, height + 2, 1, 1, width, height, 1, 1, FrameBinningAlgorithm.IdentityV1, 1, 1)
+                : new(width, height, 0, 0, width, height, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
         };
-        var time = Time(sequence);
+        var time = observation ?? Time(sequence);
         var end = time.AddSeconds(1);
         var integration = end - time;
         var profile = new ProfileIdentityDescriptor("fixed", "1", new string('A', 64));
@@ -250,7 +336,8 @@ public sealed class CenteredRegisteredStackTests
         {
             CaptureId = rawSource.CaptureId, DescriptorIdentitySha256 = rawSource.DescriptorSha256, RecipeDescriptor = RawRecipe
         };
-        var linearProduct = await Produce(new(BuiltInProcessingRecipes.LinearNormalization, default,
+        var reference = calibrate ? ReferenceCalibration(raw) : null;
+        var linearProduct = await Produce(reference ?? new(BuiltInProcessingRecipes.LinearNormalization, default,
             ProcessingInputSelector.Raw("raw"), [raw], "qualified"));
         var linear = Artifact(linearProduct, raw);
         var linearSource = new ExposureMeasurementSourceV1(rawSource.CaptureId, linear.ArtifactId,
@@ -258,22 +345,105 @@ public sealed class CenteredRegisteredStackTests
             linearProduct.OutputIdentitySha256, linear.Layout!);
         var orientation = new RigOrientation(90, 180, 0);
         var measurementProduct = await Produce(ExposureMeasurementProducts.Request(
-            new(rawSource, linearSource, ExposureCalibrationDisposition.NormalizationOnly, null, Compatible.Orientation, 2.4, orientation),
+            new(rawSource, linearSource, calibrate ? ExposureCalibrationDisposition.ReferenceCalibrated : ExposureCalibrationDisposition.NormalizationOnly,
+                measurementReason, Compatible.Orientation, 2.4, orientation),
             raw, linear));
         var measurement = Artifact(measurementProduct, raw);
         var qualified = new LinearExposureInputV1(new(new(Camera, Run, rawSource.CaptureId), rawDescriptor,
             new(layout, orientation, profile.Sha256, "fixture", 5.5)), linear,
-            new(LinearExposureDisposition.QualifiedNormalizationOnly,
+            new(calibrate ? LinearExposureDisposition.Calibrated : LinearExposureDisposition.QualifiedNormalizationOnly,
                 raw.ArtifactId, rawSource.DescriptorSha256, rawSource.PayloadSha256, linear.ArtifactId,
                 linearSource.DescriptorSha256, linearSource.PayloadSha256, linearProduct.OutputIdentitySha256,
-                linearProduct.Recipe, ImmutableArray<Guid>.Empty, new(raw.ArtifactId, 4095), new(linear.ArtifactId, 4095)));
-        var mask = raw with
-        {
-            ArtifactId = Guid.NewGuid(), Role = FrameArtifactRole.Metadata, Variant = "qualified-mask", Layout = null,
-            Payload = Enumerable.Repeat((byte)1, Width * Height).ToArray(), SourceArtifactIds = [raw.ArtifactId, linear.ArtifactId]
-        };
-        var retained = new CenteredStackQualifiedExposure(qualified, new(2.4, null));
+                linearProduct.Recipe, linear.SourceArtifactIds!.Skip(1).ToImmutableArray(), new(raw.ArtifactId, 4095),
+                new(linear.ArtifactId, calibrate ? ushort.MaxValue : 4095))
+            {
+                CalibrationBundleIdentitySha256 = reference?.AuxiliaryInputs?[0].IdentitySha256,
+                CalibrationPayloadHashes = reference is null ? [] :
+                    reference.Inputs.Skip(1).Select(item => ProcessingIdentity.ComputePayloadSha256(item.Payload)).ToImmutableArray()
+            });
+        var mask = CenteredStackValidityMask.Create(raw, linear, Enumerable.Repeat((byte)1, layout.Width * layout.Height).ToArray());
+        var retained = new CenteredStackQualifiedExposure(qualified, new(2.4, null), measurementReason);
         return new(retained, CenteredStackExposurePin.Create(retained, raw, mask, CenteredStackArtifactPin.From(measurement)), raw, mask, measurement);
+    }
+
+    private static async Task<Capture> FromPlateFixture(MeasuredAstrometryFixture fixture, int sequence, bool includePlate)
+    {
+        var capture = await BuildCapture(sequence, fixture.Raw.Payload.ToArray(), false, width: 512, height: 512,
+            observation: fixture.Raw.ObservationStartedUtc!.Value);
+        if (!includePlate)
+        {
+            return capture;
+        }
+        var raw = capture.Raw;
+        var scene = fixture.Scene with { Source = new(raw.CaptureId!.Value, raw.ArtifactId, raw.DescriptorIdentitySha256!) };
+        scene = scene with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(scene) };
+        var sceneInput = MeasuredStellarAssociationFixtures.SceneAuxiliary(scene);
+        var sceneArtifact = Artifact(await Produce(new(BuiltInProcessingRecipes.ProjectedScene, default,
+            ProcessingInputSelector.Raw(raw.Variant), [raw], "projection", AuxiliaryInputs: [sceneInput])), raw);
+        var associations = Artifact(await Produce(new(BuiltInProcessingRecipes.MeasuredStellarAssociations, default,
+            ProcessingInputSelector.Raw(raw.Variant), [raw], "association", AuxiliaryInputs: [sceneInput])), raw);
+        var context = RetainedAstrometryProducts.CreateContext(raw, associations, sceneArtifact,
+            new(fixture.Context.CatalogMetadata, fixture.Context.CatalogStars, fixture.Context.CatalogPackage,
+                fixture.Context.CatalogComplete, fixture.Context.CompletenessMagnitudeLimit),
+            AstrometricClockFacts.NotSupplied);
+        var contextArtifact = Artifact(RetainedAstrometryProducts.CreateContextProduct(context, raw, associations, sceneArtifact, "context"), raw);
+        var solution = await Produce(RetainedAstrometryProducts.Request(raw, associations, sceneArtifact, contextArtifact,
+            MeasuredAstrometryFixture.Options, "solve"));
+        Assert.IsTrue(MeasuredAstrometryJson.Parse(solution.Payload).Assessment.HasMeasuredMapping);
+        var solutionArtifact = Artifact(solution, raw);
+        var pins = new CenteredStackPlatePins(CenteredStackArtifactPin.From(associations), CenteredStackArtifactPin.From(sceneArtifact),
+            CenteredStackArtifactPin.From(contextArtifact), CenteredStackArtifactPin.From(solutionArtifact));
+        return capture with
+        {
+            Pin = capture.Pin with { Plate = pins },
+            PlateArtifacts = [associations, sceneArtifact, contextArtifact, solutionArtifact]
+        };
+    }
+
+    private static ExposureMeasurementInputV1 MeasurementBinding(Capture capture)
+    {
+        var data = capture.Qualified.Linear;
+        var provenance = data.Provenance;
+        return new(ExposureMeasurementSourceV1.FromDescriptor(data.Exposure.Raw),
+            new(data.Exposure.Key.CaptureId, provenance.LinearArtifactId, provenance.LinearDescriptorSha256,
+                provenance.LinearPayloadSha256, provenance.Recipe.IdentitySha256, provenance.OutputIdentitySha256, data.Linear.Layout!),
+            ExposureCalibrationDisposition.NormalizationOnly, null, capture.Raw.Compatibility.Orientation,
+            2.4, data.Exposure.Geometry.Orientation);
+    }
+
+    private static ProcessingExecutionRequest ReferenceCalibration(ProcessingArtifact raw)
+    {
+        var layout = CalibrationMasterBuilder.CreateNormalizedLayout(raw.Layout!);
+        var references = CalibrationReferenceKinds.All.Select((kind, index) =>
+        {
+            var pixels = new byte[(int)layout.ByteLength];
+            if (kind == CalibrationReferenceKinds.Flat)
+            {
+                for (var offset = 0; offset < pixels.Length; offset += 2)
+                {
+                    BinaryPrimitives.WriteUInt16LittleEndian(pixels.AsSpan(offset, 2), 30000);
+                }
+            }
+            return raw with
+            {
+                ArtifactId = new Guid(index + 1, 0, 0, new byte[8]),
+                Variant = kind,
+                Layout = layout,
+                Payload = pixels
+            };
+        }).ToArray();
+        var profile = new ReferenceCalibrationProfileV1(ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+            "uniform-reference", "1", "independently known fixture references", Start.AddDays(-1), null,
+            layout.Width, layout.Height, layout.PixelFormat, 30000, 9, 11, -11, -9,
+            references.Select(reference => new CalibrationReferenceDescriptorV1(reference.Variant, reference.ArtifactId,
+                ProcessingIdentity.ComputePayloadSha256(reference.Payload), reference.Integration,
+                reference.Conditions!.Gain, reference.Conditions.TemperatureC)).ToArray());
+        return new(BuiltInProcessingRecipes.ReferenceCalibration, default, ProcessingInputSelector.Raw(raw.Variant),
+            [raw, .. references], "qualified", AuxiliaryInputs:
+            [new("calibration-profile", ProcessingAuxiliaryInputKind.CanonicalJson, SchemaVersion: ReferenceCalibrationProfileV1.CurrentSchemaVersion,
+                IdentitySha256: ReferenceCalibrationProfileJson.ComputeIdentitySha256(profile), Payload: ReferenceCalibrationProfileJson.Serialize(profile)),
+             .. references.Select(reference => new ProcessingAuxiliaryInput(reference.Variant + "-reference",
+                 ProcessingAuxiliaryInputKind.Artifact, ProcessingInputSelector.Raw(reference.Variant), ArtifactId: reference.ArtifactId))]);
     }
 
     private static DateTimeOffset Time(int sequence) => Start.AddSeconds(2 * (sequence - 100));
@@ -312,6 +482,7 @@ public sealed class CenteredRegisteredStackTests
     private sealed record Capture(CenteredStackQualifiedExposure Qualified, CenteredStackExposurePin Pin,
         ProcessingArtifact Raw, ProcessingArtifact Mask, ProcessingArtifact Measurement)
     {
+        public ProcessingArtifact[] PlateArtifacts { get; init; } = [];
         public IEnumerable<ProcessingArtifact> Artifacts()
         {
             yield return Raw;
@@ -320,6 +491,10 @@ public sealed class CenteredRegisteredStackTests
             if (Pin.Measurement is not null)
             {
                 yield return Measurement;
+            }
+            foreach (var artifact in PlateArtifacts)
+            {
+                yield return artifact;
             }
         }
     }

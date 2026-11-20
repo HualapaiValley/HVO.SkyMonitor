@@ -18,6 +18,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
     public const string RecipeName = "centered-registered-stack";
     public const string RecipeVersion = "centered-direct-registration-v1";
     public const string InvalidPlan = "registration.invalid-centered-plan";
+    public const string RetainedInputsUnavailable = "registration.retained-inputs-unavailable";
     public const string ReferenceUnavailable = "registration.reference-unavailable";
     public const string ResourceLimit = "registration.resource-limit";
     public const string EvidenceVariant = "centered-stack-evidence";
@@ -32,6 +33,60 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         ArgumentNullException.ThrowIfNull(plan);
         return new(RecipeName, default, ProcessingInputSelector.Calibrated(linearVariant), artifacts, outputVariant,
             AuxiliaryInputs: [plan.ToAuxiliaryInput()]);
+    }
+
+    /// <summary>
+    /// Restores the exact drawable geometry for a published contributor. For a plate pair, the caller supplies
+    /// both endpoints' pinned raw, association, scene, context and solution artifacts from the published plan.
+    /// </summary>
+    public static IImageRegistrationMap? ReconstructSourceMap(CenteredRegisteredStackEvidence evidence, int offset,
+        IReadOnlyDictionary<Guid, ProcessingArtifact> plateInputs, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        ArgumentNullException.ThrowIfNull(plateInputs);
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentOutOfRangeException.ThrowIfLessThan(offset, -2);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(offset, 2);
+        var slot = offset + 2;
+        var member = evidence.Sources[slot];
+        if (member.Reason != CenteredRegistrationReason.Contributed)
+        {
+            return null;
+        }
+        if (member.Method == CenteredRegistrationMethod.ReferenceIdentity)
+        {
+            return new ImageSimilarity(1, 0, 0, 0);
+        }
+        if (member.Method == CenteredRegistrationMethod.VerifiedCentroidSimilarity)
+        {
+            return member.Similarity;
+        }
+        var source = Open(slot);
+        var reference = Open(2);
+        if (source.Mapping is not { } sourceMap || reference.Mapping is not { } referenceMap ||
+            !source.IsCompatibleWith(reference))
+        {
+            throw new InvalidDataException("Published plate pair could not be reconstructed.");
+        }
+        return new CenteredStackPlate.Pair(sourceMap, referenceMap);
+
+        CenteredStackPlate Open(int index)
+        {
+            var endpoint = evidence.Plan.Slots[index].Exposure ??
+                throw new InvalidDataException("Published plate contributor has no pinned exposure.");
+            var pins = endpoint.Plate ?? throw new InvalidDataException("Published contributor has no plate pins.");
+            var plate = CenteredStackPlate.Verify(Pinned(endpoint.Raw), Pinned(pins.Associations), Pinned(pins.Scene),
+                Pinned(pins.Context), Pinned(pins.Solution), cancellationToken);
+            if (PlateEvidence(plate) != evidence.Sources[index].Plate)
+            {
+                throw new InvalidDataException("Published plate identity differs from retained solution.");
+            }
+            return plate;
+        }
+
+        ProcessingArtifact Pinned(CenteredStackArtifactPin pin) =>
+            plateInputs.TryGetValue(pin.ArtifactId, out var artifact) && pin.Matches(artifact)
+                ? artifact : throw new InvalidDataException("Published plate evidence is missing or changed.");
     }
 
     public JsonElement NormalizeOptions(JsonElement options)
@@ -85,18 +140,27 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         }
 
         var exposures = plan.Slots.Select(slot => slot.Exposure).OfType<CenteredStackExposurePin>().ToArray();
-        var known = exposures.SelectMany(CenteredStackPlanV1.Pins).Select(pin => pin.ArtifactId).ToHashSet();
+        var pins = exposures.SelectMany(CenteredStackPlanV1.Pins).ToDictionary(pin => pin.ArtifactId);
         var artifacts = new Dictionary<Guid, ProcessingArtifact>();
         foreach (var artifact in request.Inputs)
         {
-            if (!known.Contains(artifact.ArtifactId) || !artifacts.TryAdd(artifact.ArtifactId, artifact))
+            if (!pins.TryGetValue(artifact.ArtifactId, out var pin) || !artifacts.TryAdd(artifact.ArtifactId, artifact))
             {
                 return ProcessingOutcome.TerminalFailure(InvalidPlan, nameof(request.Inputs));
             }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!pin.Matches(artifact))
+            {
+                return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidLineage, nameof(request.Inputs));
+            }
+        }
+        if (artifacts.Count != pins.Count)
+        {
+            return ProcessingOutcome.RetryableFailure(RetainedInputsUnavailable);
         }
         var selected = ProcessingRecipeSupport.ResolveMany(request, out _);
         if (!selected.Select(artifact => artifact.ArtifactId).SequenceEqual(
-            exposures.Select(exposure => exposure.Linear.ArtifactId).Where(artifacts.ContainsKey)))
+            exposures.Select(exposure => exposure.Linear.ArtifactId)))
         {
             return ProcessingOutcome.TerminalFailure(InvalidPlan, nameof(request.Inputs));
         }
@@ -111,6 +175,14 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
                 continue;
             }
             var loaded = await ResolveExposureAsync(exposure, artifacts, cancellationToken).ConfigureAwait(false);
+            if (loaded.Reason == CenteredRegistrationReason.RetainedInputMissing)
+            {
+                return ProcessingOutcome.RetryableFailure(RetainedInputsUnavailable);
+            }
+            if (loaded.Reason == CenteredRegistrationReason.RetainedInputMismatch)
+            {
+                return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidLineage);
+            }
             resolved[slot] = loaded.Exposure;
             decisions[slot] = decisions[slot] with
             {
@@ -157,17 +229,9 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
             var reason = choice.Reason;
             if (reason == CenteredRegistrationReason.Contributed)
             {
-                try
-                {
-                    var image = CenteredStackLinearInput.Decode(source.Raw, source.Linear, source.Mask, cancellationToken);
-                    supported = accumulator.Add(slot, image, choice.Map, cancellationToken);
-                    reason = supported == 0 ? CenteredRegistrationReason.NoValidSamples : reason;
-                }
-                catch (ArgumentException)
-                {
-                    // Decode validates the mask before mutating the accumulator.
-                    reason = CenteredRegistrationReason.RetainedInputMismatch;
-                }
+                var image = CenteredStackLinearInput.Decode(source.Raw, source.Linear, source.Mask, source.Aperture, cancellationToken);
+                supported = accumulator.Add(slot, image, choice.Map, cancellationToken);
+                reason = supported == 0 ? CenteredRegistrationReason.NoValidSamples : reason;
             }
             decisions[slot] = decisions[slot] with
             {
@@ -221,15 +285,22 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         {
             return (null, CenteredRegistrationReason.RetainedInputMissing);
         }
-        var retained = await _reader.ReadLinearAsync(pin.Key, pin.Linear.ArtifactId, cancellationToken).ConfigureAwait(false);
+        CenteredStackQualifiedExposure? retained;
+        try
+        {
+            retained = await _reader.ReadLinearAsync(pin.Key, pin.Linear.ArtifactId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            return (null, CenteredRegistrationReason.RetainedInputMissing);
+        }
         if (retained is null)
         {
             return (null, CenteredRegistrationReason.RetainedInputMissing);
         }
         var qualified = retained.Linear;
-        if (!pin.Raw.Matches(raw) || !pin.Linear.Matches(linear) || !pin.ValidityMask.Matches(mask) ||
-            !CenteredStackLinearInput.MatchesExposure(pin, raw, linear, mask, qualified) ||
-            pin.MeasurementGeometrySha256 != retained.MeasurementGeometry.Identity())
+        if (!CenteredStackLinearInput.MatchesExposure(pin, raw, linear, mask, qualified) ||
+            pin.MeasurementBindingSha256 != retained.MeasurementBindingIdentity())
         {
             return (null, CenteredRegistrationReason.RetainedInputMismatch);
         }
@@ -242,7 +313,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         {
             try
             {
-                if (!measurementPin.Matches(measurement) || measurement.CaptureId != pin.Key.CaptureId ||
+                if (measurement.CaptureId != pin.Key.CaptureId ||
                     measurement.SchemaVersion != ExposureMeasurementProducts.SchemaVersion)
                 {
                     throw new ArgumentException("Measurement artifact differs from the fixed exposure product.");
@@ -280,14 +351,14 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
                 invalidPlate = true;
             }
         }
-        return (new(pin, raw, linear, mask, detections, invalidMeasurement, measurementStatus, measurementReason, plate, invalidPlate),
+        return (new(pin, raw, linear, mask, retained.MeasurementGeometry.ApertureProjection, detections, invalidMeasurement, measurementStatus, measurementReason, plate, invalidPlate),
             CenteredRegistrationReason.Contributed);
 
         bool TryGet(CenteredStackArtifactPin artifactPin, out ProcessingArtifact artifact) =>
             artifacts.TryGetValue(artifactPin.ArtifactId, out artifact!);
 
         ProcessingArtifact GetPlate(CenteredStackArtifactPin artifactPin) =>
-            TryGet(artifactPin, out var artifact) && artifact.CaptureId == pin.Key.CaptureId && artifactPin.Matches(artifact)
+            TryGet(artifactPin, out var artifact) && artifact.CaptureId == pin.Key.CaptureId
                 ? artifact : throw new ArgumentException("A fixed retained plate input is missing or differs.");
     }
 
@@ -301,7 +372,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         return new(ExposureMeasurementSourceV1.FromDescriptor(qualified.Exposure.Raw),
             new(qualified.Exposure.Key.CaptureId, source.LinearArtifactId, source.LinearDescriptorSha256,
                 source.LinearPayloadSha256, source.Recipe.IdentitySha256, source.OutputIdentitySha256, linear.Layout!),
-            disposition, null, raw.Compatibility.Orientation, retained.MeasurementGeometry.NativePixelPitchMicrometers,
+            disposition, retained.MeasurementCalibrationReason, raw.Compatibility.Orientation, retained.MeasurementGeometry.NativePixelPitchMicrometers,
             qualified.Exposure.Geometry.Orientation, retained.MeasurementGeometry.ApertureProjection);
     }
 
@@ -369,7 +440,6 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
     {
         var lineage = plan.Slots.Select(slot => slot.Exposure).OfType<CenteredStackExposurePin>()
             .SelectMany(CenteredStackPlanV1.Pins)
-            .Where(pin => artifacts.TryGetValue(pin.ArtifactId, out var artifact) && pin.Matches(artifact))
             .Select(pin => artifacts[pin.ArtifactId]).ToArray();
         var compatibility = reference?.Linear.Compatibility ?? lineage.FirstOrDefault()?.Compatibility;
         if (compatibility is null || lineage.Length == 0)
@@ -484,7 +554,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         plate.Solution.Assessment.ReasonCode, plate.Solution.UncertaintyReasonCode);
 
     private sealed record ResolvedExposure(CenteredStackExposurePin Pin, ProcessingArtifact Raw, ProcessingArtifact Linear,
-        ProcessingArtifact Mask, IReadOnlyList<StellarDetection>? Detections, bool InvalidMeasurement,
+        ProcessingArtifact Mask, ProjectionContext? Aperture, IReadOnlyList<StellarDetection>? Detections, bool InvalidMeasurement,
         ExposureMeasurementStatus? MeasurementStatus, string? MeasurementReason,
         CenteredStackPlate? Plate, bool InvalidPlate);
 

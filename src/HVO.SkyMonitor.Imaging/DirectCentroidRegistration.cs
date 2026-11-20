@@ -77,8 +77,8 @@ public static class DirectCentroidRegistration
                 {
                     continue;
                 }
-                Consider(Seed(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second));
-                Consider(Seed(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second));
+                Consider(sourcePair.First, sourcePair.Second, referencePair.First, referencePair.Second);
+                Consider(sourcePair.Second, sourcePair.First, referencePair.First, referencePair.Second);
             }
         }
 
@@ -105,8 +105,10 @@ public static class DirectCentroidRegistration
         cancellationToken.ThrowIfCancellationRequested();
         return new(status == DirectRegistrationStatus.Verified ? best.Map : null, report);
 
-        void Consider(ImageSimilarity seed)
+        void Consider(StellarDetection sourceFirst, StellarDetection sourceSecond,
+            StellarDetection referenceFirst, StellarDetection referenceSecond)
         {
+            var seed = Seed(sourceFirst.Pixel, sourceSecond.Pixel, referenceFirst.Pixel, referenceSecond.Pixel);
             var count = MatchPoints(seed, sources, training, hits);
             if (count < MinimumFitCount)
             {
@@ -133,9 +135,18 @@ public static class DirectCentroidRegistration
             }
             var matches = refinedHits.AsSpan(0, count);
             var error = 0.0;
+            var usedFirst = false;
+            var usedSecond = false;
             foreach (var match in matches)
             {
                 error += match.SquaredResidual;
+                usedFirst |= match.Source.Index == sourceFirst.Index && match.Reference.Index == referenceFirst.Index;
+                usedSecond |= match.Source.Index == sourceSecond.Index && match.Reference.Index == referenceSecond.Index;
+            }
+            // Neither endpoint of the winning training seed is eligible for verification.
+            if (!usedFirst || !usedSecond)
+            {
+                return;
             }
             if (Better(count, error, best))
             {
@@ -204,7 +215,7 @@ public static class DirectCentroidRegistration
                 var distance = Math.Sqrt(DistanceSquared(a, b));
                 if (distance >= minimumLength)
                 {
-                    pairs.Add(new(a, b, distance));
+                    pairs.Add(new(points[first], points[second], distance));
                 }
             }
         }
@@ -389,7 +400,7 @@ public static class DirectCentroidRegistration
         return output;
     }
 
-    private readonly record struct Pair(PixelPoint First, PixelPoint Second, double Distance);
+    private readonly record struct Pair(StellarDetection First, StellarDetection Second, double Distance);
     private readonly record struct Match(StellarDetection Source, StellarDetection Reference, double SquaredResidual, int ReferencePosition);
     private sealed record Candidate(ImageSimilarity Map, Match[] Fit, double SquaredError);
 }

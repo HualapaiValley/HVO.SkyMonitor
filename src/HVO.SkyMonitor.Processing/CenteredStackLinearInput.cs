@@ -1,4 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
 
 namespace HVO.SkyMonitor.Processing;
@@ -31,7 +32,7 @@ internal static class CenteredStackLinearInput
             provenance.LinearPayloadSha256 != pin.Linear.PayloadSha256 ||
             provenance.Recipe.IdentitySha256 != linear.RecipeIdentitySha256 ||
             raw.DescriptorIdentitySha256 is null || raw.CaptureId != pin.Key.CaptureId || linear.CaptureId != pin.Key.CaptureId ||
-            mask.Role != FrameArtifactRole.Metadata || mask.CaptureId != pin.Key.CaptureId ||
+            !CenteredStackValidityMask.Matches(mask, pin.ValidityMask) || mask.CaptureId != pin.Key.CaptureId ||
             raw.CaptureSequence != pin.CaptureSequence || linear.CaptureSequence != pin.CaptureSequence ||
             raw.ObservationStartedUtc != pin.ExposureStartedUtc || linear.ObservationStartedUtc != pin.ExposureStartedUtc ||
             raw.ObservationEndedUtc is not { } rawEnd || linear.ObservationEndedUtc is not { } linearEnd ||
@@ -66,16 +67,19 @@ internal static class CenteredStackLinearInput
         {
             BuiltInProcessingRecipes.LinearNormalization => parents.Count == 1 &&
                 provenance.Disposition == LinearExposureDisposition.QualifiedNormalizationOnly &&
+                provenance.CalibrationBundleIdentitySha256 is null && provenance.CalibrationPayloadHashes.IsEmpty &&
                 linearLayout == ProcessingRecipeSupport.CreatePackedLayout(rawLayout),
             BuiltInProcessingRecipes.ReferenceCalibration => parents.Count == 5 &&
                 provenance.Disposition == LinearExposureDisposition.Calibrated &&
+                IsSha256(provenance.CalibrationBundleIdentitySha256) &&
+                provenance.CalibrationPayloadHashes.Length == 4 && provenance.CalibrationPayloadHashes.All(IsSha256) &&
                 linearLayout == CalibrationMasterBuilder.CreateNormalizedLayout(rawLayout),
             _ => false
         };
     }
 
     internal static LinearRegistrationImage Decode(ProcessingArtifact raw, ProcessingArtifact linear,
-        ProcessingArtifact mask, CancellationToken cancellationToken)
+        ProcessingArtifact mask, ProjectionContext? aperture, CancellationToken cancellationToken)
     {
         var layout = linear.Layout!;
         var size = layout.Width * layout.Height;
@@ -103,7 +107,8 @@ internal static class CenteredStackLinearInput
                     throw new ArgumentException("Invalid retained mask sample.", nameof(mask));
                 }
                 values[index] = linearCode;
-                valid[index] = validCode == 1 && rawCode < sourceWhite && linearCode < linearWhite;
+                valid[index] = validCode == 1 && rawCode < sourceWhite && linearCode < linearWhite &&
+                    (aperture?.ContainsSample(x + .5, y + .5) ?? true);
             }
         }
         if (pattern is null)
@@ -123,6 +128,8 @@ internal static class CenteredStackLinearInput
         (long)layout.Width * layout.Height <= LinearRegisteredMean.MaximumPixels &&
         (layout.PixelFormat == CameraPixelFormat.Mono16 || layout.Width >= 3 && layout.Height >= 3 && Pattern(layout) is not null) &&
         StoredWhite(layout) is > 0;
+
+    private static bool IsSha256(string? value) => value is { Length: 64 } && value.All(Uri.IsHexDigit);
 
     private static double StoredWhite(FrameLayoutDescriptor layout) =>
         ExposureSampleCodes.Clipping(layout).StoredWhite is { } white ? white : double.NaN;
