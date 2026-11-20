@@ -9,10 +9,11 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
-    [DataRow(true, true)]
-    [DataRow(false, true)]
-    [DataRow(true, false)]
-    public async Task InvalidatedPrefetchWaitsForFreshLayersOnlyWhenAdvertised(bool advertisedLayers, bool invalidateIncoming)
+    [DataRow(true, true, false)]
+    [DataRow(false, true, false)]
+    [DataRow(true, false, false)]
+    [DataRow(true, false, true)]
+    public async Task InvalidatedPrefetchWaitsForFreshLayersOnlyWhenAdvertised(bool advertisedLayers, bool invalidateIncoming, bool mismatchedBase)
     {
         var fit = (await AstrometryEvidenceAsync().ConfigureAwait(false)) with { ArtifactId = Guid.NewGuid() };
         var firstImage = WithStructuredBase();
@@ -37,6 +38,7 @@ public sealed partial class CurrentSkyPageTests
                 new(new string('F', 64), AstrometricDiagnosticPresentation.ResidualsLayer, "measured-residuals", 610, false, 1_000_000, "v1", "v1")]
         };
         var nextBase = Guid.Parse("00000000-0000-0000-0000-000000000204");
+        var offeredBase = mismatchedBase ? Guid.NewGuid() : nextBase;
         var nextImage = Next(first, SecondCaptureId, firstCapture.CaptureSequence + 1);
         var incoming = nextImage with
         {
@@ -129,7 +131,24 @@ public sealed partial class CurrentSkyPageTests
                 Assert.IsEmpty(page.FindAll(".astrometry-calculator-result, input[data-layer-target='measured-residuals'], input[data-layer-target='measured-associations']"));
             });
 
-            staleRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(SecondCaptureId, new string('C', 64), nextBase)));
+            staleRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(SecondCaptureId, new string('C', 64), offeredBase)));
+            if (mismatchedBase)
+            {
+                await refresh.ConfigureAwait(false);
+                Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
+                Assert.AreEqual(firstImageUrl, page.Find(".sky-layer-canvas img").GetAttribute("src"));
+                Assert.IsTrue(page.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
+                Assert.IsEmpty(page.FindAll(".astrometry-calculator-result, input[data-layer-target='measured-residuals'], input[data-layer-target='measured-associations']"));
+                Assert.AreEqual(0, incomingFreshReads);
+
+                freshRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+                    Layered(SecondCaptureId, new string('B', 64), nextBase)));
+                await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+                Assert.AreEqual(CaptureLink(incoming), page.Find(".layers-link").GetAttribute("href"));
+                StringAssert.Contains(page.Find(".sky-layer-canvas img").GetAttribute("src"), nextBase.ToString("D"), StringComparison.Ordinal);
+                Assert.AreEqual(1, incomingFreshReads);
+                return;
+            }
             if (!invalidateIncoming)
             {
                 var firstCompletion = await Task.WhenAny(refresh, freshStarted.Task).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
