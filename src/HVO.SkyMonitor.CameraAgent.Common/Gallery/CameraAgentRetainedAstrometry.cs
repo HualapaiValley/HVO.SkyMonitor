@@ -121,11 +121,16 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     private readonly SemaphoreSlim latestGate = new(1, 1);
     private IReadOnlyList<AstrometryCaptureCandidate>? latestSnapshot;
     private LinkedList<AstrometryCaptureCandidate> latestCandidates = [];
-    private HashSet<AstrometryOutputStamp> rejectedOutputs = [];
     // An incremental store refresh retains the object for each unchanged capture. A changed capture
     // receives a new object even if the assessment itself still has the same artifact identity.
-    private Dictionary<Guid, CandidateInvalidation> invalidCandidates = [];
-    private sealed record CandidateInvalidation(AstrometryCaptureCandidate Candidate, AstrometryLineageInvalidation Lineage);
+    private Dictionary<Guid, CandidateSkip> skippedCandidates = [];
+
+    private enum CandidateDisposition { Continue, Retry, SkipUntilChanged }
+
+    private readonly record struct CandidateProbe(CameraAgentRetainedAstrometry Evidence,
+        CandidateDisposition Disposition = CandidateDisposition.Continue);
+
+    private sealed record CandidateSkip(AstrometryCaptureCandidate Candidate, AstrometryLineageInvalidation? Lineage);
 
     public void Dispose()
     {
@@ -152,7 +157,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             return new(captureId, "Unavailable", "read-capacity");
         try
         {
-            var view = await ReadAsync(captureId, cancellationToken).ConfigureAwait(false);
+            var view = (await ReadAsync(captureId, cancellationToken).ConfigureAwait(false)).Evidence;
             if (view.Solution is null || view.ArtifactId is not { } artifact || view.SolutionIdentitySha256 is not { } solution)
                 return view;
 
@@ -244,26 +249,18 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var candidate = node.Value;
-                var value = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
-                if (value.Reason is "read-capacity" or TemporaryEvidenceUnavailable)
+                var probe = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
+                if (probe.Disposition == CandidateDisposition.Retry)
                     return LatestRead(false, null, previous, selected);
-                if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary)
+                if (CameraAgentLatestAstrometry.FromVerified(probe.Evidence) is { } summary)
                     return await CompleteLatestReadAsync(captures, summary, previous, selected, cancellationToken).ConfigureAwait(false);
 
                 var next = node.Next;
-                // Retain durable ineligibility for this snapshot and exact immutable rejections.
-                // Open failures and pending artifacts can recover without a durable state change.
-                if (value.LineageInvalidation is { } invalidation)
+                // Commit a conclusive probe before the next cancellation check. Unverified
+                // failures stay on the work list so a later request can observe recovery.
+                if (probe.Disposition == CandidateDisposition.SkipUntilChanged)
                 {
-                    invalidCandidates.Add(candidate.CaptureId, new(candidate, invalidation));
-                    latestCandidates.Remove(node);
-                    newSkips++;
-                }
-                else if (candidate.SoleOutput is { } output && value.Reason == "no-accepted-mapping" &&
-                    value.ArtifactId == output.ArtifactId &&
-                    string.Equals(value.SolutionIdentitySha256, output.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase))
-                {
-                    rejectedOutputs.Add(output);
+                    skippedCandidates.Add(candidate.CaptureId, new(candidate, probe.Evidence.LineageInvalidation));
                     latestCandidates.Remove(node);
                     newSkips++;
                 }
@@ -310,48 +307,49 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
     private RetainedAstrometryLineageState CachedInvalidation(CameraAgentAstrometryAssessmentIdentity? identity)
         => identity is not null && latestSnapshot is { } snapshot &&
-           invalidCandidates.TryGetValue(identity.CaptureId, out var proof) &&
-           proof.Lineage.Assessment.ArtifactId == identity.ArtifactId &&
-           string.Equals(proof.Lineage.Assessment.ContentIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
+           skippedCandidates.TryGetValue(identity.CaptureId, out var skip) && skip.Lineage is { } proof &&
+           proof.Assessment.ArtifactId == identity.ArtifactId &&
+           string.Equals(proof.Assessment.ContentIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase) &&
            store.IsCurrentAstrometrySnapshotForCapture(snapshot, identity.CaptureId)
-               ? proof.Lineage.State : RetainedAstrometryLineageState.Unknown;
+               ? proof.State : RetainedAstrometryLineageState.Unknown;
 
     private void RefreshLatestCandidates(IReadOnlyList<AstrometryCaptureCandidate> snapshot, CancellationToken cancellationToken)
     {
         var pending = new LinkedList<AstrometryCaptureCandidate>();
-        var retained = new HashSet<AstrometryOutputStamp>();
-        var invalidations = new Dictionary<Guid, CandidateInvalidation>();
+        var retained = new Dictionary<Guid, CandidateSkip>();
         foreach (var candidate in snapshot)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (invalidCandidates.TryGetValue(candidate.CaptureId, out var invalidation) &&
-                ReferenceEquals(invalidation.Candidate, candidate))
-                invalidations.Add(candidate.CaptureId, invalidation);
-            else if (candidate.SoleOutput is { } output && rejectedOutputs.Contains(output)) retained.Add(output);
+            if (skippedCandidates.TryGetValue(candidate.CaptureId, out var skip) && ReferenceEquals(skip.Candidate, candidate))
+                retained.Add(candidate.CaptureId, skip);
             else pending.AddLast(candidate);
         }
         latestCandidates = pending;
-        rejectedOutputs = retained;
-        invalidCandidates = invalidations;
+        skippedCandidates = retained;
         latestSnapshot = snapshot;
     }
 
-    private async ValueTask<CameraAgentRetainedAstrometry> ReadAsync(Guid captureId, CancellationToken cancellationToken, bool acceptedOnly = false)
+    private async ValueTask<CandidateProbe> ReadAsync(Guid captureId, CancellationToken cancellationToken, bool acceptedOnly = false)
     {
-        if (captureId == Guid.Empty) return new(captureId, "Unavailable", "invalid-capture");
+        if (captureId == Guid.Empty) return new(new(captureId, "Unavailable", "invalid-capture"));
         var acquiredRawRead = false;
-        DurableCaptureProduct? assessment = null;
+        AstrometryAssessmentSelection assessment = default;
         try
         {
-            var candidates = await store.ReadCaptureProductsAsync(captureId,
-                MeasuredAstrometrySolutionV1.CurrentSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
-            if (candidates.Count == 0) return new(captureId, "NotRetained", "assessment-not-retained");
-            if (candidates.Count != 1) return new(captureId, "Unavailable", "assessment-ambiguous");
-            assessment = candidates[0];
+            assessment = await store.ReadAstrometryAssessmentAsync(captureId, cancellationToken).ConfigureAwait(false);
+            switch (assessment.Kind)
+            {
+                case AstrometryAssessmentSelectionKind.Absent:
+                    return new(new(captureId, "NotRetained", "assessment-not-retained"), CandidateDisposition.SkipUntilChanged);
+                case AstrometryAssessmentSelectionKind.Pending:
+                    return Unavailable(temporary: true);
+                case AstrometryAssessmentSelectionKind.Ambiguous:
+                    return new(new(captureId, "Unavailable", "assessment-ambiguous"), CandidateDisposition.SkipUntilChanged);
+            }
             if (assessment.AvailabilityState == "Quarantined")
                 return Invalidated(assessment, RetainedAstrometryLineageState.Quarantined);
             if (assessment.AvailabilityState != "Available")
-                return await ReadFailedEvidenceAsync(TemporaryEvidenceUnavailable).ConfigureAwait(false);
+                return await ReadFailedEvidenceAsync(temporary: true).ConfigureAwait(false);
             var remaining = Math.Min(maximumReadBytes, MaximumReadBytes);
             var (solutionArtifact, solutionProduct) = await ReadProductAsync(assessment.ArtifactId,
                 MeasuredAstrometryJson.MaximumSolutionBytes).ConfigureAwait(false);
@@ -366,11 +364,12 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             if (acceptedOnly)
             {
                 if (!solution.Assessment.HasMeasuredMapping)
-                    return new(captureId, "NotRetained", "no-accepted-mapping", solutionArtifact.ArtifactId, solution.SolutionIdentitySha256);
+                    return new(new(captureId, "NotRetained", "no-accepted-mapping", solutionArtifact.ArtifactId,
+                        solution.SolutionIdentitySha256), CandidateDisposition.SkipUntilChanged);
                 // Rejection probes read one bounded metadata object. Only raw reconstruction contends with the
                 // selected-frame reader for the larger raw-read allowance.
                 acquiredRawRead = await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
-                if (!acquiredRawRead) return new(captureId, "Unavailable", "read-capacity");
+                if (!acquiredRawRead) return new(new(captureId, "Unavailable", "read-capacity"), CandidateDisposition.Retry);
             }
             var rawId = solution.Assessment.Frame.SourceArtifactId;
             var rawRead = await OpenArtifactAsync(rawId).ConfigureAwait(false);
@@ -399,7 +398,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var associations = MeasuredStellarAssociationJson.Parse(measured.Payload).Associations
                 ?? throw new InvalidDataException("Invalid retained associations.");
             var calibration = new AstrometricCalibration(frozen.Projection, frozen.CalibrationVersion, frozen.ReadoutIdentitySha256);
-            return new(captureId, "Retained", solution.Assessment.ReasonCode, solutionArtifact.ArtifactId,
+            var evidence = new CameraAgentRetainedAstrometry(captureId, "Retained", solution.Assessment.ReasonCode, solutionArtifact.ArtifactId,
                 solution.SolutionIdentitySha256, solution.Assessment.HasMeasuredMapping ? "MeasuredFit" : "Unavailable", solution)
             {
                 Mapping = solution.Assessment.HasMeasuredMapping ? MeasuredAstrometryJson.ReconstructMapping(solution, calibration, associations) : null,
@@ -413,6 +412,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 HeightPixels = descriptor.Layout.Height,
                 DiagnosticsReason = solution.Assessment.HasMeasuredMapping ? "Source mapping to the displayed base has not been established." : "No accepted measured mapping for this capture."
             };
+            return new(evidence);
 
             async ValueTask<(ProcessingArtifact Artifact, ProcessingProduct Product)> ReadProductAsync(Guid id, int maximum)
             {
@@ -460,18 +460,18 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
         }
         catch (Exception exception) when (exception is InvalidDataException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
         {
-            return await ReadFailedEvidenceAsync(InvalidEvidence).ConfigureAwait(false);
+            return await ReadFailedEvidenceAsync(temporary: false).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
         {
-            return await ReadFailedEvidenceAsync(TemporaryEvidenceUnavailable).ConfigureAwait(false);
+            return await ReadFailedEvidenceAsync(temporary: true).ConfigureAwait(false);
         }
         finally
         {
             if (acquiredRawRead) readGate.Release();
         }
 
-        async ValueTask<CameraAgentRetainedAstrometry> ReadFailedEvidenceAsync(string reason)
+        async ValueTask<CandidateProbe> ReadFailedEvidenceAsync(bool temporary)
         {
             // The artifact reads and their leases have ended. The journal lookup needs no raw-read allowance.
             if (acquiredRawRead)
@@ -479,8 +479,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 readGate.Release();
                 acquiredRawRead = false;
             }
-            if (assessment?.ContentIdentitySha256 is not { } identity)
-                return new(captureId, "Unavailable", reason);
+            if (assessment.ContentIdentitySha256 is not { } identity)
+                return Unavailable(temporary);
 
             // The failed open describes one artifact. Read the complete durable lineage before
             // deciding whether this capture is a definite skip or a candidate that should retry.
@@ -488,18 +488,22 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 cancellationToken).ConfigureAwait(false);
             var state = lineage?.Result;
             if (state is null or RetainedAstrometryLineageState.Pending)
-                return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+                return Unavailable(temporary: true);
 
             // Malformed lineage is insufficient to authorize emission or cache a skip. The
             // original artifact failure still describes whether this probe should retry.
-            return IsInvalid(state.Value) ? Invalidated(assessment, state.Value) : new(captureId, "Unavailable", reason);
+            return IsInvalid(state.Value) ? Invalidated(assessment, state.Value) : Unavailable(temporary);
         }
 
-        CameraAgentRetainedAstrometry Invalidated(DurableCaptureProduct product, RetainedAstrometryLineageState state)
-            => new(captureId, "Unavailable", InvalidEvidence)
+        CandidateProbe Unavailable(bool temporary)
+            => new(new(captureId, "Unavailable", temporary ? TemporaryEvidenceUnavailable : InvalidEvidence),
+                temporary ? CandidateDisposition.Retry : CandidateDisposition.Continue);
+
+        CandidateProbe Invalidated(AstrometryAssessmentSelection product, RetainedAstrometryLineageState state)
+            => new(new CameraAgentRetainedAstrometry(captureId, "Unavailable", InvalidEvidence)
             {
                 LineageInvalidation = product.ContentIdentitySha256 is { } identity
                     ? new(new(product.ArtifactId, identity), state) : null
-            };
+            }, CandidateDisposition.SkipUntilChanged);
     }
 }

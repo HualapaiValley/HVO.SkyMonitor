@@ -7,7 +7,8 @@ internal enum CaptureProcessingFaultPoint
     BeforeNodeExecution,
     AfterOutputsPublishedBeforeNodeCommit,
     AfterAstrometrySeedRowMaterialized,
-    BeforeAstrometrySeedPublished
+    BeforeAstrometrySeedPublished,
+    AfterAstrometryAssessmentLookup
 }
 
 internal interface ICaptureProcessingFaultInjector
