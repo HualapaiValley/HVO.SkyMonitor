@@ -15,10 +15,15 @@ internal static class ReferenceAstrometryPreset
 
     internal static async ValueTask<(CapturePipelineConfig Pipeline, MeasuredAstrometryCatalogSelection Selection)> ApplyAsync(
         CapturePipelineConfig pipeline, double? referenceMagnitude, IAstrometricCatalogSource? source, CancellationToken cancellationToken,
-        ProcessingGraphRevisionSnapshot? sourceRevision = null, bool reuseCompatiblePrediction = false)
+        ProcessingGraphRevisionSnapshot? sourceRevision = null)
     {
         ValidateMagnitude(referenceMagnitude);
         var basis = ReadBasis(pipeline);
+        // An explicit graph can have one enabled prediction before a solver is installed.
+        var compatiblePrediction = basis is null
+            ? pipeline.Steps.SingleOrDefault(static step => step.Enabled != false &&
+                HasAlias(step, AstrometryPredictionCaptureProcessingStep.Alias))
+            : null;
         if (basis is not null)
         {
             var priorPin = basis.Pin;
@@ -41,7 +46,7 @@ internal static class ReferenceAstrometryPreset
             throw new InvalidDataException("The installed catalog does not provide a complete, nonempty selection at this magnitude.");
 
         var selection = new MeasuredAstrometryCatalogSelection(data.IdentitySha256, data.SelectionIdentitySha256, magnitude, maximumEntries);
-        return (ApplySelection(pipeline, basis, selection, sourceRevision, reuseCompatiblePrediction), selection);
+        return (ApplySelection(pipeline, basis, selection, sourceRevision, compatiblePrediction), selection);
     }
 
     internal static void ValidateMagnitude(double? referenceMagnitude)
@@ -71,6 +76,7 @@ internal static class ReferenceAstrometryPreset
         }
         else
         {
+            // Reconstruct the historical branch layout for result-fingerprinted receipts.
             expected = ApplySelection(basisPipeline, basis, selection);
         }
         return CaptureContractJson.ComputeCanonicalJsonSha256(expected) ==
@@ -109,13 +115,13 @@ internal static class ReferenceAstrometryPreset
 
     private static CapturePipelineConfig ApplySelection(
         CapturePipelineConfig pipeline, ExistingBranch? basis, MeasuredAstrometryCatalogSelection selection,
-        ProcessingGraphRevisionSnapshot? sourceRevision = null, bool reuseCompatiblePrediction = false)
+        ProcessingGraphRevisionSnapshot? sourceRevision = null, CaptureProcessingStepConfig? compatiblePrediction = null)
     {
         var steps = pipeline.Steps.ToList();
         var magnitude = selection.MaximumMagnitude;
         if (basis is null)
         {
-            AppendBranch(steps, selection, sourceRevision, reuseCompatiblePrediction);
+            AppendBranch(steps, selection, sourceRevision, compatiblePrediction);
         }
         else
         {
@@ -139,13 +145,10 @@ internal static class ReferenceAstrometryPreset
     }
 
     private static void AppendBranch(List<CaptureProcessingStepConfig> steps, MeasuredAstrometryCatalogSelection selection,
-        ProcessingGraphRevisionSnapshot? sourceRevision, bool reuseCompatiblePrediction)
+        ProcessingGraphRevisionSnapshot? sourceRevision, CaptureProcessingStepConfig? compatiblePrediction)
     {
         var ids = steps.Select(NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var variants = sourceRevision is null ? new HashSet<string>(StringComparer.Ordinal) : LegacyVirtualSkySceneGraph.ReadMetadataVariants(sourceRevision);
-        var compatiblePrediction = reuseCompatiblePrediction
-            ? steps.Single(static step => step.Enabled != false && HasAlias(step, AstrometryPredictionCaptureProcessingStep.Alias))
-            : null;
         var predictionId = compatiblePrediction is null
             ? LegacyVirtualSkySceneGraph.ReserveUnused(AstrometryPredictionCaptureProcessingStep.Alias, ids)
             : NodeId(compatiblePrediction);
