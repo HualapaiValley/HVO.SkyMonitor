@@ -60,6 +60,10 @@ public sealed class DirectCentroidRegistrationTests
         var collinear = DirectCentroidRegistration.Fit(straight, straight, 160, 160);
         Assert.IsNull(collinear.Map);
 
+        var repeated = Positions.Where((_, index) => index is not (2 or 8))
+            .Concat(Positions.Select(p => new PixelPoint(p.X + 20, p.Y)));
+        Assert.IsNull(DirectCentroidRegistration.Fit(Points(repeated), Points(Positions), 180, 160).Map);
+
         var source = Points(Positions);
         var badHoldout = Points(Positions.Select((p, i) => i % 3 != 1 ? p : new PixelPoint(p.X + 3, p.Y + 4)));
         var unverified = DirectCentroidRegistration.Fit(source, badHoldout, 160, 160);

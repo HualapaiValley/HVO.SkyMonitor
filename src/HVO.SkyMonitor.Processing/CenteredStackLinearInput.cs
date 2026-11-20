@@ -23,7 +23,8 @@ internal static class CenteredStackLinearInput
             descriptor.Controls.EffectiveGain != raw.Conditions?.Gain ||
             descriptor.Controls.EffectiveOffset != raw.Conditions?.Offset ||
             descriptor.Timing.ExposureStartedUtc != pin.ExposureStartedUtc ||
-            descriptor.Timing.ExposureEndedUtc != raw.ObservationEndedUtc ||
+            ProcessingArtifact.ResolveObservationEndedUtc(descriptor.Timing.ExposureStartedUtc,
+                descriptor.Timing.ExposureEndedUtc, descriptor.Controls.EffectiveExposure) != pin.ExposureEndedUtc ||
             pin.GeometrySha256 != ProcessingIdentity.ComputePayloadSha256(CenteredStackPlanV1.Serialize(qualified.Exposure.Geometry)) ||
             pin.LinearProvenanceSha256 != ProcessingIdentity.ComputePayloadSha256(CenteredStackPlanV1.Serialize(provenance)) ||
             provenance.RawArtifactId != raw.ArtifactId || provenance.RawDescriptorSha256 != pin.Raw.DescriptorSha256 ||
@@ -68,7 +69,7 @@ internal static class CenteredStackLinearInput
             BuiltInProcessingRecipes.LinearNormalization => parents.Count == 1 &&
                 provenance.Disposition == LinearExposureDisposition.QualifiedNormalizationOnly &&
                 provenance.CalibrationBundleIdentitySha256 is null && provenance.CalibrationPayloadHashes.IsEmpty &&
-                linearLayout == ProcessingRecipeSupport.CreatePackedLayout(rawLayout),
+                MatchesNormalizationLayout(rawLayout, linearLayout),
             BuiltInProcessingRecipes.ReferenceCalibration => parents.Count == 5 &&
                 provenance.Disposition == LinearExposureDisposition.Calibrated &&
                 IsSha256(provenance.CalibrationBundleIdentitySha256) &&
@@ -78,45 +79,87 @@ internal static class CenteredStackLinearInput
         };
     }
 
-    internal static LinearRegistrationImage Decode(ProcessingArtifact raw, ProcessingArtifact linear,
-        ProcessingArtifact mask, ProjectionContext? aperture, CancellationToken cancellationToken)
+    internal static bool MatchesNormalizationLayout(FrameLayoutDescriptor source, FrameLayoutDescriptor normalized)
     {
-        var layout = linear.Layout!;
-        var size = layout.Width * layout.Height;
-        var values = new double[size];
-        var valid = new bool[size];
-        var pattern = Pattern(layout);
-        var sourceWhite = StoredWhite(raw.Layout!);
-        var linearWhite = StoredWhite(layout);
-        for (var y = 0; y < layout.Height; y++)
+        var packed = ProcessingRecipeSupport.CreatePackedLayout(source);
+        if (packed == normalized)
         {
-            var rawRow = raw.Payload.Span.Slice(y * raw.Layout!.StrideBytes, layout.Width * 2);
-            var linearRow = linear.Payload.Span.Slice(y * layout.StrideBytes, layout.Width * 2);
-            for (var x = 0; x < layout.Width; x++)
+            return true;
+        }
+        // The centered admission path can relabel scaled/shifted native levels in
+        // stored units without changing a single sample. No other layout change is allowed.
+        if (source.LevelCodeSpace != FrameLevelCodeSpace.NativeSample ||
+            source.BlackLevel is not { } black ||
+            !FrameWhiteThreshold.TryResolveStored(source, out var white, out _))
+        {
+            return false;
+        }
+        var scale = source.StoredCodeTransform switch
+        {
+            FrameStoredCodeTransform.LeftShiftedV1 => 1 << (source.ContainerDepthBits - source.SampleDepthBits),
+            FrameStoredCodeTransform.FullRangeScaledV1 => ushort.MaxValue / (double)((1 << source.SampleDepthBits) - 1),
+            _ => 0
+        };
+        return scale > 0 && normalized == (packed with
+        {
+            LevelCodeSpace = FrameLevelCodeSpace.StoredContainer,
+            BlackLevel = black * scale,
+            WhiteLevel = white
+        });
+    }
+
+    /// <summary>One source's scratch, reused after the accumulator has consumed that source.</summary>
+    internal sealed class Decoder(FrameLayoutDescriptor layout)
+    {
+        private readonly double[] _values = new double[layout.Width * layout.Height];
+        private readonly bool[] _valid = new bool[layout.Width * layout.Height];
+        private readonly ColorPlanes? _color = Pattern(layout) is { } pattern ? new(layout.Width * layout.Height, pattern) : null;
+
+        internal LinearRegistrationImage Decode(ProcessingArtifact raw, ProcessingArtifact linear,
+            ProcessingArtifact mask, ProjectionContext? aperture, CancellationToken cancellationToken)
+        {
+            var sourceWhite = StoredWhite(raw.Layout!);
+            var linearWhite = StoredWhite(layout);
+            for (var y = 0; y < layout.Height; y++)
             {
-                var index = y * layout.Width + x;
-                if ((index & 1023) == 0)
+                var rawRow = raw.Payload.Span.Slice(y * raw.Layout!.StrideBytes, layout.Width * 2);
+                var linearRow = linear.Payload.Span.Slice(y * layout.StrideBytes, layout.Width * 2);
+                for (var x = 0; x < layout.Width; x++)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    var index = y * layout.Width + x;
+                    if ((index & 1023) == 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    var rawCode = ExposureSampleCodes.Read16(rawRow[(x * 2)..], raw.Layout!.ByteOrder);
+                    var linearCode = ExposureSampleCodes.Read16(linearRow[(x * 2)..], layout.ByteOrder);
+                    var validCode = mask.Payload.Span[index];
+                    if (validCode > 1)
+                    {
+                        throw new ArgumentException("Invalid retained mask sample.", nameof(mask));
+                    }
+                    _values[index] = linearCode;
+                    _valid[index] = validCode == 1 && rawCode < sourceWhite && linearCode < linearWhite &&
+                        (aperture?.ContainsSample(x + .5, y + .5) ?? true);
                 }
-                var rawCode = ExposureSampleCodes.Read16(rawRow[(x * 2)..], raw.Layout!.ByteOrder);
-                var linearCode = ExposureSampleCodes.Read16(linearRow[(x * 2)..], layout.ByteOrder);
-                var validCode = mask.Payload.Span[index];
-                if (validCode > 1)
-                {
-                    throw new ArgumentException("Invalid retained mask sample.", nameof(mask));
-                }
-                values[index] = linearCode;
-                valid[index] = validCode == 1 && rawCode < sourceWhite && linearCode < linearWhite &&
-                    (aperture?.ContainsSample(x + .5, y + .5) ?? true);
             }
+            if (_color is not { } color)
+            {
+                return new(layout.Width, layout.Height, _valid, _values);
+            }
+            LinearBayerReconstruction.ReconstructInto(_values, _valid, layout.Width, layout.Height, color.Pattern,
+                color.Red, color.Green, color.Blue, color.Mask, cancellationToken);
+            return new(layout.Width, layout.Height, color.Mask, color.Red, color.Green, color.Blue);
         }
-        if (pattern is null)
+
+        private sealed class ColorPlanes(int size, BayerPattern pattern)
         {
-            return new(layout.Width, layout.Height, valid, values);
+            internal BayerPattern Pattern { get; } = pattern;
+            internal double[] Red { get; } = new double[size];
+            internal double[] Green { get; } = new double[size];
+            internal double[] Blue { get; } = new double[size];
+            internal bool[] Mask { get; } = new bool[size];
         }
-        var rgb = LinearBayerReconstruction.Reconstruct(values, valid, layout.Width, layout.Height, pattern.Value, cancellationToken);
-        return new(layout.Width, layout.Height, rgb.ValidMask, rgb.Red, rgb.Green, rgb.Blue);
     }
 
     private static bool SupportedLayout(FrameLayoutDescriptor? layout, int payloadLength) =>

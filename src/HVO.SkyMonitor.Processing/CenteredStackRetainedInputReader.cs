@@ -31,7 +31,26 @@ public sealed class CenteredStackRetainedInputReader(
             throw new InvalidDataException("The committed linear result does not match the frozen stack input.");
         }
         var geometry = await _readGeometry(committed.Exposure, cancellationToken).ConfigureAwait(false);
-        return geometry is null ? null :
-            new(new(committed.Exposure, linear, provenance), geometry);
+        if (geometry is null)
+        {
+            return null;
+        }
+        var measurement = ExposureMeasurementBindings.FromAdmitted(committed, geometry.ApertureProjection,
+            geometry.NativePixelPitchMicrometers);
+        if (measurement.Linear is not { } expected || linear.Layout is not { } layout ||
+            linear.DescriptorIdentitySha256 != provenance.LinearDescriptorSha256)
+        {
+            throw new InvalidDataException("The committed linear layout or descriptor is unavailable.");
+        }
+        if (expected.Layout != layout)
+        {
+            if (committed.Disposition != LinearExposureDisposition.QualifiedNormalizationOnly ||
+                !CenteredStackLinearInput.MatchesNormalizationLayout(committed.Exposure.Raw.Layout, layout))
+            {
+                throw new InvalidDataException("The committed linear layout differs from the admitted readout.");
+            }
+            measurement = measurement with { Linear = expected with { Layout = layout } };
+        }
+        return new(new(committed.Exposure, linear, provenance), measurement);
     }
 }

@@ -158,7 +158,7 @@ public static class DirectCentroidRegistration
             }
             if (compareAgainstWinner)
             {
-                return count >= best!.Fit.Length - 1 && Distinct(refined, best.Map, width, height) &&
+                return Distinct(refined, best!.Map, width, height) &&
                     Check(matches, width, height, MinimumFitCount, .50) == DirectRegistrationStatus.Verified;
             }
             if (Better(count, error, best))

@@ -118,12 +118,10 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             var pin = Outputs[index];
             var plane = planes[index];
             var support = pin.Channel == "support";
-            var format = support ? CameraPixelFormat.Mono8 : CameraPixelFormat.Mono16;
             var media = support ? SupportMediaType : "application/x-hvo-linear-frame";
-            var stride = Width * (support ? 1 : 2);
+            var layout = PlaneLayout(Width, Height, support);
             if (plane.Kind != ProcessingProductKind.PixelData || plane.Role != FrameArtifactRole.Combined ||
-                plane.MediaType != media || plane.Layout is not { } layout || !layout.Validate().IsValid ||
-                layout.Width != Width || layout.Height != Height || layout.StrideBytes != stride || layout.PixelFormat != format ||
+                plane.MediaType != media || plane.Layout != layout ||
                 layout.ByteLength != plane.Payload.Length || plane.ChecksumSha256 != pin.PayloadSha256 ||
                 ProcessingIdentity.ComputePayloadSha256(plane.Payload) != pin.PayloadSha256 ||
                 plane.OutputIdentitySha256 != pin.OutputIdentitySha256 ||
@@ -177,6 +175,16 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         }
     }
 
+    internal static FrameLayoutDescriptor PlaneLayout(int width, int height, bool support)
+    {
+        var bytesPerPixel = support ? 1 : 2;
+        return new(width, height, width * bytesPerPixel,
+            support ? CameraPixelFormat.Mono8 : CameraPixelFormat.Mono16,
+            support ? FrameByteOrder.NotApplicable : FrameByteOrder.LittleEndian,
+            bytesPerPixel * 8, bytesPerPixel * 8, FrameSamplePacking.ByteAligned,
+            ColorFilterArrayPattern.None, 0, support ? 31 : ushort.MaxValue, (long)width * height * bytesPerPixel);
+    }
+
     private void ValidateMembership()
     {
         long total = 0;
@@ -212,7 +220,8 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             LastExposureUtc != contributors.LastOrDefault()?.ExposureEndedUtc ||
             !registered && (Outputs.Count != 0 || ValidPixelCount != 0) ||
             Disposition == CenteredStackDisposition.NoReference && members != 0 ||
-            Disposition == CenteredStackDisposition.SingleExposure && members != 4 ||
+            Disposition == CenteredStackDisposition.SingleExposure &&
+                (members is not (0 or 4) || members == 0 && Sources[2].Reason != CenteredRegistrationReason.NoValidSamples) ||
             registered && ((members & 4) == 0 || ContributorsAt(members) < 2 ||
                 Width < 1 || Height < 1 || (long)Width * Height > LinearRegisteredMean.MaximumPixels ||
                 ValidPixelCount <= 0 || ValidPixelCount > Width * Height || !ValidChannels()))

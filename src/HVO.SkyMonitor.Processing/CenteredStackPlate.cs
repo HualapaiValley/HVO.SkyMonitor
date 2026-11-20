@@ -6,6 +6,10 @@ namespace HVO.SkyMonitor.Processing;
 
 internal sealed record CenteredStackPlate(AstrometricMapping? Mapping, MeasuredAstrometrySolutionV1 Solution)
 {
+    internal static bool MatchesMeasurementPin(ProcessingArtifact association, CenteredStackArtifactPin? measurement) =>
+        association.RecipeDescriptor?.Name != ExposureAssociationProducts.RecipeName ||
+        measurement is not null && association.SourceArtifactIds is { Count: 3 } parents && parents[1] == measurement.ArtifactId;
+
     internal static CenteredStackPlate Verify(ProcessingArtifact raw, ProcessingArtifact association, ProcessingArtifact scene,
         ProcessingArtifact context, ProcessingArtifact artifact, CancellationToken cancellationToken)
     {

@@ -24,7 +24,7 @@ public sealed record RegisteredLinearSamples(ReadOnlyMemory<ushort> Codes, ReadO
 public sealed class LinearRegisteredMean
 {
     public const string AlgorithmVersion = "inverse-bilinear-positive-taps-mean-v1";
-    public const int MaximumPixels = 4_000_000;
+    public const int MaximumPixels = 6_500_000;
     public const int SlotCount = 5;
     private readonly int _width;
     private readonly int _height;

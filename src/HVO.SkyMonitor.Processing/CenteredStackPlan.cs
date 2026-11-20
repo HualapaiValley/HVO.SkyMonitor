@@ -38,7 +38,8 @@ public sealed record CenteredStackArtifactPin(Guid ArtifactId, string ProducerSh
                 artifact.Compatibility,
                 artifact.SourceArtifactIds,
                 artifact.ProductKind,
-                artifact.SchemaVersion
+                artifact.SchemaVersion,
+                artifact.RecipeDescriptor
             })));
     }
 
@@ -57,12 +58,10 @@ public sealed record CenteredStackPlatePins(CenteredStackArtifactPin Association
 /// <summary>Frozen geometry for the retained #1920 measurement input binding.</summary>
 public sealed record CenteredStackMeasurementGeometry(double? NativePixelPitchMicrometers, ProjectionContext? ApertureProjection);
 
-/// <summary>Qualified pixels plus frozen measurement geometry reconstructed from the admitted profile.</summary>
-public sealed record CenteredStackQualifiedExposure(LinearExposureInputV1 Linear, CenteredStackMeasurementGeometry MeasurementGeometry,
-    string? MeasurementCalibrationReason = null)
+/// <summary>Qualified pixels and the measurement expectation derived from their admitted settlement.</summary>
+public sealed record CenteredStackQualifiedExposure(LinearExposureInputV1 Linear, ExposureMeasurementInputV1 MeasurementInput)
 {
-    internal string MeasurementBindingIdentity() => ProcessingIdentity.ComputePayloadSha256(
-        CenteredStackPlanV1.Serialize(new { geometry = MeasurementGeometry, calibrationReason = MeasurementCalibrationReason }));
+    internal string MeasurementBindingIdentity() => ProcessingIdentity.ComputePayloadSha256(CenteredStackPlanV1.Serialize(MeasurementInput));
 }
 
 /// <summary>
