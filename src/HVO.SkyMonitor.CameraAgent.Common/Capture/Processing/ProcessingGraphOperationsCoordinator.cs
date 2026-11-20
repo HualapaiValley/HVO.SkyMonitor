@@ -101,12 +101,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 return await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
             }
             var revisionName = pipelineIdentity[..16];
+            var compilation = retainedCapture ? CaptureProcessingGraphCompilation.RetainedCapture : CaptureProcessingGraphCompilation.ActiveProfile;
             var revision = CreateRevisionSnapshot(
                 configuration,
                 ConfiguredGraphName,
                 revisionName,
                 _timeProvider.GetUtcNow(),
-                ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
+                ProcessingGraphRevisionLifecycle.Validated, compilation: compilation);
             var occupant = await _store.ReadRevisionIdByNameAsync(ConfiguredGraphName, revisionName, cancellationToken)
                 .ConfigureAwait(false);
             if (occupant is not null && !string.Equals(occupant, revision.State.RevisionId, StringComparison.Ordinal))
@@ -120,7 +121,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                     ConfiguredGraphName,
                     SupersededRevisionName(revisionName, revision.State),
                     _timeProvider.GetUtcNow(),
-                    ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
+                    ProcessingGraphRevisionLifecycle.Validated, compilation: compilation);
             }
             EnsureLiveEligible(revision);
             var state = await _store.UpsertConfiguredBasicRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
@@ -181,7 +182,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             var migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(revision, legacyScene, sharedFit) };
             var successor = CreateRevisionSnapshot(migrated,
                 compatibilityGraphName, revision.State.RevisionId, _timeProvider.GetUtcNow(),
-                ProcessingGraphRevisionLifecycle.Validated);
+                ProcessingGraphRevisionLifecycle.Validated, compilation: CaptureProcessingGraphCompilation.ActiveProfile);
             EnsureLiveEligible(successor);
             await _store.InsertSceneCompatibilityRevisionAsync(successor, cancellationToken).ConfigureAwait(false);
             return successor;
@@ -829,11 +830,15 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         DateTimeOffset createdUtc,
         ProcessingGraphRevisionLifecycle lifecycle = ProcessingGraphRevisionLifecycle.Draft,
         ProcessingGraphDefinition? sourceDefinition = null,
-        bool retainedCapture = false)
+        CaptureProcessingGraphCompilation compilation = CaptureProcessingGraphCompilation.Proposal)
     {
-        using var graph = new DisposableProcessingGraph(sourceDefinition is null
-            ? retainedCapture ? _pipelineFactory.CreateRetainedGraph(configuration) : _pipelineFactory.CreateGraph(configuration)
-            : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));
+        using var graph = new DisposableProcessingGraph(compilation switch
+        {
+            CaptureProcessingGraphCompilation.ActiveProfile => _pipelineFactory.CreateActiveProfileGraph(configuration),
+            CaptureProcessingGraphCompilation.RetainedCapture => _pipelineFactory.CreateRetainedGraph(configuration),
+            _ when sourceDefinition is not null => _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision),
+            _ => _pipelineFactory.CreateGraph(configuration)
+        });
         var sharedPlan = graph.Value.SharedPlan
             ?? throw new InvalidOperationException("Processing graph revisions require explicit pipeline v2 compilation.");
         if (sourceDefinition is not null && !ProcessingGraphJson.SerializeCanonical(sourceDefinition)

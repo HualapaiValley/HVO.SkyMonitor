@@ -134,16 +134,19 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision)
-        => CreateGraph(config, definitionName, definitionRevision, validateNewGraph: true);
+        => CreateGraph(config, definitionName, definitionRevision, CaptureProcessingGraphCompilation.Proposal);
+
+    public CaptureProcessingGraph CreateActiveProfileGraph(CameraModuleConfig config)
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, CaptureProcessingGraphCompilation.ActiveProfile);
 
     public CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config)
-        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, validateNewGraph: false);
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, CaptureProcessingGraphCompilation.RetainedCapture);
 
     private CaptureProcessingGraph CreateGraph(
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision,
-        bool validateNewGraph)
+        CaptureProcessingGraphCompilation compilation)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
@@ -275,19 +278,20 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                         producer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
                     throw new InvalidOperationException("MeasuredAstrometry requires an optional explicit node, durable scene and measured dependencies and durable local publication.");
 
-                if (validateNewGraph)
+                // The associations must describe the same scene the solver consumes. A previously
+                // committed graph keeps its plan so raw admission and replay keep their original identities.
+                var sceneId = astrometry.Config.DependsOn.Single(id => nodesById[id].Step is ProjectedSceneCaptureProcessingStep);
+                var measurement = astrometry.Config.DependsOn.Select(id => nodesById[id])
+                    .Single(static producer => producer.Step is MeasuredStellarAssociationCaptureProcessingStep);
+                if (measurement.Config.DependsOn is not { Count: 1 } measuredInputs ||
+                    !string.Equals(measuredInputs[0], sceneId, StringComparison.OrdinalIgnoreCase))
                 {
-                    // The input contracts above select each producer independently. The associations must also
-                    // describe the exact scene consumed by this solver.
-                    var sceneId = astrometry.Config.DependsOn.Single(id => nodesById[id].Step is ProjectedSceneCaptureProcessingStep);
-                    var measurement = astrometry.Config.DependsOn.Select(id => nodesById[id])
-                        .Single(static producer => producer.Step is MeasuredStellarAssociationCaptureProcessingStep);
-                    if (measurement.Config.DependsOn is not { Count: 1 } measuredInputs ||
-                        !string.Equals(measuredInputs[0], sceneId, StringComparison.OrdinalIgnoreCase))
+                    if (compilation == CaptureProcessingGraphCompilation.Proposal)
                     {
                         throw new InvalidOperationException(
                             $"MeasuredAstrometry step '{astrometry.Step.Name}' and its association producer '{measurement.Step.Name}' must depend on the same scene producer.");
                     }
+                    ((MeasuredAstrometryCaptureProcessingStep)astrometry.Step).HasCrossedSceneDependencies = true;
                 }
             }
             if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
@@ -308,7 +312,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
             ValidateAstrometryPrediction(configured, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
-            if (validateNewGraph) ValidateProjectedSceneDependencies(config, configured);
+            if (compilation != CaptureProcessingGraphCompilation.RetainedCapture) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
                 ? CompileSharedPlan(
                     config.Pipeline, configuredSteps, configured, nodesById, definitionName, definitionRevision)

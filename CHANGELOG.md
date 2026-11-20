@@ -28,6 +28,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Legacy VirtualSky graphs preserve their canonical scene and keep measured fits independent when annotations share stellar associations. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901
 
+- CameraAgent resumes raw capture and canonical processing after restarting with a saved graph whose astrometry solver and associations use different scenes. Live solves are skipped with a processing warning. #1901
+
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 
 - Allow runtime control after a backup is settled or fully recovered, while retaining its journal. #1878

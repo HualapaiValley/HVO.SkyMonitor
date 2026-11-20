@@ -25,6 +25,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.MeasuredAstrometry;
     internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
+    internal bool HasCrossedSceneDependencies { get; set; }
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => MeasuredAstrometrySolutionV1.CurrentSchemaVersion;
@@ -55,6 +56,11 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
         var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Astrometry requires durable raw admission.");
         if (context.Config.Pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2)
             throw new InvalidOperationException("Astrometry requires an explicit v2 graph.");
+        if (!context.IsReplayExecution && HasCrossedSceneDependencies)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.crossed-scene-dependencies"));
+            return;
+        }
         if (!context.IsReplayExecution && (descriptor.Capture.CaptureSequence - 1) % Options.CaptureStride != 0)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.capture-cadence"));

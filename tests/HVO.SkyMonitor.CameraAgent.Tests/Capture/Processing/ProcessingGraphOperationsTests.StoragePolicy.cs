@@ -71,7 +71,8 @@ public sealed partial class ProcessingGraphOperationsTests
                 var compiler = typeof(ProcessingGraphOperationsCoordinator).GetMethod("CreateRevisionSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
                 var snapshot = (ProcessingGraphRevisionSnapshot)compiler.Invoke(operations,
                     [profile with { Pipeline = DivergentStoragePipeline(profile.Pipeline, root, member) },
-                        "legacy-storage", "2", DateTimeOffset.UtcNow, ProcessingGraphRevisionLifecycle.Draft, null, false])!;
+                        "legacy-storage", "2", DateTimeOffset.UtcNow, ProcessingGraphRevisionLifecycle.Draft,
+                        null, CaptureProcessingGraphCompilation.Proposal])!;
                 var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
                 legacyId = (await store.InsertNamedRevisionAsync(snapshot, "legacy-create", "old-host", null, CancellationToken.None).ConfigureAwait(false)).RevisionId;
                 await Assert.ThrowsExactlyAsync<ValidationException>(async () =>
