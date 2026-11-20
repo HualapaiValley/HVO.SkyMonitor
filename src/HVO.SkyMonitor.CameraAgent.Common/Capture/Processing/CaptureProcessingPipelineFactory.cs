@@ -349,19 +349,25 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         {
             throw new InvalidOperationException("AstrometryPrediction requires one optional explicit node with only a raw dependency and durable local publication.");
         }
-        var analysisNodes = configured.Where(static item => IsIndependentMeasurement(item.Step))
+        var analysisInputs = configured.Where(static item => item.Step is
+                MeasuredStellarAssociationCaptureProcessingStep { UsesAstrometryPrediction: true })
             .Select(static item => item.Step.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        analysisNodes.Add(predictions[0].Step.Name);
-        foreach (var consumer in configured.Where(item => item.Config.DependsOn?.Any(analysisNodes.Contains) == true))
+        analysisInputs.Add(predictions[0].Step.Name);
+        var fits = configured.Where(static item => item.Step is MeasuredAstrometryCaptureProcessingStep { UsesAstrometryPrediction: true })
+            .Select(static item => item.Step.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var consumer in configured)
         {
-            if (!IsIndependentMeasurement(consumer.Step) ||
-                consumer.Config.Required || consumer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
-                throw new InvalidOperationException("Only optional durable measured nodes configured for AstrometryPrediction may depend on its analysis branch.");
+            var consumerDependencies = consumer.Config.DependsOn ?? [];
+            if (consumerDependencies.Any(analysisInputs.Contains) &&
+                (consumer.Step is not (MeasuredStellarAssociationCaptureProcessingStep { UsesAstrometryPrediction: true } or
+                    MeasuredAstrometryCaptureProcessingStep { UsesAstrometryPrediction: true }) ||
+                 consumer.Config.Required || consumer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
+                throw new InvalidOperationException("Only optional durable measured nodes configured for AstrometryPrediction may consume its analysis inputs.");
+            // A terminal, retained assessment may still have local Storage or outcome consumers. Existing
+            // storage-policy validation disallows upload of the layoutless fit and context.
+            if (consumerDependencies.Any(fits.Contains) && consumer.Step is not (FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep))
+                throw new InvalidOperationException("Only Storage and Telemetry may consume an independent astrometry assessment.");
         }
-
-        static bool IsIndependentMeasurement(ICaptureProcessingStep step) => step is
-            MeasuredStellarAssociationCaptureProcessingStep { UsesAstrometryPrediction: true } or
-            MeasuredAstrometryCaptureProcessingStep { UsesAstrometryPrediction: true };
     }
 
     private static void ValidateProjectedSceneDependencies(

@@ -26,7 +26,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Equatorial-to-horizontal calculations at the zenith and nadir stay finite when floating-point rounding reaches slightly outside the sine range. #1901
 
-- Legacy VirtualSky graphs preserve their canonical scene when they request independent astrometry. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901
+- Legacy VirtualSky graphs preserve their canonical scene and keep measured fits independent when annotations share stellar associations. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901
 
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 

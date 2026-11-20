@@ -23,6 +23,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 {
     private const string ConfiguredGraphName = "configured-basic";
     private const string VirtualSkySceneCompatibilityGraphName = "virtualsky-scene-compatibility";
+    private const string VirtualSkySharedFitCompatibilityGraphName = "virtualsky-shared-fit-compatibility";
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
         ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
@@ -169,13 +170,17 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             // Bind new exposures to a validated successor. Existing raw manifests keep their original revision,
             // and the registry's selected revision retains its identity and control-plane history.
+            var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(revision.Pipeline, legacyScene);
+            // A previously stored successor remains available to its bound captures. New captures with a
+            // shared fit need a distinct successor so an earlier migration cannot silently keep the broken wiring.
+            var compatibilityGraphName = sharedFit is null ? VirtualSkySceneCompatibilityGraphName : VirtualSkySharedFitCompatibilityGraphName;
             var migratedId = await _store.ReadRevisionIdByNameAsync(
-                VirtualSkySceneCompatibilityGraphName, revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
+                compatibilityGraphName, revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
             if (migratedId is not null)
                 return await _store.ReadRevisionAsync(migratedId, cancellationToken).ConfigureAwait(false);
-            var migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(revision.Pipeline, legacyScene) };
+            var migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(revision, legacyScene, sharedFit) };
             var successor = CreateRevisionSnapshot(migrated,
-                VirtualSkySceneCompatibilityGraphName, revision.State.RevisionId, _timeProvider.GetUtcNow(),
+                compatibilityGraphName, revision.State.RevisionId, _timeProvider.GetUtcNow(),
                 ProcessingGraphRevisionLifecycle.Validated);
             EnsureLiveEligible(successor);
             await _store.InsertSceneCompatibilityRevisionAsync(successor, cancellationToken).ConfigureAwait(false);
