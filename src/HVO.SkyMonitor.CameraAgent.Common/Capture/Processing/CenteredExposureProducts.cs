@@ -65,7 +65,7 @@ internal sealed class CenteredExposureProductReader(
         var exposure = CreateExposure(key, raw);
         if (raw.Run.LinearNodeId is null)
             return new(exposure, LinearExposureDisposition.Unavailable, null, null, null, "linear.no-configured-step");
-        var (product, provenance, unavailableReason) = await store.ReadCenteredLinearAsync(key, raw, cancellationToken)
+        var (product, provenance, fallback, unavailableReason) = await store.ReadCenteredLinearAsync(key, raw, cancellationToken)
             .ConfigureAwait(false);
         var disposition = product?.Availability switch
         {
@@ -75,11 +75,9 @@ internal sealed class CenteredExposureProductReader(
             ExposureProductAvailability.Failed => LinearExposureDisposition.Failed,
             ExposureProductAvailability.Unavailable or ExposureProductAvailability.MissingEvidence =>
                 LinearExposureDisposition.Unavailable,
-            _ => unavailableReason is null ? LinearExposureDisposition.Pending : LinearExposureDisposition.Unavailable
+            _ => fallback
         };
-        return new(exposure, disposition, product?.Revision, product?.Product,
-            product?.Availability == ExposureProductAvailability.Available ? provenance : null,
-            product?.Reason ?? unavailableReason);
+        return new(exposure, disposition, product?.Revision, product?.Product, provenance, product?.Reason ?? unavailableReason);
     }
 
     public async ValueTask<ExposureProductLookup?> ReadProductAsync(

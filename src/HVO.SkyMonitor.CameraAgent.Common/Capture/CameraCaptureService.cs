@@ -72,6 +72,7 @@ public sealed class CameraCaptureService(
         await WaitForApplicationStartedAsync(stoppingToken).ConfigureAwait(false);
         var fileConfiguration = await _configurationAccessor.WaitForConfigurationAsync(stoppingToken).ConfigureAwait(false);
         var startupPending = namedRigProfiles?.StartupPendingSelection;
+        CameraKey? previousCenteredCamera = null;
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -130,7 +131,8 @@ public sealed class CameraCaptureService(
                 await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
                 await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
                 if (_rawCaptureIngress is RawCaptureIngress durableIngress)
-                    await durableIngress.ReconcileCenteredControlAsync(config, captureToken).ConfigureAwait(false);
+                    await durableIngress.ReconcileCenteredControlAsync(config, captureToken, previousCenteredCamera)
+                        .ConfigureAwait(false);
                 if (config.CenteredExposure is not null && module is not ICameraBoundExposureCapture)
                     throw new InvalidOperationException("The selected camera cannot bind centered exposure attempts.");
                 await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
@@ -160,6 +162,8 @@ public sealed class CameraCaptureService(
                     }
                 }
                 moduleInitialized = true;
+                previousCenteredCamera = config.CenteredExposure is { } centered
+                    ? new CameraKey(config.AgentId!, centered.CameraId) : null;
                 startupPending = null;
                 if (prepared is not null)
                     namedRigProfiles!.ReportPendingRuntimeFailure(null);
