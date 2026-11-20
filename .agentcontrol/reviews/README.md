@@ -1,10 +1,12 @@
 # Historical AgentControl review bodies
 
 The `hvo-agentcontrol[bot]` reviewer role and its `post-review` publication route
-are retired for formal review. Formal review begins after draft checks pass on
-the exact PR head. Kepler publishes reviewer output verbatim under the operator
-account, links the reviewer sessions, and relays verification records before
-Ready. Follow the [PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md)
+are retired. Kepler publishes reviews without head-mutating review commits.
+
+Formal review begins after draft checks pass on the exact PR head. Kepler
+publishes reviewer output verbatim under the operator account, links the reviewer
+sessions, and relays verification records before Ready. Follow the
+[PR lifecycle skill](../../.agents/skills/pr-lifecycle/SKILL.md)
 and the [common policy](../../docs/development/policy/common.md#authority-and-precedence).
 
 The AgentControl App still opens or refreshes draft PRs for
