@@ -64,8 +64,10 @@ public sealed partial class CurrentSkyPage
 
     private bool InvalidateSelectedAssessment(CameraAgentAstrometryAssessmentIdentity identity)
     {
-        // Also fence a layer projection already requested for an incoming, not-yet-selected frame.
         Interlocked.Increment(ref _retainedAstrometryInvalidationRevision);
+        // A confirmed invalidation only fences a pending switch to the affected capture.
+        if (Volatile.Read(ref _incomingLayerPrefetch) is { } prefetch && prefetch.CaptureId == identity.CaptureId)
+            prefetch.Invalidate();
         if (_runCaptureId != identity.CaptureId) return false;
 
         var layered = _layers?.Astrometry;

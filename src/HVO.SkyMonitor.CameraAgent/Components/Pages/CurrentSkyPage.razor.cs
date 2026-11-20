@@ -94,6 +94,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private int _refreshRequested;
     private int _manualRefreshRequested;
     private long _lastCaptureChangeTimestamp;
+    private IncomingLayerPrefetch? _incomingLayerPrefetch;
     private int _disposeStarted;
 
     // Whether each layer kind is shown, as last shown or chosen. It carries the selection from read to read and capture
@@ -107,6 +108,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         None,
         Switch,
         Hold
+    }
+
+    private sealed class IncomingLayerPrefetch(Guid captureId)
+    {
+        private long _revision;
+
+        public Guid CaptureId { get; } = captureId;
+        public long Revision => Volatile.Read(ref _revision);
+        public void Invalidate() => Interlocked.Increment(ref _revision);
     }
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
@@ -253,6 +263,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         using var deadline = new CancellationTokenSource(bound, TimeProvider);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         await InvokeAsync(() => _refreshing = true);
+        IncomingLayerPrefetch? prefetch = null;
         try
         {
             OperatorUiResult<CameraAgentCurrentSkyView> result;
@@ -266,12 +277,20 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
             var change = CaptureChange.None;
             if (result.IsSuccess && result.Value is { } view)
-                await InvokeAsync(() => change = ClassifyCaptureChange(view, manual, started)).ConfigureAwait(false);
-            var requiresEligibleLayers = change == CaptureChange.Switch && result.Value!.Presentation.StructuredLayersAvailable;
+                await InvokeAsync(() =>
+                {
+                    change = ClassifyCaptureChange(view, manual, started);
+                    if (change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId)
+                    {
+                        prefetch = new(nextCaptureId);
+                        Volatile.Write(ref _incomingLayerPrefetch, prefetch);
+                    }
+                }).ConfigureAwait(false);
+            var requiresEligibleLayers = prefetch is not null && result.Value!.Presentation.StructuredLayersAvailable;
             // The next capture arrives with its overlays in hand, so a change never shows a half-loaded page.
-            var prefetchedLayersRevision = Volatile.Read(ref _retainedAstrometryInvalidationRevision);
-            var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
-                ? await ReadLayersAsync(nextCaptureId, timeout.Token).ConfigureAwait(false)
+            var prefetchedLayersRevision = prefetch?.Revision ?? 0;
+            var layers = prefetch is not null
+                ? await ReadLayersAsync(prefetch.CaptureId, timeout.Token).ConfigureAwait(false)
                 : null;
             if (layers?.Kind == OperatorUiResultKind.Unauthorized)
             {
@@ -280,11 +299,11 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             }
             timeout.Token.ThrowIfCancellationRequested();
             // If invalidation overtook the prefetch, use the same refresh budget for one replacement read.
-            var revisionAfterPrefetch = Volatile.Read(ref _retainedAstrometryInvalidationRevision);
-            if (requiresEligibleLayers && prefetchedLayersRevision != revisionAfterPrefetch && displayCaptureId is { } incomingId)
+            var revisionAfterPrefetch = prefetch?.Revision ?? 0;
+            if (requiresEligibleLayers && prefetchedLayersRevision != revisionAfterPrefetch && prefetch is not null)
             {
                 prefetchedLayersRevision = revisionAfterPrefetch;
-                layers = await ReadLayersAsync(incomingId, timeout.Token).ConfigureAwait(false);
+                layers = await ReadLayersAsync(prefetch.CaptureId, timeout.Token).ConfigureAwait(false);
             }
             var refreshedCaptureId = displayCaptureId;
             await InvokeAsync(() =>
@@ -303,7 +322,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     return;
                 }
                 if (_viewerOpen) { _refreshing = false; return; }
-                if (prefetchedLayersRevision != _retainedAstrometryInvalidationRevision) layers = null;
+                if (prefetchedLayersRevision != (prefetch?.Revision ?? 0)) layers = null;
                 // Decide whether to switch using the same eligible projection the renderer can install.
                 if (requiresEligibleLayers &&
                     (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
@@ -393,6 +412,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 if (_accessDenied || _disposeStarted != 0) return;
                 ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
             }).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _incomingLayerPrefetch, null);
         }
     }
 

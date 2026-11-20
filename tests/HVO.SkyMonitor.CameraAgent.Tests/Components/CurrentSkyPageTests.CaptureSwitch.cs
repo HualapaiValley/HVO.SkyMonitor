@@ -9,9 +9,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
 public sealed partial class CurrentSkyPageTests
 {
     [TestMethod]
-    [DataRow(true)]
-    [DataRow(false)]
-    public async Task InvalidatedPrefetchWaitsForFreshLayersOnlyWhenAdvertised(bool advertisedLayers)
+    [DataRow(true, true)]
+    [DataRow(false, true)]
+    [DataRow(true, false)]
+    public async Task InvalidatedPrefetchWaitsForFreshLayersOnlyWhenAdvertised(bool advertisedLayers, bool invalidateIncoming)
     {
         var fit = (await AstrometryEvidenceAsync().ConfigureAwait(false)) with { ArtifactId = Guid.NewGuid() };
         var firstImage = WithStructuredBase();
@@ -24,6 +25,9 @@ public sealed partial class CurrentSkyPageTests
         var firstBase = firstImage.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined).DisplayArtifactId;
         fit = fit with { CompatibleBaseArtifactId = firstBase };
         var summary = CameraAgentLatestAstrometry.FromVerified(fit)!;
+        var headline = invalidateIncoming
+            ? summary with { CaptureId = SecondCaptureId, ArtifactId = Guid.NewGuid() }
+            : summary;
         var priorLayers = Layered(fit.CaptureId, new string('D', 64));
         var measuredLayers = priorLayers with
         {
@@ -64,7 +68,7 @@ public sealed partial class CurrentSkyPageTests
         service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
         service.LatestAstrometryHandler = (_, _) => ++latestReads switch
         {
-            1 => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary))),
+            1 => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, headline))),
             2 => new(invalidation.Task),
             _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)))
         };
@@ -112,7 +116,11 @@ public sealed partial class CurrentSkyPageTests
         try
         {
             await staleStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            invalidation.SetResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true) { PreviousSummaryEvicted = true }));
+            invalidation.SetResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)
+            {
+                PreviousSummaryEvicted = true,
+                SelectedAssessmentInvalidated = invalidateIncoming
+            }));
             page.WaitForAssertion(() =>
             {
                 Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
@@ -122,6 +130,16 @@ public sealed partial class CurrentSkyPageTests
             });
 
             staleRead.SetResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(Layered(SecondCaptureId, new string('C', 64), nextBase)));
+            if (!invalidateIncoming)
+            {
+                var firstCompletion = await Task.WhenAny(refresh, freshStarted.Task).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                Assert.AreSame(refresh, firstCompletion, "Invalidation of the outgoing capture must not restart an eligible incoming projection.");
+                await refresh.ConfigureAwait(false);
+                Assert.AreEqual(CaptureLink(incoming), page.Find(".layers-link").GetAttribute("href"));
+                Assert.AreEqual(0, incomingFreshReads);
+                StringAssert.Contains(page.Find(".sky-layer-canvas img").GetAttribute("src"), nextBase.ToString("D"), StringComparison.Ordinal);
+                return;
+            }
             await freshStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             // Drain the renderer work that requested the replacement before checking what it made visible.
             await page.InvokeAsync(() => { }).ConfigureAwait(false);
