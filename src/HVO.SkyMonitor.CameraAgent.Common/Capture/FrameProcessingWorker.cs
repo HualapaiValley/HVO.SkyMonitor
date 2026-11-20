@@ -250,6 +250,7 @@ internal sealed class FrameProcessingWorker
                             [], context, item.Execution, cancellationToken).ConfigureAwait(false);
                     }
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
+                    context.AddStepTelemetry(new CaptureProcessingStepTelemetry(node.Id, TimeSpan.Zero, false, dependencyReason));
                     dependencyStopwatch.Stop();
                     telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
                     if (required)
