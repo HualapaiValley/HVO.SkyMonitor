@@ -52,10 +52,11 @@ and `leapSecondsSha256` on the prediction step. Set `expectedRecords` to a
 map from each catalog number to its pinned record SHA-256. A conflicting
 record selection produces an unavailable disposition. Configure that local
 snapshot and the exact time pair through CameraAgent’s orbital inputs.
-The package accepts the same file bounds as the installed time resolver.
-The prediction step
-verifies the exact sources and reports an unavailable result if a pinned
-input cannot be resolved. A capture-specific predicted layer is generated
+The package accepts the installed resolver's input bounds. The selected time
+pair must cover the observed shutter interval. Historical replays can use a
+checksum-pinned local override containing supported rows for that interval.
+The prediction step verifies the exact sources and reports an unavailable
+result if a pinned input cannot be resolved. A capture-specific predicted layer is generated
 from the reported interval and rig. Enable the separate Edge transient
 worker to obtain measured trails. The worker consumes raw evidence and
 independent masks. Tests can compare its output with the private optical
@@ -68,8 +69,9 @@ catalog. The regression uses the original HVO projection and regenerates
 capture-profile tracks for the short cadence. The two-element snapshot is
 derived from the retained #529 facts with a distinct local raw-carrier
 identity. The test uses a simulated clock and ordinary CameraAgent capture,
-raw admission, the installed time resolver with local checksummed overrides,
-local processing and read services. The runner delays its first shutter by
+raw admission, the installed time resolver with the checksummed October
+fixture pair, local processing and read services. The November bundled pair
+has rapid-only rows for the fixture interval. The runner delays its first shutter by
 one millisecond to verify the distinction between requested and observed time.
 
 ```bash

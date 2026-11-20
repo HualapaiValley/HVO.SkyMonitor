@@ -309,7 +309,7 @@ public sealed class NamedOrbitalPassCaptureTests
             var ct = TestContext.CancellationToken;
             var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "orbital-prediction-v1");
             var config = MakeConfiguration(fixture, bayer: false);
-            var input = await PreparePackageAsync(root, fixture, config, ct, bundledTime: clouds).ConfigureAwait(false);
+            var input = await PreparePackageAsync(root, fixture, config, ct).ConfigureAwait(false);
             var ingressRoot = Path.Combine(root, "ingress");
             config = ConfigureGraph(config, input, ingressRoot, wrongExpectedRecord);
             if (clouds)
@@ -694,7 +694,7 @@ public sealed class NamedOrbitalPassCaptureTests
     }
 
     private static async Task<PreparedInput> PreparePackageAsync(
-        string root, string fixture, CameraModuleConfig config, CancellationToken ct, bool competingRecord = false, bool bundledTime = false)
+        string root, string fixture, CameraModuleConfig config, CancellationToken ct, bool competingRecord = false)
     {
         var packageRoot = Path.Combine(root, "private-inputs");
         Directory.CreateDirectory(packageRoot);
@@ -717,12 +717,9 @@ public sealed class NamedOrbitalPassCaptureTests
         }
         var manifest = Put("snapshot.json", combined.SerializeManifest());
         var records = Put("records.json", combined.SerializePayload());
-        var timeRoot = bundledTime ? CameraAgentPinnedOrbitalTimeSource.BundledDirectory : Path.Combine(fixture, "time");
-        var eop = await File.ReadAllBytesAsync(Path.Combine(timeRoot,
-            bundledTime ? "finals2000A.daily.extended" : "predicted-2026.finals2000A"), ct).ConfigureAwait(false);
+        var timeRoot = Path.Combine(fixture, "time");
+        var eop = await File.ReadAllBytesAsync(Path.Combine(timeRoot, "predicted-2026.finals2000A"), ct).ConfigureAwait(false);
         var leaps = await File.ReadAllBytesAsync(Path.Combine(timeRoot, "leap-seconds.list"), ct).ConfigureAwait(false);
-        if (bundledTime)
-            Assert.IsGreaterThan(256 * 1024, eop.Length);
         var time = OrbitalTimeData.FromFinals2000A(eop, leaps);
         var model = OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true);
         var rig = config.Rig;
