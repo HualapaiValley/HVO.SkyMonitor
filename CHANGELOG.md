@@ -167,6 +167,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Changed
 
+- CameraAgent ships the verified November 19, 2026 satellite time-data snapshot. Earth-orientation predictions extend through November 25, 2027, and the bundled leap-second list expires June 28, 2027 at 00:00 UTC. #1474
+
 - Skip Storage-incompatible standard processing while retaining raw and committed capture-time scene evidence for explicit replay; optional scene failures leave capture admission open, configured-basic refreshes without a false health alarm, and divergent Named graph commands return HTTP 409 policy guidance. #1386
 
 - The companion ProcessingRunner update moves its `runtime-deps` base to 10.0.14 as an OS-layer update only. The self-contained runner's .NET runtime remains at 10.0.13 because SDK 10.0.402 is unchanged; adopting the .NET 10.0.14 runtime security fixes requires a coordinated SDK update. #1668
