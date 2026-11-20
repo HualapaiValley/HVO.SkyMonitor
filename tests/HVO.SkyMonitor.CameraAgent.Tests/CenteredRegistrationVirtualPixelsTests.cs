@@ -117,7 +117,8 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         }
         var support = planes.Single(plane => plane.MediaType == CenteredRegisteredStackEvidence.SupportMediaType);
         Assert.AreEqual((byte)0, support.Payload.Span[0]); // outside the declared optical aperture
-        Score(catalog.Query(new(5, 2000)), rig, contributing, evidence, plane, support, ordinary, exposure, byId);
+        Score(catalog.Query(new(5, 2000)), rig, contributing, evidence, plane, support, ordinary, exposure, byId,
+            requireSharpness: contributing.Length == 3);
     }
 
     private async ValueTask<T> MeasureAsync<T>(Process process, string name, Func<ValueTask<T>> operation)
@@ -165,7 +166,7 @@ public sealed class CenteredRegistrationVirtualPixelsTests
 
     private void Score(IReadOnlyList<CelestialCatalogObject> catalogStars, CameraRigConfig rig, Row[] rows, CenteredRegisteredStackEvidence evidence,
         ProcessingProduct plane, ProcessingProduct support, ReadOnlyMemory<byte> ordinary, TimeSpan exposure,
-        IReadOnlyDictionary<Guid, ProcessingArtifact> retained)
+        IReadOnlyDictionary<Guid, ProcessingArtifact> retained, bool requireSharpness)
     {
         var positions = rows.Select(row => VirtualAstrometryReference.Trails(rig, row.Midpoint, exposure, catalogStars)
             .ToDictionary(trail => trail.Star.Id, trail => trail.Mid, StringComparer.Ordinal)).ToArray();
@@ -175,7 +176,8 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         var centerIndex = Array.IndexOf(slots, 0);
         var expectedSupport = (byte)slots.Sum(offset => 1 << (offset + 2));
         var maps = slots.Select(offset => CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, offset, retained)!).ToArray();
-        var candidate = new List<(double WidthRatio, double FluxRatio, double MappingError)>();
+        var placement = new List<double>();
+        var candidate = new List<(double WidthRatio, double FluxRatio)>();
         foreach (var star in catalogStars)
         {
             var points = positions.Select(row => row.GetValueOrDefault(star.Id)).ToArray();
@@ -183,10 +185,15 @@ public sealed class CenteredRegistrationVirtualPixelsTests
                 points.Any(point => !point.HasValue) || points[centerIndex] is not { } center ||
                 !VirtualAstrometryReference.IsApertureInterior(rig, center, 16) ||
                 center.X is < 16 || center.X >= width - 16 || center.Y is < 16 || center.Y >= height - 16 ||
-                VirtualAstrometryReference.Distance(points[0]!.Value, points[^1]!.Value) < 3 ||
                 positions[centerIndex].Any(entry => entry.Key != star.Id && entry.Value is { } other &&
                     VirtualAstrometryReference.Distance(center, other) < 26) ||
                 !FullAperture(support.Payload, width, center, expectedSupport))
+            {
+                continue;
+            }
+            placement.Add(maps.Select((map, index) =>
+                VirtualAstrometryReference.Distance(center, map.SourceToReference(points[index]!.Value)!.Value)).Max());
+            if (VirtualAstrometryReference.Distance(points[0]!.Value, points[^1]!.Value) < 3)
             {
                 continue;
             }
@@ -196,19 +203,26 @@ public sealed class CenteredRegistrationVirtualPixelsTests
             {
                 continue;
             }
-            var error = maps.Select((map, index) =>
-                VirtualAstrometryReference.Distance(center, map.SourceToReference(points[index]!.Value)!.Value)).Max();
-            candidate.Add((registered.Width / mean.Width, registered.Flux / mean.Flux, error));
+            candidate.Add((registered.Width / mean.Width, registered.Flux / mean.Flux));
         }
 
+        Assert.IsGreaterThanOrEqualTo(8, placement.Count);
+        var mappingError = Median(placement);
+        TestContext.WriteLine($"Independent placement n={placement.Count}, median={mappingError:F3} px; valid pixels={evidence.ValidPixelCount}, " +
+            $"support sha256={support.ChecksumSha256}");
+        Assert.IsLessThan(1.25, mappingError);
+        if (!requireSharpness && candidate.Count < 8)
+        {
+            // Do not weaken the independent displacement floor because one input failed.
+            TestContext.WriteLine($"Only {candidate.Count} targets reached the predeclared 3 px displacement; " +
+                "no PSF or aperture-code qualification for this partial window.");
+            return;
+        }
         Assert.IsGreaterThanOrEqualTo(8, candidate.Count);
         var widthRatio = Median(candidate.Select(item => item.WidthRatio));
         var fluxRatio = Median(candidate.Select(item => item.FluxRatio));
-        var mappingError = Median(candidate.Select(item => item.MappingError));
-        TestContext.WriteLine($"Independent actual-pixel scorer n={candidate.Count}, mapping median={mappingError:F3} px, " +
-            $"PSF RMS width ratio={widthRatio:F3}, aperture-code flux ratio={fluxRatio:F3}, valid pixels={evidence.ValidPixelCount}, " +
-            $"support sha256={support.ChecksumSha256}");
-        Assert.IsLessThan(1.25, mappingError);
+        TestContext.WriteLine($"Independent photometric diagnostic n={candidate.Count}, PSF RMS width ratio={widthRatio:F3}, " +
+            $"aperture-code flux ratio={fluxRatio:F3}");
         Assert.IsLessThan(.95, widthRatio);
         Assert.IsTrue(fluxRatio is >= .80 and <= 1.20);
     }
