@@ -253,6 +253,7 @@ public sealed partial class DailySummaryIntegrationTests
         }
 
         var produced = 0;
+        ExceptionDispatchInfo? hookFailure = null;
         var reachedSyntheticThrow = false;
         using var harness = Create(recordWindow: async (store, status, fingerprint, ids, token) =>
         {
@@ -262,11 +263,20 @@ public sealed partial class DailySummaryIntegrationTests
                 reachedSyntheticThrow = true;
                 throw new IOException("Synthetic second summary pointer failure.");
             }
-            await store.RecordWindowAsync(status, fingerprint, ids, token);
+            try
+            {
+                await store.RecordWindowAsync(status, fingerprint, ids, token);
+            }
+            catch (Exception exception)
+            {
+                hookFailure ??= ExceptionDispatchInfo.Capture(exception);
+                throw;
+            }
         });
         using var automation = CreateAutomation(harness);
         await QueueStillAsync(automation.Store, NightlyProductKind.StarTrail);
         await automation.Runner.SweepAsync(CancellationToken.None);
+        hookFailure?.Throw();
         Assert.IsTrue(reachedSyntheticThrow);
         Assert.AreEqual(2, produced);
         var failed = (await automation.Store.GetStateAsync(CancellationToken.None)).Runs.Single();
