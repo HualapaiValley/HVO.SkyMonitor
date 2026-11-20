@@ -14,7 +14,8 @@ internal static class ReferenceAstrometryPreset
     private static readonly CaptureProcessingPublicationPolicy Durable = new(CaptureProcessingPersistenceMode.DurableLocal);
 
     internal static async ValueTask<(CapturePipelineConfig Pipeline, MeasuredAstrometryCatalogSelection Selection)> ApplyAsync(
-        CapturePipelineConfig pipeline, double? referenceMagnitude, IAstrometricCatalogSource? source, CancellationToken cancellationToken)
+        CapturePipelineConfig pipeline, double? referenceMagnitude, IAstrometricCatalogSource? source, CancellationToken cancellationToken,
+        ProcessingGraphRevisionSnapshot? sourceRevision = null, bool reuseCompatiblePrediction = false)
     {
         ValidateMagnitude(referenceMagnitude);
         var basis = ReadBasis(pipeline);
@@ -40,7 +41,7 @@ internal static class ReferenceAstrometryPreset
             throw new InvalidDataException("The installed catalog does not provide a complete, nonempty selection at this magnitude.");
 
         var selection = new MeasuredAstrometryCatalogSelection(data.IdentitySha256, data.SelectionIdentitySha256, magnitude, maximumEntries);
-        return (ApplySelection(pipeline, basis, selection), selection);
+        return (ApplySelection(pipeline, basis, selection, sourceRevision, reuseCompatiblePrediction), selection);
     }
 
     internal static void ValidateMagnitude(double? referenceMagnitude)
@@ -80,12 +81,10 @@ internal static class ReferenceAstrometryPreset
     {
         ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(pipeline);
         var solve = FindSolver(pipeline);
-        if (solve is null && !pipeline.Steps.Any(static step =>
-                HasAlias(step, AstrometryPredictionCaptureProcessingStep.Alias) ||
-                HasAlias(step, MeasuredStellarAssociationCaptureProcessingStep.Alias) ||
-                HasAlias(step, MeasuredAstrometryCaptureProcessingStep.Alias)))
+        // Associations and predictions can have their own consumers in a graph without a solver.
+        if (solve is null)
             return null;
-        if (solve?.DependsOn is not { Count: 2 } dependencies)
+        if (solve.DependsOn is not { Count: 2 } dependencies)
             throw new InvalidOperationException("The existing astrometry branch must be complete and enabled.");
 
         // A graph may publish other associations for its canonical scene. Only the solver's inputs define this branch.
@@ -109,26 +108,14 @@ internal static class ReferenceAstrometryPreset
     }
 
     private static CapturePipelineConfig ApplySelection(
-        CapturePipelineConfig pipeline, ExistingBranch? basis, MeasuredAstrometryCatalogSelection selection)
+        CapturePipelineConfig pipeline, ExistingBranch? basis, MeasuredAstrometryCatalogSelection selection,
+        ProcessingGraphRevisionSnapshot? sourceRevision = null, bool reuseCompatiblePrediction = false)
     {
         var steps = pipeline.Steps.ToList();
         var magnitude = selection.MaximumMagnitude;
         if (basis is null)
         {
-            steps.Add(new(AstrometryPredictionCaptureProcessingStep.Alias, "AstrometryPrediction",
-                DependsOn: ["$raw"], Required: false, Publication: Durable,
-                Options: JsonSerializer.SerializeToElement(new { maximumMagnitude = magnitude })));
-            steps.Add(new(MeasuredStellarAssociationCaptureProcessingStep.Alias, "Measured",
-                DependsOn: ["AstrometryPrediction"], Required: false, Publication: Durable,
-                Options: JsonSerializer.SerializeToElement(new { useAstrometryPrediction = true })));
-            steps.Add(new(MeasuredAstrometryCaptureProcessingStep.Alias, "Astrometry",
-                DependsOn: ["AstrometryPrediction", "Measured"], Required: false, Publication: Durable,
-                Options: JsonSerializer.SerializeToElement(new
-                {
-                    useAstrometryPrediction = true,
-                    catalogSelection = selection,
-                    recipe = new { solver = new { maximumCatalogMagnitude = magnitude } }
-                }, Json)));
+            AppendBranch(steps, selection, sourceRevision, reuseCompatiblePrediction);
         }
         else
         {
@@ -149,6 +136,64 @@ internal static class ReferenceAstrometryPreset
         }
 
         return pipeline with { Steps = steps };
+    }
+
+    private static void AppendBranch(List<CaptureProcessingStepConfig> steps, MeasuredAstrometryCatalogSelection selection,
+        ProcessingGraphRevisionSnapshot? sourceRevision, bool reuseCompatiblePrediction)
+    {
+        var ids = steps.Select(NodeId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var variants = sourceRevision is null ? new HashSet<string>(StringComparer.Ordinal) : LegacyVirtualSkySceneGraph.ReadMetadataVariants(sourceRevision);
+        var compatiblePrediction = reuseCompatiblePrediction
+            ? steps.Single(static step => step.Enabled != false && HasAlias(step, AstrometryPredictionCaptureProcessingStep.Alias))
+            : null;
+        var predictionId = compatiblePrediction is null
+            ? LegacyVirtualSkySceneGraph.ReserveUnused(AstrometryPredictionCaptureProcessingStep.Alias, ids)
+            : NodeId(compatiblePrediction);
+        var measuredId = LegacyVirtualSkySceneGraph.ReserveUnused("Measured", ids);
+        var solveId = LegacyVirtualSkySceneGraph.ReserveUnused("Astrometry", ids);
+
+        var magnitude = selection.MaximumMagnitude;
+        var predictionOptions = compatiblePrediction is null ? new JsonObject() : ReadOptions(compatiblePrediction);
+        predictionOptions["maximumMagnitude"] = magnitude;
+        var measuredOptions = new JsonObject { ["useAstrometryPrediction"] = true };
+        var solveOptions = new JsonObject
+        {
+            ["useAstrometryPrediction"] = true,
+            ["catalogSelection"] = JsonSerializer.SerializeToNode(selection, Json),
+            ["recipe"] = new JsonObject { ["solver"] = new JsonObject { ["maximumCatalogMagnitude"] = magnitude } }
+        };
+
+        if (compatiblePrediction is null)
+            SetVariant(predictionOptions, AstrometryPredictionCaptureProcessingStep.AliasVariant);
+        else
+            variants.Add(((AstrometryPredictionCaptureProcessingStepOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
+                compatiblePrediction.Options, typeof(AstrometryPredictionCaptureProcessingStepOptions))).OutputVariant ??
+                AstrometryPredictionCaptureProcessingStep.AliasVariant);
+        SetVariant(measuredOptions, new MeasuredStellarAssociationProcessingStepOptions().OutputVariant);
+        var defaultSolveVariant = new MeasuredAstrometryCaptureOptions().OutputVariant;
+        var solveVariant = LegacyVirtualSkySceneGraph.ReserveUnused(defaultSolveVariant, variants);
+        while (variants.Contains(solveVariant + "-context"))
+            solveVariant = LegacyVirtualSkySceneGraph.ReserveUnused(defaultSolveVariant, variants);
+        if (solveVariant != defaultSolveVariant)
+            solveOptions["outputVariant"] = solveVariant;
+
+        var predictionJson = JsonSerializer.SerializeToElement(predictionOptions);
+        if (compatiblePrediction is null)
+            steps.Add(new(AstrometryPredictionCaptureProcessingStep.Alias, predictionId,
+                DependsOn: ["$raw"], Required: false, Publication: Durable, Options: predictionJson));
+        else
+            steps[steps.IndexOf(compatiblePrediction)] = compatiblePrediction with { Options = predictionJson };
+        steps.Add(new(MeasuredStellarAssociationCaptureProcessingStep.Alias, measuredId,
+            DependsOn: [predictionId], Required: false, Publication: Durable, Options: JsonSerializer.SerializeToElement(measuredOptions)));
+        steps.Add(new(MeasuredAstrometryCaptureProcessingStep.Alias, solveId,
+            DependsOn: [predictionId, measuredId], Required: false, Publication: Durable, Options: JsonSerializer.SerializeToElement(solveOptions)));
+
+        void SetVariant(JsonObject options, string defaultVariant)
+        {
+            var variant = LegacyVirtualSkySceneGraph.ReserveUnused(defaultVariant, variants);
+            if (variant != defaultVariant)
+                options["outputVariant"] = variant;
+        }
     }
 
     internal static MeasuredAstrometryCatalogSelection ReadSelection(CapturePipelineConfig pipeline)
@@ -176,7 +221,7 @@ internal static class ReferenceAstrometryPreset
         => (MeasuredAstrometryCaptureOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
             step.Options, typeof(MeasuredAstrometryCaptureOptions));
 
-    internal static CaptureProcessingStepConfig? FindSolver(CapturePipelineConfig pipeline)
+    private static CaptureProcessingStepConfig? FindSolver(CapturePipelineConfig pipeline)
         => pipeline.Steps.SingleOrDefault(static step => step.Enabled != false &&
             HasAlias(step, MeasuredAstrometryCaptureProcessingStep.Alias));
 
