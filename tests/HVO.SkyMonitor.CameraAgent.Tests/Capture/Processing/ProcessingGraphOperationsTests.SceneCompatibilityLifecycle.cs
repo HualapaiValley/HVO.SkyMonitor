@@ -151,6 +151,19 @@ public sealed partial class ProcessingGraphOperationsTests
                     _ => ProcessingGraphRevisionLifecycle.Validated
                 };
                 Assert.AreEqual(expectedLifecycle, prior.Lifecycle);
+                if (storedRecord == "wrong-id")
+                {
+                    var retired = await operations.RetireRevisionAsync(
+                        ineligible, state.StateVersion, "retire-unrelated", "test", null, token).ConfigureAwait(false);
+                    Assert.AreEqual(source, retired.ActiveRevisionId);
+                    Assert.AreEqual(state.StateVersion + 1, retired.StateVersion);
+                    Assert.AreEqual(ProcessingGraphRevisionLifecycle.Retired,
+                        retired.Revisions.Single(value => value.RevisionId == ineligible).Lifecycle);
+                    var retry = await operations.RetireRevisionAsync(
+                        ineligible, state.StateVersion, "retire-unrelated", "test", null, token).ConfigureAwait(false);
+                    Assert.AreEqual(retired.StateVersion, retry.StateVersion);
+                    state = retired;
+                }
                 await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
                     await operations.RetireRevisionAsync(candidate.RevisionId, state.StateVersion,
                         "retire-recovered", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
@@ -170,9 +183,15 @@ public sealed partial class ProcessingGraphOperationsTests
 
             using var reopened = CreateSceneCompatibilityProvider(root);
             await reopened.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var reopenedOperations = reopened.GetRequiredService<IProcessingGraphOperations>();
+            var reopenedState = await reopenedOperations.GetRegistryAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(source, reopenedState.ActiveRevisionId);
+            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await reopenedOperations.RetireRevisionAsync(replacement.Manifest.CaptureGraphRevisionId!,
+                    reopenedState.StateVersion, "retire-reopened", "test", null, token).ConfigureAwait(false)).ConfigureAwait(false);
             var fresh = await CaptureWithSceneCompatibilityAsync(reopened, configuration, now.AddSeconds(4)).ConfigureAwait(false);
             Assert.AreEqual(replacement.Manifest.CaptureGraphRevisionId, fresh.Manifest.CaptureGraphRevisionId);
-            await AssertSceneCompatibilityReplayAsync(reopened, replacement).ConfigureAwait(false);
+            await AssertSceneCompatibilityReplayAsync(reopened, fresh).ConfigureAwait(false);
         }
         finally
         {

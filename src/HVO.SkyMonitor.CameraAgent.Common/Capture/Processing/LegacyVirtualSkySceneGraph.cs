@@ -7,10 +7,13 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal static class LegacyVirtualSkySceneGraph
 {
     internal static CaptureProcessingStepConfig? FindLegacyScene(CameraModuleConfig configuration, CapturePipelineConfig pipeline)
+        => string.Equals(configuration.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase)
+            ? FindLegacyScene(pipeline) : null;
+
+    internal static CaptureProcessingStepConfig? FindLegacyScene(CapturePipelineConfig pipeline)
     {
         // Storage owns supplemental durable output retention. A scene-only graph can still commit its canonical stage.
-        if (!string.Equals(configuration.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
-            !pipeline.Steps.Any(static step => IsEnabledAlias(step, "Storage"))) return null;
+        if (!pipeline.Steps.Any(static step => IsEnabledAlias(step, "Storage"))) return null;
         return pipeline.Steps.SingleOrDefault(static step => IsEnabledAlias(step, "ProjectedScene") &&
             step.Options is { ValueKind: JsonValueKind.Object } options && options.EnumerateObject().Any(static entry =>
                 string.Equals(entry.Name, "independentPrediction", StringComparison.OrdinalIgnoreCase) &&

@@ -198,11 +198,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             {
                 if (migrated is null)
                 {
-                    var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(source.Pipeline, legacyScene);
-                    // The earlier scene successor remains bound to its historical captures.
-                    if (sharedFit is not null)
-                        compatibilityGraphName = VirtualSkySharedFitCompatibilityGraphName;
-                    migrated = configuration with { Pipeline = LegacyVirtualSkySceneGraph.Migrate(source, legacyScene, sharedFit) };
+                    var derivation = DeriveSceneCompatibilityPipeline(source, legacyScene);
+                    compatibilityGraphName = derivation.GraphName;
+                    migrated = configuration with { Pipeline = derivation.Pipeline };
                 }
                 var name = generation == 0 ? sourceId : FormattableString.Invariant($"{sourceId}-{generation}");
                 var expected = CreateRevisionSnapshot(migrated, compatibilityGraphName,
@@ -660,7 +658,44 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string? reason,
         CancellationToken cancellationToken)
         => _store.RetireRevisionAsync(
-            revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken);
+            revisionId, expectedVersion, idempotencyKey, actor, reason, IsLiveSceneCompatibilityRevisionAsync, cancellationToken);
+
+    private async ValueTask<bool> IsLiveSceneCompatibilityRevisionAsync(
+        ProcessingGraphRevisionSnapshot source,
+        ProcessingGraphRevisionSnapshot candidate,
+        CancellationToken cancellationToken)
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        var legacyScene = profile is null ? LegacyVirtualSkySceneGraph.FindLegacyScene(source.Pipeline)
+            : LegacyVirtualSkySceneGraph.FindLegacyScene(profile, source.Pipeline);
+        if (legacyScene is null) return false;
+
+        var (graphName, pipeline) = DeriveSceneCompatibilityPipeline(source, legacyScene);
+        var state = candidate.State;
+        if (state.Name != graphName || !candidate.PipelineJson.AsSpan().SequenceEqual(CanonicalBytes(pipeline)))
+            return false;
+
+        if (profile is null)
+        {
+            // The journal can be reopened before a camera profile is available. Verify the derivation using the
+            // frozen source pipeline and the candidate's immutable revision identity in that interval.
+            return state.RevisionId == ComputeRevisionId(
+                state.Name, state.Revision, state.DefinitionIdentitySha256, state.SharedPlanIdentitySha256, state.LocalPlanIdentitySha256);
+        }
+
+        var expected = CreateRevisionSnapshot(profile with { Pipeline = pipeline }, graphName, state.Revision, state.CreatedUtc,
+            ProcessingGraphRevisionLifecycle.Validated, compilation: CaptureProcessingGraphCompilation.ActiveProfile);
+        return SqliteCaptureProcessingStore.HasSameRevisionContent(candidate, expected);
+    }
+
+    private static (string GraphName, CapturePipelineConfig Pipeline) DeriveSceneCompatibilityPipeline(
+        ProcessingGraphRevisionSnapshot source, CaptureProcessingStepConfig legacyScene)
+    {
+        var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(source.Pipeline, legacyScene);
+        // The earlier scene successor remains bound to its historical captures.
+        var graphName = sharedFit is null ? VirtualSkySceneCompatibilityGraphName : VirtualSkySharedFitCompatibilityGraphName;
+        return (graphName, LegacyVirtualSkySceneGraph.Migrate(source, legacyScene, sharedFit));
+    }
 
     public ValueTask<ProcessingReplaySubmissionResult> SubmitReplayAsync(
         ProcessingReplaySubmission submission,
@@ -891,15 +926,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 Publication = node.Publication?.Persistence.ToString()
             }).ToArray()
         });
-        var revisionId = CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            SchemaVersion = "cameraagent-processing-graph-revision-v1",
-            Name = name,
-            Revision = revision,
-            sharedPlan.DefinitionIdentitySha256,
-            sharedPlan.PlanIdentitySha256,
-            LocalPlanIdentitySha256 = localPlanIdentity
-        });
+        var revisionId = ComputeRevisionId(
+            name, revision, sharedPlan.DefinitionIdentitySha256, sharedPlan.PlanIdentitySha256, localPlanIdentity);
         var sharedNodes = sharedPlan.Nodes.ToDictionary(
             static node => node.Definition.Id,
             StringComparer.Ordinal);
@@ -1043,6 +1071,18 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     internal static bool IsSha256(string value)
         => value.Length == 64 && value.All(Uri.IsHexDigit);
+
+    private static string ComputeRevisionId(string name, string revision, string definitionIdentitySha256,
+        string sharedPlanIdentitySha256, string localPlanIdentitySha256)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            SchemaVersion = "cameraagent-processing-graph-revision-v1",
+            Name = name,
+            Revision = revision,
+            DefinitionIdentitySha256 = definitionIdentitySha256,
+            PlanIdentitySha256 = sharedPlanIdentitySha256,
+            LocalPlanIdentitySha256 = localPlanIdentitySha256
+        });
 
     private static byte[] CanonicalBytes<T>(T value)
         => Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(

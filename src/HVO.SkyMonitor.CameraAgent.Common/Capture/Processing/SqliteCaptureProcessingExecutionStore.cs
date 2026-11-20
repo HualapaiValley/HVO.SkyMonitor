@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -54,14 +55,29 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return (false, null);
         var state = ReadRevisionState(reader);
-        if (state.RevisionId != expected.State.RevisionId ||
-            state.Lifecycle is not (ProcessingGraphRevisionLifecycle.Validated or ProcessingGraphRevisionLifecycle.Active) ||
-            state.ValidatedUtc is null || state.RetiredUtc is not null)
+        if (state.RevisionId != expected.State.RevisionId || !IsValidatedCompatibilityRevision(state))
         {
             return (true, null);
         }
         var stored = await ReadRevisionSnapshotAsync(reader, state, cancellationToken).ConfigureAwait(false);
         return (true, HasSameRevisionContent(stored, expected) ? stored : null);
+    }
+
+    private static bool IsValidatedCompatibilityRevision(ProcessingGraphRevisionState state)
+        => state.Lifecycle is (ProcessingGraphRevisionLifecycle.Validated or ProcessingGraphRevisionLifecycle.Active) &&
+           state.ValidatedUtc is not null && state.RetiredUtc is null;
+
+    private static bool HasSceneCompatibilityNameFor(ProcessingGraphRevisionState state, string sourceId)
+    {
+        if (state.Name is not (ProcessingGraphOperationsCoordinator.VirtualSkySceneCompatibilityGraphName or
+                ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName))
+            return false;
+
+        var name = state.Revision.AsSpan();
+        if (name.SequenceEqual(sourceId)) return true;
+        return name.Length > sourceId.Length + 1 && name.StartsWith(sourceId, StringComparison.Ordinal) &&
+               name[sourceId.Length] == '-' && name[sourceId.Length + 1] is >= '1' and <= '9' &&
+               int.TryParse(name[(sourceId.Length + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out _);
     }
 
     internal async ValueTask<ProcessingGraphRegistryState> UpsertConfiguredBasicRevisionAsync(
@@ -442,6 +458,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         string idempotencyKey,
         string actor,
         string? reason,
+        Func<ProcessingGraphRevisionSnapshot, ProcessingGraphRevisionSnapshot, CancellationToken, ValueTask<bool>>
+            isLiveCompatibilityRevision,
         CancellationToken cancellationToken)
     {
         ValidateRevisionId(revisionId);
@@ -471,14 +489,16 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             throw new ProcessingGraphStoreConflictException("The processing graph revision is already retired.");
         }
-        // The registry names the source revision. Both the original and replacement names encode that source.
-        if (revision.State.Name is (ProcessingGraphOperationsCoordinator.VirtualSkySceneCompatibilityGraphName or
-                ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName) &&
-            (revision.State.Revision == state.ActiveRevisionId ||
-             revision.State.Revision.StartsWith(state.ActiveRevisionId + "-", StringComparison.Ordinal)))
+        // Names narrow the lookup. The selected source and its derived revision are checked in this transaction.
+        if (IsValidatedCompatibilityRevision(revision.State) && HasSceneCompatibilityNameFor(revision.State, state.ActiveRevisionId))
         {
-            throw new ProcessingGraphStoreConflictException(
-                "A compatibility revision for the selected processing graph cannot be retired.");
+            var source = await ReadRevisionAsync(connection, transaction, state.ActiveRevisionId, cancellationToken)
+                .ConfigureAwait(false);
+            if (await isLiveCompatibilityRevision(source, revision, cancellationToken).ConfigureAwait(false))
+            {
+                throw new ProcessingGraphStoreConflictException(
+                    "A compatibility revision for the selected processing graph cannot be retired.");
+            }
         }
         if (await IsAcceptedDeliveredRevisionAsync(connection, transaction, revisionId, cancellationToken).ConfigureAwait(false))
         {
@@ -1419,8 +1439,9 @@ internal sealed partial class SqliteCaptureProcessingStore
         return inserted;
     }
 
-    private static bool HasSameRevisionContent(ProcessingGraphRevisionSnapshot stored, ProcessingGraphRevisionSnapshot expected)
-        => stored.State.Name == expected.State.Name &&
+    internal static bool HasSameRevisionContent(ProcessingGraphRevisionSnapshot stored, ProcessingGraphRevisionSnapshot expected)
+        => stored.State.RevisionId == expected.State.RevisionId &&
+           stored.State.Name == expected.State.Name &&
            stored.State.Revision == expected.State.Revision &&
            stored.State.DefinitionIdentitySha256 == expected.State.DefinitionIdentitySha256 &&
            stored.State.SharedPlanIdentitySha256 == expected.State.SharedPlanIdentitySha256 &&
