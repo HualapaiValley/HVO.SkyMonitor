@@ -9,6 +9,7 @@ public sealed partial class CurrentSkyPage
     private CameraAgentRetainedAstrometry? _astrometry;
     private CameraAgentLatestAstrometry? _latestAstrometry;
     private long _latestAstrometryRevision;
+    private long _retainedAstrometryInvalidationRevision;
     private bool _latestAstrometryLoading;
     private bool? _latestAstrometryReadSucceeded;
 
@@ -32,17 +33,21 @@ public sealed partial class CurrentSkyPage
                 if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                 if (revision != _latestAstrometryRevision || _disposeStarted != 0 || _accessDenied || IsArchived) return;
                 var read = result.Value;
+                CameraAgentAstrometryAssessmentIdentity? invalidatedPrevious = null;
+                var reloadSelected = false;
                 if (read?.PreviousSummaryInvalidated == true && previous is not null)
                 {
                     _latestAstrometry = null;
-                    InvalidateSelectedAssessment(new(previous.CaptureId, previous.ArtifactId, previous.SolutionIdentitySha256));
+                    invalidatedPrevious = new(previous.CaptureId, previous.ArtifactId, previous.SolutionIdentitySha256);
+                    reloadSelected = InvalidateSelectedAssessment(invalidatedPrevious);
                 }
-                if (read?.SelectedAssessmentInvalidated == true && selected is not null)
-                    InvalidateSelectedAssessment(selected);
+                if (read?.SelectedAssessmentInvalidated == true && selected is not null && selected != invalidatedPrevious)
+                    reloadSelected |= InvalidateSelectedAssessment(selected);
                 var completed = read?.Completed == true && result.IsSuccess && !bounded.IsCancellationRequested;
                 _latestAstrometryReadSucceeded = completed;
                 if (completed) _latestAstrometry = read!.Summary;
                 StateHasChanged();
+                if (reloadSelected) TryLoadLayers(_runCaptureId);
             });
         }
         catch (Exception)
@@ -57,19 +62,19 @@ public sealed partial class CurrentSkyPage
         }
     }
 
-    private void InvalidateSelectedAssessment(CameraAgentAstrometryAssessmentIdentity identity)
+    private bool InvalidateSelectedAssessment(CameraAgentAstrometryAssessmentIdentity identity)
     {
-        if (Matches(_layers?.Astrometry, identity))
-        {
-            // Replace the measured overlays with a projection begun after invalidation. A shared
-            // layer read that started before quarantine or eviction can still hold the old fit.
-            ResetLayers(identity.CaptureId, _lifetime!.Token);
-            TryLoadLayers(identity.CaptureId, requireCurrent: true);
-        }
-        else if (Matches(_astrometry, identity))
-        {
-            ClearAstrometry();
-        }
+        // Also fence a layer projection already requested for an incoming, not-yet-selected frame.
+        Interlocked.Increment(ref _retainedAstrometryInvalidationRevision);
+        if (_runCaptureId != identity.CaptureId) return false;
+
+        var layered = _layers?.Astrometry;
+        var matchingEvidence = Matches(layered, identity) || Matches(_astrometry, identity);
+        var hasVerifiedEvidence = RetainedIdentity(layered) is not null || RetainedIdentity(_astrometry) is not null;
+        // A pending read can carry the invalidated fit even if neither projection has installed it yet.
+        // Rotate both read lifetimes. Keep a separately verified replacement already on the same frame.
+        ResetLayers(identity.CaptureId, _lifetime!.Token, discardDisplayedEvidence: matchingEvidence || !hasVerifiedEvidence);
+        return true;
     }
 
     private static CameraAgentAstrometryAssessmentIdentity? RetainedIdentity(CameraAgentRetainedAstrometry? value)
@@ -164,10 +169,11 @@ public sealed partial class CurrentSkyPage
         }
     }
 
-    private void CalculatePixelToSky()
+    private void CalculatePixelToSky((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
+        if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
         _calculatorResult = "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
-        if (!CanCalculate || _pixelX is not { } x || _pixelY is not { } y || !InsideSource(x, y)) return;
+        if (_pixelX is not { } x || _pixelY is not { } y || !InsideSource(x, y)) return;
         var point = _astrometry!.Mapping!.PixelToSky(new(x, y));
         if (point is not { AboveGeometricHorizon: true }) return;
         _skyCoordinates = "equatorial";
@@ -176,10 +182,11 @@ public sealed partial class CurrentSkyPage
         _calculatorResult = FormattableString.Invariant($"RA {_skyFirst:0.########} h, Dec {_skySecond:0.########}° (mean of date); altitude {point.Horizontal.AltitudeDegrees:0.########}°, azimuth {point.Horizontal.AzimuthDegrees:0.########}°. Epoch {point.CoordinateEpochUtc:O}. Point uncertainty withheld; fit RMS is not prediction uncertainty.");
     }
 
-    private void CalculateSkyToPixel()
+    private void CalculateSkyToPixel((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
+        if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
         _calculatorResult = "Enter finite RA [0, 24) h / Dec [−90, 90]°, or altitude [0, 90]° / azimuth [0, 360)°. The point must lie within the retained aperture above the horizon.";
-        if (!CanCalculate || _skyFirst is not { } first || _skySecond is not { } second || !double.IsFinite(first) || !double.IsFinite(second)) return;
+        if (_skyFirst is not { } first || _skySecond is not { } second || !double.IsFinite(first) || !double.IsFinite(second)) return;
         EquatorialPoint equatorial;
         if (_skyCoordinates == "horizontal")
         {
