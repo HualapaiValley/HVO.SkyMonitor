@@ -104,8 +104,8 @@ public sealed partial class VirtualSkyCameraModuleTests
             string digest;
             (ExposureProductLookup Publication, ExposureMeasurementV1 Measurement)? beforeExpiry = null;
             using var cancellation = new CancellationTokenSource();
-            using (var provider = MeasurementProvider(root, location, predictions,
-                interrupt ? new MeasurementCommitInterruption(cancellation) : null))
+            var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
+            using (var provider = MeasurementProvider(root, location, predictions, interruption))
             {
                 var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
                 var operations = provider.GetRequiredService<IProcessingGraphOperations>();
@@ -144,18 +144,26 @@ public sealed partial class VirtualSkyCameraModuleTests
                 await module.InitializeAsync(active, CancellationToken.None).ConfigureAwait(false);
                 var ingress = provider.GetRequiredService<RawCaptureIngress>();
                 var resources = provider.GetRequiredService<CaptureProjectedSceneStager>().FrozenResources;
-                var reservation = await ingress.ReserveCenteredAsync(active, resources, null, CancellationToken.None).ConfigureAwait(false);
                 var setpoint = new CaptureSetpoint(TimeSpan.FromSeconds(1), 1, null, null);
-                await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "fixture", CancellationToken.None).ConfigureAwait(false);
-                var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+                async Task<(CaptureResult Capture, RawCaptureReceipt Receipt)> CaptureAndAdmitAsync(
+                    DateTimeOffset requestedUtc, CancellationToken token)
                 {
-                    BoundGraphRevisionId = reservation.Revision.State.RevisionId,
-                    BoundGraph = reservation.Revision.Pipeline
-                };
-                var capture = await module.CaptureBoundAsync(reservation.Pending.Key, request, CancellationToken.None).ConfigureAwait(false);
+                    var reservation = await ingress.ReserveCenteredAsync(active, resources, null, token).ConfigureAwait(false);
+                    await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "fixture", token).ConfigureAwait(false);
+                    var request = new CaptureRequest(requestedUtc, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint)
+                    {
+                        BoundGraphRevisionId = reservation.Revision.State.RevisionId,
+                        BoundGraph = reservation.Revision.Pipeline
+                    };
+                    var result = await module.CaptureBoundAsync(reservation.Pending.Key, request, token).ConfigureAwait(false);
+                    Assert.IsNotNull(result.Frame);
+                    var accepted = await ingress.AcceptCenteredAsync(active, new(request, result, requestedUtc, request.TargetInterval,
+                        request.TargetInterval), reservation, token).ConfigureAwait(false);
+                    return (result, accepted);
+                }
+
+                var (capture, receipt) = await CaptureAndAdmitAsync(now, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(capture.Frame);
-                var receipt = await ingress.AcceptCenteredAsync(active, new(request, capture, now, request.TargetInterval,
-                    request.TargetInterval), reservation, CancellationToken.None).ConfigureAwait(false);
                 var exposure = CaptureExposureMeasurementReader.Key(receipt.Manifest);
                 if (references is not null)
                 {
@@ -172,10 +180,31 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var reader = provider.GetRequiredService<IExposureProductReader>();
                 var slot = new ExposureProductSlot(lease.Context.Execution!.ExecutionId, ExposureMeasurementProducts.StepAlias,
                     ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
-                if (interrupt)
+                var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
+                if (interruption is not null)
                 {
-                    await Assert.ThrowsAsync<OperationCanceledException>(async () => await provider.GetRequiredService<StandardCaptureLaneHandler>()
-                        .HandleAsync(lease.Context, cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+                    var work = lease.Context;
+                    var running = Task.Run(async () => await handler.HandleAsync(work, cancellation.Token).ConfigureAwait(false));
+                    try
+                    {
+                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                        await interruption.Entered.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+                        var (_, next) = await CaptureAndAdmitAsync(now.AddSeconds(1), timeout.Token).ConfigureAwait(false);
+                        Assert.AreEqual(RawIngressOutcome.Committed, next.Outcome);
+                        var nextKey = CaptureExposureMeasurementReader.Key(next.Manifest);
+                        Assert.AreNotEqual(exposure.CaptureId, nextKey.CaptureId);
+                        Assert.AreEqual(exposure.RunId, nextKey.RunId);
+                        var current = await ingress.ReadCurrentAsync(exposure.Camera, timeout.Token).ConfigureAwait(false);
+                        Assert.AreEqual(nextKey, current.AcquisitionHead?.Exposure);
+                        Assert.IsNull(await reader.ReadProductAsync(exposure, slot, timeout.Token).ConfigureAwait(false),
+                            "N+1 must commit while step four for N is still blocked.");
+                    }
+                    finally
+                    {
+                        interruption.Resume.TrySetResult();
+                        await Assert.ThrowsAsync<OperationCanceledException>(async () => await running.ConfigureAwait(false))
+                            .ConfigureAwait(false);
+                    }
                     Assert.IsNull(await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false),
                         "Files alone cannot advertise an uncommitted measurement.");
                     await laneStore.ReleaseAsync(lease, CancellationToken.None).ConfigureAwait(false);
@@ -183,8 +212,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.IsNotNull(lease);
                     Assert.AreEqual(slot.ExecutionId, lease.Context.Execution!.ExecutionId);
                 }
-                var outcome = await provider.GetRequiredService<StandardCaptureLaneHandler>()
-                    .HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
+                var outcome = await handler.HandleAsync(lease.Context, CancellationToken.None).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
                 await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
 
@@ -377,7 +405,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         await using (input.ConfigureAwait(false))
         {
             Assert.AreEqual(qualified.Provenance.LinearPayloadSha256,
-                ProcessingIdentity.ComputePayloadSha256(input.Input.Linear.Payload.Span));
+                ProcessingIdentity.ComputePayloadSha256(input.Input.Linear.Payload));
         }
 
         var stored = await store.ReadOutputByArtifactIdAsync(qualified.Product.ArtifactId, CancellationToken.None).ConfigureAwait(false);
@@ -429,10 +457,19 @@ public sealed partial class VirtualSkyCameraModuleTests
 
     private sealed class MeasurementCommitInterruption(CancellationTokenSource cancellation) : ICaptureProcessingFaultInjector
     {
+        public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Resume { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
-            if (point == CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit &&
-                nodeId == ExposureMeasurementProducts.StepAlias && !cancellation.IsCancellationRequested)
+            if (nodeId != ExposureMeasurementProducts.StepAlias || cancellation.IsCancellationRequested)
+                return;
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution)
+            {
+                Entered.TrySetResult();
+                Resume.Task.WaitAsync(TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
+            }
+            if (point == CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit)
             {
                 cancellation.Cancel();
                 cancellation.Token.ThrowIfCancellationRequested();
