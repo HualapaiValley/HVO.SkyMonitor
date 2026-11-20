@@ -10,6 +10,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -321,19 +322,43 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
         ValidateRevisionName(revision, nameof(revision));
+        ReferenceAstrometryPreset.ValidateMagnitude(referenceMagnitude);
+        var requestSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(
+            new { basisRevisionId, revision, referenceMagnitude, actor, reason });
+        if (await _store.ReadReferenceAstrometryCreationAsync(
+                idempotencyKey, requestSha256, actor, reason, cancellationToken).ConfigureAwait(false) is { } receipt)
+        {
+            var selection = ReferenceAstrometryPreset.ReadSelection(receipt.Revision.Pipeline);
+            if (receipt.Legacy)
+            {
+                var legacyBasis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+                if (receipt.Revision.State.Revision != revision || !ReferenceAstrometryPreset.MatchesLegacyCreation(
+                        legacyBasis.Pipeline, referenceMagnitude, receipt.Revision.Pipeline, selection))
+                    throw new ProcessingGraphStoreConflictException("The idempotency key was used for a different command.");
+            }
+            return (receipt.Revision.State, selection);
+        }
+
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("A camera profile must be initialized before configuring astrometry.");
         if (referenceMagnitude is null && !string.Equals(profile.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
-        if ((profile.Rig.Readout?.PixelFormat ?? profile.Rig.Sensor.PixelFormat) is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
-            throw new InvalidOperationException("Measured astrometry requires a linear 16-bit monochrome or Bayer readout.");
-        _ = RigProjectionContextFactory.Create(profile.Rig);
+        EnsureReferenceAstrometryReadout(profile.Rig);
         var basis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
-        var (pipeline, selection) = await ReferenceAstrometryPreset.ApplyAsync(
+        var (pipeline, _) = await ReferenceAstrometryPreset.ApplyAsync(
             basis.Pipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
-        var draft = await CreateRevisionAsync(profile, ReferenceAstrometryPreset.GraphName, revision, pipeline,
-            idempotencyKey, actor, reason, cancellationToken, referenceAstrometryPreset: true).ConfigureAwait(false);
-        return (draft, selection);
+        var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
+            ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
+        var committed = await _store.InsertReferenceAstrometryRevisionAsync(
+            snapshot, idempotencyKey, actor, reason, requestSha256, candidate =>
+            {
+                var current = _currentCaptureProfile?.Invoke() ?? profile;
+                CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, current.Pipeline);
+                if (current.Rig != profile.Rig)
+                    EnsureReferenceAstrometryReadout(current.Rig);
+            }, cancellationToken).ConfigureAwait(false);
+        // A concurrent retry can commit another selection before this transaction starts.
+        return (committed.State, ReferenceAstrometryPreset.ReadSelection(committed.Pipeline));
     }
 
     internal async ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(
@@ -344,8 +369,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string idempotencyKey,
         string actor,
         string? reason,
-        CancellationToken cancellationToken,
-        bool referenceAstrometryPreset = false)
+        CancellationToken cancellationToken)
     {
         ValidateRevisionName(name, nameof(name));
         ValidateRevisionName(revision, nameof(revision));
@@ -355,7 +379,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
         return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
             candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
-                (_currentCaptureProfile?.Invoke() ?? profile).Pipeline), referenceAstrometryPreset).ConfigureAwait(false);
+                (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);
     }
 
     public async ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
@@ -736,10 +760,25 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
             ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
         CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
+        if (referenceAstrometryPreset)
+            EnsureReferenceAstrometryReadout(current.Rig);
         EnsureCompatibleRevisionPlans(revision, current);
         if (referenceAstrometryPreset)
             await ReferenceAstrometryPreset.VerifySelectionAsync(
                 revision.Pipeline, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void EnsureReferenceAstrometryReadout(CameraRigConfig rig)
+    {
+        if ((rig.Readout?.PixelFormat ?? rig.Sensor.PixelFormat) is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
+            throw new InvalidOperationException("Measured astrometry requires a linear 16-bit monochrome or Bayer readout.");
+        var projection = RigProjectionContextFactory.Create(rig);
+        // StellarSourceMeasurer requires at least 16 pixels per axis and has a lower pixel ceiling than the solver.
+        const int minimumDimension = 16;
+        if (projection.WidthPixels is < minimumDimension or > ProjectedSceneJson.MaximumDimensionPixels ||
+            projection.HeightPixels is < minimumDimension or > ProjectedSceneJson.MaximumDimensionPixels ||
+            (long)projection.WidthPixels * projection.HeightPixels > StellarDetector.MaximumSupportedPixels)
+            throw new InvalidOperationException("The configured readout dimensions fall outside the measured astrometry recipe bounds.");
     }
 
     private void EnsureCompatibleRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig configuration)

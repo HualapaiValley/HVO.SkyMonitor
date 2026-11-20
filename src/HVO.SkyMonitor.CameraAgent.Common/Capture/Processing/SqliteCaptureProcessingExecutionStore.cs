@@ -126,20 +126,65 @@ internal sealed partial class SqliteCaptureProcessingStore
         return (await ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false)).State;
     }
 
+    internal async ValueTask<(ProcessingGraphRevisionSnapshot Revision, bool Legacy)?> ReadReferenceAstrometryCreationAsync(
+        string idempotencyKey, string requestSha256, string actor, string? reason, CancellationToken cancellationToken)
+    {
+        ValidateCommand(idempotencyKey, actor, reason);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        var prior = await ReadCommandAsync(connection, null, idempotencyKey, cancellationToken).ConfigureAwait(false);
+        if (prior is null) return null;
+
+        var legacy = prior.Kind == LegacyReferenceAstrometryCreateCommand;
+        if (legacy)
+        {
+            EnsureIdempotent(prior, LegacyReferenceAstrometryCreateCommand,
+                CommandSha256(LegacyReferenceAstrometryCreateCommand, prior.ResultReference, actor, reason));
+        }
+        else
+        {
+            EnsureIdempotent(prior, ReferenceAstrometryCreateCommand, requestSha256);
+        }
+        var revision = await ReadRevisionAsync(connection, null, prior.ResultReference, cancellationToken).ConfigureAwait(false);
+        return (revision, legacy);
+    }
+
     internal async ValueTask<ProcessingGraphRevisionState> InsertNamedRevisionAsync(
         ProcessingGraphRevisionSnapshot revision,
         string idempotencyKey,
         string actor,
         string? reason,
         CancellationToken cancellationToken,
-        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null,
-        bool referenceAstrometryPreset = false)
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible = null)
+        => (await InsertNamedRevisionCommandAsync(revision, idempotencyKey, actor, reason,
+            ensureCompatible, referenceAstrometryRequestSha256: null, cancellationToken).ConfigureAwait(false)).State;
+
+    internal ValueTask<ProcessingGraphRevisionSnapshot> InsertReferenceAstrometryRevisionAsync(
+        ProcessingGraphRevisionSnapshot revision,
+        string idempotencyKey,
+        string actor,
+        string? reason,
+        string requestSha256,
+        Action<ProcessingGraphRevisionSnapshot> ensureCompatible,
+        CancellationToken cancellationToken)
+        => InsertNamedRevisionCommandAsync(revision, idempotencyKey, actor, reason,
+            ensureCompatible, requestSha256, cancellationToken);
+
+    private async ValueTask<ProcessingGraphRevisionSnapshot> InsertNamedRevisionCommandAsync(
+        ProcessingGraphRevisionSnapshot revision,
+        string idempotencyKey,
+        string actor,
+        string? reason,
+        Action<ProcessingGraphRevisionSnapshot>? ensureCompatible,
+        string? referenceAstrometryRequestSha256,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(revision);
         ValidateCommand(idempotencyKey, actor, reason);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var referenceAstrometryPreset = referenceAstrometryRequestSha256 is not null;
         var kind = referenceAstrometryPreset ? ReferenceAstrometryCreateCommand : "create";
-        var commandSha256 = CommandSha256(kind, revision.State.RevisionId, actor, reason);
+        var commandSha256 = referenceAstrometryRequestSha256 ?? CommandSha256(kind, revision.State.RevisionId, actor, reason);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: false);
@@ -148,7 +193,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             EnsureIdempotent(prior, kind, commandSha256);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            return (await ReadRevisionAsync(connection, null, prior.ResultReference, cancellationToken).ConfigureAwait(false)).State;
+            return await ReadRevisionAsync(connection, null, prior.ResultReference, cancellationToken).ConfigureAwait(false);
         }
         // A committed acknowledgement precedes current-policy checks, just as validate/activate/rollback do.
         // The command fingerprint above still rejects a different request reusing the key.
@@ -166,7 +211,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             connection, transaction, idempotencyKey, kind, commandSha256, actor, reason,
             revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return (await ReadRevisionAsync(revision.State.RevisionId, cancellationToken).ConfigureAwait(false)).State;
+        return await ReadRevisionAsync(connection, null, revision.State.RevisionId, cancellationToken).ConfigureAwait(false);
     }
 
     internal async ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
@@ -1359,9 +1404,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Transaction = transaction;
         command.CommandText = """
             SELECT 1 FROM processing_graph_commands
-            WHERE command_kind = $kind AND result_reference = $revision LIMIT 1;
+            WHERE command_kind IN ($kind, $legacyKind) AND result_reference = $revision LIMIT 1;
             """;
         command.Parameters.AddWithValue("$kind", ReferenceAstrometryCreateCommand);
+        command.Parameters.AddWithValue("$legacyKind", LegacyReferenceAstrometryCreateCommand);
         command.Parameters.AddWithValue("$revision", revisionId);
         return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not null;
     }
@@ -1745,7 +1791,8 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     private sealed record StoredCommand(string Kind, string CommandSha256, string ResultReference);
 
-    private const string ReferenceAstrometryCreateCommand = "create-reference-astrometry";
+    private const string LegacyReferenceAstrometryCreateCommand = "create-reference-astrometry";
+    private const string ReferenceAstrometryCreateCommand = "create-reference-astrometry-v2";
 
     private const string RevisionSelectSql = """
         SELECT revision_id, graph_name, revision_name, lifecycle,

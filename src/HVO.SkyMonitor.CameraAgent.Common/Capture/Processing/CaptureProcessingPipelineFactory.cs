@@ -134,16 +134,16 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision)
-        => CreateGraph(config, definitionName, definitionRevision, requireCanonicalScene: true);
+        => CreateGraph(config, definitionName, definitionRevision, validateNewGraph: true);
 
     public CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config)
-        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, requireCanonicalScene: false);
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, validateNewGraph: false);
 
     private CaptureProcessingGraph CreateGraph(
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision,
-        bool requireCanonicalScene)
+        bool validateNewGraph)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
@@ -274,6 +274,21 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                         producer.Step is not (ProjectedSceneCaptureProcessingStep or MeasuredStellarAssociationCaptureProcessingStep) ||
                         producer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
                     throw new InvalidOperationException("MeasuredAstrometry requires an optional explicit node, durable scene and measured dependencies and durable local publication.");
+
+                if (validateNewGraph)
+                {
+                    // The input contracts above select each producer independently. The associations must also
+                    // describe the exact scene consumed by this solver.
+                    var sceneId = astrometry.Config.DependsOn.Single(id => nodesById[id].Step is ProjectedSceneCaptureProcessingStep);
+                    var measurement = astrometry.Config.DependsOn.Select(id => nodesById[id])
+                        .Single(static producer => producer.Step is MeasuredStellarAssociationCaptureProcessingStep);
+                    if (measurement.Config.DependsOn is not { Count: 1 } measuredInputs ||
+                        !string.Equals(measuredInputs[0], sceneId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException(
+                            $"MeasuredAstrometry step '{astrometry.Step.Name}' and its association producer '{measurement.Step.Name}' must depend on the same scene producer.");
+                    }
+                }
             }
             if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
                 throw new InvalidOperationException("A capture graph supports one bounded satellite prediction producer.");
@@ -293,7 +308,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             }
             ValidateAstrometryPrediction(configured, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
-            if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
+            if (validateNewGraph) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
                 ? CompileSharedPlan(
                     config.Pipeline, configuredSteps, configured, nodesById, definitionName, definitionRevision)

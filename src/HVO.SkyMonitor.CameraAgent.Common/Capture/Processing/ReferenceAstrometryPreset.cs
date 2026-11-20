@@ -16,41 +16,22 @@ internal static class ReferenceAstrometryPreset
     internal static async ValueTask<(CapturePipelineConfig Pipeline, MeasuredAstrometryCatalogSelection Selection)> ApplyAsync(
         CapturePipelineConfig pipeline, double? referenceMagnitude, IAstrometricCatalogSource? source, CancellationToken cancellationToken)
     {
-        if (referenceMagnitude is { } requested && (!double.IsFinite(requested) || requested is < -30 or > 30))
-            throw new ArgumentOutOfRangeException(nameof(referenceMagnitude));
-        ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(pipeline);
-
-        var steps = pipeline.Steps.ToList();
-        var prediction = Find(steps, AstrometryPredictionCaptureProcessingStep.Alias);
-        var measured = Find(steps, MeasuredStellarAssociationCaptureProcessingStep.Alias);
-        var solve = Find(steps, MeasuredAstrometryCaptureProcessingStep.Alias);
-
-        var maximumEntries = AstrometricCatalogData.MaximumEntries;
-        if (prediction is not null || measured is not null || solve is not null)
+        ValidateMagnitude(referenceMagnitude);
+        var basis = ReadBasis(pipeline);
+        if (basis is not null)
         {
-            if (prediction is null || measured is null || solve is null ||
-                prediction.Enabled == false || measured.Enabled == false || solve.Enabled == false)
-                throw new InvalidOperationException("The existing astrometry branch must be complete and enabled.");
-
-            var solveOptions = ReadSolveOptions(solve);
-            if (solveOptions is not { UseAstrometryPrediction: true, Catalog: null, PreviousAccepted: null, CatalogSelection: { } priorPin })
-                throw new InvalidOperationException("The preset requires an independent branch with an installed catalog pin and no explicit prior.");
-
+            var priorPin = basis.Pin;
             // A scope change must not silently bless a different installed catalog or an invalid prior selection.
             _ = await priorPin.ResolveAsync(source, cancellationToken).ConfigureAwait(false);
             if (referenceMagnitude is null)
             {
-                var predictionOptions = (AstrometryPredictionCaptureProcessingStepOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
-                    prediction.Options, typeof(AstrometryPredictionCaptureProcessingStepOptions));
-                var solver = solveOptions.Recipe.Solver ?? new();
-                if (priorPin.MaximumMagnitude != predictionOptions.MaximumMagnitude ||
-                    priorPin.MaximumMagnitude != solver.MaximumCatalogMagnitude)
+                if (!HasCoherentDepth(basis))
                     throw new InvalidOperationException("The existing reference limits differ. Supply an explicit magnitude to align them.");
                 return (pipeline, priorPin);
             }
-            maximumEntries = priorPin.MaximumEntries;
         }
 
+        var maximumEntries = basis?.Pin.MaximumEntries ?? AstrometricCatalogData.MaximumEntries;
         var magnitude = referenceMagnitude ?? VirtualSkyDefaultMagnitude;
         var data = await (source ?? throw new InvalidDataException("The installed astrometry catalog adapter is unavailable."))
             .ReadAsync(magnitude, maximumEntries, cancellationToken).ConfigureAwait(false);
@@ -59,7 +40,73 @@ internal static class ReferenceAstrometryPreset
             throw new InvalidDataException("The installed catalog does not provide a complete, nonempty selection at this magnitude.");
 
         var selection = new MeasuredAstrometryCatalogSelection(data.IdentitySha256, data.SelectionIdentitySha256, magnitude, maximumEntries);
-        if (solve is null || prediction is null)
+        return (ApplySelection(pipeline, basis, selection), selection);
+    }
+
+    internal static void ValidateMagnitude(double? referenceMagnitude)
+    {
+        if (referenceMagnitude is { } requested && (!double.IsFinite(requested) || requested is < -30 or > 30))
+            throw new ArgumentOutOfRangeException(nameof(referenceMagnitude));
+    }
+
+    internal static bool MatchesLegacyCreation(
+        CapturePipelineConfig basisPipeline, double? referenceMagnitude, CapturePipelineConfig committedPipeline,
+        MeasuredAstrometryCatalogSelection selection)
+    {
+        // Legacy receipts fingerprinted the resulting revision. Rebuild the expected pipeline with the
+        // recorded selection so those receipts can still be checked without the original catalog adapter.
+        var basis = ReadBasis(basisPipeline);
+        var magnitude = referenceMagnitude ?? basis?.Pin.MaximumMagnitude ?? VirtualSkyDefaultMagnitude;
+        var maximumEntries = basis?.Pin.MaximumEntries ?? AstrometricCatalogData.MaximumEntries;
+        if (selection.MaximumMagnitude != magnitude || selection.MaximumEntries != maximumEntries)
+            return false;
+
+        CapturePipelineConfig expected;
+        if (referenceMagnitude is null && basis is not null)
+        {
+            if (basis.Pin != selection || !HasCoherentDepth(basis))
+                return false;
+            expected = basisPipeline;
+        }
+        else
+        {
+            expected = ApplySelection(basisPipeline, basis, selection);
+        }
+        return CaptureContractJson.ComputeCanonicalJsonSha256(expected) ==
+            CaptureContractJson.ComputeCanonicalJsonSha256(committedPipeline);
+    }
+
+    private static ExistingBranch? ReadBasis(CapturePipelineConfig pipeline)
+    {
+        ProcessingGraphOperationsCoordinator.EnsureExplicitPipeline(pipeline);
+        var prediction = Find(pipeline.Steps, AstrometryPredictionCaptureProcessingStep.Alias);
+        var measured = Find(pipeline.Steps, MeasuredStellarAssociationCaptureProcessingStep.Alias);
+        var solve = Find(pipeline.Steps, MeasuredAstrometryCaptureProcessingStep.Alias);
+        if (prediction is null && measured is null && solve is null)
+            return null;
+        if (prediction is null || measured is null || solve is null ||
+            prediction.Enabled == false || measured.Enabled == false || solve.Enabled == false)
+            throw new InvalidOperationException("The existing astrometry branch must be complete and enabled.");
+        var options = ReadSolveOptions(solve);
+        if (options is not { UseAstrometryPrediction: true, Catalog: null, PreviousAccepted: null, CatalogSelection: not null })
+            throw new InvalidOperationException("The preset requires an independent branch with an installed catalog pin and no explicit prior.");
+        return new(prediction, solve, options);
+    }
+
+    private static bool HasCoherentDepth(ExistingBranch basis)
+    {
+        var prediction = (AstrometryPredictionCaptureProcessingStepOptions)CaptureProcessingPipelineFactory.CreateOptionsInstance(
+            basis.Prediction.Options, typeof(AstrometryPredictionCaptureProcessingStepOptions));
+        return basis.Pin.MaximumMagnitude == prediction.MaximumMagnitude &&
+            basis.Pin.MaximumMagnitude == (basis.Options.Recipe.Solver ?? new()).MaximumCatalogMagnitude;
+    }
+
+    private static CapturePipelineConfig ApplySelection(
+        CapturePipelineConfig pipeline, ExistingBranch? basis, MeasuredAstrometryCatalogSelection selection)
+    {
+        var steps = pipeline.Steps.ToList();
+        var magnitude = selection.MaximumMagnitude;
+        if (basis is null)
         {
             steps.Add(new(AstrometryPredictionCaptureProcessingStep.Alias, "AstrometryPrediction",
                 DependsOn: ["$raw"], Required: false, Publication: Durable,
@@ -78,6 +125,7 @@ internal static class ReferenceAstrometryPreset
         }
         else
         {
+            var (prediction, solve, _) = basis;
             var predictionOptions = ReadOptions(prediction);
             predictionOptions["maximumMagnitude"] = magnitude;
             steps[steps.IndexOf(prediction)] = prediction with { Options = JsonSerializer.SerializeToElement(predictionOptions) };
@@ -93,16 +141,20 @@ internal static class ReferenceAstrometryPreset
             steps[steps.IndexOf(solve)] = solve with { Options = JsonSerializer.SerializeToElement(solveOptions) };
         }
 
-        return (pipeline with { Steps = steps }, selection);
+        return pipeline with { Steps = steps };
+    }
+
+    internal static MeasuredAstrometryCatalogSelection ReadSelection(CapturePipelineConfig pipeline)
+    {
+        var solve = Find(pipeline.Steps, MeasuredAstrometryCaptureProcessingStep.Alias);
+        var selection = solve is null ? null : ReadSolveOptions(solve).CatalogSelection;
+        return selection ?? throw new ReferenceAstrometryCatalogConflictException();
     }
 
     internal static async ValueTask VerifySelectionAsync(
         CapturePipelineConfig pipeline, IAstrometricCatalogSource? source, CancellationToken cancellationToken)
     {
-        var solve = Find(pipeline.Steps, MeasuredAstrometryCaptureProcessingStep.Alias);
-        var selection = solve is null ? null : ReadSolveOptions(solve).CatalogSelection;
-        if (selection is null)
-            throw new ReferenceAstrometryCatalogConflictException();
+        var selection = ReadSelection(pipeline);
         try
         {
             _ = await selection.ResolveAsync(source, cancellationToken).ConfigureAwait(false);
@@ -123,4 +175,10 @@ internal static class ReferenceAstrometryPreset
     private static JsonObject ReadOptions(CaptureProcessingStepConfig step)
         => (JsonObject?)JsonNode.Parse(step.Options?.GetRawText() ?? "null", new JsonNodeOptions { PropertyNameCaseInsensitive = true })
            ?? new JsonObject();
+
+    private sealed record ExistingBranch(
+        CaptureProcessingStepConfig Prediction, CaptureProcessingStepConfig Solve, MeasuredAstrometryCaptureOptions Options)
+    {
+        internal MeasuredAstrometryCatalogSelection Pin => Options.CatalogSelection!;
+    }
 }
