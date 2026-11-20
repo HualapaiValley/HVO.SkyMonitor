@@ -29,7 +29,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     [TestMethod]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true)]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true)]
-    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences")]
+    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", false, 10)]
     [DataRow(CameraPixelFormat.Mono16, "None", false)]
     [DataRow(CameraPixelFormat.Mono16, "CalibrationLibrary")]
@@ -133,8 +133,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                 }
 
                 var catalog = new InMemoryCelestialCatalog(signal == "star" ? [
-                    new CelestialCatalogObject("fixture-star", "Fixture Star", rightAscension, 35.347,
-                        calibration == "SyntheticReferences" ? 2.5 : 0, 0.65)
+                    new CelestialCatalogObject("fixture-star", "Fixture Star", rightAscension, 35.347, 0, 0.65)
                 ] : []);
                 var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(now, autoAdvance: true), catalog, new ProjectedSceneStore(),
                     stagingStore: provider.GetRequiredService<IProjectedSceneStagingStore>());
@@ -211,7 +210,21 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.AreEqual(codes.Max(), measurement.RawBrightness.Maximum);
                 Assert.AreEqual(codes.LongCount(value => value == 0), measurement.RawBrightness.ZeroCount);
                 if (measurement.RawBrightness.SensorClipping.StoredWhite is { } white)
+                {
                     Assert.AreEqual(codes.LongCount(value => value >= white), measurement.RawBrightness.SensorClipping.Count);
+                    if (signal == "star")
+                    {
+                        var image = new ImageLayout(224, 224, format, capture.Frame.Layout!.StrideBytes);
+                        var corner = SparseLinear16Meter.Measure(image, pixels.Span,
+                            new(16, 16, whiteLevel: white, region: new(64, 64, 32, 32)));
+                        var center = SparseLinear16Meter.Measure(image, pixels.Span,
+                            new(4, 4, whiteLevel: white, region: new(96, 96, 32, 32)));
+                        Assert.AreNotEqual(corner.ConsideredSampleCount, center.ConsideredSampleCount);
+                        Assert.IsGreaterThan(center.ConsideredSampleCount, measurement.RawBrightness.SampleCount);
+                        Assert.IsNull(receipt.Manifest.Descriptor.CycleEvidence?.Metering,
+                            "The admitted exposure and fixed statistics do not require a metering result.");
+                    }
+                }
                 if (calibration is not ("CalibrationLibrary" or "Omitted") && referenceGain == 1 && declareReadout)
                 {
                     Assert.AreEqual(calibration == "None" ? ExposureCalibrationDisposition.NormalizationOnly :
