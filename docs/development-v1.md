@@ -13,7 +13,8 @@ for policy scope and retained procedures.
 development/v1
   -> feature/<issue>-<short-name>
   -> draft pull request targeting development/v1
-  -> independent review and finding-thread resolution
+  -> passing draft Preflight
+  -> independent formal review and review-thread resolution
   -> ready pull request
   -> required Development v1 CI
   -> merge into development/v1
@@ -192,7 +193,14 @@ The install contract's settings requirements remain in [section 2](hvo-install-c
 
 ## Review
 
-Mechanical, Standard, and Deep review levels use one parent review with one resolvable child thread per finding. Author resolutions and independent reviewer verification remain in the finding thread. A pull request is marked ready only after the current head is reviewed, every finding has a verified terminal disposition, and every review thread is resolved.
+Mechanical, Standard, and Deep set coverage and round limits under the
+[review process](runbooks/development-v1-review.md#review-levels-and-limits).
+Kepler alone publishes review and verification records before Ready. Kepler
+posts reviewer output verbatim, links the reviewer session, and faithfully
+relays verified finding dispositions under the
+[common policy](development/policy/common.md#authority-and-precedence).
+
+A pull request is marked ready only after the current head is reviewed, every finding has a verified terminal disposition, and every review thread is resolved.
 
 ## Promotion To main
 
