@@ -65,6 +65,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "ix_processing_outputs_role",
         "ix_processing_outputs_recipe",
         "ix_processing_outputs_product",
+        "ix_processing_outputs_astrometry_lookup",
         "ix_processing_outputs_retention_available",
         "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact",

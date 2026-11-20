@@ -2,30 +2,42 @@ using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
-internal sealed record AstrometryCaptureCandidate(Guid CaptureId, long ExposureUtc, long Sequence, long RowId);
+internal sealed record AstrometryOutputStamp(Guid ArtifactId, string ContentIdentitySha256);
+
+internal sealed record AstrometryCaptureCandidate(
+    Guid CaptureId, long ExposureUtc, long Sequence, long RowId, AstrometryOutputStamp? SoleOutput);
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
     // Seed this read model from retained solution outputs once. A capture can be a candidate before its output is
     // published. Each read still checks current publication, availability and exact evidence through the retained reader.
     internal const string LatestAstrometryQuery = """
-        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id
+        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id,
+               candidate.sole_artifact, candidate.sole_content
         FROM (
-            SELECT DISTINCT output.capture_id
-            FROM processing_outputs output INDEXED BY ix_processing_outputs_role
+            SELECT output.capture_id,
+                   CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
+                       THEN MIN(output.artifact_id) END AS sole_artifact,
+                   CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
+                       THEN MIN(output.content_identity_sha256) END AS sole_content
+            FROM processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup
             WHERE output.role = 'Metadata' AND output.product_schema_version = 'measured-astrometry-solution-v1'
+            GROUP BY output.capture_id
         ) candidate
         CROSS JOIN raw_captures raw ON raw.capture_id = candidate.capture_id;
         """;
 
     private const string RefreshAstrometryCandidatesQuery = """
-        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id
+        SELECT raw.capture_id, raw.exposure_started_unix_ms, raw.capture_sequence, raw.raw_capture_row_id,
+               CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
+                   THEN MIN(output.artifact_id) END,
+               CASE WHEN COUNT(*) = 1 AND MIN(output.availability_state) = 'Available'
+                   THEN MIN(output.content_identity_sha256) END
         FROM json_each($captures) changed
         CROSS JOIN raw_captures raw ON raw.capture_id = changed.value
-        WHERE EXISTS (
-            SELECT 1 FROM processing_outputs output
-            WHERE output.capture_id = raw.capture_id
-              AND output.role = 'Metadata' AND output.product_schema_version = 'measured-astrometry-solution-v1');
+        CROSS JOIN processing_outputs output INDEXED BY ix_processing_outputs_astrometry_lookup ON output.capture_id = raw.capture_id
+          AND output.role = 'Metadata' AND output.product_schema_version = 'measured-astrometry-solution-v1'
+        GROUP BY raw.capture_id;
         """;
 
     private readonly SemaphoreSlim _astrometryCandidateGate = new(1, 1);
@@ -81,7 +93,11 @@ internal sealed partial class SqliteCaptureProcessingStore
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    updated.Add(new(Guid.ParseExact(reader.GetString(0), "N"), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3)));
+                    var soleOutput = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ||
+                        await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null
+                        : new AstrometryOutputStamp(Guid.ParseExact(reader.GetString(4), "N"), reader.GetString(5));
+                    updated.Add(new(Guid.ParseExact(reader.GetString(0), "N"), reader.GetInt64(1), reader.GetInt64(2),
+                        reader.GetInt64(3), soleOutput));
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 _astrometryCandidates = updated.OrderByDescending(static capture => capture.ExposureUtc)

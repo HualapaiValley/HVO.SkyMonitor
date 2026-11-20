@@ -79,6 +79,16 @@ public sealed partial class CurrentSkyPageTests
             Assert.IsTrue(cut.Find(".pixel-sky-calculator button").HasAttribute("disabled"));
         });
 
+        service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(summary));
+        await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        cut.WaitForAssertion(() =>
+        {
+            var text = cut.Find(".latest-measured-solution").TextContent;
+            Assert.IsFalse(text.Contains("temporarily unavailable", StringComparison.Ordinal));
+            StringAssert.Contains(text, summary.MidpointUtc.ToString("O"), StringComparison.Ordinal);
+            StringAssert.Contains(text, summary.SolutionIdentitySha256, StringComparison.Ordinal);
+        });
+
         service.LatestAstrometryHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometry?>.Success(null));
         await cut.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
         cut.WaitForAssertion(() => StringAssert.Contains(cut.Find(".latest-measured-solution").TextContent,

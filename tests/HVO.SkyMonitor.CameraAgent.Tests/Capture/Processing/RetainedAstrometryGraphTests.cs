@@ -35,7 +35,7 @@ public sealed partial class DurableCaptureProcessingTests
             var cold = await store.ReadAstrometryCandidatesAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.IsEmpty(cold);
             // A broken cold query would fail while the warm lookup should use the existing snapshot without SQL.
-            command.CommandText = "DROP INDEX ix_processing_outputs_role;";
+            command.CommandText = "DROP INDEX ix_processing_outputs_astrometry_lookup;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             Assert.AreSame(cold, await store.ReadAstrometryCandidatesAsync(CancellationToken.None).ConfigureAwait(false));
             using var reader = new HVO.SkyMonitor.CameraAgent.Common.Gallery.CameraAgentRetainedAstrometryService(store,
@@ -84,15 +84,30 @@ public sealed partial class DurableCaptureProcessingTests
             using var connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
+            await SeedRawAstrometryHistoryAsync(connection, 8193, exposureUnixMilliseconds: 1).ConfigureAwait(false);
+            command.CommandText = """
+                INSERT INTO processing_outputs(output_identity_sha256,capture_id,agent_id,node_id,artifact_id,role,variant,
+                    payload_relative_path,sidecar_relative_path,descriptor_json,recipe_identity_sha256,algorithms_json,
+                    compatibility_json,total_integration_ticks,capture_sequence,committed_unix_ms,product_kind,
+                    product_schema_version,content_identity_sha256)
+                SELECT printf('%064x',raw_capture_row_id),capture_id,agent_id,'fixture',
+                    'fc00' || printf('%028x',raw_capture_row_id),'Metadata','fixture','unused','unused',
+                    X'7B7D',descriptor_sha256,X'5B5D',X'7B7D',0,capture_sequence,committed_unix_ms,'Metadata',
+                    CASE WHEN capture_sequence = 1 THEN 'measured-astrometry-solution-v1' ELSE 'cloud-assessment-v1' END,
+                    descriptor_sha256
+                FROM raw_captures WHERE agent_id = 'history-fixture';
+                """;
+            Assert.AreEqual(8193, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
             command.CommandText = "EXPLAIN QUERY PLAN " + SqliteCaptureProcessingStore.LatestAstrometryQuery;
             var details = new List<string>();
-            using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
-            while (await reader.ReadAsync().ConfigureAwait(false)) details.Add(reader.GetString(3));
+            using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
+                while (await reader.ReadAsync().ConfigureAwait(false)) details.Add(reader.GetString(3));
             var plan = string.Join("\n", details);
-            StringAssert.Contains(plan, "USING INDEX ix_processing_outputs_role (role=?)", StringComparison.Ordinal);
+            StringAssert.Contains(plan, "USING COVERING INDEX ix_processing_outputs_astrometry_lookup (role=? AND product_schema_version=?)", StringComparison.Ordinal);
             StringAssert.Contains(plan, "SEARCH raw USING INDEX sqlite_autoindex_raw_captures_1 (capture_id=?)", StringComparison.Ordinal);
             Assert.IsFalse(plan.Contains("SCAN raw", StringComparison.Ordinal), plan);
             Assert.IsFalse(plan.Contains("TEMP B-TREE", StringComparison.Ordinal), plan);
+            Assert.HasCount(1, await store.ReadAstrometryCandidatesAsync(CancellationToken.None).ConfigureAwait(false));
         }
         finally { Directory.Delete(root, recursive: true); }
     }
