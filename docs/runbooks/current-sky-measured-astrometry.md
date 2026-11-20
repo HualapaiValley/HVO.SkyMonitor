@@ -55,8 +55,11 @@ recipe and output variant keep it out of canonical scene recovery, upload, and
 presentation. Replay pins each scene by its own producer. The solver discovers
 correspondences from raw measured centroids and retains acceptance/rejection
 evidence. Configured pointing supplies the starting prediction. Existing
-graphs that already use the single-scene `independentPrediction` option remain
-readable and retain their configured identities.
+VirtualSky graphs that use the single-scene `independentPrediction` option keep
+their recorded revisions and canonical scene. When the graph has a storage
+retention owner, new captures use a compatible successor with a separate
+prediction product. Scene-only graphs without that owner continue publishing
+the canonical scene.
 
 Materialize the selection once to record those two identity hashes. The runtime
 resolves only the installed local adapter, verifies both hashes, package
