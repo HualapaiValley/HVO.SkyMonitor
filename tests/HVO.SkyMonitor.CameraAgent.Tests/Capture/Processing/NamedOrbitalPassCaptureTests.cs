@@ -66,7 +66,7 @@ public sealed class NamedOrbitalPassCaptureTests
             var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "orbital-prediction-v1");
             var config = MakeConfiguration(fixture, bayer);
             var input = await PreparePackageAsync(root, fixture, config, ct).ConfigureAwait(false);
-            config = ConfigureGraph(config, input, Path.Combine(root, "ingress"));
+            config = ConfigureGraph(config, input, Path.Combine(root, "ingress"), omitGraphPin: true);
             await WriteAsync(Path.Combine(root, "camera.json"), config, ct).ConfigureAwait(false);
             var catalogRoot = Environment.GetEnvironmentVariable("HVO_NAMED_PASS_HYG42_ROOT");
             ICelestialCatalog catalog = catalogRoot is null
@@ -297,10 +297,15 @@ public sealed class NamedOrbitalPassCaptureTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(false, true)]
-    public async Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord)
+    [DataRow(false, false, false, null)]
+    [DataRow(true, false, false, null)]
+    [DataRow(false, true, false, null)]
+    [DataRow(false, false, true, null)]
+    [DataRow(false, false, false, "missing-marker")]
+    [DataRow(false, false, false, "missing-inputs")]
+    [DataRow(false, false, false, "null-inputs")]
+    public async Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord,
+        bool crossesSelectionBoundary, string? lineageFault)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -309,9 +314,13 @@ public sealed class NamedOrbitalPassCaptureTests
             var ct = TestContext.CancellationToken;
             var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "orbital-prediction-v1");
             var config = MakeConfiguration(fixture, bayer: false);
-            var input = await PreparePackageAsync(root, fixture, config, ct).ConfigureAwait(false);
+            var requested = First + 3 * Exposure;
+            var shutter = requested.AddMilliseconds(1);
+            var input = await PreparePackageAsync(root, fixture, config, ct,
+                selectionBoundary: crossesSelectionBoundary ? shutter : null).ConfigureAwait(false);
             var ingressRoot = Path.Combine(root, "ingress");
-            config = ConfigureGraph(config, input, ingressRoot, wrongExpectedRecord);
+            config = ConfigureGraph(config, input, ingressRoot, wrongExpectedRecord,
+                omitGraphPin: crossesSelectionBoundary || lineageFault is not null);
             if (clouds)
             {
                 var options = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
@@ -322,8 +331,17 @@ public sealed class NamedOrbitalPassCaptureTests
                 }, Json);
                 config = config with { Module = config.Module with { Options = JsonSerializer.SerializeToElement(options, Json) } };
             }
-            var requested = First + 3 * Exposure;
-            var shutter = requested.AddMilliseconds(1);
+            if (crossesSelectionBoundary)
+            {
+                var objectIdentity = new OrbitalObjectIdentity("norad", CatalogNumbers[0]);
+                var policy = CaptureSatelliteTracksOptions.CreateSelectionPolicy(false);
+                var nominal = OrbitalRecordSelector.Select(input.Snapshot, objectIdentity, new(requested, requested + Exposure), policy);
+                var observed = OrbitalRecordSelector.Select(input.Snapshot, objectIdentity, new(shutter, shutter + Exposure), policy);
+                Assert.AreEqual(input.Tracks[(3, CatalogNumbers[0])].Lineage.RecordSha256, nominal.SelectedRecord!.RecordSha256);
+                Assert.AreNotEqual(nominal.SelectedRecord.RecordSha256, observed.SelectedRecord!.RecordSha256);
+                Assert.AreEqual(objectIdentity, observed.SelectedRecord.ObjectIdentity);
+                Assert.HasCount(2, observed.Candidates.Where(static candidate => candidate.Eligibility == OrbitalSelectionEligibility.Eligible));
+            }
             var clock = new ExposureTestTimeProvider(shutter);
             var provider = CreateProvider(ingressRoot, clock, new InMemoryCelestialCatalog([]), input);
             await using var providerLifetime = provider.ConfigureAwait(false);
@@ -342,6 +360,54 @@ public sealed class NamedOrbitalPassCaptureTests
             Assert.AreEqual(requested, rendered.VirtualExposure.RequestedStartUtc);
             Assert.AreEqual(shutter, rendered.TransientScenario!.IntegrationStartUtc);
             Assert.AreEqual(clouds ? shutter : (DateTimeOffset?)null, rendered.CloudScenario?.IntegrationStartUtc);
+            Assert.IsFalse(VirtualSkyNamedPass.TryReadPredictionLineage(config, null, out _));
+            Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, rendered, out var lineage));
+            var bright = input.Tracks[(3, CatalogNumbers[0])];
+            Assert.AreEqual(bright.Lineage.RecordSha256, lineage!.Inputs.ExpectedRecords![CatalogNumbers[0]]);
+            if (crossesSelectionBoundary)
+            {
+                var pixels = capture.Frame.PixelData.ToArray();
+                var brightCodes = SampleCorridor(pixels, bright, false);
+                var darkCodes = SampleCorridor(pixels, input.Tracks[(3, CatalogNumbers[1])], false);
+                Assert.IsGreaterThan(50, brightCodes.RedOrMonoMedian - darkCodes.RedOrMonoMedian);
+            }
+            if (lineageFault is not null)
+            {
+                // Persist an internally consistent raw sidecar with incomplete named-pass metadata.
+                var scenario = rendered.TransientScenario;
+                var parameters = JsonNode.Parse(scenario.Parameters.GetRawText())!.AsObject();
+                switch (lineageFault)
+                {
+                    case "missing-marker":
+                        Assert.IsTrue(parameters.Remove("sourcePackageSha256"));
+                        Assert.IsTrue(parameters.Remove("namedPassPredictionV1"));
+                        break;
+                    case "missing-inputs":
+                        Assert.IsTrue(parameters["namedPassPredictionV1"]!.AsObject().Remove("inputs"));
+                        break;
+                    case "null-inputs":
+                        parameters["namedPassPredictionV1"]!["inputs"] = null;
+                        break;
+                }
+                var modified = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(parameters));
+                capture = capture with
+                {
+                    Frame = capture.Frame with
+                    {
+                        Metadata = capture.Frame.Metadata with
+                        {
+                            Scene = rendered with
+                            {
+                                TransientScenario = scenario with
+                                {
+                                    Parameters = modified,
+                                    ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(modified)
+                                }
+                            }
+                        }
+                    }
+                };
+            }
 
             var ingress = provider.GetRequiredService<IRawCaptureIngress>();
             var host = new CaptureHostContext(config, ingress, provider.GetRequiredService<ICaptureDistributor>(), null,
@@ -367,10 +433,12 @@ public sealed class NamedOrbitalPassCaptureTests
             var prediction = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
                 Path.Combine(ingressRoot, status.PayloadRelativePath), ct).ConfigureAwait(false));
             Assert.AreEqual(new OrbitalUtcInterval(shutter, shutter + Exposure), prediction.Exposure);
-            Assert.AreEqual(wrongExpectedRecord ? 0 : 2, prediction.TrackCount);
-            Assert.AreEqual(!wrongExpectedRecord, prediction.Renderable);
-            if (wrongExpectedRecord)
-                Assert.AreEqual("PinnedRecordSelectionMismatch", prediction.Reason);
+            var expectedReason = lineageFault is not null ? "NamedPassPredictionLineageUnavailable" :
+                crossesSelectionBoundary ? "PinnedRecordSelectionMismatch" :
+                wrongExpectedRecord ? "NamedPassPredictionInputsMismatch" : "None";
+            Assert.AreEqual(expectedReason == "None" ? 2 : 0, prediction.TrackCount);
+            Assert.AreEqual(expectedReason == "None", prediction.Renderable);
+            Assert.AreEqual(expectedReason, prediction.Reason);
         }
         finally
         {
@@ -523,7 +591,7 @@ public sealed class NamedOrbitalPassCaptureTests
     }
 
     private static CameraModuleConfig ConfigureGraph(CameraModuleConfig config, PreparedInput input, string storageRoot,
-        bool wrongExpectedRecord = false)
+        bool wrongExpectedRecord = false, bool omitGraphPin = false)
     {
         var module = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
         module["illuminationMode"] = "ControlledNight";
@@ -541,7 +609,8 @@ public sealed class NamedOrbitalPassCaptureTests
                 Keyframes = [ControlPoint(20, 240), ControlPoint(25, 250)]
             }]
         }, Json);
-        var expectedRecords = input.Snapshot.Records.ToDictionary(static record => record.ObjectIdentity.CatalogNumber, static record => record.RecordSha256);
+        var expectedRecords = CatalogNumbers.ToDictionary(static number => number,
+            number => input.Tracks[(3, number)].Lineage.RecordSha256);
         if (wrongExpectedRecord)
             expectedRecords[CatalogNumbers[0]] = expectedRecords[CatalogNumbers[1]];
         var pin = new CaptureSatellitePinnedInputs(input.Snapshot.Manifest.ManifestSha256, input.Time.EarthOrientationSha256!, input.Time.LeapSecondsSha256,
@@ -559,7 +628,7 @@ public sealed class NamedOrbitalPassCaptureTests
                     new { widthPixels = 640, heightPixels = 640, stackPreviewVariant = "default" }),
                 Step("CaptureSatelliteTracks", "satellite", ["$raw"], new CaptureSatelliteTracksOptions
                 {
-                    CatalogNumbers = CatalogNumbers, PinnedInputs = pin, OverrideTimeDataAvailableUtc = First.AddDays(-1)
+                    CatalogNumbers = CatalogNumbers, PinnedInputs = omitGraphPin ? null : pin, OverrideTimeDataAvailableUtc = First.AddDays(-1)
                 }),
                 Step("CaptureSatelliteLayer", "satellite-layer", ["satellite"]),
                 Step("OverlayManifest", "overlay", ["preview", "scene-layer", "environment", "satellite-layer", "satellite"],
@@ -694,7 +763,8 @@ public sealed class NamedOrbitalPassCaptureTests
     }
 
     private static async Task<PreparedInput> PreparePackageAsync(
-        string root, string fixture, CameraModuleConfig config, CancellationToken ct, bool competingRecord = false)
+        string root, string fixture, CameraModuleConfig config, CancellationToken ct, bool competingRecord = false,
+        DateTimeOffset? selectionBoundary = null)
     {
         var packageRoot = Path.Combine(root, "private-inputs");
         Directory.CreateDirectory(packageRoot);
@@ -709,11 +779,21 @@ public sealed class NamedOrbitalPassCaptureTests
             TermsReference = "Normalized-record fixture carrier from the retained #529 Starlinks. No provider download."
         }], source.Manifest.Coverage);
         var combined = snapshot;
-        if (competingRecord)
+        if (competingRecord || selectionBoundary is not null)
         {
             var selected = snapshot.RecordsFor(new("norad", CatalogNumbers[0])).Single();
-            var preferred = OrbitalContract.CreateRecord(selected with { EpochUtc = selected.EpochUtc.AddHours(1) });
-            combined = OrbitalSnapshot.Create([.. snapshot.Records, preferred], snapshot.Manifest.Sources, snapshot.Manifest.Coverage);
+            var preferred = OrbitalContract.CreateRecord(selected with
+            {
+                EpochUtc = selected.EpochUtc.AddHours(1),
+                ValidFromUtc = selectionBoundary
+            });
+            var withCompeting = OrbitalSnapshot.Create([.. snapshot.Records, preferred], snapshot.Manifest.Sources, snapshot.Manifest.Coverage);
+            var combinedCarrier = withCompeting.SerializePayload();
+            combined = OrbitalSnapshot.Create(withCompeting.Records, [snapshot.Manifest.Sources.Single() with
+            {
+                RawLengthBytes = combinedCarrier.Length,
+                RawSha256 = Hash(combinedCarrier)
+            }], snapshot.Manifest.Coverage);
         }
         var manifest = Put("snapshot.json", combined.SerializeManifest());
         var records = Put("records.json", combined.SerializePayload());
@@ -741,6 +821,8 @@ public sealed class NamedOrbitalPassCaptureTests
             var trackEntries = new List<object>();
             for (var index = 1; index < 6; index++)
             {
+                if (selectionBoundary is not null && index != 3)
+                    continue;
                 var interval = new OrbitalUtcInterval(First + index * Exposure, First + (index + 1) * Exposure);
                 var timing = new OrbitalTimingFacts(interval, OrbitalTimingBasis.Estimated, null, OrbitalTimingBasis.Unknown,
                     "named-pass-virtual-shutter", AstrometricClockFacts.NotSupplied);
@@ -748,7 +830,7 @@ public sealed class NamedOrbitalPassCaptureTests
                     new(OrbitalPredictionUse.Diagnostic, snapshot, policy, interval, [identity], observer, model,
                         new(1, 20, 10_000, 1, 100, 1000, 1000, 1, .01)), geometry, timing), ct).ConfigureAwait(false);
                 var prediction = Assert.ContainsSingle(result.Products);
-                if (competingRecord)
+                if (combined != snapshot)
                 {
                     prediction = OrbitalPredictionJson.CreateTrack(prediction with
                     {
@@ -793,7 +875,7 @@ public sealed class NamedOrbitalPassCaptureTests
             leapSeconds = Put("leaps", leaps),
             objects = groups
         }, Json));
-        return new(Path.Combine(packageRoot, package.Path), package.Sha256, time, snapshot, tracks);
+        return new(Path.Combine(packageRoot, package.Path), package.Sha256, time, combined, tracks);
 
         FilePin Put(string name, byte[] bytes)
         {

@@ -6,6 +6,7 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -124,14 +125,19 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters);
         var exposure = new OrbitalUtcInterval(descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc);
         // Both seams are already warmed by startup/refresh. Any cold materialization happens on this durable lane.
-        var pin = Options.PinnedInputs;
-        var snapshot = pin is null
-            ? await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false)
-            : await snapshots.ReadExactAsync(pin.SnapshotManifestSha256, cancellationToken).ConfigureAwait(false);
+        var namedLineageValid = VirtualSkyNamedPass.TryReadPredictionLineage(
+            context.Config, context.RawCapture?.Manifest.Scene, out var named);
+        var selectionPolicy = CaptureSatelliteTracksOptions.CreateSelectionPolicy(Options.AllowStaleDiagnostics);
+        var pin = named?.Inputs ?? Options.PinnedInputs;
+        var snapshot = !namedLineageValid ? OrbitalSnapshotReadResult.Unavailable(OrbitalSnapshotUnavailableReason.IntegrityFailure) :
+            pin is null ? await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false) :
+                await snapshots.ReadExactAsync(pin.SnapshotManifestSha256, cancellationToken).ConfigureAwait(false);
         var time = await timeSource.ResolveAsync(exposure, cancellationToken).ConfigureAwait(false);
         var available = time.Source == CameraAgentOrbitalTimeDataSource.Override ? Options.OverrideTimeDataAvailableUtc :
             new[] { time.EarthOrientationProvenance?.RetrievedUtc, time.LeapSecondsProvenance?.RetrievedUtc }.Max();
-        var reason = time.Data is null ? "TimeInputsUnavailable:" + time.Problem :
+        var reason = !namedLineageValid ? "NamedPassPredictionLineageUnavailable" :
+            named is not null && !MatchesNamedPass(named, selectionPolicy) ? "NamedPassPredictionInputsMismatch" :
+            time.Data is null ? "TimeInputsUnavailable:" + time.Problem :
             available is null ? "TimeAvailabilityUnknown" : available > descriptor.Timing.DurableIngressUtc ? "TimeNotOriginallyAvailable" :
             descriptor.Layout.Readout is null ? "ReadoutGeometryUnavailable" : observer is null ? "CaptureLocationUnavailable" : null;
         if (pin is not null)
@@ -186,7 +192,7 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             plan = new(descriptor, observer!.Value, geometry, timing, model, Options.Bounds,
                 new(CaptureOrbitalAssessmentMode.OriginalAvailability, descriptor.Timing.DurableIngressUtc,
                     descriptor.Timing.DurableIngressUtc, available!.Value), snapshot,
-                CaptureSatelliteTracksOptions.CreateSelectionPolicy(Options.AllowStaleDiagnostics),
+                selectionPolicy,
                 Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)),
                 context.Config.Rig.HorizonObstruction is null ? null : context.Config.Rig);
             if (pin?.ExpectedRecords is { } records && plan.Plan.Selections.Any(selection =>
@@ -208,6 +214,20 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
                 OverrideAvailableUtc = Options.OverrideTimeDataAvailableUtc
             })
         };
+    }
+
+    private bool MatchesNamedPass(VirtualSkyNamedPass.NamedPassPredictionLineage named, OrbitalSelectionPolicy selection)
+    {
+        var expected = named.Inputs;
+        var records = expected.ExpectedRecords!;
+        if (named.SelectionPolicySha256 != selection.IdentitySha256 || Options.CatalogNumbers.Any(number => !records.ContainsKey(number)))
+            return false;
+        return Options.PinnedInputs is not { } configured ||
+            configured.SnapshotManifestSha256 == expected.SnapshotManifestSha256 &&
+            configured.EarthOrientationSha256 == expected.EarthOrientationSha256 &&
+            configured.LeapSecondsSha256 == expected.LeapSecondsSha256 &&
+            (configured.ExpectedRecords is null ||
+             configured.ExpectedRecords.All(entry => records.TryGetValue(entry.Key, out var hash) && hash == entry.Value));
     }
 
     private static ReadOnlyMemory<byte>? OptionalBytes(byte[]? bytes)

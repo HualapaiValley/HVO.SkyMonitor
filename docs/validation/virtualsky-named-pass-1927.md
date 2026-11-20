@@ -47,11 +47,13 @@ window while the named trails move.
 Enable `ProjectedScene` for durable capture admission. For prediction and
 presentation, configure the existing `CaptureSatelliteTracks`,
 `CaptureSatelliteLayer`, `Preview`, and `OverlayManifest` graph steps.
-Use `pinnedInputs` with `snapshotManifestSha256`, `earthOrientationSha256`,
-and `leapSecondsSha256` on the prediction step. Set `expectedRecords` to a
-map from each catalog number to its pinned record SHA-256. A conflicting
-record selection produces an unavailable disposition. Configure that local
-snapshot and the exact time pair through CameraAgent’s orbital inputs.
+Named captures carry the validated snapshot, time pair, selection policy and
+expected record hashes in their raw scene provenance. The prediction step
+uses that binding after admission and calculates paths independently for the
+observed shutter interval. Explicit graph `pinnedInputs` may confirm the same
+snapshot, time pair and expected records. Conflicting options or a different
+selected record produce an unavailable prediction and a retained reason.
+Configure the local snapshot and time pair through CameraAgent’s orbital inputs.
 The package accepts the installed resolver's input bounds. The selected time
 pair must cover the observed shutter interval. Historical replays can use a
 checksum-pinned local override containing supported rows for that interval.

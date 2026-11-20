@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -18,6 +19,7 @@ public sealed record VirtualSkyNamedPassOptions(string PackagePath, string Packa
 internal sealed class VirtualSkyNamedPass
 {
     private const string Schema = "virtual-sky-named-pass-v1";
+    private const string PredictionLineageProperty = "namedPassPredictionV1";
     private const int DocumentLimit = 256 * 1024;
     private const int MaximumTracksPerObject = 12;
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
@@ -30,11 +32,14 @@ internal sealed class VirtualSkyNamedPass
         MaxDepth = 20
     };
 
-    private VirtualSkyNamedPass(VirtualTransientScenarioDefinition definition, ObserverLocation observer)
+    private VirtualSkyNamedPass(VirtualTransientScenarioDefinition definition, ObserverLocation observer,
+        NamedPassPredictionLineage prediction)
     {
         Definition = definition;
         Observer = observer;
-        Parameters = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(definition));
+        var parameters = JsonNode.Parse(CaptureContractJson.SerializeToElement(definition).GetRawText())!.AsObject();
+        parameters[PredictionLineageProperty] = JsonSerializer.SerializeToNode(prediction, Json);
+        Parameters = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(parameters));
         ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(Parameters);
     }
 
@@ -201,8 +206,56 @@ internal sealed class VirtualSkyNamedPass
         };
         definition = definition with { ScenarioId = definition.ComputeCanonicalScenarioId() };
         definition.ValidateSensorBounds(sensor.WidthPixels, sensor.HeightPixels);
-        return new(definition, observer);
+        var pins = new CaptureSatellitePinnedInputs(snapshot.Manifest.ManifestSha256,
+            time.EarthOrientationSha256!, time.LeapSecondsSha256, package.Objects.ToDictionary(
+                static group => group.CatalogNumber, static group => group.RecordSha256, StringComparer.Ordinal));
+        return new(definition, observer, new(selection.IdentitySha256, pins));
     }
+
+    internal static bool TryReadPredictionLineage(CameraModuleConfig configuration, SceneProvenance? scene,
+        out NamedPassPredictionLineage? lineage)
+    {
+        lineage = null;
+        var namedOption = string.Equals(configuration.Module?.Type, "VirtualSky", StringComparison.OrdinalIgnoreCase) &&
+            configuration.ModuleOptions is { ValueKind: JsonValueKind.Object } options
+            ? options.EnumerateObject().LastOrDefault(static entry => entry.Name.Equals("namedOrbitalPass", StringComparison.OrdinalIgnoreCase)).Value
+            : default;
+        var configured = namedOption.ValueKind == JsonValueKind.Object;
+        var requiresLineage = configured || scene?.VirtualExposure?.TimeMapping is
+            VirtualExposureTimeMapping.ShutterUtc or VirtualExposureTimeMapping.FixedCelestialAndShutterUtc;
+        if (scene?.TransientScenario?.Parameters is not { ValueKind: JsonValueKind.Object } parameters ||
+            !parameters.TryGetProperty("sourcePackageSha256", out var package))
+            return !requiresLineage;
+        if (package.ValueKind != JsonValueKind.String || !OrbitalContract.IsSha256(package.GetString()) ||
+            !parameters.TryGetProperty(PredictionLineageProperty, out var value))
+            return false;
+
+        if (configured)
+        {
+            var configuredHash = namedOption.EnumerateObject().LastOrDefault(static entry =>
+                entry.Name.Equals("packageSha256", StringComparison.OrdinalIgnoreCase)).Value;
+            if (configuredHash.ValueKind != JsonValueKind.String || configuredHash.GetString() != package.GetString())
+                return false;
+        }
+
+        try
+        {
+            lineage = value.Deserialize<NamedPassPredictionLineage>(Json);
+            return lineage is { Inputs: { } inputs } && OrbitalContract.IsSha256(lineage.SelectionPolicySha256) &&
+                OrbitalContract.IsSha256(inputs.SnapshotManifestSha256) &&
+                OrbitalContract.IsSha256(inputs.EarthOrientationSha256) &&
+                OrbitalContract.IsSha256(inputs.LeapSecondsSha256) &&
+                inputs.ExpectedRecords is { Count: > 0 and <= 4 } records &&
+                records.All(static entry => OrbitalContract.IsObjectIdentity(new("norad", entry.Key)) &&
+                    OrbitalContract.IsSha256(entry.Value));
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    internal sealed record NamedPassPredictionLineage(string SelectionPolicySha256, CaptureSatellitePinnedInputs Inputs);
 
     public static ObserverLocation ToObserver(ObservatoryLocation site)
         => new(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters);
