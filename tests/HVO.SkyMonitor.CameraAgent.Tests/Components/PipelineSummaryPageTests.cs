@@ -71,7 +71,8 @@ public sealed class PipelineSummaryPageTests
             builder.Services.AddSingleton(accessor);
             builder.Services.AddSingleton(graphs);
             builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
-            await using var host = builder.Build();
+            var host = builder.Build();
+            await using var hostLifetime = host.ConfigureAwait(false);
             host.MapCameraAgentPipelineOperationsEndpoints();
             host.MapCameraAgentScheduleOperationsEndpoints();
             var invoke = CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync;
@@ -103,15 +104,16 @@ public sealed class PipelineSummaryPageTests
             {
                 Assert.IsFalse(projection.Active.Plan.EffectiveNodes.Any(node => node.Id == ExposureMeasurementProducts.StepAlias));
                 Assert.IsFalse(cut.Markup.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal));
-                cut.FindAll(".ops-pipeline-node.step").Single(node => node.TextContent.Contains("linear", StringComparison.Ordinal)).Click();
+                await cut.FindAll(".ops-pipeline-node.step").Single(node => node.TextContent.Contains("linear", StringComparison.Ordinal))
+                    .ClickAsync().ConfigureAwait(false);
                 Assert.IsNotNull(cut.Find("#pipeline-step-toggle"));
                 return;
             }
 
             var fixedStep = projection.Active.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
             CollectionAssert.AreEqual(new[] { RawInput, "linear" }, fixedStep.Dependencies!.ToArray());
-            cut.FindAll(".ops-pipeline-node.step").Single(node =>
-                node.TextContent.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal)).Click();
+            await cut.FindAll(".ops-pipeline-node.step").Single(node =>
+                node.TextContent.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal)).ClickAsync().ConfigureAwait(false);
             Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
             Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
             Assert.Contains("linear", cut.Find(".ops-node-facts").TextContent);
@@ -138,7 +140,7 @@ public sealed class PipelineSummaryPageTests
                 new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, DependsOn: [RawInput, "linear"], Enabled: false)] };
             var rejected = await invoke(host, "StageCameraAgentSchedule", "POST", new
             {
-                Profile = disabled, BasisRevisionId = basis.RevisionId, ExpectedVersion = pending.StateVersion
+                Profile = disabled, BasisRevisionId = basis.RevisionId, ExpectedVersion = pending.Version
             }, null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(422, rejected.Status, rejected.Body);
             var unchanged = await runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);

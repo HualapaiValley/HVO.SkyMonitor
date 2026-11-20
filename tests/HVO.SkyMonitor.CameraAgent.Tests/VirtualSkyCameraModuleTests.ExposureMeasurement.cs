@@ -75,10 +75,11 @@ public sealed partial class VirtualSkyCameraModuleTests
                 FrameStoredCodeTransform.FullRangeScaledV1 => (1024.2344322344322d, (ushort)44810),
                 _ => null
             };
+            var nativeWhite = transform is FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 ? 2800 : 4095;
             var readout = format == CameraPixelFormat.Mono16 && declareReadout && calibration != "SyntheticReferences"
                 ? new SensorReadoutProfile(new SensorCrop(0, 0, 224, 224), 1, 1, FrameBinningAlgorithm.IdentityV1,
                     CameraPixelFormat.Mono16, 12, 16, FrameSamplePacking.ByteAligned, transform,
-                    FrameLevelCodeSpace.NativeSample, 64, storedLevels is null ? 4095 : 2800)
+                    FrameLevelCodeSpace.NativeSample, 64, nativeWhite)
                 : null;
             var steps = new List<CaptureProcessingStepConfig>
             {
