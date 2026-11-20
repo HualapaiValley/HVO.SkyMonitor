@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Storage.FileSystem;
 
@@ -71,8 +73,10 @@ internal sealed class VirtualSkyNamedPass
             ReadReference(directory, package.SnapshotRecords)).Snapshot ??
             throw new InvalidDataException("Invalid named orbital pass snapshot or normalized records.");
         var time = OrbitalTimeData.FromFinals2000A(
-            ReadReference(directory, package.EarthOrientation), ReadReference(directory, package.LeapSeconds));
+            ReadReference(directory, package.EarthOrientation, CameraAgentPinnedOrbitalTimeSource.MaximumEarthOrientationBytes),
+            ReadReference(directory, package.LeapSeconds, CameraAgentPinnedOrbitalTimeSource.MaximumLeapSecondsBytes));
         var model = OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true);
+        var selection = CaptureSatelliteTracksOptions.CreateSelectionPolicy(package.AllowStaleDiagnostics);
         var site = configuration.ResolveObservatory(package.EpochUtc);
         var observer = ToObserver(site);
         var expectedReadout = readout?.Geometry ?? new FrameReadoutDescriptor(sensor.WidthPixels, sensor.HeightPixels,
@@ -138,10 +142,13 @@ internal sealed class VirtualSkyNamedPass
                 if (lineage.ObjectIdentity != identity || lineage.RecordSha256 != record.RecordSha256 ||
                     lineage.SourceDataset != record.SourceDataset || lineage.EpochUtc != record.EpochUtc ||
                     lineage.SnapshotManifestSha256 != snapshot.Manifest.ManifestSha256 ||
-                    lineage.NormalizedPayloadSha256 != snapshot.Manifest.NormalizedPayloadSha256 || track.Model != model)
+                    lineage.NormalizedPayloadSha256 != snapshot.Manifest.NormalizedPayloadSha256 ||
+                    lineage.SelectionPolicySha256 != selection.IdentitySha256 || track.Model != model)
                 {
                     throw new InvalidDataException("Named orbital track identity, snapshot or time model does not match its package.");
                 }
+                if (OrbitalRecordSelector.Select(snapshot, identity, interval, selection).SelectedRecord?.RecordSha256 != record.RecordSha256)
+                    throw new InvalidDataException("Named orbital track record does not match the capture prediction selection policy.");
                 time.ValidateModel(model, interval, OrbitalPredictionUse.Diagnostic, OrbitalGeometryBasis.ConfiguredRig);
                 time.ValidatePropagationInterval(record.EpochUtc, interval);
 
@@ -240,13 +247,14 @@ internal sealed class VirtualSkyNamedPass
         }
     }
 
-    private static byte[] ReadReference(PhysicalRoot directory, FileReference reference)
-        => ReadPinned(directory.Resolve(reference.Path), reference.Sha256, DocumentLimit);
+    private static byte[] ReadReference(PhysicalRoot directory, FileReference reference, int maximumBytes = DocumentLimit)
+        => ReadPinned(directory.Resolve(reference.Path), reference.Sha256, maximumBytes);
 
     private static byte[] ReadPinned(string path, string hash, int maximumBytes)
     {
         if (!OrbitalContract.IsSha256(hash))
             throw new InvalidDataException("Named orbital package checksums must be uppercase SHA-256.");
+        DurableSync.RequireRegularFile(path);
         using var stream = File.OpenRead(path);
         if (stream.Length <= 0 || stream.Length > maximumBytes)
             throw new InvalidDataException("Named orbital package file length is outside its bound.");
@@ -264,7 +272,8 @@ internal sealed class VirtualSkyNamedPass
     private sealed record PackageTrack(FileReference Track, DateTimeOffset ExposureStartUtc, double Transmission);
     private sealed record PackageObject(string CatalogNumber, string RecordSha256, FileReference Optics, IReadOnlyList<PackageTrack> Tracks);
     private sealed record NamedPassPackage(string SchemaVersion, DateTimeOffset EpochUtc, FileReference SnapshotManifest,
-        FileReference SnapshotRecords, FileReference EarthOrientation, FileReference LeapSeconds, IReadOnlyList<PackageObject> Objects);
+        FileReference SnapshotRecords, FileReference EarthOrientation, FileReference LeapSeconds, IReadOnlyList<PackageObject> Objects,
+        bool AllowStaleDiagnostics = false);
     private sealed record LightCurvePoint(double OffsetSeconds, double MagnitudeDelta);
     private sealed record SyntheticOptics(string SchemaVersion, bool IsSynthetic, double Magnitude, double AngularWidthDegrees,
         double RedWeight, double GreenWeight, double BlueWeight, double ExposureSeconds, int Seed, IReadOnlyList<LightCurvePoint> LightCurve)

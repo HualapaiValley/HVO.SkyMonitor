@@ -14,6 +14,7 @@ The package is a JSON object with these fields.
 | `snapshotManifest`, `snapshotRecords` | File references to an immutable orbital snapshot and its normalized records |
 | `earthOrientation`, `leapSeconds` | File references to the exact finals2000A and IETF leap inputs from the track model |
 | `objects` | One to four objects with `catalogNumber`, `recordSha256`, `optics`, and an ordered `tracks` list |
+| `allowStaleDiagnostics` | Optional. Match the capture prediction selection policy. Defaults to false. |
 
 A file reference contains `path` relative to the package and uppercase
 `sha256`. Each track entry has a `track` file reference to an individual
@@ -24,7 +25,8 @@ canonical exposure track, an `exposureStartUtc` pin, and a linear
 duration, and optical light-curve knots are explicit. Transmission zero
 deposits no signal, including when orbital illumination is unknown.
 Positive transmission attenuates the synthetic magnitude before rasterization.
-Keep light-curve knots on the intended orbital sample times. Optional
+Light-curve knots must coincide with the track sample times. The optical seed
+is added to the ordinary camera noise seed for named captures. Optional
 unrelated transient controls use the same epoch.
 
 Describe one observer, configured rig, optics, and delivered readout in the
@@ -46,8 +48,12 @@ Enable `ProjectedScene` for durable capture admission. For prediction and
 presentation, configure the existing `CaptureSatelliteTracks`,
 `CaptureSatelliteLayer`, `Preview`, and `OverlayManifest` graph steps.
 Use `pinnedInputs` with `snapshotManifestSha256`, `earthOrientationSha256`,
-and `leapSecondsSha256` on the prediction step. Configure that local snapshot
-and time pair through CameraAgent’s orbital inputs. The prediction step
+and `leapSecondsSha256` on the prediction step. Set `expectedRecords` to a
+map from each catalog number to its pinned record SHA-256. A conflicting
+record selection produces an unavailable disposition. Configure that local
+snapshot and the exact time pair through CameraAgent’s orbital inputs.
+The package accepts the same file bounds as the installed time resolver.
+The prediction step
 verifies the exact sources and reports an unavailable result if a pinned
 input cannot be resolved. A capture-specific predicted layer is generated
 from the reported interval and rig. Enable the separate Edge transient
@@ -62,7 +68,9 @@ catalog. The regression uses the original HVO projection and regenerates
 capture-profile tracks for the short cadence. The two-element snapshot is
 derived from the retained #529 facts with a distinct local raw-carrier
 identity. The test uses a simulated clock and ordinary CameraAgent capture,
-raw admission, local processing and read services.
+raw admission, the installed time resolver with local checksummed overrides,
+local processing and read services. The runner delays its first shutter by
+one millisecond to verify the distinction between requested and observed time.
 
 ```bash
 HVO_NAMED_PASS_EVIDENCE=/path/to/new-evidence-directory \

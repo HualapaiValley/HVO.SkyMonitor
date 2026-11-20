@@ -52,7 +52,7 @@ public sealed record ArtifactManifestV2(
             return CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.projectedSceneSchemaVersion");
         if (Scene?.VirtualExposure is { } exposure &&
             (!exposure.IsValid(Descriptor!.Controls.EffectiveExposure) ||
-             exposure.RequestedStartUtc.ToUnixTimeMilliseconds() != Descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds() ||
+             !exposure.MatchesCaptureTiming(Descriptor.Timing) ||
              Scene.SceneUtc != exposure.CelestialMidpointUtc ||
              Scene.CloudScenario is { } cloud &&
                 (cloud.IntegrationStartUtc != exposure.ScenarioStartUtc || cloud.IntegrationEndUtc != exposure.ScenarioEndUtc) ||

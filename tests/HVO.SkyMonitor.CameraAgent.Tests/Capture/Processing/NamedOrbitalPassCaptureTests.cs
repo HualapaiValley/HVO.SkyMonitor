@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -39,6 +40,7 @@ public sealed class NamedOrbitalPassCaptureTests
     private const string Agent = "named-pass-regression";
     private static readonly DateTimeOffset First = new(2026, 10, 20, 3, 59, 55, TimeSpan.Zero);
     private static readonly TimeSpan Exposure = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ShutterDelay = TimeSpan.FromMilliseconds(1);
     private static readonly string[] CatalogNumbers = ["56838", "65283"];
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {
@@ -70,11 +72,11 @@ public sealed class NamedOrbitalPassCaptureTests
             ICelestialCatalog catalog = catalogRoot is null
                 ? new InMemoryCelestialCatalog([])
                 : CatalogSnapshotResolver.Resolve(new(catalogRoot, "hyg-v42-production")
-                    { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" }).Catalog;
+                { ExpectedPackageVersion = "hyg-v4.2-p3-s2-r1" }).Catalog;
             var preparationTime = TimeSpan.FromHours(3);
             var clock = new ExposureTestTimeProvider(First - preparationTime, autoAdvance: true);
             var ingressRoot = Path.Combine(root, "ingress");
-            var acquisition = CreateProvider(ingressRoot, clock, catalog, input.Time);
+            var acquisition = CreateProvider(ingressRoot, clock, catalog, input);
             await using (acquisition.ConfigureAwait(false))
             {
                 await InstallSnapshotAsync(acquisition, input.Snapshot, ct).ConfigureAwait(false);
@@ -89,7 +91,7 @@ public sealed class NamedOrbitalPassCaptureTests
                 await InstallSnapshotAsync(acquisition, newer, ct).ConfigureAwait(false);
             }
             // Restart between raw admission and lane execution, and leave processing timers on a manually controlled clock.
-            var provider = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()), catalog, input.Time);
+            var provider = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()), catalog, input);
             await using var providerLifetime = provider.ConfigureAwait(false);
             await InitializeCaptureServicesAsync(provider, config, ct).ConfigureAwait(false);
             var active = await provider.GetRequiredService<IOrbitalSnapshotReader>().ReadCurrentAsync(ct).ConfigureAwait(false);
@@ -108,8 +110,12 @@ public sealed class NamedOrbitalPassCaptureTests
                 var receipt = lease.Context.RawCapture;
                 var manifest = receipt.Manifest;
                 var descriptor = manifest.Descriptor;
-                Assert.AreEqual(First + index * Exposure, descriptor.Timing.ExposureStartedUtc);
+                Assert.IsLessThanOrEqualTo(ShutterDelay, (descriptor.Timing.ExposureStartedUtc - (First + index * Exposure)).Duration());
+                if (index == 0)
+                    Assert.AreEqual(ShutterDelay, descriptor.Timing.ExposureStartedUtc - descriptor.Timing.RequestedStartUtc);
                 Assert.AreEqual(Exposure, descriptor.Timing.ExposureEndedUtc - descriptor.Timing.ExposureStartedUtc);
+                Assert.IsTrue(manifest.Validate().IsValid);
+                Assert.AreEqual(VirtualExposureProvenance.ShutterSchemaVersion, manifest.Scene!.VirtualExposure!.SchemaVersion);
                 Assert.AreEqual(descriptor.Timing.ExposureStartedUtc, manifest.Scene!.TransientScenario!.IntegrationStartUtc);
                 Assert.AreEqual(input.PackageSha256, manifest.Scene.TransientScenario.Parameters.GetProperty("sourcePackageSha256").GetString());
                 Assert.AreEqual(bayer ? CameraPixelFormat.BayerRggb16 : CameraPixelFormat.Mono16, descriptor.Layout.PixelFormat);
@@ -153,6 +159,10 @@ public sealed class NamedOrbitalPassCaptureTests
                 var view = await presentation.GetAsync(captureId, ct).ConfigureAwait(false);
                 var predictionNode = await processing.ReadNodeAsync(captureId, "satellite", ct).ConfigureAwait(false);
                 Assert.IsNotNull(predictionNode);
+                var satelliteLayer = await processing.ReadNodeAsync(captureId, "satellite-layer", ct).ConfigureAwait(false);
+                var overlay = await processing.ReadNodeAsync(captureId, "overlay", ct).ConfigureAwait(false);
+                Assert.IsNotNull(satelliteLayer);
+                Assert.IsNotNull(overlay);
                 var evidence = predictionNode.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.StatusSchema);
                 var status = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
                     Path.Combine(ingressRoot, evidence.PayloadRelativePath), ct).ConfigureAwait(false));
@@ -168,18 +178,37 @@ public sealed class NamedOrbitalPassCaptureTests
                 Assert.IsNotNull(pixels);
                 Assert.AreEqual(640, pixels.Width);
                 Assert.AreEqual(640, pixels.Height);
-                await File.WriteAllBytesAsync(Path.Combine(root, $"slot-{101 + index}-preview.png"), preview.Content, ct).ConfigureAwait(false);
+                await File.WriteAllBytesAsync(Path.Combine(root, $"slot-{101 + index}-preview.jpg"), preview.Content, ct).ConfigureAwait(false);
                 await File.WriteAllBytesAsync(Path.Combine(root, $"slot-{101 + index}-layers.svg"), view.Presentation.Svg, ct).ConfigureAwait(false);
                 await WriteAsync(Path.Combine(root, $"slot-{101 + index}.json"), new
                 {
-                    ordinal = 101 + index, receipt.Manifest, receipt.CommittedManifestSha256, outcome,
-                    measurement = new { measurement.State, measurement.Incomplete, trails = measurement.Trails.Select(trail => new
+                    ordinal = 101 + index,
+                    receipt.Manifest,
+                    receipt.CommittedManifestSha256,
+                    outcome,
+                    measurement = new
                     {
-                        trail.CandidateId, trail.CandidateIdentitySha256, trail.ExtractionIdentitySha256,
-                        trail.SourceManifest.Descriptor.Artifact.ArtifactId, trail.DetectorInput, trail.Geometry
-                    }) },
-                    presentationStatus = view.Status, presentationReason = view.Reason, layers = view.Presentation.Layers, view.Presentation.BaseArtifactId,
-                    predictionProducts = predictionNode.Outputs, status, linearProducts = linear.Outputs
+                        measurement.State,
+                        measurement.Incomplete,
+                        trails = measurement.Trails.Select(trail => new
+                        {
+                            trail.CandidateId,
+                            trail.CandidateIdentitySha256,
+                            trail.ExtractionIdentitySha256,
+                            trail.SourceManifest.Descriptor.Artifact.ArtifactId,
+                            trail.DetectorInput,
+                            trail.Geometry
+                        })
+                    },
+                    presentationStatus = view.Status,
+                    presentationReason = view.Reason,
+                    layers = view.Presentation.Layers,
+                    view.Presentation.BaseArtifactId,
+                    predictionProducts = predictionNode.Outputs,
+                    status,
+                    linearProducts = linear.Outputs,
+                    satelliteLayerProducts = satelliteLayer.Outputs,
+                    overlayProducts = overlay.Outputs
                 }, ct).ConfigureAwait(false);
                 TestContext.WriteLine($"slot {101 + index}: {status.Status}, {outcome.CausalSucceeded}/{outcome.Reason}/{outcome.CandidateCount}, {measurement.State}");
                 if (index < 2)
@@ -195,6 +224,18 @@ public sealed class NamedOrbitalPassCaptureTests
                 var bound = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(
                     Path.Combine(ingressRoot, binding.PayloadRelativePath), ct).ConfigureAwait(false));
                 Assert.AreEqual(input.Snapshot.Manifest.ManifestSha256, CaptureSatelliteProducts.ReadSnapshotManifest(bound)!.ManifestSha256);
+                var predictionFile = predictionNode.Outputs.Single(static output => output.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
+                var prediction = CaptureOrbitalPredictionJson.Parse(await File.ReadAllBytesAsync(
+                    Path.Combine(ingressRoot, predictionFile.PayloadRelativePath), ct).ConfigureAwait(false),
+                    CaptureSatelliteProducts.Restore(bound, OrbitalSnapshotReadResult.Available(input.Snapshot)));
+                CollectionAssert.AreEquivalent(CatalogNumbers, prediction.Tracks.Select(track => track.Lineage.ObjectIdentity.CatalogNumber).ToArray());
+                foreach (var track in prediction.Tracks)
+                {
+                    var expected = input.Tracks[(index, track.Lineage.ObjectIdentity.CatalogNumber)];
+                    Assert.AreEqual(status.Exposure, track.RequestedInterval);
+                    Assert.IsLessThanOrEqualTo(ShutterDelay, (expected.RequestedInterval.StartUtc - track.RequestedInterval.StartUtc).Duration());
+                    Assert.AreEqual(expected.Lineage.RecordSha256, track.Lineage.RecordSha256);
+                }
                 Assert.IsTrue(outcome.CausalSucceeded, outcome.Reason);
                 if (index == 5)
                 {
@@ -224,7 +265,10 @@ public sealed class NamedOrbitalPassCaptureTests
                     Assert.AreEqual(receipt.Manifest.Descriptor.Artifact.ArtifactId, trail.SourceManifest.Descriptor.Artifact.ArtifactId);
                     Assert.AreEqual(bayer ? .5 : 1, trail.DetectorInput.SourceToDetectorTransform.ScaleX);
                 }
-                var brightMatch = Assert.ContainsSingle(measurement.Trails.Where(trail => Matches(trail, TrackPixels(bright))));
+                var brightPath = TrackPixels(bright);
+                var brightMatch = Assert.ContainsSingle(measurement.Trails.Where(trail => Matches(trail, brightPath)));
+                Assert.IsFalse(Matches(PerpendicularControl(brightMatch, brightPath), brightPath),
+                    "A perpendicular crossing must not score as the predicted trail.");
                 var darkCount = measurement.Trails.Count(trail => Matches(trail, TrackPixels(dark)));
                 Assert.AreEqual(0, darkCount, "No measured trail should match the dark prediction.");
                 var centerline = brightMatch.Geometry.Polyline;
@@ -253,6 +297,88 @@ public sealed class NamedOrbitalPassCaptureTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord)
+    {
+        var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var ct = TestContext.CancellationToken;
+            var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "orbital-prediction-v1");
+            var config = MakeConfiguration(fixture, bayer: false);
+            var input = await PreparePackageAsync(root, fixture, config, ct, bundledTime: clouds).ConfigureAwait(false);
+            var ingressRoot = Path.Combine(root, "ingress");
+            config = ConfigureGraph(config, input, ingressRoot, wrongExpectedRecord);
+            if (clouds)
+            {
+                var options = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
+                options["cloudScenario"] = JsonSerializer.SerializeToNode(new VirtualCloudScenarioDefinition
+                {
+                    EpochUtc = First,
+                    Keyframes = [new() { Coverage = .3, MaximumOpacity = .2 }]
+                }, Json);
+                config = config with { Module = config.Module with { Options = JsonSerializer.SerializeToElement(options, Json) } };
+            }
+            var requested = First + 3 * Exposure;
+            var shutter = requested.AddMilliseconds(1);
+            var clock = new ExposureTestTimeProvider(shutter);
+            var provider = CreateProvider(ingressRoot, clock, new InMemoryCelestialCatalog([]), input);
+            await using var providerLifetime = provider.ConfigureAwait(false);
+            await InitializeCaptureServicesAsync(provider, config, ct).ConfigureAwait(false);
+            await InstallSnapshotAsync(provider, input.Snapshot, ct).ConfigureAwait(false);
+            var module = provider.GetRequiredService<ICameraModuleFactory>().Create(config.ModuleType);
+            await using var moduleLifetime = module.ConfigureAwait(false);
+            await module.InitializeAsync(config, ct).ConfigureAwait(false);
+            var request = new CaptureRequest(requested, Exposure, CaptureMode.Still, new(Exposure, 0, null, null));
+            var exposureTask = module.CaptureAsync(request, ct);
+            await clock.TimerCreated.Task.WaitAsync(ct).ConfigureAwait(false);
+            clock.Advance(Exposure);
+            var capture = await exposureTask.ConfigureAwait(false);
+            var rendered = capture.Frame!.Metadata.Scene!;
+            Assert.AreEqual(shutter, rendered.VirtualExposure!.ScenarioStartUtc);
+            Assert.AreEqual(requested, rendered.VirtualExposure.RequestedStartUtc);
+            Assert.AreEqual(shutter, rendered.TransientScenario!.IntegrationStartUtc);
+            Assert.AreEqual(clouds ? shutter : (DateTimeOffset?)null, rendered.CloudScenario?.IntegrationStartUtc);
+
+            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+            var host = new CaptureHostContext(config, ingress, provider.GetRequiredService<ICaptureDistributor>(), null,
+                provider.GetRequiredService<IProjectedSceneStagingStore>(), provider.GetRequiredService<ProjectedSceneStageLifecycleCoordinator>(),
+                provider.GetRequiredService<CaptureProjectedSceneStager>());
+            await host.PublishAsync(new(request, capture, shutter, Exposure, Exposure), ct).ConfigureAwait(false);
+
+            var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static lane => lane.Name == "standard");
+            var queue = provider.GetRequiredService<ICaptureLaneStore>();
+            var lease = await queue.ClaimAsync(lane, Agent, config, ct).ConfigureAwait(false);
+            Assert.IsNotNull(lease);
+            var manifest = lease.Context.RawCapture.Manifest;
+            Assert.IsTrue(manifest.Validate().IsValid);
+            Assert.AreEqual(shutter, manifest.Descriptor.Timing.ExposureStartedUtc);
+            Assert.AreEqual(requested, manifest.Descriptor.Timing.RequestedStartUtc);
+            var result = await provider.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, ct).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+            await queue.CompleteAsync(lease, ct).ConfigureAwait(false);
+            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var node = await store.ReadNodeAsync(manifest.Descriptor.Capture.CaptureId, "satellite", ct).ConfigureAwait(false);
+            Assert.IsNotNull(node);
+            var status = node.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.StatusSchema);
+            var prediction = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
+                Path.Combine(ingressRoot, status.PayloadRelativePath), ct).ConfigureAwait(false));
+            Assert.AreEqual(new OrbitalUtcInterval(shutter, shutter + Exposure), prediction.Exposure);
+            Assert.AreEqual(wrongExpectedRecord ? 0 : 2, prediction.TrackCount);
+            Assert.AreEqual(!wrongExpectedRecord, prediction.Renderable);
+            if (wrongExpectedRecord)
+                Assert.AreEqual("PinnedRecordSelectionMismatch", prediction.Reason);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task PinRejectsAlteredBytesWrongObjectShutterAndMirror()
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-pass-invalid-" + Guid.NewGuid().ToString("N"));
@@ -267,10 +393,17 @@ public sealed class NamedOrbitalPassCaptureTests
             var options = new VirtualSkyCameraModuleOptions();
             _ = VirtualSkyNamedPass.Prepare(pin, config, options, null, ct);
             Reject(pin with { PackageSha256 = new string('A', 64) }, config, "checksum");
-            Reject(pin, config with { Rig = config.Rig with
-                { Optics = config.Rig.Optics with { HorizontalFlip = !config.Rig.Optics.HorizontalFlip } } }, "projection");
-            Reject(pin, config with { DeploymentLocation = null, Observatory = config.Observatory with
-                { LatitudeDegrees = config.Observatory.LatitudeDegrees + .1 } }, "observer");
+            Reject(pin, config with
+            {
+                Rig = config.Rig with
+                { Optics = config.Rig.Optics with { HorizontalFlip = !config.Rig.Optics.HorizontalFlip } }
+            }, "projection");
+            Reject(pin, config with
+            {
+                DeploymentLocation = null,
+                Observatory = config.Observatory with
+                { LatitudeDegrees = config.Observatory.LatitudeDegrees + .1 }
+            }, "observer");
 
             var original = JsonNode.Parse(await File.ReadAllBytesAsync(package.PackagePath, ct).ConfigureAwait(false))!;
             var wrongObject = original.DeepClone();
@@ -282,7 +415,54 @@ public sealed class NamedOrbitalPassCaptureTests
             var wrongInput = original.DeepClone();
             wrongInput["objects"]![0]!["tracks"]![0]!["track"]!["sha256"] = new string('C', 64);
             Reject(await WritePinAsync("wrong-input.json", wrongInput).ConfigureAwait(false), config, "checksum");
+            var alternateRoot = Path.Combine(root, "competing");
+            Directory.CreateDirectory(alternateRoot);
+            var competing = await PreparePackageAsync(alternateRoot, fixture, config, ct, competingRecord: true).ConfigureAwait(false);
+            Reject(new(competing.PackagePath, competing.PackageSha256), config, "selection policy");
             Assert.ThrowsExactly<OperationCanceledException>(() => VirtualSkyNamedPass.Prepare(pin, config, options, null, new(true)));
+
+            var module = new VirtualSkyCameraModule(new ExposureTestTimeProvider(First, autoAdvance: true),
+                new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+            await using var moduleLifetime = module.ConfigureAwait(false);
+            var preflight = (ICameraModuleConfigurationPreflight)module;
+            var badPath = Path.Combine(root, "missing.json");
+            _ = Assert.ThrowsExactly<InvalidOperationException>(() =>
+                preflight.ValidateConfiguration(WithPass(config, pin with { PackagePath = badPath })));
+            if (OperatingSystem.IsLinux())
+            {
+                var fifo = Path.Combine(root, "package.fifo");
+                using var command = Process.Start(new ProcessStartInfo("mkfifo", [fifo]));
+                Assert.IsNotNull(command);
+                await command.WaitForExitAsync(ct).ConfigureAwait(false);
+                Assert.AreEqual(0, command.ExitCode);
+                _ = Assert.ThrowsExactly<InvalidOperationException>(() =>
+                    preflight.ValidateConfiguration(WithPass(config, pin with { PackagePath = fifo })));
+            }
+
+            var seedOnly = original.DeepClone();
+            foreach (var entry in seedOnly["objects"]!.AsArray())
+            {
+                var source = Path.Combine(Path.GetDirectoryName(package.PackagePath)!, entry!["optics"]!["path"]!.GetValue<string>());
+                var optics = JsonNode.Parse(await File.ReadAllBytesAsync(source, ct).ConfigureAwait(false))!;
+                optics["seed"] = 528;
+                var changed = await WritePinAsync("seed-" + Path.GetFileName(source), optics).ConfigureAwait(false);
+                entry["optics"] = JsonSerializer.SerializeToNode(new FilePin(Path.GetFileName(changed.PackagePath), changed.PackageSha256), Json);
+            }
+            var changedSeed = await WritePinAsync("changed-seed.json", seedOnly).ConfigureAwait(false);
+            var baselinePixels = await RenderAsync(pin).ConfigureAwait(false);
+            var changedPixels = await RenderAsync(changedSeed).ConfigureAwait(false);
+            Assert.AreNotEqual(baselinePixels, changedPixels);
+
+            async Task<string> RenderAsync(VirtualSkyNamedPassOptions reference)
+            {
+                var clock = new ExposureTestTimeProvider(First, autoAdvance: true);
+                var camera = new VirtualSkyCameraModule(clock, new InMemoryCelestialCatalog([]), new ProjectedSceneStore());
+                await using var cameraLifetime = camera.ConfigureAwait(false);
+                await camera.InitializeAsync(WithPass(config, reference), ct).ConfigureAwait(false);
+                var frame = await camera.CaptureAsync(new(First, Exposure, CaptureMode.Still, new(Exposure, 0, null, null)), ct)
+                    .ConfigureAwait(false);
+                return Hash(frame.Frame!.PixelData.ToArray());
+            }
 
             void Reject(VirtualSkyNamedPassOptions reference, CameraModuleConfig configuration, string reason)
             {
@@ -305,6 +485,13 @@ public sealed class NamedOrbitalPassCaptureTests
         }
     }
 
+    private static CameraModuleConfig WithPass(CameraModuleConfig config, VirtualSkyNamedPassOptions reference)
+    {
+        var options = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
+        options["namedOrbitalPass"] = JsonSerializer.SerializeToNode(reference, Json);
+        return config with { Module = config.Module with { Options = JsonSerializer.SerializeToElement(options, Json) } };
+    }
+
     private static CameraModuleConfig MakeConfiguration(string fixture, bool bayer)
     {
         var basis = JsonSerializer.Deserialize<CameraModuleConfig>(
@@ -320,20 +507,23 @@ public sealed class NamedOrbitalPassCaptureTests
             },
             Sensor = bayer ? basis.Rig.Sensor : basis.Rig.Sensor with
             {
-                PixelFormat = CameraPixelFormat.Mono16, ColorMode = SensorColorMode.Mono,
+                PixelFormat = CameraPixelFormat.Mono16,
+                ColorMode = SensorColorMode.Mono,
                 ResponseMode = SensorResponseMode.Monochrome
             }
         };
         var site = basis.Observatory;
         return basis with
         {
-            AgentId = Agent, Rig = rig,
+            AgentId = Agent,
+            Rig = rig,
             DeploymentLocation = DeploymentLocationSnapshot.Create("named-pass-site", 1, "fixture", null,
                 DateTimeOffset.UnixEpoch, null, site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters, site.TimeZoneId)
         };
     }
 
-    private static CameraModuleConfig ConfigureGraph(CameraModuleConfig config, PreparedInput input, string storageRoot)
+    private static CameraModuleConfig ConfigureGraph(CameraModuleConfig config, PreparedInput input, string storageRoot,
+        bool wrongExpectedRecord = false)
     {
         var module = JsonNode.Parse(config.Module.Options!.Value.GetRawText())!.AsObject();
         module["illuminationMode"] = "ControlledNight";
@@ -351,7 +541,11 @@ public sealed class NamedOrbitalPassCaptureTests
                 Keyframes = [ControlPoint(20, 240), ControlPoint(25, 250)]
             }]
         }, Json);
-        var pin = new CaptureSatellitePinnedInputs(input.Snapshot.Manifest.ManifestSha256, input.Time.EarthOrientationSha256!, input.Time.LeapSecondsSha256);
+        var expectedRecords = input.Snapshot.Records.ToDictionary(static record => record.ObjectIdentity.CatalogNumber, static record => record.RecordSha256);
+        if (wrongExpectedRecord)
+            expectedRecords[CatalogNumbers[0]] = expectedRecords[CatalogNumbers[1]];
+        var pin = new CaptureSatellitePinnedInputs(input.Snapshot.Manifest.ManifestSha256, input.Time.EarthOrientationSha256!, input.Time.LeapSecondsSha256,
+            expectedRecords);
         return config with
         {
             Module = config.Module with { Options = JsonSerializer.SerializeToElement(module, Json) },
@@ -388,13 +582,14 @@ public sealed class NamedOrbitalPassCaptureTests
         => new(type, id, DependsOn: dependencies, Options: options is null ? null : JsonSerializer.SerializeToElement(options, Json),
             Publication: new(CaptureProcessingPersistenceMode.DurableLocal));
 
-    private static ServiceProvider CreateProvider(string root, TimeProvider clock, ICelestialCatalog catalog, OrbitalTimeData time)
+    private static ServiceProvider CreateProvider(string root, TimeProvider clock, ICelestialCatalog catalog, PreparedInput input)
     {
         var services = new ServiceCollection();
         services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning));
         services.AddSingleton(clock);
         services.AddSingleton(catalog);
-        services.AddCameraAgentInfrastructure(new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        var packageRoot = Path.GetDirectoryName(input.PackagePath)!;
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["CameraAgent:AgentId"] = Agent,
             ["CameraAgent:RawIngressRoot"] = root,
@@ -405,15 +600,21 @@ public sealed class NamedOrbitalPassCaptureTests
             ["CameraAgent:TransientDetection:ExposureIntegratedStarMask"] = "true",
             ["CameraAgent:TransientDetection:StarMaximumResults"] = "32768",
             ["CameraAgent:TransientDetection:StarMaximumMagnitude"] = "6.5",
-            ["CameraAgent:TransientDetection:StarSupportRadiusSourcePixels"] = "2"
-        }).Build());
+            ["CameraAgent:TransientDetection:StarSupportRadiusSourcePixels"] = "2",
+            ["CameraAgent:SatellitePlanning:Enabled"] = "true",
+            ["CameraAgent:SatellitePlanning:EarthOrientationPath"] = Path.Combine(packageRoot, "earth-orientation"),
+            ["CameraAgent:SatellitePlanning:EarthOrientationSha256"] = input.Time.EarthOrientationSha256,
+            ["CameraAgent:SatellitePlanning:LeapSecondsPath"] = Path.Combine(packageRoot, "leaps"),
+            ["CameraAgent:SatellitePlanning:LeapSecondsSha256"] = input.Time.LeapSecondsSha256
+        }).Build();
+        services.AddCameraAgentInfrastructure(configuration);
+        services.AddCameraAgentSatellitePlanning(configuration);
         services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
-        services.AddSingleton<ICameraAgentOrbitalTimeSource>(new PinnedTimeSource(time));
         services.AddSingleton<IDeploymentLocationProtector>(new OrbitalPassThroughLocationProtector());
         return services.BuildServiceProvider();
     }
 
-    private static async Task<IReadOnlyList<CaptureTiming>> CaptureSequenceAsync(ServiceProvider provider, CameraModuleConfig config, TimeProvider clock,
+    private static async Task<IReadOnlyList<CaptureTiming>> CaptureSequenceAsync(ServiceProvider provider, CameraModuleConfig config, ExposureTestTimeProvider clock,
         CancellationToken cancellationToken)
     {
         await InitializeCaptureServicesAsync(provider, config, cancellationToken).ConfigureAwait(false);
@@ -428,7 +629,7 @@ public sealed class NamedOrbitalPassCaptureTests
             provider.GetRequiredService<CaptureProjectedSceneStager>());
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var bounded = new SixCaptureHost(host, stop);
-        var runner = new CameraModuleRunner(module, bounded, clock, NullLogger.Instance);
+        var runner = new CameraModuleRunner(new DelayedFirstShutter(module, clock), bounded, clock, NullLogger.Instance);
         await runner.RunAsync(stop.Token).WaitAsync(cancellationToken).ConfigureAwait(false);
         Assert.HasCount(6, bounded.Timings);
         return bounded.Timings;
@@ -471,15 +672,29 @@ public sealed class NamedOrbitalPassCaptureTests
 
     private sealed record CaptureTiming(DateTimeOffset StartUtc, string RenderMilliseconds, string RenderCpuMilliseconds, string ProjectionMilliseconds);
 
-    private sealed class PinnedTimeSource(OrbitalTimeData time) : ICameraAgentOrbitalTimeSource
+    private sealed class DelayedFirstShutter(ICameraModule module, ExposureTestTimeProvider clock) : ICameraModule
     {
-        public ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(CancellationToken cancellationToken)
-            => ValueTask.FromResult(new CameraAgentOrbitalTimeResolution(CameraAgentOrbitalTimeDataSource.Override, CameraAgentOrbitalTimeDataProblem.None, time));
-        public ValueTask<CameraAgentOrbitalTimeResolution> ResolveAsync(OrbitalUtcInterval window, CancellationToken cancellationToken)
-            => ResolveAsync(cancellationToken);
+        private bool _first = true;
+        public string Id => module.Id;
+        public string DisplayName => module.DisplayName;
+        public string ModuleType => module.ModuleType;
+        public CameraModuleCapabilities Capabilities => module.Capabilities;
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+            => module.InitializeAsync(config, cancellationToken);
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        {
+            if (_first)
+            {
+                _first = false;
+                clock.Advance(ShutterDelay);
+            }
+            return module.CaptureAsync(request, cancellationToken);
+        }
+        public ValueTask DisposeAsync() => module.DisposeAsync();
     }
 
-    private static async Task<PreparedInput> PreparePackageAsync(string root, string fixture, CameraModuleConfig config, CancellationToken ct)
+    private static async Task<PreparedInput> PreparePackageAsync(
+        string root, string fixture, CameraModuleConfig config, CancellationToken ct, bool competingRecord = false, bool bundledTime = false)
     {
         var packageRoot = Path.Combine(root, "private-inputs");
         Directory.CreateDirectory(packageRoot);
@@ -493,10 +708,21 @@ public sealed class NamedOrbitalPassCaptureTests
             RawLengthBytes = carrier.Length, RawSha256 = Hash(carrier),
             TermsReference = "Normalized-record fixture carrier from the retained #529 Starlinks. No provider download."
         }], source.Manifest.Coverage);
-        var manifest = Put("snapshot.json", snapshot.SerializeManifest());
-        var records = Put("records.json", snapshot.SerializePayload());
-        var eop = await File.ReadAllBytesAsync(Path.Combine(fixture, "time", "predicted-2026.finals2000A"), ct).ConfigureAwait(false);
-        var leaps = await File.ReadAllBytesAsync(Path.Combine(fixture, "time", "leap-seconds.list"), ct).ConfigureAwait(false);
+        var combined = snapshot;
+        if (competingRecord)
+        {
+            var selected = snapshot.RecordsFor(new("norad", CatalogNumbers[0])).Single();
+            var preferred = OrbitalContract.CreateRecord(selected with { EpochUtc = selected.EpochUtc.AddHours(1) });
+            combined = OrbitalSnapshot.Create([.. snapshot.Records, preferred], snapshot.Manifest.Sources, snapshot.Manifest.Coverage);
+        }
+        var manifest = Put("snapshot.json", combined.SerializeManifest());
+        var records = Put("records.json", combined.SerializePayload());
+        var timeRoot = bundledTime ? CameraAgentPinnedOrbitalTimeSource.BundledDirectory : Path.Combine(fixture, "time");
+        var eop = await File.ReadAllBytesAsync(Path.Combine(timeRoot,
+            bundledTime ? "finals2000A.daily.extended" : "predicted-2026.finals2000A"), ct).ConfigureAwait(false);
+        var leaps = await File.ReadAllBytesAsync(Path.Combine(timeRoot, "leap-seconds.list"), ct).ConfigureAwait(false);
+        if (bundledTime)
+            Assert.IsGreaterThan(256 * 1024, eop.Length);
         var time = OrbitalTimeData.FromFinals2000A(eop, leaps);
         var model = OrbitalPredictionModel.Create(time, assumeEllipsoidalHeight: true);
         var rig = config.Rig;
@@ -525,7 +751,18 @@ public sealed class NamedOrbitalPassCaptureTests
                     new(OrbitalPredictionUse.Diagnostic, snapshot, policy, interval, [identity], observer, model,
                         new(1, 20, 10_000, 1, 100, 1000, 1000, 1, .01)), geometry, timing), ct).ConfigureAwait(false);
                 var prediction = Assert.ContainsSingle(result.Products);
-                if (number == "56838" && index == 3)
+                if (competingRecord)
+                {
+                    prediction = OrbitalPredictionJson.CreateTrack(prediction with
+                    {
+                        Lineage = prediction.Lineage with
+                        {
+                            SnapshotManifestSha256 = combined.Manifest.ManifestSha256,
+                            NormalizedPayloadSha256 = combined.Manifest.NormalizedPayloadSha256
+                        }
+                    });
+                }
+                if (!bundledTime && number == "56838" && index == 3)
                 {
                     // Compatible projection/time from retained virtual-camera/tracks/starlink-56838/track-03.json.
                     Assert.AreEqual(291.5576252182425, prediction.Samples[0].Pixel!.Value.X, 1e-6);
@@ -541,14 +778,23 @@ public sealed class NamedOrbitalPassCaptureTests
             optical["angularWidthDegrees"] = .09;
             optical["redWeight"] = 1.8;
             optical["blueWeight"] = .35;
-            groups.Add(new { catalogNumber = number, recordSha256 = snapshot.RecordsFor(identity).Single().RecordSha256,
-                optics = Put($"optics-{number}.json", JsonSerializer.SerializeToUtf8Bytes(optical, Json)), tracks = trackEntries });
+            groups.Add(new
+            {
+                catalogNumber = number,
+                recordSha256 = snapshot.RecordsFor(identity).Single().RecordSha256,
+                optics = Put($"optics-{number}.json", JsonSerializer.SerializeToUtf8Bytes(optical, Json)),
+                tracks = trackEntries
+            });
         }
         var package = Put("package.json", JsonSerializer.SerializeToUtf8Bytes(new
         {
-            schemaVersion = "virtual-sky-named-pass-v1", epochUtc = First,
-            snapshotManifest = manifest, snapshotRecords = records,
-            earthOrientation = Put("earth-orientation", eop), leapSeconds = Put("leaps", leaps), objects = groups
+            schemaVersion = "virtual-sky-named-pass-v1",
+            epochUtc = First,
+            snapshotManifest = manifest,
+            snapshotRecords = records,
+            earthOrientation = Put("earth-orientation", eop),
+            leapSeconds = Put("leaps", leaps),
+            objects = groups
         }, Json));
         return new(Path.Combine(packageRoot, package.Path), package.Sha256, time, snapshot, tracks);
 
@@ -559,18 +805,41 @@ public sealed class NamedOrbitalPassCaptureTests
         }
     }
 
-    private static IEnumerable<PixelPoint> TrackPixels(OrbitalExposureTrackV1 track)
-        => track.Samples.Where(static sample => sample.Pixel.HasValue).Select(static sample => sample.Pixel!.Value);
+    private static PixelPoint[] TrackPixels(OrbitalExposureTrackV1 track)
+        => track.Samples.Where(static sample => sample.Pixel.HasValue).Select(static sample => sample.Pixel!.Value).ToArray();
 
     private static bool Matches(CameraAgentCaptureTrail trail, IEnumerable<PixelPoint> expected)
     {
         var transform = trail.DetectorInput.SourceToDetectorTransform;
         var path = expected.Select(point => new TransientPointV1(point.X * transform.ScaleX + transform.OffsetX,
             point.Y * transform.ScaleY + transform.OffsetY)).ToArray();
-        return NearPath(trail.Geometry.Polyline[0]) && NearPath(trail.Geometry.Polyline[^1]);
+        var first = trail.Geometry.Polyline[0];
+        var last = trail.Geometry.Polyline[^1];
+        var expectedX = path[^1].X - path[0].X;
+        var expectedY = path[^1].Y - path[0].Y;
+        var measuredX = last.X - first.X;
+        var measuredY = last.Y - first.Y;
+        var expectedLength = double.Hypot(expectedX, expectedY);
+        var projectedExtent = Math.Abs(measuredX * expectedX + measuredY * expectedY) / expectedLength;
+        return projectedExtent >= expectedLength * .25 &&
+            projectedExtent >= .85 * double.Hypot(measuredX, measuredY) && NearPath(first) && NearPath(last);
 
         bool NearPath(TransientPointV1 endpoint)
             => path.Any(point => double.Hypot(point.X - endpoint.X, point.Y - endpoint.Y) <= 4 * transform.ScaleX);
+    }
+
+    private static CameraAgentCaptureTrail PerpendicularControl(CameraAgentCaptureTrail trail, PixelPoint[] path)
+    {
+        var transform = trail.DetectorInput.SourceToDetectorTransform;
+        var chordX = path[^1].X - path[0].X;
+        var chordY = path[^1].Y - path[0].Y;
+        var length = double.Hypot(chordX, chordY);
+        var x = -3 * chordY / length;
+        var y = 3 * chordX / length;
+        var center = path[path.Length / 2];
+        TransientPointV1 Endpoint(double sign) => new((center.X + sign * x) * transform.ScaleX + transform.OffsetX,
+            (center.Y + sign * y) * transform.ScaleY + transform.OffsetY);
+        return trail with { Geometry = trail.Geometry with { Polyline = [Endpoint(-1), Endpoint(1)] } };
     }
 
     // Independently select detector photosites near the expected path using pixel-edge coordinates.

@@ -88,8 +88,14 @@ public sealed partial class TransientWorkerRuntimeTests
             var secondInput = preparation.Prepare(new Dictionary<int, CameraModuleConfig> { [0] = alternative },
                 new Dictionary<int, TransientLoadedFrame>
                 {
-                    [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene with
-                        { Objects = [new("alternate-satellite-identity-canary", "alternate-oracle", 55, 30, 30)] } } }
+                    [0] = frame with
+                    {
+                        Manifest = frame.Manifest with
+                        {
+                            Scene = firstScene with
+                            { Objects = [new("alternate-satellite-identity-canary", "alternate-oracle", 55, 30, 30)] }
+                        }
+                    }
                 }, true);
             Assert.AreEqual(firstInput[0], secondInput[0], "Changing private names and positions must not change the measured inputs.");
             var first = await runtime.CreateSourcesAsync(firstInput, options, CancellationToken.None).ConfigureAwait(false);

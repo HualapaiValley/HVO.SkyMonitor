@@ -186,9 +186,15 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             plan = new(descriptor, observer!.Value, geometry, timing, model, Options.Bounds,
                 new(CaptureOrbitalAssessmentMode.OriginalAvailability, descriptor.Timing.DurableIngressUtc,
                     descriptor.Timing.DurableIngressUtc, available!.Value), snapshot,
-                new([new("celestrak:gp:active", 0)], Options.AllowStaleDiagnostics),
+                CaptureSatelliteTracksOptions.CreateSelectionPolicy(Options.AllowStaleDiagnostics),
                 Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)),
                 context.Config.Rig.HorizonObstruction is null ? null : context.Config.Rig);
+            if (pin?.ExpectedRecords is { } records && plan.Plan.Selections.Any(selection =>
+                    selection.SelectedRecord?.RecordSha256 != records[selection.ObjectIdentity.CatalogNumber]))
+            {
+                plan = null;
+                reason = "PinnedRecordSelectionMismatch";
+            }
         }
         return new(CaptureSatelliteProducts.InputSchema, descriptor, context.Config.Rig, observer, OptionalBytes(plan?.SerializePlan()),
             OptionalBytes(manifest), null, OptionalBytes(eop), OptionalBytes(leaps), time.Source.ToString(), available, reason)
@@ -213,6 +219,9 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
 
 public sealed class CaptureSatelliteTracksOptions : IValidatableObject
 {
+    internal static OrbitalSelectionPolicy CreateSelectionPolicy(bool allowStaleDiagnostics)
+        => new([new(CelesTrakGpSource.DatasetKey, 0)], allowStaleDiagnostics);
+
     [Required, MaxLength(96), MinLength(1)]
     public string OutputVariant { get; init; } = "capture-satellites-v1";
     public IReadOnlyList<string> CatalogNumbers { get; init; } = [];
@@ -234,10 +243,13 @@ public sealed class CaptureSatelliteTracksOptions : IValidatableObject
             OverrideTimeDataAvailableUtc is { Offset: var offset } && offset != TimeSpan.Zero)
             yield return new ValidationResult("Satellite bounds or time availability exceed the capture contract.");
         if (PinnedInputs is { } pin && (!OrbitalContract.IsSha256(pin.SnapshotManifestSha256) ||
-            !OrbitalContract.IsSha256(pin.EarthOrientationSha256) || !OrbitalContract.IsSha256(pin.LeapSecondsSha256)))
-            yield return new ValidationResult("Pinned satellite inputs require three uppercase SHA-256 identities.");
+            !OrbitalContract.IsSha256(pin.EarthOrientationSha256) || !OrbitalContract.IsSha256(pin.LeapSecondsSha256) ||
+            pin.ExpectedRecords is { } records && (records.Count != CatalogNumbers.Count ||
+                CatalogNumbers.Any(number => !records.TryGetValue(number, out var hash) || !OrbitalContract.IsSha256(hash)))))
+            yield return new ValidationResult("Pinned satellite inputs require valid uppercase SHA-256 identities and a matching optional record set.");
     }
 }
 
 /// <summary>Exact local inputs required when a capture profile uses a frozen orbital scenario.</summary>
-public sealed record CaptureSatellitePinnedInputs(string SnapshotManifestSha256, string EarthOrientationSha256, string LeapSecondsSha256);
+public sealed record CaptureSatellitePinnedInputs(string SnapshotManifestSha256, string EarthOrientationSha256, string LeapSecondsSha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyDictionary<string, string>? ExpectedRecords = null);

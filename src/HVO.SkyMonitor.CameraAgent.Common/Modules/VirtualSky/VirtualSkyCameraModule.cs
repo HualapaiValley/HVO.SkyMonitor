@@ -128,7 +128,16 @@ public sealed class VirtualSkyCameraModule(
     {
         var (options, readout) = ValidateConfiguration(config);
         if (options.NamedOrbitalPass is { } namedPass)
-            _ = VirtualSkyNamedPass.Prepare(namedPass, config, options, readout, CancellationToken.None);
+        {
+            try
+            {
+                _ = VirtualSkyNamedPass.Prepare(namedPass, config, options, readout, CancellationToken.None);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException("The configured named orbital pass package could not be validated.", exception);
+            }
+        }
     }
 
     private static void ValidatePixelFormat(CameraModuleConfig config, VirtualSkyCameraModuleOptions options)
@@ -282,7 +291,8 @@ public sealed class VirtualSkyCameraModule(
             _options.CatalogSchemaVersion);
         var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? configuredMetadata;
         long? fixedSequence = null;
-        var timelineUtc = request.RequestedStartUtc;
+        var namedPass = preview is null ? _namedPass : null;
+        var timelineUtc = namedPass is null ? request.RequestedStartUtc : exposureStartedUtc;
         if (_options.FixedSequenceStartUtc is { } fixedSequenceStartUtc)
         {
             lock (_fixedSequenceLock)
@@ -298,24 +308,24 @@ public sealed class VirtualSkyCameraModule(
         }
         var virtualExposure = VirtualExposureProvenance.Create(request.RequestedStartUtc, timelineUtc,
             _options.FixedSceneUtc ?? timelineUtc, setpoint.Exposure,
-            (_options.FixedSceneUtc.HasValue, _options.FixedSequenceStartUtc.HasValue) switch
+            (namedPass is not null, _options.FixedSceneUtc.HasValue, _options.FixedSequenceStartUtc.HasValue) switch
             {
-                (false, false) => VirtualExposureTimeMapping.RequestUtc,
-                (true, false) => VirtualExposureTimeMapping.FixedCelestialUtc,
-                (false, true) => VirtualExposureTimeMapping.FixedScenarioUtc,
-                (true, true) => VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc
+                (true, false, _) => VirtualExposureTimeMapping.ShutterUtc,
+                (true, true, _) => VirtualExposureTimeMapping.FixedCelestialAndShutterUtc,
+                (false, false, false) => VirtualExposureTimeMapping.RequestUtc,
+                (false, true, false) => VirtualExposureTimeMapping.FixedCelestialUtc,
+                (false, false, true) => VirtualExposureTimeMapping.FixedScenarioUtc,
+                (false, true, true) => VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc
             });
         var sceneUtc = virtualExposure.CelestialMidpointUtc;
         // Deployment validity binds the operational capture, not a shifted celestial clock.
-        var namedPass = preview is null ? _namedPass : null;
         var observatory = config.ResolveObservatory(namedPass is null ? request.RequestedStartUtc : exposureStartedUtc);
         if (namedPass is not null && VirtualSkyNamedPass.ToObserver(observatory) != namedPass.Observer)
             throw new InvalidOperationException("The named orbital pass observer no longer matches the capture site.");
         var cloud = _cloudField is null ? null : new VirtualCloudRenderContext(_cloudField, timelineUtc, setpoint.Exposure);
-        var transientStartUtc = namedPass is null ? timelineUtc : exposureStartedUtc;
         var transient = _transientScenario is null || preview is not null && _namedPass is not null
             ? null
-            : new VirtualTransientRenderContext(_transientScenario, transientStartUtc, setpoint.Exposure);
+            : new VirtualTransientRenderContext(_transientScenario, timelineUtc, setpoint.Exposure);
         LinearSceneRenderOptions initialRenderOptions = sensor.PixelFormat switch
         {
             CameraPixelFormat.Mono16 => CreateMonoOptions(setpoint, 0, renderProjection, cloud, transient),
@@ -478,8 +488,7 @@ public sealed class VirtualSkyCameraModule(
             CaptureContractJson.ComputeCanonicalJsonSha256(virtualExposure)))));
         if (namedPass is not null)
             sceneId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(sceneId, "\n",
-                _options.NamedOrbitalPass!.PackageSha256, "\n", namedPass.ParametersSha256, "\n",
-                transientStartUtc.ToString("O", CultureInfo.InvariantCulture)))));
+                namedPass.ParametersSha256))));
         if (preview is not null)
         {
             // A preview never shares an identity with a capture of the same instant, and binds the focus model.
@@ -500,12 +509,12 @@ public sealed class VirtualSkyCameraModule(
         var finalRenderOptions = initialRenderOptions with
         {
             StellarExposure = stellarPlan,
-            Seed = sensor.PixelFormat switch
+            Seed = unchecked((namedPass?.Definition.Seed ?? 0) + (sensor.PixelFormat switch
             {
                 CameraPixelFormat.Mono16 => CreateMonoOptions(setpoint, captureSequence, renderProjection, cloud, transient).Seed,
                 CameraPixelFormat.BayerRggb16 => CreateBayerOptions(setpoint, captureSequence, renderProjection, cloud, transient).Seed,
                 _ => initialRenderOptions.Seed
-            }
+            }))
         };
         var renderCpuStarted = ReadProcessCpu();
         var renderStarted = Stopwatch.GetTimestamp();
@@ -572,7 +581,7 @@ public sealed class VirtualSkyCameraModule(
         var cloudProvenance = CreateCloudProvenance(_options.CloudScenario, timelineUtc, setpoint.Exposure);
         var transientProvenance = CreateTransientProvenance(
             transient is null ? null : namedPass?.Definition ?? _options.TransientScenario,
-            transientStartUtc, setpoint.Exposure, namedPass);
+            timelineUtc, setpoint.Exposure, namedPass);
         var catalogIdentity = CatalogSceneProvenanceIdentity.For(catalog as ICelestialCatalogMetadataSource);
         var provenance = new SceneProvenance(
             sceneId,
