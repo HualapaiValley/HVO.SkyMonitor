@@ -1171,7 +1171,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 // at execution time; its absence must not suppress Storage's required image or scene inputs.
                 optionalDependencies = dependencies
                     .Where(dependency => nodesById[dependency] is
-                        { Config.Required: false, Step: MeasuredAstrometryCaptureProcessingStep })
+                    { Config.Required: false, Step: MeasuredAstrometryCaptureProcessingStep })
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
             ordered.Add(new CaptureProcessingGraphNode(
