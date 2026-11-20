@@ -42,6 +42,9 @@ internal sealed partial class SqliteCaptureProcessingStore
 
     private readonly SemaphoreSlim _astrometryCandidateGate = new(1, 1);
     private readonly object _astrometryChangesLock = new();
+    private readonly CancellationTokenSource _astrometrySeedLifetime = new();
+    private Task? _astrometrySeed;
+    private bool _astrometrySeedStopped;
     private HashSet<Guid>? _changedAstrometryCaptures;
     private AstrometryCaptureCandidate[]? _astrometryCandidates;
 
@@ -54,6 +57,40 @@ internal sealed partial class SqliteCaptureProcessingStore
     }
 
     internal async ValueTask<IReadOnlyList<AstrometryCaptureCandidate>> ReadAstrometryCandidatesAsync(
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Task? seed = null;
+        lock (_astrometryChangesLock)
+        {
+            ObjectDisposedException.ThrowIf(_astrometrySeedStopped, this);
+            if (_astrometryCandidates is null)
+            {
+                // Microsoft.Data.Sqlite can materialize rows synchronously. One store-owned worker
+                // supplies the initial snapshot while each page request can cancel its own wait.
+                if (_astrometrySeed is null or { IsCompleted: true })
+                {
+                    _astrometrySeed = Task.Run(async () =>
+                    {
+                        await ReadAstrometryCandidatesCoreAsync(_astrometrySeedLifetime.Token).ConfigureAwait(false);
+                    }, CancellationToken.None);
+                    // All page requests can leave before a seed faults. Observe the error while
+                    // retaining it for any waiters. The next request can retry a failed seed.
+                    _ = _astrometrySeed.ContinueWith(static completed => { _ = completed.Exception; },
+                        CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+                seed = _astrometrySeed;
+            }
+        }
+
+        if (seed is not null) await seed.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        // Reconcile writes and evictions that arrived during the seed before exposing its snapshot.
+        return await ReadAstrometryCandidatesCoreAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IReadOnlyList<AstrometryCaptureCandidate>> ReadAstrometryCandidatesCoreAsync(
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -75,7 +112,9 @@ internal sealed partial class SqliteCaptureProcessingStore
             {
                 using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                if (_astrometryCandidates is null)
+                var previousSnapshot = _astrometryCandidates;
+                var seeding = previousSnapshot is null;
+                if (seeding)
                 {
                     command.CommandText = LatestAstrometryQuery;
                 }
@@ -86,23 +125,34 @@ internal sealed partial class SqliteCaptureProcessingStore
                         changes.Select(static captureId => captureId.ToString("N"))));
                 }
 
-                var updated = _astrometryCandidates is null
+                var updated = previousSnapshot is null
                     ? new List<AstrometryCaptureCandidate>()
-                    : _astrometryCandidates.Where(candidate => !changes.Contains(candidate.CaptureId)).ToList();
-                using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    : previousSnapshot.Where(candidate => !changes.Contains(candidate.CaptureId)).ToList();
+                var observeSeed = seeding && _faultInjector != NullCaptureProcessingFaultInjector.Instance;
+                using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var soleOutput = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ||
+                            await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null
+                            : new AstrometryOutputStamp(Guid.ParseExact(reader.GetString(4), "N"), reader.GetString(5));
+                        var captureId = reader.GetString(0);
+                        updated.Add(new(Guid.ParseExact(captureId, "N"), reader.GetInt64(1), reader.GetInt64(2),
+                            reader.GetInt64(3), soleOutput));
+                        if (observeSeed) _faultInjector.Inject(CaptureProcessingFaultPoint.AfterAstrometrySeedRowMaterialized, captureId);
+                    }
+                }
+                if (observeSeed) _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeAstrometrySeedPublished, "astrometry");
+                cancellationToken.ThrowIfCancellationRequested();
+                var snapshot = updated.OrderByDescending(static capture => capture.ExposureUtc)
+                    .ThenByDescending(static capture => capture.Sequence).ThenByDescending(static capture => capture.RowId).ToArray();
+                lock (_astrometryChangesLock)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
-                    var soleOutput = await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ||
-                        await reader.IsDBNullAsync(5, cancellationToken).ConfigureAwait(false) ? null
-                        : new AstrometryOutputStamp(Guid.ParseExact(reader.GetString(4), "N"), reader.GetString(5));
-                    updated.Add(new(Guid.ParseExact(reader.GetString(0), "N"), reader.GetInt64(1), reader.GetInt64(2),
-                        reader.GetInt64(3), soleOutput));
+                    _astrometryCandidates = snapshot;
                 }
-                cancellationToken.ThrowIfCancellationRequested();
-                _astrometryCandidates = updated.OrderByDescending(static capture => capture.ExposureUtc)
-                    .ThenByDescending(static capture => capture.Sequence).ThenByDescending(static capture => capture.RowId).ToArray();
-                return _astrometryCandidates;
+                return snapshot;
             }
             catch
             {
