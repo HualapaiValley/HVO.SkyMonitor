@@ -174,6 +174,13 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IProjectedSceneStagingReader>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<IProjectedSceneStagingReconciler>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<CaptureProjectedSceneStager>();
+        services.AddSingleton(provider => new CenteredExposureSceneProvider(
+            provider.GetRequiredService<RawCaptureIngress>(),
+            provider.GetRequiredService<CaptureProjectedSceneStager>(),
+            provider.GetRequiredService<ICelestialCatalog>(),
+            () => provider.GetService<IDeploymentLocationStore>(),
+            provider.GetService<IConstellationTopology>(),
+            provider.GetService<IPlanetEphemeris>()));
         services.AddSingleton<IVirtualSkyGraphSelection>(provider => new VirtualSkyGraphSelectionProvider(
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>(),
             (provider.GetRequiredService<ICelestialCatalog>() as IDeepSkyCatalogSource)?.DeepSky?.Semantics.SnapshotIdentity is not null));
@@ -285,6 +292,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingState>();
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
+        services.AddSingleton<CenteredExposureProductChanges>();
+        services.AddSingleton<CenteredExposureProductReader>();
+        services.AddSingleton<IExposureProductReader>(provider =>
+            provider.GetRequiredService<CenteredExposureProductReader>());
+        services.AddSingleton<ICenteredExposureRuntimeReader>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<CenteredExposureInputCustody>();
         services.AddSingleton<ProcessingReplayWakeup>();
         services.AddSingleton(provider => new ProcessingGraphOperationsCoordinator(
             provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
@@ -297,7 +310,8 @@ public static class CameraAgentServiceCollectionExtensions
             // Hostless graph tools have no initialized accessor; do not construct capture admission for them.
             () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
                 ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
-                : null));
+                : null,
+            provider.GetServices<ICenteredExposureGraphExtension>()));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>

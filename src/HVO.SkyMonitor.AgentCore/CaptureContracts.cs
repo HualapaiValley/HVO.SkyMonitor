@@ -7,7 +7,14 @@ public sealed record CaptureRequest(
     DateTimeOffset RequestedStartUtc,
     TimeSpan TargetInterval,
     CaptureMode Mode,
-    CaptureSetpoint? RequestedSetpoint = null);
+    CaptureSetpoint? RequestedSetpoint = null)
+{
+    [JsonIgnore]
+    public string? BoundGraphRevisionId { get; init; }
+
+    [JsonIgnore]
+    public CapturePipelineConfig? BoundGraph { get; init; }
+}
 
 public sealed record CaptureResult(
     CameraFrame? Frame,

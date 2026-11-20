@@ -25,11 +25,14 @@ internal sealed partial class SqliteRawCaptureJournal(
     Action? inspectionSourceOpenedSeam = null)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
-    internal const int CurrentSchemaVersion = 16;
+    internal const int CurrentSchemaVersion = 17;
+    internal const int PreviousEnvironmentalFenceSchemaVersion = 16;
     internal const int PreviousSchemaVersion = 13;
     internal const int PreviousRecoverySchemaVersion = 14;
     internal const int PreviousEvidenceSchemaVersion = 15;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
+        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true, includeCentered: true));
+    private static readonly Lazy<Dictionary<string, string>> PreCenteredSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: false));
@@ -132,7 +135,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                     $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
             }
             initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && version != PreviousEvidenceSchemaVersion && !initializeSchema)
+            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && version != PreviousEvidenceSchemaVersion &&
+                version != PreviousEnvironmentalFenceSchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
                     $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -147,7 +151,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
             cancellationToken).ConfigureAwait(false);
         if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion && writableVersion != PreviousEvidenceSchemaVersion))
+            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion && writableVersion != PreviousEvidenceSchemaVersion &&
+                writableVersion != PreviousEnvironmentalFenceSchemaVersion))
         {
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -171,6 +176,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                     connection, transaction, CalibrationLibrarySchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,
@@ -186,7 +192,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion or PreviousEvidenceSchemaVersion)
+        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion or PreviousEvidenceSchemaVersion
+            or PreviousEnvironmentalFenceSchemaVersion)
         {
             try
             {
@@ -199,6 +206,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 if (writableVersion == PreviousSchemaVersion)
                     await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -517,6 +525,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             await InsertLiveExecutionAsync(
                 connection, transaction, rawRowId, entry, liveExecution, cancellationToken).ConfigureAwait(false);
         }
+        await BindCenteredAdmissionAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
         _laneFaultInjector.Inject(CaptureLaneFaultPoint.AfterWorkRowsInserted);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalRowInserted);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
@@ -776,11 +785,19 @@ internal sealed partial class SqliteRawCaptureJournal(
             SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
             FROM raw_captures
             WHERE retention_hold = 1 OR EXISTS (
+                SELECT 1 FROM centered_exposure_attempts attempt
+                WHERE attempt.source_capture_id = raw_captures.capture_id
+                  AND attempt.status = 'pending'
+            ) OR EXISTS (
+                SELECT 1 FROM centered_exposure_holds hold
+                WHERE hold.capture_id = raw_captures.capture_id AND hold.expires_unix_ms > $centered_now
+            ) OR EXISTS (
                 SELECT 1 FROM raw_capture_stage_events disposition
                 WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
                   AND disposition.stage_key GLOB 'raw-evidence-release.*')
             ORDER BY agent_id, capture_sequence;
             """;
+        command.Parameters.AddWithValue("$centered_now", _utcNow().ToUnixTimeMilliseconds());
         var holds = new List<RawIngressRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1519,6 +1536,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         var recoveredRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
             connection, transaction, recoveredRowId, entry, laneDefinitions, cancellationToken).ConfigureAwait(false);
+        await BindCenteredAdmissionAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return RawIngressOutcome.Committed;
     }
@@ -1947,7 +1965,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         => Convert.ToString(await ExecuteScalarAsync(connection, sql, cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statements are executed.")]
-    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions(bool includeProfiles)
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions(bool includeProfiles, bool includeCentered = false)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
@@ -1971,6 +1989,12 @@ internal sealed partial class SqliteRawCaptureJournal(
             command.CommandText = NamedProfileSchemaSql;
             command.ExecuteNonQuery();
         }
+        if (includeCentered)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = CenteredSchemaSql;
+            command.ExecuteNonQuery();
+        }
         return ReadSchemaDefinitions(connection);
     }
 
@@ -1983,7 +2007,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             throw new InvalidDataException($"Raw ingress v{sourceVersion} migration source failed integrity or foreign-key validation.");
         }
         await ValidateCanonicalSchemaDefinitionsAsync(
-            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : CanonicalSchemaDefinitions.Value,
+            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : PreCenteredSchemaDefinitions.Value,
             sourceVersion, cancellationToken).ConfigureAwait(false);
     }
 

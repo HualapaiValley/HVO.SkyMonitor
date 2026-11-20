@@ -513,6 +513,8 @@ internal sealed class CaptureDescriptorProcessingContext(CaptureProcessingContex
 
     public SceneProvenance? SceneProvenance => context.RawCapture?.Manifest.Scene;
 
+    internal CenteredExposureBindingV1? CenteredExposure => context.RawCapture?.Manifest.CenteredExposure;
+
     /// <summary>Gets whether the current node runs inside an archived replay execution.</summary>
     public bool IsReplayExecution => context.IsReplayExecution;
 

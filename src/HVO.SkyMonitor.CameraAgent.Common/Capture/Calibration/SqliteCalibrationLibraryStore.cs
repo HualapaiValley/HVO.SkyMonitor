@@ -1341,7 +1341,14 @@ public sealed partial class SqliteCalibrationLibraryStore(
                     SELECT a.artifact_id, a.payload_relative_path, a.manifest_relative_path
                     FROM calibration_library_artifacts a
                     JOIN calibration_library_bundles b ON b.bundle_id = a.bundle_id
-                    WHERE b.retention_hold = 1
+                    WHERE b.retention_hold = 1 OR EXISTS (
+                        SELECT 1 FROM centered_exposure_runs run WHERE run.calibration_bundle_id = b.bundle_id
+                          AND (run.closed_reason IS NULL OR EXISTS (
+                              SELECT 1 FROM centered_exposure_attempts attempt
+                              JOIN processing_executions execution ON execution.capture_id = attempt.capture_id
+                              WHERE attempt.run_id = run.run_id AND execution.status IN ('Pending','Running')
+                          ))
+                    )
                     ORDER BY a.bundle_id, a.ordinal;
                     """;
                 using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -1359,7 +1366,14 @@ public sealed partial class SqliteCalibrationLibraryStore(
             {
                 command.CommandText = """
                     SELECT bundle_identity_sha256, profile_relative_path, source
-                    FROM calibration_library_bundles WHERE retention_hold = 1
+                    FROM calibration_library_bundles b WHERE retention_hold = 1 OR EXISTS (
+                        SELECT 1 FROM centered_exposure_runs run WHERE run.calibration_bundle_id = b.bundle_id
+                          AND (run.closed_reason IS NULL OR EXISTS (
+                              SELECT 1 FROM centered_exposure_attempts attempt
+                              JOIN processing_executions execution ON execution.capture_id = attempt.capture_id
+                              WHERE attempt.run_id = run.run_id AND execution.status IN ('Pending','Running')
+                          ))
+                    )
                     ORDER BY bundle_id;
                     """;
                 using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -2120,6 +2134,19 @@ public sealed partial class SqliteCalibrationLibraryStore(
             Path.GetRelativePath(_storageRoot, path).Replace(Path.DirectorySeparatorChar, '/'),
             after.Length,
             after.LastWriteTimeUtc.Ticks));
+    }
+
+    internal async Task<CalibrationLibrarySelectionResult> SelectFrozenAsync(
+        CenteredCalibrationBinding? binding,
+        ReconstructionDescriptor light,
+        CancellationToken cancellationToken)
+    {
+        if (binding is null) return new(null, CalibrationLibraryReasonCodes.Missing, 0);
+        var bundle = await GetBundleAsync(binding.BundleId, cancellationToken).ConfigureAwait(false);
+        var reason = SelectReason(bundle, light, bundle is null ? 0 : 1);
+        if (bundle is not null && bundle.BundleIdentitySha256 != binding.BundleIdentitySha256)
+            reason = CalibrationLibraryReasonCodes.IncompatibleIdentity;
+        return new(reason is null ? bundle : null, reason ?? "calibration.library.selected", binding.StateVersion);
     }
 
     private static string? SelectReason(

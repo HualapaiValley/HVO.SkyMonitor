@@ -102,8 +102,16 @@ public sealed partial class RawCaptureIngressTests
         }
     }
 
+    private const string DropCenteredSchemaSql = """
+        DROP TABLE centered_exposure_holds;
+        DROP TABLE centered_exposure_products;
+        DROP TABLE centered_exposure_attempts;
+        DROP TABLE centered_exposure_runs;
+        """;
+
     private static async Task RevertProfilesToV13Async(SqliteConnection connection)
     {
+        await ExecuteTestSqlAsync(connection, DropCenteredSchemaSql).ConfigureAwait(false);
         await ExecuteTestSqlAsync(connection, """
             DROP TRIGGER tr_named_rig_revisions_no_delete;
             DROP TRIGGER tr_named_rig_revisions_immutable;
@@ -129,7 +137,7 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV16AndAcceptsEquivalentLegacyFormatting()
+    public async Task InitializeAsync_EmptyDatabaseCreatesCanonicalV17AndAcceptsEquivalentLegacyFormatting()
     {
         var root = CreateRoot();
         try
@@ -499,7 +507,7 @@ public sealed partial class RawCaptureIngressTests
                     // including the read-only inspection source, is refused with SQLITE_BUSY.
                     command.CommandText = "PRAGMA locking_mode = EXCLUSIVE;";
                     Assert.AreEqual("exclusive", await command.ExecuteScalarAsync().ConfigureAwait(false));
-                    command.CommandText = "PRAGMA user_version = 15;";
+                    command.CommandText = "PRAGMA user_version = 17;";
                     await command.ExecuteNonQueryAsync().ConfigureAwait(false);
                 }
 
@@ -543,7 +551,7 @@ public sealed partial class RawCaptureIngressTests
             Assert.AreEqual("wal", await command.ExecuteScalarAsync().ConfigureAwait(false));
             // A committed write that leaves the canonical schema alone, so the write-ahead log holds real frames
             // the inspection must still see after this connection closes.
-            command.CommandText = "PRAGMA user_version = 15;";
+            command.CommandText = "PRAGMA user_version = 17;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         Assert.IsTrue(
@@ -1521,7 +1529,7 @@ public sealed partial class RawCaptureIngressTests
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 17;";
+                command.CommandText = "PRAGMA user_version = 18;";
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var state = new RawIngressState(TimeProvider.System);
@@ -1544,7 +1552,7 @@ public sealed partial class RawCaptureIngressTests
                 await ingress.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
 
             using var verify = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(17L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(18L, await ScalarLongAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
             Assert.AreEqual(RawIngressAvailability.Unhealthy, state.Snapshot.Availability);
             Assert.AreEqual(0L, telemetry.CheckpointCount);
             Assert.AreEqual(0L, telemetry.CheckpointFailureCount);

@@ -31,6 +31,7 @@ public sealed class VirtualSkyCameraModule(
     IVirtualSkyGraphSelection? graphSelection = null) :
     ICameraModule,
     ICameraSetpointController,
+    ICameraBoundExposureCapture,
     ICameraModuleConfigurationPreflight,
     ICameraFocusPreviewCapture,
     ICameraSimulatedSkyRegime
@@ -171,8 +172,26 @@ public sealed class VirtualSkyCameraModule(
         return ValueTask.FromResult(timeProvider.GetUtcNow().ToUniversalTime());
     }
 
+    private ExposureAttemptKey? _lastBoundAttempt;
+
     public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
-        => CaptureCoreAsync(request, null, cancellationToken);
+        => _config?.CenteredExposure is null
+            ? CaptureCoreAsync(request, null, cancellationToken)
+            : throw new InvalidOperationException("Centered exposure requires a reserved acquisition attempt.");
+
+    public Task<CaptureResult> CaptureBoundAsync(
+        ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        ArgumentNullException.ThrowIfNull(request);
+        if (_config?.CenteredExposure is not { } centered || request.RequestedSetpoint is null ||
+            attempt.Camera != new CameraKey(_config.AgentId!, centered.CameraId) ||
+            _lastBoundAttempt is { } prior && prior.RunId == attempt.RunId && prior.Ordinal >= attempt.Ordinal)
+            throw new InvalidOperationException("Centered exposure requires a fresh attempt and explicit settings.");
+
+        _lastBoundAttempt = attempt;
+        return CaptureCoreAsync(request, null, cancellationToken);
+    }
 
     private VirtualSimulatedFocusOptions SimulatedFocusOptions => _options.SimulatedFocus ?? DefaultSimulatedFocus;
 
@@ -234,8 +253,10 @@ public sealed class VirtualSkyCameraModule(
             ? _options.PsfRadiusPixels
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
-        var captureGraph = preview is null && graphSelection is not null
-            ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
+        var captureGraph = request.BoundGraph is { } boundGraph && request.BoundGraphRevisionId is { } boundRevision
+            ? new VirtualSkyGraphSelection(boundRevision, boundGraph)
+            : preview is null && graphSelection is not null
+                ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
         var captureDeepSky = _options.DeepSky ?? (captureGraph is null ? _deepSkyAnnotations : ResolveDeepSkyAnnotations(captureGraph.Pipeline));
         var captureCurated = captureGraph is null ? _curatedAnnotations : ResolveCuratedAnnotations(captureGraph.Pipeline);
         var stageProjectedScene = captureGraph is null ? _stageProjectedScene : captureGraph.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));

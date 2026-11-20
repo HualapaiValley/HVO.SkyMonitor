@@ -792,6 +792,10 @@ internal sealed partial class CaptureProcessingPersistence(
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
+            var inputEvidence = context.GetCurrentInputEvidence();
+            var centeredProducts = execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
+                ? CenteredExposureProductReader.CreateSettlements(rawCapture.Manifest, node, status, reason, outputs, inputEvidence)
+                : null;
             await _store.WriteNodeAsync(
                 rawCapture.Manifest.Descriptor.Capture.CaptureId,
                 node,
@@ -808,13 +812,14 @@ internal sealed partial class CaptureProcessingPersistence(
                 completedUtc,
                 duration,
                 outcome,
-                context.GetCurrentInputEvidence(),
+                inputEvidence,
                 workId,
                 leaseToken,
                 outputs,
                 execution,
                 context.CurrentExecutionRoute,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                centeredProducts).ConfigureAwait(false);
             if (outputs.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.CaptureProcessingOutputPersisted(
@@ -827,6 +832,23 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             lifecycleGate.Release();
         }
+    }
+
+    internal async Task<ProcessingArtifact> RestoreCenteredLinearAsync(
+        ExposureProductRef expected, CancellationToken cancellationToken)
+    {
+        var saved = await _store.ReadOutputByArtifactIdAsync(expected.ArtifactId, cancellationToken).ConfigureAwait(false);
+        if (saved is null || saved.AvailabilityState != "Available" ||
+            saved.Capture.CaptureId != expected.Exposure.CaptureId ||
+            saved.OutputIdentitySha256 != expected.OutputIdentitySha256 ||
+            saved.Artifact.ChecksumSha256 != expected.PayloadSha256)
+            throw new InvalidDataException("The retained linear artifact differs from its centered product binding.");
+        var restored = await RestoreOutputAsync(saved, cancellationToken).ConfigureAwait(false);
+        return CreateProcessingArtifact(saved, restored) with
+        {
+            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(saved.Descriptor ??
+                throw new InvalidDataException("A centered linear product requires a frame descriptor."))
+        };
     }
 
     private async ValueTask<RestoredProcessingOutput> RestoreOutputAsync(

@@ -289,13 +289,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
 
+    private readonly CenteredExposureProductChanges? _centeredProductChanges;
+
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
         TimeProvider? timeProvider = null,
         ICaptureProcessingFaultInjector? faultInjector = null,
-        Microsoft.Extensions.Logging.ILogger<SqliteCaptureProcessingStore>? logger = null)
+        Microsoft.Extensions.Logging.ILogger<SqliteCaptureProcessingStore>? logger = null,
+        CenteredExposureProductChanges? centeredProductChanges = null)
     {
         _logger = logger;
+        _centeredProductChanges = centeredProductChanges;
         ArgumentNullException.ThrowIfNull(options);
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);
@@ -612,7 +616,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         IReadOnlyList<DurableProcessingOutput> outputs,
         ProcessingExecutionContext? execution,
         ProcessingNodeExecutionRoute executionRoute,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<CenteredProductSettlement>? centeredProducts = null)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -634,7 +639,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 connection, transaction, captureId, node.Id, outputs[index], execution is not null, cancellationToken)
                 .ConfigureAwait(false);
             outputPublication[index] = execution is null ||
-                execution.ExecutionClass != ProcessingGraphExecutionClass.Live && execution.AllowAutomaticPublication ||
+                execution.AllowAutomaticPublication &&
+                (execution.ExecutionClass != ProcessingGraphExecutionClass.Live ||
+                 centeredProducts?.Any(product => product.OutputIdentity == outputs[index].OutputIdentitySha256) == true) ||
                 !inserted && await IsOutputPublishedAsync(
                     connection, transaction, outputs[index].OutputIdentitySha256, cancellationToken)
                     .ConfigureAwait(false);
@@ -699,8 +706,19 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await InsertInputAsync(connection, transaction, captureId, node.Id, input, cancellationToken).ConfigureAwait(false);
             }
         }
+        var centeredProductPublished = false;
         if (execution is not null)
         {
+            if (execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
+                centeredProducts is not null)
+            {
+                foreach (var product in centeredProducts)
+                {
+                    centeredProductPublished |= await PublishCenteredProductAsync(
+                        connection, transaction, execution.ExecutionId, product, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
             await CompleteExecutionNodeCoreAsync(
                 connection,
                 transaction,
@@ -718,6 +736,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (centeredProductPublished) _centeredProductChanges?.NotifyCommitted();
     }
 
     /// <summary>
@@ -1616,7 +1635,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             update.Transaction = transaction;
             if (operation.Kind == "delete")
             {
-                update.CommandText = "DELETE FROM processing_outputs WHERE output_identity_sha256 = $output;";
+                update.CommandText = """
+                    UPDATE centered_exposure_products SET disposition = 'Expired', reason = 'retention-expired'
+                    WHERE output_identity = $output;
+                    DELETE FROM processing_outputs WHERE output_identity_sha256 = $output;
+                    """;
             }
             else
             {
@@ -2431,6 +2454,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 SELECT raw_artifact_id FROM raw_ranked WHERE rank <= 100
                 UNION
                 SELECT output.artifact_id
+                FROM centered_exposure_holds hold
+                JOIN processing_outputs output ON output.output_identity_sha256 = hold.output_identity
+                WHERE hold.expires_unix_ms > $centered_now
+                UNION
+                SELECT output.artifact_id
                 FROM processing_execution_output_input_pins pin
                 JOIN processing_outputs output ON output.output_identity_sha256 = pin.output_identity_sha256
                 WHERE pin.released_flag = 0
@@ -2451,6 +2479,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             LIMIT $maximum_holds_plus_one;
             """;
         command.Parameters.AddWithValue("$maximum_outputs", ProcessingOutputRetentionCount);
+        command.Parameters.AddWithValue("$centered_now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$maximum_holds_plus_one", ProcessingRetentionHoldSafetyCount + 1);
         var holds = new List<ProcessingRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

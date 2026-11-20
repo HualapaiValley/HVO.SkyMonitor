@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent can opt into centered exposure capture with recoverable per-camera admission and retained linear-input evidence (#1919).
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Fixed

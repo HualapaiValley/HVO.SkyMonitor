@@ -200,12 +200,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingGraphRevisionSnapshot revision)
     {
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
-        var executionId = StableExecutionId(new
-        {
-            Class = ProcessingGraphExecutionClass.Live.ToString(),
-            CaptureId = captureId.ToString("N"),
-            RevisionId = revision.State.RevisionId
-        });
+        var executionId = GetLiveExecutionId(captureId, revision.State.RevisionId);
         var durableConfiguration = effectiveConfiguration with
         {
             Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -928,6 +923,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     private static string CanonicalText<T>(T value)
         => Encoding.UTF8.GetString(CanonicalBytes(value));
+
+    internal static Guid GetLiveExecutionId(Guid captureId, string revisionId) => StableExecutionId(new
+    {
+        Class = ProcessingGraphExecutionClass.Live.ToString(),
+        CaptureId = captureId.ToString("N"),
+        RevisionId = revisionId
+    });
 
     private static Guid StableExecutionId<T>(T value)
     {
