@@ -148,7 +148,18 @@ jobs:
           jq -e --arg head "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
             '.headSha == $head and .runId == $run' "$catalog_root/openngc-fixture.json" >/dev/null ||
             { printf 'OpenNGC bundle provenance does not match the workflow run and commit.\n' >&2; exit 1; }
+          database="$openngc_bundle/openngc.sqlite"
+          [[ -f "$database" && ! -L "$database" ]] ||
+            { printf 'Restored OpenNGC database must be a regular file: %s\n' "$database" >&2; exit 1; }
           (cd "$catalog_root" && sha256sum --check --strict openngc.sha256)
+          # The transfer ledger travels with the artifact. Check the bytes against the reviewed checkout.
+          digest="$(sha256sum < "$database")"
+          length="$(stat -c %s -- "$database")"
+          jq -e --arg hash "${digest%% *}" --argjson bytes "$length" '
+            [.specifications[] | select(.catalogId == "openngc-production")] |
+            length == 1 and (.[0].database | .sha256 == $hash and .length == $bytes)
+          ' src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json >/dev/null ||
+            { printf 'Restored OpenNGC database does not match the approved SHA-256 and length.\n' >&2; exit 1; }
           cp "$catalog_root/"{openngc-fixture.json,openngc.sha256} \
             "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/"
           {

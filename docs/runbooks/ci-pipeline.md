@@ -818,14 +818,26 @@ accept evidence only when the run's `head_sha` matches. See the command and revi
 responsibility in [CameraAgent ARM64 CI Runner](cameraagent-arm64-ci.md#workload-boundary).
 There is no pull-request trigger; the advisory is not aggregated by `Required CI`.
 
-The workflow builds the canonical production catalog contract on hosted x64,
-then performs a native CameraAgent Release build, Docker-disabled Unit subset,
-`linux-arm64` publish/ELF validation, native container build, catalog install,
-and bounded VirtualSky smoke on ARM64. It retains checksums, image identity,
-host resource/thermal samples, installation verification, capture evidence,
-SQLite checks, logs, and cleanup state for 30 days. Provisioning, isolation,
-updates, recovery, decommissioning, and promotion criteria are maintained in
-[`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
+The hosted x64 job builds the approved HYG 4.2 and standalone OpenNGC bundles
+from pinned public inputs. It requires 12 focused passing OpenNGC results with
+Docker disabled, one catalog reader case and eleven installer and lifecycle
+cases. The `hosted-openngc-contracts-<run-id>-<attempt>` artifact retains the TRX
+files, producer metadata and checksum ledger for 30 days.
+
+The native job checks the restored artifact's run ID and commit. The bundled
+SHA-256 ledger checks transfer integrity. Before exporting the test bundle
+paths, the job verifies the restored OpenNGC database's SHA-256 and byte length
+against the approved catalog specification in the checkout. A native-only retry
+can reuse a retained artifact from an earlier attempt of the same run at the
+same commit.
+
+On ARM64 the workflow performs a CameraAgent Release build, Docker-disabled
+Unit subset, `linux-arm64` publish/ELF validation, native container build, HYG 4.2
+catalog install, and bounded VirtualSky smoke. It retains checksums, image
+identity, host resource and thermal samples, installation verification, capture
+evidence, SQLite checks, logs, and cleanup state for 30 days. Provisioning,
+isolation, updates, recovery, decommissioning, and promotion criteria are
+maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
