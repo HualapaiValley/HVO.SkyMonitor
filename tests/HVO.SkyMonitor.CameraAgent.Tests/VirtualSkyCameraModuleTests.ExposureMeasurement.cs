@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -15,6 +16,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     [TestMethod]
     [DataRow(CameraPixelFormat.Mono16, "None")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None")]
+    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences")]
     [DataRow(CameraPixelFormat.Mono16, "CalibrationLibrary")]
     public async Task ExposureMeasurement_OrdinaryCapturePersistsAndReopensThroughStandardLane(
         CameraPixelFormat format, string calibration)
@@ -26,15 +28,19 @@ public sealed partial class VirtualSkyCameraModuleTests
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
+            var references = calibration == "SyntheticReferences" ? new SyntheticCalibrationModelV1() : null;
             var file = camera with
             {
+                AgentId = profile.AgentId,
                 Schedule = profile.Schedule,
+                Rig = camera.Rig with { ControlPolicy = profile.Rig.ControlPolicy },
                 DeploymentLocation = DeploymentLocationSnapshot.Create("measurement-test", 1, "virtual",
                     null, DateTimeOffset.UnixEpoch, null, 35.347, -113.878, 0, "America/Phoenix"),
                 Module = new("VirtualSky", JsonSerializer.SerializeToElement(new
                 {
                     seed = 1920, fixedSequenceStartUtc = now, illuminationMode = "ControlledNight",
-                    asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 }
+                    asi178Sensor = new { enabled = format == CameraPixelFormat.BayerRggb16 },
+                    syntheticCalibration = references
                 })),
                 Pipeline = profile.Pipeline with
                 {
@@ -42,7 +48,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     [
                         new("Calibration", "linear", DependsOn: ["$raw"], Publication: durable,
                             Options: JsonSerializer.SerializeToElement(new CalibrationProcessingStepOptions
-                            { Strategy = calibration, OutputVariant = "qualified-linear" })),
+                            { Strategy = calibration, OutputVariant = "qualified-linear", SyntheticCalibration = references })),
                         new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias,
                             DependsOn: ["$raw", "linear"], Publication: durable)
                     ]
@@ -88,6 +94,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 executionId = id.Value;
                 var execution = await operations.ReadExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(execution);
+                Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "MeasuredAstrometry"),
+                    "The retained results exist when the optional fit was never scheduled.");
                 var run = await provider.GetRequiredService<IExposureMeasurementRunReader>().ReadAsync(execution, CancellationToken.None)
                     .ConfigureAwait(false);
                 Assert.IsNotNull(run?.Measurement, run?.UnavailableReason);
@@ -100,9 +108,10 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var sum = Enumerable.Range(0, pixels.Length / sizeof(ushort))
                     .Sum(index => (long)BinaryPrimitives.ReadUInt16LittleEndian(pixels.Span[(index * sizeof(ushort))..]));
                 Assert.AreEqual((ulong)sum, measurement.RawBrightness.Sum);
-                if (calibration == "None")
+                if (calibration != "CalibrationLibrary")
                 {
-                    Assert.AreEqual(ExposureCalibrationDisposition.NormalizationOnly, measurement.Input.Calibration);
+                    Assert.AreEqual(calibration == "None" ? ExposureCalibrationDisposition.NormalizationOnly :
+                        ExposureCalibrationDisposition.ReferenceCalibrated, measurement.Input.Calibration);
                     Assert.IsNotNull(measurement.Input.Linear);
                     Assert.AreNotEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status, measurement.Sources.Reason);
                 }
@@ -137,6 +146,9 @@ public sealed partial class VirtualSkyCameraModuleTests
 
     private static ServiceProvider MeasurementProvider(string root)
         => ProcessingGraphOperationsTests.CreateProvider(root, configureServices: services =>
+        {
+            HVO.SkyMonitor.CameraAgent.Program.AddCameraModules(services);
             services.AddSingleton(new CaptureProcessingStepRegistration(ExposureMeasurementProducts.StepAlias,
-                typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions), 4, AutoInclude: false)));
+                typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions), 4, AutoInclude: false));
+        });
 }

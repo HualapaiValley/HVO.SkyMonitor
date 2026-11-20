@@ -47,7 +47,7 @@ internal sealed partial class CaptureProcessingPersistence
                 return new(null, "measurement-binding-mismatch");
             return new(measurement, null);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             return new(null, "measurement-unreadable");
         }

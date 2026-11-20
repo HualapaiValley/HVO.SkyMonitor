@@ -55,7 +55,12 @@ public sealed record ExposureMeasurementInputV1(
     string OrientationIdentity,
     double? NativePixelPitchMicrometers = null,
     RigOrientation? RigOrientation = null,
-    ProjectionContext? ApertureProjection = null);
+    ProjectionContext? ApertureProjection = null,
+    ExposureKey? Exposure = null,
+    string? OpticalCalibrationVersion = null,
+    double? PixelScaleArcseconds = null,
+    LinearExposureDisposition? Step3Disposition = null,
+    long? Step3Revision = null);
 
 public sealed record ExposureClippingV1(ushort? StoredWhite, long? Count, string? Reason);
 public sealed record ExposureBrightnessV1(
@@ -93,7 +98,11 @@ public sealed record ExposureMeasurementV1(
     string? RawBrightnessUnavailableReason,
     ExposureClippingV1? LinearOutputClipping,
     ExposureSourcesV1 Sources,
-    ExposureHfdV1 Hfd);
+    ExposureHfdV1 Hfd)
+{
+    public string CoordinateConvention { get; init; } = ExposureMeasurementProducts.CoordinateConvention;
+    public string HfdUnit { get; init; } = "delivered-image-pixels";
+}
 
 /// <summary>Constructs and reads the single versioned, source-bound exposure measurement product.</summary>
 public static class ExposureMeasurementProducts
@@ -127,7 +136,7 @@ public static class ExposureMeasurementProducts
         ArgumentNullException.ThrowIfNull(artifact);
         ArgumentNullException.ThrowIfNull(expected);
         ValidateInput(expected);
-        if (artifact.CaptureId != expected.Raw.CaptureId || artifact.RecipeDescriptor is not { } descriptor)
+        if (artifact.Layout is not null || artifact.CaptureId != expected.Raw.CaptureId || artifact.RecipeDescriptor is not { } descriptor)
             throw Invalid("capture");
         var recipe = ProcessingIdentity.CreateRecipeIdentity(descriptor);
         var sources = artifact.SourceArtifactIds ?? [];
@@ -148,8 +157,11 @@ public static class ExposureMeasurementProducts
                 product.Role, product.Variant, product.Recipe.IdentitySha256, product.SourceArtifactIds)) ||
             !Same(product.ChecksumSha256, product.ContentIdentitySha256))
             throw Invalid("output identity");
-        return Read(product.Role, product.Variant, product.Kind, product.MediaType, product.SchemaVersion,
+        var measurement = Read(product.Role, product.Variant, product.Kind, product.MediaType, product.SchemaVersion,
             product.Payload, product.ContentIdentitySha256, product.Recipe, product.SourceArtifactIds);
+        if (!product.Algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input)))
+            throw Invalid("algorithms");
+        return measurement;
     }
 
     public static ExposureMeasurementV1 VerifyBinding(ExposureMeasurementV1 result, ExposureMeasurementInputV1 expected)
@@ -168,17 +180,6 @@ public static class ExposureMeasurementProducts
         if (raw.Artifact.Role != FrameArtifactRole.Raw || result.Input.Raw != ExposureMeasurementSourceV1.FromDescriptor(raw))
             throw Invalid("raw binding");
         return result;
-    }
-
-    /// <summary>Reconstitutes the shared matcher input from retained detections and exclusions.</summary>
-    public static StellarMeasurementResult ToStellarMeasurement(ExposureMeasurementV1 measurement)
-    {
-        ArgumentNullException.ThrowIfNull(measurement);
-        var sources = measurement.Sources;
-        return StellarMeasurementResult.FromRetainedEvidence(
-            sources.Status is ExposureMeasurementStatus.Usable or ExposureMeasurementStatus.Empty ||
-            sources.Reason == "all-candidates-rejected",
-            sources.Detections, sources.Exclusions, sources.CandidateCount ?? 0, sources.SettingsSha256);
     }
 
     internal static JsonElement SerializeInput(ExposureMeasurementInputV1 input)
@@ -211,6 +212,7 @@ public static class ExposureMeasurementProducts
             var value = JsonSerializer.Deserialize<ExposureMeasurementV1>(payload.Span, Json) ?? throw Invalid("payload");
             var options = recipe.Descriptor.Options;
             if (!options.TryGetProperty("parameters", out var parameters) || value.SchemaVersion != SchemaVersion ||
+                value.CoordinateConvention != CoordinateConvention || value.HfdUnit != "delivered-image-pixels" ||
                 !payload.Span.SequenceEqual(Serialize(value)))
                 throw Invalid("canonical payload");
             VerifyBinding(value, ReadInput(parameters));
@@ -233,9 +235,18 @@ public static class ExposureMeasurementProducts
         if (input is null || !ValidSource(input.Raw) || input.Raw.OutputIdentitySha256 is not null ||
             string.IsNullOrWhiteSpace(input.OrientationIdentity) || input.OrientationIdentity.Length > 256 ||
             input.NativePixelPitchMicrometers is { } pitch && (!double.IsFinite(pitch) || pitch <= 0) ||
+            input.PixelScaleArcseconds is { } scale && (!double.IsFinite(scale) || scale <= 0) ||
             !Enum.IsDefined(input.Calibration) ||
             input.CalibrationReason is { } reason && (string.IsNullOrWhiteSpace(reason) || reason.Length > 128))
             throw Invalid("input");
+
+        if (input.Exposure is { } exposure && (exposure.CaptureId != input.Raw.CaptureId ||
+                exposure.RunId == Guid.Empty || exposure.Camera is not { } camera ||
+                string.IsNullOrWhiteSpace(camera.CameraId) || string.IsNullOrWhiteSpace(camera.AgentId) ||
+                input.RigOrientation is null || string.IsNullOrWhiteSpace(input.OpticalCalibrationVersion) ||
+                input.Step3Disposition is not { } step3 || !Enum.IsDefined(step3) || step3 == LinearExposureDisposition.Pending ||
+                input.Step3Revision is null or <= 0))
+            throw Invalid("admitted exposure");
 
         if (input.ApertureProjection is { } aperture)
         {
@@ -281,7 +292,10 @@ public static class ExposureMeasurementProducts
                 brightness.Sum < (ulong)count * brightness.Minimum || brightness.Sum > (ulong)count * brightness.Maximum ||
                 brightness.ZeroCount < 0 || brightness.ZeroCount > count ||
                 (brightness.Minimum == 0) != (brightness.ZeroCount > 0) ||
-                !ValidClipping(brightness.SensorClipping, layout, count))
+                !ValidClipping(brightness.SensorClipping, layout, count) ||
+                brightness.SensorClipping.StoredWhite is { } white &&
+                ((brightness.Maximum >= white) != (brightness.SensorClipping.Count > 0) ||
+                    brightness.Minimum >= white && brightness.SensorClipping.Count != count))
                 throw Invalid("brightness");
         }
         if (value.Input.Linear is { Layout: var linearLayout } && !ValidClipping(value.LinearOutputClipping,
@@ -289,12 +303,15 @@ public static class ExposureMeasurementProducts
             throw Invalid("linear clipping");
 
         var measuredLayout = value.Input.Linear?.Layout;
-        if (sources.Status == ExposureMeasurementStatus.Usable != (sources.Detections.Count > 0) ||
+        if ((sources.Status == ExposureMeasurementStatus.Usable) != (sources.Detections.Count > 0) ||
             measuredLayout is null && sources.Status != ExposureMeasurementStatus.Unavailable ||
             sources.Status == ExposureMeasurementStatus.Empty && (sources.CandidateCount != 0 || sources.Exclusions.Count != 0) ||
             sources.Status == ExposureMeasurementStatus.Unavailable && (sources.CandidateCount is not null || sources.Exclusions.Count != 0) ||
+            sources.Status != ExposureMeasurementStatus.Unavailable && sources.CandidateCount is null ||
             sources.CandidateCount is < 0 || sources.AvailableBackgroundTiles is < 0 ||
             sources.CandidateCount < sources.Detections.Count + sources.Exclusions.Count ||
+            measuredLayout is not null && sources.Status != ExposureMeasurementStatus.Unavailable &&
+                sources.LocalBayerPattern != ExposureMeasurementRecipe.LocalPattern(measuredLayout) ||
             sources.Status is ExposureMeasurementStatus.Usable or ExposureMeasurementStatus.Empty &&
                 (sources.AvailableBackgroundTiles is null or 0 || !IsSha256(sources.SettingsSha256)))
             throw Invalid("sources");

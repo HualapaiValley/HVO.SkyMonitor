@@ -91,8 +91,21 @@ public static class MeasuredStellarAssociator
         StellarLabelPolicySettingsV1 labelPolicy,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(measurement);
+        return Associate(scene, measurement.Detections, measurement.Exclusions,
+            measurement.Status == StellarMeasurementStatus.Completed, settings, labelPolicy, cancellationToken);
+    }
+
+    internal static MeasuredStellarAssociationEntries Associate(
+        ProjectedSceneV1 scene,
+        IReadOnlyList<StellarDetection> detections,
+        IReadOnlyList<StellarMeasurementExclusion> exclusions,
+        bool measurementCompleted,
+        MeasuredStellarAssociationSettingsV1 settings,
+        StellarLabelPolicySettingsV1 labelPolicy,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(labelPolicy);
         settings.Validate();
@@ -100,9 +113,8 @@ public static class MeasuredStellarAssociator
         var aperture = new ProjectedSceneAperture(scene);
         var stars = scene.Objects.Where(static item => item.Kind == CelestialObjectKind.Star)
             .OrderBy(static item => item.Id, StringComparer.Ordinal).ToArray();
-        var detections = measurement.Detections;
         var unmatched = new List<MeasuredStellarUnmatchedPredictionV1>();
-        if (measurement.Status != StellarMeasurementStatus.Completed)
+        if (!measurementCompleted)
         {
             foreach (var star in stars)
                 unmatched.Add(Unmatched(star, aperture.Contains(star.Pixel)
@@ -174,7 +186,6 @@ public static class MeasuredStellarAssociator
             detectionAssigned[pair.Detection] = pair.Star;
         }
 
-        var exclusions = measurement.Exclusions;
         var associations = new List<MeasuredStellarAssociationV1>();
         var starCategory = new int[stars.Length];
         for (var index = 0; index < stars.Length; index++)

@@ -141,7 +141,7 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(1.45 * gaussianHfdPerSigma, result.Hfd.MeanPixels!.Value, bayer ? 0.8 : 0.35);
         Assert.AreEqual(result.Hfd.MeanPixels, result.Hfd.MedianPixels);
         Assert.AreEqual(result.Sources.Detections[0].Pixel,
-            ExposureMeasurementProducts.ToStellarMeasurement(result).Detections[0].Pixel);
+            ExposureMeasurementConsumers.RegistrationDetections(retained, input)[0].Pixel);
 
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained,
             input with { Linear = input.Linear! with { PayloadSha256 = new string('B', 64) } }));
@@ -192,6 +192,91 @@ public sealed class ExposureMeasurementTests
         var focus = result.Sources.Detections[result.Hfd.Samples.Single(sample => sample.DiameterPixels.HasValue).DetectionIndex];
         Assert.AreEqual(usable.X, focus.Pixel.X, 0.2);
         Assert.AreEqual(usable.Y, focus.Pixel.Y, 0.2);
+    }
+
+    [TestMethod]
+    public async Task CommittedReaderVerifiesIndependentAdmissionAndExactProductSlot()
+    {
+        var layout = Layout(96, 96);
+        var light = CreateRaw(layout, Generate(layout, static (_, _) => 91));
+        var checksum = Convert.ToHexString(SHA256.HashData(light.Payload.Span));
+        var identity = new ProfileIdentityDescriptor("fixture", "1", new string('E', 64));
+        var descriptor = new ReconstructionDescriptor(new("agent", "rig", 1, light.CaptureId!.Value),
+            new(ExposureTime, ExposureTime, ExposureTime, ExposureTime, ExposureTime),
+            new(light.Integration, light.Integration, 10, 10, 0, 0, null, null),
+            new(identity, identity, identity, identity, identity), layout,
+            new(light.ArtifactId, light.Role, "raw", light.Variant, ExposureTime, [], RawRecipe, light.MediaType, checksum));
+        var raw = light with { DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(descriptor) };
+        var key = new ExposureKey(new("agent", "virtual"), Guid.NewGuid(), descriptor.Capture.CaptureId);
+        var execution = Guid.NewGuid();
+        var exposure = new ExposureInputV1(key, descriptor, new(layout, new(90, 0, 0), identity.Sha256, "optics-1", 1320));
+        var linear = await Normalize(raw);
+        var linearRef = new ExposureProductRef(key, new(execution, "linear", "linear-v1", linear.Variant),
+            linear.ArtifactId, linear.ContentIdentitySha256!, Convert.ToHexString(SHA256.HashData(linear.Payload.Span)), null);
+        var provenance = new LinearInputProvenanceV1(LinearExposureDisposition.QualifiedNormalizationOnly,
+            raw.ArtifactId, raw.DescriptorIdentitySha256, checksum, linear.ArtifactId, linear.DescriptorIdentitySha256!,
+            linearRef.PayloadSha256, linearRef.OutputIdentitySha256, ProcessingIdentity.CreateRecipeIdentity(linear.RecipeDescriptor!),
+            [], new(raw.ArtifactId, 4095), new(linear.ArtifactId, 4095));
+        var lookup = new LinearExposureLookup(exposure, provenance.Disposition, 1, linearRef, provenance, null);
+        var request = ExposureMeasurementBindings.Request(lookup, raw, new(exposure, linear, provenance));
+        var retained = ProductArtifact(await Produce(request), raw);
+        var slot = new ExposureProductSlot(execution, ExposureMeasurementProducts.StepAlias,
+            ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+        var exact = new ExposureProductRef(key, slot, retained.ArtifactId,
+            ProcessingIdentity.CreateOutputIdentity(retained.Role, retained.Variant, retained.RecipeIdentitySha256, retained.SourceArtifactIds!),
+            retained.ContentIdentitySha256!, retained.ContentIdentitySha256);
+        var reader = new RetainedReader(lookup, new(key, slot, ExposureProductAvailability.Available, 2, exact, null));
+        var read = await ExposureMeasurementBindings.ReadCommittedAsync(reader, exact, retained, CancellationToken.None);
+        Assert.AreEqual(key, read.Input.Exposure);
+        Assert.AreEqual(1L, read.Input.Step3Revision);
+        Assert.AreEqual(1320, read.Input.PixelScaleArcseconds);
+        Assert.AreEqual(ExposureMeasurementStatus.Empty, read.Sources.Status);
+        Assert.AreEqual(0, read.Hfd.ValidCount);
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
+            reader, exact with { Slot = slot with { ExecutionId = Guid.NewGuid() } }, retained, CancellationToken.None));
+        var wrongLookup = lookup with { Provenance = provenance with { LinearDescriptorSha256 = new string('F', 64) } };
+        var wrongReader = reader with { Linear = wrongLookup };
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
+            wrongReader, exact, retained, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
+            reader with { Linear = lookup with { Revision = 3 } }, exact, retained, CancellationToken.None));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
+            reader with { Linear = lookup with { Product = linearRef with { Slot = linearRef.Slot with { ExecutionId = Guid.NewGuid() } } } },
+            exact, retained, CancellationToken.None));
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.FromAdmitted(
+            lookup with { Disposition = LinearExposureDisposition.Pending }));
+    }
+
+    [TestMethod]
+    public async Task AssociationFittingAndRegistrationReuseTheRetainedPositionsWithoutPixels()
+    {
+        var scene = await MeasuredStellarAssociationFixtures.StarFieldAsync(("catalog:zenith", 0, 0, 2));
+        var predicted = MeasuredStellarAssociationFixtures.Pixel(scene, "catalog:zenith");
+        var matched = new PixelPoint(predicted.X + 0.2, predicted.Y + 0.3);
+        var unassociated = new PixelPoint(61.25, 86.4);
+        var layout = Layout(MeasuredStellarAssociationFixtures.Width, MeasuredStellarAssociationFixtures.Height);
+        var background = MeasuredStellarAssociationFixtures.Field();
+        MeasuredStellarAssociationFixtures.AddNoise(background, 1920, 2.5);
+        var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Round(background[y * layout.Width + x] +
+            Gaussian(x, y, matched, 1.35, 2500) + Gaussian(x, y, unassociated, 1.35, 1800))),
+            scene.Source.CaptureId) with { ArtifactId = scene.Source.ArtifactId, DescriptorIdentitySha256 = scene.Source.ArtifactIdentitySha256 };
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var artifact = ProductArtifact(await Produce(ExposureMeasurementProducts.Request(input, raw, linear)), raw);
+        var associations = ExposureMeasurementConsumers.Associate(artifact, input, scene, new(), new());
+        var association = Assert.ContainsSingle(associations.Entries.Associations);
+        Assert.IsTrue(association.LabelEligible, association.LabelRejectionReason);
+        Assert.AreEqual("catalog:zenith", association.CatalogId);
+        Assert.HasCount(1, associations.Entries.UnassociatedDetections);
+        var fit = Assert.ContainsSingle(ExposureMeasurementConsumers.AstrometryDetections(artifact, input, associations));
+        Assert.AreEqual(association.DetectionIndex, fit.Index);
+        Assert.AreEqual(matched.X, fit.Pixel.X, 0.15);
+        Assert.AreEqual(matched.Y, fit.Pixel.Y, 0.15);
+        var registration = ExposureMeasurementConsumers.RegistrationDetections(artifact, input);
+        Assert.HasCount(2, registration);
+        AssertNear(registration, unassociated, 0.15);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementConsumers.AstrometryDetections(artifact, input,
+            associations with { MeasurementArtifactId = Guid.NewGuid() }));
     }
 
     [TestMethod]
@@ -400,4 +485,21 @@ public sealed class ExposureMeasurementTests
 
     private static async Task<ExposureMeasurementV1> Run(ProcessingArtifact raw, ProcessingArtifact? linear, ExposureMeasurementInputV1 input)
         => ExposureMeasurementProducts.Read(await Produce(ExposureMeasurementProducts.Request(input, raw, linear)));
+
+    private sealed record RetainedReader(LinearExposureLookup Linear, ExposureProductLookup Product) : IExposureProductReader
+    {
+        public ValueTask<ExposureInputV1?> ReadExposureAsync(ExposureKey key, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(key == Linear.Exposure.Key ? Linear.Exposure : null);
+
+        public ValueTask<LinearExposureLookup?> ReadLinearAsync(ExposureKey key, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(key == Linear.Exposure.Key ? Linear : null);
+
+        public ValueTask<ExposureProductLookup?> ReadProductAsync(
+            ExposureKey key, ExposureProductSlot slot, CancellationToken cancellationToken) =>
+            ValueTask.FromResult(key == Product.Exposure && slot == Product.Slot ? Product : null);
+
+        public ValueTask<IReadOnlyList<ExposureProductLookup>> ReadProductsAfterAsync(
+            CameraKey camera, long afterRevision, int maximumCount, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("An exact product read must never query the latest revision.");
+    }
 }

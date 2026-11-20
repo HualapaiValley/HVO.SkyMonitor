@@ -33,17 +33,22 @@ public static class ExposureMeasurementConsumers
         ArgumentNullException.ThrowIfNull(retained);
         ArgumentNullException.ThrowIfNull(expected);
         ArgumentNullException.ThrowIfNull(prediction);
+        ProjectedSceneJson.Validate(prediction);
         var exposure = ExposureMeasurementProducts.Read(retained, expected);
         var raw = expected.Raw;
         if (prediction.Kind != ProjectedSceneKind.Predicted || prediction.Source.CaptureId != raw.CaptureId ||
             prediction.Source.ArtifactId != raw.ArtifactId ||
             !ExposureMeasurementProducts.Same(prediction.Source.ArtifactIdentitySha256, raw.DescriptorSha256) ||
+            !ExposureMeasurementProducts.Same(prediction.SceneIdentitySha256, ProjectedSceneJson.ComputeIdentity(prediction)) ||
             prediction.CoordinateConvention != ProjectedSceneCoordinateConvention.ContinuousTopLeftPixelEdge ||
             prediction.ImageTransform != ProjectedSceneImageTransformV1.Identity(raw.Layout.Width, raw.Layout.Height))
             throw new InvalidDataException("Prediction differs from the measured exposure or delivered geometry.");
 
-        var entries = MeasuredStellarAssociator.Associate(prediction, ExposureMeasurementProducts.ToStellarMeasurement(exposure),
-            settings, labelPolicy, cancellationToken);
+        var sources = exposure.Sources;
+        var completed = sources.Status is ExposureMeasurementStatus.Usable or ExposureMeasurementStatus.Empty ||
+            sources.Reason == "all-candidates-rejected";
+        var entries = MeasuredStellarAssociator.Associate(prediction, sources.Detections, sources.Exclusions,
+            completed, settings, labelPolicy, cancellationToken);
         return new(ExposureAssociationEvidenceV1.CurrentSchemaVersion, raw.CaptureId, retained.ArtifactId,
             retained.ContentIdentitySha256!, prediction.SceneIdentitySha256, entries);
     }
