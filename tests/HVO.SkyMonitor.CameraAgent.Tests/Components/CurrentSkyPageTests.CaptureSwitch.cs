@@ -289,12 +289,12 @@ public sealed partial class CurrentSkyPageTests
 
         static CameraAgentCurrentSkyView WithBase(CameraAgentCurrentSkyView candidate,
             CameraAgentPresentationSlot slot, bool advertised) => candidate with
-        {
-            Presentation = candidate.Presentation with
             {
-                StructuredLayersAvailable = advertised,
-                Stages = candidate.Presentation.Stages.Select(stage => stage.Stage == slot.Stage ? slot : stage).ToArray()
-            }
-        };
+                Presentation = candidate.Presentation with
+                {
+                    StructuredLayersAvailable = advertised,
+                    Stages = candidate.Presentation.Stages.Select(stage => stage.Stage == slot.Stage ? slot : stage).ToArray()
+                }
+            };
     }
 }
