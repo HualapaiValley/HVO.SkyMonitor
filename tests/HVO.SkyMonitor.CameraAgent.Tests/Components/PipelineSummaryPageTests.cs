@@ -104,16 +104,14 @@ public sealed class PipelineSummaryPageTests
             {
                 Assert.IsFalse(projection.Active.Plan.EffectiveNodes.Any(node => node.Id == ExposureMeasurementProducts.StepAlias));
                 Assert.IsFalse(cut.Markup.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal));
-                await cut.FindAll(".ops-pipeline-node.step").Single(node => node.TextContent.Contains("linear", StringComparison.Ordinal))
-                    .ClickAsync().ConfigureAwait(false);
+                await cut.Find(".ops-pipeline-node.step[title='linear']").ClickAsync().ConfigureAwait(false);
                 Assert.IsNotNull(cut.Find("#pipeline-step-toggle"));
                 return;
             }
 
             var fixedStep = projection.Active.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
             CollectionAssert.AreEqual(new[] { RawInput, "linear" }, fixedStep.Dependencies!.ToArray());
-            await cut.FindAll(".ops-pipeline-node.step").Single(node =>
-                node.TextContent.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal)).ClickAsync().ConfigureAwait(false);
+            await cut.Find($".ops-pipeline-node.step[title='{ExposureMeasurementProducts.StepAlias}']").ClickAsync().ConfigureAwait(false);
             Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
             Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
             Assert.Contains("linear", cut.Find(".ops-node-facts").TextContent);

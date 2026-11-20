@@ -42,9 +42,9 @@ public sealed partial class VirtualSkyCameraModuleTests
         DisplayName = "ExposureMeasurement_CenteredLeftShiftedKeepsQualifiedStoredLevels")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.FullRangeScaledV1,
         DisplayName = "ExposureMeasurement_CenteredFullRangeScaledKeepsQualifiedStoredLevels")]
-    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 1,
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 1,
         DisplayName = "ExposureMeasurement_PublicationIoRetriesOnceAndFencesThePreviousLease")]
-    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 2,
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true, false, "star", false, FrameStoredCodeTransform.RightAlignedV1, 2,
         DisplayName = "ExposureMeasurement_PublicationIoStopsAtTheExistingAttemptBound")]
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false, FrameStoredCodeTransform.RightAlignedV1,
         0, "expired", DisplayName = "ExposureMeasurement_OperationsRecognizesDeletedMeasurementSlot")]
@@ -120,11 +120,10 @@ public sealed partial class VirtualSkyCameraModuleTests
                 CenteredExposure = new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion),
                 Pipeline = profile.Pipeline with { Steps = steps }
             };
-            Guid executionId;
-            Guid artifactId;
-            string digest;
-            ExposureProductLookup originalPublication;
-            ExposureMeasurementV1 originalMeasurement;
+            ExposureKey exposure;
+            ProcessingGraphExecutionState originalExecution;
+            ExposureProductLookup? originalPublication = null;
+            ExposureMeasurementV1? originalMeasurement = null;
             using var cancellation = new CancellationTokenSource();
             var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
             var publication = publicationFailures > 0 ? new MeasurementPublicationIo(publicationFailures) : null;
@@ -189,7 +188,7 @@ public sealed partial class VirtualSkyCameraModuleTests
 
                 var (capture, receipt) = await CaptureAndAdmitAsync(now, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(capture.Frame);
-                var exposure = CaptureExposureMeasurementReader.Key(receipt.Manifest);
+                exposure = CaptureExposureMeasurementReader.Key(receipt.Manifest);
                 if (references is not null)
                 {
                     var rawCalibration = receipt.Manifest.Descriptor.Profiles.Calibration;
@@ -255,6 +254,13 @@ public sealed partial class VirtualSkyCameraModuleTests
                     var retry = failedAttempt!.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
                     Assert.AreEqual("RetryableFailure", retry.Status);
                     Assert.IsEmpty(retry.Outputs);
+                    Assert.AreEqual("Completed", failedAttempt.Nodes.Single(item => item.NodeId == "scene").Status);
+                    foreach (var dependent in failedAttempt.Nodes.Where(item => item.NodeId is "associated" or "fit"))
+                    {
+                        Assert.AreEqual("Pending", dependent.Status);
+                        Assert.AreEqual(0, dependent.AttemptCount);
+                        Assert.IsEmpty(dependent.Outputs);
+                    }
                     Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure,
                         await laneStore.FailAsync(lease, outcome, CancellationToken.None).ConfigureAwait(false));
                     Assert.IsNull(await laneStore.ClaimAsync(lane, "publication-retry", active, CancellationToken.None).ConfigureAwait(false));
@@ -281,9 +287,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var id = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None)
                     .ConfigureAwait(false);
                 Assert.IsNotNull(id);
-                executionId = id.Value;
-                var execution = await operations.ReadExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
+                var execution = await operations.ReadExecutionDetailAsync(id.Value, CancellationToken.None).ConfigureAwait(false);
                 Assert.IsNotNull(execution);
+                originalExecution = execution.Execution;
                 if (!fit)
                     Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "fit"));
                 var recordedMeasurement = execution.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
@@ -298,154 +304,162 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual("TerminalFailure", recordedMeasurement.Status);
                     Assert.AreEqual("measurement-publication-io", recordedMeasurement.Reason);
                     Assert.IsEmpty(recordedMeasurement.Outputs);
+                    Assert.AreEqual(0, recordedMeasurement.CommittedOutputCount);
+                    foreach (var dependent in execution.Nodes.Where(item => item.NodeId is "associated" or "fit"))
+                    {
+                        Assert.AreEqual("Skipped", dependent.Status);
+                        Assert.AreEqual("processing.dependency-unavailable", dependent.Reason);
+                        Assert.IsEmpty(dependent.Outputs);
+                    }
                     Assert.IsNull(await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
                     Assert.IsNull(await laneStore.ClaimAsync(lane, "unexpected-third-attempt", active, CancellationToken.None)
                         .ConfigureAwait(false));
                     var stillQualified = await reader.ReadLinearAsync(exposure, CancellationToken.None).ConfigureAwait(false);
                     Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, stillQualified?.Disposition);
-                    var unavailable = await ui.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
+                    var unavailable = await ui.GetExecutionDetailAsync(id.Value, CancellationToken.None).ConfigureAwait(false);
                     Assert.AreEqual("measurement-publication-io", unavailable.Value?.ExposureMeasurement?.UnavailableReason);
-                    return;
-                }
-                var recordedScene = execution.Nodes.Single(item => item.NodeId == "scene");
-                Assert.IsNotNull(recordedMeasurement.CompletedUtc);
-                Assert.IsNotNull(recordedScene.StartedUtc);
-                Assert.IsTrue(recordedMeasurement.CompletedUtc <= recordedScene.StartedUtc,
-                    "An unrelated scene dependency must not run ahead of step four.");
-                var detail = await ui.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsTrue(detail.IsSuccess, detail.Message);
-                var run = detail.Value!.ExposureMeasurement;
-                Assert.IsNotNull(run?.Measurement, run?.UnavailableReason);
-                Assert.IsNull(run.LinearExpiryReason);
-                var measurement = run.Measurement;
-                Assert.AreEqual(receipt.Manifest.Descriptor.Layout, measurement.Input.Raw.Layout);
-                Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId, measurement.Input.Raw.CaptureId);
-                Assert.AreEqual(format, measurement.Input.Raw.Layout.PixelFormat);
-                Assert.AreEqual(224L * 224, measurement.RawBrightness!.SampleCount);
-                var pixels = capture.Frame.PixelData;
-                var codes = Enumerable.Range(0, pixels.Length / sizeof(ushort))
-                    .Select(index => BinaryPrimitives.ReadUInt16LittleEndian(pixels.Span[(index * sizeof(ushort))..])).ToArray();
-                Assert.AreEqual((ulong)codes.Sum(value => (long)value), measurement.RawBrightness.Sum);
-                Assert.AreEqual(codes.Min(), measurement.RawBrightness.Minimum);
-                Assert.AreEqual(codes.Max(), measurement.RawBrightness.Maximum);
-                Assert.AreEqual(codes.LongCount(value => value == 0), measurement.RawBrightness.ZeroCount);
-                if (measurement.RawBrightness.SensorClipping.StoredWhite is { } white)
-                {
-                    Assert.AreEqual(codes.LongCount(value => value >= white), measurement.RawBrightness.SensorClipping.Count);
-                    if (signal == "star")
-                    {
-                        var image = new ImageLayout(224, 224, format, capture.Frame.Layout!.StrideBytes);
-                        var corner = SparseLinear16Meter.Measure(image, pixels.Span,
-                            new(16, 16, whiteLevel: white, region: new(64, 64, 32, 32)));
-                        var center = SparseLinear16Meter.Measure(image, pixels.Span,
-                            new(4, 4, whiteLevel: white, region: new(96, 96, 32, 32)));
-                        Assert.AreNotEqual(corner.ConsideredSampleCount, center.ConsideredSampleCount);
-                        Assert.IsGreaterThan(center.ConsideredSampleCount, measurement.RawBrightness.SampleCount);
-                        Assert.IsNull(receipt.Manifest.Descriptor.CycleEvidence?.Metering,
-                            "The admitted exposure and fixed statistics do not require a metering result.");
-                    }
-                }
-                if (storedLevels is { } expectedStoredLevels)
-                {
-                    Assert.AreEqual(expectedStoredLevels.White, measurement.RawBrightness.SensorClipping.StoredWhite);
-                    Assert.AreEqual(expectedStoredLevels.White, measurement.LinearOutputClipping?.StoredWhite);
-                    Assert.AreEqual(codes.LongCount(value => value >= expectedStoredLevels.White),
-                        measurement.LinearOutputClipping?.Count);
-                    Assert.AreEqual(expectedStoredLevels.White, measurement.Input.Linear?.Layout.WhiteLevel);
-                }
-                if (calibration is not ("CalibrationLibrary" or "Omitted") && referenceGain == 1 && declareReadout)
-                {
-                    Assert.AreEqual(calibration == "None" ? ExposureCalibrationDisposition.NormalizationOnly :
-                        ExposureCalibrationDisposition.ReferenceCalibrated, measurement.Input.Calibration,
-                        measurement.Input.CalibrationReason);
-                    Assert.IsNotNull(measurement.Input.Linear);
-                    if (signal == "star")
-                    {
-                        Assert.AreEqual(ExposureMeasurementStatus.Usable, measurement.Sources.Status, measurement.Sources.Reason +
-                            ": " + string.Join(", ", measurement.Sources.Exclusions.Select(item => item.ReasonCode)));
-                        Assert.IsTrue(measurement.Sources.Detections.Any(detection =>
-                            Math.Abs(detection.Pixel.X - 112) < 2 && Math.Abs(detection.Pixel.Y - 112) < 2),
-                            "The independently placed zenith star must be measured near the optical center.");
-                        Assert.IsGreaterThan(0, measurement.Hfd.ValidCount ?? 0, measurement.Hfd.Reason);
-                    }
-                    else if (signal == "blank")
-                    {
-                        Assert.AreEqual(ExposureMeasurementStatus.Empty, measurement.Sources.Status, measurement.Sources.Reason);
-                        Assert.AreEqual(0, measurement.Hfd.ValidCount);
-                        Assert.IsNull(measurement.Hfd.MeanPixels);
-                    }
-                    else
-                    {
-                        Assert.IsGreaterThan(0L, measurement.RawBrightness.SensorClipping.Count ?? 0);
-                        Assert.AreEqual(ExposureMeasurementStatus.Unsuitable, measurement.Sources.Status, measurement.Sources.Reason);
-                        Assert.IsNull(measurement.Hfd.MeanPixels);
-                    }
                 }
                 else
                 {
-                    var expected = referenceGain != 1 || !declareReadout
-                        ? ExposureCalibrationDisposition.Incompatible : ExposureCalibrationDisposition.Missing;
-                    Assert.AreEqual(expected, measurement.Input.Calibration, measurement.Input.CalibrationReason);
-                    if (referenceGain != 1)
-                        Assert.AreEqual(ProcessingReasonCodes.CalibrationReferenceConditionsMismatch, measurement.Input.CalibrationReason);
-                    else if (calibration == "Omitted")
-                        Assert.AreEqual("linear.no-configured-step", measurement.Input.CalibrationReason);
-                    else if (!declareReadout)
+                    var recordedScene = execution.Nodes.Single(item => item.NodeId == "scene");
+                    var settledUtc = publication is null ? recordedMeasurement.CompletedUtc : recordedMeasurement.Attempts[0].CompletedUtc;
+                    Assert.IsNotNull(settledUtc);
+                    Assert.IsNotNull(recordedScene.StartedUtc);
+                    Assert.IsTrue(settledUtc <= recordedScene.StartedUtc, "Step four must get its first attempt before the unrelated scene.");
+                    var detail = await ui.GetExecutionDetailAsync(id.Value, CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsTrue(detail.IsSuccess, detail.Message);
+                    var run = detail.Value!.ExposureMeasurement;
+                    Assert.IsNotNull(run?.Measurement, run?.UnavailableReason);
+                    Assert.IsNull(run.LinearExpiryReason);
+                    var measurement = run.Measurement;
+                    Assert.AreEqual(receipt.Manifest.Descriptor.Layout, measurement.Input.Raw.Layout);
+                    Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId, measurement.Input.Raw.CaptureId);
+                    Assert.AreEqual(format, measurement.Input.Raw.Layout.PixelFormat);
+                    Assert.AreEqual(224L * 224, measurement.RawBrightness!.SampleCount);
+                    var pixels = capture.Frame.PixelData;
+                    var codes = Enumerable.Range(0, pixels.Length / sizeof(ushort))
+                        .Select(index => BinaryPrimitives.ReadUInt16LittleEndian(pixels.Span[(index * sizeof(ushort))..])).ToArray();
+                    Assert.AreEqual((ulong)codes.Sum(value => (long)value), measurement.RawBrightness.Sum);
+                    Assert.AreEqual(codes.Min(), measurement.RawBrightness.Minimum);
+                    Assert.AreEqual(codes.Max(), measurement.RawBrightness.Maximum);
+                    Assert.AreEqual(codes.LongCount(value => value == 0), measurement.RawBrightness.ZeroCount);
+                    if (measurement.RawBrightness.SensorClipping.StoredWhite is { } white)
                     {
-                        Assert.IsNull(measurement.RawBrightness.SensorClipping.Count);
-                        Assert.AreEqual(FrameWhiteThreshold.UnavailableReason, measurement.Sources.Reason);
+                        Assert.AreEqual(codes.LongCount(value => value >= white), measurement.RawBrightness.SensorClipping.Count);
+                        if (signal == "star")
+                        {
+                            var image = new ImageLayout(224, 224, format, capture.Frame.Layout!.StrideBytes);
+                            var corner = SparseLinear16Meter.Measure(image, pixels.Span,
+                                new(16, 16, whiteLevel: white, region: new(64, 64, 32, 32)));
+                            var center = SparseLinear16Meter.Measure(image, pixels.Span,
+                                new(4, 4, whiteLevel: white, region: new(96, 96, 32, 32)));
+                            Assert.AreNotEqual(corner.ConsideredSampleCount, center.ConsideredSampleCount);
+                            Assert.IsGreaterThan(center.ConsideredSampleCount, measurement.RawBrightness.SampleCount);
+                            Assert.IsNull(receipt.Manifest.Descriptor.CycleEvidence?.Metering,
+                                "The admitted exposure and fixed statistics do not require a metering result.");
+                        }
                     }
-                    Assert.IsNull(measurement.Input.Linear);
-                    Assert.AreEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status);
-                }
-                var output = Assert.ContainsSingle(recordedMeasurement.Outputs);
-                artifactId = output.ArtifactId;
-                digest = output.OutputIdentitySha256;
-                var published = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);
-                Assert.IsNotNull(published);
-                Assert.AreEqual(ExposureProductAvailability.Available, published.Availability);
-                Assert.IsNotNull(published.Product);
-                Assert.AreEqual(artifactId, published.Product?.ArtifactId);
-                Assert.AreEqual(digest, published.Product?.OutputIdentitySha256);
-                var notifications = await reader.ReadProductsAfterAsync(exposure.Camera, 0, 128, CancellationToken.None)
-                    .ConfigureAwait(false);
-                Assert.AreEqual(published, Assert.ContainsSingle(notifications.Where(product => product.Slot == slot)));
-                if (fit)
-                {
-                    var association = execution.Nodes.Single(item => item.NodeId == "associated");
-                    Assert.AreEqual("Completed", association.Status, association.Reason);
-                    var associationOutput = Assert.ContainsSingle(association.Outputs);
-                    Assert.Contains(artifactId, associationOutput.SourceArtifactIds);
-                    var fitting = execution.Nodes.Single(item => item.NodeId == "fit");
-                    Assert.AreEqual("Completed", fitting.Status, fitting.Reason);
-                    var solutionOutput = fitting.Outputs.Single(item => item.Variant == "measured-astrometry-v1");
-                    var stored = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadOutputByArtifactIdAsync(
-                        solutionOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
-                    Assert.IsNotNull(stored);
-                    var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, stored.PayloadRelativePath))
-                        .ConfigureAwait(false));
-                    Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
-                    Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
-                }
+                    if (storedLevels is { } expectedStoredLevels)
+                    {
+                        Assert.AreEqual(expectedStoredLevels.White, measurement.RawBrightness.SensorClipping.StoredWhite);
+                        Assert.AreEqual(expectedStoredLevels.White, measurement.LinearOutputClipping?.StoredWhite);
+                        Assert.AreEqual(codes.LongCount(value => value >= expectedStoredLevels.White),
+                            measurement.LinearOutputClipping?.Count);
+                        Assert.AreEqual(expectedStoredLevels.White, measurement.Input.Linear?.Layout.WhiteLevel);
+                    }
+                    if (calibration is not ("CalibrationLibrary" or "Omitted") && referenceGain == 1 && declareReadout)
+                    {
+                        Assert.AreEqual(calibration == "None" ? ExposureCalibrationDisposition.NormalizationOnly :
+                            ExposureCalibrationDisposition.ReferenceCalibrated, measurement.Input.Calibration,
+                            measurement.Input.CalibrationReason);
+                        Assert.IsNotNull(measurement.Input.Linear);
+                        if (signal == "star")
+                        {
+                            Assert.AreEqual(ExposureMeasurementStatus.Usable, measurement.Sources.Status, measurement.Sources.Reason +
+                                ": " + string.Join(", ", measurement.Sources.Exclusions.Select(item => item.ReasonCode)));
+                            Assert.IsTrue(measurement.Sources.Detections.Any(detection =>
+                                Math.Abs(detection.Pixel.X - 112) < 2 && Math.Abs(detection.Pixel.Y - 112) < 2),
+                                "The independently placed zenith star must be measured near the optical center.");
+                            Assert.IsGreaterThan(0, measurement.Hfd.ValidCount ?? 0, measurement.Hfd.Reason);
+                        }
+                        else if (signal == "blank")
+                        {
+                            Assert.AreEqual(ExposureMeasurementStatus.Empty, measurement.Sources.Status, measurement.Sources.Reason);
+                            Assert.AreEqual(0, measurement.Hfd.ValidCount);
+                            Assert.IsNull(measurement.Hfd.MeanPixels);
+                        }
+                        else
+                        {
+                            Assert.IsGreaterThan(0L, measurement.RawBrightness.SensorClipping.Count ?? 0);
+                            Assert.AreEqual(ExposureMeasurementStatus.Unsuitable, measurement.Sources.Status, measurement.Sources.Reason);
+                            Assert.IsNull(measurement.Hfd.MeanPixels);
+                        }
+                    }
+                    else
+                    {
+                        var expected = referenceGain != 1 || !declareReadout
+                            ? ExposureCalibrationDisposition.Incompatible : ExposureCalibrationDisposition.Missing;
+                        Assert.AreEqual(expected, measurement.Input.Calibration, measurement.Input.CalibrationReason);
+                        if (referenceGain != 1)
+                            Assert.AreEqual(ProcessingReasonCodes.CalibrationReferenceConditionsMismatch, measurement.Input.CalibrationReason);
+                        else if (calibration == "Omitted")
+                            Assert.AreEqual("linear.no-configured-step", measurement.Input.CalibrationReason);
+                        else if (!declareReadout)
+                        {
+                            Assert.IsNull(measurement.RawBrightness.SensorClipping.Count);
+                            Assert.AreEqual(FrameWhiteThreshold.UnavailableReason, measurement.Sources.Reason);
+                        }
+                        Assert.IsNull(measurement.Input.Linear);
+                        Assert.AreEqual(ExposureMeasurementStatus.Unavailable, measurement.Sources.Status);
+                    }
+                    var output = Assert.ContainsSingle(recordedMeasurement.Outputs);
+                    var artifactId = output.ArtifactId;
+                    var published = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(published);
+                    Assert.AreEqual(ExposureProductAvailability.Available, published.Availability);
+                    Assert.IsNotNull(published.Product);
+                    Assert.AreEqual(artifactId, published.Product?.ArtifactId);
+                    Assert.AreEqual(output.OutputIdentitySha256, published.Product?.OutputIdentitySha256);
+                    var notifications = await reader.ReadProductsAfterAsync(exposure.Camera, 0, 128, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    Assert.AreEqual(published, Assert.ContainsSingle(notifications.Where(product => product.Slot == slot)));
+                    if (fit)
+                    {
+                        var association = execution.Nodes.Single(item => item.NodeId == "associated");
+                        Assert.AreEqual("Completed", association.Status, association.Reason);
+                        var associationOutput = Assert.ContainsSingle(association.Outputs);
+                        Assert.Contains(artifactId, associationOutput.SourceArtifactIds);
+                        var fitting = execution.Nodes.Single(item => item.NodeId == "fit");
+                        Assert.AreEqual("Completed", fitting.Status, fitting.Reason);
+                        var solutionOutput = fitting.Outputs.Single(item => item.Variant == "measured-astrometry-v1");
+                        var stored = await provider.GetRequiredService<SqliteCaptureProcessingStore>().ReadOutputByArtifactIdAsync(
+                            solutionOutput.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+                        Assert.IsNotNull(stored);
+                        var solution = MeasuredAstrometryJson.Parse(await File.ReadAllBytesAsync(Path.Combine(root, stored.PayloadRelativePath))
+                            .ConfigureAwait(false));
+                        Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
+                        Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
+                    }
 
-                if (expireLinear)
-                    await ExpireQualifiedLinearAsync(provider, root, reader, exposure, slot, measurement).ConfigureAwait(false);
-                if (archiveFault == "expired")
-                {
-                    await ExpireOnlyProductAsync(provider, root, artifactId).ConfigureAwait(false);
-                    var expired = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);
-                    Assert.AreEqual(ExposureProductAvailability.Expired, expired?.Availability);
-                    Assert.AreEqual("retention-expired", expired?.Reason);
-                    Assert.AreEqual(published.Revision, expired?.Revision);
-                    Assert.AreEqual(published.Exposure, expired?.Exposure);
+                    if (expireLinear)
+                        await ExpireQualifiedLinearAsync(provider, root, reader, exposure, slot, measurement).ConfigureAwait(false);
+                    if (archiveFault == "expired")
+                    {
+                        await ExpireOnlyProductAsync(provider, root, artifactId).ConfigureAwait(false);
+                        var expired = await reader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false);
+                        Assert.AreEqual(ExposureProductAvailability.Expired, expired?.Availability);
+                        Assert.AreEqual("retention-expired", expired?.Reason);
+                        Assert.AreEqual(published.Revision, expired?.Revision);
+                        Assert.AreEqual(published.Exposure, expired?.Exposure);
+                    }
+                    else if (archiveFault == "corrupt")
+                    {
+                        // Mutate the journaled run snapshot, not the current configuration or the committed step-four payload.
+                        await CorruptMeasurementRunSnapshotAsync(root, exposure).ConfigureAwait(false);
+                    }
+                    originalPublication = published;
+                    originalMeasurement = measurement;
                 }
-                else if (archiveFault == "corrupt")
-                {
-                    // Mutate the journaled run snapshot, not the current configuration or the committed step-four payload.
-                    await CorruptMeasurementRunSnapshotAsync(root, exposure).ConfigureAwait(false);
-                }
-                originalPublication = published;
-                originalMeasurement = measurement;
             }
 
             using var reopened = MeasurementProvider(root, location, predictions);
@@ -453,15 +467,39 @@ public sealed partial class VirtualSkyCameraModuleTests
             await restartedIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             var switched = file with { CenteredExposure = null, Rig = file.Rig with { Orientation = new RigOrientation(80, 15, 5) } };
             reopened.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(switched);
-            await restartedIngress.ReconcileCenteredControlAsync(switched, CancellationToken.None, originalPublication.Exposure.Camera)
+            await restartedIngress.ReconcileCenteredControlAsync(switched, CancellationToken.None, exposure.Camera)
                 .ConfigureAwait(false);
-            var reopenedUi = MeasurementOperations(reopened, reopened.GetRequiredService<IProcessingGraphOperations>());
-            var reopenedDetail = await reopenedUi.GetExecutionDetailAsync(executionId, CancellationToken.None).ConfigureAwait(false);
+            var reopenedOperations = reopened.GetRequiredService<IProcessingGraphOperations>();
+            var reopenedUi = MeasurementOperations(reopened, reopenedOperations);
+            var reopenedDetail = await reopenedUi.GetExecutionDetailAsync(originalExecution.ExecutionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsTrue(reopenedDetail.IsSuccess, reopenedDetail.Message);
             var reopenedView = reopenedDetail.Value!;
-            Assert.AreEqual(executionId, reopenedView.Execution.ExecutionId);
-            Assert.AreEqual(originalPublication.Exposure.CaptureId, reopenedView.Execution.CaptureId);
-            Assert.AreEqual(originalMeasurement.Input.Raw.ArtifactId, reopenedView.Execution.PrimaryArtifactId);
+            Assert.AreEqual(originalExecution.ExecutionId, reopenedView.Execution.ExecutionId);
+            Assert.AreEqual(exposure.CaptureId, reopenedView.Execution.CaptureId);
+            Assert.AreEqual(originalExecution.PrimaryArtifactId, reopenedView.Execution.PrimaryArtifactId);
+            Assert.AreEqual(originalExecution.GraphRevisionId, reopenedView.Execution.GraphRevisionId);
+            var reopenedReader = reopened.GetRequiredService<IExposureProductReader>();
+            var fixedStage = reopenedView.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
+            if (publicationFailures == 2)
+            {
+                Assert.AreEqual(originalExecution.ExecutionId, await reopenedOperations.ReadLiveExecutionIdAsync(exposure.CaptureId,
+                    CancellationToken.None).ConfigureAwait(false));
+                Assert.AreEqual("TerminalFailure", fixedStage.Status);
+                Assert.AreEqual("measurement-publication-io", fixedStage.Reason);
+                CollectionAssert.AreEqual(new[] { "RetryableFailure", "TerminalFailure" }, fixedStage.Attempts.Select(attempt => attempt.Status).ToArray());
+                Assert.IsEmpty(fixedStage.Outputs);
+                Assert.IsNotNull(reopenedView.ExposureMeasurement);
+                Assert.IsNull(reopenedView.ExposureMeasurement.Measurement);
+                Assert.AreEqual("measurement-publication-io", reopenedView.ExposureMeasurement.UnavailableReason);
+                var slot = new ExposureProductSlot(originalExecution.ExecutionId, fixedStage.NodeId,
+                    ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+                Assert.IsNull(await reopenedReader.ReadProductAsync(exposure, slot, CancellationToken.None).ConfigureAwait(false));
+                var notifications = await reopenedReader.ReadProductsAfterAsync(exposure.Camera, 0, 128, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsFalse(notifications.Any(notification => notification.Slot == slot));
+                return;
+            }
+            Assert.IsNotNull(originalPublication?.Product);
+            Assert.IsNotNull(originalMeasurement);
             if (archiveFault is "expired" or "corrupt")
             {
                 var unavailable = reopenedView.ExposureMeasurement;
@@ -469,20 +507,17 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNull(unavailable.Measurement);
                 Assert.AreEqual(archiveFault == "expired" ? "retention-expired" : "measurement-unreadable",
                     unavailable.UnavailableReason);
-                var fixedStage = reopenedView.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
                 if (archiveFault == "expired")
                     Assert.IsEmpty(fixedStage.Outputs, "The deleted output row can no longer supply a joined result.");
                 else
-                    Assert.AreEqual(artifactId, Assert.ContainsSingle(fixedStage.Outputs).ArtifactId);
+                    Assert.AreEqual(originalPublication.Product.ArtifactId, Assert.ContainsSingle(fixedStage.Outputs).ArtifactId);
                 return;
             }
-            var reopenedOutput = Assert.ContainsSingle(reopenedView.Nodes.Single(
-                item => item.NodeId == ExposureMeasurementProducts.StepAlias).Outputs);
-            Assert.AreEqual(artifactId, reopenedOutput.ArtifactId);
-            Assert.AreEqual(digest, reopenedOutput.OutputIdentitySha256);
+            var reopenedOutput = Assert.ContainsSingle(fixedStage.Outputs);
+            Assert.AreEqual(originalPublication.Product.ArtifactId, reopenedOutput.ArtifactId);
+            Assert.AreEqual(originalPublication.Product.OutputIdentitySha256, reopenedOutput.OutputIdentitySha256);
             var restored = reopenedView.ExposureMeasurement;
             Assert.IsNotNull(restored?.Measurement, restored?.UnavailableReason);
-            var reopenedReader = reopened.GetRequiredService<IExposureProductReader>();
             Assert.AreEqual(originalPublication, await reopenedReader.ReadProductAsync(originalPublication.Exposure,
                 originalPublication.Slot, CancellationToken.None).ConfigureAwait(false));
             Assert.AreEqual(expireLinear ? "retention-expired" : null, restored.LinearExpiryReason);

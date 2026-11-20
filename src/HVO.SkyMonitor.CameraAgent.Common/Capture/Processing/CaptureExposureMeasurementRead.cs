@@ -74,7 +74,7 @@ internal sealed class CaptureExposureMeasurementReader(
             return measurement.Input.Raw.ArtifactId == run.PrimaryArtifactId
                 ? new(measurement, null, expiry) : new(null, "measurement-binding-mismatch");
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException
+        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or RawIngressConflictException
             or System.Text.Json.JsonException)
         {
             return new(null, "measurement-unreadable");
