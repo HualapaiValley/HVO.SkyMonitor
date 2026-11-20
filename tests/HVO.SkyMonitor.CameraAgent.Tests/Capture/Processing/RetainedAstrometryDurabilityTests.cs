@@ -331,7 +331,7 @@ public sealed partial class DurableCaptureProcessingTests
                 480, 480, ProjectionAperture.Circular, 595.84, 72, 243, 17);
             var reference = await MeasuredAstrometryFixture.CreateAtAsync(20, projectionOverride: cropped).ConfigureAwait(false);
             var next = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true, captureSequence: 61,
-                reference: reference, previousCaptureExists: true).ConfigureAwait(false);
+                reference: reference, prior: (1, 1)).ConfigureAwait(false);
             var latest = await ProduceAcceptedAsync(next).ConfigureAwait(false);
             Assert.IsTrue(latest.MidpointUtc > centered.MidpointUtc);
             Assert.AreNotEqual(centered.SolutionIdentitySha256, latest.SolutionIdentitySha256);
@@ -493,7 +493,7 @@ public sealed partial class DurableCaptureProcessingTests
 
     private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root,
         string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1,
-        MeasuredAstrometryFixture? reference = null, bool previousCaptureExists = false)
+        MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null)
     {
         reference ??= await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         var bytes = reference.Raw.Payload.ToArray();
@@ -507,7 +507,7 @@ public sealed partial class DurableCaptureProcessingTests
         var layout = reference.Raw.Layout!;
         var manifest = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, layout.Width, layout.Height, layout.StrideBytes, bytes);
-        if (previousCaptureExists)
+        if (prior is not null)
         {
             manifest = manifest with
             {
@@ -561,7 +561,7 @@ public sealed partial class DurableCaptureProcessingTests
         }
         var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-        for (var sequence = previousCaptureExists ? 2 : 1; sequence < captureSequence; sequence++)
+        for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)
             _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
         _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(RawIngressOutcome.Committed, await journal.CommitAsync(new RawIngressJournalEntry(
@@ -572,7 +572,7 @@ public sealed partial class DurableCaptureProcessingTests
         {
             var recovered = await new RawIngressReconciler(root, journal)
                 .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(previousCaptureExists ? 2 : 1, recovered.Inspected);
+            Assert.AreEqual((prior?.Count ?? 0) + 1, recovered.Inspected);
             Assert.AreEqual(0, recovered.Quarantined);
             Assert.AreEqual(0, recovered.MissingEvidence);
         }

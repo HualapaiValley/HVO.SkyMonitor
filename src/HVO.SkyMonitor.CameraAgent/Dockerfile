@@ -146,8 +146,8 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # predecessor at development/v1 38320d3a, so that schema-3 automation reader also checkpoints.
 # Its change makes existing installers checkpoint the paired databases before store conversion;
 # rollback restores that checkpoint rather than handing converted stores to older readers.
-# The same boundary also selects the paired checkpoint for processing schema 9.
-# Refs #1766. Earlier processing readers require the retained checkpoint.
+# The boundary also selects the paired checkpoint for the processing manifest ledger
+# (Refs #1766) and the schema-10 retained-astrometry index (Refs #1901).
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -162,7 +162,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="bc5ca7489c4090c299c416309519ab72da4a8cdb" \
+      io.hvo.skymonitor.minimum-compatible-revision="ac373b8f9f3f7e02a0281e73b969d224181ae089" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="16" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-to-v16" \

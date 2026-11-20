@@ -82,10 +82,20 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 {
     internal const int MaximumRawBytes = 32 * 1024 * 1024;
     internal const int MaximumReadBytes = 44 * 1024 * 1024;
+    private const int LatestNewRejectionLimit = 4096;
+    private const string TemporaryEvidenceUnavailable = "retained-evidence-temporarily-unavailable";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim readGate = new(1, 1);
+    private readonly SemaphoreSlim latestGate = new(1, 1);
+    private IReadOnlyList<AstrometryCaptureCandidate>? latestSnapshot;
+    private LinkedList<AstrometryCaptureCandidate> latestCandidates = [];
+    private HashSet<AstrometryOutputStamp> rejectedOutputs = [];
 
-    public void Dispose() => readGate.Dispose();
+    public void Dispose()
+    {
+        latestGate.Dispose();
+        readGate.Dispose();
+    }
 
     public async ValueTask<CameraAgentRetainedAstrometry> GetAsync(Guid captureId, CancellationToken cancellationToken)
     {
@@ -101,42 +111,99 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
     public async ValueTask<CameraAgentLatestAstrometryRead> ReadLatestAcceptedAsync(CancellationToken cancellationToken)
     {
-        if (!await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return new(false);
+        if (!await latestGate.WaitAsync(0, cancellationToken).ConfigureAwait(false)) return new(false);
         try
         {
             var captures = await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false);
-            foreach (var candidate in captures)
+            if (!ReferenceEquals(latestSnapshot, captures)) RefreshLatestCandidates(captures, cancellationToken);
+            var node = latestCandidates.First;
+            var newRejections = 0;
+            while (node is not null && newRejections < LatestNewRejectionLimit)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var candidate = node.Value;
                 var value = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
-                if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary) return new(true, summary);
+                if (value.Reason is "read-capacity" or TemporaryEvidenceUnavailable) return new(false);
+                if (CameraAgentLatestAstrometry.FromVerified(value) is { } summary)
+                    return await IsCurrentSnapshotAsync(captures, cancellationToken).ConfigureAwait(false) ? new(true, summary) : new(false);
+
+                var next = node.Next;
+                // An exact immutable rejection cannot become an accepted fit. A pending, invalid, ambiguous or
+                // temporarily unavailable output remains eligible. Removal happens only after successful validation,
+                // so independently canceled refreshes retain progress without treating an interrupted probe as empty.
+                if (candidate.SoleOutput is { } output && value.Reason == "no-accepted-mapping" &&
+                    value.ArtifactId == output.ArtifactId &&
+                    string.Equals(value.SolutionIdentitySha256, output.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    rejectedOutputs.Add(output);
+                    latestCandidates.Remove(node);
+                    newRejections++;
+                }
+                node = next;
             }
-            return new(true);
+            if (node is not null) return new(false);
+            return new(await IsCurrentSnapshotAsync(captures, cancellationToken).ConfigureAwait(false));
         }
-        finally { readGate.Release(); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
+        {
+            return new(false);
+        }
+        finally { latestGate.Release(); }
+    }
+
+    private async ValueTask<bool> IsCurrentSnapshotAsync(IReadOnlyList<AstrometryCaptureCandidate> snapshot,
+        CancellationToken cancellationToken)
+        => ReferenceEquals(snapshot, await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false));
+
+    private void RefreshLatestCandidates(IReadOnlyList<AstrometryCaptureCandidate> snapshot, CancellationToken cancellationToken)
+    {
+        var pending = new LinkedList<AstrometryCaptureCandidate>();
+        var retained = new HashSet<AstrometryOutputStamp>();
+        foreach (var candidate in snapshot)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (candidate.SoleOutput is { } output && rejectedOutputs.Contains(output)) retained.Add(output);
+            else pending.AddLast(candidate);
+        }
+        latestCandidates = pending;
+        rejectedOutputs = retained;
+        latestSnapshot = snapshot;
     }
 
     private async ValueTask<CameraAgentRetainedAstrometry> ReadAsync(Guid captureId, CancellationToken cancellationToken, bool acceptedOnly = false)
     {
         if (captureId == Guid.Empty) return new(captureId, "Unavailable", "invalid-capture");
+        var acquiredRawRead = false;
         try
         {
             var candidates = await store.ReadCaptureProductsAsync(captureId,
                 MeasuredAstrometrySolutionV1.CurrentSchemaVersion, 2, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) return new(captureId, "NotRetained", "assessment-not-retained");
-            if (candidates.Count != 1 || candidates[0].AvailabilityState != "Available")
-                return new(captureId, "Unavailable", "assessment-ambiguous-or-unavailable");
+            if (candidates.Count != 1) return new(captureId, "Unavailable", "assessment-ambiguous");
+            if (candidates[0].AvailabilityState != "Available") return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
             var remaining = Math.Min(maximumReadBytes, MaximumReadBytes);
             var (solutionArtifact, solutionProduct) = await ReadProductAsync(candidates[0].ArtifactId,
                 MeasuredAstrometryJson.MaximumSolutionBytes).ConfigureAwait(false);
             var solution = MeasuredAstrometryJson.Parse(solutionArtifact.Payload);
             if (solution.Assessment.Frame.CaptureId != captureId || solutionProduct.SourceArtifactIds.Count != 4)
                 throw new InvalidDataException("Retained assessment source mismatch.");
-            if (acceptedOnly && !solution.Assessment.HasMeasuredMapping)
-                return new(captureId, "NotRetained", "no-accepted-mapping");
+            if (acceptedOnly)
+            {
+                if (!solution.Assessment.HasMeasuredMapping)
+                {
+                    var identity = solution.SolutionIdentitySha256;
+                    if (!string.Equals(identity, solutionProduct.ContentIdentitySha256, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidDataException("Retained assessment content identity mismatch.");
+                    return new(captureId, "NotRetained", "no-accepted-mapping", solutionArtifact.ArtifactId, identity);
+                }
+                // Rejection probes read one bounded metadata object. Only raw reconstruction contends with the
+                // selected-frame reader for the larger raw-read allowance.
+                acquiredRawRead = await readGate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
+                if (!acquiredRawRead) return new(captureId, "Unavailable", "read-capacity");
+            }
             var rawId = solution.Assessment.Frame.SourceArtifactId;
-            var rawRead = await artifacts.OpenContentAsync(rawId, cancellationToken).ConfigureAwait(false);
-            var rawContent = rawRead.Content ?? throw new IOException("The retained raw is unavailable.");
+            var rawRead = await OpenArtifactAsync(rawId).ConfigureAwait(false);
+            var rawContent = rawRead.Content ?? throw new InvalidDataException("The retained raw is absent.");
             await using var rawLease = rawContent.ConfigureAwait(false);
             var descriptor = rawContent.Descriptor ?? throw new InvalidDataException("Missing raw descriptor.");
             if (rawRead.Status != CameraAgentArtifactReadStatus.Found || rawContent.CaptureId != captureId ||
@@ -178,8 +245,8 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
             async ValueTask<(ProcessingArtifact Artifact, ProcessingProduct Product)> ReadProductAsync(Guid id, int maximum)
             {
-                var result = await artifacts.OpenContentAsync(id, cancellationToken).ConfigureAwait(false);
-                var content = result.Content ?? throw new IOException("A retained input is unavailable.");
+                var result = await OpenArtifactAsync(id).ConfigureAwait(false);
+                var content = result.Content ?? throw new InvalidDataException("A retained input is absent.");
                 await using var contentLease = content.ConfigureAwait(false);
                 if (result.Status != CameraAgentArtifactReadStatus.Found || content.CaptureId != captureId || content.ProductManifest is not { } manifest)
                     throw new InvalidDataException("Invalid retained input envelope.");
@@ -202,6 +269,14 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 return (artifact, product);
             }
 
+            async ValueTask<CameraAgentArtifactContentResult> OpenArtifactAsync(Guid id)
+            {
+                var result = await artifacts.OpenContentAsync(id, cancellationToken).ConfigureAwait(false);
+                if (result.Status != CameraAgentArtifactReadStatus.Unavailable) return result;
+                if (result.Content is { } content) await content.DisposeAsync().ConfigureAwait(false);
+                throw new IOException("The retained artifact is temporarily unavailable.");
+            }
+
             async ValueTask<byte[]> ReadBytesAsync(CameraAgentArtifactContentStream content, int maximum)
             {
                 if (content.ByteLength is <= 0 || content.ByteLength > maximum || content.ByteLength > remaining)
@@ -212,9 +287,17 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
                 return bytes;
             }
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
+        catch (Exception exception) when (exception is InvalidDataException or ArgumentException or InvalidOperationException or JsonException or OverflowException)
         {
-            return new(captureId, "Unavailable", "retained-evidence-invalid-or-unavailable");
+            return new(captureId, "Unavailable", "retained-evidence-invalid");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Data.Common.DbException)
+        {
+            return new(captureId, "Unavailable", TemporaryEvidenceUnavailable);
+        }
+        finally
+        {
+            if (acquiredRawRead) readGate.Release();
         }
     }
 }
