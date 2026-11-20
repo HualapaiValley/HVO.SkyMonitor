@@ -688,8 +688,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             : LegacyVirtualSkySceneGraph.FindLegacyScene(profile, source.Pipeline);
         var state = candidate.State;
         if (legacyScene is null &&
-            (state.Name != AstrometryConsumerCompatibilityGraphName ||
-             !source.HasHistoricalAstrometryConsumerEdge() || candidate.HasHistoricalAstrometryConsumerEdge()))
+            (state.Name != AstrometryConsumerCompatibilityGraphName || !source.HasHistoricalAstrometryConsumerEdge()))
             return null;
 
         var (graphName, pipeline) = legacyScene is null
@@ -710,6 +709,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             return new(graphName, source.State.RevisionId,
                 name => CreateSceneCompatibilitySnapshot(migrated, graphName, name, compilation));
         }
+
+        // The live compiler records optional fit dependencies as supplementary for Storage and Telemetry.
+        // A predecessor with required fit edges can still serve frozen history, but cannot be the fresh successor.
+        if (candidate.HasHistoricalAstrometryConsumerEdge())
+            return null;
 
         // Before a profile loads, use frozen derivation evidence. An earlier revision compiled under a
         // different plan cannot establish that the candidate would be skipped by the live compiler.

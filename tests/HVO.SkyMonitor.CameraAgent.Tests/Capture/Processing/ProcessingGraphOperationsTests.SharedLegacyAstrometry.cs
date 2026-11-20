@@ -22,6 +22,8 @@ public sealed partial class ProcessingGraphOperationsTests
     [DataRow("storage")]
     [DataRow("storage-fit-failure")]
     [DataRow("historical-storage-telemetry-plan")]
+    [DataRow("historical-generation-retirement-unloaded")]
+    [DataRow("historical-generation-retirement-loaded")]
     [DataRow("isolated")]
     [DataRow("annotation-preset")]
     [DataRow("annotation-occupied-prediction-storage-preset")]
@@ -40,7 +42,9 @@ public sealed partial class ProcessingGraphOperationsTests
         var configurePreset = consumer == "annotation-preset" || combined;
         var sharedAssociations = consumer == "annotation" || configurePreset || occupiedPrediction;
         var failedFit = consumer == "storage-fit-failure";
-        var historicalPlan = consumer == "historical-storage-telemetry-plan";
+        var retireAfterReopen = consumer == "historical-generation-retirement-unloaded";
+        var retireHistoricalGeneration = retireAfterReopen || consumer == "historical-generation-retirement-loaded";
+        var historicalPlan = consumer == "historical-storage-telemetry-plan" || retireHistoricalGeneration;
         var sharedFit = consumer == "storage" || failedFit || combined || historicalPlan;
         var fitMeasurementId = sharedAssociations ? measurementId + "-1" : measurementId;
         var archiveRoot = Path.Combine(root, "archive");
@@ -185,6 +189,7 @@ public sealed partial class ProcessingGraphOperationsTests
             string? previousId = null;
             Guid? offCadenceCaptureId = null;
             ProcessingGraphRevisionSnapshot? predecessorRevision = null;
+            RawCaptureReceipt? historicalCapture = null;
             var replayOutputs = new Dictionary<string, DurableProcessingOutput>(StringComparer.Ordinal);
             using (var provider = CreateProvider(root, configureServices: services =>
             {
@@ -337,11 +342,15 @@ public sealed partial class ProcessingGraphOperationsTests
                         failedFit ? DurableProcessingNodeStatus.TerminalFailure : DurableProcessingNodeStatus.Completed).ConfigureAwait(false);
                     if (historicalPlan)
                     {
-                        // Select the predecessor's already migrated graph as a named revision before restarting.
-                        registry = await operations.ActivateRevisionAsync(liveId, registry.StateVersion,
-                            "predecessor-activate", "test", null, token).ConfigureAwait(false);
-                        activeId = registry.ActiveRevisionId;
-                        Assert.AreEqual(liveId, activeId);
+                        if (!retireHistoricalGeneration)
+                        {
+                            // Exercise the upgrade of an explicitly selected, already migrated revision separately.
+                            registry = await operations.ActivateRevisionAsync(liveId, registry.StateVersion,
+                                "predecessor-activate", "test", null, token).ConfigureAwait(false);
+                            activeId = registry.ActiveRevisionId;
+                            Assert.AreEqual(liveId, activeId);
+                        }
+                        historicalCapture = receipt;
                         predecessorRevision = await store.ReadRevisionAsync(liveId, token).ConfigureAwait(false);
                         replayOutputs.Add("fit", await ReadOutputAsync("fit", BuiltInProcessingRecipes.MeasuredAstrometry).ConfigureAwait(false));
                     }
@@ -366,6 +375,12 @@ public sealed partial class ProcessingGraphOperationsTests
             }
             if (historicalPlan)
                 await UsePreviousAstrometryLookupSchemaAsync(root, token).ConfigureAwait(false);
+            if (retireHistoricalGeneration)
+            {
+                await VerifyHistoricalGenerationRetirementAsync(activeId, predecessorRevision!, historicalCapture!,
+                    replayOutputs["fit"]).ConfigureAwait(false);
+                return;
+            }
             string? presetReceipt = null;
             using (var restarted = CreateProvider(root, configureServices: sharedFit || occupiedPrediction || configurePreset ? AddCaptureServices : null))
             {
@@ -474,6 +489,120 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             SqliteConnection.ClearAllPools();
             Directory.Delete(root, recursive: true);
+        }
+
+        async Task VerifyHistoricalGenerationRetirementAsync(
+            string sourceId, ProcessingGraphRevisionSnapshot historical, RawCaptureReceipt original,
+            DurableProcessingOutput retainedFit)
+        {
+            var historicalId = historical.State.RevisionId;
+            Assert.AreEqual(ProcessingGraphOperationsCoordinator.VirtualSkySharedFitCompatibilityGraphName, historical.State.Name);
+            Assert.AreEqual(sourceId, historical.State.Revision);
+            Assert.AreEqual(historicalId, original.Manifest.CaptureGraphRevisionId);
+            var rawChecksum = Sha256OfFile(original.StoredFrame.AbsolutePath);
+            var manifestChecksum = Sha256OfFile(Path.ChangeExtension(original.StoredFrame.AbsolutePath, ".json"));
+            var descriptor = original.Manifest.Descriptor;
+            const string retireKey = "retire-historical-generation-zero";
+            long versionBeforeRetirement = 0;
+            long retiredVersion = 0;
+            string currentId;
+            Guid historicalReplayId;
+            using (var current = CreateProvider(root, configureServices: AddCaptureServices))
+            {
+                await current.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+                var operations = current.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+                var module = CreateModule(current, requestedUtc.AddSeconds(2));
+                await using var moduleLifetime = module.ConfigureAwait(false);
+                await module.InitializeAsync(configuration, token).ConfigureAwait(false);
+                var fresh = await CaptureAndAdmitAsync(current, module, requestedUtc.AddSeconds(2), 2).ConfigureAwait(false);
+                Assert.AreEqual(2L, fresh.Manifest.Descriptor.Capture.CaptureSequence);
+                currentId = fresh.Manifest.CaptureGraphRevisionId!;
+                Assert.AreNotEqual(historicalId, currentId);
+                var store = current.GetRequiredService<SqliteCaptureProcessingStore>();
+                var successor = await store.ReadRevisionAsync(currentId, token).ConfigureAwait(false);
+                Assert.AreEqual(historical.State.Name, successor.State.Name);
+                Assert.AreEqual(sourceId + "-1", successor.State.Revision);
+                CollectionAssert.AreEqual(historical.PipelineJson, successor.PipelineJson);
+                Assert.AreNotEqual(historical.State.LocalPlanIdentitySha256, successor.State.LocalPlanIdentitySha256);
+                await CompleteLiveAsync(current, configuration).ConfigureAwait(false);
+                await AssertSupplementaryStoragePlanAsync(operations, successor, fresh.Manifest.Descriptor.Capture.CaptureId, token)
+                    .ConfigureAwait(false);
+                await AssertHistoricalAstrometryReplayAsync(current, historical, descriptor.Capture.CaptureId,
+                    descriptor.Artifact.ArtifactId, retainedFit, token).ConfigureAwait(false);
+                historicalReplayId = (await operations.ReadExecutionsAsync(ProcessingGraphExecutionClass.Replay, 4, token)
+                    .ConfigureAwait(false)).Single().ExecutionId;
+                Console.WriteLine($"Active source {sourceId}; historical {historicalId}; current {currentId}; replay {historicalReplayId}.");
+                if (!retireAfterReopen)
+                    await RetireHistoricalAsync(operations).ConfigureAwait(false);
+            }
+
+            using var reopened = CreateProvider(root, configureServices: AddCaptureServices);
+            await reopened.GetRequiredService<IRawCaptureIngress>().InitializeAsync(token).ConfigureAwait(false);
+            var reopenedOperations = reopened.GetRequiredService<ProcessingGraphOperationsCoordinator>();
+            if (retireAfterReopen)
+                await RetireHistoricalAsync(reopenedOperations).ConfigureAwait(false);
+            var retry = await reopenedOperations.RetireRevisionAsync(historicalId, versionBeforeRetirement,
+                retireKey, "test", null, token).ConfigureAwait(false);
+            Assert.AreEqual(retiredVersion, retry.StateVersion);
+            Assert.AreEqual(sourceId, retry.ActiveRevisionId);
+
+            var reopenedStore = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
+            var retained = await reopenedStore.ReadRevisionAsync(historicalId, token).ConfigureAwait(false);
+            Assert.AreEqual(ProcessingGraphRevisionLifecycle.Retired, retained.State.Lifecycle);
+            Assert.IsTrue(SqliteCaptureProcessingStore.HasSameRevisionContent(historical, retained));
+            Assert.AreEqual(rawChecksum, Sha256OfFile(original.StoredFrame.AbsolutePath));
+            Assert.AreEqual(manifestChecksum, Sha256OfFile(Path.ChangeExtension(original.StoredFrame.AbsolutePath, ".json")));
+            var replay = await reopenedOperations.ReadRunManifestAsync(historicalReplayId, token).ConfigureAwait(false);
+            Assert.IsNotNull(replay);
+            Assert.AreEqual(ProcessingGraphExecutionStatus.Completed, replay.Execution.Status);
+            Assert.AreEqual(historicalId, replay.Execution.GraphRevisionId);
+            Assert.AreEqual(historical.State.LocalPlanIdentitySha256, replay.Execution.LocalPlanIdentitySha256);
+            Assert.IsTrue(replay.Nodes.Single(node => node.NodeId == "archive").Dependencies
+                .Single(dependency => dependency.ProducerId == "fit").Required);
+            Assert.AreEqual(retainedFit.OutputIdentitySha256, replay.Nodes.Single(node => node.NodeId == "fit").Outputs
+                .Single(output => output.ArtifactId == retainedFit.ArtifactId).OutputIdentitySha256);
+
+            var reopenedModule = CreateModule(reopened, requestedUtc.AddSeconds(4));
+            await using var reopenedLifetime = reopenedModule.ConfigureAwait(false);
+            await reopenedModule.InitializeAsync(configuration, token).ConfigureAwait(false);
+            var after = await CaptureCadenceFrameAsync(reopened, reopenedModule, currentId, 3).ConfigureAwait(false);
+            await AssertSupplementaryStoragePlanAsync(reopenedOperations,
+                await reopenedStore.ReadRevisionAsync(currentId, token).ConfigureAwait(false),
+                after.Manifest.Descriptor.Capture.CaptureId, token).ConfigureAwait(false);
+            // An off-cadence capture has no frozen fit inputs. Replay must not borrow the earlier fit.
+            var afterDescriptor = after.Manifest.Descriptor;
+            var unavailable = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await reopenedOperations.SubmitReplayAsync(new(afterDescriptor.Capture.CaptureId, currentId,
+                    afterDescriptor.Artifact.ArtifactId), "replay-without-cadence-evidence", "test", token)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            StringAssert.Contains(unavailable.Message, "The original bounded analyzer evidence is not retained",
+                StringComparison.Ordinal);
+            await AssertCurrentProtectedAsync(reopenedOperations, (await reopenedOperations.GetRegistryAsync(token)
+                .ConfigureAwait(false)).StateVersion).ConfigureAwait(false);
+
+            async Task RetireHistoricalAsync(IProcessingGraphOperations operations)
+            {
+                var state = await operations.GetRegistryAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(sourceId, state.ActiveRevisionId);
+                versionBeforeRetirement = state.StateVersion;
+                await AssertCurrentProtectedAsync(operations, versionBeforeRetirement).ConfigureAwait(false);
+                var result = await operations.RetireRevisionAsync(historicalId, versionBeforeRetirement,
+                    retireKey, "test", null, token).ConfigureAwait(false);
+                Assert.AreEqual(sourceId, result.ActiveRevisionId);
+                retiredVersion = result.StateVersion;
+                Assert.AreEqual(versionBeforeRetirement + 1, retiredVersion);
+                await AssertCurrentProtectedAsync(operations, retiredVersion).ConfigureAwait(false);
+            }
+
+            async Task AssertCurrentProtectedAsync(IProcessingGraphOperations operations, long version)
+            {
+                await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                    await operations.RetireRevisionAsync(currentId, version, "retire-current-generation", "test", null, token)
+                        .ConfigureAwait(false)).ConfigureAwait(false);
+                var state = await operations.GetRegistryAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(sourceId, state.ActiveRevisionId);
+                Assert.AreEqual(version, state.StateVersion);
+            }
         }
 
         async Task<RawCaptureReceipt> CaptureCadenceFrameAsync(ServiceProvider host, VirtualSkyCameraModule camera, string expectedRevisionId, int sequence)
