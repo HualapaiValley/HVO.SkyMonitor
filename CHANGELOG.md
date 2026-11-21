@@ -16,7 +16,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
-- CameraAgent keeps the first scheduled environmental reading pending while it recovers the deployment location. Once the location is available, it records the reading or explains why the scheduled time falls outside the location’s effective interval. #1938
+- CameraAgent keeps the first scheduled environmental reading pending while it recovers the deployment location. It records one reading or explicit outcome for that slot and keeps the outcome across restarts. The environmental schema upgrade takes a paired checkpoint so rollback can restore the older journal. #1938
 
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 

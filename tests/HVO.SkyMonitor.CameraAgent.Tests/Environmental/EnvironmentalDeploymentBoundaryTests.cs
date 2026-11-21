@@ -341,6 +341,52 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     }
 
     [TestMethod]
+    public async Task ProtectedLocationStartup_CoalescedDispositionSurvivesShutdownBeforeCaptureDrains()
+    {
+        var location = Location(Epoch.AddDays(-1));
+        var device = new BlockingSkyQualityMeter();
+        var fixture = new Fixture(Epoch.AddSeconds(1), location, protectedStartup: true, device: device);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+        await fixture.PersistLocationHoldAsync().ConfigureAwait(false);
+
+        using var shutdown = new CancellationTokenSource();
+        var capture = fixture.Coordinator.AcquireSourceAsync("source-0", EnvironmentalAcquisitionTrigger.AfterCapture,
+            Epoch.AddSeconds(1), 1, Guid.NewGuid(), shutdown.Token).AsTask();
+        var next = Epoch + StartupSourcePeriod;
+        try
+        {
+            await device.FirstRead.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+            await fixture.StartAndWaitForPollAsync(next).ConfigureAwait(false);
+            await fixture.StopAsync().WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        }
+        finally
+        {
+            await shutdown.CancelAsync().ConfigureAwait(false);
+        }
+        await Assert.ThrowsAsync<OperationCanceledException>(() => capture.WaitAsync(HarnessDeadline)).ConfigureAwait(false);
+        Assert.AreEqual(new EnvironmentalLocationPollSlot(Epoch, true),
+            await fixture.ReadLocationPollSlotAsync().ConfigureAwait(false));
+        Assert.AreEqual(0L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        var original = (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single();
+        Assert.AreEqual(EnvironmentalAcquisitionTrigger.Periodic, original.Trigger);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, original.Disposition);
+
+        var reopened = new Fixture(next.AddSeconds(1), location, root: fixture.Root, protectedStartup: true, device: device);
+        await using var reopenedLifetime = reopened.ConfigureAwait(false);
+        await reopened.LoadLocationAsync(expectProvisional: false).ConfigureAwait(false);
+        await reopened.StartAndWaitForPollAsync(next + StartupSourcePeriod).ConfigureAwait(false);
+        Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        var attempts = await reopened.ReadAttemptsAsync().ConfigureAwait(false);
+        Assert.HasCount(2, attempts);
+        Assert.IsTrue(attempts.Contains(original));
+        Assert.AreEqual(EnvironmentalAcquisitionTrigger.Periodic,
+            attempts.Single(static attempt => attempt.Disposition == EnvironmentalAcquisitionDisposition.Produced).Trigger);
+        CollectionAssert.AreEqual(new[] { Epoch.AddSeconds(1), next }, device.RequestedTimes.ToArray());
+    }
+
+    [TestMethod]
     public async Task ProtectedLocationStartup_AttemptWriteFailureRollsBackTheFactAndRecordsAnExplicitDisposition()
     {
         var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
@@ -810,10 +856,12 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         private int _reads;
         public TaskCompletionSource FirstRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseFirstRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentQueue<DateTimeOffset> RequestedTimes { get; } = new();
 
         public async ValueTask<EnvironmentalDeviceSample> ReadAsync(string deviceId, string command, DateTimeOffset receivedAtUtc,
             CancellationToken cancellationToken)
         {
+            RequestedTimes.Enqueue(receivedAtUtc);
             var read = Interlocked.Increment(ref _reads);
             if (read == 1)
             {
