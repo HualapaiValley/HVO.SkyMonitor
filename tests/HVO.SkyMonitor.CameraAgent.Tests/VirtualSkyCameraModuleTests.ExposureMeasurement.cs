@@ -714,10 +714,24 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             raw.Descriptor.Capture.CaptureId,
             Raw = raw.Descriptor.Artifact.ArtifactId,
-            Canonical = new { canonicalNode.NodeId, canonical.ArtifactId, canonical.Variant, canonical.OutputIdentitySha256,
-                canonicalOutput.ProductSchemaVersion, canonicalOutput.Artifact.Recipe.Name },
-            Prediction = new { predictionNode.NodeId, prediction.ArtifactId, prediction.Variant, prediction.OutputIdentitySha256,
-                predictionOutput.ProductSchemaVersion, predictionOutput.Artifact.Recipe.Name },
+            Canonical = new
+            {
+                canonicalNode.NodeId,
+                canonical.ArtifactId,
+                canonical.Variant,
+                canonical.OutputIdentitySha256,
+                canonicalOutput.ProductSchemaVersion,
+                canonicalOutput.Artifact.Recipe.Name
+            },
+            Prediction = new
+            {
+                predictionNode.NodeId,
+                prediction.ArtifactId,
+                prediction.Variant,
+                prediction.OutputIdentitySha256,
+                predictionOutput.ProductSchemaVersion,
+                predictionOutput.Artifact.Recipe.Name
+            },
             Outcome = result.Outcome.ToString(),
             result.Reason,
             EnqueuedCount = queued.Count,

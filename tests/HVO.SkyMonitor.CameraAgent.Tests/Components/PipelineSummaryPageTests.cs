@@ -61,7 +61,8 @@ public sealed class PipelineSummaryPageTests
             {
                 services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
                 services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
-            } : null);
+            }
+            : null);
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             IEnumerable<CaptureProcessingStepConfig> analysis = centered
                 ? ProcessingGraphOperationsTests.RemainingOptionsPipeline(root).Steps.Where(static step =>
