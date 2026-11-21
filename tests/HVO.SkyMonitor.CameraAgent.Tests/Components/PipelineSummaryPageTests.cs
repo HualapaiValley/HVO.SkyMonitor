@@ -3,8 +3,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
@@ -50,7 +53,15 @@ public sealed class PipelineSummaryPageTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-measurement-operations");
         try
         {
-            using var provider = StoragePolicyRawIngressIntegrationTests.Provider(root);
+            using var provider = ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:CentralIntegration:Mode"] = "Enabled",
+                ["CameraAgent:CaptureDistribution:UploadEnabled"] = "false"
+            }, configureServices: centered ? static services =>
+            {
+                services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
+                services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
+            } : null);
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             IEnumerable<CaptureProcessingStepConfig> analysis = centered
                 ? ProcessingGraphOperationsTests.RemainingOptionsPipeline(root).Steps.Where(static step =>
@@ -63,6 +74,10 @@ public sealed class PipelineSummaryPageTests
             }) : null;
             var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile with
             {
+                Module = centered ? new("VirtualSky") : profile.Module,
+                Rig = centered
+                    ? profile.Rig with { Sensor = profile.Rig.Sensor with { ResponseMode = SensorResponseMode.Monochrome } }
+                    : profile.Rig,
                 CenteredExposure = centered ? new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) : null,
                 Pipeline = profile.Pipeline with
                 {
