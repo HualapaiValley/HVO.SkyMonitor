@@ -685,12 +685,14 @@ public sealed partial class DurableCaptureProcessingTests
 
     [TestMethod]
     [TestCategory("Integration")]
-    public async Task OperatorMaterializationPersistsSelectedStackOnceWithExactAuditAndLineage()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task OperatorMaterializationPersistsSelectedStackOnceWithExactAuditAndLineage(bool centered)
     {
         var root = CreateTestRoot();
         try
         {
-            var fixture = await CreateFixtureAsync(root).ConfigureAwait(false);
+            var fixture = await CreateFixtureAsync(root, includeCenteredAcquisition: centered).ConfigureAwait(false);
             var rawJournal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 5);
             await rawJournal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var telemetry = new CaptureProcessingTelemetry();
@@ -819,6 +821,14 @@ public sealed partial class DurableCaptureProcessingTests
             Assert.IsTrue(reconstruction.IsValid, reconstruction.ReasonCode);
 
             var materializedPath = Path.Combine(root, output.PayloadRelativePath);
+            if (centered)
+            {
+                Assert.IsNotNull(output.Descriptor!.CenteredAcquisition);
+                var date = DateOnly.FromDateTime(output.Descriptor.Timing.ExposureStartedUtc.UtcDateTime);
+                Assert.IsTrue(storage.List(root, date, FrameArtifactRole.AnnotatedPreview, 10)
+                    .Any(frame => frame.AbsolutePath == materializedPath),
+                    "A completed on-demand materialization is published without an execution association.");
+            }
             var corruptPayload = await File.ReadAllBytesAsync(materializedPath).ConfigureAwait(false);
             corruptPayload[0] ^= 0xFF;
             await File.WriteAllBytesAsync(materializedPath, corruptPayload).ConfigureAwait(false);
@@ -3145,7 +3155,8 @@ public sealed partial class DurableCaptureProcessingTests
     private static async Task<Fixture> CreateFixtureAsync(
         string root,
         bool includeCycleEvidence = false,
-        bool includeSceneEvidence = false)
+        bool includeSceneEvidence = false,
+        bool includeCenteredAcquisition = false)
     {
         var payload = new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 };
         var manifest = ReconstructableCaptureContractTests.CreateManifest(
@@ -3169,6 +3180,18 @@ public sealed partial class DurableCaptureProcessingTests
                 Descriptor = manifest.Descriptor with
                 {
                     CycleEvidence = CreateCycleEvidence(manifest.Descriptor)
+                }
+            };
+        }
+        if (includeCenteredAcquisition)
+        {
+            var descriptor = manifest.Descriptor;
+            manifest = manifest with
+            {
+                Descriptor = descriptor with
+                {
+                    CenteredAcquisition = new(CaptureCadenceMode.Continuous, TimeSpan.Zero,
+                        descriptor.Timing.RequestedStartUtc, TimeSpan.Zero, null, false, null, null)
                 }
             };
         }

@@ -33,9 +33,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed partial class RawCaptureIngressTests
 {
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task CenteredContinuousScheduleReopensSameWindowWithConfirmedAdmissionVersion(bool pauseAndResume)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task CenteredContinuousScheduleReopensSameWindowWithConfirmedAdmissionVersion(bool pauseAndResume, bool missedBlackout)
     {
         var root = CreateRoot();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -44,6 +45,14 @@ public sealed partial class RawCaptureIngressTests
         {
             var clock = new ExposureTestTimeProvider(Timestamp(8).AddMinutes(5));
             var config = CenteredContinuousConfiguration(clock.GetUtcNow());
+            var blackoutStart = clock.GetUtcNow().AddSeconds(1);
+            var blackoutEnd = blackoutStart.AddSeconds(2);
+            if (missedBlackout)
+                config = config with { Schedule = config.Schedule! with
+                {
+                    Blackouts = [new("missed", blackoutStart, blackoutEnd)]
+                } };
+            var freshTarget = missedBlackout || pauseAndResume;
             var captures = new List<(ExposureAttemptKey Key, CaptureRequest Request, CaptureResult Result)>();
             ExposureKey first;
             long version;
@@ -70,6 +79,8 @@ public sealed partial class RawCaptureIngressTests
                 }
             }
 
+            if (missedBlackout)
+                clock.Advance(blackoutEnd - clock.GetUtcNow());
             using var restarted = new CenteredFixture(root, timeProvider: clock);
             using var afterTelemetry = new CaptureControlTelemetry();
             using var afterAdmission = new CaptureAdmissionCoordinator(restarted.Ingress, restarted.Options, clock, afterTelemetry);
@@ -104,18 +115,25 @@ public sealed partial class RawCaptureIngressTests
             await RunOneAsync(restarted, afterTelemetry, afterAdmission).ConfigureAwait(false);
             Assert.HasCount(2, captures);
             Assert.AreEqual(captures[0].Request.RequestedSetpoint, captures[1].Request.RequestedSetpoint);
-            Assert.AreEqual(!pauseAndResume, captures[0].Key.RunId == captures[1].Key.RunId);
-            Assert.AreEqual(pauseAndResume ? 1L : 2L, captures[1].Key.Ordinal);
+            Assert.AreEqual(!freshTarget, captures[0].Key.RunId == captures[1].Key.RunId);
+            Assert.AreEqual(freshTarget ? 1L : 2L, captures[1].Key.Ordinal);
+            Assert.AreNotEqual(captures[0].Key.AttemptId, captures[1].Key.AttemptId);
             var subsequent = await restarted.Ingress.ReadCurrentAsync(first.Camera, token).ConfigureAwait(false);
             var second = await restarted.Ingress.ReadCenteredRawAsync(subsequent.AcquisitionHead!.Exposure, token).ConfigureAwait(false);
             Assert.AreEqual(recorded.ScheduleAdmission.IntervalId, second!.Manifest.Descriptor.RetainedScheduleAdmission!.IntervalId);
             Assert.AreEqual(afterAdmission.Snapshot.Version, second.Run.AdmissionStateVersion);
             using var db = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(pauseAndResume ? 1L : 0L, await ScalarLongAsync(db, """
+            var retirement = missedBlackout ? "schedule-grant-changed" : "schedule-admission-interrupted";
+            Assert.AreEqual(freshTarget ? 1L : 0L, await ScalarLongAsync(db, $"""
                 SELECT COUNT(*) FROM centered_exposure_attempts
-                WHERE ordinal = 2 AND status = 'expired' AND reason = 'schedule-admission-interrupted'
+                WHERE ordinal = 2 AND status = 'expired' AND reason = '{retirement}'
                   AND source_capture_id IS NOT NULL AND capture_id IS NULL;
                 """).ConfigureAwait(false));
+            if (missedBlackout)
+            {
+                Assert.AreEqual(blackoutStart, recorded.ScheduleAdmission.EffectiveEndUtc);
+                Assert.AreEqual(blackoutEnd, second.Manifest.Descriptor.RetainedScheduleAdmission.EffectiveStartUtc);
+            }
 
             foreach (var cadence in new[] { CaptureCadenceMode.Continuous, CaptureCadenceMode.MinimumStartInterval })
             {

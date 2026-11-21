@@ -278,7 +278,9 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         if (!decision.Admitted ||
             !string.Equals(decision.SetpointProfileId, grant.Profile.Id, StringComparison.Ordinal) ||
             !string.Equals(decision.Interval?.Id, grant.Decision.Interval?.Id, StringComparison.Ordinal) ||
-            !string.Equals(decision.OverrideId, grant.Decision.OverrideId, StringComparison.Ordinal))
+            !string.Equals(decision.OverrideId, grant.Decision.OverrideId, StringComparison.Ordinal) ||
+            snapshot.Configuration.CenteredExposure is not null &&
+                (decision.OpenSegment != grant.Decision.OpenSegment || decision.DecisionUtc < grant.Decision.DecisionUtc))
         {
             return null;
         }
@@ -774,6 +776,11 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         var interval = decision.Interval ?? throw new InvalidOperationException("An admitted schedule decision needs an interval.");
         var profile = snapshot.Revision.Definition.SetpointProfiles.Single(item =>
             string.Equals(item.Id, decision.SetpointProfileId, StringComparison.Ordinal));
+        var segment = snapshot.Configuration.CenteredExposure is not null ? decision.OpenSegment : null;
+        var start = segment?.StartUtc is { } segmentStart && segmentStart > interval.StartUtc
+            ? segmentStart : interval.StartUtc;
+        var end = segment is not null && decision.NextTransitionUtc is { } transition && transition < interval.EndUtc
+            ? transition : interval.EndUtc;
         var evidence = new CaptureScheduleAdmissionEvidence(
             CaptureScheduleAdmissionEvidence.CurrentSchemaVersion,
             snapshot.Revision.RevisionId,
@@ -783,8 +790,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             decision.Reason,
             interval.Source,
             decision.DecisionUtc,
-            interval.StartUtc,
-            interval.EndUtc,
+            start,
+            end,
             interval.Id,
             snapshot.Preview.ExpansionAlgorithmVersion,
             snapshot.Preview.ExpansionSha256,

@@ -2797,6 +2797,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 CaptureContractJson.Serialize(requestedManifest with { ProducerStepId = null }));
     }
 
+    // "output" is the exact processing_outputs row selected by the caller.
+    internal const string OutputPublicationPredicate = """
+        (EXISTS (SELECT 1 FROM processing_execution_outputs association
+                 WHERE association.output_identity_sha256 = output.output_identity_sha256 AND association.published_flag = 1)
+         OR (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
+                         WHERE association.output_identity_sha256 = output.output_identity_sha256)
+             AND EXISTS (SELECT 1 FROM processing_nodes node
+                         WHERE node.capture_id = output.capture_id AND node.node_id = output.node_id
+                           AND node.status = 'Completed')))
+        """;
+
     private static async ValueTask<bool> IsOutputPublishedAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -2805,20 +2816,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
-            SELECT CASE WHEN
-                EXISTS (SELECT 1 FROM processing_execution_outputs
-                        WHERE output_identity_sha256 = $output AND published_flag = 1)
-                OR (NOT EXISTS (SELECT 1 FROM processing_execution_outputs
-                                WHERE output_identity_sha256 = $output)
-                    AND EXISTS (
-                        SELECT 1
-                        FROM processing_outputs output
-                        JOIN processing_nodes node ON node.capture_id = output.capture_id
-                                                  AND node.node_id = output.node_id
-                        WHERE output.output_identity_sha256 = $output
-                          AND node.status = 'Completed'))
-                THEN 1 ELSE 0 END;
+        command.CommandText = $$"""
+            SELECT EXISTS (SELECT 1 FROM processing_outputs output
+                           WHERE output.output_identity_sha256 = $output AND {{OutputPublicationPredicate}});
             """;
         command.Parameters.AddWithValue("$output", outputIdentitySha256);
         return Convert.ToInt64(

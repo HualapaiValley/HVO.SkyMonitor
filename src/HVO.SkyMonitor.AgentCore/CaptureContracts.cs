@@ -15,14 +15,22 @@ public sealed record CaptureRequest(
     [JsonIgnore]
     public CapturePipelineConfig? BoundGraph { get; init; }
 
+    /// <summary>The earliest authorized shutter start for a confirmed bound capture grant.</summary>
+    [JsonIgnore]
+    public DateTimeOffset? BoundStartNotBeforeUtc { get; init; }
+
     /// <summary>The exclusive shutter-start limit for a confirmed bound capture grant.</summary>
     [JsonIgnore]
     public DateTimeOffset? BoundStartBeforeUtc { get; init; }
 
     /// <summary>Check the confirmed grant at the device-owned shutter boundary.</summary>
-    public void RequireOpenBoundStart(DateTimeOffset utc)
+    public void RequireOpenBoundStart(DateTimeOffset utc) => RequireOpenBoundStart(utc, null);
+
+    /// <summary>Check the shutter sample and its chronology after device controls were applied.</summary>
+    public void RequireOpenBoundStart(DateTimeOffset utc, DateTimeOffset? appliedUtc)
     {
-        if (BoundStartBeforeUtc is { } limit && utc >= limit)
+        if (BoundStartBeforeUtc is { } limit && utc >= limit ||
+            BoundStartNotBeforeUtc is { } opening && (utc < opening || utc < appliedUtc))
             throw new CaptureStartWindowClosedException();
     }
 }

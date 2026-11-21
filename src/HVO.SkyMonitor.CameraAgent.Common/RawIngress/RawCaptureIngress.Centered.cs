@@ -11,7 +11,7 @@ internal sealed record CenteredExposureReservation(
     CenteredPendingAttempt Pending, ProcessingGraphRevisionSnapshot Revision);
 
 internal sealed record RecoveredCenteredAdmission(
-    ProcessingLiveExecutionSeed Execution, byte[] ContextJson, string ContextSha256);
+    ProcessingLiveExecutionSeed Execution, byte[] ContextJson, string ContextSha256, CaptureSetpoint RequestedSetpoint);
 
 internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
 {
@@ -255,8 +255,10 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         var (seed, configuration) = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
             run.Configuration, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             descriptor.Timing.DurableIngressUtc, cancellationToken, revision).ConfigureAwait(false);
-        var context = SerializeCenteredLaneEnvelope(configuration, descriptor);
-        return new(seed, context.Json, context.Sha256);
+        var requested = await _journal.ReadCenteredRequestAsync(centered.Source,
+            descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
+        var context = SerializeCenteredLaneEnvelope(configuration, descriptor, requested);
+        return new(seed, context.Json, context.Sha256, requested);
     }
 
     internal Task<CenteredRawEvidence?> ReadCenteredRawAsync(ExposureKey key, CancellationToken cancellationToken)

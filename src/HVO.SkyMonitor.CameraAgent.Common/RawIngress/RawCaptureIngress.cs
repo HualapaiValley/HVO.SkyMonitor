@@ -479,6 +479,10 @@ internal sealed partial class RawCaptureIngress :
             {
                 EnsureCapacity(frame.PixelData.Length);
             }
+            var centeredRequest = centered is null ? null : await _journal.ReadCenteredRequestAsync(
+                centered.Source, stableIds.CaptureId, cancellationToken).ConfigureAwait(false);
+            if (centeredRequest is not null && centeredRequest != submission.Request.RequestedSetpoint)
+                throw new RawIngressConflictException("The centered retry differs from the dispatched settings request.");
             var payloadSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
             _faultInjector.Inject(RawIngressFaultPoint.BeforeIdentityReservation);
             cancellationToken.ThrowIfCancellationRequested();
@@ -683,7 +687,11 @@ internal sealed partial class RawCaptureIngress :
             // The centered sidecar is the durable source of the submission projection in both admission paths.
             var context = centered is null
                 ? CaptureLaneEnvelopeSerializer.Serialize(durableConfiguration, committedSubmission)
-                : SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor);
+                : SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor, centeredRequest);
+            var predecessorContextSha256 = centered is not null &&
+                committedDescriptor.CenteredAcquisition?.Module?.RequestedSetpoint is null
+                ? SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor).Sha256
+                : null;
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
@@ -694,6 +702,8 @@ internal sealed partial class RawCaptureIngress :
                     context.Sha256,
                     _lanePolicy.Definitions,
                     liveExecution,
+                    centeredRequest,
+                    predecessorContextSha256,
                     CancellationToken.None).ConfigureAwait(false);
                 if (outcome == RawIngressOutcome.Committed)
                 {
@@ -903,19 +913,20 @@ internal sealed partial class RawCaptureIngress :
     }
 
     private static (byte[] Json, string Sha256) SerializeCenteredLaneEnvelope(
-        CameraModuleConfig configuration, ReconstructionDescriptor descriptor)
+        CameraModuleConfig configuration, ReconstructionDescriptor descriptor, CaptureSetpoint? requested = null)
     {
-        var envelope = CreateRecoveredEnvelope(configuration, descriptor);
+        var envelope = CreateRecoveredEnvelope(configuration, descriptor, requested);
         return CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
     }
 
     private static CaptureLaneEnvelope CreateRecoveredEnvelope(
         CameraModuleConfig configuration,
-        ReconstructionDescriptor descriptor)
+        ReconstructionDescriptor descriptor,
+        CaptureSetpoint? dispatchedRequest = null)
     {
         var acquisition = descriptor.CenteredAcquisition;
         var reporting = acquisition?.Module;
-        var requested = reporting?.RequestedSetpoint ?? new CaptureSetpoint(
+        var requested = dispatchedRequest ?? reporting?.RequestedSetpoint ?? new CaptureSetpoint(
             descriptor.Controls.RequestedExposure,
             descriptor.Controls.RequestedGain,
             null,

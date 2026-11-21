@@ -266,7 +266,7 @@ public sealed class ZwoAsiCameraModule :
                 {
                     captureToken.ThrowIfCancellationRequested();
                     exposureStartedUtc = _timeProvider.GetUtcNow().ToUniversalTime();
-                    request.RequireOpenBoundStart(exposureStartedUtc);
+                    request.RequireOpenBoundStart(exposureStartedUtc, _setpointAppliedUtc);
                     _exposureActive = true;
                     native.StartExposure(_cameraId, dark: false);
                 }

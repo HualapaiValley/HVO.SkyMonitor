@@ -5,7 +5,8 @@ internal enum CaptureProcessingFaultPoint
     AfterSchemaTransactionBegan,
     BeforeSchemaCommit,
     BeforeNodeExecution,
-    AfterOutputsPublishedBeforeNodeCommit
+    AfterOutputsPublishedBeforeNodeCommit,
+    AfterArchiveCopyStaged
 }
 
 internal interface ICaptureProcessingFaultInjector

@@ -35,7 +35,19 @@ public sealed partial class VirtualSkyCameraModuleTests
         await Assert.ThrowsExactlyAsync<CaptureStartWindowClosedException>(() =>
             module.CaptureBoundAsync(attempt, refused, CancellationToken.None)).ConfigureAwait(false);
         attempt = new(attempt.Camera, Guid.NewGuid(), 1, Guid.NewGuid());
-        request = request with { BoundStartBeforeUtc = FixtureUtc.AddMilliseconds(1) };
+        var beforeOpening = request with
+        {
+            BoundStartNotBeforeUtc = FixtureUtc.AddTicks(1),
+            BoundStartBeforeUtc = FixtureUtc.AddMilliseconds(1)
+        };
+        await Assert.ThrowsExactlyAsync<CaptureStartWindowClosedException>(() =>
+            module.CaptureBoundAsync(attempt, beforeOpening, CancellationToken.None)).ConfigureAwait(false);
+        attempt = new(attempt.Camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        request = request with
+        {
+            BoundStartNotBeforeUtc = FixtureUtc,
+            BoundStartBeforeUtc = FixtureUtc.AddMilliseconds(1)
+        };
         var result = await module.CaptureBoundAsync(attempt, request, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(result.Frame);
         Assert.IsNotNull(result.Frame.Layout);

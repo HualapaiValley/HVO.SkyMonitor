@@ -1160,9 +1160,12 @@ public sealed class ZwoAsiCameraModuleTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task CenteredZwoReadsBackBothControlsBeforeCheckingExclusiveStartLimit(bool reachesLimit)
+    [DataRow(0, false)]
+    [DataRow(9, false)]
+    [DataRow(10, true)]
+    [DataRow(11, true)]
+    [DataRow(-1, true)]
+    public async Task CenteredZwoReadsBackBothControlsBeforeCheckingExclusiveStartLimit(int shiftMilliseconds, bool refused)
     {
         var now = new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero);
         var clock = new ExposureTestTimeProvider(now);
@@ -1176,14 +1179,15 @@ public sealed class ZwoAsiCameraModuleTests
         native.ControlRead = type =>
         {
             if (type == AsiControlType.Gain)
-                clock.Advance(TimeSpan.FromMilliseconds(reachesLimit ? 10 : 9));
+                clock.ShiftUtc(TimeSpan.FromMilliseconds(shiftMilliseconds));
         };
         var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still,
             new(TimeSpan.FromMilliseconds(90), 17, null, null))
         {
+            BoundStartNotBeforeUtc = now,
             BoundStartBeforeUtc = now.AddMilliseconds(10)
         };
-        if (reachesLimit)
+        if (refused)
         {
             await Assert.ThrowsExactlyAsync<CaptureStartWindowClosedException>(
                 () => module.CaptureBoundAsync(attempt, request, CancellationToken.None));
@@ -1192,10 +1196,13 @@ public sealed class ZwoAsiCameraModuleTests
             await Assert.ThrowsExactlyAsync<InvalidOperationException>(
                 () => module.CaptureBoundAsync(attempt, request, CancellationToken.None));
             native.ControlRead = null;
+            if (shiftMilliseconds < 0)
+                clock.ShiftUtc(TimeSpan.FromMilliseconds(-shiftMilliseconds));
             native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
             request = request with
             {
                 RequestedStartUtc = clock.GetUtcNow(),
+                BoundStartNotBeforeUtc = clock.GetUtcNow(),
                 BoundStartBeforeUtc = clock.GetUtcNow().AddMilliseconds(10),
                 RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 6, null, null)
             };
@@ -1209,7 +1216,7 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
         Assert.IsTrue(native.Calls.Contains("Set:Exposure:90000"));
         Assert.IsTrue(native.Calls.Contains("Set:Gain:17"));
-        if (reachesLimit)
+        if (refused)
         {
             Assert.IsTrue(native.Calls.Contains("Set:Exposure:20000"));
             Assert.IsTrue(native.Calls.Contains("Set:Gain:6"));

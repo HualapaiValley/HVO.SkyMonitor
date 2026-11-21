@@ -221,21 +221,18 @@ internal sealed class CameraModuleRunner
 
             using var acceptedAdmission = admission;
             CenteredExposureReservation? reservation = null;
-            DateTimeOffset? boundStartBeforeUtc = null;
             if (centered is not null)
             {
                 try
                 {
-                    if (scheduleGrant is not null)
-                    {
-                        var end = scheduleGrant.Evidence.EffectiveEndUtc;
-                        boundStartBeforeUtc = scheduleGrant.Decision.NextTransitionUtc is { } next && next < end ? next : end;
-                        if (!boundModule!.EnforcesBoundStartLimit)
-                            throw new InvalidOperationException("The selected camera cannot enforce the confirmed shutter start limit.");
-                    }
+                    if (scheduleGrant is not null && !boundModule!.EnforcesBoundStartLimit)
+                        throw new InvalidOperationException("The selected camera cannot enforce the confirmed shutter start limit.");
                     var scheduleBinding = scheduleGrant?.Evidence is { } grant
                         ? new CenteredScheduleBinding(grant.ScheduleRevisionSha256, grant.LocalProfileSha256,
                             grant.SetpointProfileId, grant.IntervalId, grant.OverrideId, cadenceMode)
+                        {
+                            OpenSegment = scheduleGrant.Decision.OpenSegment
+                        }
                         : null;
                     reservation = await centered.ReserveCenteredAsync(scheduleBinding,
                         scheduleGrant?.AdmissionWasInterrupted == true,
@@ -293,7 +290,8 @@ internal sealed class CameraModuleRunner
                 {
                     BoundGraphRevisionId = reservation.Revision.State.RevisionId,
                     BoundGraph = reservation.Revision.Pipeline,
-                    BoundStartBeforeUtc = boundStartBeforeUtc
+                    BoundStartNotBeforeUtc = scheduleGrant?.Evidence.DecisionUtc,
+                    BoundStartBeforeUtc = scheduleGrant?.Evidence.EffectiveEndUtc
                 };
             CaptureResult? result;
             EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
@@ -314,6 +312,8 @@ internal sealed class CameraModuleRunner
                     cancellationToken.ThrowIfCancellationRequested();
                     acquisitionUtc = UtcNow();
                     request.RequireOpenBoundStart(acquisitionUtc);
+                    if (scheduleGrant is not null)
+                        request = request with { BoundStartNotBeforeUtc = acquisitionUtc };
                     acquisitionStart = _timeProvider.GetTimestamp();
                     previousStartTimestamp = acquisitionStart;
                     previousStartUtc = acquisitionUtc;

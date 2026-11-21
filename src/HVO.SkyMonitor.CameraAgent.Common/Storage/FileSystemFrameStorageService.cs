@@ -4,6 +4,8 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Data.Sqlite;
@@ -94,6 +96,8 @@ public sealed class FileSystemFrameStorageService(
         RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         var payloadExists = File.Exists(payloadPath);
         var sidecarExists = File.Exists(metadataPath);
+        if (!payloadExists || !sidecarExists)
+            DeleteArchiveReceipt(storageRoot, payloadPath);
         var upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
             storageRoot,
             descriptor,
@@ -296,6 +300,7 @@ public sealed class FileSystemFrameStorageService(
         {
             ArgumentNullException.ThrowIfNull(removal.StoredFrame);
             var payloadPath = removal.StoredFrame.AbsolutePath;
+            DeleteArchiveReceipt(storageRoot, payloadPath);
             if (File.Exists(payloadPath))
             {
                 RetainedFileMutations.Delete(payloadPath);
@@ -461,38 +466,7 @@ public sealed class FileSystemFrameStorageService(
         storageRoot = Path.GetFullPath(storageRoot);
         using var journal = OpenCenteredBrowseJournal(storageRoot);
         BrowseJournalDiscovered?.Invoke();
-        using var visibility = journal?.CreateCommand();
-        if (visibility is not null)
-        {
-            using var schema = journal!.CreateCommand();
-            schema.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('processing_outputs', 'processing_execution_outputs');";
-            if (schema.ExecuteScalar() is 2L)
-            {
-                visibility.CommandText = """
-                    SELECT ($requires_settlement = 0
-                            AND NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture))
-                       OR EXISTS (
-                           SELECT 1 FROM processing_outputs output
-                           JOIN processing_execution_outputs association
-                             ON association.output_identity_sha256 = output.output_identity_sha256
-                           WHERE output.capture_id = $capture AND output.artifact_id = $artifact
-                             AND output.payload_relative_path = $path AND output.availability_state = 'Available'
-                             AND association.published_flag = 1
-                       );
-                    """;
-            }
-            else
-            {
-                visibility.CommandText = """
-                    SELECT $requires_settlement = 0
-                        AND NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture);
-                    """;
-            }
-            visibility.Parameters.Add("$capture", SqliteType.Text);
-            visibility.Parameters.Add("$artifact", SqliteType.Text);
-            visibility.Parameters.Add("$path", SqliteType.Text);
-            visibility.Parameters.Add("$requires_settlement", SqliteType.Integer);
-        }
+        using var visibility = journal is null ? null : CreateBrowseVisibility(journal);
 
         var references = new List<StoredFrameCandidate>();
         var seenArtifactIds = new HashSet<Guid>();
@@ -537,7 +511,7 @@ public sealed class FileSystemFrameStorageService(
                     !TryReadMetadataFile(metadataPath, out var sidecarMetadata, out var versionedBinding) ||
                     !Matches(indexedMetadata, sidecarMetadata) ||
                     versionedBinding is not null && (!MatchesVersionedBinding(storageRoot, payloadPath, versionedBinding) ||
-                        !IsPublishedForCompatibility(visibility, versionedBinding, indexedMetadata.ArtifactId)))
+                        !IsPublishedForCompatibility(storageRoot, payloadPath, visibility, versionedBinding, indexedMetadata.ArtifactId)))
                 {
                     _logger.FrameBrowseEntrySkipped(indexPath);
                     continue;
@@ -604,8 +578,10 @@ public sealed class FileSystemFrameStorageService(
                 manifest.RelativeArtifactPath,
                 descriptor.Layout.ByteLength,
                 descriptor.Capture.CaptureId,
-                manifest.ProducerStepId is not null,
-                descriptor.Artifact.Role != FrameArtifactRole.Raw && descriptor.CenteredAcquisition is not null);
+                manifest.ProducerStepId,
+                descriptor.Artifact.Role == FrameArtifactRole.Raw,
+                descriptor.Artifact.Role != FrameArtifactRole.Raw && descriptor.CenteredAcquisition is not null,
+                manifest);
             return true;
         }
         catch (JsonException)
@@ -629,7 +605,7 @@ public sealed class FileSystemFrameStorageService(
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path + "-wal");
         RawIngressFileStore.EnsureNoSymbolicLinks(root, path + "-shm");
-        SqliteConnection? owned = new(new SqliteConnectionStringBuilder
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = path,
             Mode = SqliteOpenMode.ReadOnly,
@@ -637,34 +613,177 @@ public sealed class FileSystemFrameStorageService(
         }.ToString());
         try
         {
-            owned.Open();
-            using var command = owned.CreateCommand();
-            command.CommandText = "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'centered_exposure_attempts');";
-            if (command.ExecuteScalar() is not 1L)
-                return null;
-
-            var result = owned;
-            owned = null;
-            return result;
+            connection.Open();
+            return connection;
         }
-        finally
+        catch
         {
-            owned?.Dispose();
+            connection.Dispose();
+            throw;
         }
     }
 
-    private static bool IsPublishedForCompatibility(
-        SqliteCommand? visibility, VersionedSidecarBinding binding, Guid artifactId)
+    private static SqliteCommand CreateBrowseVisibility(SqliteConnection journal)
     {
-        if (visibility is null)
-            return !binding.RequiresSettlement;
-        if (!binding.HasProducer && !binding.RequiresSettlement)
+        using var schema = journal.CreateCommand();
+        schema.CommandText = """
+            SELECT name FROM sqlite_schema WHERE type = 'table'
+            AND name IN ('raw_captures', 'centered_exposure_attempts', 'processing_outputs',
+                         'processing_execution_outputs', 'processing_nodes');
+            """;
+        var tables = new HashSet<string>(StringComparer.Ordinal);
+        using (var reader = schema.ExecuteReader())
+            while (reader.Read())
+                tables.Add(reader.GetString(0));
+
+        var raw = tables.Contains("raw_captures")
+            ? """
+              EXISTS (SELECT 1 FROM raw_captures raw WHERE raw.capture_id = $capture
+                  AND CASE WHEN json_valid(CAST(raw.manifest_json AS TEXT))
+                           THEN json_type(CAST(raw.manifest_json AS TEXT), '$.centeredExposure') IS NULL
+                           ELSE 0 END)
+              """
+            : "0";
+        var centered = tables.Contains("centered_exposure_attempts")
+            ? "EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture)"
+            : "0";
+        var published = tables.Contains("processing_outputs") && tables.Contains("processing_execution_outputs") &&
+            tables.Contains("processing_nodes")
+            ? $$"""
+               EXISTS (SELECT 1 FROM processing_outputs output
+                       WHERE output.capture_id = $capture AND output.artifact_id = $artifact
+                         AND output.payload_relative_path = $path AND output.availability_state = 'Available'
+                         AND {{SqliteCaptureProcessingStore.OutputPublicationPredicate}})
+               """
+            : "0";
+        var command = journal.CreateCommand();
+        command.CommandText = $"""
+            SELECT {published} OR ($requires_settlement = 0 AND NOT ({centered}) AND {raw});
+            """;
+        command.Parameters.Add("$capture", SqliteType.Text);
+        command.Parameters.Add("$artifact", SqliteType.Text);
+        command.Parameters.Add("$path", SqliteType.Text);
+        command.Parameters.Add("$requires_settlement", SqliteType.Integer);
+        return command;
+    }
+
+    private static bool IsPublishedForCompatibility(
+        string storageRoot, string payloadPath, SqliteCommand? visibility, VersionedSidecarBinding binding,
+        Guid artifactId)
+    {
+        if (binding.IsRaw)
             return true;
+        var archived = ArchiveReceiptPath(payloadPath);
+        var receiptExists = File.Exists(archived);
+        if (receiptExists && MatchesArchiveReceipt(storageRoot, archived, binding, artifactId))
+            return true;
+
+        var needsProof = receiptExists || binding.RequiresSettlement;
+        if (visibility is not null)
+            return ReadBrowseVisibility(visibility, binding, artifactId, needsProof);
+        if (needsProof)
+            return false;
+
+        // A predecessor may lack the centered marker. Recheck after reading its indexed sidecar so a
+        // journal initialized during discovery cannot lend its staged output the standalone fallback.
+        using var lateJournal = OpenCenteredBrowseJournal(storageRoot);
+        using var lateVisibility = lateJournal is null ? null : CreateBrowseVisibility(lateJournal);
+        return lateVisibility is null
+            ? !HasRetainedCenteredRaw(storageRoot, binding)
+            : ReadBrowseVisibility(lateVisibility, binding, artifactId, needsProof);
+    }
+
+    private static bool HasRetainedCenteredRaw(string storageRoot, VersionedSidecarBinding binding)
+    {
+        var rawArtifact = RawCaptureDescriptorFactory.CreateRawArtifactId(binding.CaptureId);
+        var paths = RawIngressFileStore.GetPaths(storageRoot,
+            binding.Manifest.Descriptor.Timing.ExposureStartedUtc, rawArtifact);
+        if (!File.Exists(paths.SidecarAbsolutePath))
+            return false;
+
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, paths.SidecarAbsolutePath);
+        return TryReadMetadataFile(paths.SidecarAbsolutePath, out _, out var raw) &&
+            raw is { IsRaw: true } && raw.CaptureId == binding.CaptureId &&
+            raw.Manifest.Descriptor.Artifact.ArtifactId == rawArtifact && raw.Manifest.CenteredExposure is not null;
+    }
+
+    private static bool ReadBrowseVisibility(
+        SqliteCommand visibility, VersionedSidecarBinding binding, Guid artifactId, bool needsProof)
+    {
         visibility.Parameters["$capture"].Value = binding.CaptureId.ToString("N");
         visibility.Parameters["$artifact"].Value = artifactId.ToString("N");
         visibility.Parameters["$path"].Value = binding.RelativeArtifactPath.Replace('\\', '/');
-        visibility.Parameters["$requires_settlement"].Value = binding.RequiresSettlement ? 1 : 0;
+        visibility.Parameters["$requires_settlement"].Value = needsProof ? 1 : 0;
         return visibility.ExecuteScalar() is 1L;
+    }
+
+    internal static async ValueTask PublishArchiveAsync(
+        string storageRoot, StoredFrameReference stored, ReconstructionDescriptor descriptor, RawCaptureReceipt raw,
+        ProcessingExecutionContext execution, string storageNode, string producer, string outputIdentity, string? contentIdentity,
+        CancellationToken cancellationToken)
+    {
+        var payloadPath = stored.AbsolutePath;
+        var relativePath = stored.RelativePath.Replace('\\', '/');
+        var artifact = descriptor.Artifact;
+        if (raw.Manifest.CenteredExposure is null || execution.ExecutionId == Guid.Empty ||
+            execution.ExecutionClass != ProcessingGraphExecutionClass.Live || !execution.AllowAutomaticPublication ||
+            raw.Manifest.Descriptor.Capture.CaptureId != descriptor.Capture.CaptureId ||
+            raw.Manifest.CaptureGraphRevisionId != execution.GraphRevisionId ||
+            artifact.ArtifactId != ProcessingIdentity.CreateArtifactId(outputIdentity))
+            throw new InvalidDataException("The archive copy is not bound to its centered execution output.");
+
+        var receipt = new ArchivePublicationReceipt(StorageRootIdentity.Key(storageRoot), relativePath,
+            descriptor.Capture.CaptureId, execution.ExecutionId, storageNode, producer, artifact.ArtifactId,
+            outputIdentity, contentIdentity, CaptureContractJson.ComputeDescriptorSha256(descriptor), artifact.ChecksumSha256);
+        var path = ArchiveReceiptPath(payloadPath);
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await WriteAtomicallyAsync(storageRoot, path, JsonSerializer.SerializeToUtf8Bytes(receipt, SerializerOptions),
+                cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            indexGate.Release();
+        }
+    }
+
+    private static bool MatchesArchiveReceipt(
+        string storageRoot, string path, VersionedSidecarBinding binding, Guid artifactId)
+    {
+        try
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
+            using var stream = File.OpenRead(path);
+            var receipt = stream.Length <= 4096
+                ? JsonSerializer.Deserialize<ArchivePublicationReceipt>(stream, SerializerOptions) : null;
+            return receipt is not null && receipt.ExecutionId != Guid.Empty &&
+                !string.IsNullOrWhiteSpace(receipt.StorageNode) && !string.IsNullOrWhiteSpace(receipt.Producer) &&
+                (binding.Producer is null || binding.Producer == receipt.Producer) &&
+                receipt.Root == StorageRootIdentity.Key(storageRoot) &&
+                receipt.RelativePath == binding.RelativeArtifactPath.Replace('\\', '/') &&
+                receipt.CaptureId == binding.CaptureId && receipt.ArtifactId == artifactId &&
+                ProcessingIdentity.CreateArtifactId(receipt.OutputIdentity) == artifactId &&
+                receipt.DescriptorSha256 == binding.Manifest.IdempotencyKey &&
+                receipt.PayloadSha256 == binding.Manifest.Descriptor.Artifact.ChecksumSha256;
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or ArgumentException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    internal static string ArchiveReceiptPath(string payloadPath) => Path.ChangeExtension(payloadPath, ".archive");
+
+    internal static void DeleteArchiveReceipt(string storageRoot, string payloadPath)
+    {
+        var path = ArchiveReceiptPath(payloadPath);
+        if (!File.Exists(path))
+            return;
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
+        RetainedFileMutations.Delete(path);
+        RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
     }
 
     private static bool MatchesVersionedBinding(
@@ -812,7 +931,12 @@ public sealed class FileSystemFrameStorageService(
     private sealed record StoredFrameCandidate(StoredFrameReference Reference, Guid ArtifactId);
 
     private sealed record VersionedSidecarBinding(
-        string RelativeArtifactPath, long ByteLength, Guid CaptureId, bool HasProducer, bool RequiresSettlement);
+        string RelativeArtifactPath, long ByteLength, Guid CaptureId, string? Producer, bool IsRaw,
+        bool RequiresSettlement, ArtifactManifestV2 Manifest);
+
+    private sealed record ArchivePublicationReceipt(
+        string Root, string RelativePath, Guid CaptureId, Guid ExecutionId, string StorageNode, string Producer,
+        Guid ArtifactId, string OutputIdentity, string? ContentIdentity, string DescriptorSha256, string PayloadSha256);
 
     public void Dispose() => GC.SuppressFinalize(this);
 

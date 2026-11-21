@@ -207,6 +207,9 @@ public sealed record ReconstructionDescriptor(
     [JsonIgnore]
     public CaptureCadenceMode? RetainedCadenceMode => CenteredAcquisition?.CadenceMode ?? CycleEvidence?.CadenceMode;
 
+    [JsonIgnore]
+    public TimeSpan? RetainedEffectiveInterval => CenteredAcquisition?.EffectiveInterval;
+
     public CaptureContractValidationResult Validate()
         => ReconstructionDescriptorValidator.Validate(this);
 }

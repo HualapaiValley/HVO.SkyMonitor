@@ -122,6 +122,7 @@ public sealed class CameraCaptureService(
                 stoppingToken, prepared is null ? captureContext?.RevisionChanged ?? CancellationToken.None : CancellationToken.None);
             var captureToken = revisionCancellation.Token;
             ICameraModule? module = null;
+            CancellationTokenSource? runnerCancellation = null;
             var moduleInitialized = false;
             var activationFailed = false;
             var retryPreparedConflict = false;
@@ -198,7 +199,7 @@ public sealed class CameraCaptureService(
                 namedRigProfiles?.ReportActiveRuntimeFailure(null);
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
-                using var runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                     captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
                 if (runnerCancellation.IsCancellationRequested)
                 {
@@ -268,29 +269,14 @@ public sealed class CameraCaptureService(
                     break;
                 }
 
-                if (activationFailed)
-                {
-                    try { await Task.Delay(Timeout.InfiniteTimeSpan, stoppingToken).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
-                    break;
-                }
-
                 if (retryPreparedConflict)
                 {
                     continue;
                 }
-
-                try
-                {
-                    await Task.Delay(RestartDelay, stoppingToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                {
-                    break;
-                }
             }
             finally
             {
+                using var lifetime = runnerCancellation;
                 if (_rawCaptureIngress is RawCaptureIngress durableIngress)
                     durableIngress.RecentCenteredExposures.Deactivate(config);
                 if (module is not null)
@@ -323,6 +309,16 @@ public sealed class CameraCaptureService(
                         }
                     }
                 }
+            }
+
+            try
+            {
+                await Task.Delay(activationFailed ? Timeout.InfiniteTimeSpan : RestartDelay, _timeProvider, stoppingToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
             }
         }
     }

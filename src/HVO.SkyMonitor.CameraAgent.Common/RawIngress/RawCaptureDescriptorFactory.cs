@@ -30,8 +30,10 @@ internal static class RawCaptureDescriptorFactory
             key = string.Join('\n', CenteredExposureProfile.CurrentExecutionVersion, centered.CameraId, key);
         }
         var captureId = CreateStableGuid("capture", key);
-        return (captureId, CreateStableGuid("raw-artifact", captureId.ToString("N")));
+        return (captureId, CreateRawArtifactId(captureId));
     }
+
+    internal static Guid CreateRawArtifactId(Guid captureId) => CreateStableGuid("raw-artifact", captureId.ToString("N"));
 
     internal static DateTimeOffset ResolveExposureStartedUtc(CaptureLoopSubmission submission, CameraFrame frame)
         => ToMilliseconds(submission.Result.AcquisitionTiming?.ExposureStartedUtc ?? frame.TimestampUtc);

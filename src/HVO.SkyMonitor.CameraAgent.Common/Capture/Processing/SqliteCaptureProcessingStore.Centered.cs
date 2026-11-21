@@ -30,16 +30,27 @@ internal sealed partial class SqliteCaptureProcessingStore
     internal const string NoLinearStepProducer = "$step3";
     internal const string NoLinearStepVariant = "none";
 
+    // Old snapshots could freeze the uncompiled default alias. An exact compiled ID always wins.
+    private const string CenteredLinearNodeJoin = """
+        LEFT JOIN processing_execution_nodes node
+          ON node.execution_id = execution.execution_id
+         AND node.node_id = CASE
+            WHEN run.linear_node_id = 'calibration' AND NOT EXISTS (
+                SELECT 1 FROM processing_execution_nodes exact
+                WHERE exact.execution_id = execution.execution_id AND exact.node_id = 'calibration')
+            THEN 'Calibration' ELSE run.linear_node_id END
+        """;
+
     internal static async Task<bool> PublishMissingCenteredLinearAsync(
         SqliteConnection connection, SqliteTransaction transaction, Guid executionId, CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
+        command.CommandText = $$"""
             INSERT INTO centered_exposure_products(agent_id, camera_id, capture_id, execution_id, producer, schema_version,
                 variant, disposition, reason)
             SELECT run.agent_id, run.camera_id, execution.capture_id, execution.execution_id,
-                   COALESCE(run.linear_node_id, $no_step), $schema, COALESCE(run.linear_variant, $no_variant),
+                   COALESCE(node.node_id, run.linear_node_id, $no_step), $schema, COALESCE(run.linear_variant, $no_variant),
                    CASE WHEN run.linear_node_id IS NULL THEN 'Unavailable'
                         WHEN execution.status = 'Expired' THEN 'Expired'
                         WHEN execution.status = 'Failed' OR node.status = 'TerminalFailure' THEN 'Failed'
@@ -50,8 +61,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             FROM processing_executions execution
             JOIN centered_exposure_attempts attempt ON attempt.capture_id = execution.capture_id
             JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
-            LEFT JOIN processing_execution_nodes node
-              ON node.execution_id = execution.execution_id AND node.node_id = run.linear_node_id
+            {{CenteredLinearNodeJoin}}
             WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
               AND execution.trigger_kind = 'capture' AND execution.allow_automatic_publication = 1
               AND (run.linear_node_id IS NULL OR execution.status IN ('Completed','Expired','Failed','Cancelled'))
@@ -73,20 +83,24 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
+        command.CommandText = $$"""
             INSERT INTO centered_exposure_products(agent_id, camera_id, capture_id, execution_id, producer, schema_version, variant,
                 output_identity, artifact_id, payload_sha256, content_identity_sha256, disposition, reason, provenance_json)
             SELECT run.agent_id, run.camera_id, $capture, $execution, $producer, $schema, $variant, $output, $artifact,
                 $payload, $content, $disposition, $reason, $provenance
             FROM centered_exposure_attempts attempt
             JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+            JOIN processing_executions execution ON execution.execution_id = $execution
+            {{CenteredLinearNodeJoin}}
             WHERE attempt.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
+              AND ($schema <> $linear_schema OR (node.node_id = $producer AND run.linear_variant = $variant))
             ON CONFLICT(capture_id, execution_id, producer, schema_version, variant) DO NOTHING;
             """;
         SqliteRawCaptureJournal.AddExposureParameters(command, settlement.Exposure);
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         command.Parameters.AddWithValue("$producer", settlement.Producer);
         command.Parameters.AddWithValue("$schema", settlement.SchemaVersion);
+        command.Parameters.AddWithValue("$linear_schema", CenteredExposureProductReader.LinearSchemaVersion);
         command.Parameters.AddWithValue("$variant", settlement.Variant);
         command.Parameters.AddWithValue("$output", (object?)settlement.OutputIdentity ?? DBNull.Value);
         command.Parameters.AddWithValue("$artifact", settlement.ArtifactId is { } artifact ? artifact.ToString("N") : DBNull.Value);
@@ -158,14 +172,16 @@ internal sealed partial class SqliteCaptureProcessingStore
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = CenteredProductProjection + """
+        command.CommandText = CenteredProductProjection + $$"""
              JOIN processing_executions execution ON execution.execution_id = product.execution_id
+             {{CenteredLinearNodeJoin}}
              WHERE product.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
                AND execution.execution_class = 'Live' AND execution.allow_automatic_publication = 1
                AND execution.trigger_kind = 'capture' AND execution.capture_id = $capture
                AND execution.execution_id = $execution
                AND execution.primary_artifact_id = $raw AND execution.graph_revision_id = $graph
-               AND product.schema_version = $schema AND product.producer = $node AND product.variant = $variant;
+               AND product.schema_version = $schema
+               AND product.producer = COALESCE(node.node_id, run.linear_node_id, $no_step) AND product.variant = $variant;
             """;
         SqliteRawCaptureJournal.AddExposureParameters(command, key);
         command.Parameters.AddWithValue("$schema", CenteredExposureProductReader.LinearSchemaVersion);
@@ -173,7 +189,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$graph", raw.Run.GraphRevisionId);
         command.Parameters.AddWithValue("$execution",
             ProcessingGraphOperationsCoordinator.GetLiveExecutionId(key.CaptureId, raw.Run.GraphRevisionId).ToString("N"));
-        command.Parameters.AddWithValue("$node", raw.Run.LinearNodeId ?? NoLinearStepProducer);
+        command.Parameters.AddWithValue("$no_step", NoLinearStepProducer);
         command.Parameters.AddWithValue("$variant", raw.Run.LinearVariant ?? NoLinearStepVariant);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return (null, null);

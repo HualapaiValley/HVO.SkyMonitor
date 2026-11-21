@@ -201,6 +201,32 @@ internal sealed class SqliteCaptureLaneStore(
                 var envelope = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? CaptureLaneEnvelopeSerializer.Deserialize(candidate.ContextJson, candidate.ContextSha256)
                     : CreateFallbackEnvelope(fallbackConfiguration, manifest.Descriptor);
+                if (manifest.CenteredExposure is { } centered &&
+                    manifest.Descriptor.CenteredAcquisition?.Module?.RequestedSetpoint is null)
+                {
+                    CaptureSetpoint request;
+                    try
+                    {
+                        request = await SqliteRawCaptureJournal.ReadCenteredRequestAsync(connection, transaction,
+                            centered.Source, manifest.Descriptor.Capture.CaptureId, allowUnbound: false, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (RawIngressConflictException exception)
+                    {
+                        throw new InvalidDataException("The predecessor lane request has no valid retained dispatch.", exception);
+                    }
+                    var submission = envelope.Submission;
+                    var controls = manifest.Descriptor.Controls;
+                    if (request.Exposure != controls.RequestedExposure || request.Gain != controls.RequestedGain ||
+                        submission.Request.RequestedSetpoint != request &&
+                        submission.Request.RequestedSetpoint != new CaptureSetpoint(
+                            controls.RequestedExposure, controls.RequestedGain, null, null))
+                        throw new InvalidDataException("The predecessor lane request differs from its retained dispatch.");
+                    envelope = envelope with { Submission = submission with
+                    {
+                        Request = submission.Request with { RequestedSetpoint = request }
+                    } };
+                }
                 var capturedRig = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? JsonSerializer.Deserialize<CaptureLaneEnvelope>(candidate.ContextJson,
                         EnvelopeJsonOptions)?.Configuration.Rig

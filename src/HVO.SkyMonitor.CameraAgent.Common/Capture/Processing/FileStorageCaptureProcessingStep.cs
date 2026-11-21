@@ -23,7 +23,8 @@ internal sealed class FileStorageCaptureProcessingStep(
     IArtifactOutbox artifactOutbox,
     IOptions<CameraAgentHostOptions> hostOptions,
     ILogger<FileStorageCaptureProcessingStep> logger,
-    CaptureProcessingPersistence? processingPersistence = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
+    CaptureProcessingPersistence? processingPersistence = null,
+    ICaptureProcessingFaultInjector? faults = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
 {
     internal const string StableAlias = "Storage";
 
@@ -65,6 +66,8 @@ internal sealed class FileStorageCaptureProcessingStep(
             IsStoredUnderRoot(durableRaw.StoredFrame, Options.StorageRoot);
         var metadataAlreadyStoredUnderRoot = context.RawCapture is { } metadataRaw &&
             IsStoredUnderRoot(metadataRaw.StoredFrame, Options.StorageRoot);
+        var exportsCenteredCopy = !metadataAlreadyStoredUnderRoot && context.RawCapture?.Manifest.CenteredExposure is not null &&
+            context.ProcessingExecution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true };
         var lifecycleGate = StorageLifecycleLock.ForRoot(Options.StorageRoot);
         var selectedArtifacts = IsExplicitPipeline(context.Config)
             ? context.GetDependencyArtifacts()
@@ -118,6 +121,11 @@ internal sealed class FileStorageCaptureProcessingStep(
                             descriptor,
                             producerStepId!,
                             cancellationToken).ConfigureAwait(false);
+                        if (exportsCenteredCopy)
+                        {
+                            await PublishCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, published,
+                                cancellationToken).ConfigureAwait(false);
+                        }
                         await _artifactOutbox.EnqueueAsync(
                             Options.StorageRoot,
                             new ArtifactManifestV2(
@@ -168,6 +176,11 @@ internal sealed class FileStorageCaptureProcessingStep(
                                 descriptor,
                                 producerStepId!,
                                 cancellationToken).ConfigureAwait(false);
+                        if (exportsCenteredCopy)
+                        {
+                            await PublishCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, stored,
+                                cancellationToken).ConfigureAwait(false);
+                        }
                         uploadManifest = new ArtifactManifestV2(
                             ArtifactManifestV2.CurrentSchemaVersion,
                             descriptor,
@@ -332,6 +345,20 @@ internal sealed class FileStorageCaptureProcessingStep(
 
     private static bool IsExplicitPipeline(CameraModuleConfig config)
         => config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
+
+    private async ValueTask PublishCenteredArchiveAsync(
+        CaptureProcessingContext context, RawIngress.RawCaptureReceipt raw, ProcessingProduct product, string? producer,
+        ReconstructionDescriptor descriptor, StoredFrameReference stored, CancellationToken cancellationToken)
+    {
+        if (_frameStorageService is not FileSystemFrameStorageService ||
+            context.ProcessingExecution is not { } execution || context.CurrentNodeId is not { } storageNode ||
+            producer is null)
+            throw new InvalidDataException("The centered archive copy has no authorized Storage execution.");
+
+        faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, storageNode);
+        await FileSystemFrameStorageService.PublishArchiveAsync(Options.StorageRoot, stored, descriptor, raw, execution, storageNode,
+            producer, product.OutputIdentitySha256, product.ContentIdentitySha256, cancellationToken).ConfigureAwait(false);
+    }
 
     internal bool QueuesUpload(string? producerStepId, FrameArtifactRole role, string? variant, string? recipeName)
         => _centralIntegrationEnabled &&

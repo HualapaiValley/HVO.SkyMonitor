@@ -2,6 +2,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Focus;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -782,6 +783,129 @@ public sealed class CameraCaptureServiceTests
             finally { await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task RunnerFaultWithdrawsHeldFocusBeforeRetryAndThenPublishesTheNewRevision()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-faulted-focus-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+        var token = deadline.Token;
+        try
+        {
+            var clock = new ExposureTestTimeProvider(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            var original = CreateConfig() with
+            {
+                AgentId = "focus-b-to-c",
+                DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
+                    DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+                Schedule = new("capture-schedule-v1",
+                    [new("night", TimeSpan.FromMilliseconds(1), 0, TimeSpan.FromSeconds(1))],
+                    [new("monday", DayOfWeek.Monday,
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(21, 0)),
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "night")])
+            };
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+            using var ingress = CreateDurableIngress(options, clock);
+            using var store = new SqliteCaptureScheduleStore(ingress, options, clock);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry);
+            using var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), new EmptyPipelineFactory(), clock);
+            await runtime.InitializeAsync(original, token).ConfigureAwait(false);
+            using var lifetime = new TestHostApplicationLifetime();
+            using var ownership = new CameraModuleOwnership();
+            var before = new HeldFocusModule();
+            var after = new RigRecordingModule(clock);
+            var factory = new SequenceModuleFactory(before, after);
+            using var service = new CameraCaptureService(new ConfigurationAccessor(original), factory,
+                ingress, new RecordingDistributor(), clock, new AstronomyEnginePlanetEphemeris(), telemetry,
+                admission, new FleetRuntimeState(clock), lifetime, NullLogger<CameraCaptureService>.Instance,
+                scheduleRuntimeCoordinator: runtime, moduleOwnership: ownership);
+            await service.StartAsync(token).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            try
+            {
+                await clock.TimerCreated.Task.WaitAsync(token).ConfigureAwait(false);
+                var focus = new CameraModuleManualFocusPreviewSource(ownership, admission, clock);
+                var settings = new ManualFocusPreviewSettings(TimeSpan.FromMilliseconds(1), 0);
+                var preview = focus.AcquireAsync(settings, null, token);
+                await before.Entered.Task.WaitAsync(token).ConfigureAwait(false);
+                clock.FailNextUtcRead();
+                clock.Advance(TimeSpan.FromMinutes(2));
+                await before.Revoked.Task.WaitAsync(TimeSpan.FromSeconds(3), token).ConfigureAwait(false);
+                Assert.IsFalse(before.Disposed.Task.IsCompleted);
+                Assert.IsFalse(ownership.TryAcquire(out _));
+                await Assert.ThrowsExactlyAsync<ManualFocusSessionUnavailableException>(
+                    () => focus.AcquireAsync(settings, null, token)).ConfigureAwait(false);
+
+                before.Release.TrySetResult();
+                await Assert.ThrowsExactlyAsync<ManualFocusSessionUnavailableException>(
+                    async () => await preview.ConfigureAwait(false)).ConfigureAwait(false);
+                await before.Disposed.Task.WaitAsync(token).ConfigureAwait(false);
+                var current = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+                var profile = current.ActiveRevision.Profile;
+                var window = profile.Schedule.WeeklyWindows.Single();
+                var next = profile with { Schedule = profile.Schedule with
+                {
+                    WeeklyWindows = [window with { Start = new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue) }]
+                } };
+                var staged = await runtime.StageAsync(next, "stage-focus-c", current.Version, "fixture", null, token)
+                    .ConfigureAwait(false);
+                var revision = staged.PendingRevision!.RevisionId;
+                await runtime.ActivateAsync(revision, "activate-focus-c", staged.Version, "fixture", null, token)
+                    .ConfigureAwait(false);
+                Assert.IsFalse(ownership.TryAcquire(out _), "B cannot be leased during the restart delay.");
+                while (clock.ActiveTimers == 0)
+                    await Task.Delay(10, token).ConfigureAwait(false);
+                clock.Advance(TimeSpan.FromSeconds(5));
+                var raw = await ingress.Captured.Task.WaitAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(revision, raw.Manifest.Descriptor.CycleEvidence!.ScheduleAdmission!.ScheduleRevisionId);
+                Assert.IsTrue(ownership.TryAcquire(out var lease));
+                using var currentLease = lease!;
+                Assert.AreSame(after, currentLease.Module);
+            }
+            finally
+            {
+                before.Release.TrySetResult();
+                await service.StopAsync(CancellationToken.None).WaitAsync(token).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    private sealed class HeldFocusModule : ICameraModule, ICameraFocusPreviewCapture
+    {
+        public string Id => "focus-b";
+        public string DisplayName => "Focus B";
+        public string ModuleType => "FocusFixture";
+        public CameraModuleCapabilities Capabilities => CameraModuleCapabilities.StillFrames;
+        public CameraFocusPreviewFidelity FocusPreviewFidelity { get; } = new("fixture", false, "Test preview");
+        public CameraSimulatedFocusModel? SimulatedFocus => null;
+        internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Revoked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("The closed grant must prevent B from capturing.");
+        public async Task<CaptureResult> CaptureFocusPreviewAsync(CameraFocusPreviewRequest request, CancellationToken cancellationToken)
+        {
+            using var revoked = cancellationToken.Register(() => Revoked.TrySetResult());
+            Entered.TrySetResult();
+            await Release.Task.ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new InvalidOperationException("The focus lease must be revoked before release.");
+        }
+        public ValueTask DisposeAsync()
+        {
+            Disposed.TrySetResult();
+            return ValueTask.CompletedTask;
+        }
     }
 
     [TestMethod]
