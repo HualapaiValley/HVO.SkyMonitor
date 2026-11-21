@@ -108,6 +108,11 @@ public sealed record ExposureMeasurementV1(
 public static class ExposureMeasurementProducts
 {
     public const string StepAlias = "ExposureMeasurement";
+
+    /// <summary>These steps and their reserved identifiers are supplied by the centered capture profile.</summary>
+    public static bool IsSystemManagedStepAlias(string alias)
+        => string.Equals(alias, StepAlias, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(alias, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
     public const string SchemaVersion = "exposure-measurement-v1";
     public const string Variant = SchemaVersion;
     public const string MediaType = "application/vnd.hvo.exposure-measurement+json";
@@ -364,9 +369,10 @@ public static class ExposureMeasurementProducts
         for (var index = 0; index < sampleCount; index++)
         {
             var sample = hfd.Samples[index];
+            var rejection = ExposureMeasurementRecipe.FocusDetectionRejection(sources.Detections[index].Conditions);
             if (sample is null || sample.DetectionIndex != index || string.IsNullOrWhiteSpace(sample.Reason) ||
                 (sample.DiameterPixels is not null) != (sample.Reason == FocusStarReasonCodes.Valid) ||
-                sources.Detections[index].Conditions.HasFlag(StellarSourceConditions.Saturated) && sample.Reason != FocusStarReasonCodes.Saturated)
+                rejection is not null && sample.Reason != rejection)
                 throw Invalid("HFD sample");
             if (sample.DiameterPixels is { } diameter)
             {

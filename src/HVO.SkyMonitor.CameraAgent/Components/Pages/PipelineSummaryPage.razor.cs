@@ -304,6 +304,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     /// </summary>
     private string? ToggleUnavailableReason()
     {
+        if (SelectedNode is { Alias: var selectedAlias } && ExposureMeasurementProducts.IsSystemManagedStepAlias(selectedAlias))
+            return CameraAgentPipelineOperatorProjection.SystemManagedStepReason;
         if (_pipeline is null)
         {
             return "The processing graph is not loaded.";
@@ -912,18 +914,19 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     private static string StepFacts(CaptureProcessingPlanNode node)
         => string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
 
-    private static bool IsExposureMeasurement(CaptureProcessingPlanNode node) =>
-        string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
-
     private static string StepKind(CaptureProcessingPlanNode node)
-        => IsExposureMeasurement(node) ? "Fixed step" :
+        => ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? "Fixed step" :
             string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
 
     private static string StepDescription(CaptureProcessingPlanNode node)
     {
-        if (IsExposureMeasurement(node))
+        if (string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
         {
             return "Records raw brightness, measured centroids and half-flux diameter for each exposure as inputs permit.";
+        }
+        if (ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias))
+        {
+            return "Builds an independent catalog prediction for the selected centered association or astrometry steps.";
         }
         if (!node.Enabled)
         {

@@ -472,6 +472,14 @@ public sealed partial class VirtualSkyCameraModuleTests
                         Assert.AreEqual("retention-expired", expired?.Reason);
                         Assert.AreEqual(published.Revision, expired?.Revision);
                         Assert.AreEqual(published.Exposure, expired?.Exposure);
+
+                        var snapshotReader = provider.GetRequiredService<IExposureMeasurementRunReader>();
+                        var raced = await snapshotReader.ReadAsync(execution, CancellationToken.None).ConfigureAwait(false);
+                        Assert.AreEqual("retention-expired", raced?.UnavailableReason,
+                            "Retention completed after Operations took the available snapshot.");
+                        var otherRevision = execution with { Execution = execution.Execution with { GraphRevisionId = new string('F', 64) } };
+                        var unrelated = await snapshotReader.ReadAsync(otherRevision, CancellationToken.None).ConfigureAwait(false);
+                        Assert.AreEqual("measurement-unreadable", unrelated?.UnavailableReason);
                     }
                     else if (archiveFault == "corrupt")
                     {
@@ -791,7 +799,8 @@ public sealed partial class VirtualSkyCameraModuleTests
     }
 
     private static ServiceProvider MeasurementProvider(string root, DeploymentLocationSnapshot location, ICelestialCatalog catalog,
-        ICaptureProcessingFaultInjector? fault = null, TimeProvider? timeProvider = null)
+        ICaptureProcessingFaultInjector? fault = null, TimeProvider? timeProvider = null,
+        Action<IServiceCollection>? configureServices = null)
         => ProcessingGraphOperationsTests.CreateProvider(root,
             timeProvider is null ? null : new Dictionary<string, string?> { ["CameraAgent:CaptureDistribution:MaximumAttempts"] = "2" },
             timeProvider, configureServices: services =>
@@ -803,6 +812,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             services.AddSingleton(locations.Object);
             if (fault is not null)
                 services.AddSingleton(fault);
+            configureServices?.Invoke(services);
         });
 
     private static async Task CorruptMeasurementRunSnapshotAsync(string root, ExposureKey exposure)

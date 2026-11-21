@@ -242,18 +242,13 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         foreach (var detection in stars.Detections.Take(count))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (detection.Conditions.HasFlag(StellarSourceConditions.Saturated))
+            if (FocusDetectionRejection(detection.Conditions) is { } rejection)
             {
-                results.Add(new(detection.Index, FocusStarReasonCodes.Saturated, null));
+                results.Add(new(detection.Index, rejection, null));
                 continue;
             }
             var x0 = (int)detection.Pixel.X - windowRadius;
             var y0 = (int)detection.Pixel.Y - windowRadius;
-            if (detection.Conditions.HasFlag(StellarSourceConditions.Trailed))
-            {
-                results.Add(new(detection.Index, "trailed-source", null));
-                continue;
-            }
             if (x0 < 0 || y0 < 0 || x0 + diameter > layout.Width || y0 + diameter > layout.Height)
             {
                 results.Add(new(detection.Index, FocusStarReasonCodes.ApertureTruncated, null));
@@ -296,6 +291,10 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         return new(status, reason, widths.Count, widths.Count == 0 ? null : widths.Average(),
             ExposureMeasurementProducts.Median(widths), omitted, FocusSettings, results);
     }
+
+    internal static string? FocusDetectionRejection(StellarSourceConditions conditions)
+        => conditions.HasFlag(StellarSourceConditions.Saturated) ? FocusStarReasonCodes.Saturated
+            : conditions.HasFlag(StellarSourceConditions.Trailed) ? "trailed-source" : null;
 
     internal static string? FocusUnavailableReason(ExposureSourcesV1 sources, FrameLayoutDescriptor? layout)
     {

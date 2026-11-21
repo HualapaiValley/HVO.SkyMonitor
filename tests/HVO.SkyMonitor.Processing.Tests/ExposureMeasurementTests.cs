@@ -323,6 +323,39 @@ public sealed class ExposureMeasurementTests
         var falseWidth = result with { Sources = result.Sources with { Detections = detections } };
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(falseWidth)));
 
+        var original = result.Sources.Detections[0];
+        detections[0] = original with { Conditions = original.Conditions | StellarSourceConditions.Trailed };
+        var trailed = result with { Sources = result.Sources with { Detections = detections } };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(trailed)),
+            "A trailed detection cannot contribute an HFD diameter.");
+
+        var samples = result.Hfd.Samples.ToArray();
+        samples[0] = new(original.Index, "trailed-source", null);
+        var widths = samples.Skip(1).Select(sample => sample.DiameterPixels!.Value).Order().ToArray();
+        var focus = result.Hfd with
+        {
+            Samples = samples,
+            ValidCount = widths.Length,
+            MeanPixels = samples.Skip(1).Average(sample => sample.DiameterPixels!.Value),
+            MedianPixels = widths[widths.Length / 2]
+        };
+        var accepted = ExposureMeasurementProducts.Read(Rehash(trailed with { Hfd = focus }));
+        Assert.AreEqual(detections[0], accepted.Sources.Detections[0]);
+        Assert.AreEqual(samples[0], accepted.Hfd.Samples[0]);
+        Assert.AreEqual(31, accepted.Hfd.ValidCount);
+        Assert.AreEqual(4, accepted.Hfd.OmittedCount);
+
+        detections[0] = detections[0] with
+        {
+            Conditions = detections[0].Conditions | StellarSourceConditions.Saturated,
+            SaturatedSampleCount = 1
+        };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(trailed with { Hfd = focus })),
+            "Saturation takes precedence over trailing.");
+        samples[0] = new(original.Index, FocusStarReasonCodes.Saturated, null);
+        accepted = ExposureMeasurementProducts.Read(Rehash(trailed with { Hfd = focus }));
+        Assert.AreEqual(samples[0], accepted.Hfd.Samples[0]);
+
         ProcessingProduct Rehash(ExposureMeasurementV1 measurement)
         {
             var payload = JsonSerializer.SerializeToUtf8Bytes(

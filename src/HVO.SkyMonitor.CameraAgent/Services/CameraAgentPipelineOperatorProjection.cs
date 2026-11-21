@@ -23,6 +23,8 @@ internal sealed record CameraAgentPipelineProfilePreview(
 
 internal static class CameraAgentPipelineOperatorProjection
 {
+    internal const string SystemManagedStepReason = "This step is managed by the centered capture profile.";
+
     internal static CameraAgentPipelineOperatorState CreateState(
         CaptureScheduleOperatorState state,
         CameraModuleConfig currentConfiguration,
@@ -74,9 +76,9 @@ internal static class CameraAgentPipelineOperatorProjection
             throw new InvalidOperationException("The processing node identifier is invalid.");
         }
         if (profile.CenteredExposure is not null &&
-            string.Equals(nodeId, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(nodeId))
         {
-            throw new InvalidOperationException("Exposure measurement is a fixed step.");
+            throw new InvalidOperationException(SystemManagedStepReason);
         }
         var matches = profile.ProcessingSteps
             .Select((step, index) => (Step: step, Index: index))
@@ -89,9 +91,9 @@ internal static class CameraAgentPipelineOperatorProjection
         {
             throw new InvalidOperationException("The processing node was not found in the desired graph.");
         }
-        if (string.Equals(matches[0].Step.Type, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        if (ExposureMeasurementProducts.IsSystemManagedStepAlias(matches[0].Step.Type))
         {
-            throw new InvalidOperationException("Exposure measurement is a fixed step.");
+            throw new InvalidOperationException(SystemManagedStepReason);
         }
         var steps = profile.ProcessingSteps.ToArray();
         steps[matches[0].Index] = matches[0].Step with { Enabled = enabled };
@@ -113,9 +115,9 @@ internal static class CameraAgentPipelineOperatorProjection
         {
             return "The processing node was not found in the desired graph.";
         }
-        if (exception.Message.Contains("fixed step", StringComparison.Ordinal))
+        if (exception.Message == SystemManagedStepReason)
         {
-            return "Exposure measurement is a fixed step.";
+            return SystemManagedStepReason;
         }
         return exception.Message.Contains("dependency cycle", StringComparison.Ordinal)
             ? "The desired graph contains a dependency cycle."

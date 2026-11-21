@@ -8,8 +8,7 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
 {
     internal static void EnsureMatchesProfile(CapturePipelineConfig pipeline, CenteredExposureProfile? centered)
     {
-        if (centered is null && !pipeline.Steps.Any(step => Matches(step.Type, ExposureMeasurementProducts.StepAlias) ||
-            Matches(step.Type, ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias) ||
+        if (centered is null && !pipeline.Steps.Any(step => ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ||
             Matches(step.Type, ExposureAssociationProducts.StepAlias) ||
             Matches(step.Type, ExposureAstrometryCaptureProcessingStep.CenteredAlias)))
             return;
@@ -62,8 +61,8 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
         const string raw = "$raw";
         var fixedStep = ExposureMeasurementProducts.StepAlias;
         var prediction = ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias;
-        if (pipeline.Steps.Any(step => Matches(step.Type, fixedStep) || Matches(NodeId(step), fixedStep) ||
-            Matches(step.Type, prediction) || Matches(NodeId(step), prediction)))
+        if (pipeline.Steps.Any(step => ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ||
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(NodeId(step))))
             throw new InvalidOperationException("Exposure measurement and catalog prediction are supplied by the centered pipeline.");
         var calibration = pipeline.Steps.SingleOrDefault(static step => step.Enabled != false && Matches(step.Type, "Calibration"));
         if (calibration is not null && !(calibration.DependsOn is [var input] && Matches(input, raw)))

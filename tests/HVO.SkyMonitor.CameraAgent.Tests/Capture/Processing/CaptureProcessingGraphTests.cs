@@ -19,6 +19,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class CaptureProcessingGraphTests
 {
+    private static readonly string[] LegacyPreviewAliases =
+    [
+        "Calibration", "CalibratedPreview", "RollingCombination", "CombinedPreview", "ImageQuality",
+        "CloudAssessment", "Annotation", "WeatherCloudOverlay", "Storage", "Telemetry"
+    ];
+
+    private static readonly string[] AutomaticAliases = ["Preview", "RollingCombination", "Annotation"];
+
     [TestMethod]
     [DataRow("missing")]
     [DataRow("disabled")]
@@ -871,11 +879,17 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(
             FrameArtifactRole.AnnotatedPreview,
             preview.EffectiveNodes.Single(static node => node.Alias == "WeatherCloudOverlay").OutputRole);
-        Assert.HasCount(10, preview.EffectiveNodes);
+        CollectionAssert.AreEquivalent(LegacyPreviewAliases, preview.EffectiveNodes.Select(static node => node.Alias).ToArray());
         Assert.IsFalse(quality.Options!.Value.TryGetProperty("enabled", out _));
-        Assert.HasCount(25, registrations);
-        foreach (var alias in new[] { CaptureSatelliteTracksProcessingStep.Alias, CaptureSatelliteLayerProcessingStep.Alias,
-            MeasuredAstrometryCaptureProcessingStep.Alias, SceneStylePresentation.StepAlias })
+        CollectionAssert.AreEquivalent(AutomaticAliases,
+            registrations.Where(static registration => registration.AutoInclude).Select(static registration => registration.Alias).ToArray());
+        foreach (var alias in new[]
+        {
+            CaptureSatelliteTracksProcessingStep.Alias, CaptureSatelliteLayerProcessingStep.Alias,
+            MeasuredAstrometryCaptureProcessingStep.Alias, SceneStylePresentation.StepAlias,
+            ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, ExposureMeasurementProducts.StepAlias,
+            ExposureAssociationProducts.StepAlias, ExposureAstrometryCaptureProcessingStep.CenteredAlias
+        })
         {
             Assert.IsFalse(registrations.Single(registration => registration.Alias == alias).AutoInclude);
             Assert.IsFalse(preview.EffectiveNodes.Any(node => node.Alias == alias));
