@@ -512,7 +512,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 16, reads 13 to 16. `io.hvo.skymonitor.raw-ingress-schema` 16 and `raw-ingress-migration` `canonical-v13-v14-v15-to-v16` also declare it |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
-| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `33903f07a1dd86166fc17197df981b32d45013a1` selects a paired checkpoint before upgrade from schema 3 or 4, or from either single-reader image for #1901 or #1938. Rollback restores the previous image's paired state |
+| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
 | `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
 | `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 3, reads 2 to 3 |

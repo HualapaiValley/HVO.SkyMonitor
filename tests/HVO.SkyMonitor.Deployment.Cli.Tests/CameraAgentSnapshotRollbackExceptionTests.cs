@@ -21,9 +21,10 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     private const string RawIngressSchema = "io.hvo.skymonitor.raw-ingress-schema";
     private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
     private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
-    private const string CombinedReaderRevision = "33903f07a1dd86166fc17197df981b32d45013a1";
+    private const string CombinedReaderRevision = "e7b9af4b98d1521c3939ef5925608a3663c63302";
     private const string ProcessingV10Reader = "ac373b8f9f3f7e02a0281e73b969d224181ae089";
-    private const string EnvironmentalV5Reader = "bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56";
+    private const string OriginalEnvironmentalV5Reader = "bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56";
+    private const string SettledEnvironmentalV5Reader = "e9bc66a58ec4f9902f7d6f25c89057832eff9fbc";
 
     /// <summary>
     /// The reader-capability labels a boundary test copies from the frozen release so that only the boundary under test
@@ -242,7 +243,8 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     [TestMethod]
     [DataRow("bc5ca7489c4090c299c416309519ab72da4a8cdb", DisplayName = "Previous release to combined reader")]
     [DataRow(ProcessingV10Reader, DisplayName = "Processing-only reader to combined reader")]
-    [DataRow(EnvironmentalV5Reader, DisplayName = "Environmental-only reader to combined reader")]
+    [DataRow(OriginalEnvironmentalV5Reader, DisplayName = "Original environmental-only reader to combined reader")]
+    [DataRow(SettledEnvironmentalV5Reader, DisplayName = "Corrected environmental-only reader to combined reader")]
     public void RetainedAstrometryIndexUpgradeCheckpointsWithUnchangedRawIngressLabels(string installedBoundary)
     {
         ArgumentNullException.ThrowIfNull(installedBoundary);
