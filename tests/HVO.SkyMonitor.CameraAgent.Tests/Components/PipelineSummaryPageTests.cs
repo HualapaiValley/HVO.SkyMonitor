@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -265,7 +266,7 @@ public sealed class PipelineSummaryPageTests
             Assert.AreEqual(association.StepVersion, ProcessingNodeOptionsForm.DescriptorFor(associationAlias)?.StepVersion);
             Assert.AreEqual(fit.StepVersion, ProcessingNodeOptionsForm.DescriptorFor(fitAlias)?.StepVersion);
             Assert.AreEqual("verified-exposure-association", graph.Nodes.Single(node => node.Id == association.Id).OutputVariant);
-            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
             var fitOptions = fit.EffectiveOptions.Deserialize<MeasuredAstrometryCaptureOptions>(json);
             Assert.AreEqual(120, fitOptions?.CaptureStride);
             Assert.IsNotNull(fitOptions?.Catalog);
