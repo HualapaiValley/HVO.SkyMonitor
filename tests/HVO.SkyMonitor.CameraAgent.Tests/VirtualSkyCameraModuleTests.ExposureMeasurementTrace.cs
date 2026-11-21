@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
+using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
@@ -22,11 +24,13 @@ public sealed partial class VirtualSkyCameraModuleTests
     public async Task ExposureMeasurement_RunnerTraceAdmits106While103WaitsForLinearAndMeasurementWithoutACatalog()
     {
         var now = DateTimeOffset.UtcNow.AddMinutes(-1);
-        await RunTraceAsync(now, overlap: false).ConfigureAwait(false);
+        var measured = await RunTraceAsync(now, overlap: false).ConfigureAwait(false);
+        var baseline = await RunTraceAsync(now, overlap: false, measurementEnabled: false).ConfigureAwait(false);
+        CollectionAssert.AreEqual(measured, baseline, "The matched observation must use the same raw and step-three payloads.");
         await RunTraceAsync(now, overlap: true).ConfigureAwait(false);
     }
 
-    private async Task RunTraceAsync(DateTimeOffset now, bool overlap)
+    private async Task<(string Raw, string Linear)[]> RunTraceAsync(DateTimeOffset now, bool overlap, bool measurementEnabled = true)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement-trace");
         try
@@ -64,10 +68,13 @@ public sealed partial class VirtualSkyCameraModuleTests
                 {
                     Steps =
                     [
-                        new("Calibration", "linear", DependsOn: ["$raw"], Required: false),
+                        new("Calibration", "linear", DependsOn: ["$raw"], Required: false,
+                            Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
                         new("ProjectedScene", "scene", DependsOn: ["$raw"], Required: false,
                             Publication: new(CaptureProcessingPersistenceMode.DurableLocal)),
-                        new("MeasuredStellarAssociations", "association", DependsOn: ["$raw"], Required: false),
+                        // The overlap arm also exercises the optional consumer with no authorized catalog.
+                        .. (overlap ? new CaptureProcessingStepConfig[] { new("MeasuredStellarAssociations", "association",
+                            DependsOn: ["$raw"], Required: false) } : []),
                         .. profile.Pipeline.Steps
                     ]
                 }
@@ -76,7 +83,10 @@ public sealed partial class VirtualSkyCameraModuleTests
             var fault = overlap ? new MeasurementTracePause() : null;
             // Simulator truth stays private to the module. The processing graph has no independently authorized catalog.
             var noCatalog = new InMemoryCelestialCatalog([]);
-            using var provider = MeasurementProvider(root, location, noCatalog, fault);
+            using var provider = MeasurementProvider(root, location, noCatalog, fault,
+                configureServices: measurementEnabled ? null : services => services.Remove(services.Single(service =>
+                    service.ServiceType == typeof(ICenteredExposureGraphExtension) &&
+                    service.ImplementationType == typeof(ExposureMeasurementGraphPlan))));
             var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
             var products = provider.GetRequiredService<IExposureProductReader>();
@@ -98,15 +108,26 @@ public sealed partial class VirtualSkyCameraModuleTests
                 projectedSceneStager: provider.GetRequiredService<CaptureProjectedSceneStager>());
             var timing = new ExposureTestTimeProvider(now, autoAdvance: true);
             var cameraKey = new CameraKey(active.AgentId!, active.CenteredExposure!.CameraId);
+            var commitMs = new List<double>(frameCount);
+            using var metrics = new MeterListener
+            {
+                InstrumentPublished = static (instrument, listener) =>
+                {
+                    if (instrument.Meter.Name == RawIngressTelemetry.MeterName && instrument.Name == "camera_agent.ingress.commit.duration")
+                        listener.EnableMeasurementEvents(instrument);
+                }
+            };
+            metrics.SetMeasurementEventCallback<double>((_, seconds, _, _) => commitMs.Add(seconds * 1000));
+            metrics.Start();
             using var process = Process.GetCurrentProcess();
+            var startIo = ReadTraceIo();
             var cpu = process.TotalProcessorTime;
             var allocated = GC.GetTotalAllocatedBytes(true);
             var runner = Task.Run(() => new CameraModuleRunner(module, host, timing, NullLogger.Instance).RunAsync(stop.Token), token);
-            var processingMs = new List<double>();
-            long rawBytes = 0, linearBytes = 0, measurementBytes = 0, sidecarBytes = 0;
+            var processingMs = new List<double>(frameCount);
+            var captures = new List<(RawCaptureReceipt Receipt, ExposureKey Exposure, ExposureProductSlot Slot)>(frameCount);
             long maxBacklog = 0, maxBacklogBytes = 0;
             long maxObservedRss = 0;
-            var durableCaptures = new List<object>(frameCount);
             try
             {
                 if (!overlap)
@@ -154,21 +175,50 @@ public sealed partial class VirtualSkyCameraModuleTests
                     processingMs.Add(clock.Elapsed.TotalMilliseconds);
                     process.Refresh();
                     maxObservedRss = Math.Max(maxObservedRss, process.WorkingSet64);
+                    captures.Add((receipt, exposure, slot));
+                }
+                await runner.WaitAsync(token).ConfigureAwait(false);
+                var drained = (await lanes.ReadBacklogsAsync(token).ConfigureAwait(false)).Single(item => item.Lane == "standard");
+                var cpuMs = (process.TotalProcessorTime - cpu).TotalMilliseconds;
+                var allocatedBytes = GC.GetTotalAllocatedBytes(true) - allocated;
+                var processIo = ReadTraceIo().ToDictionary(pair => pair.Key, pair => pair.Value - startIo[pair.Key], StringComparer.Ordinal);
+                Assert.AreEqual(0L, drained.ActiveWork?.Count ?? 0);
+                Assert.HasCount(frameCount, commitMs);
+
+                long rawBytes = 0, linearBytes = 0, measurementBytes = 0, sidecarBytes = 0;
+                var durableCaptures = new List<object>(frameCount);
+                var inputChecksums = new List<(string Raw, string Linear)>(frameCount);
+                foreach (var (receipt, exposure, slot) in captures)
+                {
                     rawBytes += receipt.Manifest.Descriptor.Layout.ByteLength;
                     var linear = await products.ReadLinearAsync(exposure, token).ConfigureAwait(false);
                     Assert.IsNotNull(linear?.Product);
+                    var rawChecksum = receipt.Manifest.Descriptor.Artifact.ChecksumSha256;
+                    var linearChecksum = linear.Product.PayloadSha256;
+                    inputChecksums.Add((rawChecksum, linearChecksum));
                     var result = await products.ReadProductAsync(exposure, slot, token).ConfigureAwait(false);
-                    Assert.IsNotNull(result?.Product);
-                    var detail = await graphOps.ReadExecutionDetailAsync(runId, token).ConfigureAwait(false);
+                    var detail = await graphOps.ReadExecutionDetailAsync(slot.ExecutionId, token).ConfigureAwait(false);
                     Assert.IsNotNull(detail);
-                    Assert.AreEqual("Skipped", detail.Nodes.Single(item => item.NodeId == "association").Status);
-                    var read = await provider.GetRequiredService<IExposureMeasurementRunReader>().ReadAsync(detail, token).ConfigureAwait(false);
-                    Assert.IsNotNull(read?.Measurement, read?.UnavailableReason);
-                    Assert.AreEqual(exposure, read.Measurement.Input.Exposure);
                     Assert.AreEqual(receipt.Manifest.CaptureGraphRevisionId, detail.Execution.GraphRevisionId);
-                    Assert.AreEqual(ExposureMeasurementStatus.Usable, read.Measurement.Sources.Status);
-                    Assert.IsGreaterThan(0, read.Measurement.Hfd.ValidCount ?? 0);
-                    foreach (var product in new[] { linear.Product, result.Product })
+                    foreach (var independent in detail.Nodes.Where(node => node.NodeId is "linear" or "scene" or "preview" or "storage"))
+                        Assert.AreEqual("Completed", independent.Status, independent.Reason);
+                    if (overlap)
+                        Assert.AreEqual("Skipped", detail.Nodes.Single(item => item.NodeId == "association").Status);
+                    var read = await provider.GetRequiredService<IExposureMeasurementRunReader>().ReadAsync(detail, token).ConfigureAwait(false);
+                    if (measurementEnabled)
+                    {
+                        Assert.IsNotNull(result?.Product);
+                        Assert.IsNotNull(read?.Measurement, read?.UnavailableReason);
+                        Assert.AreEqual(exposure, read.Measurement.Input.Exposure);
+                        Assert.AreEqual(ExposureMeasurementStatus.Usable, read.Measurement.Sources.Status);
+                        Assert.IsGreaterThan(0, read.Measurement.Hfd.ValidCount ?? 0);
+                    }
+                    else
+                    {
+                        Assert.IsNull(result);
+                        Assert.IsNull(read);
+                    }
+                    foreach (var product in new[] { linear.Product, result?.Product }.OfType<ExposureProductRef>())
                     {
                         var output = await store.ReadOutputByArtifactIdAsync(product.ArtifactId, token).ConfigureAwait(false);
                         Assert.IsNotNull(output);
@@ -177,35 +227,33 @@ public sealed partial class VirtualSkyCameraModuleTests
                         if (product == linear.Product) linearBytes += payload;
                         else measurementBytes += payload;
                     }
-                    if (ordinal >= 3)
+                    durableCaptures.Add(new
                     {
-                        durableCaptures.Add(new
-                        {
-                            slot = 100 + ordinal,
-                            exposure.CaptureId,
-                            exposure.RunId,
-                            detail.Execution.GraphRevisionId,
-                            executionId = slot.ExecutionId,
-                            measurementArtifactId = result.Product.ArtifactId,
-                            measurementIdentity = result.Product.OutputIdentitySha256,
-                            hfdContributors = read.Measurement.Hfd.ValidCount
-                        });
-                    }
+                        slot = 100 + receipt.Manifest.CenteredExposure!.Source.Ordinal,
+                        exposure.CaptureId,
+                        exposure.RunId,
+                        detail.Execution.GraphRevisionId,
+                        executionId = slot.ExecutionId,
+                        rawChecksum,
+                        linearChecksum,
+                        measurementArtifactId = result?.Product?.ArtifactId,
+                        measurementIdentity = result?.Product?.OutputIdentitySha256,
+                        hfdContributors = read?.Measurement?.Hfd.ValidCount
+                    });
                 }
-                await runner.WaitAsync(token).ConfigureAwait(false);
-                var drained = (await lanes.ReadBacklogsAsync(token).ConfigureAwait(false)).Single(item => item.Lane == "standard");
-                Assert.AreEqual(0L, drained.ActiveWork?.Count ?? 0);
                 TestContext.WriteLine(JsonSerializer.Serialize(new
                 {
-                    arm = overlap ? "overlap-step4-paused" : "acquisition-first",
+                    arm = overlap ? "overlap-step4-paused" : measurementEnabled ? "acquisition-first" : "acquisition-first-measurement-off",
                     format = "Mono16",
                     size,
                     frameCount,
-                    work = "centered normalization plus mandatory measurement, no catalog",
-                    commitMs = notifications.CommitMilliseconds,
+                    measurementEnabled,
+                    commitMs,
+                    commitSinceRunnerStartMs = notifications.CommitMilliseconds,
                     laneMs = processingMs,
-                    cpuMs = (process.TotalProcessorTime - cpu).TotalMilliseconds,
-                    allocatedBytes = GC.GetTotalAllocatedBytes(true) - allocated,
+                    cpuMs,
+                    allocatedBytes,
+                    processIo,
                     maxObservedRss,
                     maxBacklog,
                     maxBacklogBytes,
@@ -216,7 +264,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                     pendingAfterDrain = drained.ActiveWork?.Count ?? 0,
                     durableCaptures
                 }));
-
+                return inputChecksums.ToArray();
             }
             finally
             {
@@ -232,6 +280,11 @@ public sealed partial class VirtualSkyCameraModuleTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    private static Dictionary<string, long> ReadTraceIo() => OperatingSystem.IsLinux()
+        ? File.ReadLines("/proc/self/io").Select(static line => line.Split(':', 2))
+            .ToDictionary(parts => parts[0], parts => long.Parse(parts[1], CultureInfo.InvariantCulture), StringComparer.Ordinal)
+        : new(StringComparer.Ordinal);
 
     private sealed class MeasurementTraceNotifications(int count, CancellationTokenSource stop, MeasurementTracePause? pause) : ICaptureDistributor
     {

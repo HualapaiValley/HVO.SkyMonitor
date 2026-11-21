@@ -77,12 +77,29 @@ internal sealed class CaptureExposureMeasurementReader(
             return measurement.Input.Raw.ArtifactId == run.PrimaryArtifactId
                 ? new(measurement, null, expiry) : new(null, "measurement-binding-mismatch");
         }
-        catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or RawIngressConflictException
-            or System.Text.Json.JsonException)
+        catch (Exception exception) when (IsUnreadable(exception))
         {
+            if (item is { AvailabilityState: "Available" })
+            {
+                // Retention can remove the payload and output row after the execution snapshot was read.
+                // Only the settlement for this exact output can distinguish that race from damage.
+                try
+                {
+                    var slot = await store.ReadLiveMeasurementSlotAsync(run, cancellationToken, item.OutputIdentitySha256).ConfigureAwait(false);
+                    if (slot is { Availability: ExposureProductAvailability.Expired, Reason: "retention-expired" })
+                        return Unavailable(slot);
+                }
+                catch (Exception recheckFailure) when (IsUnreadable(recheckFailure))
+                {
+                    // The journal could not establish expiry. Preserve the unreadable result.
+                }
+            }
             return new(null, "measurement-unreadable");
         }
     }
+
+    private static bool IsUnreadable(Exception exception) => exception is InvalidDataException or IOException or
+        UnauthorizedAccessException or ArgumentException or RawIngressConflictException or System.Text.Json.JsonException;
 
     private static ExposureMeasurementRunRead Unavailable(ExposureProductLookup slot) => slot.Availability switch
     {
@@ -130,7 +147,7 @@ internal sealed class CaptureExposureMeasurementReader(
 internal sealed partial class SqliteCaptureProcessingStore
 {
     internal async ValueTask<ExposureProductLookup?> ReadLiveMeasurementSlotAsync(
-        ProcessingGraphExecutionState execution, CancellationToken cancellationToken)
+        ProcessingGraphExecutionState execution, CancellationToken cancellationToken, string? outputIdentity = null)
     {
         if (execution.ExecutionClass != ProcessingGraphExecutionClass.Live ||
             execution.ExecutionId != ProcessingGraphOperationsCoordinator.GetLiveExecutionId(execution.CaptureId, execution.GraphRevisionId))
@@ -147,7 +164,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                AND owning_execution.capture_id = $capture AND owning_execution.primary_artifact_id = $raw
                AND owning_execution.graph_revision_id = $graph AND owning_execution.execution_class = 'Live'
                AND owning_execution.trigger_kind = 'capture' AND owning_execution.allow_automatic_publication = 1
-               AND product.producer = $producer AND product.schema_version = $schema AND product.variant = $variant;
+               AND product.producer = $producer AND product.schema_version = $schema AND product.variant = $variant
+               AND ($output IS NULL OR product.output_identity = $output);
             """;
         command.Parameters.AddWithValue("$capture", execution.CaptureId.ToString("N"));
         command.Parameters.AddWithValue("$execution", execution.ExecutionId.ToString("N"));
@@ -156,6 +174,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$producer", ExposureMeasurementProducts.StepAlias);
         command.Parameters.AddWithValue("$schema", ExposureMeasurementProducts.SchemaVersion);
         command.Parameters.AddWithValue("$variant", ExposureMeasurementProducts.Variant);
+        command.Parameters.AddWithValue("$output", (object?)outputIdentity ?? DBNull.Value);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadCenteredLookup(reader, out _) : null;
     }
