@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Opt-in VirtualSky profiles can render a checksum-pinned orbital pass through ordinary Mono16 or Bayer RGGB16 acquisition, with synthetic brightness controls and separate predicted and measured trail evidence. #1927
+
 - CameraAgent Current Sky shows the latest accepted retained measured pointing, rotation, local pixel scale and capture time, with previous-capture results kept separate from selected-image diagnostics. Virtual Sky can measure astrometry alongside its existing scene overlays. #1901
 
 - CameraAgent owners can configure a pinned measured-astrometry reference depth with `hvo-sky astrometry configure` and set the independent `virtualSky.rendererCandidateCap` renderer limit. New VirtualSky astrometry presets default to magnitude 3.25. #1901

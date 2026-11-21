@@ -149,6 +149,9 @@ public sealed record VirtualTransientScenarioDefinition
     public int TemporalSampleCount { get; init; } = 16;
     public IReadOnlyList<VirtualTransientSkyTrack> SkyTracks { get; init; } = Array.Empty<VirtualTransientSkyTrack>();
     public IReadOnlyList<VirtualTransientSensorTrack> SensorTracks { get; init; } = Array.Empty<VirtualTransientSensorTrack>();
+    /// <summary>Identifies a frozen source package when these rendering parameters were prepared from one.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SourcePackageSha256 { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public VirtualTransientRecurrenceDefinition? Recurrence { get; init; }
 
@@ -159,6 +162,7 @@ public sealed record VirtualTransientScenarioDefinition
             string.IsNullOrWhiteSpace(ScenarioId) || ScenarioId.Length > 128 || ScenarioId != ScenarioId.Trim() ||
             string.IsNullOrWhiteSpace(ScenarioVersion) || ScenarioVersion.Length > 64 ||
             !ScenarioVersion.All(static character => character is >= '0' and <= '9') ||
+            SourcePackageSha256 is not null && !OrbitalContract.IsSha256(SourcePackageSha256) ||
             EpochUtc == default || EpochUtc.Offset != TimeSpan.Zero ||
             TemporalSampleCount is < 1 or > 64 || SkyTracks is null || SensorTracks is null ||
             SkyTracks.Count > 64 || SensorTracks.Count > MaximumPrimitiveCount ||
