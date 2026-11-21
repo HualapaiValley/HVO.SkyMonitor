@@ -174,7 +174,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             var receipt = Receipt(
                 sourceId, trigger, acquisitionBudgetMilliseconds.HasValue ? EnvironmentalAcquisitionDisposition.TimedOut : EnvironmentalAcquisitionDisposition.Coalesced,
                 acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started)
-                with { HeldLocationPollUtc = heldLocationPollUtc };
+                with
+            { HeldLocationPollUtc = heldLocationPollUtc };
             LogReceipt(source.Descriptor, receipt);
             await RecordAttemptAsync(source.Descriptor, receipt, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
