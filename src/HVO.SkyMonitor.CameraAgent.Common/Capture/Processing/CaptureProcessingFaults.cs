@@ -6,6 +6,7 @@ internal enum CaptureProcessingFaultPoint
     BeforeSchemaCommit,
     BeforeNodeExecution,
     AfterOutputsPublishedBeforeNodeCommit,
+    BeforeCenteredWindowCloseCommit,
     AfterAstrometrySeedRowMaterialized,
     BeforeAstrometrySeedPublished,
     AfterAstrometryAssessmentLookup,

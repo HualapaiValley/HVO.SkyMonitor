@@ -715,7 +715,8 @@ public sealed partial class CameraAgentArtifactServiceTests
             return new ArtifactFixture(root, journal, processingStore, service, new SqliteCameraAgentGallery(options, processingStore));
         }
 
-        internal async Task<StoredArtifact> AddRawAsync(byte[]? payload = null, int width = 2, int height = 2)
+        internal async Task<StoredArtifact> AddRawAsync(byte[]? payload = null, int width = 2, int height = 2,
+            FrameLayoutDescriptor? retainedLayout = null)
         {
             payload ??= [1, 0, 2, 0, 3, 0, 4, 0];
             var captureId = Guid.NewGuid();
@@ -723,9 +724,10 @@ public sealed partial class CameraAgentArtifactServiceTests
             var identity = await _journal.ReserveIdentityAsync(
                 "artifact-reader", captureId, artifactId, CancellationToken.None).ConfigureAwait(false);
             var template = ReconstructableCaptureContractTests.CreateManifest(
-                CameraPixelFormat.Mono16, width, height, width * 2, payload);
+                retainedLayout?.PixelFormat ?? CameraPixelFormat.Mono16, width, height, width * 2, payload);
             var descriptor = template.Descriptor with
             {
+                Layout = retainedLayout ?? template.Descriptor.Layout,
                 Capture = template.Descriptor.Capture with
                 {
                     AgentId = identity.AgentId,
@@ -735,7 +737,8 @@ public sealed partial class CameraAgentArtifactServiceTests
                 Artifact = template.Descriptor.Artifact with
                 {
                     ArtifactId = identity.ArtifactId,
-                    MediaType = "application/x-skymonitor-mono16",
+                    MediaType = retainedLayout?.PixelFormat == CameraPixelFormat.BayerRggb16
+                        ? "application/x-skymonitor-bayer-rggb16" : "application/x-skymonitor-mono16",
                     ChecksumSha256 = PayloadChecksum.ComputeSha256(payload)
                 }
             };

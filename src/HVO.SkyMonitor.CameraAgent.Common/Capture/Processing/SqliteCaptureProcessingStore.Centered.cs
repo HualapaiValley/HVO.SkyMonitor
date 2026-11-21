@@ -1,5 +1,6 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
@@ -128,16 +129,50 @@ internal sealed partial class SqliteCaptureProcessingStore
             WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
               AND execution.trigger_kind = 'capture' AND execution.allow_automatic_publication = 1
               AND (run.linear_node_id IS NULL OR execution.status IN ('Completed','Expired','Failed','Cancelled'))
-            ON CONFLICT(capture_id, execution_id, producer, schema_version, variant) DO NOTHING;
+            ON CONFLICT(capture_id, execution_id, producer, schema_version, variant) DO NOTHING
+            RETURNING revision;
             """;
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         command.Parameters.AddWithValue("$schema", CenteredExposureProductReader.LinearSchemaVersion);
         command.Parameters.AddWithValue("$no_step", NoLinearStepProducer);
         command.Parameters.AddWithValue("$no_variant", NoLinearStepVariant);
-        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 0;
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not long revision) return false;
+        await TrackCenteredProductClockAsync(command, revision, cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
-    private static async Task<bool> PublishCenteredProductAsync(
+    private static async ValueTask<List<long>?> PublishCenteredProductsAsync(SqliteConnection connection,
+        SqliteTransaction transaction, ProcessingExecutionContext execution, IReadOnlyList<CenteredProductSettlement>? settlements,
+        CancellationToken token)
+    {
+        if (execution is not { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } || settlements is null)
+            return null;
+
+        List<long>? revisions = null;
+        foreach (var settlement in settlements)
+        {
+            if (await PublishCenteredProductAsync(connection, transaction, execution.ExecutionId, settlement, token).ConfigureAwait(false) is { } revision)
+                (revisions ??= []).Add(revision);
+        }
+        return revisions;
+    }
+
+    private async ValueTask ObserveCommittedCenteredProductsAsync(SqliteConnection connection, List<long> revisions)
+    {
+        _centeredProductChanges?.NotifyCommitted();
+        try
+        {
+            // A stalled node commit cannot backdate product availability.
+            await ObserveCenteredProductsAsync(connection, revisions).ConfigureAwait(false);
+        }
+        catch (SqliteException)
+        {
+            // The coordinator recovers any missing observation at recovery time.
+        }
+        _centeredWindowWakeup?.NotifyCommitted();
+    }
+
+    private static async Task<long?> PublishCenteredProductAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         Guid executionId,
@@ -157,7 +192,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             {{CenteredLinearNodeJoin}}
             WHERE attempt.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
               AND ($schema <> $linear_schema OR (node.node_id = $producer AND run.linear_variant = $variant))
-            ON CONFLICT(capture_id, execution_id, producer, schema_version, variant) DO NOTHING;
+            ON CONFLICT(capture_id, execution_id, producer, schema_version, variant) DO NOTHING
+            RETURNING revision;
             """;
         SqliteRawCaptureJournal.AddExposureParameters(command, settlement.Exposure);
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
@@ -173,19 +209,109 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$reason", (object?)settlement.Reason ?? DBNull.Value);
         command.Parameters.AddWithValue("$provenance",
             settlement.Linear is null ? DBNull.Value : JsonSerializer.SerializeToUtf8Bytes(settlement.Linear));
-        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) == 1) return true;
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long revision)
+        {
+            await TrackCenteredProductClockAsync(command, revision, cancellationToken).ConfigureAwait(false);
+            return revision;
+        }
 
         command.CommandText = """
-            SELECT COUNT(*) FROM centered_exposure_products
+            SELECT provenance_json FROM centered_exposure_products
             WHERE capture_id = $capture AND execution_id = $execution AND producer = $producer AND schema_version = $schema
               AND variant = $variant AND output_identity IS $output AND artifact_id IS $artifact
               AND payload_sha256 IS $payload AND content_identity_sha256 IS $content AND disposition = $disposition
               AND agent_id = $agent AND camera_id = $camera
-              AND reason IS $reason AND provenance_json IS $provenance;
+              AND reason IS $reason AND (provenance_json IS $provenance OR $scene = 1);
             """;
-        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not 1L)
+        var isScene = ProjectedSceneV1.IsSupportedSchemaVersion(settlement.SchemaVersion);
+        command.Parameters.AddWithValue("$scene", isScene ? 1 : 0);
+        var committedProvenance = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        if (committedProvenance is null)
             throw new InvalidDataException("The centered product conflicts with an already settled capture output.");
-        return false;
+        if (isScene && committedProvenance is byte[] historical)
+        {
+            if (settlement.ArtifactId is not { } artifactId || settlement.OutputIdentity is not { } outputIdentity ||
+                settlement.PayloadSha256 is not { } payload)
+                throw new InvalidDataException("The regenerated centered scene has an incomplete product identity.");
+            var reference = new ExposureProductRef(settlement.Exposure,
+                new(executionId, settlement.Producer, settlement.SchemaVersion, settlement.Variant),
+                artifactId, outputIdentity, payload, settlement.ContentIdentitySha256);
+            var restored = await ReadCenteredProductHeaderAsync(transaction, reference, cancellationToken).ConfigureAwait(false);
+            var saved = ReadHistoricalCenteredSceneHeader(historical, reference);
+            if (CenteredStackArtifactPin.FromHeader(restored, payload) != CenteredStackArtifactPin.FromHeader(saved, payload))
+                throw new InvalidDataException("The regenerated centered scene differs from its original header.");
+        }
+        return null;
+    }
+
+    private static Task<int> TrackCenteredProductClockAsync(SqliteCommand command, long revision, CancellationToken cancellationToken)
+    {
+        command.CommandText = "INSERT INTO processing_centered_product_clock(revision) VALUES ($revision);";
+        command.Parameters.AddWithValue("$revision", revision);
+        return command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private async Task ObserveCenteredProductsAsync(SqliteConnection connection, IReadOnlyList<long> revisions)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE processing_centered_product_clock SET settled_ticks = $observed
+            WHERE settled_ticks IS NULL AND revision IN (SELECT value FROM json_each($revisions));
+            """;
+        command.Parameters.AddWithValue("$revisions", JsonSerializer.Serialize(revisions));
+        command.Parameters.AddWithValue("$observed", _timeProvider.GetUtcNow().UtcTicks);
+        await command.ExecuteNonQueryAsync(CancellationToken.None).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<bool> RecoverUnobservedCenteredEvidenceAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // An immediate transaction establishes the observation snapshot before sampling its clock.
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE processing_centered_attempt_calendar
+            SET dispatched_ticks = CASE WHEN dispatched_ticks = $unobserved THEN MIN($observed, COALESCE(admitted_ticks, $observed))
+                                        ELSE dispatched_ticks END,
+                expired_ticks = CASE WHEN expired_ticks = $unobserved THEN $observed ELSE expired_ticks END
+            WHERE attempt_id IN (
+                SELECT DISTINCT calendar.attempt_id
+                FROM processing_centered_windows window
+                JOIN processing_centered_attempt_calendar center ON center.attempt_id = REPLACE(CASE WHEN json_valid(window.checkpoint_json)
+                    THEN json_extract(window.checkpoint_json, '$.referenceAttempt.attemptId') END, '-', '')
+                JOIN processing_centered_attempt_calendar calendar ON calendar.run_id = center.run_id
+                    AND calendar.slot BETWEEN center.slot - 2 AND center.slot + 2
+                WHERE window.terminal = 0 AND window.closure_json IS NULL
+                    AND (calendar.dispatched_ticks = $unobserved OR calendar.expired_ticks = $unobserved)
+                LIMIT 128);
+            UPDATE processing_centered_attempt_calendar SET admitted_ticks = $observed
+            WHERE attempt_id IN (
+                SELECT DISTINCT calendar.attempt_id
+                FROM processing_centered_windows window
+                JOIN processing_centered_window_holds owner ON owner.window_sha256 = window.window_sha256
+                JOIN centered_exposure_holds hold ON hold.owner_id = owner.owner_id
+                JOIN centered_exposure_attempts attempt ON attempt.capture_id = hold.capture_id
+                JOIN raw_captures raw ON raw.capture_id = hold.capture_id AND raw.state = 'committed'
+                JOIN processing_centered_attempt_calendar calendar ON calendar.attempt_id = attempt.attempt_id
+                WHERE window.terminal = 0 AND window.closure_json IS NULL AND calendar.admitted_ticks IS NULL
+                LIMIT 128);
+            UPDATE processing_centered_product_clock SET settled_ticks = $observed
+            WHERE settled_ticks IS NULL AND revision IN (
+                SELECT revision FROM processing_centered_product_clock WHERE settled_ticks IS NULL
+                ORDER BY revision LIMIT 128);
+            UPDATE processing_centered_output_availability SET observed_ticks = MAX(recorded_ticks, $observed)
+            WHERE observed_ticks IS NULL AND change_id IN (
+                SELECT change_id FROM processing_centered_output_availability WHERE observed_ticks IS NULL
+                ORDER BY change_id LIMIT 128);
+            """;
+        command.Parameters.AddWithValue("$observed", _timeProvider.GetUtcNow().UtcTicks);
+        command.Parameters.AddWithValue("$unobserved", CenteredWindowRuntimeJournal.UnobservedCalendarTicks);
+        var observed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return observed;
     }
 
     internal async Task<ExposureProductLookup?> ReadCenteredProductAsync(
@@ -324,11 +450,18 @@ internal sealed partial class SqliteCaptureProcessingStore
             Guid.ParseExact(reader.GetString(2), "N"), Guid.ParseExact(reader.GetString(1), "N"));
         var slot = new ExposureProductSlot(Guid.ParseExact(reader.GetString(5), "N"),
             reader.GetString(6), reader.GetString(7), reader.GetString(8));
-        var availability = Enum.Parse<ExposureProductAvailability>(reader.GetString(10));
+        if (!Enum.TryParse<ExposureProductAvailability>(reader.GetString(10), out var availability) || !Enum.IsDefined(availability))
+            throw new InvalidDataException("The centered product has an invalid durable disposition.");
         var reason = reader.IsDBNull(11) ? null : reader.GetString(11);
         provenance = null;
         ExposureProductRef? output = null;
-        if (availability is ExposureProductAvailability.Available or ExposureProductAvailability.Expired && !reader.IsDBNull(13))
+        var hasArtifact = !reader.IsDBNull(13);
+        if ((availability == ExposureProductAvailability.Available ||
+             availability == ExposureProductAvailability.Expired && hasArtifact) &&
+            (reader.IsDBNull(9) || !hasArtifact || reader.IsDBNull(14)))
+            return new(exposure, slot, ExposureProductAvailability.MissingEvidence, reader.GetInt64(0), null,
+                "product.settlement-identity-missing");
+        if (availability is ExposureProductAvailability.Available or ExposureProductAvailability.Expired && hasArtifact)
             output = new(exposure, slot, Guid.ParseExact(reader.GetString(13), "N"), reader.GetString(9),
                 reader.GetString(14), reader.IsDBNull(15) ? null : reader.GetString(15));
         if (availability == ExposureProductAvailability.Available)
@@ -381,7 +514,11 @@ internal sealed partial class SqliteCaptureProcessingStore
         {
             return null;
         }
-        if (saved is not { Disposition: LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly } ||
+        if (saved is not
+            {
+                Disposition: LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly,
+                Recipe.Descriptor: not null, RawWhiteThreshold: not null, LinearWhiteThreshold: not null
+            } || saved.CalibrationArtifactIds.IsDefault ||
             saved.RawArtifactId.ToString("N") != reader.GetString(18) ||
             saved.RawDescriptorSha256 != reader.GetString(19) || saved.RawPayloadSha256 != reader.GetString(20) ||
             saved.OutputIdentitySha256 != reader.GetString(9) || saved.LinearPayloadSha256 != reader.GetString(14) ||

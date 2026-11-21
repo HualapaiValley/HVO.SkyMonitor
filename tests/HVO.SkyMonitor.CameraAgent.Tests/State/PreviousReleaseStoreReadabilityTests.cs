@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.State;
@@ -88,7 +89,9 @@ public sealed class PreviousReleaseStoreReadabilityTests
     [TestMethod]
     [DataRow("raw/journal/raw-ingress.db", "ALTER TABLE processing_nodes ADD COLUMN added_by_next_release TEXT;")]
     [DataRow("raw/journal/raw-ingress.db", "CREATE TABLE added_by_next_release(id INTEGER PRIMARY KEY);")]
+    [DataRow("raw/journal/raw-ingress.db", "CREATE INDEX ix_processing_centered_view_unknown ON processing_centered_view_bases(base_id);")]
     [DataRow("raw/journal/raw-ingress.db", "PRAGMA user_version = 99;")]
+    [DataRow("raw/journal/raw-ingress.db", "PRAGMA ignore_check_constraints = ON; UPDATE capture_processing_schema SET version = 99;")]
     [DataRow("raw/.fleet/fleet-status.db", "ALTER TABLE fleet_status_records ADD COLUMN added_by_next_release TEXT;")]
     [DataRow("archive/outbox/artifact-outbox.db", "CREATE INDEX ix_added_by_next_release ON artifact_outbox_records(record_id);")]
     [DataRow("identity/cameraagent_identity.db", "ALTER TABLE AspNetUsers ADD COLUMN added_by_next_release TEXT;")]
@@ -136,7 +139,8 @@ public sealed class PreviousReleaseStoreReadabilityTests
             foreach (var difference in CameraAgentStateStoreHarness.Differences(
                          CameraAgentStateStoreHarness.ReadSchema(expected.Path), actual))
             {
-                if (!previous.IsDeclaredException(location, difference, actual.GetValueOrDefault(difference))) unreadable.Add($"{location} {difference}");
+                if (!previous.IsDeclaredException(location, difference, actual.GetValueOrDefault(difference),
+                    actual.GetValueOrDefault("version:capture_processing_schema.version"))) unreadable.Add($"{location} {difference}");
             }
         }
         return unreadable;
@@ -160,11 +164,14 @@ public sealed class PreviousReleaseStoreReadabilityTests
         private static readonly JsonSerializerOptions WriteOptions = new() { WriteIndented = true };
         private readonly string directory;
         private readonly Dictionary<string, string> dumps;
-        private readonly List<(string Location, HashSet<string> Objects, string Label, string? CandidateValue)> exceptions;
+        private readonly List<RollbackException> exceptions;
+
+        private sealed record RollbackException(string Location, HashSet<string> Objects, string Label, string? CandidateValue,
+            int? ProcessingSchemaVersion);
 
         private PreviousRelease(
             string directory, IReadOnlyList<string> storageRoots, Dictionary<string, string> dumps,
-            List<(string, HashSet<string>, string, string?)> exceptions)
+            List<RollbackException> exceptions)
         {
             this.directory = directory;
             StorageRoots = storageRoots;
@@ -178,8 +185,10 @@ public sealed class PreviousReleaseStoreReadabilityTests
 
         public string Dump(string location) => File.ReadAllText(Path.Combine(directory, dumps[location]));
 
-        public bool IsDeclaredException(string location, string objectKey, string? actualValue)
+        public bool IsDeclaredException(string location, string objectKey, string? actualValue, string? processingSchemaVersion)
             => exceptions.Any(exception => exception.Location == location && exception.Objects.Contains(objectKey) &&
+                (exception.ProcessingSchemaVersion is null ||
+                    exception.ProcessingSchemaVersion.Value.ToString(CultureInfo.InvariantCulture) == processingSchemaVersion) &&
                 // The numeric raw schema exception authorizes exactly its declared version, not arbitrary later versions.
                 // Existing revision-bound exceptions retain their separately declared object scope.
                 (objectKey != "pragma:user_version" || exception.Label != "io.hvo.skymonitor.raw-ingress-schema" ||
@@ -198,7 +207,7 @@ public sealed class PreviousReleaseStoreReadabilityTests
             var previousLabels = root.GetProperty("imageLabels").EnumerateObject()
                 .ToDictionary(static label => label.Name, static label => label.Value.GetString()!, StringComparer.Ordinal);
             var currentLabels = HVO.SkyMonitor.CameraAgent.Tests.Deployment.CameraAgentStateCompatibilityLabelTests.ReadImageLabels();
-            var exceptions = new List<(string, HashSet<string>, string, string?)>();
+            var exceptions = new List<RollbackException>();
             foreach (var exception in root.GetProperty("snapshotRollbackExceptions").EnumerateArray())
             {
                 var location = exception.GetProperty("location").GetString()!;
@@ -215,9 +224,13 @@ public sealed class PreviousReleaseStoreReadabilityTests
                     $"Exception for '{location}' names a previous '{label}' the frozen release does not declare.");
                 Assert.AreEqual(currentLabels.GetValueOrDefault(label), candidateValue,
                     $"Exception for '{location}' names a '{label}' this release's Dockerfile does not declare.");
-                exceptions.Add((location,
+                var processingVersion = exception.TryGetProperty("candidateProcessingSchemaVersion", out var schema)
+                    ? (int?)schema.GetInt32() : null;
+                if (processingVersion is not null)
+                    Assert.AreEqual("raw/journal/raw-ingress.db", location);
+                exceptions.Add(new(location,
                     exception.GetProperty("objects").EnumerateArray().Select(static item => item.GetString()!).ToHashSet(StringComparer.Ordinal),
-                    label, candidateValue));
+                    label, candidateValue, processingVersion));
             }
             return new PreviousRelease(
                 directory,
