@@ -304,7 +304,7 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     /// </summary>
     private string? ToggleUnavailableReason()
     {
-        if (SelectedNode is { } node && ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias))
+        if (SelectedNode is { Alias: var selectedAlias } && ExposureMeasurementProducts.IsSystemManagedStepAlias(selectedAlias))
             return CameraAgentPipelineOperatorProjection.SystemManagedStepReason;
         if (_pipeline is null)
         {
