@@ -103,8 +103,8 @@ delivered-coordinate grid and coverage checks at 120 s spacing.
 
 The 20 s, 60 s spacing controls exercise a partially registered Mono16
 window and a Bayer single-exposure fallback. Those controls cover rejection
-and held-out geometry where a verified map is available. The positive
-sharpness and aperture-code comparisons use isolated apertures that have
+and independently computed geometry where a verified map is available. The
+positive sharpness and aperture-code comparisons use isolated apertures that have
 all contributors and at least 3 px between the first and last predicted
 placements. A positive 20 s native Bayer stack, 60 s stacked exposures and
 physical-camera accuracy are outside the measured envelope. Aperture-code
