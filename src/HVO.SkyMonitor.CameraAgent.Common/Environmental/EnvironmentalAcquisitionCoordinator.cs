@@ -154,7 +154,9 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             if (!sourceGate.Wait(0, CancellationToken.None))
             {
                 if (joinBusy) joined = _active[sourceId].Task;
-                else if (trigger != EnvironmentalAcquisitionTrigger.OnDemand && !acquisitionBudgetMilliseconds.HasValue)
+                // A held slot is settled by the scheduler, even when its disposition is Coalesced.
+                else if (heldLocationPollUtc is null && trigger != EnvironmentalAcquisitionTrigger.OnDemand &&
+                    !acquisitionBudgetMilliseconds.HasValue)
                 {
                     _pending[sourceId] ??= new PendingAcquisition(
                         trigger, observedAtUtc, captureSequence, captureId);

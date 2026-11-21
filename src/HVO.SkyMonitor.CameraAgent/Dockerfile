@@ -147,10 +147,11 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # Its change makes existing installers checkpoint the paired databases before store conversion;
 # rollback restores that checkpoint rather than handing converted stores to older readers.
 # The boundary includes the processing manifest ledger (Refs #1766), the schema-10
-# retained-astrometry index (Refs #1901), and the schema-5 held environmental poll
-# journal (Refs #1938). The beta reader advanced from either single-reader image at raw schema 16.
-# This private source carries the beta marker and the raw schema 17 migration metadata for contract
-# checks. It is source-only. The installable centered reader gets a distinct marker under #1922.
+# retained-astrometry index (Refs #1901), and the corrected schema-5 environmental poll
+# settlement reader (Refs #1938). The source-only centered foundation keeps that combined
+# reader minimum and declares raw schema 17 separately. Both the minimum change and the
+# raw schema conversion can select the paired checkpoint. The installable centered reader
+# has a distinct marker under #1922.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -165,7 +166,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="33903f07a1dd86166fc17197df981b32d45013a1" \
+      io.hvo.skymonitor.minimum-compatible-revision="e7b9af4b98d1521c3939ef5925608a3663c63302" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="17" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \
