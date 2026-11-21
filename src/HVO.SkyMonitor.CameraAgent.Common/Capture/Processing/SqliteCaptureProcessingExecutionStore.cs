@@ -874,7 +874,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         TimeSpan? duration,
         ProcessingOutcomeStatus? outcome,
         ProcessingNodeExecutionRoute executionRoute,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<CenteredProductSettlement>? centeredProducts = null)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -896,7 +897,22 @@ internal sealed partial class SqliteCaptureProcessingStore
             [],
             executionRoute,
             cancellationToken).ConfigureAwait(false);
+        var centeredRevisions = await PublishCenteredProductsAsync(connection, transaction, execution,
+            centeredProducts, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (centeredRevisions is { Count: > 0 })
+            await ObserveCommittedCenteredProductsAsync(connection, centeredRevisions).ConfigureAwait(false);
+        else
+            NotifyCenteredOutputlessMeasurement(execution, node, status);
+    }
+
+    private void NotifyCenteredOutputlessMeasurement(ProcessingExecutionContext? execution,
+        CaptureProcessingGraphNode node, DurableProcessingNodeStatus status)
+    {
+        if (execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
+            node.Id == ExposureMeasurementProducts.StepAlias &&
+            status is DurableProcessingNodeStatus.Skipped or DurableProcessingNodeStatus.TerminalFailure)
+            _centeredWindowWakeup?.NotifyCommitted();
     }
 
     private async ValueTask CompleteExecutionNodeCoreAsync(

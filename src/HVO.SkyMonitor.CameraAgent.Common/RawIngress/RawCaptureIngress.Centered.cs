@@ -62,6 +62,25 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             current ? null : "runtime.live-buffer-unobserved");
     }
 
+    internal async Task WaitForCenteredWindowEvidenceAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                if (await InitializeCoreAsync(allowEvidenceUnavailable: true, cancellationToken).ConfigureAwait(false))
+                    return;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                // Ingress already reports the failure. Keep the host available
+                // for Operations and wait for the ordinary recovery path.
+            }
+            await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, cancellationToken).ConfigureAwait(false);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
     internal async Task ReconcileCenteredControlAsync(
         CameraModuleConfig configuration, CancellationToken cancellationToken, CameraKey? previousCamera = null)
     {
@@ -198,8 +217,11 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         CaptureMeteringEvidence? evidence,
         string reason,
         CancellationToken cancellationToken,
+        DateTimeOffset? requestedStart = null,
+        TimeSpan requestedInterval = default,
         CenteredOwnerTransition? owner = null)
-        => _journal.DispatchCenteredAttemptAsync(attempt, settings, evidence, reason, owner, cancellationToken);
+        => _journal.DispatchCenteredAttemptAsync(attempt, settings, evidence, reason, owner, cancellationToken,
+            requestedStart, requestedInterval);
 
     internal Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
         => _journal.ExpireCenteredPendingAsync(attempt, cancellationToken);

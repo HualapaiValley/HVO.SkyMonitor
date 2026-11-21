@@ -82,8 +82,9 @@ internal sealed class CaptureHostContext(
 
     internal Task DispatchCenteredAsync(
         ExposureAttemptKey attempt, CaptureSetpoint setpoint, CaptureMeteringEvidence? metering, string reason,
-        CancellationToken cancellationToken)
-        => CenteredIngress.DispatchCenteredAsync(attempt, setpoint, metering, reason, cancellationToken, centeredOwner);
+        DateTimeOffset requestedStart, TimeSpan requestedInterval, CancellationToken cancellationToken)
+        => CenteredIngress.DispatchCenteredAsync(attempt, setpoint, metering, reason, cancellationToken,
+            requestedStart, requestedInterval, owner: centeredOwner);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Physical projected-scene analysis is optional; acquired raw pixels must reach ingress for any recoverable analysis/provider failure.")]
     public async ValueTask PublishAsync(CaptureLoopSubmission submission, CancellationToken cancellationToken)

@@ -56,6 +56,7 @@ public sealed partial class ProcessingGraphOperationsTests
             byte[] originalPayload;
             byte[] frozenPlan;
             byte[] frozenGraph;
+            long activeSchema;
             using (var provider = CreateProvider(root))
             {
                 id = await CompleteManifestPreviewAsync(provider).ConfigureAwait(false);
@@ -80,20 +81,22 @@ public sealed partial class ProcessingGraphOperationsTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var read = connection.CreateCommand();
-                read.CommandText = "SELECT frozen_plan_json, (SELECT definition_json FROM processing_graph_revisions WHERE revision_id = graph_revision_id) FROM processing_executions WHERE execution_id = $id;";
+                read.CommandText = "SELECT frozen_plan_json, (SELECT definition_json FROM processing_graph_revisions WHERE revision_id = graph_revision_id), (SELECT version FROM capture_processing_schema) FROM processing_executions WHERE execution_id = $id;";
                 read.Parameters.AddWithValue("$id", id.ToString("N"));
                 using (var reader = await read.ExecuteReaderAsync().ConfigureAwait(false))
                 {
                     Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
                     frozenPlan = (byte[])reader[0];
                     frozenGraph = (byte[])reader[1];
+                    activeSchema = reader.GetInt64(2);
+                    Assert.AreEqual(12L, activeSchema);
                 }
                 using var legacy = connection.CreateCommand();
                 legacy.CommandText = "DELETE FROM processing_execution_manifest_counts WHERE ledger_kind='Outputs' AND node_id<>'';";
                 await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
                 using var legacyReader = await read.ExecuteReaderAsync().ConfigureAwait(false);
                 Assert.IsTrue(await legacyReader.ReadAsync().ConfigureAwait(false));
-                frozenPlan = (byte[])legacyReader[0];
+                CollectionAssert.AreEqual(frozenPlan, (byte[])legacyReader[0]);
             }
             using (var restarted = CreateProvider(root))
             {
@@ -120,7 +123,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
                 CollectionAssert.AreEqual(frozenPlan, (byte[])reader[0]);
                 CollectionAssert.AreEqual(frozenGraph, (byte[])reader[1]);
-                Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, reader.GetInt64(2));
+                Assert.AreEqual(activeSchema, reader.GetInt64(2));
             }
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
