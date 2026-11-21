@@ -87,21 +87,20 @@ public sealed partial class ProcessingGraphOperationsTests
                 primary = await ReadFrozenExecutionJsonAsync(root, id).ConfigureAwait(false);
             }
             SqliteConnection.ClearAllPools();
-            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False"))
+            using (var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False;Foreign Keys=False"))
             {
                 await connection.OpenAsync().ConfigureAwait(false);
+                await PrepareHistoricalProcessingFixtureAsync(connection, SqliteCaptureProcessingStore.LegacySchema8SqlForTests, 8).ConfigureAwait(false);
                 using var legacy = connection.CreateCommand();
-                var marker = string.Join(";", SqliteCaptureProcessingStore.LegacySchema8SqlForTests.Split(';').Where(static statement =>
-                    statement.TrimStart().StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
-                    statement.TrimStart().StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)));
-                legacy.CommandText = "DROP TABLE processing_execution_manifest_counts; DROP TABLE capture_processing_schema;" + marker +
-                    "; UPDATE processing_executions SET frozen_plan_json=$plan WHERE execution_id=$execution;";
+                legacy.CommandText = "UPDATE processing_executions SET frozen_plan_json=$plan WHERE execution_id=$execution;";
                 legacy.Parameters.AddWithValue("$execution", id.ToString("N"));
                 legacy.Parameters.AddWithValue("$plan", System.Text.Encoding.UTF8.GetBytes(System.Text.Encoding.UTF8.GetString(primary)[..^1] +
                     ",\"frozenOutputInputCounts\":{\"preview\":0},\"committedOutputCounts\":{\"preview\":1}}"));
                 await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
 
-                // The current index makes this a hybrid. A schema-8 marker alone cannot authorize migration.
+                // A schema-8 marker alone cannot authorize migration of a hybrid layout.
+                legacy.CommandText = LegacyAstrometryJournalSchema.LookupIndexDefinition;
+                await legacy.ExecuteNonQueryAsync().ConfigureAwait(false);
                 using (var hybrid = CreateProvider(root))
                 {
                     var store = hybrid.GetRequiredService<SqliteCaptureProcessingStore>();
@@ -128,6 +127,53 @@ public sealed partial class ProcessingGraphOperationsTests
             }
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }
+    }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+        Justification = "The fixture reads the canonical test schema and quotes SQLite object identifiers before dropping them.")]
+    private static async Task PrepareHistoricalProcessingFixtureAsync(
+        SqliteConnection connection, string historicalSql, int version)
+    {
+        using var historical = new SqliteConnection("Data Source=:memory:");
+        await historical.OpenAsync().ConfigureAwait(false);
+        using (var install = historical.CreateCommand())
+        {
+            install.CommandText = historicalSql;
+            await install.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        var expected = await ReadProcessingFixtureSchemaAsync(historical).ConfigureAwait(false);
+        var current = await ReadProcessingFixtureSchemaAsync(connection).ConfigureAwait(false);
+        // Preserve real graph, execution, and output rows in tables with the historical definitions.
+        using var change = connection.CreateCommand();
+        foreach (var (name, definition) in current)
+        {
+            if (expected.ContainsKey(name) && name != "capture_processing_schema")
+                continue;
+            var quoted = name.Replace("\"", "\"\"", StringComparison.Ordinal);
+            change.CommandText = $"DROP {definition.Type} IF EXISTS \"{quoted}\";";
+            await change.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        change.CommandText = expected["capture_processing_schema"].Sql + "; INSERT INTO capture_processing_schema VALUES (1, $version);";
+        change.Parameters.AddWithValue("$version", version);
+        await change.ExecuteNonQueryAsync().ConfigureAwait(false);
+        var actual = await ReadProcessingFixtureSchemaAsync(connection).ConfigureAwait(false);
+        CollectionAssert.AreEqual(expected.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray(),
+            actual.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray());
+    }
+
+    private static async Task<Dictionary<string, (string Type, string Sql)>> ReadProcessingFixtureSchemaAsync(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT name, type, sql FROM sqlite_schema
+            WHERE sql IS NOT NULL AND (name = 'capture_processing_schema' OR name GLOB 'processing_*' OR name GLOB 'ix_processing_*')
+            ORDER BY type = 'table', name;
+            """;
+        using var reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
+        var objects = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+        while (await reader.ReadAsync().ConfigureAwait(false))
+            objects.Add(reader.GetString(0), (reader.GetString(1), reader.GetString(2)));
+        return objects;
     }
 
     [TestMethod]
