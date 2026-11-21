@@ -121,10 +121,10 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
 
         var options = ProcessingRecipeSupport.ParseOptions<ReferenceCalibrationOptions>(request.Options);
         var useStoredLightCodes = options.UseStoredLightCodes && NormalizeCompleteLayout(lightLayout) is
-            {
-                SampleDepthBits: 16, ContainerDepthBits: 16, StoredCodeTransform: FrameStoredCodeTransform.IdentityV1,
-                LevelCodeSpace: FrameLevelCodeSpace.StoredContainer, WhiteLevel: ushort.MaxValue
-            };
+        {
+            SampleDepthBits: 16, ContainerDepthBits: 16, StoredCodeTransform: FrameStoredCodeTransform.IdentityV1,
+            LevelCodeSpace: FrameLevelCodeSpace.StoredContainer, WhiteLevel: ushort.MaxValue
+        };
 
         var profileInput = request.AuxiliaryInputs?.SingleOrDefault(input =>
             string.Equals(input.Name, ProfileInput, StringComparison.OrdinalIgnoreCase));
