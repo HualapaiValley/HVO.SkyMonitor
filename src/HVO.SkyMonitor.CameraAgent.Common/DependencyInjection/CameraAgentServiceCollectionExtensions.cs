@@ -334,6 +334,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.TryAddSingleton<IExecutionEvidenceTransport>(NullExecutionEvidenceTransport.Instance);
         services.TryAddSingleton<IExecutionEvidenceOriginProvider, LocalExecutionEvidenceOriginProvider>();
         services.AddSingleton<IObservingDayCalendarProvider, DeploymentObservingDayCalendarProvider>();
+        services.AddSingleton<LocalArchiveReader>();
         services.AddSingleton<SqliteCameraAgentGallery>();
         services.AddSingleton<ICameraAgentGallery>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());
         services.AddSingleton<ICameraAgentArchive>(provider => provider.GetRequiredService<SqliteCameraAgentGallery>());

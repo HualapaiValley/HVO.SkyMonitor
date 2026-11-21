@@ -1,6 +1,7 @@
 extern alias InstallerRuntime;
 
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using Installer = InstallerRuntime::HVO.SkyMonitor.Deployment;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -32,6 +33,7 @@ using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
@@ -560,12 +562,17 @@ public sealed partial class RawCaptureIngressTests
             => ValueTask.CompletedTask;
     }
 
-    private sealed class CenteredRunnerModule(
+    internal sealed class CenteredRunnerModule(
         Func<ExposureAttemptKey, CaptureRequest, CancellationToken, Task<CaptureResult>> capture,
         string deviceIdentity = "centered-trace-device",
         Func<CaptureRequest, CancellationToken, Task<CaptureResult>>? captureLegacy = null)
         : ICameraModule, ICameraBoundExposureCapture
     {
+        public CenteredRunnerModule()
+            : this(static (_, _, _) => throw new AssertFailedException(
+                "The processing fixture supplies retained pixels and does not start a shutter."))
+        { }
+
         public string Id => "centered-trace";
         public string DisplayName => Id;
         public string ModuleType => Id;
@@ -1288,7 +1295,7 @@ public sealed partial class RawCaptureIngressTests
             };
             var config = profile with
             {
-                Module = StoragePolicyRawIngressIntegrationTests.Profile(root).Module,
+                Module = new CameraModuleDescriptor(nameof(CenteredRunnerModule)),
                 Pipeline = profile.Pipeline with
                 {
                     Steps =
@@ -1331,6 +1338,7 @@ public sealed partial class RawCaptureIngressTests
                 configureServices: services =>
                 {
                     services.AddSingleton<ICaptureProcessingFaultInjector>(fault);
+                    services.AddCameraModule<CenteredRunnerModule>(nameof(CenteredRunnerModule));
                     if (predecessor)
                     {
                         services.AddSingleton<IRawIngressFaultInjector>(new OneShotFaultInjector(RawIngressFaultPoint.SidecarDirectorySynced));
@@ -1539,11 +1547,21 @@ public sealed partial class RawCaptureIngressTests
                     Assert.AreEqual("processing.live-deadline", expired.FailureReason);
                     Assert.IsFalse(File.Exists(receiptPath));
                     Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    var pendingManifest = CaptureContractJson.ParseManifest(
+                        await File.ReadAllBytesAsync(Path.ChangeExtension(payload, ".json"), token).ConfigureAwait(false))
+                        .Document!.Manifest;
+                    Assert.IsNotNull(pendingManifest.Descriptor.CenteredAcquisition);
                     var oldExpired = await ReadLegacyArchiveReceiptAsync(stagePath, archive, token).ConfigureAwait(false);
                     await File.WriteAllTextAsync(receiptPath, oldExpired.ToJsonString(), token).ConfigureAwait(false);
                     Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
                     Assert.IsTrue(File.Exists(payload));
                     Assert.IsTrue(File.Exists(claimed.Context.RawCapture.StoredFrame.AbsolutePath));
+                    File.Delete(receiptPath);
+                    // Reopen the configured archive from an independent primary root so the
+                    // already acknowledged source product cannot satisfy the same artifact ID.
+                    await CameraAgentArchiveProfileCompatibilityTests.AssertArchiveRefusedAfterReopenAsync(
+                        detached, config, pendingManifest.Descriptor.Artifact.ArtifactId, FrameArtifactRole.Preview, token)
+                        .ConfigureAwait(false);
                     return;
                 }
                 fault.Publish.Set();

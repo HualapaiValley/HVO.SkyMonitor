@@ -1,5 +1,7 @@
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -43,7 +45,12 @@ public sealed partial class ProcessingGraphOperationsTests
                     }
                     return await original.ReadAsync(magnitude, count, cancellationToken).ConfigureAwait(false);
                 });
-            using var provider = CreateProvider(root, configureServices: services => services.AddSingleton(catalog.Object));
+            using var provider = CreateProvider(root, configureServices: services =>
+            {
+                services.AddSingleton(catalog.Object);
+                services.AddSingleton<ICelestialCatalog>(new InMemoryCelestialCatalog([]));
+                services.AddCameraModule<VirtualSkyCameraModule>("VirtualSky");
+            });
             var ordinary = StoragePolicyRawIngressIntegrationTests.Profile(root);
             var camera = await LoadAstrometryProfileAsync("Fixtures/installer-controlled-night.json").ConfigureAwait(false);
             var legacy = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, ordinary with
@@ -107,7 +114,11 @@ public sealed partial class ProcessingGraphOperationsTests
                 await readEntered.Task.WaitAsync(token).ConfigureAwait(false);
                 var schedule = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
                 var profile = LocalCaptureProfileDefinition.CreateV2(
-                    legacy with { CenteredExposure = new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) },
+                    legacy with
+                    {
+                        Module = new CameraModuleDescriptor("VirtualSky"),
+                        CenteredExposure = new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion)
+                    },
                     legacy.Schedule!);
                 var scheduleState = await schedule.GetOperatorStateAsync(token).ConfigureAwait(false);
                 var staged = await schedule.StageAsync(profile, "stage-centered", scheduleState.StateVersion, actor, reason, token)

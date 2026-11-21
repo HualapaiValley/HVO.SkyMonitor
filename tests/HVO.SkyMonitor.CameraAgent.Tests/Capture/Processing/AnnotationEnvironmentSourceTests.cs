@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -17,6 +18,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -182,7 +184,7 @@ public sealed class AnnotationEnvironmentSourceTests
         var setpoint = new CaptureSetpoint(TimeSpan.FromMilliseconds(50), 1, null, null);
         var config = legacy with
         {
-            Module = StoragePolicyRawIngressIntegrationTests.Profile(harness.Root).Module,
+            Module = new CameraModuleDescriptor(nameof(RawCaptureIngressTests.CenteredRunnerModule)),
             CenteredExposure = new("annotation", CenteredExposureProfile.CurrentExecutionVersion),
             DeploymentLocation = DeploymentLocationSnapshot.Create("annotation-site", 1, "fixture", null,
                 DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
@@ -710,6 +712,7 @@ public sealed class AnnotationEnvironmentSourceTests
             services.AddLogging();
             services.AddSingleton<IConfiguration>(configuration);
             services.AddCameraAgentInfrastructure(configuration);
+            services.AddCameraModule<RawCaptureIngressTests.CenteredRunnerModule>(nameof(RawCaptureIngressTests.CenteredRunnerModule));
             if (executor is not null)
                 services.AddSingleton(executor);
             if (clock is not null)

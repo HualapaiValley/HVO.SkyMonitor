@@ -11,6 +11,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -22,7 +23,8 @@ public sealed class FileCameraAgentConfigurationLoader(
     IDeploymentLocationStore? deploymentLocationStore = null,
     ICaptureAgentIdentityProvider? captureAgentIdentityProvider = null,
     IHostApplicationLifetime? hostLifetime = null,
-    TimeProvider? timeProvider = null) : ICameraAgentConfigurationLoader
+    TimeProvider? timeProvider = null,
+    ICameraModuleConfigurationValidator? moduleConfigurationValidator = null) : ICameraAgentConfigurationLoader
 {
     // Opt-in attribution only: no listener means no activities or measurement state.
     internal const string ActivitySourceName = "HVO.SkyMonitor.CameraAgent.Configuration";
@@ -256,6 +258,8 @@ public sealed class FileCameraAgentConfigurationLoader(
 
         ValidateCurrentFileContract(config);
         var validatedSchedule = ValidateConfigCore(config);
+        if (config.CenteredExposure is not null)
+            moduleConfigurationValidator?.Validate(config);
         if (_deploymentLocationStore is not null)
         {
             bool ConfigurationStillCurrent() => File.Exists(path) &&
@@ -299,6 +303,11 @@ public sealed class FileCameraAgentConfigurationLoader(
         {
             throw new InvalidOperationException(
                 $"Deployment location is invalid ({locationValidation.ReasonCode}, {locationValidation.FieldPath}).");
+        }
+
+        if (config.CenteredExposure is { } centered && !centered.IsValid())
+        {
+            throw new InvalidOperationException("Centered exposure requires a valid camera identity and supported execution version.");
         }
 
         var scheduleValidation = CaptureScheduleContract.Validate(config.Schedule);
