@@ -93,8 +93,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     private static bool MatchesLinear(ProcessingArtifact raw, ProcessingArtifact linear, ExposureMeasurementInputV1 input)
     {
-        if (linear is not { Role: FrameArtifactRole.Calibrated, MediaType: "application/x-hvo-linear-frame",
-                RecipeDescriptor: { } producer, SourceArtifactIds: { Count: > 0 } lineage } ||
+        if (linear is not
+            {
+                Role: FrameArtifactRole.Calibrated, MediaType: "application/x-hvo-linear-frame",
+                RecipeDescriptor: { } producer, SourceArtifactIds: { Count: > 0 } lineage
+            } ||
             lineage[0] != raw.ArtifactId || !Matches(linear, input.Linear!) ||
             !ExposureMeasurementProducts.Same(ProcessingIdentity.CreateRecipeIdentity(producer).IdentitySha256, linear.RecipeIdentitySha256) ||
             !ExposureMeasurementProducts.Same(ProcessingIdentity.CreateOutputIdentity(linear.Role, linear.Variant,
@@ -104,12 +107,20 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         return input.Calibration switch
         {
             ExposureCalibrationDisposition.NormalizationOnly =>
-                producer is { Name: BuiltInProcessingRecipes.LinearNormalization, SemanticVersion: "1.0.0",
-                    ImplementationVersion: "linear-normalization-none-v1" } &&
-                lineage.Count == 1 && linear.Layout == ProcessingRecipeSupport.CreatePackedLayout(input.Raw.Layout),
+                producer is
+                {
+                    Name: BuiltInProcessingRecipes.LinearNormalization, SemanticVersion: "1.0.0",
+                    ImplementationVersion: "linear-normalization-none-v1"
+                } &&
+                lineage.Count == 1 && linear.Layout == (input.Exposure is null
+                    ? ProcessingRecipeSupport.CreatePackedLayout(input.Raw.Layout)
+                    : CenteredNormalizationLayout.CreateExpectedPackedLayout(input.Raw.Layout)),
             ExposureCalibrationDisposition.ReferenceCalibrated =>
-                producer is { Name: BuiltInProcessingRecipes.ReferenceCalibration, SemanticVersion: "1.0.0",
-                    ImplementationVersion: "reference-calibration-linear16-v2" } &&
+                producer is
+                {
+                    Name: BuiltInProcessingRecipes.ReferenceCalibration, SemanticVersion: "1.0.0",
+                    ImplementationVersion: "reference-calibration-linear16-v2"
+                } &&
                 lineage.Count == 5 && linear.Layout == CalibrationMasterBuilder.CreateNormalizedLayout(input.Raw.Layout),
             _ => false
         };
@@ -215,8 +226,8 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         ReadOnlySpan<bool> valid, ReadOnlySpan<bool> clipped, FrameLayoutDescriptor layout, bool cfa,
         CancellationToken cancellationToken)
     {
-        if (stars.Status is ExposureMeasurementStatus.Unavailable || stars.Reason is "candidate-budget-exceeded" or "insufficient-background")
-            return new(ExposureMeasurementStatus.Unavailable, stars.Reason, null, null, null, 0, null, []);
+        if (FocusUnavailableReason(stars, layout) is { } unavailable)
+            return new(ExposureMeasurementStatus.Unavailable, unavailable, null, null, null, 0, null, []);
         if (stars.Detections.Count == 0)
             return new(stars.Status, stars.Reason, 0, null, null, 0, null, []);
 
@@ -231,6 +242,11 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         foreach (var detection in stars.Detections.Take(count))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (detection.Conditions.HasFlag(StellarSourceConditions.Saturated))
+            {
+                results.Add(new(detection.Index, FocusStarReasonCodes.Saturated, null));
+                continue;
+            }
             var x0 = (int)detection.Pixel.X - windowRadius;
             var y0 = (int)detection.Pixel.Y - windowRadius;
             if (detection.Conditions.HasFlag(StellarSourceConditions.Trailed))
@@ -275,12 +291,25 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             results.Add(new(detection.Index, FocusStarReasonCodes.Valid, focus.HalfFluxDiameterPixels.Value));
         }
 
-        var status = widths.Count > 0 ? ExposureMeasurementStatus.Usable : ExposureMeasurementStatus.Unsuitable;
         var omitted = stars.Detections.Count - count;
-        var reason = omitted > 0 ? "focus-budget-limited" : widths.Count == 0 ? "no-suitable-focus-samples" : null;
+        var (status, reason) = FocusDisposition(stars, widths.Count, omitted);
         return new(status, reason, widths.Count, widths.Count == 0 ? null : widths.Average(),
             ExposureMeasurementProducts.Median(widths), omitted, FocusSettings, results);
     }
+
+    internal static string? FocusUnavailableReason(ExposureSourcesV1 sources, FrameLayoutDescriptor? layout)
+    {
+        if (sources.Status == ExposureMeasurementStatus.Unavailable ||
+            sources is { Status: ExposureMeasurementStatus.Unsuitable, Reason: "candidate-budget-exceeded" or "insufficient-background" })
+            return sources.Reason;
+        return layout?.Readout is { } readout && readout.BinX != readout.BinY ? "anisotropic-readout" : null;
+    }
+
+    internal static (ExposureMeasurementStatus Status, string? Reason) FocusDisposition(
+        ExposureSourcesV1 sources, int valid, int omitted)
+        => sources.Detections.Count == 0 ? (sources.Status, sources.Reason)
+            : (valid > 0 ? ExposureMeasurementStatus.Usable : ExposureMeasurementStatus.Unsuitable,
+                omitted > 0 ? "focus-budget-limited" : valid == 0 ? "no-suitable-focus-samples" : null);
 
     private static bool CfaNeighborClipped(ReadOnlySpan<bool> clipped, int x, int y, FrameLayoutDescriptor layout)
     {

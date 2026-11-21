@@ -1,15 +1,24 @@
+using System.Security.Claims;
 using System.Text.Json;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Processing;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -25,26 +34,129 @@ public sealed class PipelineSummaryPageTests
     private static readonly string[] EdgeStageKeys = ["detector-input", "frame-window", "causal-scan", "persist-candidate", "centered-window", "assess"];
 
     [TestMethod]
-    public void FixedExposureMeasurementShowsInputsWithoutAToggle()
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ConfiguredExposureMeasurementUsesAdmissionProfileForApiAndPage(bool centered)
     {
-        var fixedStep = Node(ExposureMeasurementProducts.StepAlias, enabled: true, required: false, order: 4,
-            [RawInput, "Calibration"]) with
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-measurement-operations");
+        try
         {
-            RecipeName = BuiltInProcessingRecipes.ExposureMeasurement,
-            OutputRole = FrameArtifactRole.Metadata,
-            OutputVariant = ExposureMeasurementProducts.Variant
-        };
-        var calibration = Node("Calibration", enabled: true, required: false, order: 3, [RawInput]);
-        var steps = new[] { calibration, fixedStep };
-        using var context = CreateContext(new PipelineScheduleService(CurrentState(), Pipeline(Plan(steps, steps))));
-        var cut = context.Render<PipelineSummaryPage>();
-        cut.WaitForElement(".ops-pipeline-graph");
-        cut.FindAll(".ops-pipeline-node.step").Single(node =>
-            node.TextContent.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal)).Click();
-        Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
-        Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
-        Assert.Contains("Calibration", cut.Find(".ops-node-facts").TextContent);
-        Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
+            using var provider = StoragePolicyRawIngressIntegrationTests.Provider(root);
+            var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile with
+            {
+                CenteredExposure = centered ? new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) : null,
+                Pipeline = profile.Pipeline with
+                {
+                    Steps = [new("Calibration", "linear", DependsOn: [RawInput], Required: false), .. profile.Pipeline.Steps]
+                }
+            }).ConfigureAwait(false);
+            var runtime = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
+            var store = provider.GetRequiredService<SqliteCaptureScheduleStore>();
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var accessor = provider.GetRequiredService<ICameraAgentConfigurationAccessor>();
+            var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
+            var state = await runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
+            var basis = state.ActiveRevision;
+            Assert.IsFalse(basis.Profile.ProcessingSteps.Any(step => step.Type == ExposureMeasurementProducts.StepAlias));
+            var pendingProfile = basis.Profile with
+            {
+                ProcessingSteps = [.. basis.Profile.ProcessingSteps.Select(step => step.Id == "linear" ? step with { Enabled = false } : step)]
+            };
+
+            var builder = WebApplication.CreateBuilder();
+            builder.Services.AddSingleton(runtime);
+            builder.Services.AddSingleton(store);
+            builder.Services.AddSingleton(factory);
+            builder.Services.AddSingleton(accessor);
+            builder.Services.AddSingleton(graphs);
+            builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
+            var host = builder.Build();
+            await using var hostLifetime = host.ConfigureAwait(false);
+            host.MapCameraAgentPipelineOperationsEndpoints();
+            host.MapCameraAgentScheduleOperationsEndpoints();
+            var invoke = CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync;
+            var original = await invoke(host, "GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(200, original.Status, original.Body);
+            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            var projection = JsonSerializer.Deserialize<CameraAgentPipelineOperatorState>(original.Body, json)!;
+            var registry = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            var admitted = await graphs.ReadRevisionPipelineAsync(registry.ConfiguredBasicRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(admitted);
+            Assert.AreEqual(factory.PreviewPlan(active with { Pipeline = admitted }).EffectiveSha256,
+                projection.Active.Plan.EffectiveSha256);
+
+            using var telemetry = new CameraAgentOperatorTelemetry();
+            var authentication = new Mock<AuthenticationStateProvider>();
+            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(
+                new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity("fixture"))));
+            var authorization = new Mock<IAuthorizationService>();
+            authorization.Setup(service => service.AuthorizeAsync(It.IsAny<ClaimsPrincipal>(), It.IsAny<object?>(), It.IsAny<string>()))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var ui = new CameraAgentScheduleUiService(authentication.Object, authorization.Object, runtime, store, accessor,
+                factory, telemetry, TimeProvider.System, NullLogger<CameraAgentScheduleUiService>.Instance, graphs);
+            var same = await ui.GetPipelineAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(projection.Active.Plan.EffectiveSha256, same.Value?.Active.Plan.EffectiveSha256);
+            using var context = CreateContext(ui);
+            var cut = context.Render<PipelineSummaryPage>();
+            cut.WaitForElement(".ops-pipeline-graph");
+            if (!centered)
+            {
+                Assert.IsFalse(projection.Active.Plan.EffectiveNodes.Any(node => node.Id == ExposureMeasurementProducts.StepAlias));
+                Assert.IsFalse(cut.Markup.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal));
+                await cut.Find(".ops-pipeline-node.step[title='linear']").ClickAsync().ConfigureAwait(false);
+                Assert.IsNotNull(cut.Find("#pipeline-step-toggle"));
+                return;
+            }
+
+            var fixedStep = projection.Active.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
+            CollectionAssert.AreEqual(new[] { RawInput, "linear" }, fixedStep.Dependencies!.ToArray());
+            await cut.Find($".ops-pipeline-node.step[title='{ExposureMeasurementProducts.StepAlias}']").ClickAsync().ConfigureAwait(false);
+            Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
+            Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
+            Assert.Contains("linear", cut.Find(".ops-node-facts").TextContent);
+            Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
+
+            var toggle = await ui.TogglePipelineAsync(CameraAgentScheduleUiService.SerializeProfile(basis.Profile), basis.RevisionId,
+                ExposureMeasurementProducts.StepAlias, false, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(toggle.IsSuccess);
+
+            var pending = await runtime.StageFromBasisAsync(pendingProfile, basis.RevisionId, "measurement-pending-profile",
+                state.StateVersion, "fixture", null, CancellationToken.None).ConfigureAwait(false);
+            var planned = await invoke(host, "GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(200, planned.Status, planned.Body);
+            var stagedResponse = JsonSerializer.Deserialize<CameraAgentPipelineOperatorState>(planned.Body, json)!;
+            var staged = stagedResponse.Pending!.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
+            CollectionAssert.AreEqual(new[] { RawInput }, staged.Dependencies!.ToArray());
+            var preview = await invoke(host, "PreviewCameraAgentPipeline", "POST", new { Profile = pendingProfile, BasisRevisionId = basis.RevisionId },
+                null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(200, preview.Status, preview.Body);
+            Assert.AreEqual(stagedResponse.Pending.Plan.EffectiveSha256,
+                JsonSerializer.Deserialize<CaptureProcessingPlanPreview>(preview.Body, json)!.EffectiveSha256);
+
+            var disabled = basis.Profile with
+            {
+                ProcessingSteps = [.. basis.Profile.ProcessingSteps,
+                new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, DependsOn: [RawInput, "linear"], Enabled: false)]
+            };
+            var rejected = await invoke(host, "StageCameraAgentSchedule", "POST", new
+            {
+                Profile = disabled,
+                BasisRevisionId = basis.RevisionId,
+                ExpectedVersion = pending.Version
+            }, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(422, rejected.Status, rejected.Body);
+            var unchanged = await runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(basis.RevisionId, unchanged.ActiveRevision.RevisionId);
+            Assert.AreEqual(pending.PendingRevision?.RevisionId, unchanged.PendingRevision?.RevisionId);
+            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.CreateRevisionAsync("measurement-removed", "test", active.Pipeline,
+                    "measurement-removed", "fixture", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [TestMethod]
@@ -842,7 +954,7 @@ public sealed class PipelineSummaryPageTests
     }
 
     private static BunitContext CreateContext(
-        PipelineScheduleService schedule,
+        ICameraAgentScheduleUiService schedule,
         ProcessingExecutionPagesTests.GraphUiService? graphs = null,
         OperatorUiResult<NamedRigUiCatalog>? rig = null,
         ProcessingGraphExecutionState[]? executions = null,

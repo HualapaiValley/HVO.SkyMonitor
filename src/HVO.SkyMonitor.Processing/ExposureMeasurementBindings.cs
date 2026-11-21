@@ -14,7 +14,12 @@ public static class ExposureMeasurementBindings
     {
         ArgumentNullException.ThrowIfNull(settled);
         var exposure = settled.Exposure;
-        if (exposure is null || settled.Revision is null or <= 0 || !exposure.Raw.Validate().IsValid ||
+        var unconfigured = settled is
+        {
+            Disposition: LinearExposureDisposition.Unavailable, Revision: null,
+            Product: null, Provenance: null, Reason: "linear.no-configured-step"
+        };
+        if (exposure is null || (!unconfigured && settled.Revision is null or <= 0) || !exposure.Raw.Validate().IsValid ||
             exposure.Raw.Artifact.Role != FrameArtifactRole.Raw ||
             exposure.Key.CaptureId != exposure.Raw.Capture.CaptureId ||
             exposure.Key.Camera.AgentId != exposure.Raw.Capture.AgentId ||
@@ -28,7 +33,9 @@ public static class ExposureMeasurementBindings
             LinearExposureDisposition.Calibrated => ExposureCalibrationDisposition.ReferenceCalibrated,
             LinearExposureDisposition.QualifiedNormalizationOnly => ExposureCalibrationDisposition.NormalizationOnly,
             LinearExposureDisposition.Unsupported => ExposureCalibrationDisposition.Incompatible,
-            LinearExposureDisposition.Unavailable or LinearExposureDisposition.Expired => ExposureCalibrationDisposition.Missing,
+            LinearExposureDisposition.Unavailable => ExposureCalibrationDisposition.Missing,
+            LinearExposureDisposition.Failed when settled.Reason is ProcessingReasonCodes.CalibrationReferenceLayoutMismatch or
+                ProcessingReasonCodes.CalibrationReferenceConditionsMismatch => ExposureCalibrationDisposition.Incompatible,
             LinearExposureDisposition.Failed => ExposureCalibrationDisposition.Failed,
             _ => throw Invalid("nonterminal step-three result")
         };
@@ -79,12 +86,24 @@ public static class ExposureMeasurementBindings
         if (exact.Slot is null || exact.Slot != Slot(exact.Slot.ExecutionId))
             throw Invalid("measurement reference");
 
-        return await ReadCommittedCoreAsync(reader, exact.Exposure, exact.Slot, retained, exact,
-            aperture, nativePixelPitchMicrometers, cancellationToken).ConfigureAwait(false);
+        return (await ReadCommittedCoreAsync(reader, exact.Exposure, exact.Slot, retained, exact,
+            aperture, nativePixelPitchMicrometers, cancellationToken).ConfigureAwait(false)).Measurement;
     }
 
     /// <summary>Resolves the fixed measurement slot from the owning execution and validates its retained payload.</summary>
-    public static ValueTask<ExposureMeasurementV1> ReadCommittedAsync(
+    public static async ValueTask<ExposureMeasurementV1> ReadCommittedAsync(
+        IExposureProductReader reader,
+        ExposureKey exposure,
+        Guid executionId,
+        ProcessingArtifact retained,
+        CancellationToken cancellationToken,
+        ProjectionContext? aperture = null,
+        double? nativePixelPitchMicrometers = null)
+        => (await ReadCommittedWithSourceAsync(reader, exposure, executionId, retained, cancellationToken,
+            aperture, nativePixelPitchMicrometers).ConfigureAwait(false)).Measurement;
+
+    /// <summary>Returns historical measurements with the current availability reason for expired linear pixels.</summary>
+    public static ValueTask<(ExposureMeasurementV1 Measurement, string? LinearExpiryReason)> ReadCommittedWithSourceAsync(
         IExposureProductReader reader,
         ExposureKey exposure,
         Guid executionId,
@@ -103,7 +122,7 @@ public static class ExposureMeasurementBindings
     private static ExposureProductSlot Slot(Guid executionId) => new(executionId,
         ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
 
-    private static async ValueTask<ExposureMeasurementV1> ReadCommittedCoreAsync(IExposureProductReader reader,
+    private static async ValueTask<(ExposureMeasurementV1 Measurement, string? LinearExpiryReason)> ReadCommittedCoreAsync(IExposureProductReader reader,
         ExposureKey exposure, ExposureProductSlot slot, ProcessingArtifact retained, ExposureProductRef? exact,
         ProjectionContext? aperture, double? nativePixelPitchMicrometers, CancellationToken cancellationToken)
     {
@@ -125,7 +144,17 @@ public static class ExposureMeasurementBindings
         if (linear is null || linear.Exposure.Key != exposure ||
             linear.Product is { } inputProduct && inputProduct.Slot.ExecutionId != slot.ExecutionId)
             throw Invalid("admitted input is unavailable");
-        return ExposureMeasurementProducts.Read(retained, FromAdmitted(linear, aperture, nativePixelPitchMicrometers));
+
+        // Only historical metadata may use the original qualified settlement after the bytes expire.
+        // The current Expired disposition is still authoritative for pixel custody and new work.
+        var original = linear is
+        {
+            Disposition: LinearExposureDisposition.Expired,
+            Provenance: { Disposition: LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly } provenance,
+            Product: not null
+        } ? linear with { Disposition = provenance.Disposition, Reason = provenance.Reason } : linear;
+        var measurement = ExposureMeasurementProducts.Read(retained, FromAdmitted(original, aperture, nativePixelPitchMicrometers));
+        return (measurement, linear.Disposition == LinearExposureDisposition.Expired ? linear.Reason ?? "linear.expired" : null);
     }
 
     private static ExposureMeasurementSourceV1 ResolveLinear(
@@ -150,7 +179,7 @@ public static class ExposureMeasurementBindings
 
         var layout = calibrated
             ? CalibrationMasterBuilder.CreateNormalizedLayout(raw.Layout)
-            : ProcessingRecipeSupport.CreatePackedLayout(raw.Layout);
+            : CenteredNormalizationLayout.CreateExpectedPackedLayout(raw.Layout);
         if (!ThresholdMatches(provenance.RawWhiteThreshold, raw.ArtifactId, raw.Layout) ||
             !ThresholdMatches(provenance.LinearWhiteThreshold, product.ArtifactId, layout))
             throw Invalid("linear clipping thresholds");

@@ -98,6 +98,10 @@
                                         <dl class="fact-grid">
                                             <div><dt>Raw source</dt><dd><code>@measurement.Input.Raw.ArtifactId</code></dd></div>
                                             <div><dt>Linear source</dt><dd>@(measurement.Input.Linear?.ArtifactId.ToString() ?? "Unavailable")</dd></div>
+                                            @if (_view.ExposureMeasurement.LinearExpiryReason is { } expiry)
+                                            {
+                                                <div><dt>Linear pixels</dt><dd>Expired (@expiry); retained measurements remain available.</dd></div>
+                                            }
                                             <div><dt>Calibration</dt><dd>@measurement.Input.Calibration @measurement.Input.CalibrationReason</dd></div>
                                             <div><dt>Delivered image</dt><dd>@imageLayout.PixelFormat / @imageLayout.Width × @imageLayout.Height px @measurement.Sources.LocalBayerPattern</dd></div>
                                             @if (imageLayout.Readout is { } readout)

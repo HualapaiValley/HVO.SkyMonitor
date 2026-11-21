@@ -9,7 +9,10 @@ internal static class ExposureMeasurementServiceCollectionExtensions
     internal static void AddExposureMeasurement(this IServiceCollection services)
     {
         services.AddSingleton<ICenteredExposureGraphExtension, ExposureMeasurementGraphPlan>();
-        services.AddSingleton<IExposureMeasurementRunReader>(provider => provider.GetRequiredService<CaptureProcessingPersistence>());
+        services.AddSingleton<CaptureExposureMeasurementReader>();
+        services.AddSingleton<IExposureMeasurementRunReader>(provider => provider.GetRequiredService<CaptureExposureMeasurementReader>());
+        services.AddSingleton(new CaptureProcessingStepRegistration(ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias,
+            typeof(ExposureCatalogPredictionCaptureProcessingStep), typeof(ProjectedSceneCaptureProcessingStepOptions), 20, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(ExposureMeasurementProducts.StepAlias,
             typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions), 4, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(ExposureAssociationProducts.StepAlias,

@@ -130,6 +130,16 @@ public static class ExposureMeasurementProducts
             InputArtifactId: raw.ArtifactId);
     }
 
+    /// <summary>Gets the admission lookup key. Consumers still verify the product against independent evidence.</summary>
+    public static ExposureKey ReadExposureKey(ProcessingArtifact retained)
+    {
+        ArgumentNullException.ThrowIfNull(retained);
+        if (retained.RecipeDescriptor is not { Name: BuiltInProcessingRecipes.ExposureMeasurement } recipe ||
+            !recipe.Options.TryGetProperty("parameters", out var parameters))
+            throw Invalid("admission lookup identity");
+        return ReadInput(parameters).Exposure ?? throw Invalid("admission lookup identity");
+    }
+
     /// <summary>Verifies the retained envelope and its identity against the caller's expected raw and linear facts.</summary>
     public static ExposureMeasurementV1 Read(ProcessingArtifact artifact, ExposureMeasurementInputV1 expected)
     {
@@ -245,7 +255,8 @@ public static class ExposureMeasurementProducts
                 string.IsNullOrWhiteSpace(camera.CameraId) || string.IsNullOrWhiteSpace(camera.AgentId) ||
                 input.RigOrientation is null || string.IsNullOrWhiteSpace(input.OpticalCalibrationVersion) ||
                 input.Step3Disposition is not { } step3 || !Enum.IsDefined(step3) || step3 == LinearExposureDisposition.Pending ||
-                input.Step3Revision is null or <= 0))
+                input.Step3Revision is <= 0 || input.Step3Revision is null &&
+                (step3 != LinearExposureDisposition.Unavailable || input.CalibrationReason != "linear.no-configured-step")))
             throw Invalid("admitted exposure");
 
         if (input.ApertureProjection is { } aperture)
@@ -321,6 +332,7 @@ public static class ExposureMeasurementProducts
             var item = sources.Detections[index];
             if (item is null || item.Index != index || !Inside(item.Pixel, measuredLayout!) ||
                 !double.IsFinite(item.Flux) || item.Flux <= 0 || item.SaturatedSampleCount < 0 ||
+                item.Conditions.HasFlag(StellarSourceConditions.Saturated) != (item.SaturatedSampleCount > 0) ||
                 item.SignalToNoise is { } snr && (!double.IsFinite(snr) || snr < 0))
                 throw Invalid("detection");
         }
@@ -328,14 +340,34 @@ public static class ExposureMeasurementProducts
                 !StellarExclusionReasons.All.Contains(item.ReasonCode) || item.SampleCount <= 0))
             throw Invalid("exclusion");
 
-        var valid = new List<double>(hfd.Samples.Count);
-        var previous = -1;
-        foreach (var sample in hfd.Samples)
+        ValidateFocus(sources, hfd, measuredLayout);
+    }
+
+    private static void ValidateFocus(ExposureSourcesV1 sources, ExposureHfdV1 hfd, FrameLayoutDescriptor? layout)
+    {
+        if (ExposureMeasurementRecipe.FocusUnavailableReason(sources, layout) is { } unavailable)
         {
-            if (sample is null || sample.DetectionIndex <= previous || sample.DetectionIndex >= sources.Detections.Count ||
-                string.IsNullOrWhiteSpace(sample.Reason) || (sample.DiameterPixels is not null) != (sample.Reason == FocusStarReasonCodes.Valid))
+            if (hfd.Status != ExposureMeasurementStatus.Unavailable || hfd.Reason != unavailable ||
+                hfd.ValidCount is not null || hfd.MeanPixels is not null || hfd.MedianPixels is not null ||
+                hfd.SettingsSha256 is not null || hfd.OmittedCount != 0 || hfd.Samples.Count != 0)
+                throw Invalid("HFD unavailable disposition");
+            return;
+        }
+
+        var sampleCount = Math.Min(sources.Detections.Count, MaximumHfdSamples);
+        var omitted = sources.Detections.Count - sampleCount;
+        if (hfd.Samples.Count != sampleCount || hfd.OmittedCount != omitted ||
+            (sampleCount == 0 ? hfd.SettingsSha256 is not null : !IsSha256(hfd.SettingsSha256)))
+            throw Invalid("HFD accounting");
+
+        var valid = new List<double>(sampleCount);
+        for (var index = 0; index < sampleCount; index++)
+        {
+            var sample = hfd.Samples[index];
+            if (sample is null || sample.DetectionIndex != index || string.IsNullOrWhiteSpace(sample.Reason) ||
+                (sample.DiameterPixels is not null) != (sample.Reason == FocusStarReasonCodes.Valid) ||
+                sources.Detections[index].Conditions.HasFlag(StellarSourceConditions.Saturated) && sample.Reason != FocusStarReasonCodes.Saturated)
                 throw Invalid("HFD sample");
-            previous = sample.DetectionIndex;
             if (sample.DiameterPixels is { } diameter)
             {
                 if (!double.IsFinite(diameter) || diameter <= 0)
@@ -343,12 +375,10 @@ public static class ExposureMeasurementProducts
                 valid.Add(diameter);
             }
         }
-        if (hfd.OmittedCount < 0 || (long)hfd.Samples.Count + hfd.OmittedCount > sources.Detections.Count ||
-            (hfd.Status == ExposureMeasurementStatus.Usable) != (valid.Count != 0) ||
-            hfd.ValidCount != (hfd.Status == ExposureMeasurementStatus.Unavailable ? null : valid.Count) ||
+        var (status, reason) = ExposureMeasurementRecipe.FocusDisposition(sources, valid.Count, omitted);
+        if (hfd.Status != status || hfd.Reason != reason || hfd.ValidCount != valid.Count ||
             hfd.MeanPixels != (valid.Count == 0 ? null : valid.Average()) ||
-            hfd.MedianPixels != Median(valid) ||
-            hfd.Samples.Count > 0 && !IsSha256(hfd.SettingsSha256))
+            hfd.MedianPixels != Median(valid))
             throw Invalid("HFD summary");
     }
 

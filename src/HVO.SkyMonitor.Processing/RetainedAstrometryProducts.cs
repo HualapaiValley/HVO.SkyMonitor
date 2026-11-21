@@ -43,12 +43,13 @@ public static class RetainedAstrometryProducts
     {
         ArgumentNullException.ThrowIfNull(artifact);
         var identity = ProcessingIdentity.CreateRecipeIdentity(artifact.RecipeDescriptor ?? throw new ArgumentException("Missing producer descriptor."));
-        if (!MeasuredAstrometryJson.Same(identity.IdentitySha256, artifact.RecipeIdentitySha256))
-            throw new ArgumentException("Invalid retained producer identity.");
+        if (!MeasuredAstrometryJson.Same(identity.IdentitySha256, artifact.RecipeIdentitySha256) ||
+            artifact.SourceArtifactIds is not { Count: > 0 } lineage)
+            throw new ArgumentException("Invalid retained producer identity or lineage.");
         return ProcessingRecipeSupport.CreateProduct(artifact.Role, artifact.Variant, artifact.MediaType, artifact.Layout,
             artifact.Payload, identity,
             artifact.SchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion ? MeasuredAstrometryRecipe.Algorithms : [new(ContextRecipe, Version)],
-            artifact.SourceArtifactIds!.Select(id => artifact with { ArtifactId = id }).ToArray(), artifact.Integration,
+            lineage.Select(id => artifact with { ArtifactId = id }).ToArray(), artifact.Integration,
             artifact.Compatibility, artifact.ProductKind, artifact.SchemaVersion, artifact.ContentIdentitySha256);
     }
 

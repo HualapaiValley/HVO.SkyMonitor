@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -19,6 +20,10 @@ public sealed class ExposureMeasurementTests
         new("rig", "orientation", "calibration", "mask", "sensor", "setpoint", "profile");
     private static readonly RecipeIdentityDescriptor RawRecipe =
         RecipeIdentityDescriptor.Create("raw", "1.0.0", "fixture-v1", JsonSerializer.SerializeToElement(new { }));
+    private static readonly JsonSerializerOptions MeasurementJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter(namingPolicy: null, allowIntegerValues: false) }
+    };
 
     [TestMethod]
     public async Task RawStatisticsUseStoredWhiteExcludeStrideAndRetainCalibrationFailures()
@@ -147,11 +152,11 @@ public sealed class ExposureMeasurementTests
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained,
             input with { Raw = input.Raw with { DescriptorSha256 = new string('B', 64) } }));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained with
-            { ContentIdentitySha256 = new string('A', 64) }, input));
+        { ContentIdentitySha256 = new string('A', 64) }, input));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained with
-            { SourceArtifactIds = [raw.ArtifactId] }, input));
+        { SourceArtifactIds = [raw.ArtifactId] }, input));
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(retained with
-            { CaptureId = Guid.NewGuid() }, input));
+        { CaptureId = Guid.NewGuid() }, input));
 
         var ambiguous = await executor.ExecuteAsync(request with { Inputs = [raw, linear with { Payload = new byte[linear.Payload.Length] }] });
         Assert.AreEqual("measurement.linear-binding-mismatch", ambiguous.ReasonCode);
@@ -196,7 +201,8 @@ public sealed class ExposureMeasurementTests
         var usable = new PixelPoint(89.5, 132.5);
         var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Min(4095, Math.Round(180 +
             Gaussian(x, y, rawClipped, 1.2, 4600) + Gaussian(x, y, outputClipped, 1.4, 3100) +
-            Gaussian(x, y, usable, 1.5, 2400))))) with { Conditions = new(10, 0, -10) };
+            Gaussian(x, y, usable, 1.5, 2400))))) with
+        { Conditions = new(10, 0, -10) };
         var product = await Produce(ReferenceCalibration(raw));
         var linear = ProductArtifact(product, raw);
         var result = await Run(raw, linear, Bind(raw, linear, ExposureCalibrationDisposition.ReferenceCalibrated));
@@ -214,6 +220,116 @@ public sealed class ExposureMeasurementTests
         var focus = result.Sources.Detections[result.Hfd.Samples.Single(sample => sample.DiameterPixels.HasValue).DetectionIndex];
         Assert.AreEqual(usable.X, focus.Pixel.X, 0.2);
         Assert.AreEqual(usable.Y, focus.Pixel.Y, 0.2);
+    }
+
+    [TestMethod]
+    [DataRow(false, 78)]
+    [DataRow(true, 77)]
+    public async Task RepairedRawWingAndCfaNeighborClippingRemainIneligibleForHfd(bool bayer, int clippedX)
+    {
+        var layout = Layout(128, 128, bayer);
+        var star = new PixelPoint(64.5, 64.5);
+        const int clippedY = 64;
+        var raw = CreateRaw(layout, Generate(layout, (x, y) =>
+        {
+            if (x == clippedX && y == clippedY)
+                return 4095;
+            var wing = !bayer && y == clippedY && x is >= 65 and <= 79 ? 8 : 0;
+            return (ushort)(Math.Round(180 + Gaussian(x, y, star, 1.5, bayer ? 2400 : 3000)) + wing);
+        })) with
+        { Conditions = new(10, 0, -10) };
+        var linear = ProductArtifact(await Produce(ReferenceCalibration(raw,
+            (x, y) => x == clippedX && y == clippedY ? (ushort)1 : (ushort)0)), raw);
+        var result = await Run(raw, linear, Bind(raw, linear, ExposureCalibrationDisposition.ReferenceCalibrated));
+        Assert.AreEqual(1L, result.RawBrightness!.SensorClipping.Count);
+        Assert.AreEqual(0L, result.LinearOutputClipping!.Count);
+        Assert.IsLessThan(ushort.MaxValue, ReadCodes(linear.Payload)[clippedY * layout.Width + clippedX]);
+        var detection = Assert.ContainsSingle(result.Sources.Detections);
+        AssertNear(result.Sources.Detections, star, bayer ? 0.5 : 0.2);
+        if (!bayer)
+        {
+            Assert.IsTrue(detection.Conditions.HasFlag(StellarSourceConditions.Saturated));
+            Assert.AreEqual(1, detection.SaturatedSampleCount);
+        }
+        var sample = Assert.ContainsSingle(result.Hfd.Samples);
+        Assert.AreEqual(detection.Index, sample.DetectionIndex);
+        Assert.IsNull(sample.DiameterPixels, $"Clipped candidate contributed {sample.DiameterPixels} px.");
+        Assert.AreEqual(FocusStarReasonCodes.Saturated, sample.Reason);
+        Assert.AreEqual(ExposureMeasurementStatus.Unsuitable, result.Hfd.Status);
+        Assert.AreEqual(0, result.Hfd.ValidCount);
+        Assert.IsNull(result.Hfd.MeanPixels);
+        Assert.IsNull(result.Hfd.MedianPixels);
+    }
+
+    [TestMethod]
+    [DataRow(1, 1)]
+    [DataRow(2, 2)]
+    [DataRow(2, 1)]
+    public async Task ScalarHfdRequiresIsotropicDeliveredPixels(int binX, int binY)
+    {
+        var layout = Layout(128, 128) with
+        {
+            Readout = new(128 * binX, 128 * binY, 0, 0, 128 * binX, 128 * binY, binX, binY,
+                binX == 1 ? FrameBinningAlgorithm.IdentityV1 : FrameBinningAlgorithm.DigitalAverageV1, null, null)
+        };
+        var star = new PixelPoint(64.5, 64.5);
+        var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Round(180 + Gaussian(x, y, star, 1.5, 2400))));
+        var linear = await Normalize(raw);
+        var result = await Run(raw, linear, Bind(raw, linear));
+        Assert.HasCount(1, result.Sources.Detections);
+        AssertNear(result.Sources.Detections, star, 0.2);
+        Assert.AreEqual(128L * 128, result.RawBrightness!.SampleCount);
+        if (binX == binY)
+        {
+            Assert.AreEqual(1, result.Hfd.ValidCount);
+            Assert.AreEqual(3.53, result.Hfd.MeanPixels!.Value, 0.2);
+        }
+        else
+        {
+            Assert.AreEqual(ExposureMeasurementStatus.Unavailable, result.Hfd.Status);
+            Assert.AreEqual("anisotropic-readout", result.Hfd.Reason);
+            Assert.IsNull(result.Hfd.ValidCount);
+            Assert.IsNull(result.Hfd.MeanPixels);
+            Assert.IsNull(result.Hfd.MedianPixels);
+            Assert.IsEmpty(result.Hfd.Samples);
+        }
+    }
+
+    [TestMethod]
+    public async Task RetainedMeasurementRejectsIncompleteAccountingAndInconsistentSaturationFlags()
+    {
+        var layout = Layout(384, 320);
+        var stars = Enumerable.Range(0, 36).Select(index => new PixelPoint(40.5 + 58 * (index % 6), 38.5 + 48 * (index / 6))).ToArray();
+        var raw = CreateRaw(layout, Generate(layout, (x, y) =>
+            (ushort)Math.Round(180 + stars.Sum(star => Gaussian(x, y, star, 1.5, 2400)))));
+        var linear = await Normalize(raw);
+        var input = Bind(raw, linear);
+        var product = await Produce(ExposureMeasurementProducts.Request(input, raw, linear));
+        var result = ExposureMeasurementProducts.Read(product);
+        Assert.HasCount(36, result.Sources.Detections);
+        Assert.AreEqual(32, result.Hfd.ValidCount);
+        Assert.AreEqual(4, result.Hfd.OmittedCount);
+        Assert.AreEqual("focus-budget-limited", result.Hfd.Reason);
+        CollectionAssert.AreEqual(Enumerable.Range(0, 32).ToArray(), result.Hfd.Samples.Select(sample => sample.DetectionIndex).ToArray());
+        var falseEmpty = result with { Hfd = new(ExposureMeasurementStatus.Empty, "no-candidates", 0, null, null, 0, null, []) };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(falseEmpty)));
+        var shortBudget = result with { Hfd = result.Hfd with { OmittedCount = 3 } };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(shortBudget)));
+        var detections = result.Sources.Detections.ToArray();
+        detections[0] = detections[0] with { Conditions = detections[0].Conditions & ~StellarSourceConditions.Saturated, SaturatedSampleCount = 1 };
+        var unflagged = Rehash(result with { Sources = result.Sources with { Detections = detections } });
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementConsumers.RegistrationDetections(ProductArtifact(unflagged, raw), input));
+        detections[0] = detections[0] with { Conditions = detections[0].Conditions | StellarSourceConditions.Saturated };
+        var falseWidth = result with { Sources = result.Sources with { Detections = detections } };
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementProducts.Read(Rehash(falseWidth)));
+
+        ProcessingProduct Rehash(ExposureMeasurementV1 measurement)
+        {
+            var payload = JsonSerializer.SerializeToUtf8Bytes(
+                CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(measurement, MeasurementJson)));
+            var hash = ProcessingIdentity.ComputePayloadSha256(payload);
+            return product with { Payload = payload, ChecksumSha256 = hash, ContentIdentitySha256 = hash };
+        }
     }
 
     [TestMethod]
@@ -256,6 +372,14 @@ public sealed class ExposureMeasurementTests
         Assert.AreEqual(0, read.Hfd.ValidCount);
         var byExecution = await ExposureMeasurementBindings.ReadCommittedAsync(reader, key, execution, retained, CancellationToken.None);
         Assert.AreEqual(read.Input, byExecution.Input);
+        var expired = lookup with { Disposition = LinearExposureDisposition.Expired, Reason = "retention-expired" };
+        var readAfterExpiry = await ExposureMeasurementBindings.ReadCommittedWithSourceAsync(
+            reader with { Linear = expired }, key, execution, retained, CancellationToken.None);
+        Assert.AreEqual(read.Input, readAfterExpiry.Measurement.Input);
+        Assert.AreEqual("retention-expired", readAfterExpiry.LinearExpiryReason);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementBindings.Request(expired, raw, null));
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
+            reader with { Linear = expired with { Product = null, Provenance = null } }, exact, retained, CancellationToken.None));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(async () => await ExposureMeasurementBindings.ReadCommittedAsync(
             reader, exact with { Slot = slot with { ExecutionId = Guid.NewGuid() } }, retained, CancellationToken.None));
         var wrongLookup = lookup with { Provenance = provenance with { LinearDescriptorSha256 = new string('F', 64) } };
@@ -274,7 +398,8 @@ public sealed class ExposureMeasurementTests
     [TestMethod]
     public async Task AssociationFittingAndRegistrationReuseTheRetainedPositionsWithoutPixels()
     {
-        var scene = await MeasuredStellarAssociationFixtures.StarFieldAsync(("catalog:zenith", 0, 0, 2));
+        var fixtureScene = await MeasuredStellarAssociationFixtures.StarFieldAsync(("catalog:zenith", 0, 0, 2));
+        var scene = WithProjection(fixtureScene, fixtureScene.Projection with { AlgorithmVersion = fixtureScene.Projection.CalibrationVersion });
         var predicted = MeasuredStellarAssociationFixtures.Pixel(scene, "catalog:zenith");
         var matched = new PixelPoint(predicted.X + 0.2, predicted.Y + 0.3);
         var unassociated = new PixelPoint(61.25, 86.4);
@@ -283,9 +408,14 @@ public sealed class ExposureMeasurementTests
         MeasuredStellarAssociationFixtures.AddNoise(background, 1920, 2.5);
         var raw = CreateRaw(layout, Generate(layout, (x, y) => (ushort)Math.Round(background[y * layout.Width + x] +
             Gaussian(x, y, matched, 1.35, 2500) + Gaussian(x, y, unassociated, 1.35, 1800))),
-            scene.Source.CaptureId) with { ArtifactId = scene.Source.ArtifactId, DescriptorIdentitySha256 = scene.Source.ArtifactIdentitySha256 };
+            scene.Source.CaptureId) with
+        { ArtifactId = scene.Source.ArtifactId, DescriptorIdentitySha256 = scene.Source.ArtifactIdentitySha256 };
         var linear = await Normalize(raw);
-        var input = Bind(raw, linear);
+        var input = Bind(raw, linear) with
+        {
+            ApertureProjection = ProjectedSceneJson.ToProjectionContext(scene.Projection),
+            OpticalCalibrationVersion = scene.Projection.CalibrationVersion
+        };
         var artifact = ProductArtifact(await Produce(ExposureMeasurementProducts.Request(input, raw, linear)), raw);
         var associations = ExposureMeasurementConsumers.Associate(artifact, input, scene, new(), new());
         var association = Assert.ContainsSingle(associations.Entries.Associations);
@@ -301,6 +431,41 @@ public sealed class ExposureMeasurementTests
         AssertNear(registration, unassociated, 0.15);
         Assert.ThrowsExactly<InvalidDataException>(() => ExposureMeasurementConsumers.AstrometryDetections(artifact, input,
             associations with { MeasurementArtifactId = Guid.NewGuid() }));
+
+        var request = ExposureCatalogPredictionProducts.Request(raw, scene);
+        var prediction = ProductArtifact(await Produce(request), raw);
+        var canonical = ExposureAssociationProducts.Associate(raw, artifact, input, prediction, ExposureAssociationProducts.Variant);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, canonical.Status, canonical.ReasonCode);
+        var retained = ProductArtifact(Assert.ContainsSingle(canonical.Products), raw);
+        var measured = ExposureMeasurementProducts.Read(artifact, input);
+        var associationMember = Assert.ContainsSingle(MeasuredStellarAssociationJson.Parse(retained.Payload).Associations!.Associations);
+        Assert.AreEqual(association.DetectionIndex, associationMember.DetectionIndex);
+        ExposureAssociationProducts.VerifyMeasurement(retained, raw, artifact, measured, prediction);
+
+        var display = ProductArtifact(await Produce(request with { OutputVariant = "projected-scene-v1" }), raw);
+        Reject(display);
+        var unrelatedId = prediction with { ArtifactId = Guid.NewGuid() };
+        Reject(unrelatedId);
+        Assert.ThrowsExactly<InvalidDataException>(() => ExposureAssociationProducts.VerifyMeasurement(retained, raw, artifact, measured, unrelatedId));
+        var geometry = scene.Projection;
+        foreach (var projection in new[]
+        {
+            geometry with { HorizontalFlip = !geometry.HorizontalFlip },
+            geometry with { PrincipalPointX = geometry.PrincipalPointX + 1, PrincipalPointY = geometry.PrincipalPointY - 1 },
+            geometry with { FocalLengthXPixels = geometry.FocalLengthXPixels + 10 },
+            geometry with { RollDegrees = geometry.RollDegrees + 3 },
+            geometry with { EnforceSensorBounds = !geometry.EnforceSensorBounds },
+            geometry with { AlgorithmVersion = "other-projection" }
+        })
+        {
+            var altered = WithProjection(scene, projection);
+            var substitute = ProductArtifact(await Produce(ExposureCatalogPredictionProducts.Request(raw, altered)), raw);
+            Assert.AreNotEqual(prediction.ArtifactId, substitute.ArtifactId);
+            Reject(substitute);
+        }
+
+        void Reject(ProcessingArtifact candidate) => Assert.ThrowsExactly<InvalidDataException>(() =>
+            ExposureAssociationProducts.Associate(raw, artifact, input, candidate, ExposureAssociationProducts.Variant));
     }
 
     [TestMethod]
@@ -326,21 +491,15 @@ public sealed class ExposureMeasurementTests
                 Gaussian(x, y, picked.Pixel, 1.35, 4500)))
         };
         var linear = await Normalize(raw);
-        var expected = Bind(raw, linear);
+        var prediction = WithProjection(fixture.Scene, fixture.Scene.Projection with { AlgorithmVersion = fixture.Scene.Projection.CalibrationVersion });
+        var expected = Bind(raw, linear) with
+        {
+            ApertureProjection = ProjectedSceneJson.ToProjectionContext(prediction.Projection),
+            OpticalCalibrationVersion = prediction.Projection.CalibrationVersion
+        };
         var product = await Produce(ExposureMeasurementProducts.Request(expected, raw, linear));
         var retained = ProductArtifact(product, raw);
-        var sceneRecipe = RecipeIdentityDescriptor.Create(BuiltInProcessingRecipes.ProjectedScene,
-            "1.0.0", "projected-scene-v1", JsonSerializer.SerializeToElement(new { }));
-        var scene = fixture.Measured with
-        {
-            ArtifactId = Guid.NewGuid(),
-            Payload = ProjectedSceneJson.Serialize(fixture.Scene),
-            MediaType = StructuredProcessingProductContracts.ProjectedSceneMediaType,
-            RecipeDescriptor = sceneRecipe,
-            RecipeIdentitySha256 = ProcessingIdentity.CreateRecipeIdentity(sceneRecipe).IdentitySha256,
-            SchemaVersion = fixture.Scene.SchemaVersion,
-            ContentIdentitySha256 = fixture.Scene.SceneIdentitySha256
-        };
+        var scene = ProductArtifact(await Produce(ExposureCatalogPredictionProducts.Request(raw, prediction)), raw);
         var matching = ExposureAssociationProducts.Associate(raw with { Payload = default }, retained, expected,
             scene, "exposure-stellar-associations-v1");
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, matching.Status, matching.ReasonCode);
@@ -366,7 +525,7 @@ public sealed class ExposureMeasurementTests
             }
         };
 
-        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync(fixture.Request(context, raw, associated));
+        var outcome = await new ProcessingRecipeExecutor().ExecuteAsync((fixture with { Scene = prediction }).Request(context, raw, associated));
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, outcome.Status, outcome.ReasonCode);
         var solution = MeasuredAstrometryJson.Parse(outcome.Products.Single().Payload);
         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
@@ -374,6 +533,24 @@ public sealed class ExposureMeasurementTests
         var reread = ExposureMeasurementProducts.Read(retained, expected);
         Assert.HasCount(1, reread.Sources.Detections);
         Assert.AreEqual(1, reread.Hfd.ValidCount);
+    }
+
+    private static ProjectedSceneV1 WithProjection(ProjectedSceneV1 scene, ProjectedSceneProjection projection)
+    {
+        var projector = ProjectorFactory.Create(ProjectedSceneJson.ToProjectionContext(projection));
+        var basis = CameraBasis.Create(projection.BoresightAltitudeDegrees, projection.BoresightAzimuthDegrees,
+            projection.RollDegrees, projection.HorizontalFlip);
+        var projected = scene with
+        {
+            Projection = projection,
+            Objects = scene.Objects.Select(item => item with
+            {
+                Pixel = projector.Project(item.ApparentHorizontal)!.Value,
+                CameraDirection = basis.ToCamera(CameraBasis.FromHorizontal(item.ApparentHorizontal)),
+                ProjectionVersion = projection.AlgorithmVersion
+            }).ToArray()
+        };
+        return projected with { SceneIdentitySha256 = ProjectedSceneJson.ComputeIdentity(projected) };
     }
 
     [TestMethod]
@@ -524,7 +701,7 @@ public sealed class ExposureMeasurementTests
             JsonSerializer.SerializeToElement(new LinearNormalizationOptions()), ProcessingInputSelector.Raw(raw.Variant),
             [raw], "qualified-linear-v1")), raw);
 
-    private static ProcessingExecutionRequest ReferenceCalibration(ProcessingArtifact raw)
+    private static ProcessingExecutionRequest ReferenceCalibration(ProcessingArtifact raw, Func<int, int, ushort>? defect = null)
     {
         var layout = CalibrationMasterBuilder.CreateNormalizedLayout(raw.Layout!);
         var references = new ProcessingArtifact[]
@@ -533,7 +710,7 @@ public sealed class ExposureMeasurementTests
             Master(CalibrationReferenceKinds.Dark, static (_, _) => 1000),
             Master(CalibrationReferenceKinds.Flat, static (x, y) =>
                 (ushort)(Math.Abs(x - 142) <= 8 && Math.Abs(y - 55) <= 8 ? 6000 : 11000)),
-            Master(CalibrationReferenceKinds.Defect, static (_, _) => 0)
+            Master(CalibrationReferenceKinds.Defect, defect ?? (static (_, _) => 0))
         };
         var profile = new ReferenceCalibrationProfileV1(
             ReferenceCalibrationProfileV1.CurrentSchemaVersion, "controlled-reference", "1", "independent clipping test",
