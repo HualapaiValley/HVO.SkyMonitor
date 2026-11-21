@@ -59,7 +59,10 @@ public sealed record LocalEnvironmentalObservationCommitResult(
     LocalEnvironmentalObservationRecord Record,
     EnvironmentalObservationProjectionDisposition ProjectionDisposition,
     EnvironmentalObservationV1? DeliveryObservation,
-    EnvironmentalObservationEnqueueDisposition? DeliveryDisposition = null);
+    EnvironmentalObservationEnqueueDisposition? DeliveryDisposition = null)
+{
+    internal EnvironmentalAcquisitionReceipt? HeldPollReceipt { get; init; }
+}
 
 public sealed record LocalEnvironmentalObservationSnapshot(
     long StoredCount,
@@ -148,6 +151,15 @@ public interface IEnvironmentalObservationPublisher
     ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
         EnvironmentalObservationFactV1 fact,
         CancellationToken cancellationToken = default);
+}
+
+internal readonly record struct EnvironmentalHeldPoll(
+    EnvironmentalSourceDescriptor Source, DateTimeOffset DueUtc, DateTimeOffset StartedUtc);
+
+internal interface IEnvironmentalHeldPollPublisher
+{
+    ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+        EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken);
 }
 
 public enum EnvironmentalObservationTransportDisposition

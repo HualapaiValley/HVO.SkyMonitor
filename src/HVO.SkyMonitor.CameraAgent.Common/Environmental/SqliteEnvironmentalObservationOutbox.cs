@@ -26,10 +26,11 @@ public sealed class SqliteEnvironmentalObservationOutbox(
     int localRetentionBatchSize = 1_000,
     EnvironmentalAcquisitionTelemetry? acquisitionTelemetry = null) : IEnvironmentalObservationOutbox, ILocalEnvironmentalObservationStore,
     IEnvironmentalObservationProjectionStore, ILocalEnvironmentalAssociationStore, IEnvironmentalAcquisitionStateStore,
-    IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IDisposable
+    IEnvironmentalOnDemandCommandStore, ILocalEnvironmentalRetentionStore, IEnvironmentalLocationHeldPollStore, IDisposable
 {
-    internal const int PreviousSchemaVersion = 3;
-    internal const int CurrentSchemaVersion = 4;
+    internal const int BeforeRetentionIndexesSchemaVersion = 3;
+    internal const int PreviousSchemaVersion = 4;
+    internal const int CurrentSchemaVersion = 5;
     // V3 maps local lineage into central identities. Retain legacy v1/v2 projection semantics;
     // for v3, retrying or expired input leases must not release a derivative before its inputs are acknowledged.
     private const string AcknowledgedLineageSql = """
@@ -67,10 +68,22 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         CancellationToken cancellationToken)
         => CommitLocalAsync(root, fact, null, cancellationToken);
 
-    public async ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
+    public ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
         string root,
         EnvironmentalObservationFactV1 fact,
         EnvironmentalObservationResolvedTarget? deliveryTarget,
+        CancellationToken cancellationToken)
+        => CommitLocalCoreAsync(root, fact, deliveryTarget, null, cancellationToken);
+
+    internal ValueTask<LocalEnvironmentalObservationCommitResult> CommitHeldPollAsync(
+        string root, EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+        => CommitLocalCoreAsync(root, fact, null, poll, cancellationToken);
+
+    private async ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalCoreAsync(
+        string root,
+        EnvironmentalObservationFactV1 fact,
+        EnvironmentalObservationResolvedTarget? deliveryTarget,
+        EnvironmentalHeldPoll? heldPoll,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(fact);
@@ -131,13 +144,14 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     connection, transaction, recordId, deliveryTarget, cancellationToken).ConfigureAwait(false);
                 var projection = await EnsureProjectionAsync(
                     connection, transaction, record, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return new LocalEnvironmentalObservationCommitResult(
+                var duplicate = new LocalEnvironmentalObservationCommitResult(
                     LocalEnvironmentalObservationCommitDisposition.Duplicate,
                     record,
                     projection.Disposition,
                     projection.Observation,
                     projection.EnqueueDisposition);
+                return await FinishLocalCommitAsync(connection, transaction, duplicate, heldPoll, cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
         using (var source = connection.CreateCommand())
@@ -241,13 +255,37 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         await LinkLineageAsync(connection, transaction, committed, cancellationToken).ConfigureAwait(false);
         var committedProjection = await EnsureProjectionAsync(
             connection, transaction, committed, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return new LocalEnvironmentalObservationCommitResult(
+        var result = new LocalEnvironmentalObservationCommitResult(
             LocalEnvironmentalObservationCommitDisposition.Committed,
             committed,
             committedProjection.Disposition,
             committedProjection.Observation,
             committedProjection.EnqueueDisposition);
+        return await FinishLocalCommitAsync(connection, transaction, result, heldPoll, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<LocalEnvironmentalObservationCommitResult> FinishLocalCommitAsync(
+        SqliteConnection connection, SqliteTransaction transaction, LocalEnvironmentalObservationCommitResult result,
+        EnvironmentalHeldPoll? heldPoll, CancellationToken cancellationToken)
+    {
+        if (heldPoll is { } held)
+        {
+            var fact = result.Record.Fact;
+            var duplicate = result.Disposition == LocalEnvironmentalObservationCommitDisposition.Duplicate;
+            var receipt = new EnvironmentalAcquisitionReceipt(held.Source.Id, EnvironmentalAcquisitionTrigger.Periodic,
+                duplicate ? EnvironmentalAcquisitionDisposition.Duplicate : EnvironmentalAcquisitionDisposition.Produced,
+                duplicate ? "duplicate" : "produced", fact.ObservationId, held.StartedUtc, _timeProvider.GetUtcNow(),
+                fact.ObservedAtUtc, fact.StaleAfterUtc)
+            {
+                HeldLocationPollUtc = held.DueUtc,
+                HeldLocationPollCommitted = true
+            };
+            await RecordAttemptCoreAsync(connection, transaction, held.Source, receipt, null, null, cancellationToken)
+                .ConfigureAwait(false);
+            result = result with { HeldPollReceipt = receipt };
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
     public async ValueTask<LocalEnvironmentalObservationSnapshot> GetLocalSnapshotAsync(
@@ -786,6 +824,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             receipt.ObservedAtUtc.HasValue != receipt.StaleAfterUtc.HasValue ||
             receipt.ObservedAtUtc is { } observedAtUtc && observedAtUtc.Offset != TimeSpan.Zero ||
             receipt.StaleAfterUtc is { } staleAfterUtc && staleAfterUtc.Offset != TimeSpan.Zero ||
+            receipt.HeldLocationPollUtc is { } held &&
+            (receipt.Trigger != EnvironmentalAcquisitionTrigger.Periodic || held.Offset != TimeSpan.Zero) ||
             receipt.ObservationId.HasValue != receipt.ObservedAtUtc.HasValue)
         {
             throw new ArgumentException("The environmental acquisition attempt is invalid.", nameof(receipt));
@@ -794,6 +834,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: false);
+        await RecordAttemptCoreAsync(connection, transaction, source, receipt, captureSequence, captureId, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask RecordAttemptCoreAsync(
+        SqliteConnection connection, SqliteTransaction transaction, EnvironmentalSourceDescriptor source,
+        EnvironmentalAcquisitionReceipt receipt, long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
+    {
         using (var insert = connection.CreateCommand())
         {
             insert.Transaction = transaction;
@@ -843,7 +892,80 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 receipt.Disposition == EnvironmentalAcquisitionDisposition.TimedOut && receipt.Reason == "before-capture-source-busy" ? 1 : 0);
             await runtime.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (receipt.HeldLocationPollUtc is { } heldDue)
+        {
+            using var settle = connection.CreateCommand();
+            settle.Transaction = transaction;
+            settle.CommandText = """
+                UPDATE environmental_location_held_polls SET settled = 1
+                WHERE source_id = $source AND source_type = $type AND schedule_epoch_utc_ticks = $epoch
+                    AND period_seconds = $period AND due_utc_ticks = $due AND settled = 0;
+                """;
+            BindLocationHeldPollScope(settle, source);
+            settle.Parameters.AddWithValue("$due", heldDue.UtcTicks);
+            if (await settle.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+                throw new InvalidDataException("The held environmental poll did not match its settlement.");
+        }
+    }
+
+    async ValueTask<EnvironmentalLocationPollSlot?> IEnvironmentalLocationHeldPollStore.ReadLocationHeldPollAsync(
+        string root, EnvironmentalSourceDescriptor source, CancellationToken cancellationToken)
+    {
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT due_utc_ticks, settled FROM environmental_location_held_polls
+            WHERE source_id = $source AND source_type = $type AND schedule_epoch_utc_ticks = $epoch
+                AND period_seconds = $period;
+            """;
+        BindLocationHeldPollScope(command, source);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadLocationPollSlot(reader) : null;
+    }
+
+    async ValueTask<EnvironmentalLocationPollSlot> IEnvironmentalLocationHeldPollStore.HoldLocationPollAsync(
+        string root, EnvironmentalSourceDescriptor source, DateTimeOffset due, CancellationToken cancellationToken)
+    {
+        root = NormalizeRoot(root);
+        await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO environmental_location_held_polls(source_id, source_type, schedule_epoch_utc_ticks, period_seconds, due_utc_ticks, settled)
+            VALUES($source, $type, $epoch, $period, $due, 0)
+            ON CONFLICT(source_id) DO UPDATE SET
+                due_utc_ticks = CASE
+                    WHEN source_type = excluded.source_type AND schedule_epoch_utc_ticks = excluded.schedule_epoch_utc_ticks
+                        AND period_seconds = excluded.period_seconds
+                        AND (settled = 0 OR due_utc_ticks >= excluded.due_utc_ticks) THEN due_utc_ticks
+                    ELSE excluded.due_utc_ticks END,
+                settled = CASE
+                    WHEN source_type = excluded.source_type AND schedule_epoch_utc_ticks = excluded.schedule_epoch_utc_ticks
+                        AND period_seconds = excluded.period_seconds AND due_utc_ticks >= excluded.due_utc_ticks THEN settled
+                    ELSE 0 END,
+                source_type = excluded.source_type, schedule_epoch_utc_ticks = excluded.schedule_epoch_utc_ticks,
+                period_seconds = excluded.period_seconds
+            RETURNING due_utc_ticks, settled;
+            """;
+        BindLocationHeldPollScope(command, source);
+        command.Parameters.AddWithValue("$due", due.UtcTicks);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("The environmental poll slot was not recorded.");
+        return ReadLocationPollSlot(reader);
+    }
+
+    private static EnvironmentalLocationPollSlot ReadLocationPollSlot(SqliteDataReader reader)
+        => new(new DateTimeOffset(reader.GetInt64(0), TimeSpan.Zero), reader.GetBoolean(1));
+
+    private static void BindLocationHeldPollScope(SqliteCommand command, EnvironmentalSourceDescriptor source)
+    {
+        command.Parameters.AddWithValue("$source", source.Id);
+        command.Parameters.AddWithValue("$type", source.Type);
+        command.Parameters.AddWithValue("$epoch", source.ScheduleEpochUtc.UtcTicks);
+        command.Parameters.AddWithValue("$period", source.PeriodSeconds);
     }
 
     public async ValueTask UpdateSourceScheduleAsync(
@@ -2002,7 +2124,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                 ? await InspectExistingDatabaseAsync(root, cancellationToken).ConfigureAwait(false)
                 : new EnvironmentalSchemaInspection(0, 0);
             var initializeSchema = inspection.SchemaVersion == 0 && inspection.SchemaObjectCount == 0;
-            if (!initializeSchema && inspection.SchemaVersion is not (PreviousSchemaVersion or CurrentSchemaVersion))
+            if (!initializeSchema && !IsSupportedSchemaVersion(inspection.SchemaVersion))
             {
                 var relationship = inspection.SchemaVersion > CurrentSchemaVersion
                     ? "newer than supported"
@@ -2011,7 +2133,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     $"Environmental observation schema {inspection.SchemaVersion} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
             }
             using var connection = await OpenUnconfiguredAsync(root, cancellationToken).ConfigureAwait(false);
-            if (initializeSchema || inspection.SchemaVersion == PreviousSchemaVersion)
+            if (inspection.SchemaVersion != CurrentSchemaVersion)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                 using var transaction = connection.BeginTransaction(deferred: false);
@@ -2027,13 +2149,14 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     command.CommandText = CanonicalSchemaSql;
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
-                else if (writableVersion == PreviousSchemaVersion)
+                else if (writableVersion is BeforeRetentionIndexesSchemaVersion or PreviousSchemaVersion)
                 {
-                    // Validate the complete prior schema before the transactional index-only upgrade.
-                    await ValidateSchemaAsync(connection, transaction, cancellationToken, PreviousSchemaVersion).ConfigureAwait(false);
+                    await ValidateSchemaAsync(connection, transaction, cancellationToken, checked((int)writableVersion)).ConfigureAwait(false);
                     using var migration = connection.CreateCommand();
                     migration.Transaction = transaction;
-                    migration.CommandText = RetentionIndexesSql + "PRAGMA user_version=4;";
+                    migration.CommandText =
+                        (writableVersion == BeforeRetentionIndexesSchemaVersion ? RetentionIndexesSql : string.Empty)
+                        + LocationHeldPollsSql + "PRAGMA user_version=5;";
                     await migration.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
                 else if (writableVersion != CurrentSchemaVersion)
@@ -3207,7 +3330,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             var version = await ExecuteScalarLongAsync(
                 connection, "PRAGMA user_version;", null, cancellationToken).ConfigureAwait(false);
             var objectCount = await CountSchemaObjectsAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            if (version is PreviousSchemaVersion or CurrentSchemaVersion)
+            if (IsSupportedSchemaVersion(version))
             {
                 await ValidateSchemaAsync(connection, null, cancellationToken, checked((int)version)).ConfigureAwait(false);
             }
@@ -3291,6 +3414,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             Convert.ToHexString(SHA256.HashData(stream)));
     }
 
+    private static bool IsSupportedSchemaVersion(long version)
+        => version is BeforeRetentionIndexesSchemaVersion or PreviousSchemaVersion or CurrentSchemaVersion;
+
     private static async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
         SqliteTransaction? transaction,
@@ -3303,7 +3429,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             throw new InvalidDataException("Environmental observation schema version is not canonical.");
         }
         var expectedDefinitions = CanonicalSchemaDefinitions.Value
-            .Where(entry => schemaVersion != PreviousSchemaVersion || entry.Key is not ("ix_environment_on_demand_retention" or "ix_environment_attempt_retention"))
+            .Where(entry => schemaVersion != BeforeRetentionIndexesSchemaVersion ||
+                entry.Key is not ("ix_environment_on_demand_retention" or "ix_environment_attempt_retention"))
+            .Where(entry => schemaVersion == CurrentSchemaVersion || entry.Key != "environmental_location_held_polls")
             .ToDictionary(StringComparer.Ordinal);
         var actual = await ReadSchemaDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         if (expectedDefinitions.Any(expected =>
@@ -3771,13 +3899,23 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             UNIQUE(local_record_id, target_site_id, target_agent_id, target_rig_id)) STRICT;
         CREATE INDEX ix_environment_projection_waiting
             ON environmental_observation_central_projection(status, updated_unix_ms, local_record_id);
-        """ + RetentionIndexesSql + "PRAGMA user_version=4;";
+        """ + RetentionIndexesSql + LocationHeldPollsSql + "PRAGMA user_version=5;";
 
     private const string RetentionIndexesSql = """
         CREATE INDEX ix_environment_on_demand_retention
             ON environmental_on_demand_commands(updated_unix_ms, idempotency_key);
         CREATE INDEX ix_environment_attempt_retention
             ON environmental_acquisition_attempts(completed_unix_ms, attempt_id);
+        """;
+
+    private const string LocationHeldPollsSql = """
+        CREATE TABLE environmental_location_held_polls(
+            source_id TEXT NOT NULL PRIMARY KEY REFERENCES environmental_source_runtime(source_id) ON DELETE CASCADE,
+            source_type TEXT NOT NULL CHECK(length(source_type) BETWEEN 1 AND 128),
+            schedule_epoch_utc_ticks INTEGER NOT NULL CHECK(schedule_epoch_utc_ticks BETWEEN 0 AND 3155378975999999999),
+            period_seconds INTEGER NOT NULL CHECK(period_seconds > 0),
+            due_utc_ticks INTEGER NOT NULL CHECK(due_utc_ticks BETWEEN schedule_epoch_utc_ticks AND 3155378975999999999),
+            settled INTEGER NOT NULL CHECK(settled IN (0, 1))) STRICT;
         """;
 
     private const string CanonicalSchemaSql = SchemaSql + OperationsSchemaSql + LocalSchemaSql;

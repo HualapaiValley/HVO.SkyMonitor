@@ -21,6 +21,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     private const string RawIngressSchema = "io.hvo.skymonitor.raw-ingress-schema";
     private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
     private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
+    private const string EnvironmentalV5Reader = "e9bc66a58ec4f9902f7d6f25c89057832eff9fbc";
 
     /// <summary>
     /// The reader-capability labels a boundary test copies from the frozen release so that only the boundary under test
@@ -50,6 +51,34 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         Assert.AreEqual(expectedRawChanges, rawChanges, context);
         Assert.AreEqual(expectedBoundaryChanges + expectedRawChanges, changes.Count, context);
         return boundaryChanges;
+    }
+
+    [TestMethod]
+    public void SchemaFourEnvironmentalUpgradeSelectsThePairedCheckpoint()
+    {
+        const string stateContracts = "io.hvo.skymonitor.state-contracts";
+        var candidate = ReadDockerfileLabels();
+        var previous = new Dictionary<string, string>(candidate, StringComparer.Ordinal)
+        {
+            [MinimumCompatibleRevision] = "bc5ca7489c4090c299c416309519ab72da4a8cdb"
+        };
+        var previousContracts = JsonNode.Parse(candidate[stateContracts])!.AsObject();
+        var environmental = previousContracts["environmentalOutbox"]!.AsObject();
+        Assert.AreEqual(5, environmental["writes"]!.GetValue<int>());
+        environmental["writes"] = 4;
+        environmental["reads"]!["max"] = 4;
+        previous[stateContracts] = previousContracts.ToJsonString();
+
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), $"hvo-environment-v5-{Guid.NewGuid():N}"),
+            Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "previous", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "candidate", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
+            target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+        Assert.AreEqual(EnvironmentalV5Reader, candidate[MinimumCompatibleRevision]);
+        Assert.HasCount(1, AssertBoundaryAndRawIngressChanges(changes, previous, candidate, 1, string.Join("; ", changes)));
     }
 
     [TestMethod]
@@ -187,7 +216,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
         Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
-        Assert.AreEqual("bc5ca7489c4090c299c416309519ab72da4a8cdb", candidate[boundary]);
+        Assert.AreEqual(EnvironmentalV5Reader, candidate[boundary]);
         Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
         CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
         // Isolate the processing-ledger checkpoint trigger from unrelated reader-capability upgrades.

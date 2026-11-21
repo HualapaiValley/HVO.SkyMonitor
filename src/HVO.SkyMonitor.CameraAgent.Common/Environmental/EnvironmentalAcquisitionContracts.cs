@@ -202,6 +202,17 @@ public interface IEnvironmentalAcquisitionStateStore
         CancellationToken cancellationToken);
 }
 
+internal sealed record EnvironmentalLocationPollSlot(DateTimeOffset DueUtc, bool Settled);
+
+internal interface IEnvironmentalLocationHeldPollStore
+{
+    ValueTask<EnvironmentalLocationPollSlot?> ReadLocationHeldPollAsync(
+        string root, EnvironmentalSourceDescriptor source, CancellationToken cancellationToken);
+
+    ValueTask<EnvironmentalLocationPollSlot> HoldLocationPollAsync(
+        string root, EnvironmentalSourceDescriptor source, DateTimeOffset due, CancellationToken cancellationToken);
+}
+
 public enum EnvironmentalOnDemandClaimDisposition
 {
     Claimed,
