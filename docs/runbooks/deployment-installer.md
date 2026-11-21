@@ -2720,7 +2720,8 @@ the installer takes the paired checkpoint before startup and restores it if an
 older reader is needed for rollback.
 
 **Combined environmental and processing readers (Refs #1901 and #1938).** The
-image declares `e7b9af4b98d1521c3939ef5925608a3663c63302` as its minimum compatible revision.
+settled beta declares `e7b9af4b98d1521c3939ef5925608a3663c63302` as its
+minimum compatible revision.
 That revision contains the processing-10 reader and the corrected environmental-5
 settlement reader. Either single-reader image and the earlier private joined image
 (`33903f07a1dd86166fc17197df981b32d45013a1`) have different minimums. The installer
@@ -2735,8 +2736,24 @@ schema 17, processing schema 10 and corrected environmental schema 5. It
 carries the same combined minimum `e7b9af4b98d1521c3939ef5925608a3663c63302`.
 Its raw schema and migration labels independently select the paired checkpoint
 from the corrected raw-16 reader. The earlier private joined reader also
-differs at the minimum-compatible-revision. Issue #1922 owns the distinct
-installable centered raw-17, processing-12, environmental-5 reader marker.
+differs at the minimum-compatible-revision.
+
+The centered publisher declares `1dea5e36beb9955dd480fcd7ba6038cbd42b1617`
+for raw 17, processing 12 and the settled environmental v5 reader. The minimum change also selects
+the paired checkpoint from the earlier private raw-17 publisher when both
+images declare the same raw and environmental schema numbers.
+
+**Centered view custody (Refs #1921 and #1922).** Processing schema 12 adds the
+attempt calendar, output availability history, and retained view revisions to
+the raw journal database. The changed `minimum-compatible-revision` selects
+the paired checkpoint before an older processing reader is replaced, including
+an upgrade from schema 10 with raw schema 17 already installed. Rollback
+restores the paired checkpoint for the earlier reader. Both earlier schema-12
+layouts without trusted cutoff observations also upgrade to the covering
+index. Closed windows, view revisions and saved selections retain their identities. Open windows rely on
+confirmed commit observations after the upgrade. The exception names the
+changed processing objects and applies to a database recording processing
+schema 12. The frozen previous-release SQL image remains the same.
 
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite

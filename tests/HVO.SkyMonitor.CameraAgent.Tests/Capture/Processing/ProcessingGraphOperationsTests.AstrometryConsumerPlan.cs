@@ -99,23 +99,10 @@ public sealed partial class ProcessingGraphOperationsTests
 
     private static async Task UsePreviousAstrometryLookupSchemaAsync(string root, CancellationToken token)
     {
-        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False;Foreign Keys=False");
         await connection.OpenAsync(token).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        // The schema-10 layout added this index and advanced the processing marker.
-        // Restore the predecessor layout in the disposable fixture without modifying any plan or evidence rows.
-        command.CommandText = """
-            BEGIN IMMEDIATE;
-            DROP INDEX ix_processing_outputs_astrometry_lookup;
-            DROP TABLE capture_processing_schema;
-            CREATE TABLE capture_processing_schema(
-                schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-                version INTEGER NOT NULL CHECK(version = 9)
-            ) STRICT;
-            INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 9);
-            COMMIT;
-            """;
-        await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+        await PrepareHistoricalProcessingFixtureAsync(connection, SqliteCaptureProcessingStore.LegacySchema9SqlForTests, 9)
+            .ConfigureAwait(false);
     }
 
     // Feed the production journal an independently compiled predecessor definition.

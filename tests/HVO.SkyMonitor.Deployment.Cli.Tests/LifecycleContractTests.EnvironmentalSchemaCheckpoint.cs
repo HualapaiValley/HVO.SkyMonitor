@@ -72,15 +72,18 @@ public sealed partial class LifecycleContractTests
     }
 
     [TestMethod]
-    [DataRow(true)]
-    [DataRow(false)]
+    [DataRow("33903f07a1dd86166fc17197df981b32d45013a1", 10)]
+    [DataRow("150886d93ec3cef42c2ebe2bfea29d1a8419f2a3", 12)]
+    [DataRow(null, 12)]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
-    public async Task SettledEnvironmentalReaderCheckpointsOnlyWhenTheCombinedMinimumChanges(bool earlierReader)
+    public async Task SettledEnvironmentalReaderCheckpointsOnlyWhenTheCombinedMinimumChanges(
+        string? previousMinimum, int processingSchema)
     {
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
         const string outbox = "raw/.environment/environmental-observation-outbox.db";
         var candidate = CameraAgentSnapshotRollbackExceptionTests.ReadDockerfileLabels();
-        var installedBoundary = earlierReader ? "33903f07a1dd86166fc17197df981b32d45013a1" : candidate[boundary];
+        var earlierReader = previousMinimum is not null;
+        var installedBoundary = previousMinimum ?? candidate[boundary];
         var installed = new Dictionary<string, string>(candidate, StringComparer.Ordinal)
         {
             [boundary] = installedBoundary
@@ -95,21 +98,23 @@ public sealed partial class LifecycleContractTests
         var catalogManifest = Path.Combine(fixture.Paths.CatalogRoot, "current", "manifest.json");
         await File.WriteAllTextAsync(catalogManifest, "{\"manifestVersion\":4,\"catalog\":{\"id\":\"" + fixture.Manifest.Catalog.CatalogId + "\"}}");
 
-        // Use a canonical raw-17 input so only the combined minimum selects the paired checkpoint.
-        // The runtime migration tests exercise the exact E5 layout.
+        // Use the canonical raw layout so installer preflight reaches the equal-floor migration decision.
+        // The runtime checkpoint test exercises the full processing and environmental layouts.
+        using var contracts = JsonDocument.Parse(candidate["io.hvo.skymonitor.state-contracts"]);
+        var rawSchema = contracts.RootElement.GetProperty("rawIngress").GetProperty("writes").GetInt32();
         WriteCanonicalV14RawIngressJournal(fixture.Paths);
-        var rawPath = RawIngressPath(fixture.Paths);
-        var additions = typeof(LifecycleContractTests).Assembly.GetManifestResourceStream(
-            "HVO.SkyMonitor.Deployment.Cli.Tests.FrozenRawIngressV17Additions.sql")!;
-        await using (additions.ConfigureAwait(false))
-        using (var schema = new StreamReader(additions, leaveOpen: true))
+        var rawDatabase = RawIngressPath(fixture.Paths);
+        if (rawSchema == 17)
         {
-            Execute(rawPath, await schema.ReadToEndAsync().ConfigureAwait(false));
+            using var delta = typeof(LifecycleContractTests).Assembly.GetManifestResourceStream(
+                "HVO.SkyMonitor.Deployment.Cli.Tests.FrozenRawIngressV17Delta.sql")!;
+            using var reader = new StreamReader(delta);
+            Execute(rawDatabase, await reader.ReadToEndAsync());
         }
 
-        Execute(rawPath,
+        Execute(rawDatabase,
             "CREATE TABLE capture_processing_schema(schema_key INTEGER PRIMARY KEY, version INTEGER NOT NULL);" +
-            "INSERT INTO capture_processing_schema VALUES(1, 10);");
+            FormattableString.Invariant($"INSERT INTO capture_processing_schema VALUES(1, {processingSchema}); PRAGMA user_version={rawSchema};"));
         Execute(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, outbox), "PRAGMA user_version=5;");
         LifecycleOperationState? atCandidateStart = null;
         fixture.Runner.OnComposeUp = image =>
