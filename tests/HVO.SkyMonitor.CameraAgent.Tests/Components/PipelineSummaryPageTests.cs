@@ -13,11 +13,14 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
@@ -129,9 +132,18 @@ public sealed class PipelineSummaryPageTests
             Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
             Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
 
+            var graphLog = new Mock<ILogger<CameraAgentProcessingGraphUiService>>();
             var graphUi = new CameraAgentProcessingGraphUiService(authentication.Object, authorization.Object, graphs, factory,
-                accessor, runtime, TimeProvider.System, NullLogger<CameraAgentProcessingGraphUiService>.Instance);
-            await AssertCenteredEditorAsync(ui, graphUi, active, factory, registry.ConfiguredBasicRevisionId, admitted).ConfigureAwait(false);
+                accessor, runtime, TimeProvider.System, graphLog.Object);
+            var denied = await graphUi.CreateRevisionAsync("centered-options", "denied", admitted, "noncanonical-owner", null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Unauthorized, denied.Kind);
+            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(
+                new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim(ClaimTypes.NameIdentifier, "fixture"),
+                     new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                    IdentityConstants.ApplicationScheme))));
+            await AssertCenteredEditorAsync(ui, graphUi, active, factory, registry.ConfiguredBasicRevisionId, admitted, graphLog).ConfigureAwait(false);
             await AssertCenteredScheduleAsync(ui).ConfigureAwait(false);
 
             var toggle = await ui.TogglePipelineAsync(CameraAgentScheduleUiService.SerializeProfile(basis.Profile), basis.RevisionId,
@@ -181,9 +193,21 @@ public sealed class PipelineSummaryPageTests
     }
 
     private static async Task AssertCenteredEditorAsync(ICameraAgentScheduleUiService schedule, ICameraAgentProcessingGraphUiService graphs,
-        CameraModuleConfig configuration, ICaptureProcessingPipelineFactory factory, string revisionId, CapturePipelineConfig admitted)
+        CameraModuleConfig configuration, ICaptureProcessingPipelineFactory factory, string revisionId, CapturePipelineConfig admitted,
+        Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
     {
-        using var context = CreateContext(schedule, graphs);
+        OperatorUiResult<ProcessingGraphRevisionState>? saveResult = null;
+        var observed = new Mock<ICameraAgentProcessingGraphUiService>(MockBehavior.Strict);
+        observed.SetupGet(service => service.StepAliases).Returns(() => graphs.StepAliases);
+        observed.Setup(service => service.GetRevisionDetailAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((string id, CancellationToken token) => graphs.GetRevisionDetailAsync(id, token));
+        observed.Setup(service => service.PreviewAsync(It.IsAny<CapturePipelineConfig>(), It.IsAny<CancellationToken>()))
+            .Returns((CapturePipelineConfig pipeline, CancellationToken token) => graphs.PreviewAsync(pipeline, token));
+        observed.Setup(service => service.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string name, string revision, CapturePipelineConfig pipeline, string key, string? reason, CancellationToken token) =>
+                saveResult = await graphs.CreateRevisionAsync(name, revision, pipeline, key, reason, token).ConfigureAwait(false));
+        using var context = CreateContext(schedule, observed.Object);
         var navigation = context.Services.GetRequiredService<NavigationManager>();
         navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(revisionId)}");
         var editor = context.Render<ProcessingGraphEditorPage>();
@@ -213,11 +237,21 @@ public sealed class PipelineSummaryPageTests
             .QuerySelector("input")!.ChangeAsync(new ChangeEventArgs { Value = "centered-options" }).ConfigureAwait(false);
         await editor.Find("form").SubmitAsync().ConfigureAwait(false);
         editor.WaitForElement(".editor-preview .plan-view");
-        await editor.Find(".editor-actions .btn-primary").ClickAsync().ConfigureAwait(false);
-        editor.WaitForElement(".editor-banner a");
-
-        var registry = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-        var savedId = registry.Value!.Revisions.Single(static item => item.Name == "centered-options").RevisionId;
+        var previewBanner = editor.Find(".editor-banner").TextContent;
+        var saveButton = editor.Find(".editor-actions .btn-primary");
+        var saveEnabled = !saveButton.HasAttribute("disabled");
+        Assert.IsTrue(saveEnabled, $"Save disabled after preview. Banner={previewBanner}; route={navigation.Uri}");
+        await saveButton.ClickAsync().ConfigureAwait(false);
+        var saveBanner = editor.FindAll(".editor-banner").SingleOrDefault()?.TextContent;
+        var diagnostics = string.Join(" | ", graphLog.Invocations.Where(static call => call.Method.Name == nameof(ILogger.Log))
+            .Select(static call => $"{call.Arguments[0]} {call.Arguments[2]} {call.Arguments[3]}"));
+        var saveTrace = $"Save enabled={saveEnabled}; preview={previewBanner}; result={saveResult?.Kind}: {saveResult?.Message}; route={navigation.Uri}; banner={saveBanner}; logs={diagnostics}";
+        Console.WriteLine(saveTrace);
+        Assert.IsNotNull(saveResult, saveTrace);
+        Assert.IsTrue(saveResult.IsSuccess, saveTrace);
+        var savedId = saveResult.Value!.RevisionId;
+        Assert.AreEqual($"/operations/pipeline/graphs/{Uri.EscapeDataString(savedId)}",
+            editor.FindAll(".editor-banner a").SingleOrDefault()?.GetAttribute("href"), saveTrace);
         var saved = await graphs.GetRevisionDetailAsync(savedId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(saved.IsSuccess, saved.Message);
         Assert.IsNotNull(saved.Value?.Plan);
