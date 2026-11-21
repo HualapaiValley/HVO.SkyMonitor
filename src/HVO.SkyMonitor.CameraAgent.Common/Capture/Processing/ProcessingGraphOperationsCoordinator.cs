@@ -463,8 +463,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         EnsureExplicitPipeline(pipeline);
         var profile = await ReadCurrentProfileAsync(baseConfiguration, cancellationToken).ConfigureAwait(false) ?? baseConfiguration;
         var authored = IProcessingGraphOperations.PrepareAuthoredDraft(profile with { Pipeline = pipeline });
+        EnsureMeasurementProfile(authored.Pipeline, profile);
         var snapshot = CreateRevisionSnapshot(authored, name, revision, _timeProvider.GetUtcNow());
-        EnsureMeasurementProfile(snapshot.Pipeline, profile);
         return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
             candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
                 (_currentCaptureProfile?.Invoke() ?? profile).Pipeline)).ConfigureAwait(false);

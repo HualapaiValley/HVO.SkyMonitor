@@ -93,8 +93,11 @@ public sealed class PipelineSummaryPageTests
             await using var hostLifetime = host.ConfigureAwait(false);
             host.MapCameraAgentPipelineOperationsEndpoints();
             host.MapCameraAgentScheduleOperationsEndpoints();
-            var invoke = CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync;
-            var original = await invoke(host, "GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
+            Task<(int Status, string Body)> InvokeAsync(string endpoint, string method, object? request,
+                Microsoft.AspNetCore.Routing.RouteValueDictionary? route, CancellationToken token) =>
+                CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync(
+                    host, endpoint, method, request, route, cancellationToken: token);
+            var original = await InvokeAsync("GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(200, original.Status, original.Body);
             var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
             var projection = JsonSerializer.Deserialize<CameraAgentPipelineOperatorState>(original.Body, json)!;
@@ -183,12 +186,12 @@ public sealed class PipelineSummaryPageTests
 
             var pending = await runtime.StageFromBasisAsync(pendingProfile, basis.RevisionId, "measurement-pending-profile",
                 state.StateVersion, "fixture", null, CancellationToken.None).ConfigureAwait(false);
-            var planned = await invoke(host, "GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
+            var planned = await InvokeAsync("GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(200, planned.Status, planned.Body);
             var stagedResponse = JsonSerializer.Deserialize<CameraAgentPipelineOperatorState>(planned.Body, json)!;
             var staged = stagedResponse.Pending!.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
             CollectionAssert.AreEqual(new[] { RawInput }, staged.Dependencies!.ToArray());
-            var preview = await invoke(host, "PreviewCameraAgentPipeline", "POST", new { Profile = pendingProfile, BasisRevisionId = basis.RevisionId },
+            var preview = await InvokeAsync("PreviewCameraAgentPipeline", "POST", new { Profile = pendingProfile, BasisRevisionId = basis.RevisionId },
                 null, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(200, preview.Status, preview.Body);
             Assert.AreEqual(stagedResponse.Pending.Plan.EffectiveSha256,
@@ -199,7 +202,7 @@ public sealed class PipelineSummaryPageTests
                 ProcessingSteps = [.. basis.Profile.ProcessingSteps,
                 new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, DependsOn: [RawInput, "linear"], Enabled: false)]
             };
-            var rejected = await invoke(host, "StageCameraAgentSchedule", "POST", new
+            var rejected = await InvokeAsync("StageCameraAgentSchedule", "POST", new
             {
                 Profile = disabled,
                 BasisRevisionId = basis.RevisionId,
