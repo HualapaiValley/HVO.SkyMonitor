@@ -57,7 +57,7 @@ public sealed partial class VirtualSkyPipelineTests
         var olderExecutionId = firstLease.Execution.ExecutionId;
         var running = await operations.ReadExecutionAsync(olderExecutionId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(ProcessingGraphExecutionStatus.Running, running?.Status);
-        await AssertNoOutagePreviewAsync(olderRaw.Descriptor.Capture.CaptureId).ConfigureAwait(false);
+        await AssertNoOutagePreviewAsync(olderRaw.Descriptor.Capture.CaptureId, CancellationToken.None).ConfigureAwait(false);
 
         diagnostics.Stage = "older pending standard work before the outage";
         var beforeOutage = await ObserveOutageAsync(async token =>
@@ -96,43 +96,48 @@ public sealed partial class VirtualSkyPipelineTests
             var (watermark, checkpointIds) = ReadOutageCheckpoint(root);
             diagnostics.CheckpointCaptureIds = checkpointIds;
 
-            diagnostics.Stage = "committed post-checkpoint raw while the older lease is held";
-            var raw = await ObserveOutageAsync(token =>
-                ReadPostCheckpointRawAsync(root, checkpointUtc, watermark, token), diagnostics).ConfigureAwait(false);
-            var rawManifest = await ReadOutageManifestAsync(Path.Combine(root, raw.SidecarPath), CancellationToken.None).ConfigureAwait(false);
-            var measuredCapture = rawManifest.Descriptor.Capture;
-            Assert.AreEqual(raw.CaptureId, measuredCapture.CaptureId);
-            Assert.AreEqual(raw.ArtifactId, rawManifest.Descriptor.Artifact.ArtifactId);
-            Assert.AreEqual(FrameArtifactRole.Raw, rawManifest.Descriptor.Artifact.Role);
-            Assert.IsGreaterThan(watermark, measuredCapture.CaptureSequence);
-            Assert.IsGreaterThan(checkpointUtc, rawManifest.Descriptor.Timing.ExposureStartedUtc);
-            Assert.IsFalse(checkpointIds.Contains(measuredCapture.CaptureId));
-            Assert.IsLessThan(checkpointUtc, olderRaw.Descriptor.Timing.ExposureStartedUtc);
-            await WaitUntilAsync(() => IsOutageArtifactListed(rawManifest), OutageStageTimeout,
-                describeTimeout: diagnostics.Describe).ConfigureAwait(false);
-
-            var queued = await operations.ReadExecutionAsync(raw.ExecutionId, CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(ProcessingGraphExecutionStatus.Pending, queued?.Status);
-            await AssertNoOutagePreviewAsync(measuredCapture.CaptureId).ConfigureAwait(false);
-            Assert.IsNull(await ReadOutagePreviewAsync(raw.ExecutionId, CancellationToken.None).ConfigureAwait(false),
-                "A committed raw behind the held lease must not satisfy the preview predicate.");
-            var backlog = await ReadStandardBacklogAsync(CancellationToken.None).ConfigureAwait(false);
-            Assert.AreEqual(1L, backlog.LeasedCount);
-            Assert.IsGreaterThan(0L, CountWaiting(backlog));
-            Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"outage checkpoint={checkpointUtc:O} watermark={watermark} preOutageWaiting={CountWaiting(beforeOutage)} "
-                + $"oldestUnfinished={backlog.OldestPendingUtc:O} leased={backlog.LeasedCount} waiting={CountWaiting(backlog)} "
-                + $"firstRetry={firstRetry.Attempt}/{firstRetry.Reason}@{firstRetry.RecordedUtc:O} "
-                + $"older={olderRaw.Descriptor.Capture.CaptureSequence} measured={measuredCapture.CaptureSequence}"));
-
-            diagnostics.Stage = "published older and exact post-checkpoint previews during transport retry";
-            gate.Release();
-            var published = await ObserveOutageAsync(async token =>
+            // Raw commitment, listing and both previews share the original post-checkpoint deadline.
+            var (raw, rawManifest, published) = await WithinOutageBudgetAsync(async token =>
             {
-                var measuredPreview = await ReadOutagePreviewAsync(raw.ExecutionId, token).ConfigureAwait(false);
-                if (measuredPreview is null) return null;
-                var olderPreview = await ReadOutagePreviewAsync(olderExecutionId, token).ConfigureAwait(false);
-                return olderPreview is null ? null : new OutagePreviews(olderPreview, measuredPreview);
+                diagnostics.Stage = "committed post-checkpoint raw while the older lease is held";
+                var selectedRaw = await PollOutageAsync(cancellation =>
+                    ReadPostCheckpointRawAsync(root, checkpointUtc, watermark, cancellation), token).ConfigureAwait(false);
+                var selectedManifest = await ReadOutageManifestAsync(Path.Combine(root, selectedRaw.SidecarPath), token).ConfigureAwait(false);
+                var measuredCapture = selectedManifest.Descriptor.Capture;
+                Assert.AreEqual(selectedRaw.CaptureId, measuredCapture.CaptureId);
+                Assert.AreEqual(selectedRaw.ArtifactId, selectedManifest.Descriptor.Artifact.ArtifactId);
+                Assert.AreEqual(FrameArtifactRole.Raw, selectedManifest.Descriptor.Artifact.Role);
+                Assert.IsGreaterThan(watermark, measuredCapture.CaptureSequence);
+                Assert.IsGreaterThan(checkpointUtc, selectedManifest.Descriptor.Timing.ExposureStartedUtc);
+                Assert.IsFalse(checkpointIds.Contains(measuredCapture.CaptureId));
+                Assert.IsLessThan(checkpointUtc, olderRaw.Descriptor.Timing.ExposureStartedUtc);
+                await PollOutageAsync(_ => Task.FromResult(IsOutageArtifactListed(selectedManifest) ? selectedManifest : null),
+                    token).ConfigureAwait(false);
+
+                var queued = await operations.ReadExecutionAsync(selectedRaw.ExecutionId, token).ConfigureAwait(false);
+                Assert.AreEqual(ProcessingGraphExecutionStatus.Pending, queued?.Status);
+                await AssertNoOutagePreviewAsync(measuredCapture.CaptureId, token).ConfigureAwait(false);
+                Assert.IsNull(await ReadOutagePreviewAsync(selectedRaw.ExecutionId, token).ConfigureAwait(false),
+                    "A committed raw behind the held lease must not satisfy the preview predicate.");
+                var backlog = await ReadStandardBacklogAsync(token).ConfigureAwait(false);
+                Assert.AreEqual(1L, backlog.LeasedCount);
+                Assert.IsGreaterThan(0L, CountWaiting(backlog));
+                Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                    $"outage checkpoint={checkpointUtc:O} watermark={watermark} preOutageWaiting={CountWaiting(beforeOutage)} "
+                    + $"oldestUnfinished={backlog.OldestPendingUtc:O} leased={backlog.LeasedCount} waiting={CountWaiting(backlog)} "
+                    + $"firstRetry={firstRetry.Attempt}/{firstRetry.Reason}@{firstRetry.RecordedUtc:O} "
+                    + $"older={olderRaw.Descriptor.Capture.CaptureSequence} measured={measuredCapture.CaptureSequence}"));
+
+                diagnostics.Stage = "published older and exact post-checkpoint previews during transport retry";
+                gate.Release();
+                var selectedPreviews = await PollOutageAsync(async cancellation =>
+                {
+                    var measuredPreview = await ReadOutagePreviewAsync(selectedRaw.ExecutionId, cancellation).ConfigureAwait(false);
+                    if (measuredPreview is null) return null;
+                    var olderPreview = await ReadOutagePreviewAsync(olderExecutionId, cancellation).ConfigureAwait(false);
+                    return olderPreview is null ? null : new OutagePreviews(olderPreview, measuredPreview);
+                }, token).ConfigureAwait(false);
+                return (selectedRaw, selectedManifest, selectedPreviews);
             }, diagnostics).ConfigureAwait(false);
             var publicationObservedUtc = DateTimeOffset.UtcNow;
 
@@ -140,6 +145,23 @@ public sealed partial class VirtualSkyPipelineTests
             // the same transient scenario definition and both previews were produced during the outage.
             AssertOutagePair(olderRaw, published.Older);
             AssertOutagePair(rawManifest, published.Measured);
+            await AssertOutageLineageAsync(products, raw.ArtifactId, published.Measured).ConfigureAwait(false);
+
+            // Substitute the actual older Preview's sources while keeping the measured capture metadata.
+            var wrongSources = published.Measured with
+            {
+                Descriptor = published.Measured.Descriptor with
+                {
+                    Artifact = published.Measured.Descriptor.Artifact with
+                    {
+                        SourceArtifactIds = published.Older.Descriptor.Artifact.SourceArtifactIds
+                    }
+                }
+            };
+            AssertOutagePair(rawManifest, wrongSources);
+            var wrongLineage = await Assert.ThrowsExactlyAsync<AssertFailedException>(() =>
+                AssertOutageLineageAsync(products, raw.ArtifactId, wrongSources)).ConfigureAwait(false);
+            StringAssert.Contains(wrongLineage.Message, "Preview lineage must reach the measured raw", StringComparison.Ordinal);
             var mismatch = Assert.ThrowsExactly<AssertFailedException>(() => AssertOutagePair(rawManifest, published.Older));
             StringAssert.Contains(mismatch.Message, "Preview capture identity must match the raw", StringComparison.Ordinal);
             Assert.IsNotNull(published.Measured.Scene);
@@ -204,6 +226,10 @@ public sealed partial class VirtualSkyPipelineTests
             Assert.AreEqual(preview.ArtifactId, manifest.Descriptor.Artifact.ArtifactId);
             Assert.AreEqual(detail.Execution.CaptureId, manifest.Descriptor.Capture.CaptureId);
             Assert.AreEqual(preview.PayloadSha256, manifest.Descriptor.Artifact.ChecksumSha256, ignoreCase: true);
+            var sources = await products.ReadOutputSourcesAsync(output.OutputIdentitySha256,
+                SqliteCaptureProcessingStore.MaximumOutputSourceCount, token).ConfigureAwait(false);
+            CollectionAssert.AreEqual(sources.Select(static source => source.ArtifactId).ToArray(),
+                manifest.Descriptor.Artifact.SourceArtifactIds.ToArray());
             return IsOutageArtifactListed(manifest) ? manifest : null;
         }
 
@@ -217,9 +243,9 @@ public sealed partial class VirtualSkyPipelineTests
                 && string.Equals(frame.RelativePath, manifest.RelativeArtifactPath, StringComparison.Ordinal));
         }
 
-        async Task AssertNoOutagePreviewAsync(Guid captureId)
+        async Task AssertNoOutagePreviewAsync(Guid captureId, CancellationToken token)
         {
-            var retained = await products.ReadCaptureProductsAsync(captureId, null, 64, CancellationToken.None).ConfigureAwait(false);
+            var retained = await products.ReadCaptureProductsAsync(captureId, null, 64, token).ConfigureAwait(false);
             Assert.IsFalse(retained.Any(static product => product.Role == FrameArtifactRole.Preview),
                 "The held standard lane must have no retained preview for this capture.");
         }
@@ -321,23 +347,62 @@ public sealed partial class VirtualSkyPipelineTests
         Assert.AreEqual(manifest.Descriptor.Artifact.ChecksumSha256, checksum, ignoreCase: true);
     }
 
-    private static async Task<T> ObserveOutageAsync<T>(
+    private static async Task AssertOutageLineageAsync(
+        SqliteCaptureProcessingStore products, Guid measuredRawId, ArtifactManifestV2 preview)
+    {
+        var visited = new HashSet<Guid>();
+        var pending = new Queue<Guid>(preview.Descriptor.Artifact.SourceArtifactIds);
+        while (pending.TryDequeue(out var artifactId))
+        {
+            // This identity is already bound to the real committed raw and its retained bytes by the caller.
+            if (artifactId == measuredRawId) return;
+            if (!visited.Add(artifactId)) continue;
+
+            // A rolling combination can have another raw input. It has no processing-output row.
+            var output = await products.ReadOutputByArtifactIdAsync(artifactId, CancellationToken.None).ConfigureAwait(false);
+            if (output is null) continue;
+            var sources = await products.ReadOutputSourcesAsync(
+                output.OutputIdentitySha256, SqliteCaptureProcessingStore.MaximumOutputSourceCount,
+                CancellationToken.None).ConfigureAwait(false);
+            foreach (var source in sources)
+            {
+                pending.Enqueue(source.ArtifactId);
+            }
+        }
+        Assert.Fail("Preview lineage must reach the measured raw artifact " + measuredRawId.ToString("D"));
+    }
+
+    private static Task<T> ObserveOutageAsync<T>(
         Func<CancellationToken, Task<T?>> observe, VirtualSkyOutageDiagnostics diagnostics, [CallerLineNumber] int line = 0)
         where T : class
+        => WithinOutageBudgetAsync(token => PollOutageAsync(observe, token), diagnostics, line);
+
+    private static async Task<T> WithinOutageBudgetAsync<T>(
+        Func<CancellationToken, Task<T>> run, VirtualSkyOutageDiagnostics diagnostics, [CallerLineNumber] int line = 0)
     {
-        using var deadline = new CancellationTokenSource(OutageStageTimeout);
         var started = System.Diagnostics.Stopwatch.StartNew();
+        using var deadline = new CancellationTokenSource(OutageStageTimeout);
         try
         {
-            while (true)
-            {
-                if (await observe(deadline.Token).ConfigureAwait(false) is { } result) return result;
-                await Task.Delay(TimeSpan.FromMilliseconds(100), deadline.Token).ConfigureAwait(false);
-            }
+            var result = await run(deadline.Token).ConfigureAwait(false);
+            if (started.Elapsed < OutageStageTimeout) return result;
         }
         catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
-            throw CreateWaitTimeout(started.Elapsed, OutageStageTimeout, line, diagnostics.Stage, diagnostics.Describe);
+            // Use the same failure snapshot whether polling or a cancellable evidence read used the budget.
+        }
+
+        throw CreateWaitTimeout(started.Elapsed, OutageStageTimeout, line, diagnostics.Stage, diagnostics.Describe);
+    }
+
+    private static async Task<T> PollOutageAsync<T>(Func<CancellationToken, Task<T?>> observe, CancellationToken token)
+        where T : class
+    {
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            if (await observe(token).ConfigureAwait(false) is { } result) return result;
+            await Task.Delay(TimeSpan.FromMilliseconds(100), token).ConfigureAwait(false);
         }
     }
 
