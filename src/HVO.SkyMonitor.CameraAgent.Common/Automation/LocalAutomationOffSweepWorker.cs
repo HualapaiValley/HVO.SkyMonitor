@@ -14,8 +14,8 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     private TaskCompletionSource _idle = Completed();
     private TaskCompletionSource _registered = Completed();
     private Task _execution = Task.CompletedTask;
+    private Task? _shutdown;
     private bool _reserved;
-    private bool _stopped;
     private string? _scriptRunKey;
     private CancellationTokenSource? _scriptStop;
     private int _disposed;
@@ -24,7 +24,7 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
     {
         lock (_sync)
         {
-            if (_stopped || _reserved)
+            if (_shutdown is not null || _reserved)
             {
                 return null;
             }
@@ -74,33 +74,48 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken) => Task.CompletedTask;
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    public override Task StopAsync(CancellationToken cancellationToken)
     {
         lock (_sync)
         {
-            _stopped = true;
+            return _shutdown ??= DrainAsync(cancellationToken);
         }
-        await _stopping.CancelAsync().ConfigureAwait(false);
-        // The host deadline cannot release authority while an adapter is still draining.
-        await WhenIdleAsync().ConfigureAwait(false);
-        Task execution;
-        lock (_sync)
+    }
+
+    private async Task DrainAsync(CancellationToken cancellationToken)
+    {
+        try
         {
-            execution = _execution;
+            await _stopping.CancelAsync().ConfigureAwait(false);
         }
-        await execution.ConfigureAwait(false);
+        finally
+        {
+            // The host deadline and cancellation callback faults cannot release authority.
+            await WhenIdleAsync().ConfigureAwait(false);
+            Task execution;
+            lock (_sync)
+            {
+                execution = _execution;
+            }
+            await execution.ConfigureAwait(false);
+        }
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public override void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        try
         {
-            return;
+            StopAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
-        StopAsync(CancellationToken.None).GetAwaiter().GetResult();
-        _stopping.Dispose();
-        base.Dispose();
+        finally
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _stopping.Dispose();
+                base.Dispose();
+            }
+        }
     }
 
     private void Release()

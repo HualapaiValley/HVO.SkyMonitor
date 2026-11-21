@@ -159,18 +159,39 @@ public sealed class LocalAutomationOffSweepTests : OrbitalStoreTestBase
         await harness.MakeDueAsync().ConfigureAwait(false);
         orbital.Client.EnqueueHang();
         await harness.Runner.SweepAsync(default).ConfigureAwait(false);
-        await orbital.Client.RequestStarted.Task.WaitAsync(Deadline).ConfigureAwait(false);
-        var stop = harness.Runner.StopAsync(default);
-        await draining.Task.WaitAsync(Deadline).ConfigureAwait(false);
-        Assert.IsFalse(stop.IsCompleted, "Shutdown retains authority while the cancelled task drains.");
-        harness.Store.Dispose();
         using var contender = harness.NewStore();
-        await Assert.ThrowsAsync<Exception>(() => contender.InitializeAsync(default).AsTask()).ConfigureAwait(false);
-        release.SetResult();
-        await stop.WaitAsync(Deadline).ConfigureAwait(false);
+        try
+        {
+            await orbital.Client.RequestStarted.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            var dispose = Task.Run(harness.Worker.Dispose);
+            await draining.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            var expiredDeadline = new CancellationToken(canceled: true);
+            var runnerStop = harness.Runner.StopAsync(expiredDeadline);
+            var workerStop = harness.Worker.StopAsync(expiredDeadline);
+            var repeatedStop = harness.Runner.StopAsync(default);
+            Assert.IsTrue(harness.Token.IsCancellationRequested);
+            Assert.IsFalse(dispose.IsCompleted, "Dispose must retain authority while the cancelled adapter drains.");
+            Assert.IsFalse(runnerStop.IsCompleted, "The runner must join the drain even with an expired host deadline.");
+            Assert.IsFalse(workerStop.IsCompleted, "The hosted stop must join the drain even with an expired host deadline.");
+            Assert.IsFalse(repeatedStop.IsCompleted, "A repeated stop must join the same drain.");
+            harness.Store.Dispose();
+            await Assert.ThrowsAsync<Exception>(() => contender.InitializeAsync(default).AsTask()).ConfigureAwait(false);
+            release.SetResult();
+            await Task.WhenAll(dispose, runnerStop, workerStop, repeatedStop).WaitAsync(Deadline).ConfigureAwait(false);
+            await harness.Runner.StopAsync(default).WaitAsync(Deadline).ConfigureAwait(false);
+            await harness.Worker.StopAsync(default).WaitAsync(Deadline).ConfigureAwait(false);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+        Assert.IsNull(harness.Worker.TryReserve(), "An idle, stopped worker must still refuse new reservations.");
         await contender.InitializeAsync(default).ConfigureAwait(false);
         var settled = await contender.GetStateAsync(default).ConfigureAwait(false);
-        Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, settled.Runs.Single(static run => run.DefinitionId == "a-orbital").Outcome);
+        var original = harness.Registry.Occurrences.Single();
+        var interrupted = settled.Runs.Single(static run => run.DefinitionId == "a-orbital");
+        Assert.AreEqual(original.RunKey, interrupted.RunKey);
+        Assert.AreEqual(LocalAutomationRunOutcome.Interrupted, interrupted.Outcome);
         Assert.AreEqual(1, orbital.Client.Calls);
         Assert.IsNotNull((await orbital.StateAsync().ConfigureAwait(false)).Halt, "Cancellation before provider outcome keeps the fail-safe halt.");
         using var restartedWorker = new LocalAutomationOffSweepWorker();
@@ -178,6 +199,49 @@ public sealed class LocalAutomationOffSweepTests : OrbitalStoreTestBase
         await restarted.SweepAsync(default).ConfigureAwait(false);
         await restartedWorker.WhenIdleAsync().ConfigureAwait(false);
         Assert.AreEqual(1, orbital.Client.Calls, "Restart settles the claim without replaying provider work.");
+    }
+
+    [TestMethod]
+    public async Task ShutdownDrainsBeforeReportingCancellationCallbackFailure()
+    {
+        var worker = new LocalAutomationOffSweepWorker();
+        var registered = Signal();
+        var cancellationObserved = Signal();
+        var release = Signal();
+        var failure = new ObjectDisposedException("test callback");
+        var occurrence = CustomScriptTaskAdapterTests.Occurrence(CustomScriptTaskAdapterTests.Script());
+        using var reservation = worker.TryReserve();
+        Assert.IsNotNull(reservation);
+        reservation.Dispatch(async token =>
+        {
+            using var registration = token.Register(() =>
+            {
+                cancellationObserved.SetResult();
+                throw failure;
+            });
+            registered.SetResult();
+            await release.Task.ConfigureAwait(false);
+        }, occurrence, occurrence.RunKey, default);
+        try
+        {
+            await registered.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            var stop = worker.StopAsync(default);
+            await cancellationObserved.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            var repeatedStop = worker.StopAsync(default);
+            Assert.AreSame(stop, repeatedStop);
+            Assert.IsFalse(stop.IsCompleted, "A cancellation callback fault must not bypass the drain.");
+            release.SetResult();
+            var error = await Assert.ThrowsExactlyAsync<AggregateException>(() => stop.WaitAsync(Deadline)).ConfigureAwait(false);
+            Assert.AreSame(failure, error.Flatten().InnerExceptions.Single());
+            Assert.IsTrue(worker.WhenIdleAsync().IsCompletedSuccessfully);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await worker.WhenIdleAsync().WaitAsync(Deadline).ConfigureAwait(false);
+            var error = Assert.ThrowsExactly<AggregateException>(worker.Dispose);
+            Assert.AreSame(failure, error.Flatten().InnerExceptions.Single());
+        }
     }
 
     [TestMethod]

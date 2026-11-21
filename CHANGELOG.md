@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
+
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 
 - Allow runtime control after a backup is settled or fully recovered, while retaining its journal. #1878
