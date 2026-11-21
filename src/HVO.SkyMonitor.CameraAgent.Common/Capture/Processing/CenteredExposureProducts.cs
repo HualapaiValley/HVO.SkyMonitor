@@ -38,7 +38,7 @@ internal sealed class CenteredExposureProductReader(
         return raw is null ? null : CreateExposure(key, raw);
     }
 
-    private static ExposureInputV1 CreateExposure(ExposureKey key, CenteredRawEvidence raw)
+    internal static ExposureInputV1 CreateExposure(ExposureKey key, CenteredRawEvidence raw)
     {
         var descriptor = raw.Manifest.Descriptor;
         var rig = raw.Run.Configuration.Rig;
