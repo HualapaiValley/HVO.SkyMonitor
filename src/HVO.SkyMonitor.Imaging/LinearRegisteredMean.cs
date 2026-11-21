@@ -29,20 +29,33 @@ public sealed class LinearRegisteredMean
     private readonly int _width;
     private readonly int _height;
     private readonly int _channels;
+    private readonly ProjectionContext? _referenceAperture;
     private readonly double[] _sum;
     private readonly byte[] _support;
     private int _added;
 
     public LinearRegisteredMean(int width, int height, int channels)
+        : this(width, height, channels, null)
+    {
+    }
+
+    /// <summary>Limits output support to a geometric footprint on the delivered reference grid.</summary>
+    public LinearRegisteredMean(int width, int height, int channels, ProjectionContext? referenceAperture)
     {
         if (width <= 0 || height <= 0 || (long)width * height > MaximumPixels || channels is not (1 or 3))
         {
             throw new ArgumentOutOfRangeException(nameof(width));
         }
 
+        if (referenceAperture is { } aperture && (aperture.WidthPixels != width || aperture.HeightPixels != height))
+        {
+            throw new ArgumentException("The reference aperture must match the destination grid.", nameof(referenceAperture));
+        }
+        referenceAperture?.Validate();
         _width = width;
         _height = height;
         _channels = channels;
+        _referenceAperture = referenceAperture;
         _support = new byte[width * height];
         _sum = new double[_support.Length * channels];
     }
@@ -81,6 +94,10 @@ public sealed class LinearRegisteredMean
                 if ((index & 1023) == 0)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                }
+                if (_referenceAperture is { } aperture && !aperture.ContainsSample(x + .5, y + .5))
+                {
+                    continue;
                 }
                 if (map is null)
                 {

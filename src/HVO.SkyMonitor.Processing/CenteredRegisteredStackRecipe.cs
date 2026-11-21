@@ -17,7 +17,9 @@ public interface ICenteredStackInputReader
 public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader reader) : IProcessingRecipe
 {
     public const string RecipeName = "centered-registered-stack";
-    public const string RecipeVersion = "centered-direct-registration-v1";
+    public const string RecipeVersion = "centered-direct-registration-v2";
+    internal const string LegacyRecipeVersion = "centered-direct-registration-v1";
+    private const string ReferenceFootprintVersion = "reference-aperture-footprint-v1";
     public const string InvalidPlan = "registration.invalid-centered-plan";
     public const string RetainedInputsUnavailable = "registration.retained-inputs-unavailable";
     public const string ReferenceUnavailable = "registration.reference-unavailable";
@@ -55,6 +57,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         {
             return null;
         }
+        CenteredRegisteredStackEvidence.RequireVerifiedMap(member);
         if (member.Method == CenteredRegistrationMethod.ReferenceIdentity)
         {
             return new ImageSimilarity(1, 0, 0, 0);
@@ -101,7 +104,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         if (options.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) &&
             (options.ValueKind != JsonValueKind.Object || options.EnumerateObject().Any()))
         {
-            throw new ArgumentException("Centered registration v1 uses a fixed numerical policy.", nameof(options));
+            throw new ArgumentException("Centered registration uses a fixed numerical policy.", nameof(options));
         }
         return ProcessingRecipeSupport.Normalize(new
         {
@@ -110,6 +113,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
             directCentroidFit = DirectCentroidRegistration.FitVersion,
             plateCheck = DirectCentroidRegistration.PlateCheckVersion,
             combiner = LinearRegisteredMean.AlgorithmVersion,
+            referenceFootprint = ReferenceFootprintVersion,
             color = LinearBayerReconstruction.AlgorithmVersion,
             units = CenteredRegisteredStackEvidence.LinearUnits
         });
@@ -121,7 +125,8 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(identity);
         cancellationToken.ThrowIfCancellationRequested();
-        if (request.InputArtifactId is not null || request.Input.Kind != ProcessingInputKind.Calibrated ||
+        if (request.RecipeName != RecipeName || request.InputArtifactId is not null ||
+            request.Input.Kind != ProcessingInputKind.Calibrated ||
             request.Input.Role != FrameArtifactRole.Calibrated || string.IsNullOrWhiteSpace(request.Input.Variant) ||
             request.Annotation is not null || request.AuxiliaryInputs is not [{ } auxiliary])
         {
@@ -144,6 +149,23 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         catch (JsonException)
         {
             return ProcessingOutcome.TerminalFailure(InvalidPlan, nameof(request.AuxiliaryInputs));
+        }
+
+        JsonElement normalized;
+        try
+        {
+            normalized = NormalizeOptions(request.Options);
+        }
+        catch (ArgumentException)
+        {
+            return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidOptions, nameof(request.Options));
+        }
+        var effectiveOptions = ProcessingIdentity.BindExecutionInputs(normalized, request.Input, null, [auxiliary]);
+        var expectedIdentity = ProcessingIdentity.CreateRecipeIdentity(Definition, effectiveOptions);
+        if (identity.OperationKind != expectedIdentity.OperationKind ||
+            !CenteredRegisteredStackEvidence.HasRecipe(identity, expectedIdentity.IdentitySha256))
+        {
+            return ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidLineage, nameof(identity));
         }
 
         var exposures = plan.Slots.Select(slot => slot.Exposure).OfType<CenteredStackExposurePin>().ToArray();
@@ -219,7 +241,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
 
         var layout = reference.Linear.Layout!;
         var isColor = layout.PixelFormat == CameraPixelFormat.BayerRggb16;
-        var accumulator = new LinearRegisteredMean(layout.Width, layout.Height, isColor ? 3 : 1);
+        var accumulator = new LinearRegisteredMean(layout.Width, layout.Height, isColor ? 3 : 1, reference.Aperture);
         var decoder = new CenteredStackLinearInput.Decoder(layout);
         var choices = new MapChoice?[resolved.Length];
         for (var slot = 0; slot < resolved.Length; slot++)
@@ -475,6 +497,7 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
         {
             new(RecipeName, RecipeVersion),
             new("bilinear-registered-mean", LinearRegisteredMean.AlgorithmVersion),
+            new("reference-aperture-footprint", ReferenceFootprintVersion),
             new("centroid-similarity", DirectCentroidRegistration.FitVersion),
             new("plate-pair-check", DirectCentroidRegistration.PlateCheckVersion)
         };

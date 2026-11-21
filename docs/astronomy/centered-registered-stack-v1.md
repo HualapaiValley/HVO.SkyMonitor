@@ -1,4 +1,4 @@
-# Centered registered stack v1
+# Centered registered stack
 
 `centered-registered-stack` is an opt-in Processing window recipe, separate
 from `rolling-mean` and historical replay. Its caller supplies exactly five
@@ -26,7 +26,19 @@ The same canonical artifact headers must be used at close and reopen.
 
 Reopen the evidence by its committed identity and plan digest. Its reader binds
 the base variant, channel order and dimensions to the frozen publication.
-`VerifyPlanes` checks the recipe, exact layout, payload and lineage of each plane.
+The reader also requires every contributor's retained map and verification
+report to agree with its registration method. `VerifyPlanes` checks the
+recipe, exact layout, payload and lineage of each plane. It counts each
+slot's support bits, including pixels with just one bit set.
+
+New execution uses `centered-direct-registration-v2` with
+`direct-centroid-similarity-v4` and the reference-aperture footprint policy.
+The producer version and normalized values change the execution and output
+identities for the same frozen plan. The outer evidence schema and input
+validity-mask identity stay the same. The reader reopens valid v1 products by
+their original identities and validates the persisted planes. The writer
+requires the current recipe identity bound to the request's selector and
+plan. Re-executing a plan with the current producer yields v2 identities.
 
 ## Alignment and pixels
 
@@ -35,7 +47,9 @@ the base variant, channel order and dimensions to the frozen publication.
   sky mapping. The center exposure is sampled at identity. For a neighbor,
   evaluate the inverse direct map on each reference pixel center, then use
   only positive-weight bilinear taps. An out-of-range or invalid tap excludes
-  that source at that point. The stencil does not extrapolate.
+  that source at that point. The stencil does not extrapolate. All maps are
+  restricted to the reference's calibrated geometric footprint, regardless
+  of whether the center sample is clipped or masked at an interior pixel.
 - With a compatible, verified retained plate solution on each endpoint,
   map through their common sky coordinates and check the pair against
   retained centroids. With an absent or valid rejected solution, a direct
@@ -55,7 +69,9 @@ the base variant, channel order and dimensions to the frozen publication.
 The relative-map ambiguity check searches every eligible centroid in both
 fields after the disjoint training and holdout checks. An alternate must have
 at least eight matches, the combined minimum for the fit and holdout sets, and
-evidence inconsistent with the selected map. The ambiguity pass can only reject
+evidence inconsistent with the selected map. A sufficiently spread subset
+that meets the same residual bounds can veto even when a looser search match
+falls outside those bounds. The ambiguity pass can only reject
 the selected map. A field over 192 eligible centroids on either side, or a
 search that uses its 250 million spatial probe budget, yields
 `AmbiguityCheckLimitExceeded`. The recipe records a registration rejection

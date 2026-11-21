@@ -38,7 +38,7 @@ public sealed record DirectSimilarityRegistration(ImageSimilarity? Map, DirectRe
 /// <summary>Bounded pair fitting and independent point checks for direct registration.</summary>
 public static class DirectCentroidRegistration
 {
-    public const string FitVersion = "direct-centroid-similarity-v3";
+    public const string FitVersion = "direct-centroid-similarity-v4";
     public const string PlateCheckVersion = "direct-plate-centroid-check-v1";
     private const int FeatureLimit = 24;
     private const int AmbiguityFieldLimit = 192;
@@ -46,6 +46,7 @@ public static class DirectCentroidRegistration
     private const int MinimumFitCount = 5;
     private const int MinimumVerificationCount = 3;
     private const double CandidateRadius = 1.25;
+    private const double MaximumResidual = .85;
     private const double MinimumScale = .97;
     private const double MaximumScale = 1.03;
 
@@ -157,9 +158,27 @@ public static class DirectCentroidRegistration
             {
                 return false;
             }
+            if (grid is not null && IsSupportedSimilarity(seed) && Distinct(seed, best!.Map, width, height))
+            {
+                // A loose search match outside the verification radius cannot invalidate a sufficient
+                // inlier set that already verifies this alternate map. This can only veto the selected map.
+                var inliers = 0;
+                foreach (var hit in hits.AsSpan(0, count))
+                {
+                    if (hit.SquaredResidual <= MaximumResidual * MaximumResidual)
+                    {
+                        refinedHits[inliers++] = hit;
+                    }
+                }
+                var witness = refinedHits.AsSpan(0, inliers);
+                if (Check(witness, width, height, minimum, .55) == DirectRegistrationStatus.Verified &&
+                    Contradicts(best.Map, witness))
+                {
+                    return true;
+                }
+            }
             var refined = Refine(hits.AsSpan(0, count));
-            var scaleSquared = refined.A * refined.A + refined.B * refined.B;
-            if (!double.IsFinite(scaleSquared) || scaleSquared is < MinimumScale * MinimumScale or > MaximumScale * MaximumScale)
+            if (!IsSupportedSimilarity(refined))
             {
                 return false;
             }
@@ -218,6 +237,39 @@ public static class DirectCentroidRegistration
         var status = Check(verification, width, height, MinimumFitCount + MinimumVerificationCount, .55);
         cancellationToken.ThrowIfCancellationRequested();
         return Report(status, [], verification);
+    }
+
+    /// <summary>Validates a retained relative map and the shape of its independently verified correspondence report.</summary>
+    public static bool IsVerifiedSimilarity(ImageSimilarity map, DirectRegistrationCheck? check) =>
+        IsSupportedSimilarity(map) && IsVerifiedCheck(check, platePair: false);
+
+    /// <summary>Validates a retained plate check, which verifies the fixed map without fitting it.</summary>
+    public static bool IsVerifiedPlateCheck(DirectRegistrationCheck? check) => IsVerifiedCheck(check, platePair: true);
+
+    private static bool IsSupportedSimilarity(ImageSimilarity map)
+    {
+        var scaleSquared = map.A * map.A + map.B * map.B;
+        return scaleSquared is >= MinimumScale * MinimumScale and <= MaximumScale * MaximumScale &&
+            double.IsFinite(map.Tx) && double.IsFinite(map.Ty);
+    }
+
+    private static bool IsVerifiedCheck(DirectRegistrationCheck? check, bool platePair)
+    {
+        if (check is not { Status: DirectRegistrationStatus.Verified, Fit: { } fit, Verification: { } verification } ||
+            (platePair ? fit.Count != 0 : fit.Count is < MinimumFitCount or > FeatureLimit) ||
+            verification.Count < (platePair ? MinimumFitCount + MinimumVerificationCount : MinimumVerificationCount) ||
+            verification.Count > FeatureLimit)
+        {
+            return false;
+        }
+
+        var sourceIds = new HashSet<int>();
+        var referenceIds = new HashSet<int>();
+        return ValidMatches(fit) && ValidMatches(verification);
+
+        bool ValidMatches(IReadOnlyList<RegistrationCentroidMatch> matches) => matches.All(match =>
+            match is { SourceIndex: >= 0, ReferenceIndex: >= 0, ResidualPixels: >= 0 and <= MaximumResidual } &&
+            sourceIds.Add(match.SourceIndex) && referenceIds.Add(match.ReferenceIndex));
     }
 
     private static StellarDetection[] Select(IReadOnlyList<StellarDetection> points, int width, int height)
@@ -453,7 +505,7 @@ public static class DirectCentroidRegistration
         var sum = 0.0;
         foreach (var match in matches)
         {
-            if (match.SquaredResidual > .85 * .85)
+            if (match.SquaredResidual > MaximumResidual * MaximumResidual)
             {
                 return DirectRegistrationStatus.ResidualExceeded;
             }

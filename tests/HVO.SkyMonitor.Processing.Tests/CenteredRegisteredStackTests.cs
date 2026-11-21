@@ -211,6 +211,160 @@ public sealed class CenteredRegisteredStackTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    public async Task ReferenceApertureClipsMappedNeighborsButAllowsSupportAtClippedCenterPixel()
+    {
+        var aperture = new ProjectionContext(ProjectionModel.EquidistantFisheye, 80, 64, 50, 50, Width, Height,
+            ProjectionAperture.Circular, ImageCircleRadiusPixels: 77);
+        const int insideX = 151, insideY = 35;
+        const int outsideX = 153, outsideY = 34;
+        (double X, double Y)[] stars =
+        [
+            (50, 34), (78, 30), (109, 35), (121, 57), (44, 66), (76, 52),
+            (99, 59), (110, 85), (72, 96), (50, 91), (90, 91), (66, 73)
+        ];
+        var reference = await BuildCapture(103, Generate((x, y) =>
+            (x, y) == (insideX, insideY) ? (ushort)4095 : StarField(x, y, 91, stars)), false, aperture: aperture);
+        var first = await BuildCapture(104, Generate((x, y) => StarField(x + 5, y, 81, stars)), false, aperture: aperture);
+        var second = await BuildCapture(105, Generate((x, y) => StarField(x + 8, y, 101, stars)), false, aperture: aperture);
+        var outcome = await Execute([reference, first, second], 103);
+        var evidence = Read(outcome);
+        Assert.AreEqual(CenteredStackDisposition.Registered, evidence.Disposition, Describe(evidence));
+        var support = Channel(outcome, "support").Payload.ToArray();
+        var mono = Channel(outcome, "mono");
+        var outside = Enumerable.Range(0, support.Length)
+            .Where(index => Math.Pow(index % Width + .5 - 80, 2) + Math.Pow(index / Width + .5 - 64, 2) > 77 * 77)
+            .ToArray();
+        TestContext.WriteLine($"F2 exterior display-valid={outside.Count(i => CenteredRegisteredStackEvidence.ContributorsAt(support[i]) >= 2)}, " +
+            $"exterior support={outside.Count(i => support[i] != 0)}, " +
+            $"signed={support[outsideY * Width + outsideX]}/{CodeAt(mono, outsideX, outsideY)}, " +
+            $"inside={support[insideY * Width + insideX]}/{CodeAt(mono, insideX, insideY)}; {Describe(evidence)}.");
+        foreach (var (offset, shift) in new[] { (1, 5), (2, 8) })
+        {
+            Assert.AreEqual(CenteredRegistrationMethod.VerifiedCentroidSimilarity, evidence.Sources[offset + 2].Method);
+            var map = CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, offset, new Dictionary<Guid, ProcessingArtifact>());
+            Assert.AreEqual(shift, map!.SourceToReference(new(80.5, 64.5))!.Value.X - 80.5, .05);
+        }
+
+        Assert.IsTrue(outside.Contains(outsideY * Width + outsideX));
+        Assert.IsFalse(outside.Contains(insideY * Width + insideX));
+        Assert.AreEqual((byte)0, support[outsideY * Width + outsideX]);
+        Assert.AreEqual((ushort)0, CodeAt(mono, outsideX, outsideY));
+        Assert.IsTrue(outside.All(index => support[index] == 0 && CodeAt(mono, index % Width, index / Width) == 0));
+        Assert.AreEqual((byte)24, support[insideY * Width + insideX]);
+        Assert.AreEqual((ushort)91, CodeAt(mono, insideX, insideY));
+        evidence.VerifyPlanes(outcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray());
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RehashedRelativeMemberRequiresAnInvertibleVerifiedMap(bool singular)
+    {
+        var outcome = await ShiftedMonoWindow();
+        var retained = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        var evidence = CenteredRegisteredStackEvidence.Read(retained);
+        var planes = outcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
+        evidence.VerifyPlanes(planes);
+        var emptyInputs = new Dictionary<Guid, ProcessingArtifact>();
+        var member = evidence.Sources[3];
+        var genuine = CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, 1, emptyInputs);
+        Assert.IsNotNull(genuine!.ReferenceToSource(new(80, 64)));
+
+        var rewritten = RewriteEvidence(retained, json =>
+        {
+            var source = json["sources"]![3]!;
+            if (singular)
+            {
+                source["similarity"]!["a"] = 0;
+                source["similarity"]!["b"] = 0;
+            }
+            else
+            {
+                source["pairCheck"] = null;
+            }
+        });
+        var malformed = evidence.Sources.ToArray();
+        malformed[3] = singular ? member with { Similarity = new ImageSimilarity(0, 0, 0, 0) }
+            : member with { PairCheck = null };
+        var read = Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(rewritten));
+        var reconstruct = Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackRecipe.ReconstructSourceMap(
+            evidence with { Sources = malformed }, 1, emptyInputs));
+        TestContext.WriteLine($"F3 singular={singular}: Read rejected ({read.Message}); reconstruction rejected ({reconstruct.Message}).");
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task PlaneReaderChecksAllSupportBitsIncludingSinglySupportedPixels()
+    {
+        var outcome = await ShiftedMonoWindow();
+        var retained = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        var planes = outcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
+        var evidence = CenteredRegisteredStackEvidence.Read(retained);
+        evidence.VerifyPlanes(planes);
+        var support = Channel(outcome, "support").Payload.ToArray();
+        var bit = 1 << 3;
+        var actual = support.Count(value => (value & bit) != 0);
+        var alone = support.Count(value => value == bit);
+        Assert.IsGreaterThan(0, alone);
+        Assert.AreEqual(evidence.Sources[3].SupportedPixels, actual);
+        TestContext.WriteLine($"F4 actual +1 support={actual}; singly supported={alone}; display-valid={evidence.ValidPixelCount}.");
+        foreach (var forged in new[] { 1, actual - alone })
+        {
+            var rewritten = RewriteEvidence(retained, json => json["sources"]![3]!["supportedPixels"] = forged);
+            var reopened = CenteredRegisteredStackEvidence.Read(rewritten);
+            var error = Assert.ThrowsExactly<InvalidDataException>(() => reopened.VerifyPlanes(planes));
+            TestContext.WriteLine($"F4 forged +1 count {forged} rejected by plane verifier ({error.Message}).");
+        }
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task WriterRejectsHistoricalAndUnauthenticatedExecutionIdentities()
+    {
+        var center = await BuildCapture(103, Generate((x, y) => StarField(x, y, 91)), false);
+        var neighbor = await BuildCapture(104, Generate((x, y) => StarField(x + 5, y, 81)), false);
+        var (request, executor) = Request([center, neighbor], 103);
+        var produced = await executor.ExecuteAsync(request);
+        Read(produced).VerifyPlanes(produced.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray());
+        var current = produced.Products[0].Recipe;
+        var writer = new CenteredRegisteredStackRecipe(new ExactInputs([center.Qualified, neighbor.Qualified]));
+
+        var oldOptions = JsonNode.Parse(current.Descriptor.Options.GetRawText())!;
+        oldOptions["parameters"]!["directCentroidFit"] = "direct-centroid-similarity-v3";
+        oldOptions["parameters"]!.AsObject().Remove("referenceFootprint");
+        var old = ProcessingIdentity.CreateRecipeIdentity(
+            writer.Definition with { ImplementationVersion = "centered-direct-registration-v1" },
+            JsonSerializer.SerializeToElement(oldOptions));
+        var unbound = ProcessingIdentity.CreateRecipeIdentity(writer.Definition, writer.NormalizeOptions(default));
+        var altered = current with { Descriptor = current.Descriptor with { OptionsSha256 = new string('0', 64) } };
+        var replay = await writer.ExecuteAsync(request, current, TestContext.CancellationToken);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, replay.Status);
+        Assert.AreEqual(produced.Products[0].OutputIdentitySha256, replay.Products[0].OutputIdentitySha256);
+
+        var historical = await writer.ExecuteAsync(request, old, TestContext.CancellationToken);
+        var unboundResult = await writer.ExecuteAsync(request, unbound, TestContext.CancellationToken);
+        var alteredResult = await writer.ExecuteAsync(request, altered, TestContext.CancellationToken);
+        TestContext.WriteLine($"Writer identity: current={replay.Status}; historical={historical.Status}/{historical.Products.Count}; " +
+            $"unbound={unboundResult.Status}/{unboundResult.Products.Count}; altered={alteredResult.Status}/{alteredResult.Products.Count}.");
+        foreach (var result in new[] { historical, unboundResult, alteredResult })
+        {
+            Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, result.Status);
+            Assert.AreEqual(ProcessingReasonCodes.InvalidLineage, result.ReasonCode);
+            Assert.IsEmpty(result.Products);
+        }
+    }
+
+    private static async Task<ProcessingOutcome> ShiftedMonoWindow()
+    {
+        var reference = await BuildCapture(103, Generate((x, y) =>
+            x < 16 ? (ushort)4095 : StarField(x, y, 91)), false);
+        var neighbor = await BuildCapture(104, Generate((x, y) => StarField(x + 5, y, 81)), false);
+        return await Execute([reference, neighbor], 103);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task ExcludedMeasurementCannotContributeAndMissingCenterNeverBorrowsNeighbor()
     {
         var goodPixels = Generate((x, y) => (ushort)(91 + 2500 * Math.Exp(-((x - 55) * (x - 55) + (y - 45) * (y - 45)) / 4d)));
@@ -456,12 +610,13 @@ public sealed class CenteredRegisteredStackTests
         (108, 82), (131, 98), (91, 107), (62, 91), (35, 105), (17, 85)
     ];
 
-    private static ushort StarField(int x, int y, int background)
+    private static ushort StarField(int x, int y, int background, (double X, double Y)[]? stars = null)
     {
+        stars ??= FieldStars;
         var code = (double)background;
-        for (var i = 0; i < FieldStars.Length; i++)
+        for (var i = 0; i < stars.Length; i++)
         {
-            var (sx, sy) = FieldStars[i];
+            var (sx, sy) = stars[i];
             code += (1800 - 73 * i) * Math.Exp(-((x - sx) * (x - sx) + (y - sy) * (y - sy)) / 3.2);
         }
         return (ushort)Math.Round(code, MidpointRounding.AwayFromZero);
@@ -534,7 +689,8 @@ public sealed class CenteredRegisteredStackTests
 
     private static async Task<Capture> BuildCapture(int sequence, byte[] pixels, bool bayer,
         int width = Width, int height = Height, DateTimeOffset? observation = null, string? measurementReason = null,
-        bool calibrate = false, bool collapsedDescriptor = false, bool blankMask = false, bool clippingControls = false)
+        bool calibrate = false, bool collapsedDescriptor = false, bool blankMask = false, bool clippingControls = false,
+        ProjectionContext? aperture = null)
     {
         var sensorWhite = clippingControls ? 4000 : 4095;
         var layout = new FrameLayoutDescriptor(width, height, width * 2,
@@ -589,8 +745,8 @@ public sealed class CenteredRegisteredStackTests
         var mask = CenteredStackValidityMask.Create(raw, linear,
             Enumerable.Repeat(blankMask ? (byte)0 : (byte)1, layout.Width * layout.Height).ToArray());
         var settlement = Settlement(qualified, measurementReason);
-        var expected = ExposureMeasurementBindings.FromAdmitted(settlement, nativePixelPitchMicrometers: 2.4);
-        var measurement = Artifact(await Produce(ExposureMeasurementBindings.Request(settlement, raw, qualified, nativePixelPitchMicrometers: 2.4)), raw);
+        var expected = ExposureMeasurementBindings.FromAdmitted(settlement, aperture, nativePixelPitchMicrometers: 2.4);
+        var measurement = Artifact(await Produce(ExposureMeasurementBindings.Request(settlement, raw, qualified, aperture, nativePixelPitchMicrometers: 2.4)), raw);
         var retained = new CenteredStackQualifiedExposure(qualified, expected);
         return new(retained, CenteredStackExposurePin.Create(retained, raw, mask, CenteredStackArtifactPin.From(measurement)), raw, mask, measurement);
     }

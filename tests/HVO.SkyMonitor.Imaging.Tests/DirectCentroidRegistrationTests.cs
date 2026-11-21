@@ -87,6 +87,34 @@ public sealed class DirectCentroidRegistrationTests
         Assert.IsNull(contested.Map);
         Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch, contested.Check.Status);
 
+        PixelPoint[] faintPositions = [new(127.60, 40.65), new(127.47, 40.72)];
+        var faintCases = faintPositions.Select(position =>
+        {
+            var faint = new StellarDetection(40, position, 1, 100, 1, 1, 0, 0);
+            StellarDetection[] aliased = [.. ranked, .. brighterAlias, distractor, faint];
+            var reindexed = aliased.OrderBy(point => point.Pixel.Y).ThenBy(point => point.Pixel.X)
+                .Select((point, index) => point with { Index = index }).ToArray();
+            var genuine = DirectCentroidRegistration.Fit([.. ranked, faint], Points(Positions), 180, 160);
+            var originalOrder = DirectCentroidRegistration.Fit(aliased, Points(Positions), 180, 160);
+            var detectorOrder = DirectCentroidRegistration.Fit(reindexed, Points(Positions), 180, 160);
+            TestContext.WriteLine($"F1 {position}: genuine {genuine.Check.Status}/{genuine.Map?.Tx}; " +
+                $"combined {originalOrder.Check.Status}/{originalOrder.Map?.Tx}; reindexed {detectorOrder.Check.Status}/{detectorOrder.Map?.Tx}.");
+            return (genuine, originalOrder, detectorOrder);
+        }).ToArray();
+        foreach (var (genuine, originalOrder, detectorOrder) in faintCases)
+        {
+            Assert.AreEqual(DirectRegistrationStatus.Verified, genuine.Check.Status);
+            var identity = genuine.Map!.Value;
+            Assert.AreEqual(1, identity.A, 1e-10);
+            Assert.AreEqual(0, identity.B, 1e-10);
+            Assert.AreEqual(0, identity.Tx, 1e-10);
+            Assert.AreEqual(0, identity.Ty, 1e-10);
+            Assert.IsNull(originalOrder.Map);
+            Assert.IsNull(detectorOrder.Map);
+            Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch, originalOrder.Check.Status);
+            Assert.AreEqual(DirectRegistrationStatus.AmbiguousMatch, detectorOrder.Check.Status);
+        }
+
         var corner = Enumerable.Range(1, 8).Select(index => new StellarDetection(index + 24,
             new(154 + 4 * (index % 3), 134 + 4 * (index / 3)), 250 - index, 100, 1, 1, 0, 0));
         StellarDetection[] crowded = [distractor, .. corner];
@@ -122,6 +150,8 @@ public sealed class DirectCentroidRegistrationTests
         var shifted = DirectCentroidRegistration.VerifyPlatePair(new ImageSimilarity(1, 0, -1.1, -1), source, reference, 160, 160);
         Assert.AreEqual(DirectRegistrationStatus.ResidualExceeded, shifted.Status);
     }
+
+    public TestContext TestContext { get; set; } = null!;
 
     private static StellarDetection[] Points(IEnumerable<PixelPoint> points, bool brighterHalf = true) =>
         points.Select((point, index) => new StellarDetection(index, point, (brighterHalf ? 200 : 100) - index,

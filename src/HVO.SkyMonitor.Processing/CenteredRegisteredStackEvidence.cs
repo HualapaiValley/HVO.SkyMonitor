@@ -77,7 +77,8 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             retained.Payload.Length is < 1 or > 128 * 1024 || retained.ContentIdentitySha256 != retained.ChecksumSha256 ||
             retained.ChecksumSha256 != ProcessingIdentity.ComputePayloadSha256(retained.Payload) ||
             retained.Recipe.Descriptor.Name != CenteredRegisteredStackRecipe.RecipeName ||
-            retained.Recipe.Descriptor.ImplementationVersion != CenteredRegisteredStackRecipe.RecipeVersion ||
+            retained.Recipe.Descriptor.ImplementationVersion is not
+                (CenteredRegisteredStackRecipe.LegacyRecipeVersion or CenteredRegisteredStackRecipe.RecipeVersion) ||
             !HasRecipe(retained.Recipe, retained.Recipe.IdentitySha256) ||
             retained.OutputIdentitySha256 != ProcessingIdentity.CreateOutputIdentity(retained.Role, retained.Variant,
                 retained.Recipe.IdentitySha256, retained.SourceArtifactIds))
@@ -153,6 +154,8 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         var members = PublishedSlotBits();
         var published = 0;
         var used = 0;
+        Span<int> supportCounts = stackalloc int[LinearRegisteredMean.SlotCount];
+        supportCounts.Clear();
         var supportPlane = planes[^1].Payload.Span;
         for (var index = 0; index < supportPlane.Length; index++)
         {
@@ -164,6 +167,10 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             if ((bits & ~members) != 0)
             {
                 throw new InvalidDataException("Coverage includes an excluded registration slot.");
+            }
+            for (var remaining = (uint)bits; remaining != 0; remaining &= remaining - 1)
+            {
+                supportCounts[BitOperations.TrailingZeroCount(remaining)]++;
             }
             if (ContributorsAt(bits) >= 2)
             {
@@ -184,6 +191,13 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         if (published != ValidPixelCount || used != members)
         {
             throw new InvalidDataException("Registered coverage differs from the declared membership.");
+        }
+        for (var slot = 0; slot < supportCounts.Length; slot++)
+        {
+            if (supportCounts[slot] != Sources[slot].SupportedPixels)
+            {
+                throw new InvalidDataException("Registered support differs from the declared per-source pixel count.");
+            }
         }
     }
 
@@ -209,8 +223,7 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
                 (source.Reason == CenteredRegistrationReason.Contributed) != source.Method.HasValue ||
                 (source.Method == CenteredRegistrationMethod.ReferenceIdentity) !=
                     (index == 2 && source.Reason == CenteredRegistrationReason.Contributed) ||
-                (source.Method == CenteredRegistrationMethod.VerifiedCentroidSimilarity) != source.Similarity.HasValue ||
-                source.Method == CenteredRegistrationMethod.VerifiedPlatePair && source.Plate is null ||
+                source.Method is null && source.Similarity.HasValue ||
                 source.Method.HasValue && (slot.Exposure is null || source.SupportedPixels <= 0) ||
                 source.Method is null && source.SupportedPixels != 0 ||
                 source.SupportedPixels > (long)Width * Height)
@@ -219,6 +232,7 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
             }
             if (source.Method.HasValue)
             {
+                RequireVerifiedMap(source);
                 total += slot.Exposure!.IntegrationTicks;
             }
         }
@@ -240,6 +254,23 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
                 ValidPixelCount <= 0 || ValidPixelCount > Width * Height || !ValidChannels(center?.LinearLayout.PixelFormat)))
         {
             throw new InvalidDataException("Invalid registered disposition or integration.");
+        }
+    }
+
+    internal static void RequireVerifiedMap(CenteredStackSourceEvidence source)
+    {
+        var valid = source.Method switch
+        {
+            CenteredRegistrationMethod.ReferenceIdentity => source.Similarity is null && source.PairCheck is null,
+            CenteredRegistrationMethod.VerifiedCentroidSimilarity => source.Similarity is { } map &&
+                DirectCentroidRegistration.IsVerifiedSimilarity(map, source.PairCheck),
+            CenteredRegistrationMethod.VerifiedPlatePair => source.Similarity is null && source.Plate is not null &&
+                DirectCentroidRegistration.IsVerifiedPlateCheck(source.PairCheck),
+            _ => false
+        };
+        if (!valid)
+        {
+            throw new InvalidDataException("Registered contributor does not have a verified map.");
         }
     }
 
@@ -267,10 +298,10 @@ public sealed record CenteredRegisteredStackEvidence(string SchemaVersion, strin
         };
     }
 
-    private static bool HasRecipe(ProcessingRecipeIdentity recipe, string? expected) =>
-        recipe.IdentitySha256 == expected &&
-        recipe.Descriptor.OptionsSha256 == CaptureContractJson.ComputeCanonicalJsonSha256(recipe.Descriptor.Options) &&
-        ProcessingIdentity.CreateRecipeIdentity(recipe.Descriptor).IdentitySha256 == expected;
+    internal static bool HasRecipe(ProcessingRecipeIdentity recipe, string? expected) =>
+        recipe.IdentitySha256 == expected && recipe.Descriptor is { Options.ValueKind: JsonValueKind.Object } descriptor &&
+        descriptor.OptionsSha256 == CaptureContractJson.ComputeCanonicalJsonSha256(descriptor.Options) &&
+        ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256 == expected;
 
     private Guid[] ContributorIds() => Plan.Slots.Where((_, index) => Sources[index].Method is not null)
         .Select(slot => slot.Exposure!.Linear.ArtifactId).ToArray();
