@@ -61,7 +61,13 @@ public sealed record CaptureSetpoint(
     TimeSpan Exposure,
     double Gain,
     TimeSpan? NextIntervalOverride,
-    double? TargetFps);
+    double? TargetFps)
+{
+    public bool IsValid() =>
+        Exposure > TimeSpan.Zero && double.IsFinite(Gain) && Gain >= 0 &&
+        (TargetFps is not { } fps || double.IsFinite(fps) && fps > 0) &&
+        NextIntervalOverride is not { Ticks: <= 0 };
+}
 
 [Flags]
 public enum CameraModuleCapabilities

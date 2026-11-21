@@ -8,6 +8,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.HealthChecks;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
@@ -2947,6 +2948,7 @@ public sealed partial class ProcessingGraphOperationsTests
     public async Task ReplayWorkerExecutesNonEmptyGraphWithoutPublishingOrOverwritingLiveProjection()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-replay-worker");
+        var staleRoot = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-processing-raw-only");
         try
         {
             var services = new ServiceCollection();
@@ -2972,8 +2974,9 @@ public sealed partial class ProcessingGraphOperationsTests
             var operations = provider.GetRequiredService<ProcessingGraphOperationsCoordinator>();
             var registry = await operations.EnsureConfiguredBasicAsync(configuration, CancellationToken.None)
                 .ConfigureAwait(false);
+            var submission = CreateSubmission();
             var receipt = await ingress.AcceptAsync(
-                configuration, CreateSubmission(), CancellationToken.None).ConfigureAwait(false);
+                configuration, submission, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(receipt);
 
             var laneStore = provider.GetRequiredService<ICaptureLaneStore>();
@@ -2992,11 +2995,33 @@ public sealed partial class ProcessingGraphOperationsTests
                 liveLease.Context.Execution!.ExecutionId, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(stagedLive);
             var liveOutputArtifactId = stagedLive.Nodes.Single().Outputs.Single().ArtifactId;
+            var day = DateOnly.FromDateTime(receipt.Manifest.Descriptor.Timing.ExposureStartedUtc.UtcDateTime);
+            var storage = provider.GetRequiredService<IFrameStorageService>();
+            Assert.HasCount(0, storage.List(root, day, FrameArtifactRole.Preview, 10));
+            using (var stale = CreateProvider(staleRoot))
+            {
+                var staleIngress = stale.GetRequiredService<IRawCaptureIngress>();
+                await staleIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+                var identical = await staleIngress.AcceptAsync(configuration, submission, CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(receipt.Manifest.Descriptor.Capture.CaptureId, identical!.Manifest.Descriptor.Capture.CaptureId);
+                var stagedOutput = Directory.GetFiles(root, $"*{liveOutputArtifactId:N}*", SearchOption.AllDirectories);
+                Assert.IsTrue(stagedOutput.Length >= 2);
+                foreach (var file in stagedOutput.Concat(Directory.GetFiles(Path.Combine(root, "index"), "*.jsonl")))
+                {
+                    var copy = Path.Combine(staleRoot, Path.GetRelativePath(root, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+                    File.Copy(file, copy, overwrite: true);
+                }
+                Assert.HasCount(0, storage.List(staleRoot, day, FrameArtifactRole.Preview, 10));
+            }
             Assert.AreEqual(
                 CameraAgentArtifactReadStatus.NotFound,
                 (await artifactService.OpenContentAsync(liveOutputArtifactId, CancellationToken.None)
                     .ConfigureAwait(false)).Status);
             await laneStore.CompleteAsync(liveLease, CancellationToken.None).ConfigureAwait(false);
+            StringAssert.Contains(storage.List(root, day, FrameArtifactRole.Preview, 10).Single().RelativePath,
+                liveOutputArtifactId.ToString("N"), StringComparison.Ordinal);
             var publishedLive = await artifactService.OpenContentAsync(
                 liveOutputArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, publishedLive.Status);
@@ -3256,6 +3281,7 @@ public sealed partial class ProcessingGraphOperationsTests
         {
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+            if (Directory.Exists(staleRoot)) Directory.Delete(staleRoot, recursive: true);
         }
     }
 

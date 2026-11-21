@@ -24,7 +24,7 @@ internal sealed class FileStorageCaptureProcessingStep(
     IOptions<CameraAgentHostOptions> hostOptions,
     ILogger<FileStorageCaptureProcessingStep> logger,
     CaptureProcessingPersistence? processingPersistence = null,
-    ICaptureProcessingFaultInjector? faults = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
+    ICaptureProcessingFaultInjector? faults = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer, IDurableCaptureProcessingPostCommit
 {
     internal const string StableAlias = "Storage";
 
@@ -123,7 +123,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                             cancellationToken).ConfigureAwait(false);
                         if (exportsCenteredCopy)
                         {
-                            await PublishCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, published,
+                            await StageCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, published,
                                 cancellationToken).ConfigureAwait(false);
                         }
                         await _artifactOutbox.EnqueueAsync(
@@ -178,7 +178,7 @@ internal sealed class FileStorageCaptureProcessingStep(
                                 cancellationToken).ConfigureAwait(false);
                         if (exportsCenteredCopy)
                         {
-                            await PublishCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, stored,
+                            await StageCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, stored,
                                 cancellationToken).ConfigureAwait(false);
                         }
                         uploadManifest = new ArtifactManifestV2(
@@ -346,7 +346,7 @@ internal sealed class FileStorageCaptureProcessingStep(
     private static bool IsExplicitPipeline(CameraModuleConfig config)
         => config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
 
-    private async ValueTask PublishCenteredArchiveAsync(
+    private async ValueTask StageCenteredArchiveAsync(
         CaptureProcessingContext context, RawIngress.RawCaptureReceipt raw, ProcessingProduct product, string? producer,
         ReconstructionDescriptor descriptor, StoredFrameReference stored, CancellationToken cancellationToken)
     {
@@ -355,9 +355,44 @@ internal sealed class FileStorageCaptureProcessingStep(
             producer is null)
             throw new InvalidDataException("The centered archive copy has no authorized Storage execution.");
 
+        var identity = await FileSystemFrameStorageService.StageArchiveAsync(Options.StorageRoot, stored, descriptor,
+            raw, execution, producer, product.OutputIdentitySha256, product.ContentIdentitySha256, cancellationToken)
+            .ConfigureAwait(false);
+        context.RecordArchivePublication(stored.RelativePath.Replace('\\', '/'), identity);
         faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, storageNode);
-        await FileSystemFrameStorageService.PublishArchiveAsync(Options.StorageRoot, stored, descriptor, raw, execution, storageNode,
-            producer, product.OutputIdentitySha256, product.ContentIdentitySha256, cancellationToken).ConfigureAwait(false);
+    }
+
+    bool IDurableCaptureProcessingPostCommit.RequiresSuccessfulCommitCallback => true;
+
+    async ValueTask IDurableCaptureProcessingPostCommit.OnCommittedAsync(
+        CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
+    {
+        if (context.CenteredExposure is null ||
+            context.ProcessingExecution is not { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } execution)
+            return;
+        if (_processingPersistence is null || context.CurrentNodeId is not { } storageNode)
+            throw new InvalidOperationException("Centered Storage requires durable archive publication evidence.");
+
+        var copies = await _processingPersistence.ReadCommittedArchivePublicationsAsync(
+            execution.ExecutionId, storageNode, cancellationToken).ConfigureAwait(false);
+        if (copies.Count == 0)
+            return;
+        var gate = StorageLifecycleLock.ForRoot(Options.StorageRoot);
+        await StorageLifecycleLock.WaitAsync(gate, "archive-receipt", _logger, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var copy in copies)
+            {
+                faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyCommittedBeforeReceipt, storageNode);
+                await FileSystemFrameStorageService.PublishCommittedArchiveAsync(
+                    Options.StorageRoot, copy.RelativePath, copy.Identity, execution.ExecutionId, storageNode, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     internal bool QueuesUpload(string? producerStepId, FrameArtifactRole role, string? variant, string? recipeName)

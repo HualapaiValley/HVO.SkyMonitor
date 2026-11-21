@@ -35,11 +35,44 @@ internal sealed partial class SqliteCaptureProcessingStore
         LEFT JOIN processing_execution_nodes node
           ON node.execution_id = execution.execution_id
          AND node.node_id = CASE
-            WHEN run.linear_node_id = 'calibration' AND NOT EXISTS (
+            WHEN run.linear_node_id = 'Calibration' COLLATE NOCASE AND NOT EXISTS (
                 SELECT 1 FROM processing_execution_nodes exact
-                WHERE exact.execution_id = execution.execution_id AND exact.node_id = 'calibration')
+                WHERE exact.execution_id = execution.execution_id AND exact.node_id = run.linear_node_id)
             THEN 'Calibration' ELSE run.linear_node_id END
         """;
+
+    internal async ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
+        Guid executionId, string nodeId, CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT input.variant, input.identity_sha256
+            FROM processing_executions execution
+            JOIN centered_exposure_attempts exposure ON exposure.capture_id = execution.capture_id
+            JOIN processing_execution_nodes bound
+              ON bound.execution_id = execution.execution_id AND bound.node_id = $node
+            JOIN processing_nodes node
+              ON node.capture_id = execution.capture_id AND node.node_id = bound.node_id
+              AND node.plan_sha256 = bound.plan_sha256 AND node.attempt = bound.attempt_count
+              AND node.completed_unix_ms = bound.completed_unix_ms
+            JOIN processing_node_inputs input ON input.capture_id = node.capture_id AND input.node_id = node.node_id
+            WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
+              AND execution.trigger_kind = 'capture' AND execution.allow_automatic_publication = 1
+              AND bound.status = 'Completed' AND node.status = 'Completed'
+              AND input.kind = 'CanonicalContext' AND input.name = 'centered-archive' AND input.schema_version = $schema
+            ORDER BY input.input_ordinal;
+            """;
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$schema", Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<(string, string)>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            result.Add((reader.GetString(0), reader.GetString(1)));
+        return result;
+    }
 
     internal static async Task<bool> PublishMissingCenteredLinearAsync(
         SqliteConnection connection, SqliteTransaction transaction, Guid executionId, CancellationToken cancellationToken)

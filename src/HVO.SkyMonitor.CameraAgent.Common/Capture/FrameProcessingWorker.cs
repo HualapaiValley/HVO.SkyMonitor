@@ -282,9 +282,11 @@ internal sealed class FrameProcessingWorker
                             if (item.Execution?.AllowAutomaticPublication != false &&
                                 node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
                             {
-                                await RunPostCommitCleanupAsync(
+                                var finished = await RunPostCommitCleanupAsync(
                                     restoredCommit, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                                 cancellationToken.ThrowIfCancellationRequested();
+                                if (!finished)
+                                    return Finish(RetryOrWait("processing.post-commit-incomplete"));
                             }
                             logger.CaptureProcessingOutputExisting(node.Id);
                         }
@@ -509,9 +511,11 @@ internal sealed class FrameProcessingWorker
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
                         {
-                            await RunPostCommitCleanupAsync(
+                            var finished = await RunPostCommitCleanupAsync(
                                 memoryOnlyCleanup, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                             cancellationToken.ThrowIfCancellationRequested();
+                            if (!finished)
+                                return Finish(RetryOrWait("processing.post-commit-incomplete"));
                         }
                     }
                     else
@@ -526,9 +530,11 @@ internal sealed class FrameProcessingWorker
                             status == DurableProcessingNodeStatus.Completed &&
                             node.Step is IDurableCaptureProcessingPostCommit committed)
                         {
-                            await RunPostCommitCleanupAsync(
+                            var finished = await RunPostCommitCleanupAsync(
                                 committed, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                             cancellationToken.ThrowIfCancellationRequested();
+                            if (!finished)
+                                return Finish(RetryOrWait("processing.post-commit-incomplete"));
                         }
                     }
                 }
@@ -613,8 +619,8 @@ internal sealed class FrameProcessingWorker
             ?? throw new InvalidOperationException(
                 "A durable processing window requires the committed raw capture descriptor.");
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit cleanup cannot invalidate a durable node or block its dependents.")]
-    private static async ValueTask RunPostCommitCleanupAsync(
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit failures retain the completed node. Callbacks that publish durable evidence request retry.")]
+    private static async ValueTask<bool> RunPostCommitCleanupAsync(
         IDurableCaptureProcessingPostCommit cleanup,
         CaptureProcessingGraphNode node,
         CaptureProcessingContext context,
@@ -626,12 +632,14 @@ internal sealed class FrameProcessingWorker
         {
             await cleanup.OnCommittedAsync(
                 new CaptureDescriptorProcessingContext(context), cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (Exception exception)
         {
             var reason = exception is OperationCanceledException ? "cancelled" : "failed";
             telemetry.RecordPostCommitCleanupFailure(node, reason);
             logger.CaptureProcessingPostCommitCleanupFailed(node.Id, exception);
+            return !cleanup.RequiresSuccessfulCommitCallback;
         }
     }
 

@@ -22,6 +22,10 @@ public sealed record CaptureScheduleRuntimeSnapshot(
     public CaptureScheduleDecision? CurrentDecision { get; init; }
 
     public long? PreparedStateVersion { get; init; }
+
+    internal CaptureSchedulePreview? AdmissionExpansion { get; init; }
+
+    internal CaptureSchedulePreview AdmissionPolicy => AdmissionExpansion ?? Preview;
 }
 
 public sealed record CaptureScheduleGrant(
@@ -220,7 +224,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             var admissionSnapshot = _admissionCoordinator.Snapshot;
             var decision = CaptureScheduleEvaluator.Evaluate(
                 snapshot.Revision.Definition,
-                snapshot.Preview,
+                snapshot.AdmissionPolicy,
                 new CaptureScheduleEvaluationRequest(
                     now,
                     ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
@@ -265,7 +269,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         var admissionSnapshot = _admissionCoordinator.Snapshot;
         var decision = CaptureScheduleEvaluator.Evaluate(
             snapshot.Revision.Definition,
-            snapshot.Preview,
+            snapshot.AdmissionPolicy,
             new CaptureScheduleEvaluationRequest(
                 now,
                 ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
@@ -391,7 +395,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                 current.Revision.RevisionId, now, cancellationToken).ConfigureAwait(false);
             var decision = CaptureScheduleEvaluator.Evaluate(
                 current.Revision.Definition,
-                current.Preview,
+                current.AdmissionPolicy,
                 new CaptureScheduleEvaluationRequest(
                     now,
                     ResolveSafetyState(_rawIngressState.Snapshot, _captureLaneState.Snapshot),
@@ -693,21 +697,37 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         }
         var location = configuration.DeploymentLocation?.ToProvenance()
             ?? throw new InvalidOperationException("A validated deployment location is required for capture scheduling.");
-        var persisted = await _store.TryReadPreviewAsync(
-            revision, location, utc, cancellationToken).ConfigureAwait(false);
-        if (persisted is not null)
-        {
-            return new CaptureScheduleRuntimeSnapshot(
-                revision, pendingRevisionId, configuration, persisted, location);
-        }
         var observer = configuration.ResolveObservatory(utc);
         var timeZone = TimeZoneInfo.FindSystemTimeZoneById(observer.TimeZoneId);
         var localDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(utc, timeZone).DateTime);
-        var preview = CaptureScheduleIntervalExpander.Expand(
-            revision.Definition, localDate, 1, timeZone, observer, _solarEvents);
-        await _store.PersistPreviewAsync(revision, location, preview, cancellationToken).ConfigureAwait(false);
-        return new CaptureScheduleRuntimeSnapshot(
-            revision, pendingRevisionId, configuration, preview, location);
+        var preview = await _store.TryReadPreviewAsync(revision, location, utc, cancellationToken).ConfigureAwait(false);
+        if (preview is null)
+        {
+            preview = CaptureScheduleIntervalExpander.Expand(
+                revision.Definition, localDate, 1, timeZone, observer, _solarEvents);
+            await _store.PersistPreviewAsync(revision, location, preview, cancellationToken).ConfigureAwait(false);
+        }
+        CaptureSchedulePreview? admissionExpansion = null;
+        if (configuration.CenteredExposure is not null)
+        {
+            // A selected window can cover four local days. An always-open fallback
+            // can also span the gap to the previous or next weekly window.
+            var padding = revision.Definition.LegacyAlwaysOpen && revision.Definition.WeeklyWindows.Count > 0 ? 11 : 4;
+            var firstDate = localDate.AddDays(-padding);
+            var start = CaptureScheduleTimeZone.ResolveDay(firstDate, timeZone).StartUtc;
+            admissionExpansion = await _store.TryReadPreviewAsync(revision, location, utc,
+                CaptureScheduleIntervalExpander.AdmissionAlgorithmVersion, start, cancellationToken).ConfigureAwait(false);
+            if (admissionExpansion is null)
+            {
+                admissionExpansion = CaptureScheduleIntervalExpander.ExpandAdmission(
+                    revision.Definition, firstDate, 2 * padding + 1, timeZone, observer, _solarEvents);
+                await _store.PersistPreviewAsync(revision, location, admissionExpansion, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return new CaptureScheduleRuntimeSnapshot(revision, pendingRevisionId, configuration, preview, location)
+        {
+            AdmissionExpansion = admissionExpansion
+        };
     }
 
     private void ValidateConfiguration(CameraModuleConfig configuration)
@@ -776,11 +796,17 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         var interval = decision.Interval ?? throw new InvalidOperationException("An admitted schedule decision needs an interval.");
         var profile = snapshot.Revision.Definition.SetpointProfiles.Single(item =>
             string.Equals(item.Id, decision.SetpointProfileId, StringComparison.Ordinal));
-        var segment = snapshot.Configuration.CenteredExposure is not null ? decision.OpenSegment : null;
-        var start = segment?.StartUtc is { } segmentStart && segmentStart > interval.StartUtc
-            ? segmentStart : interval.StartUtc;
-        var end = segment is not null && decision.NextTransitionUtc is { } transition && transition < interval.EndUtc
-            ? transition : interval.EndUtc;
+        var policy = snapshot.AdmissionPolicy;
+        var segment = snapshot.AdmissionExpansion is not null ? decision.OpenSegment : null;
+        var legacy = segment is not null && interval.Source == CaptureScheduleIntervalSource.LegacyCompatibility;
+        var start = segment?.StartUtc ?? (legacy ? decision.DecisionUtc : interval.StartUtc);
+        var end = segment?.EndUtc ?? interval.EndUtc;
+        if (legacy && snapshot.Revision.Definition.WeeklyWindows.Count > 0 && end > policy.PreviewEndUtc)
+        {
+            // The shutter request cannot extend beyond the evaluated recurring policy.
+            // This dispatch limit does not enter the durable continuity segment.
+            end = policy.PreviewEndUtc;
+        }
         var evidence = new CaptureScheduleAdmissionEvidence(
             CaptureScheduleAdmissionEvidence.CurrentSchemaVersion,
             snapshot.Revision.RevisionId,
@@ -793,13 +819,13 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             start,
             end,
             interval.Id,
-            snapshot.Preview.ExpansionAlgorithmVersion,
-            snapshot.Preview.ExpansionSha256,
-            snapshot.Preview.TimeZoneRuleSha256,
+            policy.ExpansionAlgorithmVersion,
+            policy.ExpansionSha256,
+            policy.TimeZoneRuleSha256,
             snapshot.Location.LocationId,
             snapshot.Location.Version,
             interval.SolarAlgorithmVersion ??
-                (snapshot.Preview.SolarAlgorithmVersion == "none" ? null : snapshot.Preview.SolarAlgorithmVersion),
+                (policy.SolarAlgorithmVersion == "none" ? null : policy.SolarAlgorithmVersion),
             decision.OverrideId);
         return new CaptureScheduleGrant(
             snapshot.Revision,

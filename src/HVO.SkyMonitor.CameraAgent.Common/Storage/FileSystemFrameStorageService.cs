@@ -628,25 +628,13 @@ public sealed class FileSystemFrameStorageService(
         using var schema = journal.CreateCommand();
         schema.CommandText = """
             SELECT name FROM sqlite_schema WHERE type = 'table'
-            AND name IN ('raw_captures', 'centered_exposure_attempts', 'processing_outputs',
-                         'processing_execution_outputs', 'processing_nodes');
+            AND name IN ('processing_outputs', 'processing_execution_outputs', 'processing_nodes');
             """;
         var tables = new HashSet<string>(StringComparer.Ordinal);
         using (var reader = schema.ExecuteReader())
             while (reader.Read())
                 tables.Add(reader.GetString(0));
 
-        var raw = tables.Contains("raw_captures")
-            ? """
-              EXISTS (SELECT 1 FROM raw_captures raw WHERE raw.capture_id = $capture
-                  AND CASE WHEN json_valid(CAST(raw.manifest_json AS TEXT))
-                           THEN json_type(CAST(raw.manifest_json AS TEXT), '$.centeredExposure') IS NULL
-                           ELSE 0 END)
-              """
-            : "0";
-        var centered = tables.Contains("centered_exposure_attempts")
-            ? "EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture)"
-            : "0";
         var published = tables.Contains("processing_outputs") && tables.Contains("processing_execution_outputs") &&
             tables.Contains("processing_nodes")
             ? $$"""
@@ -657,13 +645,10 @@ public sealed class FileSystemFrameStorageService(
                """
             : "0";
         var command = journal.CreateCommand();
-        command.CommandText = $"""
-            SELECT {published} OR ($requires_settlement = 0 AND NOT ({centered}) AND {raw});
-            """;
+        command.CommandText = $"SELECT {published};";
         command.Parameters.Add("$capture", SqliteType.Text);
         command.Parameters.Add("$artifact", SqliteType.Text);
         command.Parameters.Add("$path", SqliteType.Text);
-        command.Parameters.Add("$requires_settlement", SqliteType.Integer);
         return command;
     }
 
@@ -678,9 +663,9 @@ public sealed class FileSystemFrameStorageService(
         if (receiptExists && MatchesArchiveReceipt(storageRoot, archived, binding, artifactId))
             return true;
 
-        var needsProof = receiptExists || binding.RequiresSettlement;
+        var needsProof = receiptExists || binding.RequiresSettlement || File.Exists(ArchiveStagePath(payloadPath));
         if (visibility is not null)
-            return ReadBrowseVisibility(visibility, binding, artifactId, needsProof);
+            return ReadBrowseVisibility(visibility, binding, artifactId);
         if (needsProof)
             return false;
 
@@ -690,7 +675,7 @@ public sealed class FileSystemFrameStorageService(
         using var lateVisibility = lateJournal is null ? null : CreateBrowseVisibility(lateJournal);
         return lateVisibility is null
             ? !HasRetainedCenteredRaw(storageRoot, binding)
-            : ReadBrowseVisibility(lateVisibility, binding, artifactId, needsProof);
+            : ReadBrowseVisibility(lateVisibility, binding, artifactId);
     }
 
     private static bool HasRetainedCenteredRaw(string storageRoot, VersionedSidecarBinding binding)
@@ -708,18 +693,19 @@ public sealed class FileSystemFrameStorageService(
     }
 
     private static bool ReadBrowseVisibility(
-        SqliteCommand visibility, VersionedSidecarBinding binding, Guid artifactId, bool needsProof)
+        SqliteCommand visibility, VersionedSidecarBinding binding, Guid artifactId)
     {
         visibility.Parameters["$capture"].Value = binding.CaptureId.ToString("N");
         visibility.Parameters["$artifact"].Value = artifactId.ToString("N");
         visibility.Parameters["$path"].Value = binding.RelativeArtifactPath.Replace('\\', '/');
-        visibility.Parameters["$requires_settlement"].Value = needsProof ? 1 : 0;
         return visibility.ExecuteScalar() is 1L;
     }
 
-    internal static async ValueTask PublishArchiveAsync(
+    internal const string ArchiveEvidenceVersion = "centered-archive-copy-v1";
+
+    internal static async ValueTask<string> StageArchiveAsync(
         string storageRoot, StoredFrameReference stored, ReconstructionDescriptor descriptor, RawCaptureReceipt raw,
-        ProcessingExecutionContext execution, string storageNode, string producer, string outputIdentity, string? contentIdentity,
+        ProcessingExecutionContext execution, string producer, string outputIdentity, string? contentIdentity,
         CancellationToken cancellationToken)
     {
         var payloadPath = stored.AbsolutePath;
@@ -733,9 +719,9 @@ public sealed class FileSystemFrameStorageService(
             throw new InvalidDataException("The archive copy is not bound to its centered execution output.");
 
         var receipt = new ArchivePublicationReceipt(StorageRootIdentity.Key(storageRoot), relativePath,
-            descriptor.Capture.CaptureId, execution.ExecutionId, storageNode, producer, artifact.ArtifactId,
+            descriptor.Capture.CaptureId, execution.ExecutionId, string.Empty, producer, artifact.ArtifactId,
             outputIdentity, contentIdentity, CaptureContractJson.ComputeDescriptorSha256(descriptor), artifact.ChecksumSha256);
-        var path = ArchiveReceiptPath(payloadPath);
+        var path = ArchiveStagePath(payloadPath);
         var indexGate = FrameIndexLock.ForRoot(storageRoot);
         await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -747,6 +733,79 @@ public sealed class FileSystemFrameStorageService(
         {
             indexGate.Release();
         }
+        return ArchiveIdentity(receipt);
+    }
+
+    internal static async ValueTask PublishCommittedArchiveAsync(
+        string storageRoot, string relativePath, string identity, Guid executionId, string nodeId,
+        CancellationToken cancellationToken)
+    {
+        var payloadPath = Path.GetFullPath(Path.Combine(storageRoot, relativePath));
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, payloadPath);
+        var stagePath = ArchiveStagePath(payloadPath);
+        var receiptPath = ArchiveReceiptPath(payloadPath);
+        var final = ReadArchiveReceipt(storageRoot, receiptPath);
+        if (final is not null)
+        {
+            // The first committed Storage node owns the receipt. Another authorized node can
+            // export the same copy without replacing its attribution.
+            if (!string.IsNullOrWhiteSpace(final.StorageNode) && final.ExecutionId == executionId &&
+                final.Root == StorageRootIdentity.Key(storageRoot) && final.RelativePath == relativePath &&
+                ArchiveIdentity(final) == identity)
+                return;
+            throw new InvalidDataException("The existing archive receipt differs from the committed copy.");
+        }
+
+        var staged = ReadArchiveReceipt(storageRoot, stagePath);
+        if (staged is null && !File.Exists(payloadPath) && !File.Exists(Path.ChangeExtension(payloadPath, ".json")))
+            return; // Retention removed the copy after its Storage node committed.
+        if (staged is null || staged.Root != StorageRootIdentity.Key(storageRoot) ||
+            staged.RelativePath != relativePath || staged.ExecutionId != executionId || ArchiveIdentity(staged) != identity)
+            throw new InvalidDataException("The staged archive differs from the committed copy.");
+
+        var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
+        if (!TryReadMetadataFile(sidecarPath, out var metadata, out var binding) || binding is null ||
+            !MatchesVersionedBinding(storageRoot, payloadPath, binding) ||
+            !MatchesArchiveBinding(storageRoot, staged, binding, metadata.ArtifactId))
+            throw new InvalidDataException("The staged archive files differ from the committed copy.");
+
+        var payload = new FileStream(payloadPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        await using (payload.ConfigureAwait(false))
+        {
+            var checksum = await PayloadChecksum.ComputeSha256Async(payload, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(checksum, staged.PayloadSha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The staged archive payload checksum differs from the committed copy.");
+        }
+
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var receipt = staged with { StorageNode = nodeId };
+            await WriteAtomicallyAsync(storageRoot, receiptPath,
+                JsonSerializer.SerializeToUtf8Bytes(receipt, SerializerOptions), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            indexGate.Release();
+        }
+    }
+
+    private static string ArchiveIdentity(ArchivePublicationReceipt receipt)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(receipt with { StorageNode = string.Empty });
+
+    private static ArchivePublicationReceipt? ReadArchiveReceipt(string storageRoot, string path)
+    {
+        if (!File.Exists(path))
+            return null;
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
+        using var stream = File.OpenRead(path);
+        if (stream.Length > 4096)
+            throw new InvalidDataException("The archive receipt exceeds its length limit.");
+        return JsonSerializer.Deserialize<ArchivePublicationReceipt>(stream, SerializerOptions)
+            ?? throw new InvalidDataException("The archive receipt is missing its evidence.");
     }
 
     private static bool MatchesArchiveReceipt(
@@ -754,36 +813,43 @@ public sealed class FileSystemFrameStorageService(
     {
         try
         {
-            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
-            using var stream = File.OpenRead(path);
-            var receipt = stream.Length <= 4096
-                ? JsonSerializer.Deserialize<ArchivePublicationReceipt>(stream, SerializerOptions) : null;
-            return receipt is not null && receipt.ExecutionId != Guid.Empty &&
-                !string.IsNullOrWhiteSpace(receipt.StorageNode) && !string.IsNullOrWhiteSpace(receipt.Producer) &&
-                (binding.Producer is null || binding.Producer == receipt.Producer) &&
-                receipt.Root == StorageRootIdentity.Key(storageRoot) &&
-                receipt.RelativePath == binding.RelativeArtifactPath.Replace('\\', '/') &&
-                receipt.CaptureId == binding.CaptureId && receipt.ArtifactId == artifactId &&
-                ProcessingIdentity.CreateArtifactId(receipt.OutputIdentity) == artifactId &&
-                receipt.DescriptorSha256 == binding.Manifest.IdempotencyKey &&
-                receipt.PayloadSha256 == binding.Manifest.Descriptor.Artifact.ChecksumSha256;
+            var receipt = ReadArchiveReceipt(storageRoot, path);
+            return receipt is not null && !string.IsNullOrWhiteSpace(receipt.StorageNode) &&
+                MatchesArchiveBinding(storageRoot, receipt, binding, artifactId);
         }
-        catch (Exception exception) when (exception is IOException or JsonException or ArgumentException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or ArgumentException or UnauthorizedAccessException)
         {
             return false;
         }
     }
 
+    private static bool MatchesArchiveBinding(
+        string storageRoot, ArchivePublicationReceipt receipt, VersionedSidecarBinding binding, Guid artifactId)
+        => receipt.ExecutionId != Guid.Empty && !string.IsNullOrWhiteSpace(receipt.Producer) &&
+           (binding.Producer is null || binding.Producer == receipt.Producer) &&
+           receipt.Root == StorageRootIdentity.Key(storageRoot) &&
+           receipt.RelativePath == binding.RelativeArtifactPath.Replace('\\', '/') &&
+           receipt.CaptureId == binding.CaptureId && receipt.ArtifactId == artifactId &&
+           ProcessingIdentity.CreateArtifactId(receipt.OutputIdentity) == artifactId &&
+           receipt.DescriptorSha256 == binding.Manifest.IdempotencyKey &&
+           receipt.PayloadSha256 == binding.Manifest.Descriptor.Artifact.ChecksumSha256;
+
     internal static string ArchiveReceiptPath(string payloadPath) => Path.ChangeExtension(payloadPath, ".archive");
+
+    internal const string ArchiveStageExtension = ".archive-stage";
+
+    internal static string ArchiveStagePath(string payloadPath) => Path.ChangeExtension(payloadPath, ArchiveStageExtension);
 
     internal static void DeleteArchiveReceipt(string storageRoot, string payloadPath)
     {
-        var path = ArchiveReceiptPath(payloadPath);
-        if (!File.Exists(path))
-            return;
-        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
-        RetainedFileMutations.Delete(path);
-        RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
+        foreach (var path in new[] { ArchiveReceiptPath(payloadPath), ArchiveStagePath(payloadPath) })
+        {
+            if (!File.Exists(path))
+                continue;
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
+            RetainedFileMutations.Delete(path);
+            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
+        }
     }
 
     private static bool MatchesVersionedBinding(

@@ -199,7 +199,8 @@ public sealed class AnnotationEnvironmentSourceTests
             Pipeline = legacy.Pipeline with { Steps = steps }
         };
 
-        config = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, config).ConfigureAwait(false);
+        var file = config;
+        config = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
         provider.GetRequiredService<CaptureLaneState>().Update([]);
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var token = deadline.Token;
@@ -232,7 +233,35 @@ public sealed class AnnotationEnvironmentSourceTests
         var raw = await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false);
         Assert.AreEqual(started, raw.Manifest.Descriptor.Timing.ExposureStartedUtc);
         Assert.AreEqual(grant.Evidence, raw.Manifest.Descriptor.RetainedScheduleAdmission);
-        var standard = await DriveLaneAsync(provider, "standard", config).ConfigureAwait(false);
+        var activeInterval = TimeSpan.FromSeconds(10);
+        var nextSchedule = config.Schedule! with
+        {
+            SetpointProfiles = [config.Schedule.SetpointProfiles.Single() with
+            {
+                CadenceMode = CaptureCadenceMode.MinimumStartInterval,
+                CaptureInterval = activeInterval
+            }]
+        };
+        var scheduleState = await provider.GetRequiredService<SqliteCaptureScheduleStore>().GetSnapshotAsync(token).ConfigureAwait(false);
+        var staged = await schedule.StageAsync(LocalCaptureProfileDefinition.CreateV2(config, nextSchedule),
+            "annotation-next-stage", scheduleState.Version, "fixture", null, token).ConfigureAwait(false);
+        var newRevision = staged.PendingRevision!.RevisionId;
+        await schedule.ActivateAsync(newRevision, "annotation-next-activate", staged.Version, "fixture", null, token)
+            .ConfigureAwait(false);
+        await provider.DisposeAsync().ConfigureAwait(false);
+
+        using var restarted = Harness.Create("disabled", recorder, clock, harness.Root);
+        var reopenedProvider = restarted.Provider;
+        var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(reopenedProvider, file).ConfigureAwait(false);
+        var reopenedSchedule = reopenedProvider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
+        Assert.AreEqual(newRevision, reopenedSchedule.Snapshot!.Revision.RevisionId);
+        Assert.AreNotEqual(grant.Evidence.ScheduleRevisionId, newRevision);
+        Assert.AreEqual(activeInterval, active.Schedule!.SetpointProfiles.Single().CaptureInterval);
+        var options = reopenedProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>();
+        using var reopenedStore = new SqliteCaptureProcessingStore(options, clock);
+        var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
+        Assert.IsNull(await reopenedStore.ReadNodeAsync(captureId, "annotation", token).ConfigureAwait(false));
+        var standard = await DriveLaneAsync(reopenedProvider, "standard", active).ConfigureAwait(false);
         Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, standard.Result.Outcome, standard.Result.Reason);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, recorder.Outcome);
         Assert.IsNotNull(recorder.Overlay);
@@ -240,9 +269,22 @@ public sealed class AnnotationEnvironmentSourceTests
         Assert.AreEqual("SCHEDULE continuous", recorder.Overlay.TopLeft[0]);
         Assert.AreEqual("CADENCE 0.000 S", recorder.Overlay.TopLeft[1]);
 
-        var options = provider.GetRequiredService<IOptions<CameraAgentHostOptions>>();
-        using var reopenedStore = new SqliteCaptureProcessingStore(options, clock);
-        var node = await reopenedStore.ReadNodeAsync(raw.Manifest.Descriptor.Capture.CaptureId, "annotation", token).ConfigureAwait(false);
+        var captured = standard.Context.RawCapture;
+        Assert.AreEqual(raw.CommittedManifestSha256, captured.CommittedManifestSha256);
+        var factsContext = CreateStepContext(active, standard.Context.Submission with { EffectiveInterval = activeInterval }, captured);
+        factsContext.BeginNode("frame-facts", []);
+        var scene = await CreateSceneAsync(captured.Manifest.Descriptor).ConfigureAwait(false);
+        var facts = await reopenedProvider.GetRequiredService<PresentationMetadataFactsBuilder>().BuildAsync(
+            factsContext, scene, null, [captured.Manifest.Descriptor.Artifact.ArtifactId], [], token, retainFrameFacts: true)
+            .ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var serializedFacts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(JsonSerializer.SerializeToUtf8Bytes(facts));
+        Assert.IsNotNull(serializedFacts);
+        Assert.AreEqual("continuous", serializedFacts.Capture.GetProperty("SetpointProfileId").GetString());
+        Assert.AreEqual(0d, serializedFacts.Capture.GetProperty("CadenceSeconds").GetDouble());
+        Assert.AreEqual(0d, serializedFacts.FrameFacts!.Facts.Single(fact => fact.Key == "acquisition.cadenceSeconds").Number);
+
+        var node = await reopenedStore.ReadNodeAsync(captureId, "annotation", token).ConfigureAwait(false);
         Assert.IsNotNull(node);
         Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
         var retained = node.Outputs.Single();
@@ -634,12 +676,15 @@ public sealed class AnnotationEnvironmentSourceTests
     /// <summary>The production composition over a temp root, with logs recorded and the network refused.</summary>
     private sealed class Harness : IDisposable
     {
-        private Harness(string root, ServiceProvider provider, RecordingLoggerProvider logs, FailClosedHandler network)
+        private readonly bool _ownsRoot;
+
+        private Harness(string root, ServiceProvider provider, RecordingLoggerProvider logs, FailClosedHandler network, bool ownsRoot)
         {
             Root = root;
             Provider = provider;
             Logs = logs;
             Network = network;
+            _ownsRoot = ownsRoot;
         }
 
         internal string Root { get; }
@@ -650,9 +695,10 @@ public sealed class AnnotationEnvironmentSourceTests
 
         internal FailClosedHandler Network { get; }
 
-        internal static Harness Create(string profile, IProcessingRecipeExecutor? executor = null, TimeProvider? clock = null)
+        internal static Harness Create(
+            string profile, IProcessingRecipeExecutor? executor = null, TimeProvider? clock = null, string? retainedRoot = null)
         {
-            var root = Path.Combine(Path.GetTempPath(), "ci1784-annotation", Guid.NewGuid().ToString("N"));
+            var root = retainedRoot ?? Path.Combine(Path.GetTempPath(), "ci1784-annotation", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             var logs = new RecordingLoggerProvider();
             var network = new FailClosedHandler();
@@ -677,13 +723,13 @@ public sealed class AnnotationEnvironmentSourceTests
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<IEnvironmentalAcquisitionStateStore>(),
                 serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot));
-            return new Harness(root, services.BuildServiceProvider(), logs, network);
+            return new Harness(root, services.BuildServiceProvider(), logs, network, ownsRoot: retainedRoot is null);
         }
 
         public void Dispose()
         {
             Provider.Dispose();
-            if (Directory.Exists(Root))
+            if (_ownsRoot && Directory.Exists(Root))
             {
                 Directory.Delete(Root, recursive: true);
             }

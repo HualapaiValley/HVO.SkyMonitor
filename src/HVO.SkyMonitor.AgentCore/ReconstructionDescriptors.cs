@@ -277,16 +277,14 @@ internal static class ReconstructionDescriptorValidator
             (!Enum.IsDefined(reporting.RequestMode) || !Enum.IsDefined(reporting.ResultMode) ||
              !CaptureScheduleContract.IsValidCaptureInterval(acquisition.CadenceMode, reporting.RequestedInterval) ||
              reporting.ProcessingLatency < TimeSpan.Zero ||
-             reporting.ReportedSetpoint is not { Exposure.Ticks: > 0 } setpoint ||
-             !double.IsFinite(setpoint.Gain) || setpoint.Gain < 0 ||
-             !IsFinitePositive(setpoint.TargetFps) || setpoint.NextIntervalOverride is { Ticks: <= 0 }))
+             reporting.ReportedSetpoint?.IsValid() != true))
         {
             return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition.module");
         }
         if (acquisition?.Module?.RequestedSetpoint is { } requested &&
             (requested.Exposure != descriptor.Controls.RequestedExposure ||
              requested.Gain != descriptor.Controls.RequestedGain ||
-             !IsFinitePositive(requested.TargetFps) || requested.NextIntervalOverride is { Ticks: <= 0 }))
+             !requested.IsValid()))
         {
             return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.centeredAcquisition.module.requestedSetpoint");
         }

@@ -33,21 +33,37 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 public sealed partial class RawCaptureIngressTests
 {
     [TestMethod]
-    [DataRow(false, false)]
-    [DataRow(true, false)]
-    [DataRow(false, true)]
-    public async Task CenteredContinuousScheduleReopensSameWindowWithConfirmedAdmissionVersion(bool pauseAndResume, bool missedBlackout)
+    [DataRow(false, false, false)]
+    [DataRow(true, false, false)]
+    [DataRow(false, true, false)]
+    [DataRow(false, false, true)]
+    [DataRow(false, true, true)]
+    public async Task CenteredContinuousScheduleReopensSameWindowWithConfirmedAdmissionVersion(
+        bool pauseAndResume, bool missedBlackout, bool crossMidnight)
     {
         var root = CreateRoot();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var token = deadline.Token;
         try
         {
-            var clock = new ExposureTestTimeProvider(Timestamp(8).AddMinutes(5));
+            var firstUtc = crossMidnight ? Timestamp(23).AddMinutes(55) : Timestamp(8).AddMinutes(5);
+            var clock = new ExposureTestTimeProvider(firstUtc);
             var config = CenteredContinuousConfiguration(clock.GetUtcNow());
-            var blackoutStart = clock.GetUtcNow().AddSeconds(1);
-            var blackoutEnd = blackoutStart.AddSeconds(2);
-            if (missedBlackout)
+            var blackoutStart = crossMidnight ? Timestamp(12).AddDays(1) : firstUtc.AddSeconds(1);
+            var blackoutEnd = blackoutStart + (crossMidnight ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(2));
+            if (crossMidnight)
+                config = config with
+                {
+                    Schedule = config.Schedule! with
+                    {
+                        WeeklyWindows = [new("same-window", firstUtc.DayOfWeek,
+                            new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(20, 0)),
+                            new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(4, 0),
+                                DayOffset: 1, Offset: TimeSpan.FromDays(1)), "continuous")],
+                        Blackouts = [new("missed", blackoutStart, blackoutEnd)]
+                    }
+                };
+            else if (missedBlackout)
                 config = config with
                 {
                     Schedule = config.Schedule! with
@@ -57,6 +73,7 @@ public sealed partial class RawCaptureIngressTests
                 };
             var freshTarget = missedBlackout || pauseAndResume;
             var captures = new List<(ExposureAttemptKey Key, CaptureRequest Request, CaptureResult Result)>();
+            var operatorStates = new List<CaptureScheduleOperatorState>();
             ExposureKey first;
             long version;
             using (var setup = new CenteredFixture(root, timeProvider: clock))
@@ -82,8 +99,13 @@ public sealed partial class RawCaptureIngressTests
                 }
             }
 
-            if (missedBlackout)
-                clock.Advance(blackoutEnd - clock.GetUtcNow());
+            if (crossMidnight || missedBlackout)
+            {
+                var resumeUtc = crossMidnight
+                    ? missedBlackout ? Timestamp(2).AddDays(2) : Timestamp(0).AddDays(1).AddMinutes(5)
+                    : blackoutEnd;
+                clock.Advance(resumeUtc - clock.GetUtcNow());
+            }
             using var restarted = new CenteredFixture(root, timeProvider: clock);
             using var afterTelemetry = new CaptureControlTelemetry();
             using var afterAdmission = new CaptureAdmissionCoordinator(restarted.Ingress, restarted.Options, clock, afterTelemetry);
@@ -125,6 +147,20 @@ public sealed partial class RawCaptureIngressTests
             var second = await restarted.Ingress.ReadCenteredRawAsync(subsequent.AcquisitionHead!.Exposure, token).ConfigureAwait(false);
             Assert.AreEqual(recorded.ScheduleAdmission.IntervalId, second!.Manifest.Descriptor.RetainedScheduleAdmission!.IntervalId);
             Assert.AreEqual(afterAdmission.Snapshot.Version, second.Run.AdmissionStateVersion);
+            var secondSchedule = second.Manifest.Descriptor.RetainedScheduleAdmission!;
+            Assert.AreEqual(recorded.ScheduleAdmission.EffectiveEndUtc, operatorStates[0].Decision.NextTransitionUtc);
+            Assert.AreEqual(secondSchedule.EffectiveEndUtc, operatorStates[1].Decision.NextTransitionUtc);
+            Assert.AreEqual(CaptureScheduleIntervalExpander.AlgorithmVersion, operatorStates[1].Preview.ExpansionAlgorithmVersion);
+            if (crossMidnight)
+            {
+                Assert.AreNotEqual(operatorStates[0].Preview.PreviewStartUtc, operatorStates[1].Preview.PreviewStartUtc);
+                Assert.AreEqual(missedBlackout ? Timestamp(4).AddDays(2) : blackoutStart, secondSchedule.EffectiveEndUtc);
+                Assert.AreEqual(blackoutStart, recorded.ScheduleAdmission.EffectiveEndUtc);
+            }
+            else
+            {
+                Assert.AreEqual(recorded.ScheduleAdmission.ExpansionSha256, secondSchedule.ExpansionSha256);
+            }
             using var db = await OpenJournalAsync(root).ConfigureAwait(false);
             var retirement = missedBlackout ? "schedule-grant-changed" : "schedule-admission-interrupted";
             Assert.AreEqual(freshTarget ? 1L : 0L, await ScalarLongAsync(db, $"""
@@ -168,6 +204,12 @@ public sealed partial class RawCaptureIngressTests
                 lanes.Update([]);
                 using var runtime = new CaptureScheduleRuntimeCoordinator(schedule, admission, setup.RawState, lanes, setup.Factory, clock);
                 await runtime.InitializeAsync(config, token).ConfigureAwait(false);
+                var snapshot = runtime.Snapshot!;
+                var persisted = await schedule.TryReadPreviewAsync(snapshot.Revision, snapshot.Location, clock.GetUtcNow(),
+                    CaptureScheduleIntervalExpander.AdmissionAlgorithmVersion, snapshot.AdmissionPolicy.PreviewStartUtc, token)
+                    .ConfigureAwait(false);
+                Assert.AreEqual(snapshot.AdmissionPolicy.ExpansionSha256, persisted?.ExpansionSha256);
+                operatorStates.Add(await runtime.GetOperatorStateAsync(token).ConfigureAwait(false));
                 var notifier = new CenteredTraceNotifier { Committed = stop.Cancel };
                 var host = new CaptureHostContext(config, setup.Ingress, notifier);
                 var module = new CenteredRunnerModule((attempt, request, _) =>

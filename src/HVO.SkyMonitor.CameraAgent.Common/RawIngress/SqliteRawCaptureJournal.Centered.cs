@@ -323,8 +323,12 @@ internal sealed partial class SqliteRawCaptureJournal
         var json = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as byte[];
         try
         {
-            return (json is null ? null : JsonSerializer.Deserialize<CaptureSetpoint>(json))
-                ?? throw new RawIngressConflictException("The centered raw capture has no retained dispatched settings request.");
+            var request = json is null ? null : JsonSerializer.Deserialize<CaptureSetpoint>(json);
+            if (request is null)
+                throw new RawIngressConflictException("The centered raw capture has no retained dispatched settings request.");
+            if (!request.IsValid())
+                throw new RawIngressConflictException("The centered dispatched settings request is invalid.");
+            return request;
         }
         catch (JsonException exception)
         {

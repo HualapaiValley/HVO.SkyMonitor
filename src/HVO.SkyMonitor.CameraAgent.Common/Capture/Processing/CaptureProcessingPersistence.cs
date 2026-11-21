@@ -310,6 +310,10 @@ internal sealed partial class CaptureProcessingPersistence(
         CancellationToken cancellationToken)
         => _store.ReadExecutionNodeAsync(execution.ExecutionId, captureId, nodeId, cancellationToken);
 
+    internal ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
+        Guid executionId, string nodeId, CancellationToken cancellationToken)
+        => _store.ReadCommittedArchivePublicationsAsync(executionId, nodeId, cancellationToken);
+
     internal ValueTask BeginExecutionNodeAttemptAsync(
         ProcessingExecutionContext execution,
         CaptureProcessingGraphNode node,

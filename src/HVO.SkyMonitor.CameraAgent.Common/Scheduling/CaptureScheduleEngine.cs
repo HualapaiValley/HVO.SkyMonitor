@@ -135,6 +135,7 @@ public static class CaptureScheduleTimeZone
 public static class CaptureScheduleIntervalExpander
 {
     public const string AlgorithmVersion = "capture-schedule-expand-v1";
+    internal const string AdmissionAlgorithmVersion = "capture-schedule-admission-expand-v1";
 
     public static CaptureSchedulePreview Expand(
         CaptureScheduleDefinition definition,
@@ -143,6 +144,25 @@ public static class CaptureScheduleIntervalExpander
         TimeZoneInfo timeZone,
         ObservatoryLocation observer,
         ISolarEventCalculator solarEvents)
+        => Expand(definition, firstLocalDate, dayCount, timeZone, observer, solarEvents, admission: false);
+
+    internal static CaptureSchedulePreview ExpandAdmission(
+        CaptureScheduleDefinition definition,
+        DateOnly firstLocalDate,
+        int dayCount,
+        TimeZoneInfo timeZone,
+        ObservatoryLocation observer,
+        ISolarEventCalculator solarEvents)
+        => Expand(definition, firstLocalDate, dayCount, timeZone, observer, solarEvents, admission: true);
+
+    private static CaptureSchedulePreview Expand(
+        CaptureScheduleDefinition definition,
+        DateOnly firstLocalDate,
+        int dayCount,
+        TimeZoneInfo timeZone,
+        ObservatoryLocation observer,
+        ISolarEventCalculator solarEvents,
+        bool admission)
     {
         ArgumentNullException.ThrowIfNull(definition);
         CaptureScheduleValidator.Validate(definition);
@@ -162,9 +182,19 @@ public static class CaptureScheduleIntervalExpander
         var previewStart = CaptureScheduleTimeZone.ResolveDay(firstLocalDate, timeZone).StartUtc;
         var previewEnd = CaptureScheduleTimeZone.ResolveDay(firstLocalDate.AddDays(dayCount - 1), timeZone).EndUtc;
 
-        for (var dayIndex = -2; dayIndex < dayCount; dayIndex++)
+        // A boundary on the next anchor day can be moved back by 24 hours.
+        var lastAnchor = admission ? dayCount : dayCount - 1;
+        IEnumerable<DateOnly> anchors = Enumerable.Range(-2, lastAnchor + 3)
+            .Select(firstLocalDate.AddDays);
+        var retainAllExceptions = admission && definition.LegacyAlwaysOpen;
+        if (retainAllExceptions)
         {
-            var date = firstLocalDate.AddDays(dayIndex);
+            // Always-open fallback has no intrinsic bounds. Retain each dated exception
+            // even after the local expansion has moved away from it.
+            anchors = anchors.Union(dateExceptions.Keys).Order();
+        }
+        foreach (var date in anchors)
+        {
             var localDay = CaptureScheduleTimeZone.ResolveDay(date, timeZone);
             if (dateExceptions.TryGetValue(date, out var dateRule))
             {
@@ -203,7 +233,7 @@ public static class CaptureScheduleIntervalExpander
         {
             var start = ToMilliseconds(blackout.StartUtc);
             var end = ToMilliseconds(blackout.EndUtc);
-            if (start < previewEnd && end > previewStart)
+            if (admission || start < previewEnd && end > previewStart)
             {
                 intervals.Add(new ExpandedScheduleInterval(
                     blackout.Id,
@@ -235,8 +265,13 @@ public static class CaptureScheduleIntervalExpander
                 "A preview cannot combine different solar algorithm versions.");
         }
         var solarVersion = solarVersions.SingleOrDefault() ?? "none";
-        var relevantIntervals = intervals.Where(item => item.StartUtc < previewEnd && item.EndUtc > previewStart).ToArray();
+        var relevantIntervals = intervals.Where(item =>
+            admission && item.Source == CaptureScheduleIntervalSource.Blackout ||
+            retainAllExceptions && item.Source is CaptureScheduleIntervalSource.DateExceptionClosed
+                or CaptureScheduleIntervalSource.DateExceptionWindow ||
+            item.StartUtc < previewEnd && item.EndUtc > previewStart).ToArray();
         var relevantUnavailable = unavailable.Where(item =>
+            retainAllExceptions && item.Source == CaptureScheduleIntervalSource.DateExceptionWindow ||
             item.LocalDayStartUtc < previewEnd && item.LocalDayEndUtc > previewStart).ToArray();
         ValidateExpandedConflicts(relevantIntervals);
         var orderedIntervals = relevantIntervals.OrderBy(static item => item.StartUtc)
@@ -247,9 +282,10 @@ public static class CaptureScheduleIntervalExpander
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .ToArray();
         var timeZoneRuleSha256 = CaptureScheduleTimeZone.ComputeRuleSha256(timeZone);
+        var algorithm = admission ? AdmissionAlgorithmVersion : AlgorithmVersion;
         var expansionSha256 = ComputeExpansionSha256(
             revisionSha256,
-            AlgorithmVersion,
+            algorithm,
             timeZoneRuleSha256,
             solarVersion,
             previewStart,
@@ -259,7 +295,7 @@ public static class CaptureScheduleIntervalExpander
         return new CaptureSchedulePreview(
             revisionSha256,
             expansionSha256,
-            AlgorithmVersion,
+            algorithm,
             timeZoneRuleSha256,
             solarVersion,
             previewStart,
@@ -489,9 +525,12 @@ public static class CaptureScheduleEvaluator
 
         var decision = EvaluateAt(preview, request, utc);
         var segment = FindOpenSegment(preview, request, decision);
+        var useAdmissionEdges = IsAdmissionExpansion(preview) && decision.Admitted;
         return decision with
         {
-            NextTransitionUtc = segment.EndUtc is { } end && end < preview.PreviewEndUtc ? end : preview.PreviewEndUtc,
+            NextTransitionUtc = useAdmissionEdges
+                ? segment.EndUtc
+                : segment.EndUtc is { } end && end < preview.PreviewEndUtc ? end : preview.PreviewEndUtc,
             OpenSegment = decision.Admitted ? segment : null
         };
     }
@@ -585,7 +624,9 @@ public static class CaptureScheduleEvaluator
             return Admitted(
                 CaptureScheduleAdmissionReason.WeeklyWindow, request.SafetyState, utc, weekly);
         }
-        var legacy = Active(preview, utc, CaptureScheduleIntervalSource.LegacyCompatibility);
+        var legacy = IsAdmissionExpansion(preview)
+            ? preview.Intervals.FirstOrDefault(static item => item.Source == CaptureScheduleIntervalSource.LegacyCompatibility)
+            : Active(preview, utc, CaptureScheduleIntervalSource.LegacyCompatibility);
         if (legacy is not null)
         {
             return Admitted(
@@ -679,12 +720,20 @@ public static class CaptureScheduleEvaluator
         }
 
         var utc = decision.DecisionUtc;
-        DateTimeOffset? end = values.Where(item => item > utc && item < preview.PreviewEndUtc)
+        // While force-open applies, only higher-priority blackouts or overrides can split it.
+        // The admission expansion retains those UTC edges even for a long override.
+        var forceOpen = decision.Interval is { Source: CaptureScheduleIntervalSource.ForceOpenOverride } &&
+            IsAdmissionExpansion(preview);
+        var legacy = decision.Interval is { Source: CaptureScheduleIntervalSource.LegacyCompatibility } &&
+            IsAdmissionExpansion(preview);
+        var right = forceOpen ? decision.Interval!.EndUtc : preview.PreviewEndUtc;
+        DateTimeOffset? end = values.Where(item => item > utc && (legacy || item < right))
             .Distinct().Order()
             .Where(candidate => !Equivalent(decision, EvaluateAt(preview, request, candidate)))
             .Select(static candidate => (DateTimeOffset?)candidate).FirstOrDefault();
         DateTimeOffset? start = decision.Admitted
-            ? values.Where(item => item <= utc && item > preview.PreviewStartUtc && item >= decision.Interval!.StartUtc)
+            ? values.Where(item => item > DateTimeOffset.MinValue && item <= utc &&
+                    (legacy || (forceOpen || item > preview.PreviewStartUtc) && item >= decision.Interval!.StartUtc))
                 .Distinct().OrderDescending()
                 .Where(candidate => !Equivalent(decision, EvaluateAt(preview, request, candidate.AddTicks(-1))))
                 .Select(static candidate => (DateTimeOffset?)candidate).FirstOrDefault()
@@ -697,6 +746,9 @@ public static class CaptureScheduleEvaluator
         }
         return new CaptureScheduleOpenSegment(start, end);
     }
+
+    private static bool IsAdmissionExpansion(CaptureSchedulePreview preview)
+        => preview.ExpansionAlgorithmVersion == CaptureScheduleIntervalExpander.AdmissionAlgorithmVersion;
 
     private static bool Equivalent(CaptureScheduleDecision left, CaptureScheduleDecision right)
         => left.Admitted == right.Admitted &&
