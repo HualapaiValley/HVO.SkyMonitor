@@ -91,6 +91,7 @@ public sealed partial class RawCaptureIngressTests
             var before = CaptureContractJson.Serialize(receipt.Manifest);
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
             {
+                await ExecuteTestSqlAsync(connection, DropCenteredSchemaSql).ConfigureAwait(false);
                 using var version = connection.CreateCommand();
                 version.CommandText = "PRAGMA user_version = 15;";
                 await version.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -98,7 +99,7 @@ public sealed partial class RawCaptureIngressTests
             using var restarted = CreateIngress(root, new RawIngressState(TimeProvider.System));
             await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
             using var recovered = await OpenJournalAsync(root).ConfigureAwait(false);
-            Assert.AreEqual(16L, await ScalarLongAsync(recovered, "PRAGMA user_version;").ConfigureAwait(false));
+            Assert.AreEqual(17L, await ScalarLongAsync(recovered, "PRAGMA user_version;").ConfigureAwait(false));
             using var manifest = recovered.CreateCommand();
             manifest.CommandText = "SELECT manifest_json FROM raw_captures;";
             CollectionAssert.AreEqual(before, (byte[])(await manifest.ExecuteScalarAsync().ConfigureAwait(false))!);

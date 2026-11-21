@@ -1182,7 +1182,10 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         return new(sources.Distinct(StringComparer.Ordinal).ToArray(), unavailable.Distinct(StringComparer.Ordinal).ToArray(), pending);
     }
 
-    private static async ValueTask<CaptureCycleEvidence?> ReadCaptureEnvironmentalEvidenceAsync(string root, Guid captureId,
+    private sealed record CaptureEnvironmentalFence(
+        bool EnvironmentalUnavailable, IReadOnlyList<string>? EnvironmentalBeforeCaptureSources, DateTimeOffset ModuleCallStartedUtc);
+
+    private static async ValueTask<CaptureEnvironmentalFence?> ReadCaptureEnvironmentalEvidenceAsync(string root, Guid captureId,
         Guid? acquisitionAttemptId, CancellationToken cancellationToken)
     {
         var path = Path.Combine(root, "journal", "raw-ingress.db");
@@ -1200,9 +1203,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         var parsed = CaptureContractJson.ParseManifest((byte[])payload);
         if (!parsed.IsValid || parsed.Document?.Manifest?.Descriptor is not { } descriptor || descriptor.Capture.CaptureId != captureId)
             throw new InvalidDataException("Capture environmental fence manifest is invalid.");
-        if (acquisitionAttemptId.HasValue && descriptor.CycleEvidence?.AcquisitionAttemptId != acquisitionAttemptId)
+        var centered = descriptor.CenteredAcquisition;
+        var legacy = descriptor.CycleEvidence;
+        if (acquisitionAttemptId.HasValue && (centered?.AcquisitionAttemptId ?? legacy?.AcquisitionAttemptId) != acquisitionAttemptId)
             throw new EnvironmentalObservationIdentityConflictException("Capture environmental acquisition identity differs from its manifest.");
-        return descriptor.CycleEvidence;
+        return centered is not null
+            ? new(centered.EnvironmentalUnavailable, centered.EnvironmentalBeforeCaptureSources, centered.ModuleCallStartedUtc)
+            : legacy is not null
+                ? new(legacy.EnvironmentalUnavailable, legacy.EnvironmentalBeforeCaptureSources, legacy.ModuleCallStartedUtc)
+                : null;
     }
 
     private async ValueTask<bool> TryBindCaptureAcquisitionAsync(string root, Guid acquisitionId, Guid captureId, CancellationToken cancellationToken)

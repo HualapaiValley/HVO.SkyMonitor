@@ -161,12 +161,22 @@
     {
       "location": "raw/journal/raw-ingress.db",
       "objects": [
-        "pragma:user_version"
+        "index:ix_centered_hold_capture",
+        "index:ix_centered_pending_source",
+        "index:ix_centered_product_camera",
+        "index:ix_centered_product_capture",
+        "index:ux_centered_open_run",
+        "pragma:user_version",
+        "table:centered_acquisition_owners",
+        "table:centered_exposure_attempts",
+        "table:centered_exposure_holds",
+        "table:centered_exposure_products",
+        "table:centered_exposure_runs"
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.raw-ingress-schema",
       "previousValue": "15",
-      "candidateValue": "16",
-      "reason": "Schema 16 preserves capture-specific environmental unavailable evidence that earlier readers do not understand. Processing-schema changes are declared separately; frozen SQL images remain unchanged and downgrade restores the paired checkpoint. Refs #1735"
+      "candidateValue": "17",
+      "reason": "Schema 16 preserves capture-specific environmental unavailable evidence (#1735). Schema 17 adds centered acquisition ownership, exposure attempts, products and custody. Processing-schema changes are declared separately. Downgrade restores the paired checkpoint. Refs #1919"
     }
   ]
 }

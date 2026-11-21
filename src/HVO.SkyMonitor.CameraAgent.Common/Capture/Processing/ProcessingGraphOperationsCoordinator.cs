@@ -40,6 +40,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ICameraAgentConfigurationAccessor? _configurationAccessor;
     private readonly Func<CameraModuleConfig?>? _currentCaptureProfile;
     private readonly Func<IAstrometricCatalogSource?>? _astrometricCatalog;
+    private readonly ICenteredExposureGraphExtension[] _centeredExtensions;
     /// <summary>
     /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
     /// compiles and persists exactly once. Lock order (see <see cref="RawIngressLifecycleLock"/>): callers that hold
@@ -65,6 +66,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingReplayWakeup replayWakeup,
         ICameraAgentConfigurationAccessor? configurationAccessor = null,
         Func<CameraModuleConfig?>? currentCaptureProfile = null,
+        IEnumerable<ICenteredExposureGraphExtension>? centeredExtensions = null,
         Func<IAstrometricCatalogSource?>? astrometricCatalog = null)
     {
         _pipelineFactory = pipelineFactory;
@@ -75,10 +77,21 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         _configurationAccessor = configurationAccessor;
         _currentCaptureProfile = currentCaptureProfile;
         _astrometricCatalog = astrometricCatalog;
+        _centeredExtensions = centeredExtensions?.ToArray() ?? [];
     }
 
     public ProcessingGraphAgentCapabilities Capabilities =>
         ProcessingGraphAgentCapabilities.Create(_pipelineFactory.StableStepAliases);
+
+    public CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration.CenteredExposure is null || _centeredExtensions.Length == 0) return configuration;
+
+        var pipeline = configuration.Pipeline;
+        foreach (var extension in _centeredExtensions) pipeline = extension.Configure(pipeline);
+        return configuration with { Pipeline = pipeline };
+    }
 
     internal ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
         CameraModuleConfig configuration,
@@ -91,11 +104,14 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        var sourceConfiguration = configuration;
+        if (!retainedCapture) configuration = ExpandConfiguredProfile(sourceConfiguration);
         EnsureExplicitPipeline(configuration.Pipeline);
         await _configurationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            Volatile.Write(ref _baseConfiguration, configuration);
+            if (!retainedCapture || sourceConfiguration.CenteredExposure is null)
+                Volatile.Write(ref _baseConfiguration, sourceConfiguration);
             var pipelineIdentity = CaptureContractJson.ComputeCanonicalJsonSha256(configuration.Pipeline);
             if (string.Equals(_configuredPipelineIdentity, pipelineIdentity, StringComparison.Ordinal) &&
                 _configuredPipelineRetained == retainedCapture &&
@@ -162,7 +178,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         CancellationToken cancellationToken,
         string? revisionId = null)
     {
-        _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
+        if (revisionId is null || configuration.CenteredExposure is null)
+            _ = await EnsureConfiguredBasicAsync(configuration, retainedCapture, cancellationToken).ConfigureAwait(false);
         var revision = revisionId is null
             ? await _store.ReadActiveRevisionAsync(cancellationToken).ConfigureAwait(false)
             : await _store.ReadRevisionAsync(revisionId, cancellationToken).ConfigureAwait(false);
@@ -265,12 +282,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingGraphRevisionSnapshot revision)
     {
         var effectiveConfiguration = configuration with { Pipeline = revision.Pipeline };
-        var executionId = StableExecutionId(new
-        {
-            Class = ProcessingGraphExecutionClass.Live.ToString(),
-            CaptureId = captureId.ToString("N"),
-            RevisionId = revision.State.RevisionId
-        });
+        var executionId = GetLiveExecutionId(captureId, revision.State.RevisionId);
         var durableConfiguration = effectiveConfiguration with
         {
             Observatory = new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -1130,6 +1142,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
     private static string CanonicalText<T>(T value)
         => Encoding.UTF8.GetString(CanonicalBytes(value));
+
+    internal static Guid GetLiveExecutionId(Guid captureId, string revisionId) => StableExecutionId(new
+    {
+        Class = ProcessingGraphExecutionClass.Live.ToString(),
+        CaptureId = captureId.ToString("N"),
+        RevisionId = revisionId
+    });
 
     private static Guid StableExecutionId<T>(T value)
     {

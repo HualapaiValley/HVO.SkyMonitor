@@ -174,6 +174,17 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<IProjectedSceneStagingReader>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<IProjectedSceneStagingReconciler>(provider => provider.GetRequiredService<ProjectedSceneStagingStore>());
         services.AddSingleton<CaptureProjectedSceneStager>();
+        services.AddSingleton(provider =>
+        {
+            var catalog = provider.GetService<ICelestialCatalog>();
+            return new CenteredExposureSceneProvider(
+                provider.GetRequiredService<RawCaptureIngress>(),
+                catalog is null ? null : provider.GetRequiredService<CaptureProjectedSceneStager>(),
+                catalog,
+                () => provider.GetService<IDeploymentLocationStore>(),
+                provider.GetService<IConstellationTopology>(),
+                provider.GetService<IPlanetEphemeris>());
+        });
         services.AddSingleton<IVirtualSkyGraphSelection>(provider => new VirtualSkyGraphSelectionProvider(
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>(),
             (provider.GetRequiredService<ICelestialCatalog>() as IDeepSkyCatalogSource)?.DeepSky?.Semantics.SnapshotIdentity is not null));
@@ -284,6 +295,12 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureProcessingState>();
         services.AddSingleton<CaptureProcessingTelemetry>();
         services.AddSingleton<SqliteCaptureProcessingStore>();
+        services.AddSingleton<CenteredExposureProductChanges>();
+        services.AddSingleton<CenteredExposureProductReader>();
+        services.AddSingleton<IExposureProductReader>(provider =>
+            provider.GetRequiredService<CenteredExposureProductReader>());
+        services.AddSingleton<ICenteredExposureRuntimeReader>(provider => provider.GetRequiredService<RawCaptureIngress>());
+        services.AddSingleton<CenteredExposureInputCustody>();
         services.AddSingleton<ProcessingReplayWakeup>();
         services.AddSingleton(provider => new ProcessingGraphOperationsCoordinator(
             provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
@@ -297,6 +314,7 @@ public static class CameraAgentServiceCollectionExtensions
             () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
                 ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
                 : null,
+            provider.GetServices<ICenteredExposureGraphExtension>(),
             () => provider.GetService<IAstrometricCatalogSource>()));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());

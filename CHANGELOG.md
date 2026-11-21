@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent owners can configure a pinned measured-astrometry reference depth with `hvo-sky astrometry configure` and set the independent `virtualSky.rendererCandidateCap` renderer limit. New VirtualSky astrometry presets default to magnitude 3.25. #1901
 
+- CameraAgent can opt into centered exposure capture with recoverable per-camera admission and retained linear-input evidence (#1919).
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed

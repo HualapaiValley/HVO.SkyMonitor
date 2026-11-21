@@ -56,6 +56,7 @@ internal class ProjectedSceneCaptureProcessingStep(
         var provenance = context.SceneProvenance;
         var virtualStage = string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal) &&
             (provenance?.RequiresProjectedScene == true || provenance?.ProjectedSceneStageKey is not null);
+        var independentPrediction = IsAstrometryPrediction || Options.IndependentPrediction && !virtualStage;
         if (context.IsReplayExecution)
         {
             // Archived replay never consults, recreates, or recomputes the transient stage: it consumes the committed
@@ -80,7 +81,7 @@ internal class ProjectedSceneCaptureProcessingStep(
             }
             context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
         }
-        else if (IsAstrometryPrediction || Options.IndependentPrediction && !virtualStage)
+        else if (independentPrediction && context.CenteredExposure is null)
         {
             var catalog = services?.GetService<ICelestialCatalog>();
             var locations = services?.GetService<IDeploymentLocationStore>();
@@ -103,7 +104,7 @@ internal class ProjectedSceneCaptureProcessingStep(
                 ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height), source,
                 context.Config.Rig.Optics.CalibrationVersion, context.Config.Rig.Optics.CalibrationVersion);
         }
-        else if (provenance is
+        else if (!independentPrediction && provenance is
         {
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: { Length: 64 } stageKey,
@@ -137,6 +138,21 @@ internal class ProjectedSceneCaptureProcessingStep(
                 throw new InvalidDataException("Projected-scene stage schema does not match capture scene evidence.");
             context.RecordCanonicalInput(StageInputName, StagedProjectedSceneDocument.CurrentSchemaVersion,
                 staged.StageIdentitySha256);
+        }
+        else if (context.CenteredExposure is { } centered)
+        {
+            var centeredScenes = services?.GetService<CenteredExposureSceneProvider>();
+            scene = centeredScenes is null ? null : await centeredScenes.ResolvePresentationAsync(
+                centered, descriptor, Options,
+                independentPrediction ? null : provenance?.VirtualExposure?.CelestialMidpointUtc,
+                cancellationToken).ConfigureAwait(false);
+            if (scene is null)
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.Skipped("scene.frozen-input-unavailable"));
+                return;
+            }
+
+            context.RecordCanonicalInput("centered-predicted-scene", scene.SchemaVersion, scene.SceneIdentitySha256);
         }
         else
         {

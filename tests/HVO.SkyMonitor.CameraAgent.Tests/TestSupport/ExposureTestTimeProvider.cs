@@ -11,11 +11,20 @@ internal sealed class ExposureTestTimeProvider(DateTimeOffset startUtc, bool aut
     private readonly object _sync = new();
     private readonly List<ExposureTimer> _timers = [];
     private long _ticks = startUtc.UtcTicks;
+    private long _utcOffset;
+    private int _failNextUtcRead;
     private readonly long _realStartTimestamp = Stopwatch.GetTimestamp();
     private long CurrentTicks => _ticks + (elapseRealTime ? Stopwatch.GetElapsedTime(_realStartTimestamp).Ticks : 0);
     internal TaskCompletionSource TimerCreated { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-    public override DateTimeOffset GetUtcNow() { lock (_sync) return new(CurrentTicks, TimeSpan.Zero); }
+    public override DateTimeOffset GetUtcNow()
+    {
+        if (Interlocked.Exchange(ref _failNextUtcRead, 0) != 0)
+            throw new InvalidOperationException("Injected capture clock read failure.");
+        lock (_sync) return new(CurrentTicks + _utcOffset, TimeSpan.Zero);
+    }
+
+    internal void FailNextUtcRead() => Interlocked.Exchange(ref _failNextUtcRead, 1);
     public override long GetTimestamp() { lock (_sync) return CurrentTicks; }
     internal int ActiveTimers { get { lock (_sync) return _timers.Count; } }
 
@@ -34,6 +43,11 @@ internal sealed class ExposureTestTimeProvider(DateTimeOffset startUtc, bool aut
         TimerCreated.TrySetResult();
         if (autoAdvance) Advance(dueTime);
         return timer;
+    }
+
+    internal void ShiftUtc(TimeSpan delta)
+    {
+        lock (_sync) _utcOffset += delta.Ticks;
     }
 
     internal void Advance(TimeSpan elapsed)

@@ -148,8 +148,9 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # rollback restores that checkpoint rather than handing converted stores to older readers.
 # The boundary includes the processing manifest ledger (Refs #1766), the schema-10
 # retained-astrometry index (Refs #1901), and the schema-5 held environmental poll
-# journal (Refs #1938). It advances from either single-reader image so an upgrade
-# to both readers selects the paired checkpoint even though raw ingress stays at 16.
+# journal (Refs #1938). The beta reader advanced from either single-reader image at raw schema 16.
+# This private source carries the beta marker and the raw schema 17 migration metadata for contract
+# checks. It is source-only. The installable centered reader gets a distinct marker under #1922.
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -166,14 +167,14 @@ LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
       io.hvo.skymonitor.minimum-compatible-revision="33903f07a1dd86166fc17197df981b32d45013a1" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
-      io.hvo.skymonitor.raw-ingress-schema="16" \
-      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-to-v16" \
+      io.hvo.skymonitor.raw-ingress-schema="17" \
+      io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \
       io.hvo.skymonitor.catalog-manifest-version="4" \
       io.hvo.skymonitor.configuration-contract="cameraagent-install-v1" \
       io.hvo.skymonitor.configuration-defaults="installer-defaults-2" \
       io.hvo.skymonitor.catalog-contract="hvo-approved-catalogs-v3" \
       io.hvo.skymonitor.replay-runner-contract="local-replay-runner-v1" \
-      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":16,\"reads\":{\"min\":13,\"max\":16}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
+      io.hvo.skymonitor.state-contracts="{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":17,\"reads\":{\"min\":13,\"max\":17}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":5,\"reads\":{\"min\":3,\"max\":5}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":4,\"reads\":{\"min\":3,\"max\":4}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}" \
       org.opencontainers.image.version="${HVO_VERSION}" \
       org.opencontainers.image.revision="${HVO_SOURCE_REVISION}" \
       org.opencontainers.image.created="${HVO_CREATED}"

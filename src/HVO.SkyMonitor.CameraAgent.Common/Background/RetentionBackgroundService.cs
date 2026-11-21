@@ -551,8 +551,13 @@ public sealed class RetentionBackgroundService(
                         {
                             cancellationToken.ThrowIfCancellationRequested();
                             RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
-                            if (!pending.AbsolutePaths.Contains(Path.GetFullPath(file)))
+                            if (!pending.AbsolutePaths.Contains(Path.GetFullPath(file)) &&
+                                (Path.GetExtension(file) is not (".archive" or FileSystemFrameStorageService.ArchiveStageExtension) ||
+                                 !pending.AbsolutePaths.Contains(Path.ChangeExtension(file, ".bin"))) &&
+                                File.Exists(file))
                             {
+                                if (Path.GetExtension(file).Equals(".bin", StringComparison.Ordinal))
+                                    FileSystemFrameStorageService.DeleteArchiveReceipt(storageRoot, file);
                                 RetainedFileMutations.Delete(file);
                                 deletedFiles++;
                             }

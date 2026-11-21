@@ -13,7 +13,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 
 internal sealed record CalibrationLibraryProcessingInputs(
     IReadOnlyDictionary<string, ProcessingArtifact> References,
-    IReadOnlyList<ProcessingAuxiliaryInput> AuxiliaryInputs);
+    IReadOnlyList<ProcessingAuxiliaryInput> AuxiliaryInputs,
+    ReferenceCalibrationProfileV1 Profile);
 
 internal sealed class CalibrationLibraryProcessingInputLoader(
     IOptions<CameraAgentHostOptions> options,
@@ -142,7 +143,7 @@ internal sealed class CalibrationLibraryProcessingInputLoader(
                 ? ProcessingInputSelector.Raw(kind)
                 : ProcessingInputSelector.Combined(kind),
             ArtifactId: references[kind].ArtifactId)));
-        return new CalibrationLibraryProcessingInputs(references, auxiliary);
+        return new CalibrationLibraryProcessingInputs(references, auxiliary, profile);
     }
 
     private static bool RecipeMatches(RecipeIdentityDescriptor? expected, RecipeIdentityDescriptor actual)

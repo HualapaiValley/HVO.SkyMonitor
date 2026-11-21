@@ -84,6 +84,30 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     [TestMethod]
+    public void RawSeventeenSelectsThePairedCheckpointFromTheJoinedBetaReader()
+    {
+        var candidate = ReadDockerfileLabels();
+        Assert.AreEqual(CombinedReaderRevision, candidate[MinimumCompatibleRevision]);
+        Assert.AreEqual("17", candidate[RawIngressSchema]);
+        var previous = new Dictionary<string, string>(candidate, StringComparer.Ordinal)
+        {
+            [RawIngressSchema] = "16",
+            [RawIngressMigration] = "canonical-v13-v14-v15-to-v16"
+        };
+        var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), $"hvo-beta-boundary-{Guid.NewGuid():N}"),
+            Guid.NewGuid(), "catalog");
+        var installed = CameraAgentImageLabels.Identity("registry", "beta", $"sha256:{new string('1', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(previous));
+        var target = CameraAgentImageLabels.Identity("registry", "foundation", $"sha256:{new string('2', 64)}", "amd64", null,
+            JsonSerializer.SerializeToElement(candidate));
+        var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
+            target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
+
+        Assert.HasCount(2, changes);
+        Assert.IsEmpty(AssertBoundaryAndRawIngressChanges(changes, previous, candidate, 0, string.Join("; ", changes)));
+    }
+
+    [TestMethod]
     public void EveryDeclaredException_IsALabelChangeTheInstallerSnapshotsFor()
     {
         var fixture = LoadFixture();
@@ -95,7 +119,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     [TestMethod]
-    [DataRow(RawIngressSchema, "16", "16", null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
+    [DataRow(RawIngressSchema, null, null, null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
     [DataRow("io.hvo.skymonitor.component", "CameraAgent-previous", "CameraAgent-previous", null, "does not make the installer take a snapshot", DisplayName = "a label the installer does not compare")]
     [DataRow(RawIngressSchema, "14", "13", null, "not the one the frozen release declares", DisplayName = "a previous value the frozen release does not declare")]
     [DataRow(RawIngressSchema, "14", "14", "undeclared", "not the one this release declares", DisplayName = "a candidate value this release does not declare")]
@@ -105,7 +129,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         ArgumentNullException.ThrowIfNull(label);
         var fixture = LoadFixture();
         var candidate = ReadDockerfileLabels();
-        if (frozenValue is not null) fixture["imageLabels"]![label] = frozenValue;
+        fixture["imageLabels"]![label] = frozenValue ?? candidate[label];
         Declare(fixture, label,
             previousValue ?? fixture["imageLabels"]![label]!.GetValue<string>(),
             candidateValue ?? candidate[label]);

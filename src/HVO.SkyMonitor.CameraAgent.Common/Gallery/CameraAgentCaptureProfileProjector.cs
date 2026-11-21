@@ -31,7 +31,7 @@ internal static class CameraAgentCaptureProfileProjector
                 return null;
             return new(Positive(rig.Sensor.PixelSizeMicrons), Positive(rig.Optics.FocalLengthMillimeters),
                 Positive(rig.Optics.FieldOfViewDegrees), rig.Optics.ProjectionModel,
-                submission.EffectiveInterval, descriptor.CycleEvidence?.CadenceMode);
+                submission.EffectiveInterval, descriptor.RetainedCadenceMode);
         }
         catch (Exception exception) when (exception is JsonException or ArgumentException or InvalidOperationException)
         {

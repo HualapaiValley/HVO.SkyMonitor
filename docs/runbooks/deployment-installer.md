@@ -2725,6 +2725,14 @@ An upgrade from either the processing-10-only image or the environmental-5-only
 image changes that label. The installer checkpoints both stores and their paired
 state before startup. Rollback restores the schemas paired with the previous image.
 
+The private centered foundation join is a source-only checkpoint with raw
+schema 17, processing schema 10 and environmental schema 5. Its raw schema
+and migration metadata select the paired checkpoint from the joined raw-16 beta
+even though the minimum-compatible-revision still records the beta reader
+`33903f07a1dd86166fc17197df981b32d45013a1`. The two single-reader beta predecessors
+also differ at the minimum-compatible-revision. Issue #1922 owns the distinct
+installable centered raw-17, processing-12, environmental-5 reader marker.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a

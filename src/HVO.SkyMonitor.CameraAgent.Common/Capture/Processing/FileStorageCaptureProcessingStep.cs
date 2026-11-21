@@ -23,7 +23,8 @@ internal sealed class FileStorageCaptureProcessingStep(
     IArtifactOutbox artifactOutbox,
     IOptions<CameraAgentHostOptions> hostOptions,
     ILogger<FileStorageCaptureProcessingStep> logger,
-    CaptureProcessingPersistence? processingPersistence = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer
+    CaptureProcessingPersistence? processingPersistence = null,
+    ICaptureProcessingFaultInjector? faults = null) : ConfigurableCaptureProcessingStep<FileStorageCaptureProcessingStepOptions>(metadata, options), ICaptureProcessingArtifactConsumer, IDurableCaptureProcessingPostCommit
 {
     internal const string StableAlias = "Storage";
 
@@ -65,6 +66,8 @@ internal sealed class FileStorageCaptureProcessingStep(
             IsStoredUnderRoot(durableRaw.StoredFrame, Options.StorageRoot);
         var metadataAlreadyStoredUnderRoot = context.RawCapture is { } metadataRaw &&
             IsStoredUnderRoot(metadataRaw.StoredFrame, Options.StorageRoot);
+        var exportsCenteredCopy = !metadataAlreadyStoredUnderRoot && context.RawCapture?.Manifest.CenteredExposure is not null &&
+            context.ProcessingExecution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true };
         var lifecycleGate = StorageLifecycleLock.ForRoot(Options.StorageRoot);
         var selectedArtifacts = IsExplicitPipeline(context.Config)
             ? context.GetDependencyArtifacts()
@@ -109,17 +112,20 @@ internal sealed class FileStorageCaptureProcessingStep(
                             throw new InvalidDataException(
                                 "Per-step upload publication requires a reconstructable processing product.");
                         }
-                        var descriptor = DerivativeDescriptorFactory.Create(
-                            rawCapture.Manifest.Descriptor,
-                            artifact.ArtifactId,
-                            artifact.Frame.Metadata.SourceId ?? Name,
-                            product);
+                        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                            Options.StorageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name,
+                            product, cancellationToken).ConfigureAwait(false);
                         var published = await _frameStorageService.SaveAsync(
                             Options.StorageRoot,
                             artifact,
                             descriptor,
                             producerStepId!,
                             cancellationToken).ConfigureAwait(false);
+                        if (exportsCenteredCopy)
+                        {
+                            await StageCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, published,
+                                cancellationToken).ConfigureAwait(false);
+                        }
                         await _artifactOutbox.EnqueueAsync(
                             Options.StorageRoot,
                             new ArtifactManifestV2(
@@ -151,11 +157,9 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     if (product is not null && context.RawCapture is { } rawCapture)
                     {
-                        var descriptor = DerivativeDescriptorFactory.Create(
-                            rawCapture.Manifest.Descriptor,
-                            artifact.ArtifactId,
-                            artifact.Frame.Metadata.SourceId ?? Name,
-                            product);
+                        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                            Options.StorageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name,
+                            product, cancellationToken).ConfigureAwait(false);
                         // Canonical pixels were already committed with their producer identity.
                         // Reuse those exact facts even when a broad Storage policy selects them.
                         var manifestProducerStepId = metadataAlreadyStoredUnderRoot || policy?.StepId is not null
@@ -172,6 +176,11 @@ internal sealed class FileStorageCaptureProcessingStep(
                                 descriptor,
                                 producerStepId!,
                                 cancellationToken).ConfigureAwait(false);
+                        if (exportsCenteredCopy)
+                        {
+                            await StageCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, stored,
+                                cancellationToken).ConfigureAwait(false);
+                        }
                         uploadManifest = new ArtifactManifestV2(
                             ArtifactManifestV2.CurrentSchemaVersion,
                             descriptor,
@@ -336,6 +345,55 @@ internal sealed class FileStorageCaptureProcessingStep(
 
     private static bool IsExplicitPipeline(CameraModuleConfig config)
         => config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
+
+    private async ValueTask StageCenteredArchiveAsync(
+        CaptureProcessingContext context, RawIngress.RawCaptureReceipt raw, ProcessingProduct product, string? producer,
+        ReconstructionDescriptor descriptor, StoredFrameReference stored, CancellationToken cancellationToken)
+    {
+        if (_frameStorageService is not FileSystemFrameStorageService ||
+            context.ProcessingExecution is not { } execution || context.CurrentNodeId is not { } storageNode ||
+            producer is null)
+            throw new InvalidDataException("The centered archive copy has no authorized Storage execution.");
+
+        var identity = await FileSystemFrameStorageService.StageArchiveAsync(Options.StorageRoot, stored, descriptor,
+            raw, execution, producer, product.OutputIdentitySha256, product.ContentIdentitySha256, cancellationToken)
+            .ConfigureAwait(false);
+        context.RecordArchivePublication(stored.RelativePath.Replace('\\', '/'), identity);
+        faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, storageNode);
+    }
+
+    bool IDurableCaptureProcessingPostCommit.RequiresSuccessfulCommitCallback => true;
+
+    async ValueTask IDurableCaptureProcessingPostCommit.OnCommittedAsync(
+        CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
+    {
+        if (context.CenteredExposure is null ||
+            context.ProcessingExecution is not { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } execution)
+            return;
+        if (_processingPersistence is null || context.CurrentNodeId is not { } storageNode)
+            throw new InvalidOperationException("Centered Storage requires durable archive publication evidence.");
+
+        var copies = await _processingPersistence.ReadCommittedArchivePublicationsAsync(
+            execution.ExecutionId, storageNode, cancellationToken).ConfigureAwait(false);
+        if (copies.Count == 0)
+            return;
+        var gate = StorageLifecycleLock.ForRoot(Options.StorageRoot);
+        await StorageLifecycleLock.WaitAsync(gate, "archive-receipt", _logger, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            foreach (var copy in copies)
+            {
+                faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyCommittedBeforeReceipt, storageNode);
+                await FileSystemFrameStorageService.PublishCommittedArchiveAsync(
+                    Options.StorageRoot, copy.RelativePath, copy.Identity, execution.ExecutionId, storageNode, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
 
     internal bool QueuesUpload(string? producerStepId, FrameArtifactRole role, string? variant, string? recipeName)
         => _centralIntegrationEnabled &&

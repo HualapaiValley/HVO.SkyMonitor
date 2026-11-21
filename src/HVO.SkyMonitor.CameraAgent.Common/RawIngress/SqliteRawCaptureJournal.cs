@@ -22,14 +22,18 @@ internal sealed partial class SqliteRawCaptureJournal(
     ICaptureLaneFaultInjector? laneFaultInjector = null,
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null,
-    Action? inspectionSourceOpenedSeam = null)
+    Action? inspectionSourceOpenedSeam = null,
+    CenteredExposureProductChanges? centeredProductChanges = null)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
-    internal const int CurrentSchemaVersion = 16;
+    internal const int CurrentSchemaVersion = 17;
+    internal const int PreviousEnvironmentalFenceSchemaVersion = 16;
     internal const int PreviousSchemaVersion = 13;
     internal const int PreviousRecoverySchemaVersion = 14;
     internal const int PreviousEvidenceSchemaVersion = 15;
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
+        new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true, includeCentered: true));
+    private static readonly Lazy<Dictionary<string, string>> PreCenteredSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: true));
     private static readonly Lazy<Dictionary<string, string>> PreviousSchemaDefinitions =
         new(() => CreateCanonicalSchemaDefinitions(includeProfiles: false));
@@ -133,7 +137,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                     $"Raw ingress schema {version} is newer than supported schema {CurrentSchemaVersion}.");
             }
             initializeSchema = version == 0 && inspection.SchemaObjectCount == 0;
-            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && version != PreviousEvidenceSchemaVersion && !initializeSchema)
+            if (version != CurrentSchemaVersion && version != PreviousSchemaVersion && version != PreviousRecoverySchemaVersion && version != PreviousEvidenceSchemaVersion &&
+                version != PreviousEnvironmentalFenceSchemaVersion && !initializeSchema)
             {
                 throw new InvalidOperationException(
                     $"Raw ingress schema {version} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -148,7 +153,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';",
             cancellationToken).ConfigureAwait(false);
         if ((initializeSchema && (writableVersion != 0 || writableSchemaObjectCount != 0)) ||
-            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion && writableVersion != PreviousEvidenceSchemaVersion))
+            (!initializeSchema && writableVersion != CurrentSchemaVersion && writableVersion != PreviousSchemaVersion && writableVersion != PreviousRecoverySchemaVersion && writableVersion != PreviousEvidenceSchemaVersion &&
+                writableVersion != PreviousEnvironmentalFenceSchemaVersion))
         {
             throw new InvalidOperationException(
                 $"Raw ingress schema {writableVersion} is unsupported; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
@@ -172,6 +178,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                     connection, transaction, CalibrationLibrarySchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,
@@ -187,7 +194,8 @@ internal sealed partial class SqliteRawCaptureJournal(
                 throw;
             }
         }
-        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion or PreviousEvidenceSchemaVersion)
+        else if (writableVersion is PreviousSchemaVersion or PreviousRecoverySchemaVersion or PreviousEvidenceSchemaVersion
+            or PreviousEnvironmentalFenceSchemaVersion)
         {
             try
             {
@@ -200,6 +208,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                 _faultInjector.Inject(RawIngressFaultPoint.AfterMigrationTransactionBegan);
                 if (writableVersion == PreviousSchemaVersion)
                     await ExecuteNonQueryAsync(connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
+                await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, $"PRAGMA user_version = {CurrentSchemaVersion};", cancellationToken).ConfigureAwait(false);
                 _faultInjector.Inject(RawIngressFaultPoint.BeforeMigrationCommit);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
@@ -463,10 +472,22 @@ internal sealed partial class SqliteRawCaptureJournal(
         string? contextSha256,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
         ProcessingLiveExecutionSeed? liveExecution,
+        CancellationToken cancellationToken) =>
+        CommitAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution, null, null, cancellationToken);
+
+    internal Task<RawIngressOutcome> CommitAsync(
+        RawIngressJournalEntry entry,
+        byte[]? contextJson,
+        string? contextSha256,
+        IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        ProcessingLiveExecutionSeed? liveExecution,
+        CaptureSetpoint? centeredRequest,
+        string? predecessorContextSha256,
         CancellationToken cancellationToken)
         => TrackTransactionAsync(
             "commit",
-            () => CommitCoreAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution, cancellationToken));
+            () => CommitCoreAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution,
+                centeredRequest, predecessorContextSha256, cancellationToken));
 
     internal Task<RawIngressOutcome> CommitAsync(
         RawIngressJournalEntry entry,
@@ -482,6 +503,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         string? contextSha256,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
         ProcessingLiveExecutionSeed? liveExecution,
+        CaptureSetpoint? centeredRequest,
+        string? predecessorContextSha256,
         CancellationToken cancellationToken)
     {
         using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
@@ -489,13 +512,16 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var transaction = BeginImmediate(connection);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalTransactionBegan);
         var claims = await ReadClaimsAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        await VerifyCenteredRequestAsync(connection, transaction, entry, centeredRequest,
+            allowUnbound: claims.Count == 0, cancellationToken).ConfigureAwait(false);
         if (claims.Count > 0)
         {
             if (claims.Count == 1 && IsExact(claims[0], entry))
             {
                 var existingRowId = await ReadRawRowIdAsync(connection, transaction, entry.CaptureId, cancellationToken).ConfigureAwait(false);
                 await InsertContextAsync(
-                    connection, transaction, existingRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
+                    connection, transaction, existingRowId, contextJson, contextSha256, predecessorContextSha256, cancellationToken)
+                    .ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return RawIngressOutcome.Existing;
             }
@@ -518,10 +544,15 @@ internal sealed partial class SqliteRawCaptureJournal(
             await InsertLiveExecutionAsync(
                 connection, transaction, rawRowId, entry, liveExecution, cancellationToken).ConfigureAwait(false);
         }
+        await BindCenteredAdmissionAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        var centeredProductPublished = entry.CenteredExposure is not null && liveExecution is not null &&
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(
+                connection, transaction, liveExecution.ExecutionId, cancellationToken).ConfigureAwait(false);
         _laneFaultInjector.Inject(CaptureLaneFaultPoint.AfterWorkRowsInserted);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalRowInserted);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (centeredProductPublished) centeredProductChanges?.NotifyCommitted();
         return RawIngressOutcome.Committed;
     }
 
@@ -777,11 +808,19 @@ internal sealed partial class SqliteRawCaptureJournal(
             SELECT raw_artifact_id, payload_relative_path, sidecar_relative_path
             FROM raw_captures
             WHERE retention_hold = 1 OR EXISTS (
+                SELECT 1 FROM centered_exposure_attempts attempt
+                WHERE attempt.source_capture_id = raw_captures.capture_id
+                  AND attempt.status = 'pending'
+            ) OR EXISTS (
+                SELECT 1 FROM centered_exposure_holds hold
+                WHERE hold.capture_id = raw_captures.capture_id AND hold.expires_unix_ms > $centered_now
+            ) OR EXISTS (
                 SELECT 1 FROM raw_capture_stage_events disposition
                 WHERE disposition.raw_capture_row_id = raw_captures.raw_capture_row_id
                   AND disposition.stage_key GLOB 'raw-evidence-release.*')
             ORDER BY agent_id, capture_sequence;
             """;
+        command.Parameters.AddWithValue("$centered_now", _utcNow().ToUnixTimeMilliseconds());
         var holds = new List<RawIngressRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -1220,6 +1259,17 @@ internal sealed partial class SqliteRawCaptureJournal(
         long rawRowId,
         byte[]? contextJson,
         string? contextSha256,
+        CancellationToken cancellationToken) =>
+        await InsertContextAsync(connection, transaction, rawRowId, contextJson, contextSha256, null, cancellationToken)
+            .ConfigureAwait(false);
+
+    private static async Task InsertContextAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long rawRowId,
+        byte[]? contextJson,
+        string? contextSha256,
+        string? predecessorContextSha256,
         CancellationToken cancellationToken)
     {
         if (contextJson is null || contextSha256 is null)
@@ -1248,7 +1298,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             System.Globalization.CultureInfo.InvariantCulture);
         // A sidecar-only recovery cannot recreate transient loop timing. Keep its descriptor-derived context;
         // the retry's immutable descriptor/payload were already checked, and must not overwrite frozen evidence.
-        if (!string.IsNullOrEmpty(existing) && !string.Equals(existing, contextSha256, StringComparison.Ordinal))
+        if (!string.IsNullOrEmpty(existing) && !string.Equals(existing, contextSha256, StringComparison.Ordinal) &&
+            !string.Equals(existing, predecessorContextSha256, StringComparison.Ordinal))
         {
             throw new RawIngressConflictException("Capture lane context differs from the committed retry context.");
         }
@@ -1437,18 +1488,24 @@ internal sealed partial class SqliteRawCaptureJournal(
     internal Task<RawIngressOutcome> RecoverAsync(
         RawIngressJournalEntry entry,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
-        CancellationToken cancellationToken)
-        => TrackTransactionAsync("recovery", () => RecoverCoreAsync(entry, laneDefinitions, cancellationToken));
+        CancellationToken cancellationToken,
+        RecoveredCenteredAdmission? centered = null)
+        => TrackTransactionAsync("recovery", () => RecoverCoreAsync(entry, laneDefinitions, centered, cancellationToken));
 
     private async Task<RawIngressOutcome> RecoverCoreAsync(
         RawIngressJournalEntry entry,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        RecoveredCenteredAdmission? centered,
         CancellationToken cancellationToken)
     {
+        if ((entry.CenteredExposure is null) != (centered is null))
+            throw new InvalidDataException("Centered recovery requires the exact frozen live execution and lane context.");
         using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var claims = await ReadClaimsAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        await VerifyCenteredRequestAsync(connection, transaction, entry, centered?.RequestedSetpoint,
+            allowUnbound: claims.Count == 0, cancellationToken).ConfigureAwait(false);
         if (claims.Count > 0)
         {
             if (claims.Count == 1 && IsExact(claims[0], entry))
@@ -1520,7 +1577,19 @@ internal sealed partial class SqliteRawCaptureJournal(
         var recoveredRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
             connection, transaction, recoveredRowId, entry, laneDefinitions, cancellationToken).ConfigureAwait(false);
+        if (centered is not null)
+        {
+            await InsertContextAsync(connection, transaction, recoveredRowId, centered.ContextJson,
+                centered.ContextSha256, cancellationToken).ConfigureAwait(false);
+            await InsertLiveExecutionAsync(connection, transaction, recoveredRowId, entry,
+                centered.Execution, cancellationToken).ConfigureAwait(false);
+        }
+        await BindCenteredAdmissionAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        var centeredProductPublished = centered is not null &&
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(
+                connection, transaction, centered.Execution.ExecutionId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (centeredProductPublished) centeredProductChanges?.NotifyCommitted();
         return RawIngressOutcome.Committed;
     }
 
@@ -1948,7 +2017,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         => Convert.ToString(await ExecuteScalarAsync(connection, sql, cancellationToken).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
 
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statements are executed.")]
-    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions(bool includeProfiles)
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions(bool includeProfiles, bool includeCentered = false)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
@@ -1972,6 +2041,12 @@ internal sealed partial class SqliteRawCaptureJournal(
             command.CommandText = NamedProfileSchemaSql;
             command.ExecuteNonQuery();
         }
+        if (includeCentered)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = CenteredSchemaSql;
+            command.ExecuteNonQuery();
+        }
         return ReadSchemaDefinitions(connection);
     }
 
@@ -1984,7 +2059,7 @@ internal sealed partial class SqliteRawCaptureJournal(
             throw new InvalidDataException($"Raw ingress v{sourceVersion} migration source failed integrity or foreign-key validation.");
         }
         await ValidateCanonicalSchemaDefinitionsAsync(
-            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : CanonicalSchemaDefinitions.Value,
+            connection, transaction, sourceVersion == PreviousSchemaVersion ? PreviousSchemaDefinitions.Value : PreCenteredSchemaDefinitions.Value,
             sourceVersion, cancellationToken).ConfigureAwait(false);
     }
 

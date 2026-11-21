@@ -384,6 +384,10 @@ internal sealed record ProcessingFrozenRawInput(
 
 public interface IProcessingGraphOperations
 {
+    /// <summary>Expands the registered stages of a fresh effective configured profile for preview.</summary>
+    /// <remarks>Saved and replayed graphs already carry their exact plan and do not enter this path.</remarks>
+    CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration) => configuration;
+
     ValueTask<ProcessingGraphRegistryState> GetRegistryAsync(CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(
