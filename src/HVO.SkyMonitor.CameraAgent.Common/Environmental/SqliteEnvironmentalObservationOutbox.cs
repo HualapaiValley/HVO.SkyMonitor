@@ -68,10 +68,22 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         CancellationToken cancellationToken)
         => CommitLocalAsync(root, fact, null, cancellationToken);
 
-    public async ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
+    public ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalAsync(
         string root,
         EnvironmentalObservationFactV1 fact,
         EnvironmentalObservationResolvedTarget? deliveryTarget,
+        CancellationToken cancellationToken)
+        => CommitLocalCoreAsync(root, fact, deliveryTarget, null, cancellationToken);
+
+    internal ValueTask<LocalEnvironmentalObservationCommitResult> CommitHeldPollAsync(
+        string root, EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+        => CommitLocalCoreAsync(root, fact, null, poll, cancellationToken);
+
+    private async ValueTask<LocalEnvironmentalObservationCommitResult> CommitLocalCoreAsync(
+        string root,
+        EnvironmentalObservationFactV1 fact,
+        EnvironmentalObservationResolvedTarget? deliveryTarget,
+        EnvironmentalHeldPoll? heldPoll,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(fact);
@@ -132,13 +144,14 @@ public sealed class SqliteEnvironmentalObservationOutbox(
                     connection, transaction, recordId, deliveryTarget, cancellationToken).ConfigureAwait(false);
                 var projection = await EnsureProjectionAsync(
                     connection, transaction, record, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-                return new LocalEnvironmentalObservationCommitResult(
+                var duplicate = new LocalEnvironmentalObservationCommitResult(
                     LocalEnvironmentalObservationCommitDisposition.Duplicate,
                     record,
                     projection.Disposition,
                     projection.Observation,
                     projection.EnqueueDisposition);
+                return await FinishLocalCommitAsync(connection, transaction, duplicate, heldPoll, cancellationToken)
+                    .ConfigureAwait(false);
             }
         }
         using (var source = connection.CreateCommand())
@@ -242,13 +255,37 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         await LinkLineageAsync(connection, transaction, committed, cancellationToken).ConfigureAwait(false);
         var committedProjection = await EnsureProjectionAsync(
             connection, transaction, committed, cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return new LocalEnvironmentalObservationCommitResult(
+        var result = new LocalEnvironmentalObservationCommitResult(
             LocalEnvironmentalObservationCommitDisposition.Committed,
             committed,
             committedProjection.Disposition,
             committedProjection.Observation,
             committedProjection.EnqueueDisposition);
+        return await FinishLocalCommitAsync(connection, transaction, result, heldPoll, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<LocalEnvironmentalObservationCommitResult> FinishLocalCommitAsync(
+        SqliteConnection connection, SqliteTransaction transaction, LocalEnvironmentalObservationCommitResult result,
+        EnvironmentalHeldPoll? heldPoll, CancellationToken cancellationToken)
+    {
+        if (heldPoll is { } held)
+        {
+            var fact = result.Record.Fact;
+            var duplicate = result.Disposition == LocalEnvironmentalObservationCommitDisposition.Duplicate;
+            var receipt = new EnvironmentalAcquisitionReceipt(held.Source.Id, EnvironmentalAcquisitionTrigger.Periodic,
+                duplicate ? EnvironmentalAcquisitionDisposition.Duplicate : EnvironmentalAcquisitionDisposition.Produced,
+                duplicate ? "duplicate" : "produced", fact.ObservationId, held.StartedUtc, _timeProvider.GetUtcNow(),
+                fact.ObservedAtUtc, fact.StaleAfterUtc)
+            {
+                HeldLocationPollUtc = held.DueUtc,
+                HeldLocationPollCommitted = true
+            };
+            await RecordAttemptCoreAsync(connection, transaction, held.Source, receipt, null, null, cancellationToken)
+                .ConfigureAwait(false);
+            result = result with { HeldPollReceipt = receipt };
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
     public async ValueTask<LocalEnvironmentalObservationSnapshot> GetLocalSnapshotAsync(
@@ -797,6 +834,15 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         await InitializeAsync(root, cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var transaction = connection.BeginTransaction(deferred: false);
+        await RecordAttemptCoreAsync(connection, transaction, source, receipt, captureSequence, captureId, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask RecordAttemptCoreAsync(
+        SqliteConnection connection, SqliteTransaction transaction, EnvironmentalSourceDescriptor source,
+        EnvironmentalAcquisitionReceipt receipt, long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
+    {
         using (var insert = connection.CreateCommand())
         {
             insert.Transaction = transaction;
@@ -860,7 +906,6 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             if (await settle.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
                 throw new InvalidDataException("The held environmental poll did not match its settlement.");
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     async ValueTask<DateTimeOffset?> IEnvironmentalLocationHeldPollStore.ReadLocationHeldPollAsync(

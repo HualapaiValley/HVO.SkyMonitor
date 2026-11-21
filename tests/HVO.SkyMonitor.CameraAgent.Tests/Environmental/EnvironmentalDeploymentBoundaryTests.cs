@@ -195,6 +195,88 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         Assert.IsFalse(fixture.Logger.Events.Any(static entry => entry.Id == 2526));
     }
 
+    [TestMethod]
+    public async Task ProtectedLocationStartup_QueuedTriggerFailureDoesNotRepeatACommittedHeldPoll()
+    {
+        var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Publisher.BeforeHeldCommit = cancellationToken =>
+        {
+            entered.TrySetResult();
+            return release.Task.WaitAsync(cancellationToken);
+        };
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
+        await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+        await entered.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        try
+        {
+            var queued = await fixture.Coordinator.AcquireSourceAsync("source-0", EnvironmentalAcquisitionTrigger.AfterCapture,
+                Epoch.AddDays(-2), 1, Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, queued.Disposition);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        await fixture.Clock.WaitForTimerAsync(Epoch + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        Assert.AreEqual(1, fixture.Publisher.HeldCommitAttempts);
+        Assert.AreEqual(1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        var periodic = (await fixture.ReadAttemptsAsync().ConfigureAwait(false))
+            .Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.Periodic);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, periodic.Disposition);
+        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task ProtectedLocationStartup_AttemptWriteFailureRollsBackTheFactAndRecordsAnExplicitDisposition()
+    {
+        var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
+        await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
+        await fixture.RefuseProducedAttemptAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+
+        await fixture.Clock.WaitForTimerAsync(Epoch + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        var receipt = (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single();
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Failed, receipt.Disposition);
+        Assert.AreEqual("journal-unavailable", receipt.Reason);
+        Assert.AreEqual(1, fixture.Publisher.HeldCommitAttempts);
+        Assert.AreEqual(0L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task ProtectedLocationStartup_TransientSettlementFailureRetriesTheSameFact()
+    {
+        var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        fixture.Publisher.BeforeHeldCommit = _ => fixture.Publisher.HeldCommitAttempts == 1
+            ? Task.FromException(new SqliteException("test write contention", SQLitePCL.raw.SQLITE_BUSY))
+            : Task.CompletedTask;
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
+        await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+
+        var retry = Epoch.AddMilliseconds(100);
+        await fixture.Clock.WaitForTimerAsync(retry).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        fixture.Clock.AdvanceTo(retry);
+        await fixture.Clock.WaitForTimerAsync(Epoch + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        Assert.HasCount(2, fixture.Publisher.HeldFacts);
+        Assert.AreSame(fixture.Publisher.HeldFacts.First(), fixture.Publisher.HeldFacts.Last());
+        Assert.AreEqual(1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced,
+            (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single().Disposition);
+        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+    }
+
     private static DateTimeOffset JournalTime(DateTimeOffset value)
         => DateTimeOffset.FromUnixTimeMilliseconds(value.ToUnixTimeMilliseconds());
 
@@ -410,7 +492,9 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                         Type = "VirtualEnvironment",
                         Kind = EnvironmentalObservationKind.AirTemperature,
                         Required = true,
-                        Triggers = [EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionTrigger.BeforeCapture],
+                        Triggers = protectedStartup
+                            ? [EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionTrigger.BeforeCapture, EnvironmentalAcquisitionTrigger.AfterCapture]
+                            : [EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionTrigger.BeforeCapture],
                         ScheduleEpochUtc = StartupEpoch,
                         PeriodSeconds = protectedStartup ? (int)StartupSourcePeriod.TotalSeconds : 30,
                         ValidForSeconds = 120,
@@ -514,16 +598,28 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                 Root, Coordinator.Sources.Single(), CancellationToken.None);
 
         public async Task WriteRetiredRuntimeRowAsync()
+            => await ExecuteJournalStatementAsync("""
+                INSERT INTO environmental_source_runtime(source_id, observation_kind, required, consecutive_failures)
+                VALUES('retired-source', 'RetiredKind', 0, 0);
+                """).ConfigureAwait(false);
+
+        public async Task RefuseProducedAttemptAsync()
+            => await ExecuteJournalStatementAsync("""
+                CREATE TRIGGER test_refuse_produced_attempt
+                BEFORE INSERT ON environmental_acquisition_attempts WHEN NEW.outcome = 'Produced'
+                BEGIN SELECT RAISE(ABORT, 'test attempt persistence failure'); END;
+                """).ConfigureAwait(false);
+
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+            Justification = "Only fixed test fixture statements are passed to this helper.")]
+        private async Task ExecuteJournalStatementAsync(string statement)
         {
             await _store.InitializeAsync(Root, CancellationToken.None).ConfigureAwait(false);
             var path = Path.Combine(Root, ".environment", "environmental-observation-outbox.db");
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
             await connection.OpenAsync().ConfigureAwait(false);
             using var command = connection.CreateCommand();
-            command.CommandText = """
-                INSERT INTO environmental_source_runtime(source_id, observation_kind, required, consecutive_failures)
-                VALUES('retired-source', 'RetiredKind', 0, 0);
-                """;
+            command.CommandText = statement;
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
@@ -612,9 +708,23 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     }
 
     private sealed class RecordingPublisher(SqliteEnvironmentalObservationOutbox store, string root)
-        : IEnvironmentalObservationPublisher
+        : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
     {
         public ConcurrentQueue<EnvironmentalObservationFactV1> Facts { get; } = new();
+        public ConcurrentQueue<EnvironmentalObservationFactV1> HeldFacts { get; } = new();
+        public Func<CancellationToken, Task>? BeforeHeldCommit { get; set; }
+        public int HeldCommitAttempts => HeldFacts.Count;
+
+        public async ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+            EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+        {
+            HeldFacts.Enqueue(fact);
+            if (BeforeHeldCommit is { } before)
+                await before(cancellationToken).ConfigureAwait(false);
+            var result = await store.CommitHeldPollAsync(root, fact, poll, cancellationToken).ConfigureAwait(false);
+            Facts.Enqueue(fact);
+            return result.HeldPollReceipt!;
+        }
 
         public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
             EnvironmentalObservationFactV1 fact, CancellationToken cancellationToken = default)

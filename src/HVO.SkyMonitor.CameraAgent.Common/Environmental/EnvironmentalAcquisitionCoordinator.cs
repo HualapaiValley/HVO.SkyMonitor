@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -31,6 +32,7 @@ public sealed record EnvironmentalAcquisitionReceipt(
     DateTimeOffset? StaleAfterUtc = null)
 {
     internal DateTimeOffset? HeldLocationPollUtc { get; init; }
+    internal bool HeldLocationPollCommitted { get; init; }
 }
 
 public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
@@ -185,19 +187,21 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             EnvironmentalAcquisitionReceipt first;
             try
             {
-                first = await AcquireExclusiveAsync(source, trigger, observedAtUtc, captureSequence, captureId, started, attemptToken).ConfigureAwait(false);
+                first = await AcquireExclusiveAsync(source, trigger, observedAtUtc, captureSequence, captureId, started, attemptToken,
+                    heldLocationPollUtc).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (acquisitionBudgetMilliseconds.HasValue && !cancellationToken.IsCancellationRequested)
             {
                 first = Receipt(sourceId, trigger, EnvironmentalAcquisitionDisposition.TimedOut, "before-capture-timeout", null, started);
             }
-            if (heldLocationPollUtc.HasValue)
+            if (heldLocationPollUtc.HasValue && !first.HeldLocationPollCommitted)
                 first = first with { HeldLocationPollUtc = heldLocationPollUtc };
             LogReceipt(source.Descriptor, first);
             // Capture evidence must survive shutdown even if the diagnostic attempt write is interrupted.
             if (settleFirstReceipt is not null) await settleFirstReceipt(first).ConfigureAwait(false);
-            await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
-                .ConfigureAwait(false);
+            if (!first.HeldLocationPollCommitted)
+                await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
+                    .ConfigureAwait(false);
             if (acquisitionBudgetMilliseconds.HasValue || joinBusy)
             {
                 PendingAcquisition? deferred;
@@ -362,7 +366,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         long? captureSequence,
         Guid? captureId,
         DateTimeOffset started,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        DateTimeOffset? heldLocationPollUtc = null)
     {
         using var activity = EnvironmentalAcquisitionTelemetry.ActivitySource.StartActivity("environment.acquire");
         activity?.SetTag("environment.trigger", trigger.ToString());
@@ -372,7 +377,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         try
         {
             var receipt = await AcquireSourceCoreAsync(
-                source, trigger, observedAtUtc, captureSequence, captureId, started, cancellationToken).ConfigureAwait(false);
+                source, trigger, observedAtUtc, captureSequence, captureId, started, heldLocationPollUtc,
+                cancellationToken).ConfigureAwait(false);
             _telemetry?.AcquisitionCompleted(source.Descriptor, receipt);
             return receipt;
         }
@@ -396,6 +402,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         long? captureSequence,
         Guid? captureId,
         DateTimeOffset started,
+        DateTimeOffset? heldLocationPollUtc,
         CancellationToken cancellationToken)
     {
         var location = _deploymentLocation.Active
@@ -443,6 +450,9 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         }
         try
         {
+            if (heldLocationPollUtc is { } held)
+                return await PublishHeldPollAsync(result.Fact, new EnvironmentalHeldPoll(source.Descriptor, held, started),
+                    cancellationToken).ConfigureAwait(false);
             var published = await _publisher.PublishAsync(result.Fact, cancellationToken).ConfigureAwait(false);
             return Receipt(
                 source.Descriptor.Id,
@@ -460,6 +470,24 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             LocalEnvironmentalObservationCapacityException or EnvironmentalObservationIdentityConflictException or EnvironmentalObservationOutboxCapacityException)
         {
             return Receipt(source.Descriptor.Id, trigger, EnvironmentalAcquisitionDisposition.Failed, "journal-unavailable", null, started);
+        }
+    }
+
+    private async ValueTask<EnvironmentalAcquisitionReceipt> PublishHeldPollAsync(
+        EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll,
+        CancellationToken cancellationToken)
+    {
+        var publisher = (IEnvironmentalHeldPollPublisher)_publisher;
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await publisher.PublishHeldPollAsync(fact, poll, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (attempt < 3 && IsRetryableAttemptPersistenceFailure(exception))
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), _timeProvider, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 

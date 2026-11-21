@@ -172,11 +172,25 @@ public sealed partial class EnvironmentalAcquisitionService(
         var initialPoll = true;
         var heldPollStore = stateStore as IEnvironmentalLocationHeldPollStore;
         DateTimeOffset? heldDue = null;
+        var confirmSettlement = false;
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
+                if (confirmSettlement)
+                {
+                    heldDue = await heldPollStore!.ReadLocationHeldPollAsync(
+                        options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
+                    confirmSettlement = false;
+                    if (heldDue.HasValue)
+                        await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, cancellationToken).ConfigureAwait(false);
+                    else
+                    {
+                        initialPoll = false;
+                        due = NextDue(source, timeProvider.GetUtcNow());
+                    }
+                }
                 if (initialPoll && heldPollStore is not null && !heldDue.HasValue)
                 {
                     heldDue = await heldPollStore.ReadLocationHeldPollAsync(
@@ -207,7 +221,7 @@ public sealed partial class EnvironmentalAcquisitionService(
                 var settled = await AcquireAsync(source, due, heldDue.HasValue, cancellationToken).ConfigureAwait(false);
                 if (!settled && heldDue.HasValue)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, cancellationToken).ConfigureAwait(false);
+                    confirmSettlement = true;
                     continue;
                 }
                 heldDue = null;
