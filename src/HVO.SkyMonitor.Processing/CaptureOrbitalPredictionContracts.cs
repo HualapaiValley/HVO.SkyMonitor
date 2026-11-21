@@ -27,6 +27,9 @@ public sealed record CaptureOrbitalPredictionPlanV1(string SchemaVersion, Recons
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CameraRigConfig? ObstructionRig { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualExposureProvenance? VirtualShutter { get; init; }
 }
 
 /// <summary>
@@ -47,6 +50,16 @@ public sealed class CaptureOrbitalPredictionInput
         OrbitalGeometryFacts geometry, OrbitalTimingFacts timing, OrbitalPredictionModelFacts model,
         OrbitalQueryBounds bounds, CaptureOrbitalAvailabilityV1 availability, OrbitalSnapshotReadResult resolvedSnapshot,
         OrbitalSelectionPolicy selectionPolicy, IEnumerable<OrbitalObjectIdentity> objects, CameraRigConfig? obstructionRig = null)
+        : this(descriptor, observer, geometry, timing, model, bounds, availability, resolvedSnapshot, selectionPolicy,
+            objects, obstructionRig, null)
+    {
+    }
+
+    public CaptureOrbitalPredictionInput(ReconstructionDescriptor descriptor, ObserverLocation observer,
+        OrbitalGeometryFacts geometry, OrbitalTimingFacts timing, OrbitalPredictionModelFacts model,
+        OrbitalQueryBounds bounds, CaptureOrbitalAvailabilityV1 availability, OrbitalSnapshotReadResult resolvedSnapshot,
+        OrbitalSelectionPolicy selectionPolicy, IEnumerable<OrbitalObjectIdentity> objects, CameraRigConfig? obstructionRig,
+        VirtualExposureProvenance? virtualShutter)
     {
         ArgumentNullException.ThrowIfNull(descriptor); ArgumentNullException.ThrowIfNull(geometry);
         ArgumentNullException.ThrowIfNull(timing); ArgumentNullException.ThrowIfNull(model);
@@ -61,8 +74,11 @@ public sealed class CaptureOrbitalPredictionInput
             geometry.Readout == descriptor.Layout.Readout &&
             geometry.ImageTransform.OutputWidthPixels == descriptor.Layout.Width &&
             geometry.ImageTransform.OutputHeightPixels == descriptor.Layout.Height, "capture-configured-geometry");
-        Require(timing.Exposure.StartUtc == descriptor.Timing.ExposureStartedUtc &&
-            timing.Exposure.EndUtc == descriptor.Timing.ExposureEndedUtc &&
+        var matchesExposure = virtualShutter is null
+            ? timing.Exposure.StartUtc == descriptor.Timing.ExposureStartedUtc && timing.Exposure.EndUtc == descriptor.Timing.ExposureEndedUtc
+            : virtualShutter.MatchesObservedShutter(descriptor) &&
+                timing.Exposure.StartUtc == virtualShutter.ScenarioStartUtc && timing.Exposure.EndUtc == virtualShutter.ScenarioEndUtc;
+        Require(matchesExposure &&
             (timing.ReadoutCompletedUtc is null || timing.ReadoutCompletedUtc == descriptor.Timing.ReadoutCompletedUtc) &&
             timing.ExposureBasis != OrbitalTimingBasis.Actual && timing.ReadoutBasis != OrbitalTimingBasis.Actual,
             "capture-exposure-or-reported-timing");
@@ -96,7 +112,7 @@ public sealed class CaptureOrbitalPredictionInput
             snapshot?.Manifest.Coverage ?? new("explicit-requested-object-identities", OrbitalPopulationCompleteness.Unknown,
                 ["Snapshot unavailable; population coverage unknown."]),
             new(OrbitalSelectionPolicy.CurrentVersion, selectionPolicy.IdentitySha256, selectionPolicy.AllowStaleDiagnostics, selectionPolicy.Sources),
-            ids, selections);
+            ids, selections) { VirtualShutter = virtualShutter };
         if (obstructionRig is not null)
         {
             Require(obstructionRig.HorizonObstruction is not null &&
@@ -140,7 +156,8 @@ public sealed class CaptureOrbitalPredictionInput
         var plan = CaptureOrbitalPredictionJson.Deserialize<CaptureOrbitalPredictionPlanV1>(canonicalPlan);
         var restored = new CaptureOrbitalPredictionInput(plan.Descriptor, plan.Observer, plan.Geometry, plan.Timing,
             plan.Model, plan.Bounds, plan.Availability, resolvedSnapshot,
-            new(plan.SelectionPolicy.Sources, plan.SelectionPolicy.AllowStaleDiagnostics), plan.Objects, plan.ObstructionRig);
+            new(plan.SelectionPolicy.Sources, plan.SelectionPolicy.AllowStaleDiagnostics), plan.Objects, plan.ObstructionRig,
+            plan.VirtualShutter);
         Require(canonicalPlan.SequenceEqual(restored.canonicalPlan), "capture-plan-exact-evidence");
         return restored;
     }
@@ -158,7 +175,8 @@ public sealed class CaptureOrbitalPredictionInput
         source.Role == FrameArtifactRole.Raw && source.Variant == Plan.Descriptor.Artifact.Variant &&
         source.MediaType == Plan.Descriptor.Artifact.MediaType && source.CreatedUtc == Plan.Descriptor.Artifact.CreatedUtc &&
         EqualHash(source.DescriptorIdentitySha256, Plan.DescriptorSha256) && source.Layout == Plan.Descriptor.Layout &&
-        source.ObservationStartedUtc == Plan.Timing.Exposure.StartUtc && source.ObservationEndedUtc == Plan.Timing.Exposure.EndUtc &&
+        source.ObservationStartedUtc == Plan.Descriptor.Timing.ExposureStartedUtc &&
+        source.ObservationEndedUtc == Plan.Descriptor.Timing.ExposureEndedUtc &&
         source.Integration == Plan.Descriptor.Controls.EffectiveExposure &&
         EqualHash(source.RecipeIdentitySha256, ProcessingIdentity.CreateRecipeIdentity(Plan.Descriptor.Artifact.Recipe).IdentitySha256) &&
         source.Payload.Length == Plan.Descriptor.Layout.ByteLength &&

@@ -80,6 +80,13 @@ public sealed record VirtualExposureProvenance(
         };
     }
 
+    /// <summary>Validates a shutter-mapped clock against the committed descriptor's millisecond timing.</summary>
+    public bool MatchesObservedShutter(ReconstructionDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        return UsesShutter(TimeMapping) && IsValid(descriptor.Controls.EffectiveExposure) && MatchesCaptureTiming(descriptor.Timing);
+    }
+
     private static bool IsUtc(DateTimeOffset value) => value != default && value.Offset == TimeSpan.Zero;
 
     private static bool UsesShutter(VirtualExposureTimeMapping mapping)

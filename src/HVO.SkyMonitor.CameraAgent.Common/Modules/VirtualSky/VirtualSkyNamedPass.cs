@@ -222,7 +222,9 @@ internal sealed class VirtualSkyNamedPass
             : default;
         var configured = namedOption.ValueKind == JsonValueKind.Object;
         var requiresLineage = configured || scene?.VirtualExposure?.TimeMapping is
-            VirtualExposureTimeMapping.ShutterUtc or VirtualExposureTimeMapping.FixedCelestialAndShutterUtc;
+            VirtualExposureTimeMapping.ShutterUtc or VirtualExposureTimeMapping.FixedCelestialAndShutterUtc ||
+            (scene?.TransientScenario?.Parameters is { ValueKind: JsonValueKind.Object } declared &&
+                declared.TryGetProperty(PredictionLineageProperty, out _));
         if (!requiresLineage)
             return true;
         if (scene?.TransientScenario?.Parameters is not { ValueKind: JsonValueKind.Object } parameters ||
@@ -256,6 +258,15 @@ internal sealed class VirtualSkyNamedPass
             return false;
         }
     }
+
+    internal static VirtualExposureProvenance? ReadObservedShutter(SceneProvenance? scene, ReconstructionDescriptor descriptor)
+        => scene is { VirtualExposure: { } shutter, TransientScenario: { } scenario } &&
+            shutter.MatchesObservedShutter(descriptor) &&
+            scene.SceneUtc == shutter.CelestialMidpointUtc &&
+            scenario.IntegrationStartUtc == shutter.ScenarioStartUtc && scenario.IntegrationEndUtc == shutter.ScenarioEndUtc &&
+            (scene.CloudScenario is not { } cloud ||
+                (cloud.IntegrationStartUtc == shutter.ScenarioStartUtc && cloud.IntegrationEndUtc == shutter.ScenarioEndUtc))
+            ? shutter : null;
 
     internal sealed record NamedPassPredictionLineage(string SelectionPolicySha256, CaptureSatellitePinnedInputs Inputs);
 

@@ -297,17 +297,28 @@ public sealed class NamedOrbitalPassCaptureTests
     public TestContext TestContext { get; set; } = null!;
 
     [TestMethod]
-    [DataRow(false, false, false, null)]
-    [DataRow(true, false, false, null)]
-    [DataRow(false, true, false, null)]
-    [DataRow(false, false, true, null)]
-    [DataRow(false, false, false, "missing-marker")]
-    [DataRow(false, false, false, "missing-inputs")]
-    [DataRow(false, false, false, "null-inputs")]
-    [DataRow(false, false, false, "ordinary-transient")]
-    [DataRow(false, false, false, "generic-package-hash")]
+    [DataRow(false, false, false, null, 10_000L, false)]
+    [DataRow(true, false, false, null, 10_000L, false)]
+    [DataRow(false, true, false, null, 10_000L, false)]
+    [DataRow(false, false, true, null, 10_000L, false)]
+    [DataRow(false, false, false, "missing-marker", 10_000L, false)]
+    [DataRow(false, false, false, "missing-inputs", 10_000L, false)]
+    [DataRow(false, false, false, "null-inputs", 10_000L, false)]
+    [DataRow(false, false, false, "ordinary-transient", 10_000L, false)]
+    [DataRow(false, false, false, "generic-package-hash", 10_000L, false)]
+    [DataRow(false, false, true, null, 5_000L, false)]
+    [DataRow(false, false, false, null, 5_000L, false)]
+    [DataRow(false, false, true, "retained-coarse-plan", 5_000L, false)]
+    [DataRow(false, false, false, "missing-shutter", 10_000L, false)]
+    [DataRow(false, false, false, "contradictory-shutter", 10_000L, false)]
+    [DataRow(false, false, true, null, 10_000L, true)]
+    [DataRow(false, false, true, null, 5_000L, true)]
+    [DataRow(false, false, false, null, 5_000L, true)]
+    [DataRow(false, false, false, "generic-package-hash", 10_000L, true)]
+    [DataRow(false, false, false, "missing-shutter", 10_000L, true)]
+    [DataRow(false, false, false, "contradictory-shutter", 10_000L, true)]
     public async Task DelayedShutterCommitsAndPredictsWithItsObservedInterval(bool clouds, bool wrongExpectedRecord,
-        bool crossesSelectionBoundary, string? metadataCase)
+        bool crossesSelectionBoundary, string? metadataCase, long shutterDelayTicks, bool bayer)
     {
         var root = Path.Combine(Path.GetTempPath(), "hvo-named-shutter-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -315,9 +326,9 @@ public sealed class NamedOrbitalPassCaptureTests
         {
             var ct = TestContext.CancellationToken;
             var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "orbital-prediction-v1");
-            var config = MakeConfiguration(fixture, bayer: false);
+            var config = MakeConfiguration(fixture, bayer);
             var requested = First + 3 * Exposure;
-            var shutter = requested.AddMilliseconds(1);
+            var shutter = requested.AddTicks(shutterDelayTicks);
             var input = await PreparePackageAsync(root, fixture, config, ct,
                 selectionBoundary: crossesSelectionBoundary ? shutter : null).ConfigureAwait(false);
             var ingressRoot = Path.Combine(root, "ingress");
@@ -390,11 +401,33 @@ public sealed class NamedOrbitalPassCaptureTests
             if (crossesSelectionBoundary)
             {
                 var pixels = capture.Frame.PixelData.ToArray();
-                var brightCodes = SampleCorridor(pixels, bright, false);
-                var darkCodes = SampleCorridor(pixels, input.Tracks[(3, CatalogNumbers[1])], false);
+                var brightCodes = SampleCorridor(pixels, bright, bayer);
+                var darkCodes = SampleCorridor(pixels, input.Tracks[(3, CatalogNumbers[1])], bayer);
                 Assert.IsGreaterThan(50, brightCodes.RedOrMonoMedian - darkCodes.RedOrMonoMedian);
             }
-            var malformedLineage = metadataCase is not null && !ordinaryTransient;
+            var invalidTiming = metadataCase is "missing-shutter" or "contradictory-shutter";
+            if (invalidTiming)
+            {
+                var scenario = rendered.TransientScenario;
+                if (metadataCase == "contradictory-shutter")
+                    scenario = scenario with
+                    {
+                        IntegrationStartUtc = scenario.IntegrationStartUtc.AddSeconds(10),
+                        IntegrationEndUtc = scenario.IntegrationEndUtc.AddSeconds(10)
+                    };
+                capture = capture with
+                {
+                    Frame = capture.Frame with
+                    {
+                        Metadata = capture.Frame.Metadata with
+                        {
+                            Scene = rendered with { VirtualExposure = null, TransientScenario = scenario }
+                        }
+                    }
+                };
+            }
+            var retainedCoarsePlan = metadataCase == "retained-coarse-plan";
+            var malformedLineage = metadataCase is not null && !ordinaryTransient && !invalidTiming && !retainedCoarsePlan;
             if (malformedLineage)
             {
                 // Persist an internally consistent raw sidecar with incomplete named-pass metadata.
@@ -439,35 +472,109 @@ public sealed class NamedOrbitalPassCaptureTests
                 provider.GetRequiredService<CaptureProjectedSceneStager>());
             await host.PublishAsync(new(request, capture, shutter, Exposure, Exposure), ct).ConfigureAwait(false);
 
-            var lane = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static lane => lane.Name == "standard");
-            var queue = provider.GetRequiredService<ICaptureLaneStore>();
+            // Resolve the admitted scene from the durable raw sidecar using newly opened services.
+            var reopened = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()),
+                new InMemoryCelestialCatalog([]), input);
+            await using var reopenedLifetime = reopened.ConfigureAwait(false);
+            await InitializeCaptureServicesAsync(reopened, config, ct).ConfigureAwait(false);
+            var lane = reopened.GetRequiredService<CaptureLanePolicy>().Definitions.Single(static lane => lane.Name == "standard");
+            var queue = reopened.GetRequiredService<ICaptureLaneStore>();
             var lease = await queue.ClaimAsync(lane, Agent, config, ct).ConfigureAwait(false);
             Assert.IsNotNull(lease);
             var manifest = lease.Context.RawCapture.Manifest;
             Assert.IsTrue(manifest.Validate().IsValid);
-            Assert.AreEqual(shutter, manifest.Descriptor.Timing.ExposureStartedUtc);
+            var descriptorStart = DateTimeOffset.FromUnixTimeMilliseconds(shutter.ToUnixTimeMilliseconds());
+            Assert.AreEqual(descriptorStart, manifest.Descriptor.Timing.ExposureStartedUtc);
             Assert.AreEqual(requested, manifest.Descriptor.Timing.RequestedStartUtc);
-            var result = await provider.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, ct).ConfigureAwait(false);
+            if (invalidTiming)
+            {
+                Assert.IsNull(manifest.Scene!.VirtualExposure);
+                var integrationStart = metadataCase == "contradictory-shutter" ? shutter.AddSeconds(10) : shutter;
+                Assert.AreEqual(integrationStart, manifest.Scene.TransientScenario!.IntegrationStartUtc);
+                Assert.AreEqual(integrationStart + Exposure, manifest.Scene.TransientScenario.IntegrationEndUtc);
+                Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, manifest.Scene, out var retainedLineage));
+                Assert.AreEqual(bright.Lineage.RecordSha256, retainedLineage!.Inputs.ExpectedRecords![CatalogNumbers[0]]);
+            }
+            if (retainedCoarsePlan)
+            {
+                var work = reopened.GetRequiredService<CaptureSatelliteWorkStore>();
+                var rawContext = new CaptureProcessingContext(config, new(request, capture, shutter, Exposure, Exposure), lease.Context.RawCapture);
+                await RetainCoarsePlanAsync(work, rawContext, input, bright, ct).ConfigureAwait(false);
+            }
+            var result = await reopened.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, ct).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
             await queue.CompleteAsync(lease, ct).ConfigureAwait(false);
-            var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+            var store = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
             var node = await store.ReadNodeAsync(manifest.Descriptor.Capture.CaptureId, "satellite", ct).ConfigureAwait(false);
             Assert.IsNotNull(node);
             var status = node.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.StatusSchema);
             var prediction = CaptureSatelliteProducts.ParseStatus(await File.ReadAllBytesAsync(
                 Path.Combine(ingressRoot, status.PayloadRelativePath), ct).ConfigureAwait(false));
-            Assert.AreEqual(new OrbitalUtcInterval(shutter, shutter + Exposure), prediction.Exposure);
-            var expectedReason = malformedLineage ? "NamedPassPredictionLineageUnavailable" :
+            TestContext.WriteLine($"observed={shutter:O} descriptor={descriptorStart:O} mapping={manifest.Scene?.VirtualExposure?.TimeMapping} " +
+                $"integration={manifest.Scene?.TransientScenario?.IntegrationStartUtc:O} prediction={prediction.Exposure.StartUtc:O} " +
+                $"reason={prediction.Reason} renderable={prediction.Renderable} tracks={prediction.TrackCount}");
+            var expectedReason = invalidTiming ? "NamedPassPredictionTimingUnavailable" :
+                malformedLineage ? "NamedPassPredictionLineageUnavailable" :
+                retainedCoarsePlan ? "NamedPassPredictionTimingMismatch" :
                 crossesSelectionBoundary ? "PinnedRecordSelectionMismatch" :
                 wrongExpectedRecord ? "NamedPassPredictionInputsMismatch" : "None";
+            Assert.AreEqual(expectedReason, prediction.Reason);
+            var expectedStart = invalidTiming ? descriptorStart : shutter;
+            Assert.AreEqual(new OrbitalUtcInterval(expectedStart, expectedStart + Exposure), prediction.Exposure);
             Assert.AreEqual(expectedReason == "None" ? 2 : 0, prediction.TrackCount);
             Assert.AreEqual(expectedReason == "None", prediction.Renderable);
-            Assert.AreEqual(expectedReason, prediction.Reason);
+            var evidence = node.Outputs.Single(static output => output.ProductSchemaVersion == CaptureSatelliteProducts.InputSchema);
+            var retained = CaptureSatelliteProducts.ParseInput(await File.ReadAllBytesAsync(
+                Path.Combine(ingressRoot, evidence.PayloadRelativePath), ct).ConfigureAwait(false));
+            Assert.AreEqual(shutterDelayTicks == 5_000 ? manifest.Scene!.VirtualExposure : null, retained.VirtualShutter);
+            var orbital = node.Outputs.SingleOrDefault(static output =>
+                output.ProductSchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion);
+            if (prediction.Renderable)
+            {
+                Assert.IsNotNull(orbital);
+                var exact = await reopened.GetRequiredService<IOrbitalSnapshotReader>()
+                    .ReadExactAsync(input.Snapshot.Manifest.ManifestSha256, ct).ConfigureAwait(false);
+                var restored = CaptureSatelliteProducts.Restore(retained, exact);
+                Assert.AreEqual(prediction.Exposure, restored.Plan.Timing.Exposure);
+                var tracks = CaptureOrbitalPredictionJson.Parse(await File.ReadAllBytesAsync(
+                    Path.Combine(ingressRoot, orbital.PayloadRelativePath), ct).ConfigureAwait(false), restored);
+                Assert.HasCount(2, tracks.Tracks);
+                Assert.IsTrue(tracks.Tracks.All(track => track.RequestedInterval == prediction.Exposure));
+            }
+            else
+            {
+                Assert.IsNull(retained.Plan);
+                Assert.IsNull(orbital);
+            }
         }
         finally
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task RetainCoarsePlanAsync(CaptureSatelliteWorkStore store, CaptureProcessingContext context,
+        PreparedInput input, OrbitalExposureTrackV1 bright, CancellationToken cancellationToken)
+    {
+        var descriptor = context.ReconstructionDescriptor!;
+        var rawTiming = descriptor.Timing;
+        var timing = new OrbitalTimingFacts(new(rawTiming.ExposureStartedUtc, rawTiming.ExposureEndedUtc),
+            OrbitalTimingBasis.Reported, rawTiming.ReadoutCompletedUtc, OrbitalTimingBasis.Reported,
+            "capture-descriptor-command-status-observations-v1", AstrometricClockFacts.NotSupplied);
+        var available = First.AddDays(-1);
+        var options = new CaptureSatelliteTracksOptions();
+        var plan = new CaptureOrbitalPredictionInput(descriptor, bright.Observer, bright.Geometry, timing, bright.Model,
+            options.Bounds, new(CaptureOrbitalAssessmentMode.OriginalAvailability, rawTiming.DurableIngressUtc,
+                rawTiming.DurableIngressUtc, available), OrbitalSnapshotReadResult.Available(input.Snapshot),
+            CaptureSatelliteTracksOptions.CreateSelectionPolicy(false), CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)));
+        Assert.AreEqual(bright.Lineage.RecordSha256, plan.Plan.Selections.Single(selection =>
+            selection.ObjectIdentity.CatalogNumber == CatalogNumbers[0]).SelectedRecord!.RecordSha256);
+        var coarse = new CaptureSatelliteInputV1(CaptureSatelliteProducts.InputSchema, descriptor, context.Config.Rig,
+            bright.Observer, plan.SerializePlan(), input.Snapshot.SerializeManifest(), null,
+            input.Time.ExportEarthOrientation(), input.Time.ExportLeapSeconds(), "Override", available, null);
+        var prepared = await store.PrepareAsync(context, "satellite", options.OutputVariant, () => ValueTask.FromResult(coarse),
+            cancellationToken).ConfigureAwait(false);
+        _ = await store.PinAsync(prepared, cancellationToken).ConfigureAwait(false);
     }
 
     [TestMethod]
