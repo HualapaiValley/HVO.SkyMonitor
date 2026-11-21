@@ -282,7 +282,11 @@ public sealed class PipelineSummaryPageTests
     {
         var model = ProcessingGraphDraftModel.FromPipeline(pipeline, null, "centered-structure", "1");
         model.AddNode("Telemetry");
-        model.Nodes.Single(static node => node.Type == "Telemetry").Required = false;
+        var telemetry = model.Nodes.Single(static node => node.Type == "Telemetry");
+        var storage = model.Nodes.Single(static node => node.Type == FileStorageCaptureProcessingStep.StableAlias);
+        telemetry.Required = false;
+        telemetry.ToggleDependency(ProcessingGraphDraftModel.RawInput, selected: false);
+        telemetry.ToggleDependency(storage.Id, selected: true);
         Assert.IsTrue(model.TryBuild(out var added, out var addErrors), string.Join(' ', addErrors));
         var addition = await graphs.CreateRevisionAsync(model.Name, model.Revision, added, "centered-add", null, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(addition.IsSuccess,
@@ -290,7 +294,9 @@ public sealed class PipelineSummaryPageTests
         var reopened = await graphs.GetRevisionDetailAsync(addition.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(reopened.IsSuccess, reopened.Message);
         Assert.IsNotNull(reopened.Value?.Plan);
-        Assert.IsFalse(reopened.Value.Pipeline.Steps.Single(static step => step.Type == "Telemetry").Required);
+        var restoredTelemetry = reopened.Value.Pipeline.Steps.Single(static step => step.Type == "Telemetry");
+        Assert.IsFalse(restoredTelemetry.Required);
+        CollectionAssert.AreEqual(new[] { storage.Id }, restoredTelemetry.DependsOn!.ToArray());
         AssertGeneratedSteps(generated, reopened.Value.Pipeline);
 
         model = ProcessingGraphDraftModel.FromPipeline(reopened.Value.Pipeline, addition.Value.RevisionId, model.Name, "2");
