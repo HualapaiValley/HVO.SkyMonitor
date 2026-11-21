@@ -366,111 +366,115 @@ public sealed class NamedOrbitalPassCaptureTests
                 Assert.HasCount(2, observed.Candidates.Where(static candidate => candidate.Eligibility == OrbitalSelectionEligibility.Eligible));
             }
             var clock = new ExposureTestTimeProvider(shutter);
-            var provider = CreateProvider(ingressRoot, clock, new InMemoryCelestialCatalog([]), input);
-            await using var providerLifetime = provider.ConfigureAwait(false);
-            await InitializeCaptureServicesAsync(provider, config, ct).ConfigureAwait(false);
-            await InstallSnapshotAsync(provider, input.Snapshot, ct).ConfigureAwait(false);
-            var module = provider.GetRequiredService<ICameraModuleFactory>().Create(config.ModuleType);
-            await using var moduleLifetime = module.ConfigureAwait(false);
-            await module.InitializeAsync(config, ct).ConfigureAwait(false);
-            var request = new CaptureRequest(requested, Exposure, CaptureMode.Still, new(Exposure, 0, null, null));
-            var exposureTask = module.CaptureAsync(request, ct);
-            await clock.TimerCreated.Task.WaitAsync(ct).ConfigureAwait(false);
-            clock.Advance(Exposure);
-            var capture = await exposureTask.ConfigureAwait(false);
-            var rendered = capture.Frame!.Metadata.Scene!;
-            var expectedScenarioStart = ordinaryTransient ? requested : shutter;
-            Assert.AreEqual(expectedScenarioStart, rendered.VirtualExposure!.ScenarioStartUtc);
-            Assert.AreEqual(requested, rendered.VirtualExposure.RequestedStartUtc);
-            Assert.AreEqual(expectedScenarioStart, rendered.TransientScenario!.IntegrationStartUtc);
-            Assert.AreEqual(clouds ? shutter : (DateTimeOffset?)null, rendered.CloudScenario?.IntegrationStartUtc);
-            Assert.AreEqual(ordinaryTransient, VirtualSkyNamedPass.TryReadPredictionLineage(config, null, out _));
-            Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, rendered, out var lineage));
-            var bright = input.Tracks[(3, CatalogNumbers[0])];
-            if (ordinaryTransient)
-            {
-                Assert.AreEqual(genericPackageHash, rendered.TransientScenario.Parameters.TryGetProperty("sourcePackageSha256", out var hash));
-                if (genericPackageHash)
-                    Assert.AreEqual(input.PackageSha256, hash.GetString());
-                Assert.IsNull(lineage);
-            }
-            else
-            {
-                Assert.AreEqual(bright.Lineage.RecordSha256, lineage!.Inputs.ExpectedRecords![CatalogNumbers[0]]);
-            }
-            if (crossesSelectionBoundary)
-            {
-                var pixels = capture.Frame.PixelData.ToArray();
-                var brightCodes = SampleCorridor(pixels, bright, bayer);
-                var darkCodes = SampleCorridor(pixels, input.Tracks[(3, CatalogNumbers[1])], bayer);
-                Assert.IsGreaterThan(50, brightCodes.RedOrMonoMedian - darkCodes.RedOrMonoMedian);
-            }
             var invalidTiming = metadataCase is "missing-shutter" or "contradictory-shutter";
-            if (invalidTiming)
-            {
-                var scenario = rendered.TransientScenario;
-                if (metadataCase == "contradictory-shutter")
-                    scenario = scenario with
-                    {
-                        IntegrationStartUtc = scenario.IntegrationStartUtc.AddSeconds(10),
-                        IntegrationEndUtc = scenario.IntegrationEndUtc.AddSeconds(10)
-                    };
-                capture = capture with
-                {
-                    Frame = capture.Frame with
-                    {
-                        Metadata = capture.Frame.Metadata with
-                        {
-                            Scene = rendered with { VirtualExposure = null, TransientScenario = scenario }
-                        }
-                    }
-                };
-            }
             var retainedCoarsePlan = metadataCase == "retained-coarse-plan";
             var malformedLineage = metadataCase is not null && !ordinaryTransient && !invalidTiming && !retainedCoarsePlan;
-            if (malformedLineage)
+            var bright = input.Tracks[(3, CatalogNumbers[0])];
+            CaptureLoopSubmission submission;
+            var provider = CreateProvider(ingressRoot, clock, new InMemoryCelestialCatalog([]), input);
+            await using (provider.ConfigureAwait(false))
             {
-                // Persist an internally consistent raw sidecar with incomplete named-pass metadata.
-                var scenario = rendered.TransientScenario;
-                var parameters = JsonNode.Parse(scenario.Parameters.GetRawText())!.AsObject();
-                switch (metadataCase)
+                await InitializeCaptureServicesAsync(provider, config, ct).ConfigureAwait(false);
+                await InstallSnapshotAsync(provider, input.Snapshot, ct).ConfigureAwait(false);
+                var module = provider.GetRequiredService<ICameraModuleFactory>().Create(config.ModuleType);
+                await using var moduleLifetime = module.ConfigureAwait(false);
+                await module.InitializeAsync(config, ct).ConfigureAwait(false);
+                var request = new CaptureRequest(requested, Exposure, CaptureMode.Still, new(Exposure, 0, null, null));
+                var exposureTask = module.CaptureAsync(request, ct);
+                await clock.TimerCreated.Task.WaitAsync(ct).ConfigureAwait(false);
+                clock.Advance(Exposure);
+                var capture = await exposureTask.ConfigureAwait(false);
+                var rendered = capture.Frame!.Metadata.Scene!;
+                var expectedScenarioStart = ordinaryTransient ? requested : shutter;
+                Assert.AreEqual(expectedScenarioStart, rendered.VirtualExposure!.ScenarioStartUtc);
+                Assert.AreEqual(requested, rendered.VirtualExposure.RequestedStartUtc);
+                Assert.AreEqual(expectedScenarioStart, rendered.TransientScenario!.IntegrationStartUtc);
+                Assert.AreEqual(clouds ? shutter : (DateTimeOffset?)null, rendered.CloudScenario?.IntegrationStartUtc);
+                Assert.AreEqual(ordinaryTransient, VirtualSkyNamedPass.TryReadPredictionLineage(config, null, out _));
+                Assert.IsTrue(VirtualSkyNamedPass.TryReadPredictionLineage(config, rendered, out var lineage));
+                if (ordinaryTransient)
                 {
-                    case "missing-marker":
-                        Assert.IsTrue(parameters.Remove("sourcePackageSha256"));
-                        Assert.IsTrue(parameters.Remove("namedPassPredictionV1"));
-                        break;
-                    case "missing-inputs":
-                        Assert.IsTrue(parameters["namedPassPredictionV1"]!.AsObject().Remove("inputs"));
-                        break;
-                    case "null-inputs":
-                        parameters["namedPassPredictionV1"]!["inputs"] = null;
-                        break;
+                    Assert.AreEqual(genericPackageHash, rendered.TransientScenario.Parameters.TryGetProperty("sourcePackageSha256", out var hash));
+                    if (genericPackageHash)
+                        Assert.AreEqual(input.PackageSha256, hash.GetString());
+                    Assert.IsNull(lineage);
                 }
-                var modified = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(parameters));
-                capture = capture with
+                else
                 {
-                    Frame = capture.Frame with
-                    {
-                        Metadata = capture.Frame.Metadata with
+                    Assert.AreEqual(bright.Lineage.RecordSha256, lineage!.Inputs.ExpectedRecords![CatalogNumbers[0]]);
+                }
+                if (crossesSelectionBoundary)
+                {
+                    var pixels = capture.Frame.PixelData.ToArray();
+                    var brightCodes = SampleCorridor(pixels, bright, bayer);
+                    var darkCodes = SampleCorridor(pixels, input.Tracks[(3, CatalogNumbers[1])], bayer);
+                    Assert.IsGreaterThan(50, brightCodes.RedOrMonoMedian - darkCodes.RedOrMonoMedian);
+                }
+                if (invalidTiming)
+                {
+                    var scenario = rendered.TransientScenario;
+                    if (metadataCase == "contradictory-shutter")
+                        scenario = scenario with
                         {
-                            Scene = rendered with
+                            IntegrationStartUtc = scenario.IntegrationStartUtc.AddSeconds(10),
+                            IntegrationEndUtc = scenario.IntegrationEndUtc.AddSeconds(10)
+                        };
+                    capture = capture with
+                    {
+                        Frame = capture.Frame with
+                        {
+                            Metadata = capture.Frame.Metadata with
                             {
-                                TransientScenario = scenario with
+                                Scene = rendered with { VirtualExposure = null, TransientScenario = scenario }
+                            }
+                        }
+                    };
+                }
+                if (malformedLineage)
+                {
+                    // Persist an internally consistent raw sidecar with incomplete named-pass metadata.
+                    var scenario = rendered.TransientScenario;
+                    var parameters = JsonNode.Parse(scenario.Parameters.GetRawText())!.AsObject();
+                    switch (metadataCase)
+                    {
+                        case "missing-marker":
+                            Assert.IsTrue(parameters.Remove("sourcePackageSha256"));
+                            Assert.IsTrue(parameters.Remove("namedPassPredictionV1"));
+                            break;
+                        case "missing-inputs":
+                            Assert.IsTrue(parameters["namedPassPredictionV1"]!.AsObject().Remove("inputs"));
+                            break;
+                        case "null-inputs":
+                            parameters["namedPassPredictionV1"]!["inputs"] = null;
+                            break;
+                    }
+                    var modified = CaptureContractJson.Canonicalize(CaptureContractJson.SerializeToElement(parameters));
+                    capture = capture with
+                    {
+                        Frame = capture.Frame with
+                        {
+                            Metadata = capture.Frame.Metadata with
+                            {
+                                Scene = rendered with
                                 {
-                                    Parameters = modified,
-                                    ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(modified)
+                                    TransientScenario = scenario with
+                                    {
+                                        Parameters = modified,
+                                        ParametersSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(modified)
+                                    }
                                 }
                             }
                         }
-                    }
-                };
-            }
+                    };
+                }
 
-            var ingress = provider.GetRequiredService<IRawCaptureIngress>();
-            var host = new CaptureHostContext(config, ingress, provider.GetRequiredService<ICaptureDistributor>(), null,
-                provider.GetRequiredService<IProjectedSceneStagingStore>(), provider.GetRequiredService<ProjectedSceneStageLifecycleCoordinator>(),
-                provider.GetRequiredService<CaptureProjectedSceneStager>());
-            await host.PublishAsync(new(request, capture, shutter, Exposure, Exposure), ct).ConfigureAwait(false);
+                var ingress = provider.GetRequiredService<IRawCaptureIngress>();
+                var host = new CaptureHostContext(config, ingress, provider.GetRequiredService<ICaptureDistributor>(), null,
+                    provider.GetRequiredService<IProjectedSceneStagingStore>(), provider.GetRequiredService<ProjectedSceneStageLifecycleCoordinator>(),
+                    provider.GetRequiredService<CaptureProjectedSceneStager>());
+                submission = new(request, capture, shutter, Exposure, Exposure);
+                await host.PublishAsync(submission, ct).ConfigureAwait(false);
+            }
 
             // Resolve the admitted scene from the durable raw sidecar using newly opened services.
             var reopened = CreateProvider(ingressRoot, new ExposureTestTimeProvider(clock.GetUtcNow()),
@@ -498,7 +502,7 @@ public sealed class NamedOrbitalPassCaptureTests
             if (retainedCoarsePlan)
             {
                 var work = reopened.GetRequiredService<CaptureSatelliteWorkStore>();
-                var rawContext = new CaptureProcessingContext(config, new(request, capture, shutter, Exposure, Exposure), lease.Context.RawCapture);
+                var rawContext = new CaptureProcessingContext(config, submission, lease.Context.RawCapture);
                 await RetainCoarsePlanAsync(work, rawContext, input, bright, ct).ConfigureAwait(false);
             }
             var result = await reopened.GetRequiredService<StandardCaptureLaneHandler>().HandleAsync(lease.Context, ct).ConfigureAwait(false);

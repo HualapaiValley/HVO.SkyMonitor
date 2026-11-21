@@ -86,7 +86,12 @@ public sealed record CaptureScheduleDecision(
     ExpandedScheduleInterval? Interval,
     string? OverrideId,
     bool ConsumeOneShotOverride,
-    DateTimeOffset? NextTransitionUtc);
+    DateTimeOffset? NextTransitionUtc)
+{
+    internal CaptureScheduleOpenSegment? OpenSegment { get; init; }
+}
+
+internal sealed record CaptureScheduleOpenSegment(DateTimeOffset? StartUtc, DateTimeOffset? EndUtc);
 
 public sealed class CaptureScheduleValidationException : ArgumentException
 {
@@ -130,6 +135,7 @@ public static class CaptureScheduleTimeZone
 public static class CaptureScheduleIntervalExpander
 {
     public const string AlgorithmVersion = "capture-schedule-expand-v1";
+    internal const string AdmissionAlgorithmVersion = "capture-schedule-admission-expand-v1";
 
     public static CaptureSchedulePreview Expand(
         CaptureScheduleDefinition definition,
@@ -138,6 +144,25 @@ public static class CaptureScheduleIntervalExpander
         TimeZoneInfo timeZone,
         ObservatoryLocation observer,
         ISolarEventCalculator solarEvents)
+        => Expand(definition, firstLocalDate, dayCount, timeZone, observer, solarEvents, admission: false);
+
+    internal static CaptureSchedulePreview ExpandAdmission(
+        CaptureScheduleDefinition definition,
+        DateOnly firstLocalDate,
+        int dayCount,
+        TimeZoneInfo timeZone,
+        ObservatoryLocation observer,
+        ISolarEventCalculator solarEvents)
+        => Expand(definition, firstLocalDate, dayCount, timeZone, observer, solarEvents, admission: true);
+
+    private static CaptureSchedulePreview Expand(
+        CaptureScheduleDefinition definition,
+        DateOnly firstLocalDate,
+        int dayCount,
+        TimeZoneInfo timeZone,
+        ObservatoryLocation observer,
+        ISolarEventCalculator solarEvents,
+        bool admission)
     {
         ArgumentNullException.ThrowIfNull(definition);
         CaptureScheduleValidator.Validate(definition);
@@ -157,9 +182,19 @@ public static class CaptureScheduleIntervalExpander
         var previewStart = CaptureScheduleTimeZone.ResolveDay(firstLocalDate, timeZone).StartUtc;
         var previewEnd = CaptureScheduleTimeZone.ResolveDay(firstLocalDate.AddDays(dayCount - 1), timeZone).EndUtc;
 
-        for (var dayIndex = -2; dayIndex < dayCount; dayIndex++)
+        // A boundary on the next anchor day can be moved back by 24 hours.
+        var lastAnchor = admission ? dayCount : dayCount - 1;
+        IEnumerable<DateOnly> anchors = Enumerable.Range(-2, lastAnchor + 3)
+            .Select(firstLocalDate.AddDays);
+        var retainAllExceptions = admission && definition.LegacyAlwaysOpen;
+        if (retainAllExceptions)
         {
-            var date = firstLocalDate.AddDays(dayIndex);
+            // Always-open fallback has no intrinsic bounds. Retain each dated exception
+            // even after the local expansion has moved away from it.
+            anchors = anchors.Union(dateExceptions.Keys).Order();
+        }
+        foreach (var date in anchors)
+        {
             var localDay = CaptureScheduleTimeZone.ResolveDay(date, timeZone);
             if (dateExceptions.TryGetValue(date, out var dateRule))
             {
@@ -198,7 +233,7 @@ public static class CaptureScheduleIntervalExpander
         {
             var start = ToMilliseconds(blackout.StartUtc);
             var end = ToMilliseconds(blackout.EndUtc);
-            if (start < previewEnd && end > previewStart)
+            if (admission || start < previewEnd && end > previewStart)
             {
                 intervals.Add(new ExpandedScheduleInterval(
                     blackout.Id,
@@ -230,8 +265,13 @@ public static class CaptureScheduleIntervalExpander
                 "A preview cannot combine different solar algorithm versions.");
         }
         var solarVersion = solarVersions.SingleOrDefault() ?? "none";
-        var relevantIntervals = intervals.Where(item => item.StartUtc < previewEnd && item.EndUtc > previewStart).ToArray();
+        var relevantIntervals = intervals.Where(item =>
+            admission && item.Source == CaptureScheduleIntervalSource.Blackout ||
+            retainAllExceptions && item.Source is CaptureScheduleIntervalSource.DateExceptionClosed
+                or CaptureScheduleIntervalSource.DateExceptionWindow ||
+            item.StartUtc < previewEnd && item.EndUtc > previewStart).ToArray();
         var relevantUnavailable = unavailable.Where(item =>
+            retainAllExceptions && item.Source == CaptureScheduleIntervalSource.DateExceptionWindow ||
             item.LocalDayStartUtc < previewEnd && item.LocalDayEndUtc > previewStart).ToArray();
         ValidateExpandedConflicts(relevantIntervals);
         var orderedIntervals = relevantIntervals.OrderBy(static item => item.StartUtc)
@@ -242,9 +282,10 @@ public static class CaptureScheduleIntervalExpander
             .ThenBy(static item => item.Id, StringComparer.Ordinal)
             .ToArray();
         var timeZoneRuleSha256 = CaptureScheduleTimeZone.ComputeRuleSha256(timeZone);
+        var algorithm = admission ? AdmissionAlgorithmVersion : AlgorithmVersion;
         var expansionSha256 = ComputeExpansionSha256(
             revisionSha256,
-            AlgorithmVersion,
+            algorithm,
             timeZoneRuleSha256,
             solarVersion,
             previewStart,
@@ -254,7 +295,7 @@ public static class CaptureScheduleIntervalExpander
         return new CaptureSchedulePreview(
             revisionSha256,
             expansionSha256,
-            AlgorithmVersion,
+            algorithm,
             timeZoneRuleSha256,
             solarVersion,
             previewStart,
@@ -482,36 +523,43 @@ public static class CaptureScheduleEvaluator
         }
         ValidateOverrides(definition, request.Overrides);
 
-        return EvaluateAt(preview, request, utc, includeNextTransition: true);
+        var decision = EvaluateAt(preview, request, utc);
+        var segment = FindOpenSegment(preview, request, decision);
+        var useAdmissionEdges = IsAdmissionExpansion(preview) && decision.Admitted;
+        return decision with
+        {
+            NextTransitionUtc = useAdmissionEdges
+                ? segment.EndUtc
+                : segment.EndUtc is { } end && end < preview.PreviewEndUtc ? end : preview.PreviewEndUtc,
+            OpenSegment = decision.Admitted ? segment : null
+        };
     }
 
     private static CaptureScheduleDecision EvaluateAt(
         CaptureSchedulePreview preview,
         CaptureScheduleEvaluationRequest request,
-        DateTimeOffset utc,
-        bool includeNextTransition)
+        DateTimeOffset utc)
     {
-        var nextTransition = includeNextTransition ? NextTransition(preview, request, utc) : null;
         if (request.SafetyState != CaptureScheduleSafetyState.Available)
         {
-            return Denied(CaptureScheduleAdmissionReason.SafetyUnavailable, request.SafetyState, utc, nextTransition);
+            return Denied(CaptureScheduleAdmissionReason.SafetyUnavailable, request.SafetyState, utc);
         }
         if (request.ManualPaused)
         {
-            return Denied(CaptureScheduleAdmissionReason.ManualPause, request.SafetyState, utc, nextTransition);
+            return Denied(CaptureScheduleAdmissionReason.ManualPause, request.SafetyState, utc);
         }
 
         var blackout = Active(preview, utc, CaptureScheduleIntervalSource.Blackout);
         if (blackout is not null)
         {
-            return Denied(CaptureScheduleAdmissionReason.Blackout, request.SafetyState, utc, nextTransition, blackout);
+            return Denied(CaptureScheduleAdmissionReason.Blackout, request.SafetyState, utc, blackout);
         }
         var activeOverride = ActiveOverride(request.Overrides, utc);
         if (activeOverride?.Mode == CaptureScheduleOverrideMode.ForceClosed)
         {
             return new CaptureScheduleDecision(
                 false, CaptureScheduleAdmissionReason.ForceClosedOverride, request.SafetyState, utc,
-                null, null, activeOverride.Id, false, nextTransition);
+                null, null, activeOverride.Id, false, null);
         }
         if (activeOverride?.Mode == CaptureScheduleOverrideMode.ForceOpen)
         {
@@ -526,7 +574,7 @@ public static class CaptureScheduleEvaluator
             return new CaptureScheduleDecision(
                 true, CaptureScheduleAdmissionReason.ForceOpenOverride, request.SafetyState, utc,
                 activeOverride.SetpointProfileId, effectiveInterval, activeOverride.Id,
-                activeOverride.OneShot && !activeOverride.ConsumedUtc.HasValue, nextTransition);
+                activeOverride.OneShot && !activeOverride.ConsumedUtc.HasValue, null);
         }
 
         var exceptionClosed = Active(preview, utc, CaptureScheduleIntervalSource.DateExceptionClosed);
@@ -539,7 +587,7 @@ public static class CaptureScheduleEvaluator
             if (exception is not null)
             {
                 return Admitted(
-                    CaptureScheduleAdmissionReason.DateException, request.SafetyState, utc, exception, nextTransition);
+                    CaptureScheduleAdmissionReason.DateException, request.SafetyState, utc, exception);
             }
             var unavailable = preview.UnavailableWindows.Any(item =>
                 item.Source == CaptureScheduleIntervalSource.DateExceptionWindow &&
@@ -549,7 +597,6 @@ public static class CaptureScheduleEvaluator
                 unavailable ? CaptureScheduleAdmissionReason.NoSolarEvent : CaptureScheduleAdmissionReason.DateException,
                 request.SafetyState,
                 utc,
-                nextTransition,
                 exceptionClosed);
         }
         var carriedException = Active(preview, utc, CaptureScheduleIntervalSource.DateExceptionWindow);
@@ -559,8 +606,7 @@ public static class CaptureScheduleEvaluator
                 CaptureScheduleAdmissionReason.DateException,
                 request.SafetyState,
                 utc,
-                carriedException,
-                nextTransition);
+                carriedException);
         }
         var carriedExceptionUnavailable = preview.UnavailableWindows.Any(item =>
             item.Source == CaptureScheduleIntervalSource.DateExceptionWindow &&
@@ -570,45 +616,43 @@ public static class CaptureScheduleEvaluator
             return Denied(
                 CaptureScheduleAdmissionReason.NoSolarEvent,
                 request.SafetyState,
-                utc,
-                nextTransition);
+                utc);
         }
         var weekly = Active(preview, utc, CaptureScheduleIntervalSource.WeeklyWindow);
         if (weekly is not null)
         {
             return Admitted(
-                CaptureScheduleAdmissionReason.WeeklyWindow, request.SafetyState, utc, weekly, nextTransition);
+                CaptureScheduleAdmissionReason.WeeklyWindow, request.SafetyState, utc, weekly);
         }
-        var legacy = Active(preview, utc, CaptureScheduleIntervalSource.LegacyCompatibility);
+        var legacy = IsAdmissionExpansion(preview)
+            ? preview.Intervals.FirstOrDefault(static item => item.Source == CaptureScheduleIntervalSource.LegacyCompatibility)
+            : Active(preview, utc, CaptureScheduleIntervalSource.LegacyCompatibility);
         if (legacy is not null)
         {
             return Admitted(
-                CaptureScheduleAdmissionReason.LegacyCompatibility, request.SafetyState, utc, legacy, nextTransition);
+                CaptureScheduleAdmissionReason.LegacyCompatibility, request.SafetyState, utc, legacy);
         }
         var solarUnavailable = preview.UnavailableWindows.Any(item =>
             utc >= item.LocalDayStartUtc && utc < item.LocalDayEndUtc);
         return Denied(
             solarUnavailable ? CaptureScheduleAdmissionReason.NoSolarEvent : CaptureScheduleAdmissionReason.DefaultClosed,
             request.SafetyState,
-            utc,
-            nextTransition);
+            utc);
     }
 
     private static CaptureScheduleDecision Admitted(
         CaptureScheduleAdmissionReason reason,
         CaptureScheduleSafetyState safety,
         DateTimeOffset utc,
-        ExpandedScheduleInterval interval,
-        DateTimeOffset? nextTransition)
-        => new(true, reason, safety, utc, interval.SetpointProfileId, interval, null, false, nextTransition);
+        ExpandedScheduleInterval interval)
+        => new(true, reason, safety, utc, interval.SetpointProfileId, interval, null, false, null);
 
     private static CaptureScheduleDecision Denied(
         CaptureScheduleAdmissionReason reason,
         CaptureScheduleSafetyState safety,
         DateTimeOffset utc,
-        DateTimeOffset? nextTransition,
         ExpandedScheduleInterval? interval = null)
-        => new(false, reason, safety, utc, null, interval, null, false, nextTransition);
+        => new(false, reason, safety, utc, null, interval, null, false, null);
 
     private static ExpandedScheduleInterval? Active(
         CaptureSchedulePreview preview,
@@ -658,40 +702,53 @@ public static class CaptureScheduleEvaluator
         }
     }
 
-    private static DateTimeOffset? NextTransition(
+    private static CaptureScheduleOpenSegment FindOpenSegment(
         CaptureSchedulePreview preview,
         CaptureScheduleEvaluationRequest request,
-        DateTimeOffset utc)
+        CaptureScheduleDecision decision)
     {
-        var current = EvaluateAt(preview, request, utc, includeNextTransition: false);
-        var values = preview.Intervals.SelectMany(static item => new[] { item.StartUtc, item.EndUtc })
+        var values = preview.Intervals
+            .Where(static item => item.Source != CaptureScheduleIntervalSource.LegacyCompatibility)
+            .SelectMany(static item => new[] { item.StartUtc, item.EndUtc })
             .Concat(preview.UnavailableWindows.SelectMany(static item =>
                 new[] { item.LocalDayStartUtc, item.LocalDayEndUtc }))
-            .Append(preview.PreviewEndUtc)
             .ToList();
         foreach (var scheduleOverride in request.Overrides ?? [])
         {
             values.Add(scheduleOverride.StartUtc.ToUniversalTime());
             values.Add(scheduleOverride.EndUtc.ToUniversalTime());
         }
-        foreach (var candidate in values.Where(item => item > utc).Distinct().OrderBy(static item => item))
+
+        var utc = decision.DecisionUtc;
+        // While force-open applies, only higher-priority blackouts or overrides can split it.
+        // The admission expansion retains those UTC edges even for a long override.
+        var forceOpen = decision.Interval is { Source: CaptureScheduleIntervalSource.ForceOpenOverride } &&
+            IsAdmissionExpansion(preview);
+        var legacy = decision.Interval is { Source: CaptureScheduleIntervalSource.LegacyCompatibility } &&
+            IsAdmissionExpansion(preview);
+        var right = forceOpen ? decision.Interval!.EndUtc : preview.PreviewEndUtc;
+        DateTimeOffset? end = values.Where(item => item > utc && (legacy || item < right))
+            .Distinct().Order()
+            .Where(candidate => !Equivalent(decision, EvaluateAt(preview, request, candidate)))
+            .Select(static candidate => (DateTimeOffset?)candidate).FirstOrDefault();
+        DateTimeOffset? start = decision.Admitted
+            ? values.Where(item => item > DateTimeOffset.MinValue && item <= utc &&
+                    (legacy || (forceOpen || item > preview.PreviewStartUtc) && item >= decision.Interval!.StartUtc))
+                .Distinct().OrderDescending()
+                .Where(candidate => !Equivalent(decision, EvaluateAt(preview, request, candidate.AddTicks(-1))))
+                .Select(static candidate => (DateTimeOffset?)candidate).FirstOrDefault()
+            : null;
+
+        if (decision.Interval is { Source: not CaptureScheduleIntervalSource.LegacyCompatibility } interval && decision.Admitted)
         {
-            if (candidate >= preview.PreviewEndUtc)
-            {
-                return preview.PreviewEndUtc;
-            }
-            var candidateDecision = EvaluateAt(
-                preview,
-                request with { Utc = candidate },
-                candidate,
-                includeNextTransition: false);
-            if (!Equivalent(current, candidateDecision))
-            {
-                return candidate;
-            }
+            start ??= interval.StartUtc;
+            end ??= interval.EndUtc;
         }
-        return null;
+        return new CaptureScheduleOpenSegment(start, end);
     }
+
+    private static bool IsAdmissionExpansion(CaptureSchedulePreview preview)
+        => preview.ExpansionAlgorithmVersion == CaptureScheduleIntervalExpander.AdmissionAlgorithmVersion;
 
     private static bool Equivalent(CaptureScheduleDecision left, CaptureScheduleDecision right)
         => left.Admitted == right.Admitted &&

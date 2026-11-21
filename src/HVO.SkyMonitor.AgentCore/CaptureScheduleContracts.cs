@@ -155,8 +155,7 @@ public static class CaptureScheduleContract
         {
             if (profile is null || !ValidId(profile.Id) || !profileIds.Add(profile.Id) ||
                 profile.Exposure <= TimeSpan.Zero || !double.IsFinite(profile.Gain) || profile.Gain < 0 ||
-                profile.CaptureInterval < TimeSpan.Zero || !Enum.IsDefined(profile.CadenceMode) ||
-                profile.CadenceMode == CaptureCadenceMode.MinimumStartInterval && profile.CaptureInterval <= TimeSpan.Zero ||
+                !IsValidCaptureInterval(profile.CadenceMode, profile.CaptureInterval) ||
                 profile.TargetFps is { } fps && (!double.IsFinite(fps) || fps <= 0))
             {
                 return Failure("schedule.setpointProfiles");
@@ -208,6 +207,10 @@ public static class CaptureScheduleContract
         }
         return CaptureContractValidationResult.Success;
     }
+
+    internal static bool IsValidCaptureInterval(CaptureCadenceMode mode, TimeSpan interval)
+        => Enum.IsDefined(mode) && interval >= TimeSpan.Zero &&
+            (mode != CaptureCadenceMode.MinimumStartInterval || interval > TimeSpan.Zero);
 
     public static CaptureContractValidationResult ValidateAdmissionEvidence(
         CaptureScheduleAdmissionEvidence? evidence)

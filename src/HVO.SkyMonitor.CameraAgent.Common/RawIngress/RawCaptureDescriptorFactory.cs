@@ -25,9 +25,15 @@ internal static class RawCaptureDescriptorFactory
             submission.Request.RequestedStartUtc.ToUniversalTime().ToString("O"),
             frame.TimestampUtc.ToUniversalTime().ToString("O"),
             frame.Metadata.SourceId);
+        if (configuration.CenteredExposure is { } centered)
+        {
+            key = string.Join('\n', CenteredExposureProfile.CurrentExecutionVersion, centered.CameraId, key);
+        }
         var captureId = CreateStableGuid("capture", key);
-        return (captureId, CreateStableGuid("raw-artifact", captureId.ToString("N")));
+        return (captureId, CreateRawArtifactId(captureId));
     }
+
+    internal static Guid CreateRawArtifactId(Guid captureId) => CreateStableGuid("raw-artifact", captureId.ToString("N"));
 
     internal static DateTimeOffset ResolveExposureStartedUtc(CaptureLoopSubmission submission, CameraFrame frame)
         => ToMilliseconds(submission.Result.AcquisitionTiming?.ExposureStartedUtc ?? frame.TimestampUtc);
@@ -37,16 +43,19 @@ internal static class RawCaptureDescriptorFactory
         CaptureLoopSubmission submission,
         RawCaptureIdentity identity,
         string payloadSha256,
-        DateTimeOffset durableIngressUtc)
+        DateTimeOffset durableIngressUtc,
+        CapturePipelineConfig? boundPipeline = null)
     {
         var frame = submission.Result.Frame ?? throw new ArgumentException("A raw frame is required.", nameof(submission));
         var timing = ResolveTiming(submission, frame, durableIngressUtc);
         _ = configuration.ResolveObservatory(timing.ExposureStartedUtc);
-        ValidateScheduleEvidence(configuration, submission.CycleEvidence?.ScheduleAdmission);
+        ValidateScheduleEvidence(configuration,
+            submission.CenteredAcquisition?.ScheduleAdmission ?? submission.CycleEvidence?.ScheduleAdmission);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
         var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
-        var processingSteps = configuration.Pipeline.Steps;
-        var processingProfile = CreateProcessingProfile(configuration);
+        var effectiveProcessing = boundPipeline is null ? configuration : configuration with { Pipeline = boundPipeline };
+        var processingSteps = effectiveProcessing.Pipeline.Steps;
+        var processingProfile = CreateProcessingProfile(effectiveProcessing);
         var calibrationSteps = processingSteps
             .Where(static step => step.Type.Contains("Calibration", StringComparison.OrdinalIgnoreCase))
             .ToArray();
@@ -129,7 +138,25 @@ internal static class RawCaptureDescriptorFactory
                 payloadSha256))
         {
             CycleEvidence = NormalizeEvidence(submission.CycleEvidence),
+            CenteredAcquisition = configuration.CenteredExposure is null ? null : CreateCenteredAcquisition(configuration, submission),
             Location = configuration.DeploymentLocation?.ToProvenance()
+        };
+    }
+
+    private static CenteredCaptureAcquisitionEvidence CreateCenteredAcquisition(
+        CameraModuleConfig configuration, CaptureLoopSubmission submission)
+    {
+        var acquisition = submission.CenteredAcquisition ?? new(
+            configuration.Rig.Pipeline.CadenceMode, submission.EffectiveInterval,
+            submission.CaptureStartedUtc, submission.LoopDuration, null, false, null, null);
+        return acquisition with
+        {
+            ModuleCallStartedUtc = acquisition.ModuleCallStartedUtc.ToUniversalTime(),
+            Module = new(submission.Request.Mode, submission.Request.TargetInterval, submission.Result.Mode,
+                submission.Result.NextSetpoint, submission.Result.ProcessingLatency, submission.Result.RequiresImmediateUpload)
+            {
+                RequestedSetpoint = submission.Request.RequestedSetpoint
+            }
         };
     }
 

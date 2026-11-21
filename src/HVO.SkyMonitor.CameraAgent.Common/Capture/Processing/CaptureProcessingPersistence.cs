@@ -311,6 +311,10 @@ internal sealed partial class CaptureProcessingPersistence(
         CancellationToken cancellationToken)
         => _store.ReadExecutionNodeAsync(execution.ExecutionId, captureId, nodeId, cancellationToken);
 
+    internal ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
+        Guid executionId, string nodeId, CancellationToken cancellationToken)
+        => _store.ReadCommittedArchivePublicationsAsync(executionId, nodeId, cancellationToken);
+
     internal ValueTask BeginExecutionNodeAttemptAsync(
         ProcessingExecutionContext execution,
         CaptureProcessingGraphNode node,
@@ -430,7 +434,8 @@ internal sealed partial class CaptureProcessingPersistence(
                         $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired",
                         sourcePaths.Where(File.Exists).Sum(static path => new FileInfo(path).Length),
                         _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-                    await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                    if (!await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false))
+                        continue;
                     await reconciler.ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
                     deletedFiles += sourcePaths.Length;
                 }
@@ -757,11 +762,9 @@ internal sealed partial class CaptureProcessingPersistence(
                 else
                 {
                     var artifact = context.FindArtifact(product);
-                    var descriptor = DerivativeDescriptorFactory.Create(
-                        rawCapture.Manifest.Descriptor,
-                        artifact.ArtifactId,
-                        artifact.Frame.Metadata.SourceId ?? node.Id,
-                        product);
+                    var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                        _storageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? node.Id,
+                        product, cancellationToken).ConfigureAwait(false);
                     var stored = await _frameStorage.SaveAsync(
                         _storageRoot, artifact, descriptor, node.Id, cancellationToken).ConfigureAwait(false);
                     var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);
@@ -794,6 +797,11 @@ internal sealed partial class CaptureProcessingPersistence(
                 activity?.SetStatus(ActivityStatusCode.Ok);
             }
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
+            var inputEvidence = context.GetCurrentInputEvidence();
+            var centeredProducts = rawCapture.Manifest.CenteredExposure is not null &&
+                execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
+                ? CenteredExposureProductReader.CreateSettlements(rawCapture.Manifest, node, status, reason, outputs, inputEvidence)
+                : null;
             await _store.WriteNodeAsync(
                 rawCapture.Manifest.Descriptor.Capture.CaptureId,
                 node,
@@ -810,13 +818,14 @@ internal sealed partial class CaptureProcessingPersistence(
                 completedUtc,
                 duration,
                 outcome,
-                context.GetCurrentInputEvidence(),
+                inputEvidence,
                 workId,
                 leaseToken,
                 outputs,
                 execution,
                 context.CurrentExecutionRoute,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                centeredProducts).ConfigureAwait(false);
             if (outputs.Count > 0 && _logger.IsEnabled(LogLevel.Debug))
             {
                 _logger.CaptureProcessingOutputPersisted(
@@ -829,6 +838,23 @@ internal sealed partial class CaptureProcessingPersistence(
         {
             lifecycleGate.Release();
         }
+    }
+
+    internal async Task<ProcessingArtifact> RestoreCenteredLinearAsync(
+        ExposureProductRef expected, CancellationToken cancellationToken)
+    {
+        var saved = await _store.ReadOutputByArtifactIdAsync(expected.ArtifactId, cancellationToken).ConfigureAwait(false);
+        if (saved is null || saved.AvailabilityState != "Available" ||
+            saved.Capture.CaptureId != expected.Exposure.CaptureId ||
+            saved.OutputIdentitySha256 != expected.OutputIdentitySha256 ||
+            saved.Artifact.ChecksumSha256 != expected.PayloadSha256)
+            throw new InvalidDataException("The retained linear artifact differs from its centered product binding.");
+        var restored = await RestoreOutputAsync(saved, cancellationToken).ConfigureAwait(false);
+        return CreateProcessingArtifact(saved, restored) with
+        {
+            DescriptorIdentitySha256 = CaptureContractJson.ComputeDescriptorSha256(saved.Descriptor ??
+                throw new InvalidDataException("A centered linear product requires a frame descriptor."))
+        };
     }
 
     private async ValueTask<RestoredProcessingOutput> RestoreOutputAsync(

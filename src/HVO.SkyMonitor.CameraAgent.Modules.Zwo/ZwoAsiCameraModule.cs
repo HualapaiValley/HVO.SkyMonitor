@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
@@ -12,6 +13,7 @@ namespace HVO.SkyMonitor.CameraAgent.Modules.Zwo;
 public sealed class ZwoAsiCameraModule :
     ICameraModule,
     ICameraSetpointController,
+    ICameraBoundExposureCapture,
     ICameraModuleConfigurationPreflight
 {
     private const string SupportedSdkMajorMinor = "1.41";
@@ -55,6 +57,8 @@ public sealed class ZwoAsiCameraModule :
         _environmentVariableResolver = environmentVariableResolver;
     }
 
+    private ExposureAttemptKey? _lastBoundAttempt;
+
     public string Id { get; } = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
     public string DisplayName => "ZWO ASI Camera";
     public string ModuleType => "ZwoAsi";
@@ -66,7 +70,17 @@ public sealed class ZwoAsiCameraModule :
     void ICameraModuleConfigurationPreflight.ValidateConfiguration(CameraModuleConfig configuration)
         => _ = BindAndValidate(configuration);
 
-    public async Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+    public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
+        => InitializeCoreAsync(config, null, cancellationToken);
+
+    Task ICameraBoundExposureCapture.InitializeBoundAsync(
+        CameraModuleConfig configuration, Func<string, CancellationToken, ValueTask> fenceAttachment,
+        CancellationToken cancellationToken)
+        => InitializeCoreAsync(configuration, fenceAttachment, cancellationToken);
+
+    private async Task InitializeCoreAsync(
+        CameraModuleConfig config, Func<string, CancellationToken, ValueTask>? fenceAttachment,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(config);
         var validated = BindAndValidate(config);
@@ -105,6 +119,19 @@ public sealed class ZwoAsiCameraModule :
                 }
                 cancellationToken.ThrowIfCancellationRequested();
 
+                if (config.CenteredExposure is not null || fenceAttachment is not null)
+                {
+                    var verifiedSerial = _native.GetSerialNumber(_cameraId);
+                    if (!verifiedSerial.AsSpan().SequenceEqual(runtime.Serial))
+                        throw new InvalidOperationException("The ASI device identity changed while attaching.");
+                    if (_native.GetExposureStatus(_cameraId) == AsiExposureStatus.Working)
+                        throw new InvalidOperationException("A prior ASI exposure is still active.");
+                    if (fenceAttachment is not null)
+                        await fenceAttachment("zwo-serial-sha256:" + Convert.ToHexString(SHA256.HashData(verifiedSerial)),
+                            cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
                 var controls = _native.GetControlCapabilities(_cameraId)
                     .ToDictionary(control => control.Type);
                 ValidateCameraAndControls(config, validated.Options, selected, validated.Readout, controls);
@@ -118,7 +145,11 @@ public sealed class ZwoAsiCameraModule :
                 var initial = config.Rig.Pipeline.Envelope?.DayDefaults is { } defaults
                     ? new CaptureSetpoint(defaults.Exposure, defaults.Gain, null, null)
                     : new CaptureSetpoint(config.Rig.Pipeline.DayExposure, config.Rig.Pipeline.DayGain, null, null);
-                ApplySetpointCore(initial);
+                _lastBoundAttempt = null;
+                if (config.CenteredExposure is null)
+                {
+                    ApplySetpointCore(initial, CancellationToken.None);
+                }
                 SetAndRequireReadback(AsiControlType.Offset, validated.Options.Offset);
                 SetAndRequireReadback(AsiControlType.BandwidthOverload, validated.Options.UsbBandwidth);
                 SetOptionalBooleanControl(AsiControlType.HighSpeedMode, false);
@@ -153,7 +184,9 @@ public sealed class ZwoAsiCameraModule :
         try
         {
             EnsureInitialized();
-            return ApplySetpointCore(setpoint);
+            if (_configuration!.CenteredExposure is not null)
+                throw new InvalidOperationException("Centered exposure settings require a reserved acquisition attempt.");
+            return ApplySetpointCore(setpoint, CancellationToken.None);
         }
         finally
         {
@@ -161,7 +194,17 @@ public sealed class ZwoAsiCameraModule :
         }
     }
 
-    public async Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+    public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+        => CaptureCoreAsync(request, null, cancellationToken);
+
+    public bool EnforcesBoundStartLimit => true;
+
+    public Task<CaptureResult> CaptureBoundAsync(
+        ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
+        => CaptureCoreAsync(request, attempt, cancellationToken);
+
+    private async Task<CaptureResult> CaptureCoreAsync(
+        CaptureRequest request, ExposureAttemptKey? attempt, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (request.Mode != CaptureMode.Still)
@@ -180,21 +223,54 @@ public sealed class ZwoAsiCameraModule :
             var native = _native!;
             var readout = _readout!;
             var options = _options!;
+            if (_configuration!.CenteredExposure is { } centered)
+            {
+                if (attempt is null || request.RequestedSetpoint is null ||
+                    attempt.Camera != new CameraKey(_configuration.AgentId!, centered.CameraId) ||
+                    _lastBoundAttempt is { } prior && prior.RunId == attempt.RunId && prior.Ordinal >= attempt.Ordinal)
+                {
+                    throw new InvalidOperationException("Centered exposure requires a fresh attempt and explicit settings.");
+                }
+
+                // The SDK calls are synchronous under the native gate. A prior process may have left an exposure running.
+                if (native.GetExposureStatus(_cameraId) == AsiExposureStatus.Working)
+                    throw new InvalidOperationException("A prior ASI exposure is still active.");
+                _lastBoundAttempt = attempt;
+                captureToken.ThrowIfCancellationRequested();
+                request.RequireOpenBoundStart(_timeProvider.GetUtcNow());
+            }
+            else if (attempt is not null)
+            {
+                throw new InvalidOperationException("A bound attempt requires the centered exposure profile.");
+            }
+
             if (request.RequestedSetpoint is { } requestedSetpoint)
             {
-                ApplySetpointCore(requestedSetpoint);
+                ApplySetpointCore(requestedSetpoint, attempt is null ? CancellationToken.None : captureToken);
             }
 
             var exposureStartedUtc = _timeProvider.GetUtcNow().ToUniversalTime();
             var captureStartedTimestamp = _timeProvider.GetTimestamp();
-            native.StartExposure(_cameraId, dark: false);
-            _exposureActive = true;
+            if (attempt is null)
+            {
+                native.StartExposure(_cameraId, dark: false);
+                _exposureActive = true;
+            }
             var timeout = AddChecked(_effectiveExposure, options.CaptureTimeoutMargin);
             DateTimeOffset exposureEndedUtc = default;
             long exposureEndedTimestamp = default;
             byte[] pixels;
             try
             {
+                if (attempt is not null)
+                {
+                    captureToken.ThrowIfCancellationRequested();
+                    exposureStartedUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+                    request.RequireOpenBoundStart(exposureStartedUtc, _setpointAppliedUtc);
+                    _exposureActive = true;
+                    native.StartExposure(_cameraId, dark: false);
+                }
+
                 while (true)
                 {
                     captureToken.ThrowIfCancellationRequested();
@@ -549,7 +625,7 @@ public sealed class ZwoAsiCameraModule :
         ValidateConfiguredSetpoints(configuration.Rig.Pipeline, controls);
     }
 
-    private DateTimeOffset ApplySetpointCore(CaptureSetpoint setpoint)
+    private DateTimeOffset ApplySetpointCore(CaptureSetpoint setpoint, CancellationToken cancellationToken)
     {
         if (setpoint.Exposure <= TimeSpan.Zero || !double.IsFinite(setpoint.Gain) ||
             setpoint.Gain < 0 || setpoint.Gain != Math.Truncate(setpoint.Gain) ||
@@ -564,8 +640,10 @@ public sealed class ZwoAsiCameraModule :
         ValidateControlRange(exposureCaps, exposureMicroseconds);
         ValidateControlRange(gainCaps, gain);
 
+        cancellationToken.ThrowIfCancellationRequested();
         _native!.SetControlValue(_cameraId, AsiControlType.Exposure, exposureMicroseconds, automatic: false);
         var actualExposure = _native.GetControlValue(_cameraId, AsiControlType.Exposure);
+        cancellationToken.ThrowIfCancellationRequested();
         _native.SetControlValue(_cameraId, AsiControlType.Gain, gain, automatic: false);
         var actualGain = _native.GetControlValue(_cameraId, AsiControlType.Gain);
         if (actualExposure.Automatic || actualGain.Automatic)

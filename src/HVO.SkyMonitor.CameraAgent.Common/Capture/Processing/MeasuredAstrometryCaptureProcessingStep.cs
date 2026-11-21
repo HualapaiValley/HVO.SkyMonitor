@@ -53,6 +53,12 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
+        if (context.Config.CenteredExposure is not null || context.RawCapture?.Manifest.CenteredExposure is not null)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.centered-measurement-required"));
+            return;
+        }
+
         var descriptor = context.ReconstructionDescriptor ?? throw new InvalidDataException("Astrometry requires durable raw admission.");
         if (context.Config.Pipeline.SchemaVersion != CapturePipelineSchemaVersions.ExplicitV2)
             throw new InvalidOperationException("Astrometry requires an explicit v2 graph.");

@@ -112,7 +112,10 @@ public sealed class CaptureOrbitalPredictionInput
             snapshot?.Manifest.Coverage ?? new("explicit-requested-object-identities", OrbitalPopulationCompleteness.Unknown,
                 ["Snapshot unavailable; population coverage unknown."]),
             new(OrbitalSelectionPolicy.CurrentVersion, selectionPolicy.IdentitySha256, selectionPolicy.AllowStaleDiagnostics, selectionPolicy.Sources),
-            ids, selections) { VirtualShutter = virtualShutter };
+            ids, selections)
+        {
+            VirtualShutter = virtualShutter
+        };
         if (obstructionRig is not null)
         {
             Require(obstructionRig.HorizonObstruction is not null &&

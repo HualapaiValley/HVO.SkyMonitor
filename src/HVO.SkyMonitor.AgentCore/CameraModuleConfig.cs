@@ -28,6 +28,10 @@ public sealed record CameraModuleConfig(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CaptureScheduleDefinition? Schedule { get; init; }
 
+    /// <summary>Explicitly selects the centered exposure execution contract for one camera.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredExposureProfile? CenteredExposure { get; init; }
+
     /// <summary>Gets the active coordinates, preferring the validated versioned snapshot.</summary>
     public ObservatoryLocation ResolveObservatory(DateTimeOffset? effectiveUtc = null)
     {

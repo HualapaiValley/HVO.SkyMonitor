@@ -88,12 +88,13 @@ public sealed class CameraAgentStateContractsLabelTests
                 Assert.AreEqual(contract.Writes, contract.Min, $"{store} reads only the schema it writes");
             }
         }
-        // Raw ingress migrates 13 and 14 in place to the schema it writes.
+        // Raw ingress migrates each supported predecessor in place to the schema it writes.
         var rawIngress = declared["rawIngress"];
         long[] opened =
         [
             SqliteRawCaptureJournal.PreviousSchemaVersion, SqliteRawCaptureJournal.PreviousRecoverySchemaVersion,
-            SqliteRawCaptureJournal.PreviousEvidenceSchemaVersion, SqliteRawCaptureJournal.CurrentSchemaVersion
+            SqliteRawCaptureJournal.PreviousEvidenceSchemaVersion, SqliteRawCaptureJournal.PreviousEnvironmentalFenceSchemaVersion,
+            SqliteRawCaptureJournal.CurrentSchemaVersion
         ];
         Assert.AreEqual(SqliteRawCaptureJournal.CurrentSchemaVersion, rawIngress.Writes);
         CollectionAssert.AreEqual(

@@ -2730,6 +2730,14 @@ paired with the previous image. The corrected reader refuses a private v5 journa
 without the settlement column. Restore the verified paired v4 checkpoint before
 using the corrected reader with state from that rehearsal.
 
+The private centered foundation join is a source-only checkpoint with raw
+schema 17, processing schema 10 and corrected environmental schema 5. It
+carries the same combined minimum `e7b9af4b98d1521c3939ef5925608a3663c63302`.
+Its raw schema and migration labels independently select the paired checkpoint
+from the corrected raw-16 reader. The earlier private joined reader also
+differs at the minimum-compatible-revision. Issue #1922 owns the distinct
+installable centered raw-17, processing-12, environmental-5 reader marker.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a

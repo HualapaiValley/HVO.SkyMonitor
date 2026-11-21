@@ -1,6 +1,8 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Tests.Contracts;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests;
@@ -195,6 +197,75 @@ public sealed class FileSystemFrameStorageServiceTests
         Assert.HasCount(1, service.List(root.Path, date, FrameArtifactRole.Raw, 10));
         await File.WriteAllTextAsync(Path.ChangeExtension(stored.AbsolutePath, ".json"), "{}").ConfigureAwait(false);
         Assert.IsEmpty(service.List(root.Path, date, FrameArtifactRole.Raw, 10));
+    }
+
+    [TestMethod]
+    public async Task SaveAsync_PreservesOlderCenteredDerivativeAndMarksNewOutputFromOlderRaw()
+    {
+        using var root = new TemporaryRoot();
+        using var storage = CreateService();
+        var (raw, descriptor) = CreateArtifact([1, 2, 3, 4]);
+        var request = new CaptureSetpoint(descriptor.Controls.RequestedExposure, descriptor.Controls.RequestedGain, null, null);
+        var older = descriptor with
+        {
+            CenteredAcquisition = new(CaptureCadenceMode.Continuous, TimeSpan.Zero, descriptor.Timing.RequestedStartUtc,
+                TimeSpan.Zero, null, false, null, null)
+            {
+                Module = new(CaptureMode.Still, TimeSpan.Zero, CaptureMode.Still, request, TimeSpan.Zero, false)
+            }
+        };
+        Assert.IsTrue(older.Validate().IsValid);
+        var role = FrameArtifactRole.Calibrated;
+        var sources = new[] { raw.ArtifactId };
+        var recipe = ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe);
+        var product = new ProcessingProduct(role, "fixture", ProcessingIdentity.CreateOutputIdentity(role, "fixture",
+            recipe.IdentitySha256, sources), descriptor.Artifact.MediaType, descriptor.Layout, raw.Frame.PixelData,
+            descriptor.Artifact.ChecksumSha256, recipe, [], sources, TimeSpan.Zero,
+            CameraAgentRecipeExecutionAdapter.CreateCompatibility(descriptor));
+        var artifact = new FrameArtifact(Guid.NewGuid(), role, raw.Frame, sources);
+        var source = raw.Frame.Metadata.SourceId!;
+        var candidate = DerivativeDescriptorFactory.Create(older, artifact.ArtifactId, source, product);
+        var original = candidate with { CenteredAcquisition = null };
+        var staged = await storage.SaveAsync(root.Path, artifact, original, "Calibration", CancellationToken.None).ConfigureAwait(false);
+        var sidecar = Path.ChangeExtension(staged.AbsolutePath, ".json");
+        var bytes = await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false);
+        var resumed = await DerivativeDescriptorFactory.CreateForStorageAsync(root.Path, older, artifact, source,
+            product, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsNull(resumed.CenteredAcquisition);
+        await storage.SaveAsync(root.Path, artifact, resumed, "Calibration", CancellationToken.None).ConfigureAwait(false);
+        CollectionAssert.AreEqual(bytes, await File.ReadAllBytesAsync(sidecar).ConfigureAwait(false));
+
+        var newArtifact = new FrameArtifact(Guid.NewGuid(), role, raw.Frame, sources);
+        var current = await DerivativeDescriptorFactory.CreateForStorageAsync(root.Path, older, newArtifact, source,
+            product, CancellationToken.None).ConfigureAwait(false);
+        Assert.AreEqual(CaptureCadenceMode.Continuous, current.RetainedCadenceMode);
+        var newlyStaged = await storage.SaveAsync(root.Path, newArtifact, current, "Calibration", CancellationToken.None)
+            .ConfigureAwait(false);
+        var listed = storage.List(root.Path, DateOnly.FromDateTime(descriptor.Timing.ExposureStartedUtc.UtcDateTime), role, 10);
+        Assert.IsFalse(listed.Contains(newlyStaged));
+    }
+
+    [TestMethod]
+    public async Task List_StillShowsLegacyFileOnlyDerivativeWithoutJournal()
+    {
+        using var root = new TemporaryRoot();
+        var (raw, descriptor) = CreateArtifact([1, 2, 3, 4]);
+        var artifact = new FrameArtifact(Guid.NewGuid(), FrameArtifactRole.Calibrated, raw.Frame, [raw.ArtifactId], "legacy-test-v1");
+        var derived = descriptor with
+        {
+            Artifact = descriptor.Artifact with
+            {
+                ArtifactId = artifact.ArtifactId,
+                Role = artifact.Role,
+                SourceArtifactIds = artifact.SourceArtifactIds!
+            }
+        };
+        using var service = CreateService();
+        var stored = await service.SaveAsync(root.Path, artifact, derived, "legacy-calibration", CancellationToken.None)
+            .ConfigureAwait(false);
+        var date = DateOnly.FromDateTime(derived.Timing.ExposureStartedUtc.UtcDateTime);
+        Assert.IsFalse(Directory.Exists(Path.Combine(root.Path, "journal")));
+        Assert.AreEqual(stored, service.List(root.Path, date, FrameArtifactRole.Calibrated, 10).Single());
     }
 
     [TestMethod]
