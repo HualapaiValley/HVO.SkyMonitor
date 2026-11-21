@@ -509,7 +509,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | Store | Database (under the instance's state root) | Schema marker today | Declared today |
 | --- | --- | --- | --- |
 | `identity` | `identity/cameraagent_identity.db` | The applied EF Core migrations in `__EFMigrationsHistory` (their number is the store's schema) | Writes 1, reads 1 to 1. `io.hvo.skymonitor.identity-migration` also names the newest, `20260827053715_InitialIdentity` |
-| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Beta writes 16 and reads 13 to 16. The private centered foundation source writes 17 and reads 13 to 17. The centered publisher uses the same raw range and retains processing schema 12 in this journal. The migration contract is `canonical-v13-v14-v15-v16-to-v17` |
+| `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Beta writes 16 and reads 13 to 16. The private centered foundation source writes 17 and reads 13 to 17. The centered scheduler uses the same raw range and retains processing schema 12 in this journal. The migration contract is `canonical-v13-v14-v15-v16-to-v17` |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
 | `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
@@ -521,7 +521,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 | `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
 
-The centered publisher uses minimum-compatible revision `1dea5e36beb9955dd480fcd7ba6038cbd42b1617` to select the paired checkpoint even when the installed image declares the same raw and environmental schema floors.
+The centered scheduling and storage stage uses minimum-compatible revision `1c76d83224bacdcc129041c6d1779eb5f95716cb` to select the paired checkpoint even when the installed image declares the same raw and environmental schema floors.
 
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5

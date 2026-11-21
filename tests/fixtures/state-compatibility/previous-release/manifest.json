@@ -75,7 +75,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "70ecdd3a0d02a5288aaa6438e3a5cfc8e395545f",
-      "candidateValue": "1dea5e36beb9955dd480fcd7ba6038cbd42b1617",
+      "candidateValue": "1c76d83224bacdcc129041c6d1779eb5f95716cb",
       "reason": "Schema 2 is extended atomically to schema 3 for daily summaries; older binaries require the existing paired SQLite checkpoint on rollback. No previous-release SQL image changes. #1713"
     },
     {
@@ -88,7 +88,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
-      "candidateValue": "1dea5e36beb9955dd480fcd7ba6038cbd42b1617",
+      "candidateValue": "1c76d83224bacdcc129041c6d1779eb5f95716cb",
       "reason": "Schema 3 gains the retained indexes from schema 4 and both earlier versions gain the held-poll table in schema 5. The minimum-compatible-revision boundary selects the paired checkpoint before the new reader starts, including for upgrades from a schema 4 reader. Refs #1778 and #1938",
       "previousImageRevision": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
       "previousImageLabels": {
@@ -150,7 +150,7 @@
       "candidateProcessingSchemaVersion": 12,
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c",
-      "candidateValue": "1dea5e36beb9955dd480fcd7ba6038cbd42b1617",
+      "candidateValue": "1c76d83224bacdcc129041c6d1779eb5f95716cb",
       "previousImageRevision": "5f5d253dd38308b8e62be9a1e32194dd675d0b60",
       "previousImageLabels": {
         "io.hvo.skymonitor.component": "CameraAgent",
@@ -175,7 +175,7 @@
       ],
       "stateBoundaryLabel": "io.hvo.skymonitor.minimum-compatible-revision",
       "previousValue": "53b5756ddbd26dc5ea623ecd34d34d2de2672f05",
-      "candidateValue": "1dea5e36beb9955dd480fcd7ba6038cbd42b1617",
+      "candidateValue": "1c76d83224bacdcc129041c6d1779eb5f95716cb",
       "reason": "Local automation schema 3 is extended atomically to schema 4 for retained script stop attribution. The distinct combined-reader boundary bc5ca7489c4090c299c416309519ab72da4a8cdb supersedes the processing-only boundary 4293871b7c4cf38ce0e0e4ea969aa9a6de057eea from development/v1 38320d3a4745327b7d5c1d28b6ffcf3485e084a7. Installer adoption checkpoints the paired state before startup, including an upgrade from that schema-3 automation reader; rollback restores the checkpoint for older readers. Frozen previous-release SQL images remain unchanged. Refs #1768",
       "previousImageRevision": "d3f35d22ee02e56290f7bd06da491df21b715134",
       "previousImageLabels": {

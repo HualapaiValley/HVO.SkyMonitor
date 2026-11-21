@@ -163,7 +163,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="1dea5e36beb9955dd480fcd7ba6038cbd42b1617" \
+      io.hvo.skymonitor.minimum-compatible-revision="1c76d83224bacdcc129041c6d1779eb5f95716cb" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="17" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \

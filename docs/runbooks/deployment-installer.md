@@ -2738,10 +2738,12 @@ Its raw schema and migration labels independently select the paired checkpoint
 from the corrected raw-16 reader. The earlier private joined reader also
 differs at the minimum-compatible-revision.
 
-The centered publisher declares `1dea5e36beb9955dd480fcd7ba6038cbd42b1617`
+The centered scheduling and storage stage declares `1c76d83224bacdcc129041c6d1779eb5f95716cb`
 for raw 17, processing 12 and the settled environmental v5 reader. The minimum change also selects
 the paired checkpoint from the earlier private raw-17 publisher when both
 images declare the same raw and environmental schema numbers.
+
+The publisher uses this same storage boundary and does not change the schema.
 
 **Centered view custody (Refs #1921 and #1922).** Processing schema 12 adds the
 attempt calendar, output availability history, and retained view revisions to
