@@ -685,86 +685,86 @@ public sealed class ExposureMeasurementTests
         var center = new PixelPoint(80.3, 80.7);
         var checkedRetainedEvidence = false;
         foreach (var bayer in new[] { false, true })
-        foreach (var trail in bayer ? new[] { 0.0, 3.0, 3.5, 6.0 } : new[] { 0.0, 6.0 })
-        {
-            var layout = Layout(160, 160, bayer);
-            var count = trail is 0 or 6 ? 64 : 8;
-            var measured = 0;
-            var originalFlags = 0;
-            var falseExclusions = 0;
-            var corroboratedRound = 0;
-            for (var seed = 0; seed < count; seed++)
+            foreach (var trail in bayer ? new[] { 0.0, 3.0, 3.5, 6.0 } : new[] { 0.0, 6.0 })
             {
-                var rng = new Random(7000 + seed);
-                var amplitude = flux / (2 * Math.PI * sigma * sigma) / segments;
-                // A circular optical PSF convolved with the known linear track, then independent sensor
-                // noise. The measurer receives only pixels, including the genuine reconstruction for CFA.
-                var raw = CreateRaw(layout, Generate(layout, (x, y) =>
+                var layout = Layout(160, 160, bayer);
+                var count = trail is 0 or 6 ? 64 : 8;
+                var measured = 0;
+                var originalFlags = 0;
+                var falseExclusions = 0;
+                var corroboratedRound = 0;
+                for (var seed = 0; seed < count; seed++)
                 {
-                    double signal = 0;
-                    for (var k = 0; k < segments; k++)
+                    var rng = new Random(7000 + seed);
+                    var amplitude = flux / (2 * Math.PI * sigma * sigma) / segments;
+                    // A circular optical PSF convolved with the known linear track, then independent sensor
+                    // noise. The measurer receives only pixels, including the genuine reconstruction for CFA.
+                    var raw = CreateRaw(layout, Generate(layout, (x, y) =>
                     {
-                        var offset = (k / (segments - 1.0) - 0.5) * trail;
-                        signal += Gaussian(x, y, new PixelPoint(center.X + offset, center.Y), sigma, amplitude);
-                    }
-                    var u1 = 1.0 - rng.NextDouble();
-                    var u2 = rng.NextDouble();
-                    var perturbation = Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2) * noise;
-                    return (ushort)Math.Clamp(Math.Round(300 + signal + perturbation), 0, 4095);
-                }));
-                var linear = await Normalize(raw);
-                var input = Bind(raw, linear);
-                var request = ExposureMeasurementProducts.Request(input, raw, linear);
-                var product = await Produce(request);
-                var result = ExposureMeasurementProducts.Read(product);
-                var detection = result.Sources.Detections.SingleOrDefault(star =>
-                    Math.Abs(star.Pixel.X - center.X) < 4 && Math.Abs(star.Pixel.Y - center.Y) < 2);
-                if (detection is null) continue;
-                measured++;
-                Assert.AreEqual(0, detection.SaturatedSampleCount);
-                var focus = result.Hfd.Samples.Single(sample => sample.DetectionIndex == detection.Index);
-                var trailed = detection.Conditions.HasFlag(StellarSourceConditions.Trailed);
-                if (trailed) originalFlags++;
-
-                if (trail == 0)
-                {
-                    if (focus.Reason == "trailed-source") falseExclusions++;
-                    if (focus.BayerCoreTrailUpperPixels is { } upper)
-                    {
-                        Assert.IsTrue(bayer && trailed && upper is >= 0 and < 3);
-                        Assert.IsTrue(focus.DiameterPixels is > 0);
-                        corroboratedRound++;
-                        if (!checkedRetainedEvidence)
+                        double signal = 0;
+                        for (var k = 0; k < segments; k++)
                         {
-                            await AssertBayerProofRequiresItsRetainedRecipeAsync(request, product, result, focus);
-                            checkedRetainedEvidence = true;
+                            var offset = (k / (segments - 1.0) - 0.5) * trail;
+                            signal += Gaussian(x, y, new PixelPoint(center.X + offset, center.Y), sigma, amplitude);
+                        }
+                        var u1 = 1.0 - rng.NextDouble();
+                        var u2 = rng.NextDouble();
+                        var perturbation = Math.Sqrt(-2 * Math.Log(u1)) * Math.Cos(2 * Math.PI * u2) * noise;
+                        return (ushort)Math.Clamp(Math.Round(300 + signal + perturbation), 0, 4095);
+                    }));
+                    var linear = await Normalize(raw);
+                    var input = Bind(raw, linear);
+                    var request = ExposureMeasurementProducts.Request(input, raw, linear);
+                    var product = await Produce(request);
+                    var result = ExposureMeasurementProducts.Read(product);
+                    var detection = result.Sources.Detections.SingleOrDefault(star =>
+                        Math.Abs(star.Pixel.X - center.X) < 4 && Math.Abs(star.Pixel.Y - center.Y) < 2);
+                    if (detection is null) continue;
+                    measured++;
+                    Assert.AreEqual(0, detection.SaturatedSampleCount);
+                    var focus = result.Hfd.Samples.Single(sample => sample.DetectionIndex == detection.Index);
+                    var trailed = detection.Conditions.HasFlag(StellarSourceConditions.Trailed);
+                    if (trailed) originalFlags++;
+
+                    if (trail == 0)
+                    {
+                        if (focus.Reason == "trailed-source") falseExclusions++;
+                        if (focus.BayerCoreTrailUpperPixels is { } upper)
+                        {
+                            Assert.IsTrue(bayer && trailed && upper is >= 0 and < 3);
+                            Assert.IsTrue(focus.DiameterPixels is > 0);
+                            corroboratedRound++;
+                            if (!checkedRetainedEvidence)
+                            {
+                                await AssertBayerProofRequiresItsRetainedRecipeAsync(request, product, result, focus);
+                                checkedRetainedEvidence = true;
+                            }
                         }
                     }
+                    else if (trail == 6 || trailed)
+                    {
+                        Assert.AreEqual("trailed-source", focus.Reason);
+                        Assert.IsNull(focus.DiameterPixels);
+                        Assert.IsNull(focus.BayerCoreTrailUpperPixels);
+                    }
                 }
-                else if (trail == 6 || trailed)
-                {
-                    Assert.AreEqual("trailed-source", focus.Reason);
-                    Assert.IsNull(focus.DiameterPixels);
-                    Assert.IsNull(focus.BayerCoreTrailUpperPixels);
-                }
-            }
 
-            // Report the observed error frequency for this deterministic noise cohort, keeping the
-            // single independent focus-aperture exclusion separate from trail misclassification.
-            Console.WriteLine(FormattableString.Invariant(
-                $"Bayer={bayer} trueTrail={trail} measured={measured}/{count} oldFlags={originalFlags} falseTrailExclusions={falseExclusions} roundProofs={corroboratedRound}"));
-            Assert.AreEqual(bayer && trail == 6 ? 63 : count, measured);
-            if (trail == 0)
-            {
-                Assert.AreEqual(bayer ? 6 : 1, originalFlags);
-                Assert.AreEqual(bayer ? 0 : 1, falseExclusions);
-                Assert.AreEqual(bayer ? 6 : 0, corroboratedRound);
+                // Report the observed error frequency for this deterministic noise cohort, keeping the
+                // single independent focus-aperture exclusion separate from trail misclassification.
+                Console.WriteLine(FormattableString.Invariant(
+                    $"Bayer={bayer} trueTrail={trail} measured={measured}/{count} oldFlags={originalFlags} falseTrailExclusions={falseExclusions} roundProofs={corroboratedRound}"));
+                Assert.AreEqual(bayer && trail == 6 ? 63 : count, measured);
+                if (trail == 0)
+                {
+                    Assert.AreEqual(bayer ? 6 : 1, originalFlags);
+                    Assert.AreEqual(bayer ? 0 : 1, falseExclusions);
+                    Assert.AreEqual(bayer ? 6 : 0, corroboratedRound);
+                }
+                else
+                {
+                    Assert.IsGreaterThan(count / 2, originalFlags);
+                }
             }
-            else
-            {
-                Assert.IsGreaterThan(count / 2, originalFlags);
-            }
-        }
         Assert.IsTrue(checkedRetainedEvidence);
     }
 
