@@ -259,7 +259,8 @@ internal sealed class CameraModuleRunner
                     }
                     nextSetpoint = centeredSetpoint.Setpoint;
                     await centered.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
-                        centeredSetpoint.Metering, centeredSetpoint.Reason, cancellationToken).ConfigureAwait(false);
+                        centeredSetpoint.Metering, centeredSetpoint.Reason,
+                        effectiveSchedule.RequestedStartUtc, targetInterval, cancellationToken).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -397,6 +398,11 @@ internal sealed class CameraModuleRunner
                     .ConfigureAwait(false);
                 acceptedAdmission.MarkPublished();
                 _fleetRuntimeState?.CaptureSucceeded(result, acquisitionElapsed, ingressElapsed);
+                if (_scheduleRuntimeCoordinator is null)
+                    targetInterval = result.NextSetpoint.NextIntervalOverride ?? targetInterval;
+                else
+                    moduleDelayOverride = result.NextSetpoint.NextIntervalOverride;
+                captureMode = result.Mode;
                 recovering = false;
                 continue;
             }

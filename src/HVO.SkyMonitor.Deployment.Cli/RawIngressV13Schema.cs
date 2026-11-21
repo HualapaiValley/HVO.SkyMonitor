@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.Deployment;
@@ -18,6 +19,8 @@ internal static class RawIngressV13Schema
     internal const string V14Fingerprint = "66046ff0772ff0ad91509efee1a343a3a73d36fc1e4d196ac3e2db2e66e29216";
     // v15 changes durable reader semantics, not the canonical table definitions.
     internal const string V15Fingerprint = V14Fingerprint;
+    // Raw 16 plus the 48 witnessed processing objects from the separately released astrometry beta.
+    private const string V16WithLegacyAstrometryFingerprint = "194cba35fbe2eb39b8ecf193efa876b589f9c17f98f6a6cf5b24c4514a5d2f35";
     private static readonly HashSet<string> SharedObjects = new(StringComparer.Ordinal)
     {
         "capture_processing_schema", "processing_nodes", "processing_node_inputs", "processing_outputs",
@@ -29,7 +32,6 @@ internal static class RawIngressV13Schema
         "processing_execution_outputs", "processing_execution_manifest_counts", "processing_replay_work", "ix_processing_outputs_capture_node",
         "ix_processing_outputs_window", "ix_processing_nodes_status", "ix_processing_nodes_recipe",
         "ix_processing_outputs_role", "ix_processing_outputs_recipe", "ix_processing_outputs_product",
-        "ix_processing_outputs_astrometry_lookup",
         "ix_processing_outputs_retention_available", "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact", "ix_processing_node_inputs_artifact",
         "ix_processing_graph_revisions_active", "ix_processing_graph_revisions_name",
@@ -39,20 +41,51 @@ internal static class RawIngressV13Schema
         "ix_processing_replay_work_claim", "ix_processing_node_attempts_history",
         "ix_processing_execution_inputs_window", "ix_processing_execution_pins_active",
         "ix_processing_execution_output_pins_active", "ix_processing_execution_outputs_publication",
+        "processing_centered_view_bases", "ix_processing_centered_view_live_bases",
+        "ix_processing_centered_view_reference", "ix_processing_centered_view_single",
+        "ix_processing_centered_view_capture", "processing_centered_view_members",
+        "processing_centered_view_changes", "ix_processing_centered_view_change_stream",
+        "processing_centered_view_revisions", "ix_processing_centered_view_revision_order",
+        "processing_centered_view_intervals", "ix_processing_centered_view_current",
+        "ix_processing_centered_view_history", "processing_centered_view_selections", "ix_processing_centered_view_current_stream",
+        "ix_processing_centered_view_archive_reference", "processing_centered_view_cursors",
+        "processing_centered_view_retry", "ix_processing_centered_view_retry_due",
+        "processing_centered_view_window_work", "ix_processing_centered_view_window_live_base",
+        "processing_centered_view_trail_work", "ix_processing_centered_view_trail_due", "ix_processing_centered_view_trail_capture",
+        "processing_centered_windows", "ix_processing_centered_windows_pending", "ix_processing_centered_windows_reference",
+        "processing_centered_attempt_calendar", "processing_centered_product_clock", "processing_centered_window_holds",
+        "ix_processing_centered_product_clock_pending",
+        "processing_centered_output_availability", "ix_processing_centered_output_availability_cutoff",
+        "ix_processing_centered_output_availability_pending",
         "transient_worker_frames", "ix_transient_worker_frames_ready", "transient_worker_candidates",
         "ix_transient_worker_candidates_pending"
     };
 
     internal static bool IsCanonical(SqliteConnection connection)
-        => string.Equals(ComputeFingerprint(connection), Fingerprint, StringComparison.Ordinal);
+        => string.Equals(ComputeFingerprint(connection, ProcessingObjects.RejectAstrometryIndex), Fingerprint, StringComparison.Ordinal);
 
     internal static bool IsCanonicalV14(SqliteConnection connection)
-        => string.Equals(ComputeFingerprint(connection), V14Fingerprint, StringComparison.Ordinal);
+        => string.Equals(ComputeFingerprint(connection, ProcessingObjects.RejectAstrometryIndex), V14Fingerprint, StringComparison.Ordinal);
+
+    internal static bool IsCanonicalV16(SqliteConnection connection)
+        => IsCanonicalV14(connection) ||
+            (string.Equals(ComputeFingerprint(connection, ProcessingObjects.Include), V16WithLegacyAstrometryFingerprint, StringComparison.Ordinal) &&
+             HasLegacyAstrometryMarker(connection));
 
     internal static bool IsCanonicalV17(SqliteConnection connection)
-        => string.Equals(ComputeFingerprint(connection), V17Fingerprint, StringComparison.Ordinal);
+        => string.Equals(ComputeFingerprint(connection, ProcessingObjects.IgnoreWithAstrometryIndex), V17Fingerprint, StringComparison.Ordinal);
 
     internal static string ComputeFingerprint(SqliteConnection connection)
+        => ComputeFingerprint(connection, ProcessingObjects.Ignore);
+
+    private static bool HasLegacyAstrometryMarker(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT version FROM capture_processing_schema WHERE schema_key = 1;";
+        return command.ExecuteScalar() is 10L;
+    }
+
+    private static string ComputeFingerprint(SqliteConnection connection, ProcessingObjects processing)
     {
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name;";
@@ -61,8 +94,16 @@ internal static class RawIngressV13Schema
         while (reader.Read())
         {
             var name = reader.GetString(1);
-            // These objects share the journal but are owned by capture processing or transient workers.
-            if (SharedObjects.Contains(name))
+            // Include processing only when identifying the historical v16 migration source.
+            if (SharedObjects.Contains(name) && (processing != ProcessingObjects.Include ||
+                name.StartsWith("transient_", StringComparison.Ordinal) || name.StartsWith("ix_transient_", StringComparison.Ordinal)))
+            {
+                continue;
+            }
+            if (name == LegacyAstrometryJournalSchema.LookupIndexName &&
+                (processing == ProcessingObjects.Ignore ||
+                 (processing == ProcessingObjects.IgnoreWithAstrometryIndex && reader.GetString(0) == "index" &&
+                  reader.GetString(2) == "processing_outputs" && reader.GetString(3) == LegacyAstrometryJournalSchema.LookupIndexDefinition)))
             {
                 continue;
             }
@@ -73,5 +114,13 @@ internal static class RawIngressV13Schema
             }
         }
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(definition.ToString())));
+    }
+
+    private enum ProcessingObjects
+    {
+        Ignore,
+        RejectAstrometryIndex,
+        Include,
+        IgnoreWithAstrometryIndex
     }
 }

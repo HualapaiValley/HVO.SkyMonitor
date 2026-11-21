@@ -6,7 +6,6 @@ namespace HVO.SkyMonitor.Processing;
 public static class CaptureAnalysisOptionDescriptors
 {
     public const string CenteredAstrometryAlias = "ExposureMeasuredAstrometry";
-
     public static ProcessingNodeOptionsDescriptor Prediction { get; } = new(
         "astrometry-prediction-options-v1", "AstrometryPrediction", "canonical-projected-scene-v1",
         "Astrometry catalog prediction",
