@@ -886,8 +886,7 @@ public sealed class CaptureProcessingGraphTests
         foreach (var alias in new[]
         {
             CaptureSatelliteTracksProcessingStep.Alias, CaptureSatelliteLayerProcessingStep.Alias,
-            AstrometryPredictionCaptureProcessingStep.Alias, MeasuredAstrometryCaptureProcessingStep.Alias,
-            SceneStylePresentation.StepAlias,
+            AstrometryPredictionCaptureProcessingStep.Alias, MeasuredAstrometryCaptureProcessingStep.Alias, SceneStylePresentation.StepAlias,
             ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias, ExposureMeasurementProducts.StepAlias,
             ExposureAssociationProducts.StepAlias, ExposureAstrometryCaptureProcessingStep.CenteredAlias
         })

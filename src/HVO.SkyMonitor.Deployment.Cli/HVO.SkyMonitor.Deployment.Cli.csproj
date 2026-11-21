@@ -57,6 +57,7 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <!-- The agent owns the authenticated v1 ledger wire layout used during offline restore. -->
     <Compile Include="../HVO.SkyMonitor.CameraAgent.Common/DeploymentLocation/RetainedIntegrityFormat.cs" Link="Shared/RetainedIntegrityFormat.cs" />
+    <Compile Include="../HVO.SkyMonitor.CameraAgent.Common/Capture/Processing/LegacyAstrometryJournalSchema.cs" Link="Shared/LegacyAstrometryJournalSchema.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="SplitHost/*.jq" />
