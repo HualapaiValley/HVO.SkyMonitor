@@ -10,7 +10,11 @@ public enum VirtualExposureTimeMapping
     /// <summary>Both virtual clocks follow the configured sequence timeline.</summary>
     FixedScenarioUtc,
     /// <summary>The celestial interval repeats while the scenario follows a sequence.</summary>
-    FixedCelestialAndScenarioUtc
+    FixedCelestialAndScenarioUtc,
+    /// <summary>Both virtual clocks start at observed shutter open.</summary>
+    ShutterUtc,
+    /// <summary>The stellar field repeats while synthetic signals follow observed shutter UTC.</summary>
+    FixedCelestialAndShutterUtc
 }
 
 /// <summary>
@@ -30,6 +34,7 @@ public sealed record VirtualExposureProvenance(
 {
     /// <summary>Identifies the inclusive endpoints and floor-midpoint convention.</summary>
     public const string CurrentSchemaVersion = "virtual-exposure-utc-ticks-v1";
+    public const string ShutterSchemaVersion = "virtual-exposure-shutter-utc-ticks-v1";
 
     /// <summary>Creates resolved logical facts without consulting mutable sequence state later.</summary>
     public static VirtualExposureProvenance Create(
@@ -41,7 +46,7 @@ public sealed record VirtualExposureProvenance(
     {
         if (exposure < TimeSpan.Zero || exposure > TimeSpan.FromDays(1))
             throw new ArgumentOutOfRangeException(nameof(exposure));
-        var result = new VirtualExposureProvenance(CurrentSchemaVersion, timeMapping,
+        var result = new VirtualExposureProvenance(UsesShutter(timeMapping) ? ShutterSchemaVersion : CurrentSchemaVersion, timeMapping,
             requestedStartUtc, scenarioStartUtc, scenarioStartUtc + exposure,
             scenarioStartUtc.AddTicks(exposure.Ticks / 2), celestialStartUtc, celestialStartUtc + exposure,
             celestialStartUtc.AddTicks(exposure.Ticks / 2));
@@ -53,7 +58,7 @@ public sealed record VirtualExposureProvenance(
     /// <summary>Validates logical facts against the effective exposure; zero means an instantaneous zero-signal interval.</summary>
     public bool IsValid(TimeSpan effectiveExposure)
     {
-        if (SchemaVersion != CurrentSchemaVersion || !Enum.IsDefined(TimeMapping) ||
+        if (SchemaVersion != (UsesShutter(TimeMapping) ? ShutterSchemaVersion : CurrentSchemaVersion) ||
             effectiveExposure < TimeSpan.Zero || effectiveExposure > TimeSpan.FromDays(1) ||
             !IsUtc(RequestedStartUtc) || !IsUtc(ScenarioStartUtc) || !IsUtc(ScenarioEndUtc) ||
             !IsUtc(ScenarioMidpointUtc) || !IsUtc(CelestialStartUtc) || !IsUtc(CelestialEndUtc) ||
@@ -69,11 +74,29 @@ public sealed record VirtualExposureProvenance(
             VirtualExposureTimeMapping.FixedCelestialUtc => ScenarioStartUtc == RequestedStartUtc,
             VirtualExposureTimeMapping.FixedScenarioUtc => CelestialStartUtc == ScenarioStartUtc,
             VirtualExposureTimeMapping.FixedCelestialAndScenarioUtc => true,
+            VirtualExposureTimeMapping.ShutterUtc => CelestialStartUtc == ScenarioStartUtc,
+            VirtualExposureTimeMapping.FixedCelestialAndShutterUtc => true,
             _ => false
         };
     }
 
+    /// <summary>Validates a shutter-mapped clock against the committed descriptor's millisecond timing.</summary>
+    public bool MatchesObservedShutter(ReconstructionDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        return UsesShutter(TimeMapping) && IsValid(descriptor.Controls.EffectiveExposure) && MatchesCaptureTiming(descriptor.Timing);
+    }
+
     private static bool IsUtc(DateTimeOffset value) => value != default && value.Offset == TimeSpan.Zero;
+
+    private static bool UsesShutter(VirtualExposureTimeMapping mapping)
+        => mapping is VirtualExposureTimeMapping.ShutterUtc or VirtualExposureTimeMapping.FixedCelestialAndShutterUtc;
+
+    internal bool MatchesCaptureTiming(CaptureTimingDescriptor timing)
+        => RequestedStartUtc.ToUnixTimeMilliseconds() == timing.RequestedStartUtc.ToUnixTimeMilliseconds() &&
+            (!UsesShutter(TimeMapping) ||
+                (ScenarioStartUtc.ToUnixTimeMilliseconds() == timing.ExposureStartedUtc.ToUnixTimeMilliseconds() &&
+                 ScenarioEndUtc.ToUnixTimeMilliseconds() == timing.ExposureEndedUtc.ToUnixTimeMilliseconds()));
 
     /// <summary>
     /// Resolves the known exposure clock for catalog geometry. This accepts time-only capture
@@ -85,9 +108,7 @@ public sealed record VirtualExposureProvenance(
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         if (virtualExposure is null) return descriptor.Timing.ExposureStartedUtc;
-        if (!virtualExposure.IsValid(descriptor.Controls.EffectiveExposure) ||
-            virtualExposure.RequestedStartUtc.ToUnixTimeMilliseconds() !=
-                descriptor.Timing.RequestedStartUtc.ToUnixTimeMilliseconds())
+        if (!virtualExposure.IsValid(descriptor.Controls.EffectiveExposure) || !virtualExposure.MatchesCaptureTiming(descriptor.Timing))
             throw new ArgumentException("Virtual exposure clock does not match the capture.", nameof(virtualExposure));
         return virtualExposure.CelestialStartUtc;
     }

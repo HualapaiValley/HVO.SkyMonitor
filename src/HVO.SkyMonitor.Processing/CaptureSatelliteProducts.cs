@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.Imaging;
@@ -13,6 +14,8 @@ public sealed record CaptureSatelliteInputV1(string SchemaVersion, Reconstructio
 {
     public JsonElement? TimeProvenance { get; init; }
     public JsonElement? RequestOptions { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public VirtualExposureProvenance? VirtualShutter { get; init; }
 }
 
 /// <summary>Query availability is independent of whether any exposure segment falls in the image.</summary>
@@ -100,6 +103,8 @@ public static class CaptureSatelliteProducts
             input.TimeSource is "Bundled" or "Managed" or "Override" &&
             input.UnavailableReason is null or { Length: > 0 and <= 128 }, "satellite-evidence-binding");
         input.Observer?.Validate();
+        Require(input.VirtualShutter is null || input.VirtualShutter.MatchesObservedShutter(input.Descriptor),
+            "satellite-virtual-shutter-binding");
         Require((input.SnapshotRecords is null || input.SnapshotManifest is not null) &&
             input.SnapshotRecords is null or { Length: <= MaximumSnapshotBytes } &&
             input.EarthOrientation is null or { Length: <= 8 * 1024 * 1024 } &&
@@ -112,6 +117,7 @@ public static class CaptureSatelliteProducts
         var plan = CaptureOrbitalPredictionJson.Deserialize<CaptureOrbitalPredictionPlanV1>(input.Plan.Value.Span);
         Require(input.Plan.Value.Span.SequenceEqual(OrbitalContract.SerializeCanonical(plan)) &&
             input.UnavailableReason is null && plan.DescriptorSha256 == CaptureContractJson.ComputeDescriptorSha256(input.Descriptor) &&
+            plan.VirtualShutter == input.VirtualShutter &&
             plan.Observer == input.Observer && plan.Availability.TimeDataAvailableUtc == input.TimeAvailableUtc &&
             plan.Geometry.Projection == RigProjectionContextFactory.Create(input.Rig) &&
             (input.Rig.HorizonObstruction is null ? plan.ObstructionRig is null :
@@ -240,7 +246,9 @@ public static class CaptureSatelliteProducts
         return new(StatusSchema, identity, output?.Status.ToString() ?? "Unavailable",
             input.UnavailableReason ?? (output!.Input.SnapshotUnavailableReason?.ToString() ??
                 (output.Tracks.Count == 0 && output.Status == OrbitalExecutionStatus.Complete ? "NoExposureSegments" : output.Reason.ToString())),
-            output?.Tracks.Count ?? 0, "ConfiguredRig", new(input.Descriptor.Timing.ExposureStartedUtc, input.Descriptor.Timing.ExposureEndedUtc),
+            output?.Tracks.Count ?? 0, "ConfiguredRig", input.VirtualShutter is { } shutter
+                ? new(shutter.ScenarioStartUtc, shutter.ScenarioEndUtc)
+                : new(input.Descriptor.Timing.ExposureStartedUtc, input.Descriptor.Timing.ExposureEndedUtc),
             output?.Input.PopulationCoverage ?? manifest?.Coverage ?? new("explicit-requested-object-identities", OrbitalPopulationCompleteness.Unknown,
                 ["Prediction inputs unavailable; population coverage unknown."]),
             (output?.Input.SnapshotManifest ?? manifest)?.Sources.Max(static s => (DateTimeOffset?)s.RetrievedUtc),
