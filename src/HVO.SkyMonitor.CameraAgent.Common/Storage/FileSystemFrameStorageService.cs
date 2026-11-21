@@ -17,7 +17,7 @@ using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 
-public sealed class FileSystemFrameStorageService(
+public sealed partial class FileSystemFrameStorageService(
     ILogger<FileSystemFrameStorageService> logger,
     Capture.CaptureMaintenanceGate? maintenance,
     IOptions<CameraAgentHostOptions>? hostOptions) : IFrameStorageService, IDisposable
@@ -542,7 +542,7 @@ public sealed class FileSystemFrameStorageService(
                     !TryReadMetadataFile(metadataPath, out var sidecarMetadata, out var versionedBinding) ||
                     !Matches(indexedMetadata, sidecarMetadata) ||
                     versionedBinding is not null && (!MatchesVersionedBinding(storageRoot, payloadPath, versionedBinding) ||
-                        !IsPublishedForCompatibility(storageRoot, payloadPath, visibility, versionedBinding, indexedMetadata.ArtifactId)))
+                        !IsPublishedForCompatibility(storageRoot, payloadPath, visibility, versionedBinding, indexedMetadata.ArtifactId, out _)))
                 {
                     _logger.FrameBrowseEntrySkipped(indexPath);
                     continue;
@@ -685,8 +685,9 @@ public sealed class FileSystemFrameStorageService(
 
     private bool IsPublishedForCompatibility(
         string storageRoot, string payloadPath, SqliteCommand? visibility, VersionedSidecarBinding binding,
-        Guid artifactId)
+        Guid artifactId, out bool standalone)
     {
+        standalone = false;
         if (binding.IsRaw)
             return true;
         var archived = ArchiveReceiptPath(payloadPath);
@@ -711,9 +712,10 @@ public sealed class FileSystemFrameStorageService(
         indexGate.Wait();
         try
         {
-            return !File.Exists(archived) && !File.Exists(ArchiveStagePath(payloadPath)) &&
+            standalone = !File.Exists(archived) && !File.Exists(ArchiveStagePath(payloadPath)) &&
                 File.Exists(payloadPath) && File.Exists(Path.ChangeExtension(payloadPath, ".json")) &&
                 !HasRetainedCenteredRaw(storageRoot, binding);
+            return standalone;
         }
         finally
         {

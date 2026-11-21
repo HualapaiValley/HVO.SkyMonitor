@@ -30,6 +30,12 @@ public sealed class CameraModuleFactory(
     public void Validate(CameraModuleConfig configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
+        if (configuration.CenteredExposure is not null &&
+            !typeof(ICameraBoundExposureCapture).IsAssignableFrom(ResolveModuleType(configuration.ModuleType)))
+        {
+            throw new InvalidOperationException("The selected camera cannot bind durable centered exposure attempts.");
+        }
+
         var module = Create(configuration.ModuleType);
         try
         {
