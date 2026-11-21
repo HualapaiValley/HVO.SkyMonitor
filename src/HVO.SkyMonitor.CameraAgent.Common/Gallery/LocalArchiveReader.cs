@@ -14,7 +14,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 internal sealed class LocalArchiveReader(
     IFrameStorageService storage,
     ICameraAgentConfigurationAccessor configuration,
-    IOptions<CameraAgentHostOptions> options)
+    IOptions<CameraAgentHostOptions> options,
+    Func<CameraModuleConfig?> activeConfiguration)
 {
     internal async ValueTask<IndexedArchiveFrame?> FindAsync(
         SqliteConnection journal, Guid artifactId, CancellationToken cancellationToken)
@@ -87,7 +88,8 @@ internal sealed class LocalArchiveReader(
             yield break;
 
         var host = options.Value;
-        var config = await configuration.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
+        var config = activeConfiguration() ??
+            await configuration.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
         var indexes = CameraAgentStorageResolver.Resolve(config, host)
             .Where(location => !StorageRootIdentity.AreEqual(location.Root, host.RawIngressRoot))
             .SelectMany(location => filesystem.GetArchiveIndexDates(location.Root)
