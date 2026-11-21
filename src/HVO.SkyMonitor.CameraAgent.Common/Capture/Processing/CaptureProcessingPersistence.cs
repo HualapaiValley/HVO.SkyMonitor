@@ -56,7 +56,7 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var schemaVersion in ProjectedSceneV1.SupportedSchemaVersions)
         {
             candidates.AddRange(await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
-                schemaVersion, 2, cancellationToken).ConfigureAwait(false));
+                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene).ConfigureAwait(false));
         }
         if (candidates.Count == 0) return null;
         if (candidates.Count != 1)
@@ -73,6 +73,7 @@ internal sealed partial class CaptureProcessingPersistence(
         ReconstructionDescriptor descriptor, DurableProcessingOutput output, CancellationToken cancellationToken)
     {
         if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
+            output.Artifact.Recipe.Name != BuiltInProcessingRecipes.ProjectedScene ||
             !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(output.ProductSchemaVersion) ||
             output.Artifact.SourceArtifactIds.Count != 1 ||
             output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
@@ -310,6 +311,10 @@ internal sealed partial class CaptureProcessingPersistence(
         string nodeId,
         CancellationToken cancellationToken)
         => _store.ReadExecutionNodeAsync(execution.ExecutionId, captureId, nodeId, cancellationToken);
+
+    internal ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
+        Guid executionId, string nodeId, CancellationToken cancellationToken)
+        => _store.ReadCommittedArchivePublicationsAsync(executionId, nodeId, cancellationToken);
 
     internal ValueTask BeginExecutionNodeAttemptAsync(
         ProcessingExecutionContext execution,
@@ -733,11 +738,9 @@ internal sealed partial class CaptureProcessingPersistence(
                 else
                 {
                     var artifact = context.FindArtifact(product);
-                    var descriptor = DerivativeDescriptorFactory.Create(
-                        rawCapture.Manifest.Descriptor,
-                        artifact.ArtifactId,
-                        artifact.Frame.Metadata.SourceId ?? node.Id,
-                        product);
+                    var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                        _storageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? node.Id,
+                        product, cancellationToken).ConfigureAwait(false);
                     var stored = await _frameStorage.SaveAsync(
                         _storageRoot, artifact, descriptor, node.Id, cancellationToken).ConfigureAwait(false);
                     var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);

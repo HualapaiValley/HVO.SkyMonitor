@@ -482,6 +482,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
         }
+        catch (ReferenceAstrometryCatalogConflictException)
+        {
+            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, ReferenceAstrometryCatalogConflictException.SafeMessage);
+        }
         catch (ProcessingGraphStoreConflictException)
         {
             return OperatorUiResult<T>.Failure(OperatorUiResultKind.Conflict, "Graph registry state changed. Refresh and review the command again.");

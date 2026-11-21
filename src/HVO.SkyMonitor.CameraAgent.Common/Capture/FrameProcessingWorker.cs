@@ -218,16 +218,20 @@ internal sealed class FrameProcessingWorker
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
-                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep || rawCapture?.Manifest.Scene is null))
+                if (storagePolicyMismatch &&
+                    (node.Step is not ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false, IsExposurePrediction: false } ||
+                     rawCapture?.Manifest.Scene is null))
                     continue;
                 // Retain scene evidence when possible without promoting an optional node into a lane/admission fault.
                 var required = node.Required;
                 context.BeginNode(node.Id, node.Dependencies, node.DeclaredDependencies);
                 var dependencyStopwatch = Stopwatch.StartNew();
-                var retryableDependency = node.Dependencies.FirstOrDefault(dependency =>
+                // An isolated live solver records its configuration fault regardless of the input outcomes.
+                var usesDependencies = context.IsReplayExecution ||
+                    node.Step is not MeasuredAstrometryCaptureProcessingStep { HasCrossedSceneDependencies: true };
+                if (usesDependencies && node.Dependencies.Any(dependency =>
                     statuses.TryGetValue(dependency, out var status) &&
-                    status == DurableProcessingNodeStatus.RetryableFailure);
-                if (retryableDependency is not null)
+                    status == DurableProcessingNodeStatus.RetryableFailure))
                 {
                     statuses[node.Id] = DurableProcessingNodeStatus.RetryableFailure;
                     deferredRetryReason ??= "processing.dependency-retry";
@@ -235,10 +239,9 @@ internal sealed class FrameProcessingWorker
                     telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
                     continue;
                 }
-                var blockedDependency = node.Dependencies.FirstOrDefault(dependency =>
+                if (usesDependencies && node.Dependencies.Any(dependency =>
                     node.OptionalDependencies?.Contains(dependency) != true &&
-                    statuses.TryGetValue(dependency, out var status) && status != DurableProcessingNodeStatus.Completed);
-                if (blockedDependency is not null)
+                    statuses.TryGetValue(dependency, out var status) && status != DurableProcessingNodeStatus.Completed))
                 {
                     const string dependencyReason = "processing.dependency-unavailable";
                     if (persistence is not null && rawCapture is not null)
@@ -256,6 +259,7 @@ internal sealed class FrameProcessingWorker
                             [], context, item.Execution, cancellationToken).ConfigureAwait(false);
                     }
                     statuses[node.Id] = DurableProcessingNodeStatus.Skipped;
+                    context.AddStepTelemetry(new CaptureProcessingStepTelemetry(node.Id, TimeSpan.Zero, false, dependencyReason));
                     dependencyStopwatch.Stop();
                     telemetry.RecordDependencyWait(node, dependencyStopwatch.Elapsed);
                     if (required)
@@ -289,9 +293,11 @@ internal sealed class FrameProcessingWorker
                             if (item.Execution?.AllowAutomaticPublication != false &&
                                 node.Step is IDurableCaptureProcessingPostCommit restoredCommit)
                             {
-                                await RunPostCommitCleanupAsync(
+                                var finished = await RunPostCommitCleanupAsync(
                                     restoredCommit, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                                 cancellationToken.ThrowIfCancellationRequested();
+                                if (!finished)
+                                    return Finish(RetryOrWait("processing.post-commit-incomplete"));
                             }
                             logger.CaptureProcessingOutputExisting(node.Id);
                         }
@@ -503,9 +509,11 @@ internal sealed class FrameProcessingWorker
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
                         {
-                            await RunPostCommitCleanupAsync(
+                            var finished = await RunPostCommitCleanupAsync(
                                 memoryOnlyCleanup, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                             cancellationToken.ThrowIfCancellationRequested();
+                            if (!finished)
+                                return Finish(RetryOrWait("processing.post-commit-incomplete"));
                         }
                     }
                     else
@@ -545,9 +553,11 @@ internal sealed class FrameProcessingWorker
                             status == DurableProcessingNodeStatus.Completed &&
                             node.Step is IDurableCaptureProcessingPostCommit committed)
                         {
-                            await RunPostCommitCleanupAsync(
+                            var finished = await RunPostCommitCleanupAsync(
                                 committed, node, context, telemetry, logger, cancellationToken).ConfigureAwait(false);
                             cancellationToken.ThrowIfCancellationRequested();
+                            if (!finished)
+                                return Finish(RetryOrWait("processing.post-commit-incomplete"));
                         }
                     }
                 }
@@ -651,8 +661,8 @@ internal sealed class FrameProcessingWorker
             ?? throw new InvalidOperationException(
                 "A durable processing window requires the committed raw capture descriptor.");
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit cleanup cannot invalidate a durable node or block its dependents.")]
-    private static async ValueTask RunPostCommitCleanupAsync(
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Post-commit failures retain the completed node. Callbacks that publish durable evidence request retry.")]
+    private static async ValueTask<bool> RunPostCommitCleanupAsync(
         IDurableCaptureProcessingPostCommit cleanup,
         CaptureProcessingGraphNode node,
         CaptureProcessingContext context,
@@ -664,12 +674,14 @@ internal sealed class FrameProcessingWorker
         {
             await cleanup.OnCommittedAsync(
                 new CaptureDescriptorProcessingContext(context), cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (Exception exception)
         {
             var reason = exception is OperationCanceledException ? "cancelled" : "failed";
             telemetry.RecordPostCommitCleanupFailure(node, reason);
             logger.CaptureProcessingPostCommitCleanupFailed(node.Id, exception);
+            return !cleanup.RequiresSuccessfulCommitCallback;
         }
     }
 

@@ -58,9 +58,9 @@ public sealed class CameraAgentSettingsEndpointsTests
             .ConfigureAwait(false);
 
         Assert.AreEqual(StatusCodes.Status200OK, catalogue.Status);
-        Assert.AreEqual(10, JsonDocumentLength(catalogue.Body, "groups"));
+        Assert.AreEqual(11, JsonDocumentLength(catalogue.Body, "groups"));
         Assert.AreEqual(StatusCodes.Status200OK, values.Status);
-        Assert.AreEqual(10, JsonDocumentLength(values.Body, "groups"));
+        Assert.AreEqual(11, JsonDocumentLength(values.Body, "groups"));
         Assert.AreEqual(StatusCodes.Status404NotFound, unknown.Status);
     }
 
@@ -96,6 +96,27 @@ public sealed class CameraAgentSettingsEndpointsTests
         Assert.AreEqual("Applied", json.RootElement.GetProperty("status").GetString());
         Assert.AreEqual(400, json.RootElement.GetProperty("group").GetProperty("settings")[0].GetProperty("value").GetInt32());
         Assert.AreEqual(400, harness.SceneObjectBound.Current);
+    }
+
+    [TestMethod]
+    public async Task Put_RendererCandidateCapUsesTheVersionedOwnerSettingsRouteAsync()
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        using var app = CreateApp(harness);
+        var version = (await harness.GroupAsync("virtualSky").ConfigureAwait(false)).Version;
+        var body = JsonSerializer.Serialize(new
+        {
+            expectedVersion = version,
+            values = new Dictionary<string, int> { ["virtualSky.rendererCandidateCap"] = 2000 }
+        });
+
+        var applied = await InvokeAsync(app, Put, Credential.ReadWriteKey, group: "virtualSky", json: body)
+            .ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status200OK, applied.Status, applied.Body);
+        Assert.AreEqual(2000, harness.SceneObjectBound.VirtualSkyOverride);
+        var stale = await InvokeAsync(app, Put, Credential.ReadWriteKey, group: "virtualSky", json: body)
+            .ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status409Conflict, stale.Status);
     }
 
     [TestMethod]

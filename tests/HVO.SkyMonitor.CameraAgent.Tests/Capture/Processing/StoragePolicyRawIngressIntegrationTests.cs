@@ -231,7 +231,8 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
     {
         var compiler = typeof(ProcessingGraphOperationsCoordinator).GetMethod("CreateRevisionSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var snapshot = (ProcessingGraphRevisionSnapshot)compiler.Invoke(Operations(provider),
-            [profile with { Pipeline = pipeline }, name, "1", DateTimeOffset.UtcNow, ProcessingGraphRevisionLifecycle.Draft, null, false])!;
+            [profile with { Pipeline = pipeline }, name, "1", DateTimeOffset.UtcNow,
+                ProcessingGraphRevisionLifecycle.Draft, null, CaptureProcessingGraphCompilation.Proposal])!;
         var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
         var created = await store.InsertNamedRevisionAsync(snapshot, name + "-create", "old-host", null, CancellationToken.None).ConfigureAwait(false);
         await store.ValidateRevisionAsync(created.RevisionId, name + "-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);

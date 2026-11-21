@@ -103,7 +103,8 @@ public sealed class CameraAgentStateContractsLabelTests
         var environmental = declared["environmentalOutbox"];
         Assert.AreEqual(SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion, environmental.Writes);
         CollectionAssert.AreEqual(
-            new long[] { SqliteEnvironmentalObservationOutbox.PreviousSchemaVersion, SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion },
+            new long[] { SqliteEnvironmentalObservationOutbox.BeforeRetentionIndexesSchemaVersion,
+                SqliteEnvironmentalObservationOutbox.PreviousSchemaVersion, SqliteEnvironmentalObservationOutbox.CurrentSchemaVersion },
             Enumerable.Range((int)environmental.Min, (int)(environmental.Max - environmental.Min + 1)).Select(static schema => (long)schema).ToArray());
         var automation = declared["localAutomations"];
         Assert.AreEqual(LocalAutomationContract.CurrentSchemaVersion, automation.Writes);

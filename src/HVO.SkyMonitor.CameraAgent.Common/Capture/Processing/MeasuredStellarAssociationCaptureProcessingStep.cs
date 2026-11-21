@@ -17,8 +17,10 @@ internal class MeasuredStellarAssociationCaptureProcessingStep(
     : ConfigurableCaptureProcessingStep<MeasuredStellarAssociationProcessingStepOptions>(metadata, options),
       ICaptureProcessingGraphStep, IRequiredCaptureProcessingDependencies
 {
+    internal const string Alias = "MeasuredStellarAssociations";
     public bool Enabled => Options.Enabled;
     public virtual string RecipeName => BuiltInProcessingRecipes.MeasuredStellarAssociations;
+    internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => Options.OutputVariant;
     public string? OutputSchemaVersion => MeasuredStellarAssociationsV1.CurrentSchemaVersion;
@@ -27,7 +29,8 @@ internal class MeasuredStellarAssociationCaptureProcessingStep(
     public virtual IReadOnlyList<CaptureProcessingDependencyRequirement> DependencyRequirements =>
     [
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string>(StringComparer.Ordinal) { BuiltInProcessingRecipes.ProjectedScene },
+            new HashSet<string>(StringComparer.Ordinal) { Options.UseAstrometryPrediction
+                ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene },
             new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions, StringComparer.Ordinal))
     ];
 
@@ -85,6 +88,9 @@ internal class MeasuredStellarAssociationCaptureProcessingStep(
 public sealed class MeasuredStellarAssociationProcessingStepOptions
 {
     public bool Enabled { get; init; } = true;
+
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseAstrometryPrediction { get; init; }
 
     [Required(AllowEmptyStrings = false), MaxLength(128)]
     public string OutputVariant { get; init; } = "measured-stellar-associations-v1";

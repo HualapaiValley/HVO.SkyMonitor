@@ -37,7 +37,7 @@ namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
 [TestClass]
 [TestCategory("Integration")]
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
-public sealed class VirtualSkyPipelineTests
+public sealed partial class VirtualSkyPipelineTests
 {
 #if COMBINED_INTEGRATION_TESTS
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -88,169 +88,6 @@ public sealed class VirtualSkyPipelineTests
 #endif
 
 #if !COMBINED_INTEGRATION_TESTS
-    [TestMethod]
-    public async Task CentralTransportOutageDoesNotBlockAcquisitionOrLoseLocalTransientProvenance()
-    {
-        using var scope = Fixture.CreateCameraAgentScope();
-        var services = scope.ServiceProvider;
-        var diagnostics = new VirtualSkyOutageDiagnostics(services, Fixture.StorageRoot);
-        var telemetry = services.GetRequiredService<ICaptureTelemetryProvider>();
-        var latest = services.GetRequiredService<ILatestFrameAccessor>();
-        await WaitUntilAsync(
-            () => telemetry.Latest is { FrameStored: true }
-                && latest.TryGetSnapshot(FrameArtifactRole.Raw, out _),
-            TimeSpan.FromSeconds(20), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
-        Assert.IsTrue(latest.TryGetSnapshot(FrameArtifactRole.Raw, out var before));
-        var storage = services.GetRequiredService<IFrameStorageService>();
-        var storageDate = DateOnly.FromDateTime(before.TimestampUtc.UtcDateTime);
-        IReadOnlyList<StoredFrameReference> ListStoredFrames()
-        {
-            var checkpointDateFrames = storage.List(Fixture.StorageRoot, storageDate, null, 10_000);
-            var currentDate = DateOnly.FromDateTime(DateTime.UtcNow);
-            IReadOnlyList<StoredFrameReference> frames = currentDate == storageDate
-                ? checkpointDateFrames
-                : [.. checkpointDateFrames, .. storage.List(Fixture.StorageRoot, currentDate, null, 10_000)];
-            diagnostics.LastListedFrames = frames;
-            diagnostics.LastListCapReached = checkpointDateFrames.Count >= 10_000 || frames.Count - checkpointDateFrames.Count >= 10_000;
-            return frames;
-        }
-
-        var configured = services.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value;
-        var queuedRaw = ListStoredFrames().First(static item => item.Role == FrameArtifactRole.Raw);
-        var queuedManifest = CaptureContractJson.ParseManifest(
-            await File.ReadAllBytesAsync(
-                Path.ChangeExtension(queuedRaw.AbsolutePath, ".json"),
-                CancellationToken.None).ConfigureAwait(false));
-        Assert.IsTrue(queuedManifest.IsValid, queuedManifest.Validation.ReasonCode);
-        Assert.IsNotNull(queuedManifest.Document?.Manifest);
-        await services.GetRequiredService<IArtifactOutbox>().EnqueueAsync(
-            configured.RawIngressRoot,
-            queuedManifest.Document.Manifest,
-            CancellationToken.None).ConfigureAwait(false);
-        var outageOptions = Options.Create(new CameraAgentHostOptions
-        {
-            RawIngressRoot = configured.RawIngressRoot,
-            CaptureDistribution = configured.CaptureDistribution,
-            UploadBatchSize = 1,
-            UploadPollIntervalSeconds = 1,
-            UploadRetryInitialDelaySeconds = 1,
-            UploadRetryMaximumDelaySeconds = 1
-        });
-        using var outageFactory = new OutageHttpClientFactory();
-        var outageClient = new ArtifactUploadClient(outageFactory, outageOptions, TimeProvider.System);
-        var drain = ActivatorUtilities.CreateInstance<ArtifactOutboxDrainService>(
-            services, outageClient, outageOptions);
-        await drain.StartAsync(CancellationToken.None).ConfigureAwait(false);
-        try
-        {
-            diagnostics.Stage = "outage retry";
-            await WaitUntilAsync(
-                HasTransportFailureRetry,
-                TimeSpan.FromSeconds(20), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
-            var outageCheckpointUtc = DateTimeOffset.UtcNow;
-            var checkpointCaptureIds = ListStoredFrames()
-                .Where(static item => item.Role == FrameArtifactRole.Raw)
-                .Select(item => CaptureContractJson.ParseManifest(
-                    File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json"))))
-                .Where(static parsed => parsed.IsValid && parsed.Document!.Manifest is not null)
-                .Select(static parsed => parsed.Document!.Manifest!.Descriptor.Capture.CaptureId)
-                .ToHashSet();
-            Assert.IsNotEmpty(checkpointCaptureIds);
-            diagnostics.CheckpointUtc = outageCheckpointUtc;
-            diagnostics.CheckpointCaptureIds = checkpointCaptureIds;
-            diagnostics.Stage = "post-checkpoint same-capture raw and preview";
-            (StoredFrameReference Stored, ArtifactManifestParseResult Parsed)[] measuredCapture = [];
-            await WaitUntilAsync(
-                () =>
-                {
-                    var newManifests = ListStoredFrames()
-                        .Where(static item => item.Role is FrameArtifactRole.Raw or FrameArtifactRole.Preview)
-                        .Select(item => new
-                        {
-                            Stored = item,
-                            Parsed = CaptureContractJson.ParseManifest(
-                                File.ReadAllBytes(Path.ChangeExtension(item.AbsolutePath, ".json")))
-                        })
-                        .Where(item => item.Parsed.IsValid
-                            && item.Parsed.Document!.Manifest is not null
-                            && !checkpointCaptureIds.Contains(
-                                item.Parsed.Document.Manifest.Descriptor.Capture.CaptureId)
-                            && item.Parsed.Document.Manifest.Descriptor.Timing.ExposureStartedUtc
-                                > outageCheckpointUtc)
-                        .GroupBy(item => item.Parsed.Document!.Manifest!.Descriptor.Capture.CaptureId)
-                        .FirstOrDefault(group => group.Any(item =>
-                                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Raw)
-                            && group.Any(item =>
-                                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview));
-                    if (newManifests is null)
-                    {
-                        return false;
-                    }
-
-                    measuredCapture = newManifests
-                        .Select(static item => (item.Stored, item.Parsed))
-                        .ToArray();
-                    return true;
-                },
-                TimeSpan.FromSeconds(20),
-                TimeSpan.FromSeconds(1), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
-
-            Assert.IsNotEmpty(measuredCapture);
-            var transient = measuredCapture
-                .Select(static item => item.Parsed.Document!.Manifest!.Scene?.TransientScenario)
-                .FirstOrDefault(static scenario => scenario is not null);
-            Assert.IsNotNull(transient);
-            Assert.IsTrue(measuredCapture.All(item => File.Exists(item.Stored.AbsolutePath)));
-            Assert.IsTrue(measuredCapture.Any(item =>
-                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Raw));
-            Assert.IsTrue(measuredCapture.Any(item =>
-                item.Parsed.Document!.Manifest!.Descriptor.Artifact.Role == FrameArtifactRole.Preview));
-            Assert.IsTrue(measuredCapture.All(item =>
-                item.Parsed.Document!.Manifest!.Scene?.TransientScenario?.ParametersSha256
-                    == transient.ParametersSha256));
-        }
-        finally
-        {
-            await drain.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            drain.Dispose();
-            ResetTransportFailureRetries();
-        }
-
-        Assert.IsTrue(HasPendingOrRetryOutboxRecord());
-        AssertIngressAdmitting(
-            services.GetRequiredService<RawIngressState>().Snapshot,
-            "after publication",
-            configured.ProjectedSceneStaging.MaximumReconciliationEntries);
-        var processingStateService = services.GetRequiredService<CaptureProcessingState>();
-        // Healthy is a conjunction of eight conditions, two of which count work still in flight on a producer
-        // that never stops, so waiting for it asks a live agent to fall idle. Gate the six that are defects at
-        // any sequence and report the other two, exactly as the capture-fence wait below does.
-        diagnostics.Stage = "processing after publication";
-        await WaitUntilAsync(
-            () =>
-            {
-                var live = processingStateService.Snapshot;
-                return live.TerminalCount == 0 &&
-                    live.ProcessingQuarantineCount == 0 &&
-                    live.MissingProductCount == 0 &&
-                    live.ReplayTerminalCount == 0 &&
-                    !live.DurableStateUnavailable &&
-                    !live.ReconciliationFailed;
-            },
-            TimeSpan.FromSeconds(20), describeTimeout: diagnostics.Describe).ConfigureAwait(false);
-        var processingState = processingStateService.Snapshot;
-        Console.WriteLine(string.Create(
-            System.Globalization.CultureInfo.InvariantCulture,
-            $"processing after publication: pendingCount={processingState.PendingCount} retryCount={processingState.RetryCount} "
-                + $"replayRetryCount={processingState.ReplayRetryCount} availability={processingState.Availability} reason={processingState.Reason}"));
-        Assert.AreEqual(0L, processingState.TerminalCount, processingState.Reason);
-        Assert.AreEqual(0L, processingState.ProcessingQuarantineCount, processingState.Reason);
-        Assert.AreEqual(0L, processingState.MissingProductCount, processingState.Reason);
-        Assert.AreEqual(0L, processingState.ReplayTerminalCount, processingState.Reason);
-        Assert.IsFalse(processingState.DurableStateUnavailable, processingState.Reason);
-        Assert.IsFalse(processingState.ReconciliationFailed, processingState.Reason);
-    }
-
     [TestMethod]
     public async Task StandaloneForcedTimeoutIncludesBoundedRuntimeStateAndSuccessDoesNotCollect()
     {
@@ -1616,7 +1453,8 @@ public sealed class VirtualSkyPipelineTests
     private static void AssertIngressAdmitting(
         RawIngressSnapshot snapshot,
         string stage,
-        int reconciliationPassBound)
+        int reconciliationPassBound,
+        string? storageRoot = null)
     {
         // Recorded on every run, degraded or not. The open question behind this gate is how close a normal
         // run comes to the pass bound, and nobody finds that out from a test that only speaks when it fails.
@@ -1626,7 +1464,7 @@ public sealed class VirtualSkyPipelineTests
         Console.WriteLine(string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
             $"raw ingress {stage}: availability={snapshot.Availability} reason={snapshot.Reason} "
-                + $"stagedProjectedScenes={CountStagedProjectedScenes()} "
+                + $"stagedProjectedScenes={CountStagedProjectedScenes(storageRoot ?? Fixture.StorageRoot)} "
                 + $"reconciliationPassBound={reconciliationPassBound}"));
 
         if (snapshot.Availability == RawIngressAvailability.Degraded &&
@@ -1647,9 +1485,9 @@ public sealed class VirtualSkyPipelineTests
     /// Counts entries in the projected-scene staging directory, which is what the bounded reconciliation pass
     /// walks and therefore what the backlog counter is derived from.
     /// </summary>
-    private static int CountStagedProjectedScenes()
+    private static int CountStagedProjectedScenes(string storageRoot)
     {
-        var root = Path.Combine(Fixture.StorageRoot, "staging", "projected-scenes");
+        var root = Path.Combine(storageRoot, "staging", "projected-scenes");
         return Directory.Exists(root)
             ? Directory.EnumerateFileSystemEntries(root, "*", SearchOption.TopDirectoryOnly).Count()
             : 0;
@@ -1731,39 +1569,6 @@ public sealed class VirtualSkyPipelineTests
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status <> 'acknowledged';";
         return Convert.ToInt32(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture);
-    }
-
-    private static bool HasTransportFailureRetry()
-    {
-        using var connection = OpenOutboxReadConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status = 'retry' AND last_reason = 'transport-failure';";
-        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0;
-    }
-
-    private static void ResetTransportFailureRetries()
-    {
-        using var connection = new SqliteConnection(
-            $"Data Source={Path.Combine(Fixture.StorageRoot, "outbox", "artifact-outbox.db")}");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            UPDATE artifact_outbox_records
-            SET status = 'pending', attempt_count = 0, next_attempt_unix_ms = updated_unix_ms,
-                lease_owner = NULL, lease_token = NULL, lease_expires_unix_ms = NULL,
-                last_reason = NULL
-            WHERE status = 'retry' AND last_reason IN ('transport-failure', 'status-transport-failure');
-            """;
-        Assert.IsGreaterThan(0, command.ExecuteNonQuery(),
-            "The injected transport-failure retry must be restored for the shared integration fixture.");
-    }
-
-    private static bool HasPendingOrRetryOutboxRecord()
-    {
-        using var connection = OpenOutboxReadConnection();
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM artifact_outbox_records WHERE status IN ('pending', 'retry');";
-        return Convert.ToInt64(command.ExecuteScalar(), System.Globalization.CultureInfo.InvariantCulture) > 0;
     }
 
     private static bool HasNoEnvironmentalOutboxRecord(Guid observationId)
@@ -1913,29 +1718,6 @@ public sealed class VirtualSkyPipelineTests
         Guid ArtifactId,
         string ChecksumSha256,
         long ByteLength);
-
-#if !COMBINED_INTEGRATION_TESTS
-    private sealed class OutageHttpClientFactory : IHttpClientFactory, IDisposable
-    {
-        private readonly HttpClient client = new(new OutageHttpMessageHandler())
-        {
-            BaseAddress = new Uri("http://central-outage.invalid/", UriKind.Absolute),
-            Timeout = TimeSpan.FromSeconds(1)
-        };
-
-        public HttpClient CreateClient(string name) => client;
-
-        public void Dispose() => client.Dispose();
-    }
-
-    private sealed class OutageHttpMessageHandler : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-            => throw new HttpRequestException("Injected Central transport outage.");
-    }
-#endif
 
 #if COMBINED_INTEGRATION_TESTS
     private sealed class RecordingLoggerProvider : ILoggerProvider

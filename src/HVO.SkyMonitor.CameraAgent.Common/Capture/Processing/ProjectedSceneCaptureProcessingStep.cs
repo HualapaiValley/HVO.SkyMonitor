@@ -3,6 +3,8 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Extensions.DependencyInjection;
+using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
@@ -13,6 +15,7 @@ internal class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter,
     CaptureMaintenanceGate? maintenance = null,
+    IServiceProvider? services = null,
     CenteredExposureSceneProvider? centeredScenes = null)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
@@ -21,10 +24,12 @@ internal class ProjectedSceneCaptureProcessingStep(
     internal const string ExposurePredictionAlias = ExposureCatalogPredictionProducts.StepAlias;
     private const string StageInputName = "virtual-render-scene";
     private const string FrozenInputName = "frozen-projected-scene";
-    protected virtual bool IsExposurePrediction => false;
+    internal virtual bool IsExposurePrediction => false;
 
     public bool Enabled => true;
-    public string RecipeName => BuiltInProcessingRecipes.ProjectedScene;
+    internal virtual bool IsAstrometryPrediction => false;
+    public string RecipeName => IsAstrometryPrediction
+        ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
     public string OutputVariant => IsExposurePrediction ? ExposureCatalogPredictionProducts.Variant : Options.OutputVariant;
     // The producer declaration keeps its v1 family root; expanded consumer capabilities can change plan identity.
@@ -51,6 +56,9 @@ internal class ProjectedSceneCaptureProcessingStep(
             descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId, descriptorSha256);
         ProjectedSceneV1? scene;
         var provenance = context.SceneProvenance;
+        var virtualStage = string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal) &&
+            (provenance?.RequiresProjectedScene == true || provenance?.ProjectedSceneStageKey is not null);
+        var independentPrediction = IsAstrometryPrediction || Options.IndependentPrediction && !virtualStage;
         if (context.IsReplayExecution)
         {
             // Archived replay never consults, recreates, or recomputes the transient stage: it consumes the committed
@@ -60,8 +68,15 @@ internal class ProjectedSceneCaptureProcessingStep(
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(failureReason));
                 return;
             }
-            if (!IsExposurePrediction && provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
+            // The raw manifest declares the canonical render scene schema, not the supplemental prediction schema.
+            if (!IsAstrometryPrediction && !IsExposurePrediction && provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
                 !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
+                return;
+            }
+            if ((IsAstrometryPrediction && scene.Kind != ProjectedSceneKind.Predicted) ||
+                (!IsAstrometryPrediction && !IsExposurePrediction && virtualStage && scene.Kind != ProjectedSceneKind.VirtualRenderAuthoritative))
             {
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
                 return;
@@ -82,7 +97,30 @@ internal class ProjectedSceneCaptureProcessingStep(
             }
             context.RecordCanonicalInput("centered-catalog-prediction", scene.SchemaVersion, scene.SceneIdentitySha256);
         }
-        else if (provenance is
+        else if (independentPrediction && context.CenteredExposure is null)
+        {
+            var catalog = services?.GetService<ICelestialCatalog>();
+            var locations = services?.GetService<IDeploymentLocationStore>();
+            // Predict independently from capture-time rig/site and installed catalog. Never relabel virtual truth.
+            if (catalog is not ICelestialCatalogMetadataSource metadata || locations is null || descriptor.Location is not { } location)
+                throw new InvalidDataException("Independent prediction requires a verified catalog and capture location history.");
+            var site = locations.Resolve(location, descriptor.Timing.ExposureStartedUtc);
+            var projection = RigProjectionContextFactory.Create(context.Config.Rig);
+            if (projection.WidthPixels != descriptor.Layout.Width || projection.HeightPixels != descriptor.Layout.Height)
+                throw new InvalidDataException("Independent prediction requires the source output geometry.");
+            var start = descriptor.Timing.ExposureStartedUtc;
+            var end = ProcessingArtifact.ResolveObservationEndedUtc(start, descriptor.Timing.ExposureEndedUtc, descriptor.Controls.EffectiveExposure);
+            var predictionRequest = new VisibleSceneRequest(start + TimeSpan.FromTicks((end - start).Ticks / 2),
+                new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), projection,
+                new CatalogQuery(Options.MaximumMagnitude, Options.MaximumResults), metadata.Metadata,
+                horizonPolicy: HorizonPolicy.GeometricHorizon, projectionVersion: context.Config.Rig.Optics.CalibrationVersion,
+                algorithmVersion: Options.AstronomyAlgorithmVersion);
+            var predicted = await new VisibleSceneBuilder(catalog).BuildAsync(predictionRequest, cancellationToken).ConfigureAwait(false);
+            scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predicted,
+                ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height), source,
+                context.Config.Rig.Optics.CalibrationVersion, context.Config.Rig.Optics.CalibrationVersion);
+        }
+        else if (!independentPrediction && provenance is
         {
             ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
             ProjectedSceneStageKey: { Length: 64 } stageKey,
@@ -108,6 +146,8 @@ internal class ProjectedSceneCaptureProcessingStep(
                 (string.Equals(descriptor.Artifact.SourceId, "VirtualSky", StringComparison.Ordinal)
                     ? ProjectedSceneKind.VirtualRenderAuthoritative
                     : ProjectedSceneKind.Predicted);
+            if (virtualStage && kind != ProjectedSceneKind.VirtualRenderAuthoritative)
+                throw new InvalidDataException("VirtualSky capture evidence requires its authoritative staged scene.");
             scene = staged.Bind(source, kind);
             if (provenance.ProjectedSceneSchemaVersion is { } declaredSchema &&
                 !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
@@ -115,11 +155,13 @@ internal class ProjectedSceneCaptureProcessingStep(
             context.RecordCanonicalInput(StageInputName, StagedProjectedSceneDocument.CurrentSchemaVersion,
                 staged.StageIdentitySha256);
         }
-        else if (context.CenteredExposure is { } centered && centeredScenes is not null)
+        else if (context.CenteredExposure is { } centered)
         {
-            scene = await centeredScenes.ResolvePresentationAsync(centered, descriptor, Options,
-                provenance?.VirtualExposure?.CelestialMidpointUtc, cancellationToken)
-                .ConfigureAwait(false);
+            var sceneProvider = centeredScenes ?? services?.GetService<CenteredExposureSceneProvider>();
+            scene = sceneProvider is null ? null : await sceneProvider.ResolvePresentationAsync(
+                centered, descriptor, Options,
+                independentPrediction ? null : provenance?.VirtualExposure?.CelestialMidpointUtc,
+                cancellationToken).ConfigureAwait(false);
             if (scene is null)
             {
                 context.AddProcessingOutcome(ProcessingOutcome.Skipped("scene.frozen-input-unavailable"));
@@ -147,9 +189,9 @@ internal class ProjectedSceneCaptureProcessingStep(
             CaptureId = descriptor.Capture.CaptureId,
             DescriptorIdentitySha256 = descriptorSha256
         };
-        var request = ExposureCatalogPredictionProducts.Request(raw, scene) with { OutputVariant = OutputVariant };
+        var request = ExposureCatalogPredictionProducts.Request(raw, scene) with { RecipeName = RecipeName, OutputVariant = OutputVariant };
         var outcome = await context.ExecuteAsync(adapter, request, cancellationToken).ConfigureAwait(false);
-        if (context.IsReplayExecution && (IsExposurePrediction || provenance?.RequiresProjectedScene == true) &&
+        if (context.IsReplayExecution && (IsExposurePrediction || IsAstrometryPrediction || provenance?.RequiresProjectedScene == true) &&
             outcome.Products.Any(product => !context.FrozenAuxiliaryInputs.Any(input =>
                 input.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))))
         {
@@ -221,8 +263,7 @@ internal class ProjectedSceneCaptureProcessingStep(
 
     public async ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
     {
-        if (IsExposurePrediction) return;
-        if (context.SceneProvenance is not
+        if (IsAstrometryPrediction || IsExposurePrediction || context.SceneProvenance is not
             {
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                 ProjectedSceneStageKey: { Length: 64 } stageKey
@@ -253,13 +294,19 @@ internal sealed class ExposureCatalogPredictionCaptureProcessingStep(
     CameraAgentRecipeExecutionAdapter adapter, CenteredExposureSceneProvider centeredScenes)
     : ProjectedSceneCaptureProcessingStep(metadata, options, stagingStore, stagingReader, adapter, centeredScenes: centeredScenes)
 {
-    protected override bool IsExposurePrediction => true;
+    internal override bool IsExposurePrediction => true;
 }
 
 internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableObject
 {
+    internal const string DefaultAstronomyAlgorithmVersion = "visible-scene-iau1976-constellation-v2";
+
     [Required, MinLength(1), MaxLength(128)]
     public string OutputVariant { get; init; } = "projected-scene-v1";
+
+    // Opt-in behavior must not change the effective identity of existing profiles.
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool IndependentPrediction { get; init; }
 
     [Range(-30d, 30d)]
     public double MaximumMagnitude { get; init; } = 6.5;
@@ -268,7 +315,7 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
     public int MaximumResults { get; init; } = 2000;
 
     [Required, MinLength(1), MaxLength(128)]
-    public string AstronomyAlgorithmVersion { get; init; } = "visible-scene-iau1976-constellation-v2";
+    public string AstronomyAlgorithmVersion { get; init; } = DefaultAstronomyAlgorithmVersion;
 
     public IReadOnlyList<string> ConstellationIds { get; init; } = [];
     public IReadOnlyList<SolarSystemBody> SolarSystemBodies { get; init; } = [];
@@ -292,6 +339,8 @@ internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableO
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
+        if (IndependentPrediction && (ConstellationIds.Count > 0 || SolarSystemBodies.Count > 0 || DeepSkyEnabled || CuratedAnnotations is { Enabled: true }))
+            yield return new ValidationResult("Independent astrometry prediction supports catalog stars only.");
         _ = DeepSkySelection().ToSelection();
         if (DeepSkyEnabled && CuratedAnnotations is { Enabled: true })
             yield return new ValidationResult("Choose either the general deep-sky query or the legacy curated preset.");

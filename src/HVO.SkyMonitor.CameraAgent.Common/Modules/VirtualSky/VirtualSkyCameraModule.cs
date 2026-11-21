@@ -18,7 +18,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 /// <remarks>
 /// When the host provides <paramref name="sceneObjectBound"/>, each capture reads it once and keeps that many of the
 /// brightest stars whose support crosses the frame, plus constellation endpoint stars and solar-system bodies.
-/// Without one, the module's own <see cref="VirtualSkyCameraModuleOptions.MaximumResults"/> is the limit.
+/// With no host override, the profile's configured limit or the ordinary renderer default applies.
 /// </remarks>
 public sealed class VirtualSkyCameraModule(
     TimeProvider timeProvider,
@@ -92,11 +92,7 @@ public sealed class VirtualSkyCameraModule(
         {
             _preparedVirtualCalibration = null;
         }
-        if (config.ModuleOptions is { } options)
-        {
-            _options = JsonSerializer.Deserialize<VirtualSkyCameraModuleOptions>(options.GetRawText(), SerializerOptions)
-                ?? new VirtualSkyCameraModuleOptions();
-        }
+        _options = config.ModuleOptions?.Deserialize<VirtualSkyCameraModuleOptions>(SerializerOptions) ?? new();
 
         _options.Validate();
         ValidateRig(config.Rig, _options);
@@ -186,6 +182,8 @@ public sealed class VirtualSkyCameraModule(
         => _config?.CenteredExposure is null
             ? CaptureCoreAsync(request, null, cancellationToken)
             : throw new InvalidOperationException("Centered exposure requires a reserved acquisition attempt.");
+
+    public bool EnforcesBoundStartLimit => true;
 
     public Task<CaptureResult> CaptureBoundAsync(
         ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
@@ -286,9 +284,11 @@ public sealed class VirtualSkyCameraModule(
             throw new ArgumentOutOfRangeException(nameof(request), "Virtual exposure must be between zero and one day.");
         // The operational acquisition clock is independent of the requested/fixed scene clocks below.
         // Wait before rendering or staging so an interrupted exposure owns no incomplete frame or artifact.
+        cancellationToken.ThrowIfCancellationRequested();
         var exposureStartedUtc = preview is null
             ? timeProvider.GetUtcNow().ToUniversalTime()
             : request.RequestedStartUtc;
+        request.RequireOpenBoundStart(exposureStartedUtc);
         var exposureEndedUtc = preview is null ? exposureStartedUtc + setpoint.Exposure : exposureStartedUtc;
         if (preview is null)
         {
@@ -386,15 +386,14 @@ public sealed class VirtualSkyCameraModule(
         var queryCeiling = StellarExposureRenderPlan.BestCaseMagnitudeCeiling(initialRenderOptions,
             _options.MinimumStellarSignalToNoise);
         var selectedMagnitude = Math.Min(_options.MaximumMagnitude, queryCeiling ?? -30);
-        // Read once per capture, so a limit the operator saves applies to the next capture. The operator's value
-        // governs in either direction; only an explicitly exhaustive profile keeps its complete module query.
+        // Read once per capture so a limit the operator saves applies to the next exposure.
         var exhaustiveStars = _options.StellarCandidateSelection == VirtualSkyStellarCandidateSelection.Exhaustive;
         var stellarSelection = exhaustiveStars
             ? StellarCandidateSelection.Exhaustive
             : StellarCandidateSelection.BrightestSupported;
-        var stellarLimit = exhaustiveStars || sceneObjectBound is null
+        var stellarLimit = exhaustiveStars
             ? _options.MaximumResults
-            : sceneObjectBound.Current;
+            : sceneObjectBound?.VirtualSkyOverride ?? _options.BrightestCandidateCap;
         if (stellarLimit is < 1 or > 100000)
         {
             throw new InvalidOperationException("The scene object limit must be between 1 and 100000.");
@@ -404,7 +403,7 @@ public sealed class VirtualSkyCameraModule(
             new ObserverLocation(observatory.LatitudeDegrees, observatory.LongitudeDegrees,
                 observatory.ElevationMeters),
             renderProjection,
-            // The limit also bounds midpoint annotation stars and enters the scene identity through this query.
+            // The midpoint query follows the renderer admission depth. Publication applies its own object budget.
             new CatalogQuery(selectedMagnitude, stellarLimit),
             metadata,
             horizonPolicy: HorizonPolicy.GeometricHorizon,
@@ -593,7 +592,7 @@ public sealed class VirtualSkyCameraModule(
                 Statistics = affected.Statistics
             };
         }
-        if (preview is null)
+        if (preview is null && stageKey is null)
         {
             sceneStore.Put(sceneId, scene);
         }
@@ -867,8 +866,11 @@ public sealed class VirtualSkyCameraModule(
         if (stageKey is null || stagingStore is null) return result;
         try
         {
-            await stagingStore.StageAsync(stageKey, sceneId, scene, cancellationToken).ConfigureAwait(false);
+            var publishedScene = await stagingStore.StageVirtualSceneAsync(stageKey, sceneId, scene, cancellationToken)
+                .ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
+            extra["visibleObjectCount"] = publishedScene.Objects.Count.ToString(CultureInfo.InvariantCulture);
+            sceneStore.Put(sceneId, publishedScene);
             return result;
         }
         catch
@@ -1593,8 +1595,8 @@ public enum VirtualSkyIlluminationMode
 public enum VirtualSkyStellarCandidateSelection
 {
     /// <summary>
-    /// The brightest stars whose support crosses the frame during the exposure, up to the operator's scene object
-    /// limit when the host provides one and <see cref="VirtualSkyCameraModuleOptions.MaximumResults"/> otherwise,
+    /// The brightest stars whose support crosses the frame during the exposure, up to the configured host or profile
+    /// limit, defaulting to <see cref="VirtualSkyCameraModuleOptions.DefaultRendererCandidateCap"/>,
     /// plus constellation endpoint stars. Solar-system bodies are never counted.
     /// </summary>
     OperatorSceneObjectLimit,
@@ -1609,6 +1611,9 @@ public enum VirtualSkyStellarCandidateSelection
 /// <summary>Validated deterministic scene and simulated sensor parameters.</summary>
 public sealed class VirtualSkyCameraModuleOptions
 {
+    public const int DefaultRendererCandidateCap = 2000;
+    private readonly int? _maximumResults;
+
     /// <summary>Omitted default preserves existing serialized scene identities and scalar rendering.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public VirtualSkyIlluminationMode IlluminationMode { get; init; }
@@ -1621,7 +1626,13 @@ public sealed class VirtualSkyCameraModuleOptions
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DateTimeOffset? FixedSequenceStartUtc { get; init; }
     public double MaximumMagnitude { get; init; } = 6.5;
-    public int MaximumResults { get; init; } = 32768;
+    public int MaximumResults
+    {
+        get => _maximumResults ?? 32768;
+        init => _maximumResults = value;
+    }
+
+    internal int BrightestCandidateCap => _maximumResults ?? DefaultRendererCandidateCap;
     /// <summary>
     /// The omitted default honours the operator's scene object limit; <c>Exhaustive</c> opts a profile out. The scene
     /// identity excludes the mode and binds the effective limit through the catalog query instead.

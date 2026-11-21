@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -19,15 +20,23 @@ internal sealed record CenteredRunSnapshot(
     string? DeviceIdentity = null,
     CenteredScheduleBinding? Schedule = null)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AdmissionStateVersion { get; init; }
+
     internal byte[] Serialize() => JsonSerializer.SerializeToUtf8Bytes(this);
 }
 
 internal sealed record CenteredCalibrationBinding(string BundleId, string BundleIdentitySha256, long StateVersion);
 
 internal sealed record CenteredScheduleBinding(
-    string Revision, string LocalProfile, string Profile, string Interval, string? Override, CaptureCadenceMode Cadence);
+    string Revision, string LocalProfile, string Profile, string Interval, string? Override, CaptureCadenceMode Cadence)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public Scheduling.CaptureScheduleOpenSegment? OpenSegment { get; init; }
+}
 
-internal sealed record CenteredOwnerTransition(string AgentId, string? CameraId, Guid AttachmentId);
+internal sealed record CenteredOwnerTransition(
+    string AgentId, string? CameraId, Guid AttachmentId, bool RequiresLegacyQuiescence = false);
 
 internal sealed record CenteredPendingAttempt(
     ExposureAttemptKey Key, CenteredRunSnapshot Run, string RunHash, Guid? SourceCaptureId);
@@ -177,7 +186,14 @@ internal sealed partial class SqliteRawCaptureJournal
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal async Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+    internal Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+        => ExpireCenteredTargetAsync(attempt, "pending", "metering.source-evidence-unavailable", cancellationToken);
+
+    internal Task RefuseCenteredStartAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+        => ExpireCenteredTargetAsync(attempt, "dispatched", "schedule.start-window-closed", cancellationToken);
+
+    private async Task ExpireCenteredTargetAsync(
+        ExposureAttemptKey attempt, string status, string reason, CancellationToken cancellationToken)
     {
         using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -186,8 +202,8 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Transaction = transaction;
         command.CommandText = """
             UPDATE centered_exposure_attempts
-            SET status = 'expired', reason = 'metering.source-evidence-unavailable'
-            WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal AND status = 'pending'
+            SET status = 'expired', reason = $reason
+            WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal AND status = $status
               AND EXISTS (
                 SELECT 1 FROM centered_exposure_runs WHERE run_id = $run AND agent_id = $agent
                     AND camera_id = $camera AND closed_reason IS NULL);
@@ -195,11 +211,11 @@ internal sealed partial class SqliteRawCaptureJournal
         AddAttemptParameters(command, attempt);
         command.Parameters.AddWithValue("$agent", attempt.Camera.AgentId);
         command.Parameters.AddWithValue("$camera", attempt.Camera.CameraId);
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$reason", reason);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             throw new RawIngressConflictException("The centered attempt could not be retired before opening a fresh target.");
-        command.CommandText = """
-            UPDATE centered_exposure_runs SET closed_reason = 'metering.source-evidence-unavailable' WHERE run_id = $run;
-            """;
+        command.CommandText = "UPDATE centered_exposure_runs SET closed_reason = $reason WHERE run_id = $run;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -275,6 +291,66 @@ internal sealed partial class SqliteRawCaptureJournal
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    internal async Task<CaptureSetpoint> ReadCenteredRequestAsync(
+        ExposureAttemptKey attempt, Guid captureId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadCenteredRequestAsync(connection, null, attempt, captureId, allowUnbound: true, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    internal static async Task<CaptureSetpoint> ReadCenteredRequestAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, ExposureAttemptKey attempt, Guid captureId,
+        bool allowUnbound, CancellationToken cancellationToken)
+    {
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT attempt.requested_json
+            FROM centered_exposure_attempts attempt
+            JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+            WHERE attempt.attempt_id = $attempt AND attempt.run_id = $run AND attempt.ordinal = $ordinal
+              AND run.agent_id = $agent AND run.camera_id = $camera
+              AND ((attempt.status = 'observed' AND attempt.capture_id = $capture)
+                   OR ($allow_unbound = 1 AND attempt.status IN ('dispatched', 'expired') AND attempt.capture_id IS NULL
+                       AND attempt.reason IS NOT 'schedule.start-window-closed'));
+            """;
+        AddAttemptParameters(command, attempt);
+        command.Parameters.AddWithValue("$agent", attempt.Camera.AgentId);
+        command.Parameters.AddWithValue("$camera", attempt.Camera.CameraId);
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$allow_unbound", allowUnbound ? 1 : 0);
+        var json = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as byte[];
+        try
+        {
+            var request = json is null ? null : JsonSerializer.Deserialize<CaptureSetpoint>(json);
+            if (request is null)
+                throw new RawIngressConflictException("The centered raw capture has no retained dispatched settings request.");
+            if (!request.IsValid())
+                throw new RawIngressConflictException("The centered dispatched settings request is invalid.");
+            return request;
+        }
+        catch (JsonException exception)
+        {
+            throw new RawIngressConflictException("The centered dispatched settings request is malformed.", exception);
+        }
+    }
+
+    private static async Task VerifyCenteredRequestAsync(
+        SqliteConnection connection, SqliteTransaction transaction, RawIngressJournalEntry entry, CaptureSetpoint? supplied,
+        bool allowUnbound, CancellationToken cancellationToken)
+    {
+        if (entry.CenteredExposure is not { } binding)
+            return;
+        var request = await ReadCenteredRequestAsync(connection, transaction, binding.Source, entry.CaptureId,
+            allowUnbound, cancellationToken).ConfigureAwait(false);
+        var descriptor = ParseCenteredManifest(entry.ManifestJson).Descriptor;
+        var recorded = descriptor.CenteredAcquisition?.Module?.RequestedSetpoint;
+        if (request != supplied || request.Exposure != descriptor.Controls.RequestedExposure ||
+            request.Gain != descriptor.Controls.RequestedGain || recorded is not null && recorded != request)
+            throw new RawIngressConflictException("The centered raw capture differs from its dispatched settings request.");
+    }
+
     private static async Task BindCenteredAdmissionAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -291,22 +367,12 @@ internal sealed partial class SqliteRawCaptureJournal
 
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
-            SELECT requested_json FROM centered_exposure_attempts
-            WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal
-                AND status IN ('dispatched', 'expired') AND capture_id IS NULL;
-            """;
         AddAttemptParameters(command, binding.Source);
-        var requestedJson = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as byte[];
-        var request = requestedJson is null ? null : JsonSerializer.Deserialize<CaptureSetpoint>(requestedJson);
-        if (request is null || request.Exposure != manifest.Descriptor.Controls.RequestedExposure ||
-            request.Gain != manifest.Descriptor.Controls.RequestedGain)
-            throw new RawIngressConflictException("The actual capture is not bound to the dispatched settings request.");
-
         command.CommandText = """
             UPDATE centered_exposure_attempts SET status = 'observed', capture_id = $capture
             WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal
-                AND status IN ('dispatched', 'expired') AND requested_json IS NOT NULL AND capture_id IS NULL;
+                AND status IN ('dispatched', 'expired') AND requested_json IS NOT NULL AND capture_id IS NULL
+                AND reason IS NOT 'schedule.start-window-closed';
             """;
         command.Parameters.AddWithValue("$capture", entry.CaptureId.ToString("N"));
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)

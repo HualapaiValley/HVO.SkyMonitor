@@ -194,8 +194,7 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<IConstellationTopology>(),
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<IPlanetEphemeris, AstronomyEnginePlanetEphemeris>();
-        // One live operator limit governs both the sky map and VirtualSky capture, which resolves it optionally.
-        services.AddSingleton<ISceneObjectBound>(new ConfigurationSceneObjectBound(SkyMapObjectBound(configuration)));
+        services.AddSingleton(CreateSceneObjectBound(configuration));
         services.AddSingleton<ICameraAgentSkyMapProjection>(provider =>
         {
             var sceneObjectBound = provider.GetRequiredService<ISceneObjectBound>();
@@ -315,7 +314,8 @@ public static class CameraAgentServiceCollectionExtensions
             () => provider.GetRequiredService<ICameraAgentConfigurationAccessor>().IsConfigured
                 ? provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>().Snapshot?.Configuration
                 : null,
-            provider.GetServices<ICenteredExposureGraphExtension>()));
+            provider.GetServices<ICenteredExposureGraphExtension>(),
+            () => provider.GetService<IAstrometricCatalogSource>()));
         services.AddSingleton<IProcessingGraphOperations>(provider =>
             provider.GetRequiredService<ProcessingGraphOperationsCoordinator>());
         services.AddSingleton<IProcessingGraphDeliveryInbox>(provider =>
@@ -467,7 +467,10 @@ public static class CameraAgentServiceCollectionExtensions
             "ProjectedScene", typeof(ProjectedSceneCaptureProcessingStep),
             typeof(ProjectedSceneCaptureProcessingStepOptions), 15, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(
-            "MeasuredStellarAssociations", typeof(MeasuredStellarAssociationCaptureProcessingStep),
+            AstrometryPredictionCaptureProcessingStep.Alias, typeof(AstrometryPredictionCaptureProcessingStep),
+            typeof(AstrometryPredictionCaptureProcessingStepOptions), 15, AutoInclude: false));
+        services.AddSingleton(new CaptureProcessingStepRegistration(
+            MeasuredStellarAssociationCaptureProcessingStep.Alias, typeof(MeasuredStellarAssociationCaptureProcessingStep),
             typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
         services.AddSingleton<CaptureSatelliteWorkStore>();
         services.AddSingleton<CaptureAstrometryExecutionGate>();
@@ -558,17 +561,20 @@ public static class CameraAgentServiceCollectionExtensions
         return services;
     }
 
+    internal static ISceneObjectBound CreateSceneObjectBound(IConfiguration configuration)
+        => new ConfigurationSceneObjectBound(
+            () => ReadObjectBound(configuration, SkyMapOptions.MaximumObjectsKey, CameraAgentSkyMapProjection.MaximumConfigurableObjects),
+            () => ReadObjectBound(configuration, VirtualSkyRendererOptions.CandidateCapKey, VirtualSkyRendererOptions.MaximumCandidateCap));
+
     /// <summary>
-    /// The sky map object bound as the host configuration holds it now, so an edit to the operator settings file
-    /// applies to the next projection without a restart. A value a later hand edit left unusable projects with the
-    /// default until it is corrected; startup validation already rejected one present when the host started.
+    /// Reads a live override. A malformed value introduced after startup falls back until it is corrected.
     /// </summary>
-    internal static Func<int> SkyMapObjectBound(IConfiguration configuration)
-        => () => int.TryParse(
-                configuration[SkyMapOptions.MaximumObjectsKey],
+    private static int? ReadObjectBound(IConfiguration configuration, string key, int maximum)
+        => int.TryParse(
+                configuration[key],
                 NumberStyles.Integer,
                 CultureInfo.InvariantCulture,
-                out var value) && value is >= 1 and <= CameraAgentSkyMapProjection.MaximumConfigurableObjects
+                out var value) && value >= 1 && value <= maximum
             ? value
-            : CameraAgentSkyMapProjection.DefaultMaximumObjects;
+            : null;
 }

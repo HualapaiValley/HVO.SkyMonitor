@@ -14,11 +14,20 @@ public sealed class EnvironmentalObservationPublisher(
     EnvironmentalObservationDeliveryTelemetry telemetry,
     IOptions<CameraAgentHostOptions> options,
     TimeProvider timeProvider,
-    EnvironmentalAcquisitionTelemetry? acquisitionTelemetry = null) : IEnvironmentalObservationPublisher
+    EnvironmentalAcquisitionTelemetry? acquisitionTelemetry = null)
+    : IEnvironmentalObservationPublisher, IEnvironmentalHeldPollPublisher
 {
     public async ValueTask<EnvironmentalObservationPublishResult> PublishAsync(
         EnvironmentalObservationFactV1 fact,
         CancellationToken cancellationToken = default)
+        => (await PublishCoreAsync(fact, null, cancellationToken).ConfigureAwait(false)).Published;
+
+    async ValueTask<EnvironmentalAcquisitionReceipt> IEnvironmentalHeldPollPublisher.PublishHeldPollAsync(
+        EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll, CancellationToken cancellationToken)
+        => (await PublishCoreAsync(fact, poll, cancellationToken).ConfigureAwait(false)).HeldReceipt!;
+
+    private async ValueTask<(EnvironmentalObservationPublishResult Published, EnvironmentalAcquisitionReceipt? HeldReceipt)> PublishCoreAsync(
+        EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll? poll, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(fact);
         if (outbox is not ILocalEnvironmentalObservationStore localStore)
@@ -31,10 +40,11 @@ public sealed class EnvironmentalObservationPublisher(
         var commitActivity = EnvironmentalAcquisitionTelemetry.ActivitySource.StartActivity("environment.local.commit");
         try
         {
-            committed = await localStore.CommitLocalAsync(
-                options.Value.RawIngressRoot,
-                fact,
-                cancellationToken).ConfigureAwait(false);
+            var root = options.Value.RawIngressRoot;
+            committed = poll is { } held
+                ? await ((SqliteEnvironmentalObservationOutbox)localStore)
+                    .CommitHeldPollAsync(root, fact, held, cancellationToken).ConfigureAwait(false)
+                : await localStore.CommitLocalAsync(root, fact, cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -55,7 +65,7 @@ public sealed class EnvironmentalObservationPublisher(
         var publishDisposition = committed.Disposition == LocalEnvironmentalObservationCommitDisposition.Committed
             ? EnvironmentalObservationPublishDisposition.Enqueued
             : EnvironmentalObservationPublishDisposition.Duplicate;
-        return new EnvironmentalObservationPublishResult(publishDisposition, projected.DeliveryObservation);
+        return (new EnvironmentalObservationPublishResult(publishDisposition, projected.DeliveryObservation), committed.HeldPollReceipt);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",

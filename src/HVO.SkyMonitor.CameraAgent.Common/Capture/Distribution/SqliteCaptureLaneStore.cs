@@ -21,7 +21,8 @@ internal sealed class SqliteCaptureLaneStore(
     ICaptureLaneFaultInjector faultInjector,
     Action<TimeSpan>? lockWaitRecorder = null,
     Action? evidenceInvalidated = null,
-    CenteredExposureProductChanges? centeredProductChanges = null) : ICaptureLaneStore
+    CenteredExposureProductChanges? centeredProductChanges = null,
+    Action<Guid>? liveAstrometryPublished = null) : ICaptureLaneStore
 {
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
@@ -201,6 +202,35 @@ internal sealed class SqliteCaptureLaneStore(
                 var envelope = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? CaptureLaneEnvelopeSerializer.Deserialize(candidate.ContextJson, candidate.ContextSha256)
                     : CreateFallbackEnvelope(fallbackConfiguration, manifest.Descriptor);
+                if (manifest.CenteredExposure is { } centered &&
+                    manifest.Descriptor.CenteredAcquisition?.Module?.RequestedSetpoint is null)
+                {
+                    CaptureSetpoint request;
+                    try
+                    {
+                        request = await SqliteRawCaptureJournal.ReadCenteredRequestAsync(connection, transaction,
+                            centered.Source, manifest.Descriptor.Capture.CaptureId, allowUnbound: false, cancellationToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (RawIngressConflictException exception)
+                    {
+                        throw new InvalidDataException("The predecessor lane request has no valid retained dispatch.", exception);
+                    }
+                    var submission = envelope.Submission;
+                    var controls = manifest.Descriptor.Controls;
+                    if (request.Exposure != controls.RequestedExposure || request.Gain != controls.RequestedGain ||
+                        submission.Request.RequestedSetpoint != request &&
+                        submission.Request.RequestedSetpoint != new CaptureSetpoint(
+                            controls.RequestedExposure, controls.RequestedGain, null, null))
+                        throw new InvalidDataException("The predecessor lane request differs from its retained dispatch.");
+                    envelope = envelope with
+                    {
+                        Submission = submission with
+                        {
+                            Request = submission.Request with { RequestedSetpoint = request }
+                        }
+                    };
+                }
                 var capturedRig = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? JsonSerializer.Deserialize<CaptureLaneEnvelope>(candidate.ContextJson,
                         EnvelopeJsonOptions)?.Configuration.Rig
@@ -456,6 +486,8 @@ internal sealed class SqliteCaptureLaneStore(
             }
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+            if (lease.Context.Execution is { AllowAutomaticPublication: true })
+                liveAstrometryPublished?.Invoke(lease.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterCompletionCommit);
         }
         finally

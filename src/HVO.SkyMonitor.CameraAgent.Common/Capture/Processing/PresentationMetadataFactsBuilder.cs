@@ -125,7 +125,8 @@ internal sealed class PresentationMetadataFactsBuilder(
 
         var environmentLines = environment.Select(static item => item.DisplayLine);
         var environmentHeader = sourceGroups.Count > 1 ? "ENVIRONMENT MIXED SOURCES" : "ENVIRONMENT";
-        var schedule = descriptor.CycleEvidence?.ScheduleAdmission;
+        var schedule = descriptor.RetainedScheduleAdmission;
+        var cadenceSeconds = (descriptor.RetainedEffectiveInterval ?? context.Submission.EffectiveInterval).TotalSeconds;
         var capture = JsonSerializer.SerializeToElement(new
         {
             descriptor.Capture.AgentId,
@@ -136,8 +137,8 @@ internal sealed class PresentationMetadataFactsBuilder(
             descriptor.Controls.EffectiveGain,
             descriptor.Controls.EffectiveOffset,
             descriptor.Controls.TemperatureSetpointC,
-            CadenceMode = descriptor.CycleEvidence?.CadenceMode,
-            CadenceSeconds = context.Submission.EffectiveInterval.TotalSeconds
+            CadenceMode = descriptor.RetainedCadenceMode,
+            CadenceSeconds = cadenceSeconds
         });
         var catalog = JsonSerializer.SerializeToElement(scene.Catalog);
         var calibration = JsonSerializer.SerializeToElement(descriptor.Profiles.Calibration);
@@ -175,7 +176,7 @@ internal sealed class PresentationMetadataFactsBuilder(
             // Only captured evidence is projected. No current location, time-zone database or processing clock
             // supplies optional facts absent from the retained source. Source time is read only from raw evidence.
             var retained = new FrameFactsRetainedInputV1(descriptor,
-                new(descriptorIdentity, context.Artifacts?.Raw.Frame.TimestampUtc, context.Submission.EffectiveInterval.TotalSeconds),
+                new(descriptorIdentity, context.Artifacts?.Raw.Frame.TimestampUtc, cadenceSeconds),
                 stackProduct is null ? null : new(descriptorIdentity, stackProduct.OutputIdentitySha256,
                     stackProduct.SourceArtifactIds, stackProduct.TotalIntegration),
                 Astronomy: scene, Environment: retainedEnvironment);

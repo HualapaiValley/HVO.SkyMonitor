@@ -1,3 +1,4 @@
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -403,6 +404,13 @@ public sealed class CaptureProcessingContext
                 schemaVersion, identitySha256, false)
         ]);
 
+    internal void RecordArchivePublication(string relativePath, string identitySha256)
+        => AppendInputEvidence([
+            new DurableProcessingNodeInput(
+                _currentInputs.Count, "CanonicalContext", "centered-archive", null, null, relativePath, null,
+                FileSystemFrameStorageService.ArchiveEvidenceVersion, identitySha256, false)
+        ]);
+
     internal void RecordCenteredCalibrationMasters(
         ReferenceCalibrationProfileV1 profile, IReadOnlyDictionary<string, ProcessingArtifact> references)
     {
@@ -531,6 +539,10 @@ internal sealed class CaptureDescriptorProcessingContext(CaptureProcessingContex
 
     internal CenteredExposureBindingV1? CenteredExposure => context.RawCapture?.Manifest.CenteredExposure;
 
+    internal ProcessingExecutionContext? ProcessingExecution => context.ProcessingExecution;
+
+    internal string? CurrentNodeId => context.CurrentNodeId;
+
     /// <summary>Gets whether the current node runs inside an archived replay execution.</summary>
     public bool IsReplayExecution => context.IsReplayExecution;
 
@@ -570,5 +582,7 @@ internal interface IDescriptorOnlyCaptureProcessingStep : ICaptureProcessingStep
 /// <summary>Runs only after a processing node and all of its outputs have committed durably.</summary>
 internal interface IDurableCaptureProcessingPostCommit
 {
+    bool RequiresSuccessfulCommitCallback => false;
+
     ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken);
 }

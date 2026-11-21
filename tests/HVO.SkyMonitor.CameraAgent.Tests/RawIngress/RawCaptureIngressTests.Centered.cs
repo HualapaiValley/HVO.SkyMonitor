@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -20,14 +21,17 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Fleet.Contracts;
 using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Upload;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using Microsoft.Extensions.Options;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
@@ -227,10 +231,11 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    [DataRow("profile-replaced")]
-    [DataRow("device-changed")]
-    [DataRow("attachment-incomplete")]
-    public async Task CenteredColdLegacyAndReplacementRetirePendingTarget(string retirementReason)
+    [DataRow("profile-replaced", false)]
+    [DataRow("device-changed", false)]
+    [DataRow("device-changed", true)]
+    [DataRow("attachment-incomplete", false)]
+    public async Task CenteredColdLegacyAndReplacementRetirePendingTarget(string retirementReason, bool unverifiedAttachment)
     {
         var root = CreateRoot();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
@@ -269,7 +274,8 @@ public sealed partial class RawCaptureIngressTests
                 unrelated = raw.Manifest.CenteredExposure!.Target;
                 var module = new CenteredRunnerModule((_, request, _) =>
                     Task.FromResult(CenteredTraceFrame(103, request)), deviceIdentity: "test-device-1");
-                await CaptureOnceAsync(first, config, module, start, token).ConfigureAwait(false);
+                await CaptureOnceAsync(first, config, unverifiedAttachment ? new UnverifiedCenteredModule(module) : module,
+                    start, token).ConfigureAwait(false);
                 var camera = new CameraKey(config.AgentId!, "selected");
                 var head = await first.Ingress.ReadCurrentAsync(camera, token).ConfigureAwait(false);
                 archived = head.AcquisitionHead!.Exposure;
@@ -302,7 +308,9 @@ public sealed partial class RawCaptureIngressTests
                 actual = (attempt, request.RequestedSetpoint);
                 return Task.FromResult(CenteredTraceFrame(105, request));
             }, deviceIdentity: retirementReason == "device-changed" ? "test-device-2" : "test-device-1");
-            await CaptureOnceAsync(restarted, config, replacement, start.AddSeconds(2), token).ConfigureAwait(false);
+            Assert.AreEqual("centered-trace", replacement.Id);
+            await CaptureOnceAsync(restarted, config, unverifiedAttachment ? new UnverifiedCenteredModule(replacement) : replacement,
+                start.AddSeconds(2), token).ConfigureAwait(false);
             Assert.IsNotNull(actual.Attempt);
             Assert.AreNotEqual(target.RunId, actual.Attempt.RunId);
             Assert.AreNotEqual(target.AttemptId, actual.Attempt.AttemptId);
@@ -570,10 +578,28 @@ public sealed partial class RawCaptureIngressTests
         public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
             => captureLegacy?.Invoke(request, cancellationToken) ??
                 throw new AssertFailedException("Centered acquisition must use the bound module entry point.");
+        public bool EnforcesBoundStartLimit => true;
+
         public Task<CaptureResult> CaptureBoundAsync(
             ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
             => capture(attempt, request, cancellationToken);
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class UnverifiedCenteredModule(CenteredRunnerModule module) : ICameraModule, ICameraBoundExposureCapture
+    {
+        public string Id => module.Id;
+        public string DisplayName => module.DisplayName;
+        public string ModuleType => module.ModuleType;
+        public CameraModuleCapabilities Capabilities => module.Capabilities;
+        public Task InitializeAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
+            => module.InitializeAsync(configuration, cancellationToken);
+        public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
+            => module.CaptureAsync(request, cancellationToken);
+        public Task<CaptureResult> CaptureBoundAsync(
+            ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
+            => module.CaptureBoundAsync(attempt, request, cancellationToken);
+        public ValueTask DisposeAsync() => module.DisposeAsync();
     }
 
     [TestMethod]
@@ -723,135 +749,1001 @@ public sealed partial class RawCaptureIngressTests
     }
 
     [TestMethod]
-    public async Task CenteredRunningDistributorRecoversPinnedExecutionBeforeClaim()
+    [DataRow(null, "linear")]
+    [DataRow(null, "calibration")]
+    [DataRow(null, "CaLiBrAtIoN")]
+    [DataRow("calibration", "Calibration")]
+    [DataRow("CaLiBrAtIoN", "Calibration")]
+    [DataRow("CALIBRATION", "Calibration")]
+    public async Task CenteredRunningDistributorRecoversPinnedExecutionBeforeClaim(string? predecessorAlias, string calibrationNode)
     {
         var root = CreateRoot();
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var detached = CreateRoot();
+        var stale = CreateRoot();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        var token = deadline.Token;
+        try
+        {
+            ExposureKey key;
+            ExposureProductLookup original;
+            using (var setup = new CenteredFixture(root, new OneShotFaultInjector(RawIngressFaultPoint.SidecarDirectorySynced)))
+            {
+                var configured = CenteredContinuousConfiguration(Timestamp(1));
+                var window = configured.Schedule!.WeeklyWindows.Single() with
+                {
+                    Start = new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(0, 0))
+                };
+                configured = configured with { Schedule = configured.Schedule with { WeeklyWindows = [window] } };
+                var named = WithCenteredProbe(configured);
+                named = named with
+                {
+                    Pipeline = named.Pipeline with
+                    {
+                        Steps = [new(predecessorAlias ?? "Calibration", predecessorAlias is null ? calibrationNode : null,
+                                DependsOn: ["$raw"], Required: false),
+                            named.Pipeline.Steps[1] with { DependsOn = ["$raw", calibrationNode] }]
+                    }
+                };
+                using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                using var fault = new CenteredPublicationBarrier(calibrationNode, token);
+                var day = DateOnly.FromDateTime(Timestamp(1).UtcDateTime);
+                using var resumeList = new ManualResetEventSlim();
+                var discovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                using var pausedStorage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance)
+                {
+                    BrowseJournalDiscovered = () =>
+                    {
+                        discovery.TrySetResult();
+                        resumeList.Wait(token);
+                    }
+                };
+                var pausedList = Task.Run(() => pausedStorage.List(root, day, FrameArtifactRole.Calibrated, 20), token);
+                await discovery.Task.WaitAsync(token).ConfigureAwait(false);
+                using var staleSetup = new CenteredFixture(stale);
+                await staleSetup.Ingress.InitializeAsync(token).ConfigureAwait(false);
+                await staleSetup.Store.InitializeAsync(token).ConfigureAwait(false);
+                var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, storage, setup.Telemetry,
+                    NullLogger<CaptureProcessingPersistence>.Instance, fault);
+                using var standard = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
+                    NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options, fault,
+                    graphOperations: setup.GraphOperations);
+                var accessor = new CameraAgentConfigurationAccessor();
+                accessor.SetConfiguration(configured);
+                var laneState = new CaptureLaneState(TimeProvider.System, setup.Options);
+                using var laneTelemetry = new CaptureLaneTelemetry(laneState);
+                using var distributor = new CaptureDistributionService(accessor, setup.Ingress, setup.Ingress, setup.Policy,
+                    [standard], standard, setup.Options, TimeProvider.System, new NullCaptureLaneFaultInjector(),
+                    laneTelemetry, laneState, NullLogger<CaptureDistributionService>.Instance, setup.GraphOperations);
+                await distributor.StartAsync(token).ConfigureAwait(false);
+                try
+                {
+                    var initial = await setup.GraphOperations.GetRegistryAsync(token).ConfigureAwait(false);
+                    var created = await setup.GraphOperations.CreateRevisionAsync(configured, "named", "1", named.Pipeline,
+                        "create-named", "fixture", null, token).ConfigureAwait(false);
+                    await setup.GraphOperations.ValidateRevisionAsync(created.RevisionId, "validate-named", "fixture", null, token)
+                        .ConfigureAwait(false);
+                    var activated = await setup.GraphOperations.ActivateRevisionAsync(created.RevisionId, initial.StateVersion,
+                        "activate-named", "fixture", null, token).ConfigureAwait(false);
+                    var reservation = await setup.Ingress.ReserveCenteredAsync(configured, CenteredTestResources, null, token)
+                        .ConfigureAwait(false);
+                    Assert.AreEqual(created.RevisionId, reservation.Revision.State.RevisionId);
+                    if (predecessorAlias is not null)
+                    {
+                        // Reproduce the predecessor's exact frozen alias and hash before the raw is published.
+                        var frozen = reservation.Pending.Run with { LinearNodeId = predecessorAlias };
+                        var frozenBytes = frozen.Serialize();
+                        var frozenHash = PayloadChecksum.ComputeSha256(frozenBytes);
+                        using var predecessor = await OpenJournalAsync(root).ConfigureAwait(false);
+                        using var change = predecessor.CreateCommand();
+                        change.CommandText = """
+                            UPDATE centered_exposure_runs
+                            SET linear_node_id = $alias, snapshot_json = $snapshot, snapshot_sha256 = $hash
+                            WHERE run_id = $run;
+                            """;
+                        change.Parameters.AddWithValue("$alias", predecessorAlias);
+                        change.Parameters.AddWithValue("$snapshot", frozenBytes);
+                        change.Parameters.AddWithValue("$hash", frozenHash);
+                        change.Parameters.AddWithValue("$run", frozen.RunId.ToString("N"));
+                        Assert.AreEqual(1, await change.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+                        reservation = reservation with
+                        {
+                            Pending = reservation.Pending with { Run = frozen, RunHash = frozenHash }
+                        };
+                    }
+
+                    var submit = CenteredSubmission(Timestamp(1));
+                    var captureClock = new ExposureTestTimeProvider(Timestamp(1));
+
+                    using var admissionTelemetry = new CaptureControlTelemetry();
+                    using var admission = new CaptureAdmissionCoordinator(setup.Ingress, setup.Options, captureClock, admissionTelemetry);
+                    using var scheduleStore = new SqliteCaptureScheduleStore(setup.Ingress, setup.Options, captureClock);
+                    var scheduleLaneState = new CaptureLaneState(captureClock, setup.Options);
+                    scheduleLaneState.Update([]);
+                    using var scheduleRuntime = new CaptureScheduleRuntimeCoordinator(scheduleStore, admission, setup.RawState,
+                        scheduleLaneState, setup.Factory, captureClock);
+                    await admission.InitializeAsync(token).ConfigureAwait(false);
+                    await scheduleRuntime.InitializeAsync(configured, token).ConfigureAwait(false);
+                    var scheduleStatus = await scheduleRuntime.GetOperatorStateAsync(token).ConfigureAwait(false);
+                    Assert.IsTrue(scheduleStatus.Decision.Admitted, scheduleStatus.Decision.Reason.ToString());
+                    var provisional = await scheduleRuntime.WaitForGrantAsync(token).ConfigureAwait(false);
+                    var grant = await scheduleRuntime.ConfirmGrantAsync(provisional, "sidecar-schedule", token).ConfigureAwait(false);
+                    Assert.IsNotNull(grant);
+                    submit = submit with
+                    {
+                        Request = submit.Request with
+                        {
+                            RequestedSetpoint = CenteredTestSettings with { TargetFps = 15 },
+                            TargetInterval = TimeSpan.Zero
+                        },
+                        EffectiveInterval = TimeSpan.Zero,
+                        CenteredAcquisition = new(CaptureCadenceMode.Continuous, TimeSpan.Zero, submit.Request.RequestedStartUtc,
+                            submit.LoopDuration, null, false, null, grant.Evidence),
+                        Result = submit.Result with
+                        {
+                            ProcessingLatency = TimeSpan.FromMilliseconds(4),
+                            NextSetpoint = CenteredTestSettings with { TargetFps = 1.25 },
+                            RequiresImmediateUpload = true
+                        }
+                    };
+                    await setup.Ingress.DispatchCenteredAsync(reservation.Pending.Key, submit.Request.RequestedSetpoint!,
+                        null, "fixture", token).ConfigureAwait(false);
+                    await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                        await setup.Ingress.AcceptCenteredAsync(configured, submit, reservation, token).ConfigureAwait(false))
+                        .ConfigureAwait(false);
+                    var ids = RawCaptureDescriptorFactory.CreateStableIds(configured, submit);
+                    var started = RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submit, submit.Result.Frame!);
+                    var rawSidecar = RawIngressFileStore.GetPaths(root, started, ids.ArtifactId).SidecarAbsolutePath;
+                    var retainedRawBytes = await File.ReadAllBytesAsync(rawSidecar, token).ConfigureAwait(false);
+                    if (predecessorAlias is not null)
+                        retainedRawBytes = await WritePredecessorSidecarAsync(rawSidecar, retainedRawBytes, token)
+                            .ConfigureAwait(false);
+                    await setup.GraphOperations.RollbackRevisionAsync(initial.ActiveRevisionId!, activated.StateVersion,
+                        "rollback-named", "fixture", null, token).ConfigureAwait(false);
+
+                    await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
+                    distributor.NotifyCommittedCapture();
+                    await fault.PixelStaged.Task.WaitAsync(token).ConfigureAwait(false);
+                    var attempt = reservation.Pending.Key;
+                    key = new ExposureKey(attempt.Camera, attempt.RunId, ids.CaptureId);
+                    var committed = await setup.Ingress.ReadCenteredRawAsync(key, token).ConfigureAwait(false);
+                    Assert.IsNotNull(committed);
+                    Assert.AreEqual(created.RevisionId, committed.Manifest.CaptureGraphRevisionId);
+                    var effective = configured with { Pipeline = reservation.Revision.Pipeline };
+                    Assert.AreEqual(RawCaptureDescriptorFactory.CreateProcessingProfile(effective), committed.Manifest.Descriptor.Profiles.Processing);
+                    Assert.AreEqual(configured.DeploymentLocation!.ToProvenance(), committed.Manifest.Descriptor.Location);
+                    using (var db = await OpenJournalAsync(root).ConfigureAwait(false))
+                    using (var command = db.CreateCommand())
+                    {
+                        command.CommandText = "SELECT context_json, context_sha256 FROM capture_lane_contexts;";
+                        using var row = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+                        Assert.IsTrue(await row.ReadAsync(token).ConfigureAwait(false));
+                        var envelope = CaptureLaneEnvelopeSerializer.Deserialize((byte[])row.GetValue(0), row.GetString(1));
+                        Assert.AreEqual(submit.Result.ProcessingLatency, envelope.Submission.Result.ProcessingLatency);
+                        Assert.AreEqual(submit.Result.NextSetpoint, envelope.Submission.Result.NextSetpoint);
+                        Assert.AreEqual(submit.Request.RequestedSetpoint, envelope.Submission.Request.RequestedSetpoint);
+                        Assert.AreEqual(TimeSpan.Zero, envelope.Submission.Request.TargetInterval);
+                        Assert.AreEqual(submit.Result.RequiresImmediateUpload, envelope.Submission.Result.RequiresImmediateUpload);
+                        Assert.AreEqual(submit.EffectiveInterval, envelope.Submission.EffectiveInterval);
+                        Assert.AreEqual(submit.LoopDuration, envelope.Submission.LoopDuration);
+                    }
+                    var replayedAdmission = await setup.Ingress.AcceptCenteredAsync(configured, submit, reservation, token).ConfigureAwait(false);
+                    Assert.AreEqual(RawIngressOutcome.Existing, replayedAdmission.Outcome);
+                    CollectionAssert.AreEqual(retainedRawBytes, await File.ReadAllBytesAsync(rawSidecar, token).ConfigureAwait(false));
+                    if (predecessorAlias is not null)
+                    {
+                        Assert.AreEqual(predecessorAlias, committed.Run.LinearNodeId);
+                        Assert.IsNull(committed.Manifest.Descriptor.CenteredAcquisition!.Module!.RequestedSetpoint);
+                        Assert.AreEqual(submit.Result.NextSetpoint, committed.Manifest.Descriptor.CenteredAcquisition.Module.ReportedSetpoint);
+                        var conflict = submit with
+                        {
+                            Request = submit.Request with { RequestedSetpoint = submit.Request.RequestedSetpoint! with { TargetFps = 14 } }
+                        };
+                        await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
+                            await setup.Ingress.AcceptCenteredAsync(configured, conflict, reservation, token).ConfigureAwait(false))
+                            .ConfigureAwait(false);
+                        CollectionAssert.AreEqual(retainedRawBytes, await File.ReadAllBytesAsync(rawSidecar, token).ConfigureAwait(false));
+                    }
+
+                    var gallery = new CameraAgentArtifactService(setup.Options, setup.Store, new CameraAgentPreviewEncoder());
+                    var paths = Directory.GetFiles(root, "*.bin", SearchOption.AllDirectories)
+                        .Where(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Calibrated").ToArray();
+                    var path = paths.Single();
+                    var artifact = Guid.ParseExact(Path.GetFileNameWithoutExtension(path)[^32..], "N");
+                    resumeList.Set();
+                    Assert.HasCount(0, await pausedList.WaitAsync(token).ConfigureAwait(false));
+                    foreach (var sideRoot in new[] { detached, stale })
+                    {
+                        var sourceIndex = Directory.GetFiles(Path.Combine(root, "index"), "*.jsonl").Single();
+                        Directory.CreateDirectory(Path.Combine(sideRoot, "index"));
+                        File.Copy(sourceIndex, Path.Combine(sideRoot, "index", Path.GetFileName(sourceIndex)));
+                        var stagedCopy = Path.Combine(sideRoot, Path.GetRelativePath(root, path));
+                        Directory.CreateDirectory(Path.GetDirectoryName(stagedCopy)!);
+                        File.Copy(path, stagedCopy);
+                        File.Copy(Path.ChangeExtension(path, ".json"), Path.ChangeExtension(stagedCopy, ".json"));
+                        Assert.HasCount(0, storage.List(sideRoot, day, FrameArtifactRole.Calibrated, 20));
+                        if (predecessorAlias == "calibration" && sideRoot == stale)
+                        {
+                            var copiedSidecar = Path.ChangeExtension(stagedCopy, ".json");
+                            var old = CaptureContractJson.ParseManifest(
+                                await File.ReadAllBytesAsync(copiedSidecar, token).ConfigureAwait(false)).Document!.Manifest;
+                            var unmarked = CaptureContractJson.Serialize(old with
+                            {
+                                Descriptor = old.Descriptor with { CenteredAcquisition = null }
+                            });
+                            await File.WriteAllBytesAsync(copiedSidecar, unmarked, token).ConfigureAwait(false);
+                            Assert.HasCount(0, storage.List(stale, day, FrameArtifactRole.Calibrated, 20));
+                            Assert.IsNotNull(old.ProducerStepId, "The ambiguous predecessor control has a v2 producer.");
+                            var standaloneSidecar = Path.Combine(detached, Path.GetRelativePath(stale, copiedSidecar));
+                            await File.WriteAllBytesAsync(standaloneSidecar, unmarked, token).ConfigureAwait(false);
+                            Assert.HasCount(1, storage.List(detached, day, FrameArtifactRole.Calibrated, 20));
+                            var standaloneRaw = Path.Combine(detached, Path.GetRelativePath(root, rawSidecar));
+                            Directory.CreateDirectory(Path.GetDirectoryName(standaloneRaw)!);
+                            await File.WriteAllBytesAsync(standaloneRaw, retainedRawBytes, token).ConfigureAwait(false);
+                            Assert.HasCount(0, storage.List(detached, day, FrameArtifactRole.Calibrated, 20),
+                                "An exact centered source sidecar requires positive derivative settlement even without a journal.");
+                        }
+                    }
+                    var reader = new CenteredExposureProductReader(setup.Ingress, setup.Store);
+                    Assert.HasCount(0, storage.List(root, day, FrameArtifactRole.Calibrated, 20));
+                    var opening = gallery.OpenContentAsync(artifact, token).AsTask();
+                    Assert.IsFalse(opening.IsCompleted, "The SQL artifact API must wait for the publication lifecycle lock.");
+                    Assert.AreEqual(LinearExposureDisposition.Pending, (await reader.ReadLinearAsync(key, token)
+                        .ConfigureAwait(false))!.Disposition);
+
+                    fault.CommitPixel.Set();
+                    Assert.AreEqual(CameraAgentArtifactReadStatus.NotFound, (await opening.ConfigureAwait(false)).Status);
+                    await fault.LaterNodeEntered.Task.WaitAsync(token).ConfigureAwait(false);
+                    Assert.HasCount(1, storage.List(root, day, FrameArtifactRole.Calibrated, 20));
+                    var visible = await gallery.OpenContentAsync(artifact, token).ConfigureAwait(false);
+                    Assert.AreEqual(CameraAgentArtifactReadStatus.Found, visible.Status);
+                    await using var content = visible.Content!.ConfigureAwait(false);
+                    var settled = await reader.ReadLinearAsync(key, token).ConfigureAwait(false);
+                    Assert.AreEqual(artifact, settled!.Product!.ArtifactId);
+                    Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, settled.Disposition);
+                    Assert.AreEqual(calibrationNode, settled.Product.Slot.Producer);
+                    original = (await reader.ReadProductsAfterAsync(key.Camera, 0, 10, token).ConfigureAwait(false)).Single();
+                    Assert.AreEqual(ExposureProductAvailability.Available, original.Availability);
+                    Assert.AreEqual(settled.Revision, original.Revision);
+                    Assert.AreEqual(settled.Product, original.Product);
+                    var derivative = CaptureContractJson.ParseManifest(
+                        await File.ReadAllBytesAsync(Path.ChangeExtension(path, ".json"), token).ConfigureAwait(false)).Document!.Manifest.Descriptor;
+                    Assert.AreEqual(grant.Evidence, derivative.RetainedScheduleAdmission);
+                    Assert.AreEqual(CaptureCadenceMode.Continuous, derivative.RetainedCadenceMode);
+                    Assert.AreEqual(predecessorAlias is not null ? null : submit.Request.RequestedSetpoint,
+                        derivative.CenteredAcquisition!.Module!.RequestedSetpoint);
+                    Assert.IsNull(derivative.CycleEvidence);
+                    Assert.AreEqual(ProcessingGraphOperationsCoordinator.GetLiveExecutionId(ids.CaptureId, created.RevisionId),
+                        settled.Product.Slot.ExecutionId);
+                    var relocated = configured with
+                    {
+                        DeploymentLocation = DeploymentLocationSnapshot.Create("test-site", 2, "changed", null,
+                            Timestamp(1).AddMinutes(1), null, 37, -112, 600, "UTC")
+                    };
+                    var following = await setup.AdmitAsync(relocated, Timestamp(2)).ConfigureAwait(false);
+                    Assert.AreEqual(initial.ActiveRevisionId, following.Manifest.CaptureGraphRevisionId);
+                    Assert.AreEqual(relocated.DeploymentLocation.ToProvenance(), following.Manifest.Descriptor.Location);
+
+                    var registry = await setup.GraphOperations.GetRegistryAsync(token).ConfigureAwait(false);
+                    await setup.GraphOperations.RollbackRevisionAsync(created.RevisionId, registry.StateVersion,
+                        "restore-named", "fixture", null, token).ConfigureAwait(false);
+                    var ordinarySubmission = CenteredSubmission(Timestamp(3));
+                    ordinarySubmission = ordinarySubmission with
+                    {
+                        Request = ordinarySubmission.Request with
+                        {
+                            RequestedSetpoint = submit.Request.RequestedSetpoint,
+                            TargetInterval = TimeSpan.Zero
+                        },
+                        Result = ordinarySubmission.Result with { NextSetpoint = submit.Result.NextSetpoint },
+                        EffectiveInterval = TimeSpan.Zero,
+                        CenteredAcquisition = submit.CenteredAcquisition! with
+                        {
+                            ModuleCallStartedUtc = ordinarySubmission.Request.RequestedStartUtc
+                        }
+                    };
+                    var ordinaryReservation = await setup.Ingress.ReserveCenteredAsync(configured, CenteredTestResources, null, token)
+                        .ConfigureAwait(false);
+                    await setup.Ingress.DispatchCenteredAsync(ordinaryReservation.Pending.Key,
+                        ordinarySubmission.Request.RequestedSetpoint!, null, "fixture", token).ConfigureAwait(false);
+                    var ordinary = await setup.Ingress.AcceptCenteredAsync(configured, ordinarySubmission, ordinaryReservation, token)
+                        .ConfigureAwait(false);
+                    Assert.AreEqual(RawIngressOutcome.Committed, ordinary.Outcome);
+                    var repeated = await setup.Ingress.AcceptCenteredAsync(configured, ordinarySubmission, ordinaryReservation, token)
+                        .ConfigureAwait(false);
+                    Assert.AreEqual(RawIngressOutcome.Existing, repeated.Outcome);
+                    var changedRequest = ordinarySubmission with
+                    {
+                        Request = ordinarySubmission.Request with
+                        {
+                            RequestedSetpoint = ordinarySubmission.Request.RequestedSetpoint! with { TargetFps = 14 }
+                        }
+                    };
+                    await Assert.ThrowsExactlyAsync<RawIngressConflictException>(async () =>
+                        await setup.Ingress.AcceptCenteredAsync(configured, changedRequest, ordinaryReservation, token)
+                            .ConfigureAwait(false)).ConfigureAwait(false);
+                    Assert.AreEqual(created.RevisionId, ordinary.Manifest.CaptureGraphRevisionId);
+                    Assert.AreEqual(committed.Manifest.Descriptor.Profiles.Processing, ordinary.Manifest.Descriptor.Profiles.Processing);
+                    Assert.AreEqual(committed.Manifest.Descriptor.Location, ordinary.Manifest.Descriptor.Location);
+                    Assert.AreEqual(submit.Request.RequestedSetpoint, ordinary.Manifest.Descriptor.CenteredAcquisition!.Module!.RequestedSetpoint);
+                    Assert.AreEqual(submit.Result.NextSetpoint, ordinary.Manifest.Descriptor.CenteredAcquisition.Module.ReportedSetpoint);
+
+                    fault.FinishLaterNode.Set();
+                    using var completionDb = await OpenJournalAsync(root).ConfigureAwait(false);
+                    while (await ScalarLongAsync(completionDb, $"""
+                        SELECT COUNT(*) FROM processing_executions
+                        WHERE capture_id = '{key.CaptureId:N}' AND status = 'Completed';
+                        """).ConfigureAwait(false) == 0)
+                    {
+                        await Task.Delay(10, token).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    resumeList.Set();
+                    fault.CommitPixel.Set();
+                    fault.FinishLaterNode.Set();
+                    await distributor.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+
+            using var reopened = new CenteredFixture(root);
+            var afterRestart = new CenteredExposureProductReader(reopened.Ingress, reopened.Store);
+            var exact = await afterRestart.ReadLinearAsync(key, token).ConfigureAwait(false);
+            Assert.AreEqual(original.Product, exact!.Product);
+            Assert.AreEqual(original.Revision, exact.Revision);
+            var reconnect = await afterRestart.ReadProductsAfterAsync(key.Camera, 0, 10, token).ConfigureAwait(false);
+            Assert.AreEqual(original, reconnect.Single(item => item.Exposure == key));
+            var historical = await reopened.Ingress.ReadCenteredRawAsync(key, token).ConfigureAwait(false);
+            Assert.AreEqual(1L, historical!.Manifest.Descriptor.Location!.Version);
+            var oldCapture = await new SqliteCameraAgentGallery(reopened.Options, reopened.Store).GetCaptureAsync(key.CaptureId, token)
+                .ConfigureAwait(false);
+            Assert.AreEqual(historical.Manifest.Descriptor.RetainedScheduleAdmission!.ScheduleRevisionId,
+                oldCapture!.Detail!.Schedule!.RevisionId);
+            Assert.AreEqual(CaptureCadenceMode.Continuous, oldCapture.Detail.CaptureProfile!.CadenceMode);
+        }
+        finally
+        {
+            DeleteRoot(root);
+            DeleteRoot(detached);
+            DeleteRoot(stale);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("missing")]
+    [DataRow("malformed")]
+    [DataRow("zero-fps")]
+    [DataRow("negative-fps")]
+    [DataRow("nonfinite-fps")]
+    [DataRow("zero-interval")]
+    [DataRow("valid")]
+    [DataRow("orphan-zero-fps")]
+    public async Task CenteredPredecessorLaneRequiresValidRetainedDispatch(string evidence)
+    {
+        var root = CreateRoot();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
         var token = deadline.Token;
         try
         {
             using var setup = new CenteredFixture(root, new OneShotFaultInjector(RawIngressFaultPoint.SidecarDirectorySynced));
-            var configured = CenteredConfiguration("camera");
-            var named = WithCenteredProbe(configured);
-            using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-            using var fault = new CenteredPublicationBarrier(token);
-            var persistence = new CaptureProcessingPersistence(setup.Options, setup.Store, storage, setup.Telemetry,
-                NullLogger<CaptureProcessingPersistence>.Instance, fault);
-            using var standard = new StandardCaptureLaneHandler(setup.Factory, persistence, setup.Telemetry,
-                NullLogger<StandardCaptureLaneHandler>.Instance, setup.Ingress, setup.Options, fault,
-                graphOperations: setup.GraphOperations);
-            var accessor = new CameraAgentConfigurationAccessor();
-            accessor.SetConfiguration(configured);
-            var laneState = new CaptureLaneState(TimeProvider.System, setup.Options);
-            using var laneTelemetry = new CaptureLaneTelemetry(laneState);
-            using var distributor = new CaptureDistributionService(accessor, setup.Ingress, setup.Ingress, setup.Policy,
-                [standard], standard, setup.Options, TimeProvider.System, new NullCaptureLaneFaultInjector(),
-                laneTelemetry, laneState, NullLogger<CaptureDistributionService>.Instance, setup.GraphOperations);
-            await distributor.StartAsync(token).ConfigureAwait(false);
-            try
+            var config = CenteredConfiguration("camera");
+            var baseline = CenteredSubmission(Timestamp(1));
+            var expected = baseline.Request.RequestedSetpoint! with { TargetFps = 15 };
+            var submission = baseline with { Request = baseline.Request with { RequestedSetpoint = expected } };
+            var reservation = await setup.Ingress.ReserveCenteredAsync(config, CenteredTestResources, null, token).ConfigureAwait(false);
+            await setup.Ingress.DispatchCenteredAsync(reservation.Pending.Key, submission.Request.RequestedSetpoint!,
+                null, "fixture", token).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                await setup.Ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false))
+                .ConfigureAwait(false);
+            var identity = RawCaptureDescriptorFactory.CreateStableIds(config, submission);
+            var started = RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, submission.Result.Frame!);
+            var files = RawIngressFileStore.GetPaths(root, started, identity.ArtifactId);
+            var sidecar = files.SidecarAbsolutePath;
+            var historical = await WritePredecessorSidecarAsync(sidecar,
+                await File.ReadAllBytesAsync(sidecar, token).ConfigureAwait(false), token)
+                .ConfigureAwait(false);
+            var pixels = await File.ReadAllBytesAsync(files.PayloadAbsolutePath, token).ConfigureAwait(false);
+            if (evidence == "orphan-zero-fps")
             {
-                var initial = await setup.GraphOperations.GetRegistryAsync(token).ConfigureAwait(false);
-                var created = await setup.GraphOperations.CreateRevisionAsync(configured, "named", "1", named.Pipeline,
-                    "create-named", "fixture", null, token).ConfigureAwait(false);
-                await setup.GraphOperations.ValidateRevisionAsync(created.RevisionId, "validate-named", "fixture", null, token)
-                    .ConfigureAwait(false);
-                var activated = await setup.GraphOperations.ActivateRevisionAsync(created.RevisionId, initial.StateVersion,
-                    "activate-named", "fixture", null, token).ConfigureAwait(false);
-                var reservation = await setup.DispatchAsync(configured).ConfigureAwait(false);
-                Assert.AreEqual(created.RevisionId, reservation.Revision.State.RevisionId);
-
-                var submit = CenteredSubmission(Timestamp(1));
-                submit = submit with
-                {
-                    Result = submit.Result with
-                    {
-                        ProcessingLatency = TimeSpan.FromMilliseconds(4),
-                        NextSetpoint = CenteredTestSettings with { TargetFps = 1.25 },
-                        RequiresImmediateUpload = true
-                    }
-                };
-                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
-                    await setup.Ingress.AcceptCenteredAsync(configured, submit, reservation, token).ConfigureAwait(false))
-                    .ConfigureAwait(false);
-                await setup.GraphOperations.RollbackRevisionAsync(initial.ActiveRevisionId!, activated.StateVersion,
-                    "rollback-named", "fixture", null, token).ConfigureAwait(false);
-
+                using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+                using var corruptOrphan = journal.CreateCommand();
+                corruptOrphan.CommandText = "UPDATE centered_exposure_attempts SET requested_json = $bad WHERE attempt_id = $attempt;";
+                corruptOrphan.Parameters.AddWithValue("$bad", JsonSerializer.SerializeToUtf8Bytes(expected with { TargetFps = 0 }));
+                corruptOrphan.Parameters.AddWithValue("$attempt", reservation.Pending.Key.AttemptId.ToString("N"));
+                Assert.AreEqual(1, await corruptOrphan.ExecuteNonQueryAsync(token).ConfigureAwait(false));
                 await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
-                distributor.NotifyCommittedCapture();
-                await fault.PixelStaged.Task.WaitAsync(token).ConfigureAwait(false);
-                var ids = RawCaptureDescriptorFactory.CreateStableIds(configured, submit);
-                var attempt = reservation.Pending.Key;
-                var key = new ExposureKey(attempt.Camera, attempt.RunId, ids.CaptureId);
-                var committed = await setup.Ingress.ReadCenteredRawAsync(key, token).ConfigureAwait(false);
-                Assert.IsNotNull(committed);
-                Assert.AreEqual(created.RevisionId, committed.Manifest.CaptureGraphRevisionId);
-                var effective = configured with { Pipeline = reservation.Revision.Pipeline };
-                Assert.AreEqual(RawCaptureDescriptorFactory.CreateProcessingProfile(effective), committed.Manifest.Descriptor.Profiles.Processing);
-                Assert.AreEqual(configured.DeploymentLocation!.ToProvenance(), committed.Manifest.Descriptor.Location);
-                using (var db = await OpenJournalAsync(root).ConfigureAwait(false))
-                using (var command = db.CreateCommand())
-                {
-                    command.CommandText = "SELECT context_json, context_sha256 FROM capture_lane_contexts;";
-                    using var row = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
-                    Assert.IsTrue(await row.ReadAsync(token).ConfigureAwait(false));
-                    var envelope = CaptureLaneEnvelopeSerializer.Deserialize((byte[])row.GetValue(0), row.GetString(1));
-                    Assert.AreEqual(submit.Result.ProcessingLatency, envelope.Submission.Result.ProcessingLatency);
-                    Assert.AreEqual(submit.Result.NextSetpoint, envelope.Submission.Result.NextSetpoint);
-                    Assert.AreEqual(submit.Result.RequiresImmediateUpload, envelope.Submission.Result.RequiresImmediateUpload);
-                    Assert.AreEqual(submit.EffectiveInterval, envelope.Submission.EffectiveInterval);
-                    Assert.AreEqual(submit.LoopDuration, envelope.Submission.LoopDuration);
-                }
-                var replayedAdmission = await setup.Ingress.AcceptCenteredAsync(configured, submit, reservation, token).ConfigureAwait(false);
-                Assert.AreEqual(RawIngressOutcome.Existing, replayedAdmission.Outcome);
-
-                var gallery = new CameraAgentArtifactService(setup.Options, setup.Store, new CameraAgentPreviewEncoder());
-                var paths = Directory.GetFiles(root, "*.bin", SearchOption.AllDirectories)
-                    .Where(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Calibrated").ToArray();
-                var path = paths.Single();
-                var artifact = Guid.ParseExact(Path.GetFileNameWithoutExtension(path)[^32..], "N");
-                var day = DateOnly.FromDateTime(submit.Result.Frame!.TimestampUtc.UtcDateTime);
-                var reader = new CenteredExposureProductReader(setup.Ingress, setup.Store);
-                Assert.HasCount(0, storage.List(root, day, FrameArtifactRole.Calibrated, 20));
-                var opening = gallery.OpenContentAsync(artifact, token).AsTask();
-                Assert.IsFalse(opening.IsCompleted, "The SQL artifact API must wait for the publication lifecycle lock.");
-                Assert.AreEqual(LinearExposureDisposition.Pending, (await reader.ReadLinearAsync(key, token)
-                    .ConfigureAwait(false))!.Disposition);
-
-                fault.CommitPixel.Set();
-                Assert.AreEqual(CameraAgentArtifactReadStatus.NotFound, (await opening.ConfigureAwait(false)).Status);
-                await fault.LaterNodeEntered.Task.WaitAsync(token).ConfigureAwait(false);
-                Assert.HasCount(1, storage.List(root, day, FrameArtifactRole.Calibrated, 20));
-                var visible = await gallery.OpenContentAsync(artifact, token).ConfigureAwait(false);
-                Assert.AreEqual(CameraAgentArtifactReadStatus.Found, visible.Status);
-                await using var content = visible.Content!.ConfigureAwait(false);
-                var settled = await reader.ReadLinearAsync(key, token).ConfigureAwait(false);
-                Assert.AreEqual(artifact, settled!.Product!.ArtifactId);
-                Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, settled.Disposition);
-                Assert.AreEqual(ProcessingGraphOperationsCoordinator.GetLiveExecutionId(ids.CaptureId, created.RevisionId),
-                    settled.Product.Slot.ExecutionId);
-                var following = await setup.AdmitAsync(configured, Timestamp(2)).ConfigureAwait(false);
-                Assert.AreEqual(initial.ActiveRevisionId, following.Manifest.CaptureGraphRevisionId);
-
-                var registry = await setup.GraphOperations.GetRegistryAsync(token).ConfigureAwait(false);
-                await setup.GraphOperations.RollbackRevisionAsync(created.RevisionId, registry.StateVersion,
-                    "restore-named", "fixture", null, token).ConfigureAwait(false);
-                var ordinary = await setup.AdmitAsync(configured, Timestamp(3)).ConfigureAwait(false);
-                Assert.AreEqual(RawIngressOutcome.Committed, ordinary.Outcome);
-                Assert.AreEqual(created.RevisionId, ordinary.Manifest.CaptureGraphRevisionId);
-                Assert.AreEqual(committed.Manifest.Descriptor.Profiles.Processing, ordinary.Manifest.Descriptor.Profiles.Processing);
-                Assert.AreEqual(committed.Manifest.Descriptor.Location, ordinary.Manifest.Descriptor.Location);
+                Assert.AreEqual(0L, await ScalarLongAsync(journal, "SELECT COUNT(*) FROM raw_captures;").ConfigureAwait(false));
+                Assert.AreEqual(0L, await ScalarLongAsync(journal, "SELECT COUNT(*) FROM capture_lane_contexts;").ConfigureAwait(false));
+                var retainedSidecar = Directory.GetFiles(root, Path.GetFileName(sidecar), SearchOption.AllDirectories).Single();
+                var retainedPayload = Directory.GetFiles(root, Path.GetFileName(files.PayloadAbsolutePath), SearchOption.AllDirectories).Single();
+                CollectionAssert.AreEqual(historical, await File.ReadAllBytesAsync(retainedSidecar, token).ConfigureAwait(false));
+                CollectionAssert.AreEqual(pixels, await File.ReadAllBytesAsync(retainedPayload, token).ConfigureAwait(false));
+                return;
             }
-            finally
+            await setup.Ingress.InitializeAsync(token).ConfigureAwait(false);
+            using var db = await OpenJournalAsync(root).ConfigureAwait(false);
+            var oldContext = await ScalarBytesAsync(db, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false);
+            var oldDigest = await ScalarStringAsync(db, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false);
+            var envelope = CaptureLaneEnvelopeSerializer.Deserialize(oldContext, oldDigest);
+            var predecessor = envelope with
             {
-                fault.CommitPixel.Set();
-                fault.FinishLaterNode.Set();
-                await distributor.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                Submission = envelope.Submission with
+                {
+                    Request = envelope.Submission.Request with { RequestedSetpoint = expected with { TargetFps = null } }
+                }
+            };
+            var (predecessorContext, predecessorDigest) = CaptureLaneEnvelopeSerializer.Serialize(
+                predecessor.Configuration, predecessor.Submission);
+            using var old = db.CreateCommand();
+            old.CommandText = "UPDATE capture_lane_contexts SET context_json = $context, context_sha256 = $digest;";
+            old.Parameters.AddWithValue("$context", predecessorContext);
+            old.Parameters.AddWithValue("$digest", predecessorDigest);
+            Assert.AreEqual(1, await old.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+
+            using var corrupt = db.CreateCommand();
+            corrupt.CommandText = "UPDATE centered_exposure_attempts SET requested_json = $bad WHERE capture_id = $capture;";
+            corrupt.Parameters.AddWithValue("$bad", evidence switch
+            {
+                "missing" => (object)DBNull.Value,
+                "malformed" => "{"u8.ToArray(),
+                "zero-fps" => JsonSerializer.SerializeToUtf8Bytes(expected with { TargetFps = 0 }),
+                "negative-fps" => JsonSerializer.SerializeToUtf8Bytes(expected with { TargetFps = -1 }),
+                "nonfinite-fps" => System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(expected)
+                    .Replace("\"TargetFps\":15", "\"TargetFps\":1e309", StringComparison.Ordinal)),
+                "zero-interval" => JsonSerializer.SerializeToUtf8Bytes(expected with { NextIntervalOverride = TimeSpan.Zero }),
+                _ => JsonSerializer.SerializeToUtf8Bytes(expected)
+            });
+            corrupt.Parameters.AddWithValue("$capture", identity.CaptureId.ToString("N"));
+            Assert.AreEqual(1, await corrupt.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+            await setup.Ingress.InitializeLanesAsync(token).ConfigureAwait(false);
+            var lane = setup.Policy.Definitions.Single(item => item.Name == "standard");
+            var claimed = await setup.Ingress.ClaimAsync(lane, "predecessor-dispatch", config, token).ConfigureAwait(false);
+            if (evidence == "valid")
+            {
+                Assert.IsNotNull(claimed);
+                Assert.AreEqual(expected, claimed.Context.Submission.Request.RequestedSetpoint);
             }
+            else
+            {
+                Assert.IsNull(claimed);
+            }
+            var quarantined = evidence == "valid" ? 0L : 1L;
+            Assert.AreEqual(quarantined, await ScalarLongAsync(db, """
+                SELECT COUNT(*) FROM raw_captures WHERE state = 'quarantined' AND failure_reason = 'lane-evidence-invalid';
+                """).ConfigureAwait(false));
+            Assert.AreEqual(quarantined, await ScalarLongAsync(db, """
+                SELECT COUNT(*) FROM capture_lane_work WHERE lane_name = 'standard' AND failure_reason = 'evidence-invalid';
+                """).ConfigureAwait(false));
+            CollectionAssert.AreEqual(historical, await File.ReadAllBytesAsync(sidecar, token).ConfigureAwait(false));
+            CollectionAssert.AreEqual(pixels, await File.ReadAllBytesAsync(files.PayloadAbsolutePath, token).ConfigureAwait(false));
+            CollectionAssert.AreEqual(predecessorContext,
+                await ScalarBytesAsync(db, "SELECT context_json FROM capture_lane_contexts;").ConfigureAwait(false));
+            Assert.AreEqual(predecessorDigest,
+                await ScalarStringAsync(db, "SELECT context_sha256 FROM capture_lane_contexts;").ConfigureAwait(false));
         }
         finally { DeleteRoot(root); }
     }
 
-    private sealed class CenteredPublicationBarrier(CancellationToken cancellationToken) : ICaptureProcessingFaultInjector, IDisposable
+    private static async Task<byte[]> WritePredecessorSidecarAsync(
+        string sidecarPath, byte[] current, CancellationToken cancellationToken)
+    {
+        var raw = CaptureContractJson.ParseManifest(current).Document!.Manifest;
+        var acquisition = raw.Descriptor.CenteredAcquisition!;
+        var historical = CaptureContractJson.Serialize(raw with
+        {
+            Descriptor = raw.Descriptor with
+            {
+                CenteredAcquisition = acquisition with
+                {
+                    Module = acquisition.Module! with { RequestedSetpoint = null }
+                }
+            }
+        });
+        await File.WriteAllBytesAsync(sidecarPath, historical, cancellationToken).ConfigureAwait(false);
+        return historical;
+    }
+
+    [TestMethod]
+    [DataRow("in-time")]
+    [DataRow("deadline")]
+    [DataRow("receipt-retry")]
+    [DataRow("predecessor")]
+    [DataRow("predecessor-sidecar")]
+    [DataRow("long-root")]
+    [DataRow("legacy-long-stage")]
+    [DataRow("selected-without-export")]
+    public async Task CenteredTwoRootArchiveListsOnlyExactStorageReceiptAndReclaimsIt(string scenario)
+    {
+        var root = CreateRoot();
+        var archiveBase = CreateRoot();
+        var archive = archiveBase;
+        var longRoot = scenario is "long-root" or "legacy-long-stage";
+        if (longRoot && OperatingSystem.IsLinux())
+        {
+            for (var depth = 0; depth < 17; depth++)
+                archive = Path.Combine(archive, new string('d', 215));
+            Directory.CreateDirectory(archive);
+        }
+        var detached = CreateRoot();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+        var token = deadline.Token;
+        var retryReceipt = scenario is "receipt-retry" or "legacy-long-stage";
+        var loseSidecar = scenario == "predecessor-sidecar";
+        var skipExport = scenario == "selected-without-export";
+        using var fault = new CenteredArchiveBarrier(retryReceipt, token);
+        var predecessor = scenario is "predecessor" or "predecessor-sidecar";
+        byte[]? predecessorSidecar = null;
+        try
+        {
+            var captured = Timestamp(8).AddMinutes(5);
+            var clock = new ExposureTestTimeProvider(captured.AddSeconds(1));
+            var profile = CenteredContinuousConfiguration(captured);
+            var archiveOptions = new FileStorageCaptureProcessingStepOptions
+            {
+                StorageRoot = archive,
+                RetentionDays = 1,
+                QueueForUpload = false,
+                UpdateLatestFrame = false
+            };
+            var config = profile with
+            {
+                Module = StoragePolicyRawIngressIntegrationTests.Profile(root).Module,
+                Pipeline = profile.Pipeline with
+                {
+                    Steps =
+                    [
+                        new("Calibration", "linear", DependsOn: ["$raw"]),
+                        new("CalibratedPreview", "CalibratedPreview", DependsOn: ["linear"],
+                            Publication: skipExport ? new(CaptureProcessingPersistenceMode.DurableLocal) : null),
+                        new("sToRaGe", skipExport ? "ArchiveStorage" : " ArchiveStorage ", Order: 30, DependsOn: ["CalibratedPreview"],
+                            Options: longRoot ? JsonSerializer.SerializeToElement(new { storageRoot = archive })
+                                : JsonSerializer.SerializeToElement(archiveOptions)),
+                        new("Storage", "ArchiveAgain", Order: 40, DependsOn: ["CalibratedPreview"],
+                            Options: JsonSerializer.SerializeToElement(archiveOptions)),
+                        new("Telemetry", "tail", Order: 50, DependsOn: ["ArchiveStorage", "ArchiveAgain"])
+                    ]
+                }
+            };
+            if (predecessor)
+            {
+                fault.PreparePredecessor = () =>
+                {
+                    var source = Directory.GetFiles(root, "*.bin", SearchOption.AllDirectories)
+                        .Single(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Preview");
+                    var manifest = CaptureContractJson.ParseManifest(
+                        File.ReadAllBytes(Path.ChangeExtension(source, ".json"))).Document!.Manifest;
+                    Assert.IsNotNull(manifest.Descriptor.CenteredAcquisition);
+                    predecessorSidecar = CaptureContractJson.Serialize(manifest with
+                    {
+                        Descriptor = manifest.Descriptor with { CenteredAcquisition = null }
+                    });
+                    var destination = Path.Combine(archive, manifest.RelativeArtifactPath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.WriteAllBytes(Path.ChangeExtension(destination, ".json"), predecessorSidecar);
+                    Assert.IsFalse(File.Exists(destination));
+                };
+            }
+            var provider = ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
+            {
+                ["CameraAgent:ProcessingGraphs:LiveDeadlineSeconds"] = "10"
+            }, clock,
+                configureServices: services =>
+                {
+                    services.AddSingleton<ICaptureProcessingFaultInjector>(fault);
+                    if (predecessor)
+                    {
+                        services.AddSingleton<IRawIngressFaultInjector>(new OneShotFaultInjector(RawIngressFaultPoint.SidecarDirectorySynced));
+                        services.AddSingleton<ILogger<FileSystemFrameStorageService>>(new ArchiveSaveInterruption(archive));
+                    }
+                });
+            await using var providerScope = provider.ConfigureAwait(false);
+            config = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, config).ConfigureAwait(false);
+            var ingress = provider.GetRequiredService<RawCaptureIngress>();
+            var reservation = await ingress.ReserveCenteredAsync(config, CenteredTestResources, null, token).ConfigureAwait(false);
+            var submission = CenteredSubmission(captured);
+            await ingress.DispatchCenteredAsync(reservation.Pending.Key, submission.Request.RequestedSetpoint!, null, "fixture", token)
+                .ConfigureAwait(false);
+            if (predecessor)
+            {
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                    await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false)).ConfigureAwait(false);
+                var ids = RawCaptureDescriptorFactory.CreateStableIds(config, submission);
+                var started = RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, submission.Result.Frame!);
+                var rawSidecar = RawIngressFileStore.GetPaths(root, started, ids.ArtifactId).SidecarAbsolutePath;
+                await WritePredecessorSidecarAsync(rawSidecar, await File.ReadAllBytesAsync(rawSidecar, token).ConfigureAwait(false), token)
+                    .ConfigureAwait(false);
+                await ingress.InitializeAsync(token).ConfigureAwait(false);
+            }
+            else
+            {
+                await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false);
+            }
+
+            var lanes = provider.GetRequiredService<ICaptureLaneStore>();
+            await lanes.InitializeLanesAsync(token).ConfigureAwait(false);
+            var standard = provider.GetRequiredService<CaptureLanePolicy>().Definitions.Single(lane => lane.Name == "standard");
+            var claimed = await lanes.ClaimAsync(standard, "two-root-archive", config, token).ConfigureAwait(false);
+            Assert.IsNotNull(claimed);
+            var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
+            var worker = Task.Run(async () => await handler.HandleAsync(claimed.Context, token).ConfigureAwait(false), token);
+            var storage = (FileSystemFrameStorageService)provider.GetRequiredService<IFrameStorageService>();
+            var day = DateOnly.FromDateTime(captured.UtcDateTime);
+            StoredFrameReference stored;
+            string receiptPath;
+            byte[] pixels;
+            byte[] sidecar;
+            RetentionBackgroundService CreateRetention(Action<string>? beforeUnlink = null) => new(
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), clock,
+                provider.GetRequiredService<IArtifactOutbox>(), new FixedCapacityProvider(long.MaxValue),
+                new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance)
+            {
+                BeforeArchiveFileUnlink = beforeUnlink
+            };
+            try
+            {
+                if (skipExport)
+                {
+                    await fault.Later.Task.WaitAsync(token).ConfigureAwait(false);
+                    Assert.IsFalse(Directory.Exists(archive) &&
+                        Directory.EnumerateFiles(archive, "*.bin", SearchOption.AllDirectories).Any(),
+                        "The actual Storage step selected but did not export CalibratedPreview.");
+                    var captureId = claimed.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId;
+                    var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                    var storageNode = await store.ReadNodeAsync(captureId, "ArchiveStorage", token).ConfigureAwait(false);
+                    Assert.IsNotNull(storageNode);
+                    Assert.AreEqual(DurableProcessingNodeStatus.Completed, storageNode.Status);
+                    var producer = await store.ReadNodeAsync(captureId, "CalibratedPreview", token).ConfigureAwait(false);
+                    var output = producer!.Outputs.Single();
+                    var outputDescriptor = output.Descriptor!;
+                    Assert.IsTrue(storageNode.Inputs!.Any(input => input.Selected && input.ArtifactId == output.ArtifactId));
+                    Assert.IsFalse(storageNode.Inputs!.Any(input => input.Name == "centered-archive"));
+
+                    var archivePayload = Path.Combine(archive, output.PayloadRelativePath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(archivePayload)!);
+                    File.Copy(Path.Combine(root, output.PayloadRelativePath), archivePayload);
+                    File.Copy(Path.Combine(root, output.SidecarRelativePath), Path.ChangeExtension(archivePayload, ".json"));
+                    var originalIndex = Directory.GetFiles(Path.Combine(root, "index"), "*.jsonl").Single();
+                    Directory.CreateDirectory(Path.Combine(archive, "index"));
+                    File.Copy(originalIndex, Path.Combine(archive, "index", Path.GetFileName(originalIndex)));
+                    var old = JsonSerializer.SerializeToElement(new
+                    {
+                        root = StorageRootIdentity.Key(archive),
+                        relativePath = output.PayloadRelativePath.Replace('\\', '/'),
+                        captureId,
+                        executionId = claimed.Context.Execution!.ExecutionId,
+                        storageNode = "ArchiveStorage",
+                        producer = "CalibratedPreview",
+                        artifactId = output.ArtifactId,
+                        outputIdentity = output.OutputIdentitySha256,
+                        contentIdentity = output.ContentIdentitySha256,
+                        descriptorSha256 = CaptureContractJson.ComputeDescriptorSha256(outputDescriptor),
+                        payloadSha256 = outputDescriptor.Artifact.ChecksumSha256
+                    });
+                    await File.WriteAllTextAsync(FileSystemFrameStorageService.ArchiveReceiptPath(archivePayload), old.GetRawText(), token)
+                        .ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    fault.Finish.Set();
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await worker.WaitAsync(token).ConfigureAwait(false)).Outcome);
+                    await lanes.CompleteAsync(claimed, token).ConfigureAwait(false);
+                    return;
+                }
+                if (predecessor)
+                {
+                    var saveInterrupted = await worker.WaitAsync(token).ConfigureAwait(false);
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, saveInterrupted.Outcome);
+                    Assert.AreEqual("processing.step-exception", saveInterrupted.Reason);
+                    Assert.IsNotNull(predecessorSidecar);
+                    var interruptedPayload = Directory.GetFiles(archive, "*.bin", SearchOption.AllDirectories).Single();
+                    var interruptedSidecar = Path.ChangeExtension(interruptedPayload, ".json");
+                    var interruptedStage = FileSystemFrameStorageService.ArchiveStagePath(interruptedPayload);
+                    var interruptedFinal = FileSystemFrameStorageService.ArchiveReceiptPath(interruptedPayload);
+                    Assert.IsTrue(File.Exists(interruptedStage));
+                    Assert.IsFalse(File.Exists(interruptedFinal));
+                    CollectionAssert.AreEqual(predecessorSidecar, await File.ReadAllBytesAsync(interruptedSidecar, token).ConfigureAwait(false));
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+
+                    var precommit = await ReadLegacyArchiveReceiptAsync(interruptedStage, archive, token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(interruptedFinal, precommit.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    if (loseSidecar)
+                    {
+                        File.Delete(interruptedSidecar);
+                        Assert.IsTrue(File.Exists(interruptedPayload));
+                    }
+                    else
+                    {
+                        var artifactId = CaptureContractJson.ParseManifest(predecessorSidecar).Document!.Manifest.Descriptor.Artifact.ArtifactId;
+                        var rootOwnedConfig = config with
+                        {
+                            Pipeline = config.Pipeline with
+                            {
+                                Steps = config.Pipeline.Steps.Where(step => step.Id?.Trim() == "ArchiveStorage").ToArray()
+                            }
+                        };
+                        using (var retention = CreateRetention(_ => throw new IOException("Interrupted before archive file removal.")))
+                        {
+                            clock.ShiftUtc(TimeSpan.FromDays(3));
+                            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                                await retention.ApplyRetentionAsync(rootOwnedConfig, token).ConfigureAwait(false)).ConfigureAwait(false);
+                            clock.ShiftUtc(TimeSpan.FromDays(-3));
+                        }
+                        Assert.IsTrue(File.Exists(interruptedPayload));
+                        Assert.IsTrue(File.Exists(interruptedStage));
+                        Assert.IsTrue(File.Exists(interruptedFinal));
+                        Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+
+                        storage.BeforeArchiveFileUnlink = path =>
+                        {
+                            if (path.EndsWith(".json", StringComparison.Ordinal))
+                                throw new IOException("Interrupted between archive file removals.");
+                        };
+                        var storedBeforeRemoval = new StoredFrameReference(Path.GetRelativePath(archive, interruptedPayload),
+                            interruptedPayload, captured, FrameArtifactRole.Preview);
+                        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                            await storage.RemoveAsync(archive, storedBeforeRemoval, artifactId, token).ConfigureAwait(false))
+                            .ConfigureAwait(false);
+                        storage.BeforeArchiveFileUnlink = null;
+                        Assert.IsFalse(File.Exists(interruptedPayload));
+                        Assert.IsTrue(File.Exists(interruptedSidecar));
+                        Assert.IsTrue(File.Exists(interruptedStage));
+                        Assert.IsTrue(File.Exists(interruptedFinal));
+                    }
+                    await lanes.ReleaseAsync(claimed, token).ConfigureAwait(false);
+                    claimed = await lanes.ClaimAsync(standard, "archive-save-retry", config, token).ConfigureAwait(false);
+                    Assert.IsNotNull(claimed);
+                    worker = Task.Run(async () => await handler.HandleAsync(claimed.Context, token).ConfigureAwait(false), token);
+                }
+                await fault.Staged.Task.WaitAsync(token).ConfigureAwait(false);
+                var payload = Directory.GetFiles(archive, "*.bin", SearchOption.AllDirectories).Single();
+                var stagePath = FileSystemFrameStorageService.ArchiveStagePath(payload);
+                receiptPath = FileSystemFrameStorageService.ArchiveReceiptPath(payload);
+                Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                Assert.IsTrue(File.Exists(stagePath));
+                Assert.IsFalse(File.Exists(receiptPath));
+                if (predecessor)
+                {
+                    var recoveredSidecar = await File.ReadAllBytesAsync(Path.ChangeExtension(payload, ".json"), token)
+                        .ConfigureAwait(false);
+                    if (loseSidecar)
+                    {
+                        Assert.AreEqual(
+                            CaptureContractJson.ParseManifest(predecessorSidecar!).Document!.Manifest.IdempotencyKey,
+                            CaptureContractJson.ParseManifest(recoveredSidecar).Document!.Manifest.IdempotencyKey);
+                    }
+                    else
+                    {
+                        CollectionAssert.AreEqual(predecessorSidecar, recoveredSidecar);
+                    }
+                }
+                if (scenario == "deadline")
+                {
+                    // Cross the durable UTC deadline without firing the independent monotonic cancellation timer.
+                    var monotonic = clock.GetTimestamp();
+                    clock.ShiftUtc(TimeSpan.FromSeconds(11));
+                    Assert.AreEqual(monotonic, clock.GetTimestamp());
+                    Assert.IsTrue(clock.GetUtcNow() > claimed.Context.Execution!.DeadlineUtc);
+                    Assert.IsTrue(clock.GetUtcNow() < claimed.LeaseExpiresUtc, "The lane lease has not been renewed or expired.");
+                    fault.Publish.Set();
+                    var refused = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                        async () => await worker.WaitAsync(token).ConfigureAwait(false)).ConfigureAwait(false);
+                    StringAssert.Contains(refused.Message, "expired", StringComparison.Ordinal);
+                    await Assert.ThrowsExactlyAsync<CaptureLaneLeaseLostException>(async () =>
+                        await lanes.FailAsync(claimed, CaptureLaneHandlerResult.Retry("expired"), token).ConfigureAwait(false))
+                        .ConfigureAwait(false);
+                    var expired = await provider.GetRequiredService<ProcessingGraphOperationsCoordinator>()
+                        .ReadExecutionAsync(claimed.Context.Execution.ExecutionId, token).ConfigureAwait(false);
+                    Assert.IsNotNull(expired);
+                    Assert.AreEqual(ProcessingGraphExecutionStatus.Expired, expired.Status);
+                    Assert.AreEqual("processing.live-deadline", expired.FailureReason);
+                    Assert.IsFalse(File.Exists(receiptPath));
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    var oldExpired = await ReadLegacyArchiveReceiptAsync(stagePath, archive, token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(receiptPath, oldExpired.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    Assert.IsTrue(File.Exists(payload));
+                    Assert.IsTrue(File.Exists(claimed.Context.RawCapture.StoredFrame.AbsolutePath));
+                    return;
+                }
+                fault.Publish.Set();
+                if (retryReceipt)
+                {
+                    var interrupted = await worker.WaitAsync(token).ConfigureAwait(false);
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, interrupted.Outcome);
+                    Assert.AreEqual("processing.post-commit-incomplete", interrupted.Reason);
+                    Assert.IsFalse(File.Exists(receiptPath));
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    if (scenario == "legacy-long-stage")
+                    {
+                        var historicalStage = await ReadLegacyArchiveReceiptAsync(stagePath, archive, token).ConfigureAwait(false);
+                        historicalStage["storageNode"] = string.Empty;
+                        if (OperatingSystem.IsLinux())
+                            Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(historicalStage.ToJsonString()) > 4096);
+                        await File.WriteAllTextAsync(stagePath, historicalStage.ToJsonString(), token).ConfigureAwait(false);
+                        using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+                        await SetArchiveEvidenceAsync(journal, LegacyArchiveIdentity(historicalStage), token).ConfigureAwait(false);
+                    }
+                    await lanes.ReleaseAsync(claimed, token).ConfigureAwait(false);
+                    claimed = await lanes.ClaimAsync(standard, "archive-receipt-retry", config, token).ConfigureAwait(false);
+                    Assert.IsNotNull(claimed);
+                    worker = Task.Run(async () => await handler.HandleAsync(claimed.Context, token).ConfigureAwait(false), token);
+                }
+                await fault.Later.Task.WaitAsync(token).ConfigureAwait(false);
+                stored = storage.List(archive, day, FrameArtifactRole.Preview, 10).Single();
+                Assert.AreEqual(payload, stored.AbsolutePath);
+                var executionStore = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                foreach (var archiveNode in new[] { "ArchiveStorage", "ArchiveAgain" })
+                {
+                    var completedNode = await executionStore.ReadNodeAsync(
+                        claimed.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId, archiveNode, token).ConfigureAwait(false);
+                    Assert.IsNotNull(completedNode);
+                    Assert.AreEqual(DurableProcessingNodeStatus.Completed, completedNode.Status);
+                }
+                pixels = await File.ReadAllBytesAsync(payload, token).ConfigureAwait(false);
+                sidecar = await File.ReadAllBytesAsync(Path.ChangeExtension(payload, ".json"), token).ConfigureAwait(false);
+                using var reopened = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                Assert.AreEqual(stored, reopened.List(archive, day, FrameArtifactRole.Preview, 10).Single());
+                var modernReceipt = await File.ReadAllBytesAsync(receiptPath, token).ConfigureAwait(false);
+                var modern = JsonNode.Parse(modernReceipt)!.AsObject();
+                Assert.AreEqual("ArchiveStorage", modern["storageNode"]!.GetValue<string>());
+                Assert.AreEqual("centered-archive-receipt-v2", modern["schemaVersion"]!.GetValue<string>());
+                Assert.AreEqual(64, modern["root"]!.GetValue<string>().Length);
+                Assert.IsTrue(modernReceipt.Length < 4096);
+                if (longRoot && OperatingSystem.IsLinux())
+                    Assert.IsTrue(payload.Length > 3700);
+
+                if (predecessor && !loseSidecar)
+                {
+                    CollectionAssert.AreEqual(predecessorSidecar, sidecar);
+                    using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+                    var oldCommitted = await ReadLegacyArchiveReceiptAsync(receiptPath, archive, token).ConfigureAwait(false);
+                    await SetArchiveEvidenceAsync(journal, LegacyArchiveIdentity(oldCommitted), token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(receiptPath, oldCommitted.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.AreEqual(stored, storage.List(archive, day, FrameArtifactRole.Preview, 10).Single());
+                    Assert.HasCount(0, reopened.List(archive, day, FrameArtifactRole.Preview, 10), "A detached old receipt has no source authority.");
+                    oldCommitted["executionId"] = Guid.NewGuid();
+                    await File.WriteAllTextAsync(receiptPath, oldCommitted.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    oldCommitted["executionId"] = claimed.Context.Execution!.ExecutionId;
+                    oldCommitted["relativePath"] = "frames/wrong.bin";
+                    await File.WriteAllTextAsync(receiptPath, oldCommitted.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    await File.WriteAllBytesAsync(receiptPath, modernReceipt, token).ConfigureAwait(false);
+                }
+                var copied = Path.Combine(detached, stored.RelativePath);
+                Directory.CreateDirectory(Path.GetDirectoryName(copied)!);
+                File.Copy(payload, copied);
+                File.Copy(Path.ChangeExtension(payload, ".json"), Path.ChangeExtension(copied, ".json"));
+                var sourceIndex = Directory.GetFiles(Path.Combine(archive, "index"), "*.jsonl").Single();
+                Directory.CreateDirectory(Path.Combine(detached, "index"));
+                File.Copy(sourceIndex, Path.Combine(detached, "index", Path.GetFileName(sourceIndex)));
+                Assert.HasCount(predecessor ? 1 : 0, storage.List(detached, day, FrameArtifactRole.Preview, 10));
+                File.Copy(receiptPath, FileSystemFrameStorageService.ArchiveReceiptPath(copied));
+                Assert.HasCount(0, storage.List(detached, day, FrameArtifactRole.Preview, 10), "A receipt cannot travel to another root.");
+            }
+            finally
+            {
+                fault.Publish.Set();
+                fault.Finish.Set();
+            }
+            var handled = await worker.WaitAsync(token).ConfigureAwait(false);
+            Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, handled.Outcome, handled.Reason);
+            await lanes.CompleteAsync(claimed, token).ConfigureAwait(false);
+            if (longRoot)
+                return;
+            var index = Directory.GetFiles(Path.Combine(archive, "index"), "*.jsonl").Single();
+            var indexBytes = await File.ReadAllBytesAsync(index, token).ConfigureAwait(false);
+            clock.Advance(TimeSpan.FromDays(3));
+            using (var retention = CreateRetention())
+                await retention.ApplyRetentionAsync(config, token).ConfigureAwait(false);
+            Assert.IsFalse(File.Exists(receiptPath));
+            Assert.IsFalse(File.Exists(FileSystemFrameStorageService.ArchiveStagePath(stored.AbsolutePath)));
+            Assert.IsFalse(File.Exists(stored.AbsolutePath));
+            if (predecessor)
+                return;
+            Directory.CreateDirectory(Path.GetDirectoryName(stored.AbsolutePath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(index)!);
+            await File.WriteAllBytesAsync(stored.AbsolutePath, pixels, token).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(Path.ChangeExtension(stored.AbsolutePath, ".json"), sidecar, token).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(index, indexBytes, token).ConfigureAwait(false);
+            Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10),
+                "Restoring only the indexed payload and sidecar after retention cannot publish the copy.");
+        }
+        finally
+        {
+            DeleteRoot(root);
+            DeleteRoot(archiveBase);
+            DeleteRoot(detached);
+        }
+    }
+
+    private static string LegacyArchiveIdentity(JsonObject receipt)
+    {
+        var staged = receipt.DeepClone().AsObject();
+        staged["storageNode"] = string.Empty;
+        return CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(staged));
+    }
+
+    private static async Task SetArchiveEvidenceAsync(SqliteConnection journal, string identity, CancellationToken token)
+    {
+        using var oldWriter = journal.CreateCommand();
+        oldWriter.CommandText = """
+            UPDATE processing_node_inputs SET identity_sha256 = $identity
+            WHERE node_id = 'ArchiveStorage' AND kind = 'CanonicalContext' AND name = 'centered-archive';
+            """;
+        oldWriter.Parameters.AddWithValue("$identity", identity);
+        Assert.AreEqual(1, await oldWriter.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+    }
+
+    private static async Task<JsonObject> ReadLegacyArchiveReceiptAsync(
+        string receiptPath, string root, CancellationToken cancellationToken)
+    {
+        var receipt = JsonNode.Parse(await File.ReadAllBytesAsync(receiptPath, cancellationToken).ConfigureAwait(false))!.AsObject();
+        receipt.Remove("schemaVersion");
+        receipt["root"] = StorageRootIdentity.Key(root);
+        receipt["storageNode"] = "ArchiveStorage";
+        return receipt;
+    }
+
+    private sealed class ArchiveSaveInterruption(string root) : ILogger<FileSystemFrameStorageService>
+    {
+        private readonly string _destinationPrefix = Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar;
+        private int _interrupted;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id == 2004 && state is IEnumerable<KeyValuePair<string, object?>> fields &&
+                fields.Any(field => field.Key == "Path" && field.Value is string path &&
+                    path.StartsWith(_destinationPrefix, StringComparison.Ordinal)) &&
+                Interlocked.Exchange(ref _interrupted, 1) == 0)
+                throw new IOException("Interrupted after the destination files and compatibility index were saved.");
+        }
+    }
+
+    private sealed class CenteredArchiveBarrier(bool interruptReceipt, CancellationToken token) : ICaptureProcessingFaultInjector, IDisposable
+    {
+        internal TaskCompletionSource Staged { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Later { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal ManualResetEventSlim Publish { get; } = new();
+        internal ManualResetEventSlim Finish { get; } = new();
+        internal Action? PreparePredecessor { get; set; }
+        private int _predecessorPrepared;
+        private int _receiptFault;
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution && nodeId == "ArchiveStorage" &&
+                Interlocked.Exchange(ref _predecessorPrepared, 1) == 0)
+                PreparePredecessor?.Invoke();
+            if (point == CaptureProcessingFaultPoint.AfterArchiveCopyStaged && nodeId == "ArchiveStorage")
+            {
+                Staged.TrySetResult();
+                Publish.Wait(token);
+            }
+            if (interruptReceipt && point == CaptureProcessingFaultPoint.AfterArchiveCopyCommittedBeforeReceipt &&
+                nodeId == "ArchiveStorage" && Interlocked.Exchange(ref _receiptFault, 1) == 0)
+                throw new IOException("Simulated interruption after archive commit.");
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution && nodeId == "tail")
+            {
+                Later.TrySetResult();
+                Finish.Wait(token);
+            }
+        }
+
+        public void Dispose()
+        {
+            Publish.Dispose();
+            Finish.Dispose();
+        }
+    }
+
+    private sealed class CenteredPublicationBarrier(string calibrationNode, CancellationToken cancellationToken) : ICaptureProcessingFaultInjector, IDisposable
     {
         internal TaskCompletionSource PixelStaged { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource LaterNodeEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -861,7 +1753,7 @@ public sealed partial class RawCaptureIngressTests
 
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
-            if (point == CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit && nodeId == "linear" &&
+            if (point == CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit && nodeId == calibrationNode &&
                 Interlocked.Exchange(ref _firstFault, 1) == 0)
             {
                 PixelStaged.TrySetResult();

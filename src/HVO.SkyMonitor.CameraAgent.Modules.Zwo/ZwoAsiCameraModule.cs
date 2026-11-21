@@ -119,7 +119,7 @@ public sealed class ZwoAsiCameraModule :
                 }
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (config.CenteredExposure is not null)
+                if (config.CenteredExposure is not null || fenceAttachment is not null)
                 {
                     var verifiedSerial = _native.GetSerialNumber(_cameraId);
                     if (!verifiedSerial.AsSpan().SequenceEqual(runtime.Serial))
@@ -197,6 +197,8 @@ public sealed class ZwoAsiCameraModule :
     public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
         => CaptureCoreAsync(request, null, cancellationToken);
 
+    public bool EnforcesBoundStartLimit => true;
+
     public Task<CaptureResult> CaptureBoundAsync(
         ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
         => CaptureCoreAsync(request, attempt, cancellationToken);
@@ -234,6 +236,8 @@ public sealed class ZwoAsiCameraModule :
                 if (native.GetExposureStatus(_cameraId) == AsiExposureStatus.Working)
                     throw new InvalidOperationException("A prior ASI exposure is still active.");
                 _lastBoundAttempt = attempt;
+                captureToken.ThrowIfCancellationRequested();
+                request.RequireOpenBoundStart(_timeProvider.GetUtcNow());
             }
             else if (attempt is not null)
             {
@@ -261,6 +265,8 @@ public sealed class ZwoAsiCameraModule :
                 if (attempt is not null)
                 {
                     captureToken.ThrowIfCancellationRequested();
+                    exposureStartedUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+                    request.RequireOpenBoundStart(exposureStartedUtc, _setpointAppliedUtc);
                     _exposureActive = true;
                     native.StartExposure(_cameraId, dark: false);
                 }

@@ -1,9 +1,22 @@
+using HVO.SkyMonitor.Astronomy;
+
 namespace HVO.SkyMonitor.Processing;
 
 /// <summary>Existing capture analysis controls, without replacing retained scientific inputs.</summary>
 public static class CaptureAnalysisOptionDescriptors
 {
     public const string CenteredAstrometryAlias = "ExposureMeasuredAstrometry";
+
+    public static ProcessingNodeOptionsDescriptor Prediction { get; } = new(
+        "astrometry-prediction-options-v1", "AstrometryPrediction", "canonical-projected-scene-v1",
+        "Astrometry catalog prediction",
+        "Project catalog stars from the captured rig and site for the optional measured branch.",
+        [
+            ProcessingOptionDescriptor.RealNumber("maximumMagnitude", "maximumMagnitude", "Maximum star magnitude",
+                "Include catalog stars through this magnitude.", 5, -30, 30, "mag"),
+            ProcessingOptionDescriptor.WholeNumber("maximumResults", "maximumResults", "Maximum star results",
+                "Limit catalog stars after projection.", 2000, 1, ProjectedSceneJson.MaximumObjectCount, "stars")
+        ]);
 
     public static ProcessingNodeOptionsDescriptor StellarAssociations { get; } = new(
         "measured-stellar-association-options-v1", "MeasuredStellarAssociations", "measured-stellar-associations-v1",
@@ -12,6 +25,8 @@ public static class CaptureAnalysisOptionDescriptors
         [
             ProcessingOptionDescriptor.Toggle("enabled", "enabled", "Enable measured stellar associations",
                 "Run this node. Enabled dependents still require their measured inputs.", true),
+            ProcessingOptionDescriptor.Toggle("useAstrometryPrediction", "useAstrometryPrediction", "Use independent catalog prediction",
+                "Select this when the input is the AstrometryPrediction node.", false),
             ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "Measured association output variant",
                 "Metadata output route. Update variant-specific dependent inputs separately.", "measured-stellar-associations-v1", 128, isIdentifier: true)
         ]);
@@ -20,6 +35,8 @@ public static class CaptureAnalysisOptionDescriptors
         "measured-astrometry-options-v1", "MeasuredAstrometry", "measured-astrometry-v1", "Measured astrometry",
         "Configure the existing sampled background assessment. The retained catalog, clock, previous accepted assessment and solver settings are preserved. This does not change rig calibration or qualify measured positions.",
         [
+            ProcessingOptionDescriptor.Toggle("useAstrometryPrediction", "useAstrometryPrediction", "Use independent catalog prediction",
+                "Select this when this node and the associations both depend on AstrometryPrediction.", false),
             ProcessingOptionDescriptor.Text("outputVariant", "outputVariant", "Astrometry output variant",
                 "Assessment metadata output route. Its retained context uses this variant plus -context.", "measured-astrometry-v1", 96, isIdentifier: true),
             ProcessingOptionDescriptor.WholeNumber("captureStride", "captureStride", "Capture stride",
@@ -30,11 +47,11 @@ public static class CaptureAnalysisOptionDescriptors
         "exposure-stellar-association-options-v1", ExposureAssociationProducts.StepAlias, ExposureAssociationProducts.ImplementationVersion,
         "Exposure stellar associations",
         "Associate retained exposure centroids with the capture's independent catalog prediction. Association thresholds and label policy are preserved.",
-        StellarAssociations.Options);
+        StellarAssociations.Options.Where(static option => option.Key != "useAstrometryPrediction"));
 
     public static ProcessingNodeOptionsDescriptor CenteredAstrometry { get; } = new(
         "exposure-measured-astrometry-options-v1", CenteredAstrometryAlias, MeasuredAstrometryRecipe.AlgorithmVersion,
         "Exposure measured astrometry",
         "Configure sampled assessments of retained exposure centroids. The retained catalog, clock and solver settings are preserved.",
-        Astrometry.Options);
+        Astrometry.Options.Where(static option => option.Key != "useAstrometryPrediction"));
 }

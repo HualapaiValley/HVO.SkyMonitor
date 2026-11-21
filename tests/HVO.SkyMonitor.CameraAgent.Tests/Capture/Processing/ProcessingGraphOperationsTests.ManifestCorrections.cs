@@ -120,7 +120,7 @@ public sealed partial class ProcessingGraphOperationsTests
                 Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
                 CollectionAssert.AreEqual(frozenPlan, (byte[])reader[0]);
                 CollectionAssert.AreEqual(frozenGraph, (byte[])reader[1]);
-                Assert.AreEqual(9L, reader.GetInt64(2));
+                Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, reader.GetInt64(2));
             }
         }
         finally { SqliteConnection.ClearAllPools(); Directory.Delete(root, recursive: true); }

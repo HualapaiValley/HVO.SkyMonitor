@@ -107,16 +107,24 @@ public sealed class SqliteCaptureScheduleStore(
     public Task<CaptureScheduleStoreSnapshot> InitializeAsync(
         CameraModuleConfig fileConfiguration,
         CancellationToken cancellationToken)
-        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, cancellationToken);
+        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, validateBootstrap: null, cancellationToken);
+
+    internal Task<CaptureScheduleStoreSnapshot> InitializeAsync(
+        CameraModuleConfig fileConfiguration,
+        Action<CameraModuleConfig> validateBootstrap,
+        CancellationToken cancellationToken)
+        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, validateBootstrap, cancellationToken);
 
     internal Task<CaptureScheduleStoreSnapshot> InitializeRuntimeAsync(
         CameraModuleConfig effectiveConfiguration,
+        Action<CameraModuleConfig> validateBootstrap,
         CancellationToken cancellationToken)
-        => InitializeAsync(effectiveConfiguration, preserveFileIdentity: true, cancellationToken);
+        => InitializeAsync(effectiveConfiguration, preserveFileIdentity: true, validateBootstrap, cancellationToken);
 
     private async Task<CaptureScheduleStoreSnapshot> InitializeAsync(
         CameraModuleConfig configuration,
         bool preserveFileIdentity,
+        Action<CameraModuleConfig>? validateBootstrap,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -139,6 +147,7 @@ public sealed class SqliteCaptureScheduleStore(
                 await VerifyNamedRigAsync(connection, transaction, snapshot.ActiveRevision.Profile, cancellationToken).ConfigureAwait(false);
             if (snapshot is null)
             {
+                validateBootstrap?.Invoke(configuration);
                 var source = configuration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
                 var revision = await InsertRevisionAsync(
                     connection, transaction, fileProfile, source, "system", "initial configuration", cancellationToken)
@@ -688,10 +697,20 @@ public sealed class SqliteCaptureScheduleStore(
         }
     }
 
-    public async Task<CaptureSchedulePreview?> TryReadPreviewAsync(
+    public Task<CaptureSchedulePreview?> TryReadPreviewAsync(
         CaptureScheduleRevisionSnapshot revision,
         CaptureLocationProvenance location,
         DateTimeOffset utc,
+        CancellationToken cancellationToken)
+        => TryReadPreviewAsync(revision, location, utc, CaptureScheduleIntervalExpander.AlgorithmVersion,
+            null, cancellationToken);
+
+    internal async Task<CaptureSchedulePreview?> TryReadPreviewAsync(
+        CaptureScheduleRevisionSnapshot revision,
+        CaptureLocationProvenance location,
+        DateTimeOffset utc,
+        string requestedAlgorithmVersion,
+        DateTimeOffset? requiredStartUtc,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(revision);
@@ -716,12 +735,16 @@ public sealed class SqliteCaptureScheduleStore(
                   AND deployment_location_id = $location
                   AND deployment_location_version = $location_version
                   AND preview_start_unix_ms <= $utc AND preview_end_unix_ms > $utc
+                  AND expansion_algorithm_version = $algorithm
+                  AND ($start IS NULL OR preview_start_unix_ms = $start)
                 ORDER BY preview_start_unix_ms DESC LIMIT 1;
                 """;
             command.Parameters.AddWithValue("$revision", revision.RevisionId);
             command.Parameters.AddWithValue("$location", location.LocationId);
             command.Parameters.AddWithValue("$location_version", location.Version);
             command.Parameters.AddWithValue("$utc", utc.ToUniversalTime().ToUnixTimeMilliseconds());
+            command.Parameters.AddWithValue("$algorithm", requestedAlgorithmVersion);
+            command.Parameters.AddWithValue("$start", requiredStartUtc is { } start ? start.ToUnixTimeMilliseconds() : DBNull.Value);
             using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
@@ -818,7 +841,7 @@ public sealed class SqliteCaptureScheduleStore(
             location.LocationId,
             location.Version
         });
-        if (!string.Equals(algorithmVersion, CaptureScheduleIntervalExpander.AlgorithmVersion, StringComparison.Ordinal) ||
+        if (!string.Equals(algorithmVersion, requestedAlgorithmVersion, StringComparison.Ordinal) ||
             !string.Equals(expansionKey, expectedExpansionKey, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(
                 expansionSha256,

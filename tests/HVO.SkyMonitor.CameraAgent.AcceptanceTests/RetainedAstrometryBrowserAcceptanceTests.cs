@@ -37,6 +37,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
     [DataRow("unavailable", "Unavailable")]
     [DataRow("budget", "Budget exceeded")]
     [DataRow("no-data", "Unavailable")]
+    [DataRow("stack", "Accepted")]
     public async Task RetainedAstrometryUsesRealCaptureBrowserAndBoundedReadsAsync(string scenario, string status)
     {
         ArgumentNullException.ThrowIfNull(scenario);
@@ -212,10 +213,20 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
                 Assert.AreEqual(280d, double.Parse(await page.GetByLabel("X pixel", new() { Exact = true }).InputValueAsync().ConfigureAwait(false), CultureInfo.InvariantCulture), 1e-7);
                 Assert.AreEqual(240d, double.Parse(await page.GetByLabel("Y pixel", new() { Exact = true }).InputValueAsync().ConfigureAwait(false), CultureInfo.InvariantCulture), 1e-7);
                 renderSamples.Add(new { route, renderMilliseconds, off, on, sky, horizontal });
-                if (route != "/") await SaveAstrometrySelectionAsync(page, host, identity, output).ConfigureAwait(false);
+                if (route != "/") await SaveAstrometrySelectionAsync(page, host, identity.CaptureId, identity.ManifestIdentitySha256, output, 512).ConfigureAwait(false);
             }
             else
             {
+                if (scenario == "stack" && route == "/")
+                {
+                    var retained = await host.Services.GetRequiredService<ICameraAgentRetainedAstrometryService>()
+                        .GetAsync(identity.CaptureId, CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsTrue(retained.Solution!.Assessment.HasMeasuredMapping);
+                    var summary = page.Locator(".astrometry-card .latest-measured-solution");
+                    await summary.Locator("time").WaitForAsync().ConfigureAwait(false);
+                    Assert.AreEqual(retained.Solution.Assessment.Frame.MidpointUtc.ToString("O"), await summary.Locator("time").GetAttributeAsync("datetime").ConfigureAwait(false));
+                    Assert.IsEmpty(await page.Locator("g[data-layer-kind='" + AstrometricDiagnosticPresentation.AssociationsLayer + "'],g[data-layer-kind='" + AstrometricDiagnosticPresentation.ResidualsLayer + "']").AllAsync().ConfigureAwait(false));
+                }
                 if (scenario == "no-data") Assert.Contains("No astrometric assessment was retained for this capture.", await card.InnerTextAsync().ConfigureAwait(false), StringComparison.Ordinal);
                 Assert.IsTrue(await page.GetByRole(AriaRole.Button, new() { Name = "Pixel to sky", Exact = true }).IsDisabledAsync().ConfigureAwait(false));
                 Assert.IsTrue(await associations.IsDisabledAsync().ConfigureAwait(false));
@@ -327,7 +338,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         return result;
     }
 
-    private static async Task SaveAstrometrySelectionAsync(IPage page, CameraAgentKestrelFixture host, AstrometryBrowserFixture identity, string output)
+    private static async Task SaveAstrometrySelectionAsync(IPage page, CameraAgentKestrelFixture host, Guid captureId, string manifestIdentity, string output, int size)
     {
         await page.Locator(".sky-layer-save button").ClickAsync().ConfigureAwait(false);
         var link = page.Locator(".sky-layer-result:visible a").Filter(new() { HasText = "Download original full-resolution stack" });
@@ -338,8 +349,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
             .ReadOutputByArtifactIdAsync(id, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(product);
         Assert.IsNotNull(product.Descriptor);
-        Assert.AreEqual(512, product.Descriptor.Layout.Width);
-        Assert.AreEqual(512, product.Descriptor.Layout.Height);
+        Assert.AreEqual(size, product.Descriptor.Layout.Width);
+        Assert.AreEqual(size, product.Descriptor.Layout.Height);
         var payload = await File.ReadAllBytesAsync(Path.Combine(host.Root, product.PayloadRelativePath)).ConfigureAwait(false);
         Assert.AreEqual(product.Artifact.ChecksumSha256, PayloadChecksum.ComputeSha256(payload));
         var downloaded = await page.Context.APIRequest.GetAsync(new Uri(host.BaseAddress, url).ToString()).ConfigureAwait(false);
@@ -350,8 +361,8 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         }
         finally { await downloaded.DisposeAsync().ConfigureAwait(false); }
         var shown = (await host.Services.GetRequiredService<ICameraAgentLayeredPresentationService>()
-            .GetAsync(identity.CaptureId, CancellationToken.None).ConfigureAwait(false)).Presentation!;
-        Assert.AreEqual(identity.ManifestIdentitySha256, shown.ManifestIdentitySha256);
+            .GetAsync(captureId, CancellationToken.None).ConfigureAwait(false)).Presentation!;
+        Assert.AreEqual(manifestIdentity, shown.ManifestIdentitySha256);
         Assert.AreEqual(shown.PresentationIdentitySha256, await page.Locator(".sky-layer-workspace").GetAttributeAsync("data-presentation-identity").ConfigureAwait(false));
         var manifest = await host.Services.GetRequiredService<SqliteCaptureProcessingStore>()
             .ReadOutputByArtifactIdAsync(shown.ManifestArtifactId, CancellationToken.None).ConfigureAwait(false);
@@ -363,7 +374,7 @@ public sealed partial class RetainedAstrometryBrowserAcceptanceTests
         await File.WriteAllBytesAsync(Path.Combine(output, "frozen-export.bin"), payload).ConfigureAwait(false);
         await File.WriteAllTextAsync(Path.Combine(output, "frozen-export.json"), JsonSerializer.Serialize(new
         {
-            identity.CaptureId,
+            captureId,
             product.Artifact,
             product.Descriptor.Layout,
             product.PayloadRelativePath,

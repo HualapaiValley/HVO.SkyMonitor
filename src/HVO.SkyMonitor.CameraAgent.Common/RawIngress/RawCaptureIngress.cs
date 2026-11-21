@@ -59,6 +59,7 @@ internal sealed partial class RawCaptureIngress :
     private readonly IProjectedSceneStagingReconciler? _projectedSceneStaging;
     private readonly ProjectedSceneStageLifecycleCoordinator? _projectedSceneLifecycle;
     private readonly ProcessingGraphOperationsCoordinator? _graphOperations;
+    private readonly SqliteCaptureProcessingStore? _processingStore;
 
     public RawCaptureIngress(
         IOptions<CameraAgentHostOptions> options,
@@ -77,7 +78,8 @@ internal sealed partial class RawCaptureIngress :
         ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
         ProcessingGraphOperationsCoordinator? graphOperations = null,
         Capture.CaptureMaintenanceGate? maintenanceGate = null,
-        CenteredExposureProductChanges? centeredProductChanges = null)
+        CenteredExposureProductChanges? centeredProductChanges = null,
+        SqliteCaptureProcessingStore? processingStore = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -93,6 +95,7 @@ internal sealed partial class RawCaptureIngress :
         _projectedSceneStaging = projectedSceneStaging;
         _projectedSceneLifecycle = projectedSceneLifecycle;
         _graphOperations = graphOperations;
+        _processingStore = processingStore;
         _maintenanceGate = maintenanceGate;
         if (maintenanceGate is not null) maintenanceGate.CaptureRunning += RunDeferredMaintenance;
         var resolvedLaneFaultInjector = laneFaultInjector ?? new NullCaptureLaneFaultInjector();
@@ -121,7 +124,9 @@ internal sealed partial class RawCaptureIngress :
             timeProvider,
             resolvedLaneFaultInjector,
             laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait),
-            InvalidateEvidence, centeredProductChanges);
+            InvalidateEvidence,
+            centeredProductChanges,
+            processingStore is null ? null : processingStore.NotifyLiveAstrometryPublished);
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -479,6 +484,10 @@ internal sealed partial class RawCaptureIngress :
             {
                 EnsureCapacity(frame.PixelData.Length);
             }
+            var centeredRequest = centered is null ? null : await _journal.ReadCenteredRequestAsync(
+                centered.Source, stableIds.CaptureId, cancellationToken).ConfigureAwait(false);
+            if (centeredRequest is not null && centeredRequest != submission.Request.RequestedSetpoint)
+                throw new RawIngressConflictException("The centered retry differs from the dispatched settings request.");
             var payloadSha256 = Convert.ToHexString(SHA256.HashData(frame.PixelData.Span));
             _faultInjector.Inject(RawIngressFaultPoint.BeforeIdentityReservation);
             cancellationToken.ThrowIfCancellationRequested();
@@ -526,6 +535,14 @@ internal sealed partial class RawCaptureIngress :
                 if (manifest.Descriptor.CycleEvidence is null)
                 {
                     expectedDescriptor = expectedDescriptor with { CycleEvidence = null };
+                }
+                if (manifest.Descriptor.CenteredAcquisition?.Module is { RequestedSetpoint: null } &&
+                    expectedDescriptor.CenteredAcquisition is { Module: { } reporting } acquisition)
+                {
+                    expectedDescriptor = expectedDescriptor with
+                    {
+                        CenteredAcquisition = acquisition with { Module = reporting with { RequestedSetpoint = null } }
+                    };
                 }
                 if (manifest.Descriptor.Location is null)
                 {
@@ -675,7 +692,11 @@ internal sealed partial class RawCaptureIngress :
             // The centered sidecar is the durable source of the submission projection in both admission paths.
             var context = centered is null
                 ? CaptureLaneEnvelopeSerializer.Serialize(durableConfiguration, committedSubmission)
-                : SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor);
+                : SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor, centeredRequest);
+            var predecessorContextSha256 = centered is not null &&
+                committedDescriptor.CenteredAcquisition?.Module?.RequestedSetpoint is null
+                ? SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor).Sha256
+                : null;
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
@@ -686,6 +707,8 @@ internal sealed partial class RawCaptureIngress :
                     context.Sha256,
                     _lanePolicy.Definitions,
                     liveExecution,
+                    centeredRequest,
+                    predecessorContextSha256,
                     CancellationToken.None).ConfigureAwait(false);
                 if (outcome == RawIngressOutcome.Committed)
                 {
@@ -895,17 +918,20 @@ internal sealed partial class RawCaptureIngress :
     }
 
     private static (byte[] Json, string Sha256) SerializeCenteredLaneEnvelope(
-        CameraModuleConfig configuration, ReconstructionDescriptor descriptor)
+        CameraModuleConfig configuration, ReconstructionDescriptor descriptor, CaptureSetpoint? requested = null)
     {
-        var envelope = CreateRecoveredEnvelope(configuration, descriptor);
+        var envelope = CreateRecoveredEnvelope(configuration, descriptor, requested);
         return CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
     }
 
     private static CaptureLaneEnvelope CreateRecoveredEnvelope(
         CameraModuleConfig configuration,
-        ReconstructionDescriptor descriptor)
+        ReconstructionDescriptor descriptor,
+        CaptureSetpoint? dispatchedRequest = null)
     {
-        var requested = new CaptureSetpoint(
+        var acquisition = descriptor.CenteredAcquisition;
+        var reporting = acquisition?.Module;
+        var requested = dispatchedRequest ?? reporting?.RequestedSetpoint ?? new CaptureSetpoint(
             descriptor.Controls.RequestedExposure,
             descriptor.Controls.RequestedGain,
             null,
@@ -915,8 +941,6 @@ internal sealed partial class RawCaptureIngress :
             descriptor.Controls.EffectiveGain,
             null,
             null);
-        var acquisition = descriptor.CenteredAcquisition;
-        var reporting = acquisition?.Module;
         var effectiveInterval = acquisition?.EffectiveInterval ?? configuration.Rig.Pipeline.CaptureInterval;
         var request = new CaptureRequest(
             descriptor.Timing.RequestedStartUtc,

@@ -848,7 +848,7 @@ public static class ProcessingNodeOptionsDescriptors
             CalibrationOptionDescriptors.References, ProjectedSceneOptionDescriptors.Descriptor, AnnotationOptionDescriptors.Descriptor,
             RetainedLayerOptionDescriptors.Cloud, RetainedLayerOptionDescriptors.Environment, PresentationMaterializerOptionDescriptors.Descriptor,
             OverlayManifestOptionDescriptors.Descriptor,
-            CaptureAnalysisOptionDescriptors.StellarAssociations, CaptureAnalysisOptionDescriptors.Astrometry,
+            CaptureAnalysisOptionDescriptors.Prediction, CaptureAnalysisOptionDescriptors.StellarAssociations, CaptureAnalysisOptionDescriptors.Astrometry,
             CaptureAnalysisOptionDescriptors.CenteredStellarAssociations, CaptureAnalysisOptionDescriptors.CenteredAstrometry,
             CaptureSatelliteOptionDescriptors.Tracks, CaptureSatelliteOptionDescriptors.Layer, StorageOptionDescriptors.Descriptor,
             .. PreviewOptionDescriptors.All];

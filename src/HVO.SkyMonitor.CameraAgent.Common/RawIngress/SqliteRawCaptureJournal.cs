@@ -69,6 +69,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "ix_processing_outputs_role",
         "ix_processing_outputs_recipe",
         "ix_processing_outputs_product",
+        "ix_processing_outputs_astrometry_lookup",
         "ix_processing_outputs_retention_available",
         "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact",
@@ -471,10 +472,22 @@ internal sealed partial class SqliteRawCaptureJournal(
         string? contextSha256,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
         ProcessingLiveExecutionSeed? liveExecution,
+        CancellationToken cancellationToken) =>
+        CommitAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution, null, null, cancellationToken);
+
+    internal Task<RawIngressOutcome> CommitAsync(
+        RawIngressJournalEntry entry,
+        byte[]? contextJson,
+        string? contextSha256,
+        IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        ProcessingLiveExecutionSeed? liveExecution,
+        CaptureSetpoint? centeredRequest,
+        string? predecessorContextSha256,
         CancellationToken cancellationToken)
         => TrackTransactionAsync(
             "commit",
-            () => CommitCoreAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution, cancellationToken));
+            () => CommitCoreAsync(entry, contextJson, contextSha256, laneDefinitions, liveExecution,
+                centeredRequest, predecessorContextSha256, cancellationToken));
 
     internal Task<RawIngressOutcome> CommitAsync(
         RawIngressJournalEntry entry,
@@ -490,6 +503,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         string? contextSha256,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
         ProcessingLiveExecutionSeed? liveExecution,
+        CaptureSetpoint? centeredRequest,
+        string? predecessorContextSha256,
         CancellationToken cancellationToken)
     {
         using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
@@ -497,13 +512,16 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var transaction = BeginImmediate(connection);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalTransactionBegan);
         var claims = await ReadClaimsAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        await VerifyCenteredRequestAsync(connection, transaction, entry, centeredRequest,
+            allowUnbound: claims.Count == 0, cancellationToken).ConfigureAwait(false);
         if (claims.Count > 0)
         {
             if (claims.Count == 1 && IsExact(claims[0], entry))
             {
                 var existingRowId = await ReadRawRowIdAsync(connection, transaction, entry.CaptureId, cancellationToken).ConfigureAwait(false);
                 await InsertContextAsync(
-                    connection, transaction, existingRowId, contextJson, contextSha256, cancellationToken).ConfigureAwait(false);
+                    connection, transaction, existingRowId, contextJson, contextSha256, predecessorContextSha256, cancellationToken)
+                    .ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 return RawIngressOutcome.Existing;
             }
@@ -1241,6 +1259,17 @@ internal sealed partial class SqliteRawCaptureJournal(
         long rawRowId,
         byte[]? contextJson,
         string? contextSha256,
+        CancellationToken cancellationToken) =>
+        await InsertContextAsync(connection, transaction, rawRowId, contextJson, contextSha256, null, cancellationToken)
+            .ConfigureAwait(false);
+
+    private static async Task InsertContextAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        long rawRowId,
+        byte[]? contextJson,
+        string? contextSha256,
+        string? predecessorContextSha256,
         CancellationToken cancellationToken)
     {
         if (contextJson is null || contextSha256 is null)
@@ -1269,7 +1298,8 @@ internal sealed partial class SqliteRawCaptureJournal(
             System.Globalization.CultureInfo.InvariantCulture);
         // A sidecar-only recovery cannot recreate transient loop timing. Keep its descriptor-derived context;
         // the retry's immutable descriptor/payload were already checked, and must not overwrite frozen evidence.
-        if (!string.IsNullOrEmpty(existing) && !string.Equals(existing, contextSha256, StringComparison.Ordinal))
+        if (!string.IsNullOrEmpty(existing) && !string.Equals(existing, contextSha256, StringComparison.Ordinal) &&
+            !string.Equals(existing, predecessorContextSha256, StringComparison.Ordinal))
         {
             throw new RawIngressConflictException("Capture lane context differs from the committed retry context.");
         }
@@ -1474,6 +1504,8 @@ internal sealed partial class SqliteRawCaptureJournal(
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var claims = await ReadClaimsAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        await VerifyCenteredRequestAsync(connection, transaction, entry, centered?.RequestedSetpoint,
+            allowUnbound: claims.Count == 0, cancellationToken).ConfigureAwait(false);
         if (claims.Count > 0)
         {
             if (claims.Count == 1 && IsExact(claims[0], entry))

@@ -15,7 +15,7 @@ public sealed class CameraAgentSettingsCatalogueTests
 {
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
     private static CameraAgentSettingDefinition MinimumRefresh => CameraAgentSettingsCatalogue.Find("currentSky.minimumRefreshSeconds")!;
-    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "schedule", "currentSky", "orbitalElements", "satellitePlanning", "timeDataRefresh", "spaceWeather"];
+    private static readonly string[] GroupOrder = ["site", "location", "skyMap", "camera", "virtualSky", "schedule", "currentSky", "orbitalElements", "satellitePlanning", "timeDataRefresh", "spaceWeather"];
     private static readonly string[] SwitchChoices = ["false", "true"];
 
     [TestMethod]

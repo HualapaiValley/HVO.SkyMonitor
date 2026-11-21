@@ -11,7 +11,7 @@ internal sealed record CenteredExposureReservation(
     CenteredPendingAttempt Pending, ProcessingGraphRevisionSnapshot Revision);
 
 internal sealed record RecoveredCenteredAdmission(
-    ProcessingLiveExecutionSeed Execution, byte[] ContextJson, string ContextSha256);
+    ProcessingLiveExecutionSeed Execution, byte[] ContextJson, string ContextSha256, CaptureSetpoint RequestedSetpoint);
 
 internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
 {
@@ -85,7 +85,8 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         CancellationToken cancellationToken,
         string? deviceIdentity = null,
         CenteredScheduleBinding? schedule = null,
-        bool admissionInterrupted = false)
+        bool admissionInterrupted = false,
+        long? admissionStateVersion = null)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         var profile = configuration.CenteredExposure ??
@@ -104,13 +105,13 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         var calibrationOptions = linear?.Options is { } options
             ? options.Deserialize<CalibrationProcessingStepOptions>(JsonSerializerOptions.Web)
             : null;
-        var linearNodeId = linear is null ? null : string.IsNullOrWhiteSpace(linear.Id) ? linear.Type : linear.Id.Trim();
-        if (linearNodeId is not null &&
-            !revision.Nodes.Any(node => node.NodeId.Equals(linearNodeId, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("Centered exposure requires an executable pinned calibration slot.");
+        var configuredLinearId = linear is null ? null : string.IsNullOrWhiteSpace(linear.Id) ? linear.Type : linear.Id.Trim();
+        var linearNodeId = configuredLinearId is null ? null
+            : revision.Nodes.SingleOrDefault(node => node.NodeId.Equals(configuredLinearId, StringComparison.OrdinalIgnoreCase))?.NodeId
+                ?? throw new InvalidOperationException("Centered exposure requires an executable pinned calibration slot.");
         if (calibrationOptions?.UsesCalibrationLibrary != true || calibration is null)
             return await ReserveCenteredRunAsync(configuration, resources, revision, camera, location, linearNodeId,
-                calibrationOptions, null, deviceIdentity, schedule, admissionInterrupted, cancellationToken).ConfigureAwait(false);
+                calibrationOptions, null, deviceIdentity, schedule, admissionInterrupted, admissionStateVersion, cancellationToken).ConfigureAwait(false);
 
         var root = _options.RawIngressRoot;
         if (!calibration.OwnsStorageRoot(root))
@@ -128,7 +129,7 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
                     ? new(bundle.Bundle.BundleId, bundle.BundleIdentitySha256, state.Version)
                     : null;
                 return await ReserveCenteredRunAsync(configuration, resources, revision, camera, location, linearNodeId,
-                    calibrationOptions, binding, deviceIdentity, schedule, admissionInterrupted, cancellationToken).ConfigureAwait(false);
+                    calibrationOptions, binding, deviceIdentity, schedule, admissionInterrupted, admissionStateVersion, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -153,6 +154,7 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         string? deviceIdentity,
         CenteredScheduleBinding? schedule,
         bool admissionInterrupted,
+        long? admissionStateVersion,
         CancellationToken cancellationToken)
     {
         var pending = await _journal.ReadCenteredPendingAsync(camera, cancellationToken).ConfigureAwait(false);
@@ -166,7 +168,10 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             },
             location, resources, linearNodeId,
             linearNodeId is null ? null : (calibrationOptions ?? new CalibrationProcessingStepOptions()).OutputVariant,
-            pinnedCalibration, deviceIdentity, schedule);
+            pinnedCalibration, deviceIdentity, schedule)
+        {
+            AdmissionStateVersion = admissionStateVersion
+        };
         var hash = PayloadChecksum.ComputeSha256(snapshot.Serialize());
         if (pending is not null && pending.RunHash == hash && !admissionInterrupted)
         {
@@ -174,7 +179,8 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
             return new(pending, revision);
         }
 
-        var reason = admissionInterrupted ? "schedule-admission-interrupted" :
+        var reason = admissionInterrupted || pending is not null && pending.Run.AdmissionStateVersion != admissionStateVersion
+            ? "schedule-admission-interrupted" :
             pending is not null && pending.Run.Schedule != schedule ? "schedule-grant-changed" : "generation-replaced";
         await _journal.ExpireCenteredRunsAsync(camera.AgentId, camera.CameraId, reason,
             uncertainOnly: false, cancellationToken).ConfigureAwait(false);
@@ -197,6 +203,9 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
 
     internal Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
         => _journal.ExpireCenteredPendingAsync(attempt, cancellationToken);
+
+    internal Task RefuseCenteredStartAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+        => _journal.RefuseCenteredStartAsync(attempt, cancellationToken);
 
     internal async Task<RawCaptureReceipt> AcceptCenteredAsync(
         CameraModuleConfig configuration,
@@ -246,8 +255,10 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         var (seed, configuration) = await _graphOperations.PrepareRecoveredLiveExecutionAsync(
             run.Configuration, descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
             descriptor.Timing.DurableIngressUtc, cancellationToken, revision).ConfigureAwait(false);
-        var context = SerializeCenteredLaneEnvelope(configuration, descriptor);
-        return new(seed, context.Json, context.Sha256);
+        var requested = await _journal.ReadCenteredRequestAsync(centered.Source,
+            descriptor.Capture.CaptureId, cancellationToken).ConfigureAwait(false);
+        var context = SerializeCenteredLaneEnvelope(configuration, descriptor, requested);
+        return new(seed, context.Json, context.Sha256, requested);
     }
 
     internal Task<CenteredRawEvidence?> ReadCenteredRawAsync(ExposureKey key, CancellationToken cancellationToken)

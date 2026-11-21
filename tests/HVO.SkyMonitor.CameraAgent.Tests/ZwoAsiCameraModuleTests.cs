@@ -1055,7 +1055,7 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual($"ZWO {profile.Model}", frame.Metadata.SourceId);
     }
 
-    private static ZwoAsiCameraModule Module(FakeAsiNativeApi native)
+    internal static ZwoAsiCameraModule Module(FakeAsiNativeApi native)
         => new(TimeProvider.System, _ => native, ResolveEnvironmentVariable);
 
     private static CameraModuleDocument LoadSample(SupportedProfile profile)
@@ -1158,6 +1158,73 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(9d, actual.Frame.Metadata.Gain);
         Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
     }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(0, false)]
+    [DataRow(9, false)]
+    [DataRow(10, true)]
+    [DataRow(11, true)]
+    [DataRow(-1, true)]
+    public async Task CenteredZwoReadsBackBothControlsBeforeCheckingExclusiveStartLimit(int shiftMilliseconds, bool refused)
+    {
+        var now = new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero);
+        var clock = new ExposureTestTimeProvider(now);
+        var native = new FakeAsiNativeApi { ExposureStatuses = new([AsiExposureStatus.Idle]) };
+        await using var module = new ZwoAsiCameraModule(clock, _ => native, ResolveEnvironmentVariable);
+        var config = CreateConfig() with { CenteredExposure = new("physical", CenteredExposureProfile.CurrentExecutionVersion) };
+        await module.InitializeAsync(config, CancellationToken.None);
+        var camera = new CameraKey(config.AgentId!, "physical");
+        var attempt = new ExposureAttemptKey(camera, Guid.NewGuid(), 104, Guid.NewGuid());
+        native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+        native.ControlRead = type =>
+        {
+            if (type == AsiControlType.Gain)
+                clock.ShiftUtc(TimeSpan.FromMilliseconds(shiftMilliseconds));
+        };
+        var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(90), 17, null, null))
+        {
+            BoundStartNotBeforeUtc = now,
+            BoundStartBeforeUtc = now.AddMilliseconds(10)
+        };
+        if (refused)
+        {
+            await Assert.ThrowsExactlyAsync<CaptureStartWindowClosedException>(
+                () => module.CaptureBoundAsync(attempt, request, CancellationToken.None));
+            Assert.IsFalse(native.Calls.Contains("StartExposure"));
+            Assert.IsFalse(native.Calls.Contains("StopExposure"));
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => module.CaptureBoundAsync(attempt, request, CancellationToken.None));
+            native.ControlRead = null;
+            if (shiftMilliseconds < 0)
+                clock.ShiftUtc(TimeSpan.FromMilliseconds(-shiftMilliseconds));
+            native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+            request = request with
+            {
+                RequestedStartUtc = clock.GetUtcNow(),
+                BoundStartNotBeforeUtc = clock.GetUtcNow(),
+                BoundStartBeforeUtc = clock.GetUtcNow().AddMilliseconds(10),
+                RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 6, null, null)
+            };
+            attempt = new(camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        }
+
+        var result = await module.CaptureBoundAsync(attempt, request, CancellationToken.None);
+        Assert.AreEqual(request.RequestedSetpoint!.Exposure, result.Frame!.Metadata.Exposure);
+        Assert.AreEqual(request.RequestedSetpoint.Gain, result.Frame.Metadata.Gain);
+        Assert.IsLessThan(request.BoundStartBeforeUtc!.Value, result.AcquisitionTiming!.ExposureStartedUtc);
+        Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
+        Assert.IsTrue(native.Calls.Contains("Set:Exposure:90000"));
+        Assert.IsTrue(native.Calls.Contains("Set:Gain:17"));
+        if (refused)
+        {
+            Assert.IsTrue(native.Calls.Contains("Set:Exposure:20000"));
+            Assert.IsTrue(native.Calls.Contains("Set:Gain:6"));
+        }
+    }
+
+    internal static CameraModuleConfig CreateCenteredTransportTestConfig() => CreateConfig();
 
     private static CameraModuleConfig CreateConfig(CameraModuleDocument document)
         => new(
@@ -1307,9 +1374,9 @@ public sealed class ZwoAsiCameraModuleTests
         public void Free(IntPtr handle) => FreeCalls++;
     }
 
-    private sealed record FakeCamera(AsiCameraInfo Info, byte[] Serial);
+    internal sealed record FakeCamera(AsiCameraInfo Info, byte[] Serial);
 
-    private sealed record SupportedProfile(
+    internal sealed record SupportedProfile(
         string Id,
         string Model,
         int Width,
@@ -1321,7 +1388,7 @@ public sealed class ZwoAsiCameraModuleTests
         long MaximumGain,
         string ExpectedSha256);
 
-    private sealed class FakeAsiNativeApi : IAsiNativeApi
+    internal sealed class FakeAsiNativeApi : IAsiNativeApi
     {
         private readonly Dictionary<AsiControlType, long> _values;
         private readonly SupportedProfile _profile;
@@ -1352,6 +1419,7 @@ public sealed class ZwoAsiCameraModuleTests
         internal Dictionary<AsiControlType, long> ReadbackOverrides { get; } = [];
         internal AsiControlType? ThrowAfterSetting { get; set; }
         internal Action<AsiControlType>? ControlWritten { get; set; }
+        internal Action<AsiControlType>? ControlRead { get; set; }
 
         internal Queue<AsiExposureStatus> ExposureStatuses { get; set; } = new([AsiExposureStatus.Success]);
         internal TaskCompletionSource ExposureStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1421,6 +1489,7 @@ public sealed class ZwoAsiCameraModuleTests
         public (long Value, bool Automatic) GetControlValue(int cameraId, AsiControlType type)
         {
             Calls.Add($"Get:{type}");
+            ControlRead?.Invoke(type);
             return (ReadbackOverrides.GetValueOrDefault(type, _values[type]), false);
         }
         public void SetControlValue(int cameraId, AsiControlType type, long value, bool automatic)

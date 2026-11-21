@@ -2712,6 +2712,32 @@ from the previous layout; rollback to an older binary uses the retained paired
 checkpoint. The previous-release SQL images are unchanged; the declared exception
 names only the processing marker/version and the new ledger table.
 
+**Retained astrometry lookup (Refs #1901).** Processing schema 10 adds a partial
+index for retained measured astrometry solutions. Startup upgrades schema 9 in
+one transaction and preserves the existing outputs and attempt records. The raw
+journal stays at schema 16. The image advances `minimum-compatible-revision` so
+the installer takes the paired checkpoint before startup and restores it if an
+older reader is needed for rollback.
+
+**Combined environmental and processing readers (Refs #1901 and #1938).** The
+image declares `e7b9af4b98d1521c3939ef5925608a3663c63302` as its minimum compatible revision.
+That revision contains the processing-10 reader and the corrected environmental-5
+settlement reader. Either single-reader image and the earlier private joined image
+(`33903f07a1dd86166fc17197df981b32d45013a1`) have different minimums. The installer
+checkpoints both stores and their paired state before startup when the minimum
+changes, even if the schema numbers remain 16/10/5. Rollback restores the state
+paired with the previous image. The corrected reader refuses a private v5 journal
+without the settlement column. Restore the verified paired v4 checkpoint before
+using the corrected reader with state from that rehearsal.
+
+The private centered foundation join is a source-only checkpoint with raw
+schema 17, processing schema 10 and corrected environmental schema 5. It
+carries the same combined minimum `e7b9af4b98d1521c3939ef5925608a3663c63302`.
+Its raw schema and migration labels independently select the paired checkpoint
+from the corrected raw-16 reader. The earlier private joined reader also
+differs at the minimum-compatible-revision. Issue #1922 owns the distinct
+installable centered raw-17, processing-12, environmental-5 reader marker.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a
@@ -2982,9 +3008,10 @@ procedure; never delete the ledger/evidence to force adoption. An agent that
 predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
-The image's combined row-MAC, environmental-schema, processing-ledger and local-automation-schema reader boundary is
-`bc5ca7489c4090c299c416309519ab72da4a8cdb`, declared by the image's
-`minimum-compatible-revision`. This advances beyond the processing-only boundary
+The combined reader minimum described above includes durable settlement for
+environmental schema-5 polls and selects a paired checkpoint before adopting
+schema-3 or schema-4 journals. The prior combined-reader
+boundary `bc5ca7489c4090c299c416309519ab72da4a8cdb` advanced beyond the processing-only boundary
 `4293871b7c4cf38ce0e0e4ea969aa9a6de057eea` in development/v1 `38320d3a` so that
 upgrading from that automation-schema-3 reader still takes a paired pre-upgrade
 checkpoint before automation schema 4 is opened. Processing schema 9 and its

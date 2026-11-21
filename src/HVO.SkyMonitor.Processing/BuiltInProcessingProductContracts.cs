@@ -26,7 +26,7 @@ internal static class BuiltInProcessingProductContracts
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
-            ImageQuality or ExposureMeasurement or NoOpAnalyzer or CloudAssessment or ProjectedScene or MeasuredStellarAssociations or MeasuredAstrometry =>
+            ImageQuality or ExposureMeasurement or NoOpAnalyzer or CloudAssessment or ProjectedScene or AstrometryPrediction or MeasuredStellarAssociations or MeasuredAstrometry =>
                 FrameArtifactRole.Metadata,
             _ => throw new InvalidOperationException("The built-in recipe output contract is unavailable.")
         };
@@ -400,7 +400,7 @@ internal static class BuiltInProcessingProductContracts
             CloudAssessment => CreateCloudAssessmentDetails(primary, sources),
             WeatherCloudOverlay => CreateWeatherCloudOverlayDetails(identity, primary),
             ReferenceCalibration => CreateReferenceCalibrationDetails(request, primary),
-            ProjectedScene => CreateProjectedSceneDetails(request, primary),
+            ProjectedScene or AstrometryPrediction => CreateProjectedSceneDetails(request, primary),
             MeasuredStellarAssociations => CreateMeasuredStellarAssociationDetails(primary),
             MeasuredAstrometry => new(MeasuredAstrometryJson.MediaType, false, null,
                 MeasuredAstrometrySolutionV1.CurrentSchemaVersion, true, null, MeasuredAstrometryRecipe.Algorithms,

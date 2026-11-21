@@ -327,7 +327,59 @@ else
             </section>
 
             <section class="inspector-card astrometry-card" aria-labelledby="astrometry-heading" aria-busy="@(_astrometryLoading ? "true" : "false")">
-                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip @AstrometryChipClass">@AstrometryStatus</span></header>
+                <header><div><p class="eyebrow">Measured image solution</p><h2 id="astrometry-heading">Astrometry</h2></div><span class="state-chip @AstrometryChipClass" title="Assessment for the selected capture" aria-label="@($"Selected capture assessment: {AstrometryStatus}")">@AstrometryStatus</span></header>
+                @if (!IsArchived)
+                {
+                    <section class="latest-measured-solution" aria-labelledby="latest-measured-heading">
+                        <h3 id="latest-measured-heading">Latest accepted measured result</h3>
+                        @if (_latestAstrometry is { } latestSolution)
+                        {
+                            @if (_latestAstrometryReadSucceeded is false)
+                            {
+                                <p>The latest result is temporarily unavailable. Showing the previously verified result.</p>
+                            }
+                            <p>@(_runCaptureId switch
+                            {
+                                null => "No image is selected. This result is from a retained capture.",
+                                var selected when selected == latestSolution.CaptureId => "For the selected capture.",
+                                _ => "For a different capture."
+                            })</p>
+                            <dl>
+                                <div><dt>Measured center RA / Dec</dt><dd>@FormattableString.Invariant($"{latestSolution.RightAscensionHours:0.######} h / {latestSolution.DeclinationDegrees:0.######}° (mean of date)")</dd></div>
+                                <div><dt>Measured roll</dt><dd>@FormattableString.Invariant($"{latestSolution.RollDegrees:0.######}°")</dd></div>
+                                <div><dt>Local scale X / Y</dt><dd>@(latestSolution.LocalScale.XArcsecondsPerPixel is { } sx && latestSolution.LocalScale.YArcsecondsPerPixel is { } sy ? FormattableString.Invariant($"{sx:0.####} / {sy:0.####} arcsec/pixel") : "Unavailable for this readout")</dd></div>
+                                <div><dt>Solution capture midpoint UTC</dt><dd><time datetime="@latestSolution.MidpointUtc.ToString("O")">@latestSolution.MidpointUtc.ToString("O")</time></dd></div>
+                            </dl>
+                            @if (latestSolution.ReferencePixel is { } referencePixel)
+                            {
+                                <p>@FormattableString.Invariant($"Scale at {latestSolution.ScaleReference}, source pixel ({referencePixel.X:0.####}, {referencePixel.Y:0.####}).")</p>
+                            }
+                            <details>
+                                <summary>Scale reference, axes and retained source</summary>
+                                <p>Zero-based source output X right, Y down, after crop/bin/flip. Angular separation across ±0.5 pixel on each axis; local fisheye scale, not an image-wide constant. Roll is right-handed about boresight; zero roll is local vertical up, north-up at zenith.</p>
+                                <p><a href="@($"/gallery/{latestSolution.CaptureId:D}")">Inspect solution capture</a></p>
+                                <dl>
+                                    <div><dt>Retained artifact</dt><dd><code>@latestSolution.ArtifactId</code></dd></div>
+                                    <div><dt>Solution identity</dt><dd><code>@latestSolution.SolutionIdentitySha256</code></dd></div>
+                                </dl>
+                            </details>
+                        }
+                        else if (_latestAstrometryReadSucceeded is true)
+                        {
+                            <p>No accepted measured result is available from the retained search. Raw capture and selected-image inspection continue independently.</p>
+                        }
+                        else if (_latestAstrometryReadSucceeded is false)
+                        {
+                            <p>The latest accepted measured result is temporarily unavailable.</p>
+                        }
+                        else
+                        {
+                            <p>Checking retained measured results.</p>
+                        }
+                    </section>
+                }
+
+                <h3 class="exact-frame-heading">Selected capture assessment and tools</h3>
                 @if (_astrometry?.Solution is { } solution)
                 {
                     var assessment = solution.Assessment;
@@ -381,11 +433,12 @@ else
                 {
                     <p class="astrometry-reason">@AstrometryAbsence</p>
                 }
-                <form class="pixel-sky-calculator" @onsubmit="CalculatePixelToSky" @onsubmit:preventDefault>
+                @{ var calculation = (_astrometryReadRevision, _selectedStage); }
+                <form @key="(calculation, false)" class="pixel-sky-calculator" @onsubmit="() => CalculatePixelToSky(calculation)" @onsubmit:preventDefault>
                     <p><strong>Pixel to sky</strong><span>@CalculatorAvailability</span></p>
                     <div><label>X pixel<input type="number" step="any" min="0" disabled="@(!CanCalculate)" @bind="_pixelX" /></label><label>Y pixel<input type="number" step="any" min="0" disabled="@(!CanCalculate)" @bind="_pixelY" /></label><button class="button secondary small" type="submit" disabled="@(!CanCalculate)">Pixel to sky</button></div>
                 </form>
-                <form class="pixel-sky-calculator sky-pixel-calculator" @onsubmit="CalculateSkyToPixel" @onsubmit:preventDefault>
+                <form @key="(calculation, true)" class="pixel-sky-calculator sky-pixel-calculator" @onsubmit="() => CalculateSkyToPixel(calculation)" @onsubmit:preventDefault>
                     <p><strong>Sky to pixel</strong><span>Uses the same capture epoch, source readout, crop, binning, flip and aperture.</span></p>
                     <label>Coordinates<select @bind="_skyCoordinates" disabled="@(!CanCalculate)"><option value="equatorial">Equatorial (mean of date)</option><option value="horizontal">Horizontal (geometric)</option></select></label>
                     <div><label>@(_skyCoordinates == "horizontal" ? "Altitude degrees" : "RA hours")<input type="number" step="any" disabled="@(!CanCalculate)" @bind="_skyFirst" /></label><label>@(_skyCoordinates == "horizontal" ? "Azimuth degrees" : "Declination degrees")<input type="number" step="any" disabled="@(!CanCalculate)" @bind="_skySecond" /></label><button class="button secondary small" type="submit" disabled="@(!CanCalculate)">Sky to pixel</button></div>

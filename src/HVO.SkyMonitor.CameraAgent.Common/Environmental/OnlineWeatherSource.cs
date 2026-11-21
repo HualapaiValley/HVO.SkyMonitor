@@ -36,7 +36,7 @@ public sealed class OnlineWeatherSource : IEnvironmentalSource
         ArgumentNullException.ThrowIfNull(context);
         var sample = await client.ReadAsync(options, cancellationToken).ConfigureAwait(false);
         if (sample.Body.IsEmpty) return EnvironmentalAdapterSource.Unavailable(sample.Reason);
-        if (sample.SampledAtUtc.AddSeconds(Descriptor.StaleAfterSeconds) <= context.ObservedAtUtc)
+        if (sample.SampledAtUtc.AddSeconds(Descriptor.StaleAfterSeconds) <= client.GetUtcNow())
             return EnvironmentalAdapterSource.Unavailable("provider-stale");
         try
         {

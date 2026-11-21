@@ -134,16 +134,19 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision)
-        => CreateGraph(config, definitionName, definitionRevision, requireCanonicalScene: true);
+        => CreateGraph(config, definitionName, definitionRevision, CaptureProcessingGraphCompilation.Proposal);
+
+    public CaptureProcessingGraph CreateActiveProfileGraph(CameraModuleConfig config)
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, CaptureProcessingGraphCompilation.ActiveProfile);
 
     public CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config)
-        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, requireCanonicalScene: false);
+        => CreateGraph(config, "cameraagent-capture-processing", config.Pipeline.SchemaVersion, CaptureProcessingGraphCompilation.RetainedCapture);
 
     private CaptureProcessingGraph CreateGraph(
         CameraModuleConfig config,
         string definitionName,
         string definitionRevision,
-        bool requireCanonicalScene)
+        CaptureProcessingGraphCompilation compilation)
     {
         var stopwatch = Stopwatch.StartNew();
         using var activity = CaptureProcessingTelemetry.ActivitySource.StartActivity("processing-graph.validate");
@@ -274,6 +277,27 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                         producer.Step is not (ProjectedSceneCaptureProcessingStep or MeasuredStellarAssociationCaptureProcessingStep) ||
                         producer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
                     throw new InvalidOperationException("MeasuredAstrometry requires an optional explicit node, durable scene and measured dependencies and durable local publication.");
+
+                // The associations must describe the same scene the solver consumes. A previously
+                // committed graph keeps its plan so raw admission and replay keep their original identities.
+                var sceneId = astrometry.Config.DependsOn.Single(id => nodesById[id].Step is ProjectedSceneCaptureProcessingStep);
+                var measurement = astrometry.Config.DependsOn.Select(id => nodesById[id])
+                    .Single(static producer => producer.Step is MeasuredStellarAssociationCaptureProcessingStep);
+                var measuredInputs = measurement.Config.DependsOn ?? [];
+                var measuredScenes = measurement.Step is ICenteredRawPrimaryCaptureProcessingStep
+                    ? measuredInputs.Where(id => nodesById.TryGetValue(id, out var producer) &&
+                        producer.Step is ProjectedSceneCaptureProcessingStep).ToArray()
+                    : measuredInputs;
+                if (measuredScenes is not [var measuredScene] ||
+                    !string.Equals(measuredScene, sceneId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (compilation == CaptureProcessingGraphCompilation.Proposal)
+                    {
+                        throw new InvalidOperationException(
+                            $"MeasuredAstrometry step '{astrometry.Step.Name}' and its association producer '{measurement.Step.Name}' must depend on the same scene producer.");
+                    }
+                    ((MeasuredAstrometryCaptureProcessingStep)astrometry.Step).HasCrossedSceneDependencies = true;
+                }
             }
             if (configured.Count(static item => item.Step is CaptureSatelliteTracksProcessingStep) > 1)
                 throw new InvalidOperationException("A capture graph supports one bounded satellite prediction producer.");
@@ -291,12 +315,21 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                     layer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal)
                     throw new InvalidOperationException("CaptureSatelliteLayer requires its explicit prediction producer and durable local publication.");
             }
+            ValidateAstrometryPrediction(configured, explicitV2);
             ValidateStoragePolicies(configured, nodesById, explicitV2);
-            if (requireCanonicalScene) ValidateProjectedSceneDependencies(config, configured);
+            if (compilation != CaptureProcessingGraphCompilation.RetainedCapture) ValidateProjectedSceneDependencies(config, configured);
             var sharedPlan = explicitV2
-                ? CompileSharedPlan(
-                    config.Pipeline, configuredSteps, configured, nodesById, definitionName, definitionRevision)
+                ? CompileSharedPlan(configuredSteps, configured, nodesById, definitionName, definitionRevision)
                 : null;
+            Lazy<ProcessingGraphExecutionPlan>? previousAstrometryPlan = null;
+            if (compilation == CaptureProcessingGraphCompilation.RetainedCapture &&
+                configured.Any(item => item.Config.DependsOn?.Any(dependency =>
+                    IsSupplementaryAstrometryDependency(item.Step, dependency, nodesById)) == true))
+            {
+                previousAstrometryPlan = new(() => CompileSharedPlan(
+                    configuredSteps, configured, nodesById, definitionName, definitionRevision,
+                    recordSupplementaryAstrometry: false));
+            }
             var nodes = sharedPlan is null
                 ? BuildLegacyRuntimeGraph(configured, nodesById)
                 : BuildRuntimeGraph(configured, nodesById, sharedPlan);
@@ -305,7 +338,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             activity?.SetStatus(ActivityStatusCode.Ok);
             _logger.CaptureProcessingGraphValidated(nodes.Count);
             _logger.CaptureProcessingPipelineBuilt(nodes.Count);
-            return new CaptureProcessingGraph(nodes, sharedPlan);
+            return new CaptureProcessingGraph(nodes, sharedPlan, previousAstrometryPlan);
         }
         catch
         {
@@ -318,12 +351,48 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
+    private static void ValidateAstrometryPrediction(
+        IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
+        bool explicitV2)
+    {
+        var predictions = configured.Where(static item => item.Step is AstrometryPredictionCaptureProcessingStep).ToArray();
+        if (predictions.Length == 0) return;
+        if (predictions.Length != 1 || !explicitV2 ||
+            predictions[0].Config is not
+            {
+                Required: false, Publication.Persistence: CaptureProcessingPersistenceMode.DurableLocal,
+                DependsOn: { Count: 1 } dependencies
+            } || !IsRawDependency(dependencies[0]))
+        {
+            throw new InvalidOperationException("AstrometryPrediction requires one optional explicit node with only a raw dependency and durable local publication.");
+        }
+        var analysisInputs = configured.Where(static item => item.Step is
+                MeasuredStellarAssociationCaptureProcessingStep { UsesAstrometryPrediction: true })
+            .Select(static item => item.Step.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        analysisInputs.Add(predictions[0].Step.Name);
+        var fits = configured.Where(static item => item.Step is MeasuredAstrometryCaptureProcessingStep { UsesAstrometryPrediction: true })
+            .Select(static item => item.Step.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var consumer in configured)
+        {
+            var consumerDependencies = consumer.Config.DependsOn ?? [];
+            if (consumerDependencies.Any(analysisInputs.Contains) &&
+                (consumer.Step is not (MeasuredStellarAssociationCaptureProcessingStep { UsesAstrometryPrediction: true } or
+                    MeasuredAstrometryCaptureProcessingStep { UsesAstrometryPrediction: true }) ||
+                 consumer.Config.Required || consumer.Config.Publication?.Persistence != CaptureProcessingPersistenceMode.DurableLocal))
+                throw new InvalidOperationException("Only optional durable measured nodes configured for AstrometryPrediction may consume its analysis inputs.");
+            // A terminal, retained assessment may still have local Storage or outcome consumers. Existing
+            // storage-policy validation disallows upload of the layoutless fit and context.
+            if (consumerDependencies.Any(fits.Contains) && consumer.Step is not (FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep))
+                throw new InvalidOperationException("Only Storage and Telemetry may consume an independent astrometry assessment.");
+        }
+    }
+
     private static void ValidateProjectedSceneDependencies(
         CameraModuleConfig config,
         IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured)
     {
         var scenes = configured.Where(static item =>
-            item.Step is ProjectedSceneCaptureProcessingStep and not ExposureCatalogPredictionCaptureProcessingStep).ToArray();
+            item.Step is ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false, IsExposurePrediction: false }).ToArray();
         var annotations = configured.Where(static item => item.Step is AnnotationCaptureProcessingStep).ToArray();
         var sceneBearing = string.Equals(config.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
             annotations.Any(static item =>
@@ -786,18 +855,18 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         => string.Equals(dependency, "$raw", StringComparison.OrdinalIgnoreCase);
 
     private static ProcessingGraphExecutionPlan CompileSharedPlan(
-        CapturePipelineConfig pipeline,
         IReadOnlyList<CaptureProcessingStepConfig> configuredSteps,
         List<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured,
         Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
         string definitionName,
-        string definitionRevision)
+        string definitionRevision,
+        bool recordSupplementaryAstrometry = true)
     {
         var rawSource = new ProcessingGraphSourceDefinition(
             "$raw",
             [new(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)]);
         var definitions = configured
-            .Select(item => CreateSharedNodeDefinition(item, nodesById))
+            .Select(item => CreateSharedNodeDefinition(item, nodesById, recordSupplementaryAstrometry))
             .ToList();
         definitions.AddRange(configuredSteps
             .Where(static step => step.Enabled == false)
@@ -842,7 +911,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
 
     private static ProcessingGraphNodeDefinition CreateSharedNodeDefinition(
         (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step) item,
-        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
+        bool recordSupplementaryAstrometry)
     {
         var graphStep = item.Step as ICaptureProcessingGraphStep;
         var declaredDependencies = item.Config.DependsOn?.ToArray() ?? [];
@@ -859,11 +929,16 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
             _ => ProcessingGraphDependencyKind.Ordering
         };
         var optionalDependencies = ResolveOptionalDependencyIds(item.Step, normalizedDependencies, nodesById);
+        if (recordSupplementaryAstrometry)
+        {
+            optionalDependencies.UnionWith(normalizedDependencies.Where(dependency =>
+                IsSupplementaryAstrometryDependency(item.Step, dependency, nodesById)));
+        }
         var dependencies = normalizedDependencies.Select(dependency => new ProcessingGraphDependencyDefinition(
             dependency,
             dependencyKind,
             !optionalDependencies.Contains(dependency))).ToImmutableArray();
-        var inputs = CreateSharedInputs(item.Step, normalizedDependencies, nodesById);
+        var inputs = CreateSharedInputs(item.Step, normalizedDependencies, nodesById, optionalDependencies);
         var operationKind = ResolveSharedOperationKind(graphStep, item.Step);
         var outputs = graphStep is null
             ? ImmutableArray<ProcessingGraphProductContract>.Empty
@@ -920,7 +995,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
     private static ImmutableArray<ProcessingGraphInputContract> CreateSharedInputs(
         ICaptureProcessingStep step,
         IReadOnlyList<string> dependencies,
-        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById,
+        HashSet<string> optionalDependencies)
     {
         if (step is IRequiredCaptureProcessingDependencies required)
         {
@@ -962,28 +1038,16 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
         if (step is ICaptureProcessingArtifactConsumer consumer)
         {
-            return dependencies.SelectMany(dependency => IsRawDependency(dependency)
-                    ? new[] { new ProcessingGraphProductContract(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData) }
-                    : nodesById.TryGetValue(dependency, out var producer) && producer.Step is ICaptureProcessingGraphStep producerStep
-                        ? GetOutputs(producerStep).Select(output => new ProcessingGraphProductContract(
-                            output.Role,
-                            output.Variant,
-                            output.ProductKind ?? (output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData),
-                            ResolveRecipeDefinition(
-                                output,
-                                producer.Config.Type,
-                                ResolveSharedOperationKind(producerStep, producer.Step)),
-                            output.SchemaVersion,
-                            output.SharedAlgorithms?.ToImmutableArray() ?? []))
-                        : [])
-                .Where(output => consumer.AcceptedDependencyRoles.Contains(output.Role))
-                .Select((output, index) => new ProcessingGraphInputContract(
-                    [output.Role],
-                    [output.ProductKind],
-                    [output.Variant],
-                    output.Recipe is null ? [] : [output.Recipe.Name],
-                    output.SchemaVersion is null ? [] : [output.SchemaVersion],
-                    true,
+            return dependencies.SelectMany(dependency => GetDependencyOutputs(dependency, nodesById)
+                    .Where(output => consumer.AcceptedDependencyRoles.Contains(output.Role))
+                    .Select(output => (Output: output, Required: !optionalDependencies.Contains(dependency))))
+                .Select((binding, index) => new ProcessingGraphInputContract(
+                    [binding.Output.Role],
+                    [binding.Output.ProductKind],
+                    [binding.Output.Variant],
+                    binding.Output.Recipe is null ? [] : [binding.Output.Recipe.Name],
+                    binding.Output.SchemaVersion is null ? [] : [binding.Output.SchemaVersion],
+                    binding.Required,
                     $"artifact-{index}",
                     ProcessingGraphInputBindingKind.AuxiliaryArtifact))
                 .ToImmutableArray();
@@ -998,6 +1062,33 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 true)]
             : [];
     }
+
+    private static IEnumerable<ProcessingGraphProductContract> GetDependencyOutputs(
+        string dependency,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+    {
+        if (IsRawDependency(dependency))
+        {
+            return [new(FrameArtifactRole.Raw, "source", ProcessingProductKind.PixelData)];
+        }
+        return nodesById.TryGetValue(dependency, out var producer) && producer.Step is ICaptureProcessingGraphStep producerStep
+            ? GetOutputs(producerStep).Select(output => new ProcessingGraphProductContract(
+                output.Role,
+                output.Variant,
+                output.ProductKind ?? (output.Role == FrameArtifactRole.Metadata ? ProcessingProductKind.Metadata : ProcessingProductKind.PixelData),
+                ResolveRecipeDefinition(output, producer.Config.Type, ResolveSharedOperationKind(producerStep, producer.Step)),
+                output.SchemaVersion,
+                output.SharedAlgorithms?.ToImmutableArray() ?? []))
+            : [];
+    }
+
+    private static bool IsSupplementaryAstrometryDependency(
+        ICaptureProcessingStep step,
+        string dependency,
+        Dictionary<string, (CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> nodesById)
+        => step is (FileStorageCaptureProcessingStep or TelemetryCaptureProcessingStep) &&
+           nodesById.TryGetValue(dependency, out var producer) &&
+           producer is { Config.Required: false, Step: MeasuredAstrometryCaptureProcessingStep };
 
     private static HashSet<string> ResolveOptionalDependencyIds(
         ICaptureProcessingStep step,
@@ -1139,6 +1230,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 if (!TryAssignRequiredDependencies(producerSteps, required.DependencyRequirements, out var optionalIndexes))
                     throw new InvalidOperationException($"Capture processing step '{item.Step.Name}' dependency assignment changed during ordering.");
                 optionalDependencies = optionalIndexes.Select(index => dependencies[index]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            }
+            else if (planNode.Definition.Dependencies.Any(static dependency => !dependency.Required))
+            {
+                optionalDependencies = planNode.Definition.Dependencies
+                    .Where(static dependency => !dependency.Required)
+                    .Select(static dependency => dependency.ProducerId)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
             ordered.Add(new CaptureProcessingGraphNode(
                 item.Step.Name,
@@ -1532,7 +1630,7 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         }
     }
 
-    private static object CreateOptionsInstance(JsonElement? element, Type optionsType)
+    internal static object CreateOptionsInstance(JsonElement? element, Type optionsType)
     {
         if (optionsType == typeof(EmptyProcessingStepOptions))
         {

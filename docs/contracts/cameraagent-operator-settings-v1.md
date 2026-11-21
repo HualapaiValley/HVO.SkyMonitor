@@ -18,6 +18,7 @@ names the store that keeps it, and a group is the unit of one write.
 | `location` | `location.latitudeDegrees`, `location.longitudeDegrees`, `location.elevationMeters`, `location.timeZoneId` | protected deployment-location history (a new manual version) | at the next CameraAgent start; LogicHost reviews it first when central integration is on |
 | `skyMap` | `skyMap.maximumObjects` | operator settings file (`CameraAgent:SkyMap:MaximumObjects`) | at once |
 | `camera` | `camera.skyLighting` (VirtualSky only) | a new camera revision and a staged rig revision | at the next CameraAgent start |
+| `virtualSky` | `virtualSky.rendererCandidateCap` | operator settings file (`CameraAgent:VirtualSky:RendererCandidateCap`) | at once |
 | `schedule` | `schedule.activeRevision` | capture schedule revisions | at the next capture boundary |
 | `currentSky` | `currentSky.minimumRefreshSeconds` | operator settings file (`CameraAgent:CurrentSky:MinimumRefreshSeconds`) | at once |
 

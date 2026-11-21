@@ -468,7 +468,8 @@ internal sealed partial class SqliteCaptureProcessingStore
                     cancellationToken).ConfigureAwait(false);
                 outputInputsByNode[node.NodeId] = frozenOutputs;
             }
-            if (IsProjectedSceneNode(revision.Pipeline, node.NodeId))
+            var isPrediction = IsAstrometryPredictionNode(revision.Pipeline, node.NodeId);
+            if (isPrediction || IsProjectedSceneNode(revision.Pipeline, node.NodeId))
             {
                 // Live processing deletes the transient projected-scene stage after its durable commit, so replay
                 // freezes the committed typed product itself as the node's auxiliary source (#718). It is pinned in
@@ -481,6 +482,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                         source.RawCapture.Manifest.Descriptor.Capture.CaptureId,
                         source.RawCapture.Manifest.Descriptor.Artifact.ArtifactId,
                         node.NodeId,
+                        isPrediction ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene,
                         cancellationToken).ConfigureAwait(false)
                 ];
                 auxiliaryOutputNodes.Add(node.NodeId);
@@ -543,6 +545,12 @@ internal sealed partial class SqliteCaptureProcessingStore
             auxiliaryOutputNodes, frozenPlanJson);
     }
 
+    private static bool IsAstrometryPredictionNode(CapturePipelineConfig pipeline, string nodeId)
+        => pipeline.Steps.Any(step => step.Enabled is not false &&
+            string.Equals(step.Type, AstrometryPredictionCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(string.IsNullOrWhiteSpace(step.Id) ? AstrometryPredictionCaptureProcessingStep.Alias : step.Id.Trim(),
+                nodeId, StringComparison.Ordinal));
+
     /// <summary>The registered stable step type alias of the projected-scene step.</summary>
     private const string ProjectedSceneStepAlias = "ProjectedScene";
 
@@ -586,6 +594,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         Guid captureId,
         Guid rawArtifactId,
         string nodeId,
+        string recipeName,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
@@ -596,6 +605,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             JOIN processing_output_sources source ON source.output_identity_sha256 = output.output_identity_sha256
             WHERE output.capture_id = $capture AND output.node_id = $node AND output.role = 'Metadata'
               AND output.product_schema_version IN ($schema, $schema_resolved, $schema_deep_sky) AND output.availability_state = 'Available'
+              AND json_extract(output.descriptor_json, '$.artifact.recipe.name') = $recipe
               AND source.source_artifact_id = $raw
               AND EXISTS (
                   SELECT 1
@@ -610,6 +620,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             """;
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$recipe", recipeName);
         command.Parameters.AddWithValue("$schema", ProjectedSceneV1.CurrentSchemaVersion);
         command.Parameters.AddWithValue("$schema_resolved", ProjectedSceneV1.ResolvedFootprintSchemaVersion);
         command.Parameters.AddWithValue("$schema_deep_sky", ProjectedSceneV1.DeepSkySchemaVersion);
@@ -627,7 +638,7 @@ internal sealed partial class SqliteCaptureProcessingStore
                 $"Replay of node '{nodeId}' found {candidates.Count} retained live projected-scene products for the requested capture; the source is ambiguous.");
         }
         var otherNodeIds = await ReadProjectedSceneNodeIdsAsync(
-            connection, transaction, captureId, rawArtifactId, nodeId, cancellationToken).ConfigureAwait(false);
+            connection, transaction, captureId, rawArtifactId, nodeId, recipeName, cancellationToken).ConfigureAwait(false);
         throw new ProcessingReplaySourceException(otherNodeIds.Count == 0
             ? $"Replay of node '{nodeId}' requires the committed projected-scene product of the requested capture, and none is retained."
             : $"Replay of node '{nodeId}' requires the committed projected-scene product of the requested capture, and none is retained under that node id; " +
@@ -645,6 +656,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         Guid captureId,
         Guid rawArtifactId,
         string nodeId,
+        string recipeName,
         CancellationToken cancellationToken)
     {
         using var command = connection.CreateCommand();
@@ -655,6 +667,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             JOIN processing_output_sources source ON source.output_identity_sha256 = output.output_identity_sha256
             WHERE output.capture_id = $capture AND output.node_id <> $node AND output.role = 'Metadata'
               AND output.product_schema_version IN ($schema, $schema_resolved, $schema_deep_sky) AND output.availability_state = 'Available'
+              AND json_extract(output.descriptor_json, '$.artifact.recipe.name') = $recipe
               AND source.source_artifact_id = $raw
               AND EXISTS (
                   SELECT 1
@@ -667,6 +680,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             """;
         command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
         command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$recipe", recipeName);
         command.Parameters.AddWithValue("$schema", ProjectedSceneV1.CurrentSchemaVersion);
         command.Parameters.AddWithValue("$schema_resolved", ProjectedSceneV1.ResolvedFootprintSchemaVersion);
         command.Parameters.AddWithValue("$schema_deep_sky", ProjectedSceneV1.DeepSkySchemaVersion);

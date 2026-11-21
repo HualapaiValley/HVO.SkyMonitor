@@ -281,6 +281,23 @@ public sealed class VisibleScene
             Segments, ComputationProvenance, ResolvedFootprints, DeepSkySelection, DeepSky);
     }
 
+    /// <summary>Limits published point objects, preferring non-stellar objects and constellation endpoints.</summary>
+    public VisibleScene WithObjectLimit(int maximumObjects)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumObjects);
+        if (Objects.Count <= maximumObjects) return this;
+
+        var endpoints = Request.IncludeConstellationEndpointStars
+            ? Segments.Select(static segment => segment.FromObjectId).Concat(Segments.Select(static segment => segment.ToObjectId))
+                .ToHashSet(StringComparer.Ordinal)
+            : [];
+        var selected = Objects.OrderByDescending(static item => item.Kind != CelestialObjectKind.Star)
+            .ThenByDescending(item => endpoints.Contains(item.Id))
+            .Take(maximumObjects).Select(static item => item.Id).ToHashSet(StringComparer.Ordinal);
+        return new(Request, Objects.Where(item => selected.Contains(item.Id)), Segments, ComputationProvenance,
+            ResolvedFootprints, DeepSkySelection, DeepSky);
+    }
+
     /// <summary>
     /// Places the cached curated preset after solar-system footprints. The object cap is applied before projection;
     /// basic extents consume their own bounded share after the Sun and Moon. No source contours are visited.

@@ -1,14 +1,17 @@
+using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.ComponentModel.DataAnnotations;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using Microsoft.Extensions.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -20,6 +23,9 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     IDisposable
 {
     private const string ConfiguredGraphName = "configured-basic";
+    internal const string VirtualSkySceneCompatibilityGraphName = "virtualsky-scene-compatibility";
+    internal const string VirtualSkySharedFitCompatibilityGraphName = "virtualsky-shared-fit-compatibility";
+    internal const string AstrometryConsumerCompatibilityGraphName = "astrometry-consumer-compatibility";
     private static readonly HashSet<string> LocalPolicyStepAliases = new(
         ["Storage", "Telemetry"],
         StringComparer.OrdinalIgnoreCase);
@@ -33,6 +39,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private readonly ProcessingReplayWakeup _replayWakeup;
     private readonly ICameraAgentConfigurationAccessor? _configurationAccessor;
     private readonly Func<CameraModuleConfig?>? _currentCaptureProfile;
+    private readonly Func<IAstrometricCatalogSource?>? _astrometricCatalog;
     private readonly ICenteredExposureGraphExtension[] _centeredExtensions;
     /// <summary>
     /// Serializes configured-basic refreshes (<see cref="EnsureConfiguredBasicAsync"/>) so a single pipeline identity
@@ -48,6 +55,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     private string? _configuredPipelineIdentity;
     private bool _configuredPipelineRetained;
     private SupersessionCheck? _supersessionCheck;
+    private SceneCompatibilityCandidate? _sceneCompatibilityCandidate;
     private string? _configuredModuleType;
 
     public ProcessingGraphOperationsCoordinator(
@@ -58,7 +66,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingReplayWakeup replayWakeup,
         ICameraAgentConfigurationAccessor? configurationAccessor = null,
         Func<CameraModuleConfig?>? currentCaptureProfile = null,
-        IEnumerable<ICenteredExposureGraphExtension>? centeredExtensions = null)
+        IEnumerable<ICenteredExposureGraphExtension>? centeredExtensions = null,
+        Func<IAstrometricCatalogSource?>? astrometricCatalog = null)
     {
         _pipelineFactory = pipelineFactory;
         _store = store;
@@ -67,6 +76,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         _replayWakeup = replayWakeup;
         _configurationAccessor = configurationAccessor;
         _currentCaptureProfile = currentCaptureProfile;
+        _astrometricCatalog = astrometricCatalog;
         _centeredExtensions = centeredExtensions?.ToArray() ?? [];
     }
 
@@ -110,12 +120,13 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 return await _store.ReadRegistryAsync(cancellationToken).ConfigureAwait(false);
             }
             var revisionName = pipelineIdentity[..16];
+            var compilation = retainedCapture ? CaptureProcessingGraphCompilation.RetainedCapture : CaptureProcessingGraphCompilation.ActiveProfile;
             var revision = CreateRevisionSnapshot(
                 configuration,
                 ConfiguredGraphName,
                 revisionName,
                 _timeProvider.GetUtcNow(),
-                ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
+                ProcessingGraphRevisionLifecycle.Validated, compilation: compilation);
             var occupant = await _store.ReadRevisionIdByNameAsync(ConfiguredGraphName, revisionName, cancellationToken)
                 .ConfigureAwait(false);
             if (occupant is not null && !string.Equals(occupant, revision.State.RevisionId, StringComparison.Ordinal))
@@ -129,7 +140,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                     ConfiguredGraphName,
                     SupersededRevisionName(revisionName, revision.State),
                     _timeProvider.GetUtcNow(),
-                    ProcessingGraphRevisionLifecycle.Validated, retainedCapture: retainedCapture);
+                    ProcessingGraphRevisionLifecycle.Validated, compilation: compilation);
             }
             EnsureLiveEligible(revision);
             var state = await _store.UpsertConfiguredBasicRevisionAsync(revision, cancellationToken).ConfigureAwait(false);
@@ -177,9 +188,73 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         EnsureLiveEligible(revision);
         if (revisionId is null)
             EnsureMeasurementProfile(revision.Pipeline, configuration);
+        if (!retainedCapture && revisionId is null && configuration.CenteredExposure is null)
+        {
+            // A successor applies only to new exposures. Recovery and replay use the original bound revision.
+            var legacyScene = LegacyVirtualSkySceneGraph.FindLegacyScene(configuration, revision.Pipeline);
+            if (legacyScene is not null || revision.HasHistoricalAstrometryConsumerEdge())
+            {
+                return await ResolveLiveCompatibilityRevisionAsync(configuration, revision, legacyScene, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
         // Binding runs before raw publication and during recovery. Preserve raw evidence and its immutable graph;
         // the standard lane checks current Storage policy before executing any nodes instead of refusing capture.
         return revision;
+    }
+
+    private ValueTask<ProcessingGraphRevisionSnapshot> ResolveLiveCompatibilityRevisionAsync(
+        CameraModuleConfig configuration,
+        ProcessingGraphRevisionSnapshot source,
+        CaptureProcessingStepConfig? legacyScene,
+        CancellationToken cancellationToken)
+    {
+        var sourceId = source.State.RevisionId;
+        var cached = Volatile.Read(ref _sceneCompatibilityCandidate);
+        if (cached is null || cached.Search.SourceId != sourceId || !ReferenceEquals(cached.Configuration, configuration))
+        {
+            var (graphName, pipeline) = legacyScene is null
+                ? (AstrometryConsumerCompatibilityGraphName, source.Pipeline)
+                : DeriveSceneCompatibilityPipeline(source, legacyScene);
+            var migrated = configuration with { Pipeline = pipeline };
+            var compilation = legacyScene is null
+                ? CaptureProcessingGraphCompilation.RetainedCapture
+                : CaptureProcessingGraphCompilation.ActiveProfile;
+            if (legacyScene is null && !CanUpgradeAstrometryConsumerPlan(migrated, source))
+                return ValueTask.FromResult(source);
+
+            var expectations = new ConcurrentDictionary<string, ProcessingGraphRevisionSnapshot>(StringComparer.Ordinal);
+            cached = new(configuration, new SceneCompatibilityRevisionSearch(graphName, sourceId, name =>
+                expectations.GetOrAdd(name, revision => CreateSceneCompatibilitySnapshot(migrated, graphName, revision, compilation))));
+            Volatile.Write(ref _sceneCompatibilityCandidate, cached);
+        }
+
+        // Cache the compilation only. A previously skipped draft can be validated while the host is running.
+        return _store.EnsureSceneCompatibilityRevisionAsync(cached.Search, cancellationToken);
+    }
+
+    private ProcessingGraphRevisionSnapshot CreateSceneCompatibilitySnapshot(
+        CameraModuleConfig configuration, string graphName, string revision, CaptureProcessingGraphCompilation compilation)
+    {
+        var snapshot = CreateRevisionSnapshot(configuration, graphName, revision, _timeProvider.GetUtcNow(),
+            ProcessingGraphRevisionLifecycle.Validated, compilation: compilation);
+        EnsureLiveEligible(snapshot);
+        return snapshot;
+    }
+
+    private bool CanUpgradeAstrometryConsumerPlan(
+        CameraModuleConfig configuration, ProcessingGraphRevisionSnapshot source)
+    {
+        try
+        {
+            using var graph = new DisposableProcessingGraph(_pipelineFactory.CreateRetainedGraph(configuration));
+            return source.MatchesPreviousAstrometryPlan(graph.Value);
+        }
+        catch (Exception exception) when (IsExpectedProposalValidationFailure(exception) || exception is InvalidOperationException)
+        {
+            // An unrelated compilation failure is still handled by the standard lane after raw admission.
+            return false;
+        }
     }
 
     internal async ValueTask EnsureLiveStoragePolicyAsync(CameraModuleConfig configuration, CancellationToken cancellationToken)
@@ -324,6 +399,55 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             .ConfigureAwait(false);
     }
 
+    public async ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
+        CreateReferenceAstrometryRevisionAsync(
+            string basisRevisionId, string revision, double? referenceMagnitude,
+            string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(basisRevisionId);
+        ValidateRevisionName(revision, nameof(revision));
+        ReferenceAstrometryPreset.ValidateMagnitude(referenceMagnitude);
+        var requestSha256 = CaptureContractJson.ComputeCanonicalJsonSha256(
+            new { basisRevisionId, revision, referenceMagnitude, actor, reason });
+        if (await _store.ReadReferenceAstrometryCreationAsync(
+                idempotencyKey, requestSha256, actor, reason, cancellationToken).ConfigureAwait(false) is { } receipt)
+        {
+            var selection = ReferenceAstrometryPreset.ReadSelection(receipt.Revision.Pipeline);
+            if (receipt.Legacy)
+            {
+                var legacyBasis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+                if (receipt.Revision.State.Revision != revision || !ReferenceAstrometryPreset.MatchesLegacyCreation(
+                        legacyBasis.Pipeline, referenceMagnitude, receipt.Revision.Pipeline, selection))
+                    throw new ProcessingGraphStoreConflictException("The idempotency key was used for a different command.");
+            }
+            return (receipt.Revision.State, selection);
+        }
+
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("A camera profile must be initialized before configuring astrometry.");
+        if (referenceMagnitude is null && !string.Equals(profile.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
+        EnsureReferenceAstrometryReadout(profile.Rig);
+        var basis = await _store.ReadRevisionAsync(basisRevisionId, cancellationToken).ConfigureAwait(false);
+        var legacyScene = LegacyVirtualSkySceneGraph.FindLegacyScene(profile, basis.Pipeline);
+        // Use the capture-compatible producers while keeping the caller's immutable basis in the receipt.
+        var basisPipeline = legacyScene is null ? basis.Pipeline : DeriveSceneCompatibilityPipeline(basis, legacyScene).Pipeline;
+        var (pipeline, _) = await ReferenceAstrometryPreset.ApplyAsync(
+            basisPipeline, referenceMagnitude, _astrometricCatalog?.Invoke(), cancellationToken, basis).ConfigureAwait(false);
+        var snapshot = CreateRevisionSnapshot(profile with { Pipeline = pipeline },
+            ReferenceAstrometryPreset.GraphName, revision, _timeProvider.GetUtcNow());
+        var committed = await _store.InsertReferenceAstrometryRevisionAsync(
+            snapshot, idempotencyKey, actor, reason, requestSha256, candidate =>
+            {
+                var current = _currentCaptureProfile?.Invoke() ?? profile;
+                CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, current.Pipeline);
+                if (current.Rig != profile.Rig)
+                    EnsureReferenceAstrometryReadout(current.Rig);
+            }, cancellationToken).ConfigureAwait(false);
+        // A concurrent retry can commit another selection before this transaction starts.
+        return (committed.State, ReferenceAstrometryPreset.ReadSelection(committed.Pipeline));
+    }
+
     internal async ValueTask<ProcessingGraphRevisionState> CreateRevisionAsync(
         CameraModuleConfig baseConfiguration,
         string name,
@@ -364,7 +488,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             var state = await _store.ActivateRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                revision => EnsureCurrentRevisionPlans(revision, profile)).ConfigureAwait(false);
+                (revision, preset, token) => EnsureCurrentRevisionPlansAsync(revision, profile, preset, token)).ConfigureAwait(false);
             await _store.RecordDeliveredActivationAsync(revisionId, cancellationToken).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
@@ -393,7 +517,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         {
             var state = await _store.RollbackRevisionAsync(
                 revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken,
-                revision => EnsureCurrentRevisionPlans(revision, profile)).ConfigureAwait(false);
+                (revision, preset, token) => EnsureCurrentRevisionPlansAsync(revision, profile, preset, token)).ConfigureAwait(false);
             activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Ok);
             return state;
         }
@@ -573,7 +697,66 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string? reason,
         CancellationToken cancellationToken)
         => _store.RetireRevisionAsync(
-            revisionId, expectedVersion, idempotencyKey, actor, reason, cancellationToken);
+            revisionId, expectedVersion, idempotencyKey, actor, reason, CreateRetirementCompatibilitySearchAsync, cancellationToken);
+
+    private async ValueTask<SceneCompatibilityRevisionSearch?> CreateRetirementCompatibilitySearchAsync(
+        ProcessingGraphRevisionSnapshot source,
+        ProcessingGraphRevisionSnapshot candidate,
+        CancellationToken cancellationToken)
+    {
+        var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false);
+        var legacyScene = profile is null ? LegacyVirtualSkySceneGraph.FindLegacyScene(source.Pipeline)
+            : LegacyVirtualSkySceneGraph.FindLegacyScene(profile, source.Pipeline);
+        var state = candidate.State;
+        if (legacyScene is null &&
+            (state.Name != AstrometryConsumerCompatibilityGraphName || !source.HasHistoricalAstrometryConsumerEdge()))
+            return null;
+
+        var (graphName, pipeline) = legacyScene is null
+            ? (AstrometryConsumerCompatibilityGraphName, source.Pipeline)
+            : DeriveSceneCompatibilityPipeline(source, legacyScene);
+        var pipelineJson = CanonicalBytes(pipeline);
+        if (state.Name != graphName || !candidate.PipelineJson.AsSpan().SequenceEqual(pipelineJson))
+            return null;
+
+        if (profile is not null)
+        {
+            var migrated = profile with { Pipeline = pipeline };
+            var compilation = legacyScene is null
+                ? CaptureProcessingGraphCompilation.RetainedCapture
+                : CaptureProcessingGraphCompilation.ActiveProfile;
+            if (legacyScene is null && !CanUpgradeAstrometryConsumerPlan(migrated, source))
+                return null;
+            return new(graphName, source.State.RevisionId,
+                name => CreateSceneCompatibilitySnapshot(migrated, graphName, name, compilation));
+        }
+
+        // The live compiler records optional fit dependencies as supplementary for Storage and Telemetry.
+        // A predecessor with required fit edges can still serve frozen history, but cannot be the fresh successor.
+        if (candidate.HasHistoricalAstrometryConsumerEdge())
+            return null;
+
+        // Before a profile loads, use frozen derivation evidence. An earlier revision compiled under a
+        // different plan cannot establish that the candidate would be skipped by the live compiler.
+        return new(graphName, source.State.RevisionId, MatchesFrozen: stored =>
+            stored.State.DefinitionIdentitySha256 == state.DefinitionIdentitySha256 &&
+            stored.State.SharedPlanIdentitySha256 == state.SharedPlanIdentitySha256 &&
+            stored.State.LocalPlanIdentitySha256 == state.LocalPlanIdentitySha256 &&
+            stored.PipelineJson.AsSpan().SequenceEqual(pipelineJson) &&
+            stored.DefinitionJson.AsSpan().SequenceEqual(candidate.DefinitionJson) &&
+            stored.Nodes.SequenceEqual(candidate.Nodes) &&
+            stored.State.RevisionId == ComputeRevisionId(stored.State.Name, stored.State.Revision,
+                state.DefinitionIdentitySha256, state.SharedPlanIdentitySha256, state.LocalPlanIdentitySha256));
+    }
+
+    private static (string GraphName, CapturePipelineConfig Pipeline) DeriveSceneCompatibilityPipeline(
+        ProcessingGraphRevisionSnapshot source, CaptureProcessingStepConfig legacyScene)
+    {
+        var sharedFit = LegacyVirtualSkySceneGraph.FindFitInSharedBranch(source.Pipeline, legacyScene);
+        // The earlier scene successor remains bound to its historical captures.
+        var graphName = sharedFit is null ? VirtualSkySceneCompatibilityGraphName : VirtualSkySharedFitCompatibilityGraphName;
+        return (graphName, LegacyVirtualSkySceneGraph.Migrate(source, legacyScene, sharedFit));
+    }
 
     public ValueTask<ProcessingReplaySubmissionResult> SubmitReplayAsync(
         ProcessingReplaySubmission submission,
@@ -723,13 +906,33 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         return fallback ?? Volatile.Read(ref _baseConfiguration);
     }
 
-    private void EnsureCurrentRevisionPlans(ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile)
+    private async ValueTask EnsureCurrentRevisionPlansAsync(
+        ProcessingGraphRevisionSnapshot revision, CameraModuleConfig? profile, bool referenceAstrometryPreset,
+        CancellationToken cancellationToken)
     {
         var current = _currentCaptureProfile?.Invoke() ?? profile ?? Volatile.Read(ref _baseConfiguration)
             ?? throw new InvalidOperationException("A camera configuration must be initialized before selecting a processing revision.");
         CaptureStoragePolicy.EnsureMatchesProfile(revision.Pipeline, current.Pipeline);
         EnsureMeasurementProfile(revision.Pipeline, current);
+        if (referenceAstrometryPreset)
+            EnsureReferenceAstrometryReadout(current.Rig);
         EnsureCompatibleRevisionPlans(revision, current);
+        if (referenceAstrometryPreset)
+            await ReferenceAstrometryPreset.VerifySelectionAsync(
+                revision.Pipeline, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void EnsureReferenceAstrometryReadout(CameraRigConfig rig)
+    {
+        if ((rig.Readout?.PixelFormat ?? rig.Sensor.PixelFormat) is not (CameraPixelFormat.Mono16 or CameraPixelFormat.BayerRggb16))
+            throw new InvalidOperationException("Measured astrometry requires a linear 16-bit monochrome or Bayer readout.");
+        var projection = RigProjectionContextFactory.Create(rig);
+        // StellarSourceMeasurer requires at least 16 pixels per axis and has a lower pixel ceiling than the solver.
+        const int minimumDimension = 16;
+        if (projection.WidthPixels is < minimumDimension or > ProjectedSceneJson.MaximumDimensionPixels ||
+            projection.HeightPixels is < minimumDimension or > ProjectedSceneJson.MaximumDimensionPixels ||
+            (long)projection.WidthPixels * projection.HeightPixels > StellarDetector.MaximumSupportedPixels)
+            throw new InvalidOperationException("The configured readout dimensions fall outside the measured astrometry recipe bounds.");
     }
 
     private void EnsureMeasurementProfile(CapturePipelineConfig pipeline, CameraModuleConfig configuration)
@@ -763,11 +966,15 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         DateTimeOffset createdUtc,
         ProcessingGraphRevisionLifecycle lifecycle = ProcessingGraphRevisionLifecycle.Draft,
         ProcessingGraphDefinition? sourceDefinition = null,
-        bool retainedCapture = false)
+        CaptureProcessingGraphCompilation compilation = CaptureProcessingGraphCompilation.Proposal)
     {
-        using var graph = new DisposableProcessingGraph(sourceDefinition is null
-            ? retainedCapture ? _pipelineFactory.CreateRetainedGraph(configuration) : _pipelineFactory.CreateGraph(configuration)
-            : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));
+        using var graph = new DisposableProcessingGraph(compilation switch
+        {
+            CaptureProcessingGraphCompilation.ActiveProfile => _pipelineFactory.CreateActiveProfileGraph(configuration),
+            CaptureProcessingGraphCompilation.RetainedCapture => _pipelineFactory.CreateRetainedGraph(configuration),
+            _ when sourceDefinition is not null => _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision),
+            _ => _pipelineFactory.CreateGraph(configuration)
+        });
         var sharedPlan = graph.Value.SharedPlan
             ?? throw new InvalidOperationException("Processing graph revisions require explicit pipeline v2 compilation.");
         if (sourceDefinition is not null && !ProcessingGraphJson.SerializeCanonical(sourceDefinition)
@@ -787,15 +994,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
                 Publication = node.Publication?.Persistence.ToString()
             }).ToArray()
         });
-        var revisionId = CaptureContractJson.ComputeCanonicalJsonSha256(new
-        {
-            SchemaVersion = "cameraagent-processing-graph-revision-v1",
-            Name = name,
-            Revision = revision,
-            sharedPlan.DefinitionIdentitySha256,
-            sharedPlan.PlanIdentitySha256,
-            LocalPlanIdentitySha256 = localPlanIdentity
-        });
+        var revisionId = ComputeRevisionId(
+            name, revision, sharedPlan.DefinitionIdentitySha256, sharedPlan.PlanIdentitySha256, localPlanIdentity);
         var sharedNodes = sharedPlan.Nodes.ToDictionary(
             static node => node.Definition.Id,
             StringComparer.Ordinal);
@@ -940,6 +1140,18 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     internal static bool IsSha256(string value)
         => value.Length == 64 && value.All(Uri.IsHexDigit);
 
+    private static string ComputeRevisionId(string name, string revision, string definitionIdentitySha256,
+        string sharedPlanIdentitySha256, string localPlanIdentitySha256)
+        => CaptureContractJson.ComputeCanonicalJsonSha256(new
+        {
+            SchemaVersion = "cameraagent-processing-graph-revision-v1",
+            Name = name,
+            Revision = revision,
+            DefinitionIdentitySha256 = definitionIdentitySha256,
+            PlanIdentitySha256 = sharedPlanIdentitySha256,
+            LocalPlanIdentitySha256 = localPlanIdentitySha256
+        });
+
     private static byte[] CanonicalBytes<T>(T value)
         => Encoding.UTF8.GetBytes(CaptureContractJson.Canonicalize(
             CaptureContractJson.SerializeToElement(value)).GetRawText());
@@ -1011,6 +1223,10 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         string RevisionId,
         CameraModuleConfig BaseConfiguration,
         ProcessingActiveRevisionSupersession? Result);
+
+    private sealed record SceneCompatibilityCandidate(
+        CameraModuleConfig Configuration,
+        SceneCompatibilityRevisionSearch Search);
 
     private sealed class DisposableProcessingGraph(CaptureProcessingGraph value) : IDisposable
     {

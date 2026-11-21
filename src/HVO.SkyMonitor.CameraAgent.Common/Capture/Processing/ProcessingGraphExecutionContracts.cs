@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -249,6 +250,38 @@ internal sealed record ProcessingGraphRevisionSnapshot(
     byte[] FrozenPlanJson,
     ImmutableArray<ProcessingExecutionNodeSeed> Nodes)
 {
+    internal bool HasHistoricalAstrometryConsumerEdge()
+    {
+        var solver = Pipeline.Steps.FirstOrDefault(static step => step.Enabled != false && !step.Required &&
+            string.Equals(step.Type, MeasuredAstrometryCaptureProcessingStep.Alias, StringComparison.OrdinalIgnoreCase));
+        if (solver is null) return false;
+        var solverId = NodeId(solver, MeasuredAstrometryCaptureProcessingStep.Alias);
+        foreach (var step in Pipeline.Steps)
+        {
+            if (step.Enabled == false ||
+                !(string.Equals(step.Type, "Storage", StringComparison.OrdinalIgnoreCase) ||
+                  string.Equals(step.Type, "Telemetry", StringComparison.OrdinalIgnoreCase)) ||
+                step.DependsOn?.Contains(solverId, StringComparer.OrdinalIgnoreCase) != true)
+            {
+                continue;
+            }
+            var consumerId = NodeId(step, string.Equals(step.Type, "Storage", StringComparison.OrdinalIgnoreCase)
+                ? "Storage" : "Telemetry");
+            var seed = Nodes.FirstOrDefault(node => node.NodeId == consumerId);
+            if (seed is null) continue;
+            using var dependencies = JsonDocument.Parse(seed.DependenciesJson);
+            if (dependencies.RootElement.EnumerateArray().Any(dependency =>
+                dependency.GetProperty("producerId").GetString() == solverId &&
+                dependency.GetProperty("required").GetBoolean()))
+            {
+                return true;
+            }
+        }
+        return false;
+
+        static string NodeId(CaptureProcessingStepConfig step, string alias) => string.IsNullOrWhiteSpace(step.Id) ? alias : step.Id.Trim();
+    }
+
     // Admission and replay execution share this test, so a revision accepted for queueing is never one the worker
     // then abandons as superseded. Nodes are keyed by id; each must keep both its plan and its shared identity.
     internal bool IsCompiledBy(CaptureProcessingGraph graph)
@@ -258,11 +291,32 @@ internal sealed record ProcessingGraphRevisionSnapshot(
             return false;
         }
         var stored = Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
-        return graph.Nodes.All(node =>
-            stored.TryGetValue(node.Id, out var saved) &&
-            string.Equals(saved.PlanSha256, node.PlanSha256, StringComparison.Ordinal) &&
-            string.Equals(
-                saved.SharedPlanNodeIdentitySha256, node.SharedPlanNodeIdentitySha256, StringComparison.Ordinal));
+        if (!graph.Nodes.All(node =>
+                stored.TryGetValue(node.Id, out var saved) &&
+                string.Equals(saved.PlanSha256, node.PlanSha256, StringComparison.Ordinal)))
+        {
+            return false;
+        }
+        if (graph.Nodes.All(node => stored[node.Id].SharedPlanNodeIdentitySha256 == node.SharedPlanNodeIdentitySha256))
+        {
+            return true;
+        }
+        return MatchesPreviousAstrometryPlan(graph);
+    }
+
+    internal bool MatchesPreviousAstrometryPlan(CaptureProcessingGraph graph)
+        => graph.PreviousAstrometryPlan is { } previous &&
+           State.SharedPlanIdentitySha256 == previous.PlanIdentitySha256 &&
+           Nodes.Length == previous.Nodes.Length &&
+           graph.Nodes.Count == Nodes.Length &&
+           PreviousNodesMatch(graph, previous);
+
+    private bool PreviousNodesMatch(CaptureProcessingGraph graph, ProcessingGraphExecutionPlan previous)
+    {
+        var stored = Nodes.ToDictionary(static node => node.NodeId, StringComparer.Ordinal);
+        return graph.Nodes.All(node => stored.TryGetValue(node.Id, out var saved) && saved.PlanSha256 == node.PlanSha256) &&
+               previous.Nodes.All(node => stored.TryGetValue(node.Definition.Id, out var saved) &&
+                   saved.SharedPlanNodeIdentitySha256 == node.IdentitySha256);
     }
 }
 
@@ -354,6 +408,11 @@ public interface IProcessingGraphOperations
         string actor,
         string? reason,
         CancellationToken cancellationToken);
+
+    ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
+        CreateReferenceAstrometryRevisionAsync(
+            string basisRevisionId, string revision, double? referenceMagnitude,
+            string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken);
 
     ValueTask<ProcessingGraphRegistryState> ActivateRevisionAsync(
         string revisionId,
@@ -455,6 +514,24 @@ public sealed class ProcessingGraphRevisionSupersededException : InvalidOperatio
     }
 
     public ProcessingGraphRevisionSupersededException(string message, Exception innerException) : base(message, innerException)
+    {
+    }
+}
+
+/// <summary>A preset revision pins a catalog selection the current host cannot provide.</summary>
+public sealed class ReferenceAstrometryCatalogConflictException : InvalidOperationException
+{
+    public const string SafeMessage = "This revision's astrometry pin does not match the installed catalog. Select a compatible graph or restore the pinned catalog.";
+
+    public ReferenceAstrometryCatalogConflictException() : base(SafeMessage)
+    {
+    }
+
+    public ReferenceAstrometryCatalogConflictException(string message) : base(message)
+    {
+    }
+
+    public ReferenceAstrometryCatalogConflictException(string message, Exception innerException) : base(message, innerException)
     {
     }
 }

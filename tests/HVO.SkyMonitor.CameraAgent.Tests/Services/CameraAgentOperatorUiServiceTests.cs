@@ -57,6 +57,13 @@ public sealed class CameraAgentOperatorUiServiceTests
         Assert.AreEqual(expected, result.Kind.ToString());
         Assert.IsFalse(result.Message?.Contains("private-path", StringComparison.Ordinal) ?? false);
         retained.Verify(value => value.GetAsync(id, CancellationToken.None), scenario == "denied" ? Times.Never() : Times.Once());
+        if (scenario == "denied")
+        {
+            var identity = new CameraAgentAstrometryAssessmentIdentity(id, Guid.NewGuid(), new string('A', 64));
+            var observation = await service.ReadAstrometryPublicationStateAsync(identity, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Unauthorized, observation.Kind);
+            retained.Verify(value => value.ReadPublicationStateAsync(identity, CancellationToken.None), Times.Never());
+        }
     }
 
     [TestMethod]
@@ -867,6 +874,17 @@ public sealed class CameraAgentOperatorUiServiceTests
             .ReturnsAsync(AuthorizationResult.Success());
         return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
             gallery: gallery, presentations: presentations);
+    }
+
+    internal static ICameraAgentOperatorUiService CreateAuthorizedRetainedAstrometryService(
+        ICameraAgentRetainedAstrometryService retainedAstrometry, ICameraAgentLayeredPresentationService? layers = null)
+    {
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "owner")], "test"));
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(value => value.AuthorizeAsync(principal, null, CameraAgentAuthorizationPolicyNames.OperationsReadV1))
+            .ReturnsAsync(AuthorizationResult.Success());
+        return CreateService(new CountingAuthenticationStateProvider(principal), authorization.Object,
+            layers: layers, retainedAstrometry: retainedAstrometry);
     }
 
     private static CameraAgentOperatorUiService CreateService(

@@ -15,6 +15,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 public sealed partial class ProcessingGraphOperationsTests
 {
     [TestMethod]
+    [DataRow("AstrometryPrediction")]
     [DataRow("MeasuredStellarAssociations")]
     [DataRow("MeasuredAstrometry")]
     [DataRow(ExposureAssociationProducts.StepAlias)]
@@ -26,6 +27,7 @@ public sealed partial class ProcessingGraphOperationsTests
     {
         object runtime = alias switch
         {
+            "AstrometryPrediction" => new AstrometryPredictionCaptureProcessingStepOptions(),
             "MeasuredStellarAssociations" or ExposureAssociationProducts.StepAlias => new MeasuredStellarAssociationProcessingStepOptions(),
             "MeasuredAstrometry" or ExposureAstrometryCaptureProcessingStep.CenteredAlias => new MeasuredAstrometryCaptureOptions(),
             "CaptureSatelliteTracks" => new CaptureSatelliteTracksOptions(),
@@ -70,6 +72,7 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
+    [DataRow("AstrometryPrediction", "maximumMagnitude", "4.5")]
     [DataRow("MeasuredStellarAssociations", "outputVariant", "measured-custom")]
     [DataRow("MeasuredAstrometry", "captureStride", "120")]
     [DataRow("CaptureSatelliteTracks", "allowStaleDiagnostics", "True")]
@@ -80,6 +83,14 @@ public sealed partial class ProcessingGraphOperationsTests
         try
         {
             var pipeline = RemainingOptionsPipeline(root);
+            if (alias == AstrometryPredictionCaptureProcessingStep.Alias)
+            {
+                pipeline = pipeline with
+                {
+                    Steps = [.. pipeline.Steps, new(alias, alias, DependsOn: ["$raw"], Required: false,
+                        Publication: new(CaptureProcessingPersistenceMode.DurableLocal))]
+                };
+            }
             var configuration = CreateConfiguration() with { Pipeline = pipeline };
             string sourceRevision;
             string editedRevision;

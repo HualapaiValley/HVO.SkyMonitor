@@ -169,12 +169,39 @@ public sealed partial class EnvironmentalAcquisitionService(
     {
         var now = timeProvider.GetUtcNow();
         var due = CurrentDue(source, now);
+        var initialPoll = true;
+        var heldPollStore = stateStore as IEnvironmentalLocationHeldPollStore;
+        DateTimeOffset? heldDue = null;
+        var confirmSettlement = false;
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                due = await ResolveDueAsync(source, due, cancellationToken).ConfigureAwait(false);
+                if (confirmSettlement)
+                {
+                    var slot = await heldPollStore!.ReadLocationHeldPollAsync(
+                        options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
+                    heldDue = slot is { Settled: false } ? slot.DueUtc : null;
+                    confirmSettlement = false;
+                    if (heldDue.HasValue)
+                        await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, cancellationToken).ConfigureAwait(false);
+                    else
+                    {
+                        due = NextDue(source, timeProvider.GetUtcNow());
+                    }
+                }
+                if (initialPoll && heldPollStore is not null)
+                {
+                    var slot = await heldPollStore.ReadLocationHeldPollAsync(
+                        options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
+                    if (slot is { Settled: false })
+                        heldDue = slot.DueUtc;
+                    else if (slot is not null && due <= slot.DueUtc)
+                        due = NextDue(source, slot.DueUtc);
+                    initialPoll = false;
+                }
+                due = heldDue ?? await ResolveDueAsync(source, due, cancellationToken).ConfigureAwait(false);
                 await stateStore.UpdateSourceScheduleAsync(
                     options.Value.RawIngressRoot, source, due, cancellationToken).ConfigureAwait(false);
                 if (journalUnavailable)
@@ -187,7 +214,27 @@ public sealed partial class EnvironmentalAcquisitionService(
                 {
                     await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
                 }
-                await AcquireAsync(source, due, cancellationToken).ConfigureAwait(false);
+                if (!heldDue.HasValue && heldPollStore is not null && coordinator.IsInitialDeploymentLocationPending)
+                {
+                    var slot = await heldPollStore.HoldLocationPollAsync(
+                        options.Value.RawIngressRoot, source, due, cancellationToken).ConfigureAwait(false);
+                    if (slot.Settled)
+                    {
+                        due = NextDue(source, slot.DueUtc);
+                        continue;
+                    }
+                    heldDue = due = slot.DueUtc;
+                }
+                // Keep the due timestamp while the protected store reconciles startup authority.
+                // Wait before entering the coordinator so capture triggers retain their own budgets.
+                await coordinator.WaitForInitialDeploymentLocationAsync(cancellationToken).ConfigureAwait(false);
+                var settled = await AcquireAsync(source, due, heldDue.HasValue, cancellationToken).ConfigureAwait(false);
+                if (!settled && heldDue.HasValue)
+                {
+                    confirmSettlement = true;
+                    continue;
+                }
+                heldDue = null;
                 due = NextDue(source, timeProvider.GetUtcNow());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -259,18 +306,17 @@ public sealed partial class EnvironmentalAcquisitionService(
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "A single configured source failure must not stop independent periodic sources.")]
-    private async Task AcquireAsync(
+    private async Task<bool> AcquireAsync(
         EnvironmentalSourceDescriptor source,
         DateTimeOffset due,
+        bool locationHeld,
         CancellationToken cancellationToken)
     {
         try
         {
-            _ = await coordinator.AcquireSourceAsync(
-                source.Id,
-                EnvironmentalAcquisitionTrigger.Periodic,
-                due,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+            _ = await coordinator.AcquireScheduledSourceAsync(
+                source.Id, due, locationHeld, cancellationToken).ConfigureAwait(false);
+            return true;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -285,6 +331,7 @@ public sealed partial class EnvironmentalAcquisitionService(
                 EnvironmentalAcquisitionDisposition.Failed.ToString(),
                 "unexpected",
                 exception);
+            return false;
         }
     }
 

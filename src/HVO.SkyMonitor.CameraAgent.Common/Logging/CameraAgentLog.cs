@@ -101,6 +101,9 @@ internal static partial class CameraAgentLog
     [LoggerMessage(EventId = 2014, Level = LogLevel.Debug, Message = "Built capture processing pipeline with {StepCount} steps")]
     public static partial void CaptureProcessingPipelineBuilt(this ILogger logger, int StepCount);
 
+    [LoggerMessage(EventId = 2016, Level = LogLevel.Warning, Message = "Live astrometry node {NodeId} in graph revision {RevisionId} is skipped because its solver and measured associations use different scene producers")]
+    public static partial void CaptureAstrometryCrossedSceneDependencies(this ILogger logger, string nodeId, string? revisionId);
+
     [LoggerMessage(EventId = 2027, Level = LogLevel.Information, Message = "Capture processing channel drained")]
     public static partial void CaptureProcessingDrainCompleted(this ILogger logger);
 
