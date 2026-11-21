@@ -93,18 +93,50 @@ public static class LinearBayerReconstruction
         BayerPattern pattern = BayerPattern.Rggb,
         CancellationToken cancellationToken = default)
     {
+        Validate(raw, validMask, width, height, pattern, cancellationToken);
+        var red = new double[raw.Length];
+        var green = new double[raw.Length];
+        var blue = new double[raw.Length];
+        var outputMask = new bool[raw.Length];
+        ReconstructCore(raw, validMask, width, height, pattern, red, green, blue, outputMask, cancellationToken);
+        return new(width, height, red, green, blue, outputMask);
+    }
+
+    /// <summary>Reconstructs into nonoverlapping caller-owned planes, which may be reused for another image.</summary>
+    public static void ReconstructInto(
+        ReadOnlySpan<double> raw, ReadOnlySpan<bool> validMask, int width, int height, BayerPattern pattern,
+        Span<double> red, Span<double> green, Span<double> blue, Span<bool> outputMask,
+        CancellationToken cancellationToken = default)
+    {
+        Validate(raw, validMask, width, height, pattern, cancellationToken);
+        if (red.Length != raw.Length || green.Length != raw.Length || blue.Length != raw.Length ||
+            outputMask.Length != raw.Length || raw.Overlaps(red) || raw.Overlaps(green) || raw.Overlaps(blue) ||
+            red.Overlaps(green) || red.Overlaps(blue) || green.Overlaps(blue) || validMask.Overlaps(outputMask))
+        {
+            throw new ArgumentException("Reconstruction requires exact, nonoverlapping output planes.");
+        }
+        red.Clear();
+        green.Clear();
+        blue.Clear();
+        outputMask.Clear();
+        ReconstructCore(raw, validMask, width, height, pattern, red, green, blue, outputMask, cancellationToken);
+    }
+
+    private static void Validate(ReadOnlySpan<double> raw, ReadOnlySpan<bool> validMask,
+        int width, int height, BayerPattern pattern, CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
         if (!Enum.IsDefined(pattern))
         {
             throw new ArgumentOutOfRangeException(nameof(pattern));
         }
         LinearStellarInput.Validate(raw, validMask, width, height, 3, MaximumSupportedPixels, cancellationToken);
+    }
 
-        var red = new double[raw.Length];
-        var green = new double[raw.Length];
-        var blue = new double[raw.Length];
-        var outputMask = new bool[raw.Length];
-        var planes = new[] { red, green, blue };
+    private static void ReconstructCore(ReadOnlySpan<double> raw, ReadOnlySpan<bool> validMask, int width, int height,
+        BayerPattern pattern, Span<double> red, Span<double> green, Span<double> blue, Span<bool> outputMask,
+        CancellationToken cancellationToken)
+    {
         for (var y = 1; y < height - 1; y++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -122,9 +154,10 @@ public static class LinearBayerReconstruction
                 var knownChannel = ChannelAt(x, y, pattern);
                 for (var channel = 0; channel < 3; channel++)
                 {
+                    var plane = channel == 0 ? red : channel == 1 ? green : blue;
                     if (knownChannel == channel)
                     {
-                        planes[channel][index] = raw[index];
+                        plane[index] = raw[index];
                         continue;
                     }
                     // There are four contributors at R/B sites and two at green sites. Scale before summing
@@ -141,13 +174,12 @@ public static class LinearBayerReconstruction
                             }
                         }
                     }
-                    planes[channel][index] = value;
+                    plane[index] = value;
                 }
                 outputMask[index] = true;
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
-        return new(width, height, red, green, blue, outputMask);
     }
 
     private static bool HasValidNeighborhood(ReadOnlySpan<bool> mask, int width, int x, int y)
