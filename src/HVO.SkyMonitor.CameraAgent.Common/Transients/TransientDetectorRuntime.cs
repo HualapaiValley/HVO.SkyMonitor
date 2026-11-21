@@ -3,23 +3,20 @@ using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Processing;
-using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Transients;
 
 internal sealed class TransientDetectorRuntime(
     ICelestialCatalog catalog,
     IConstellationTopology? constellationTopology = null,
-    IPlanetEphemeris? planetEphemeris = null,
-    Func<IDeploymentLocationStore?>? deploymentLocationStoreAccessor = null)
+    IPlanetEphemeris? planetEphemeris = null)
 {
     internal static readonly TransientDeterministicAssessmentOptionsV1 AssessmentOptions = new(
         5, 3, 8, 3, 1.8, 0.5, 10, 100_000, 3, 3, 3, 1_000, 30, 2);
 
     internal async ValueTask<IReadOnlyDictionary<int, TransientTemporalSource>> CreateSourcesAsync(
-        IReadOnlyDictionary<int, CameraModuleConfig> configurations,
+        IReadOnlyDictionary<int, TransientMeasurementSource> frames,
         TransientDetectionOptions options,
-        IReadOnlyDictionary<int, TransientLoadedFrame> frames,
         CancellationToken cancellationToken)
     {
         var inputs = new Dictionary<int, TransientDetectorInput>();
@@ -52,19 +49,19 @@ internal sealed class TransientDetectorRuntime(
         HorizonObstructionMaskPlanes? obstructionPlanes = null;
         foreach (var pair in frames.OrderBy(static pair => pair.Key))
         {
-            var configuration = configurations[pair.Key];
+            var facts = pair.Value;
             var input = inputs[pair.Key];
             var width = input.Descriptor.Layout.Width;
             var height = input.Descriptor.Layout.Height;
-            var projection = RigProjectionContextFactory.Create(configuration.Rig);
+            var projection = RigProjectionContextFactory.Create(facts.Rig);
             var projector = ProjectorFactory.Create(projection);
             var imageCircle = CreateProjectionMask(width, height, input, projector, static direction => direction is null);
             var horizon = CreateProjectionMask(width, height, input, projector,
                 static direction => direction is { AltitudeDegrees: < 0 });
             var obstruction = CreateObstructionMask(width, height, input,
-                configuration.Rig.ControlPolicy?.Metering?.ExcludedRegions);
+                facts.Rig.ControlPolicy?.Metering?.ExcludedRegions);
             var empty = Linear16MaskOperations.Empty(width, height);
-            var observatory = ResolveObservatory(pair.Value.Manifest.Descriptor, configuration);
+            var observatory = facts.Observatory;
             var metadata = (catalog as ICelestialCatalogMetadataSource)?.Metadata ?? new CatalogMetadata(
                 "runtime-catalog",
                 "unversioned",
@@ -82,7 +79,7 @@ internal sealed class TransientDetectorRuntime(
                 new CatalogQuery(options.StarMaximumMagnitude, options.StarMaximumResults),
                 metadata,
                 horizonPolicy: HorizonPolicy.GeometricHorizon,
-                projectionVersion: configuration.Rig.Optics.CalibrationVersion,
+                projectionVersion: facts.Rig.Optics.CalibrationVersion,
                 algorithmVersion: "visible-scene-iau1976-constellation-v2");
             var transform = input.Descriptor.SourceToDetectorTransform;
             Linear16PixelMask star;
@@ -90,15 +87,13 @@ internal sealed class TransientDetectorRuntime(
             {
                 try
                 {
-                    var descriptor = pair.Value.Manifest.Descriptor;
-                    var startUtc = VirtualExposureProvenance.ResolveCelestialStartUtc(
-                        descriptor, pair.Value.Manifest.Scene?.VirtualExposure);
-                    request = new VisibleSceneRequest(startUtc.AddTicks(descriptor.Controls.EffectiveExposure.Ticks / 2),
+                    var startUtc = facts.CelestialStartUtc;
+                    request = new VisibleSceneRequest(startUtc.AddTicks(facts.EffectiveExposure.Ticks / 2),
                         request.Observer, projection, request.CatalogQuery, metadata,
                         horizonPolicy: HorizonPolicy.GeometricHorizon,
-                        projectionVersion: configuration.Rig.Optics.CalibrationVersion);
+                        projectionVersion: facts.Rig.Optics.CalibrationVersion);
                     var geometry = await new StellarExposureGeometryBuilder(catalog).BuildAsync(request,
-                        startUtc, descriptor.Controls.EffectiveExposure,
+                        startUtc, facts.EffectiveExposure,
                         new(MaximumCandidates: options.StarMaximumResults,
                             PsfSupportRadiusPixels: options.StarSupportRadiusSourcePixels), cancellationToken)
                         .ConfigureAwait(false);
@@ -139,9 +134,9 @@ internal sealed class TransientDetectorRuntime(
                     new ProcessingAlgorithmIdentity(options.ExposureIntegratedStarMask
                         ? StellarExposureMask.AlgorithmVersion : "catalog-projected-star-mask", "v1"), star)
             };
-            if (configuration.Rig.HorizonObstruction is { } profile)
+            if (facts.Rig.HorizonObstruction is { } profile)
             {
-                var evaluator = new HorizonObstructionEvaluator(profile, configuration.Rig, request.Observer, pair.Value.Manifest.Descriptor.Location);
+                var evaluator = new HorizonObstructionEvaluator(profile, facts.Rig, request.Observer, facts.Location);
                 if (!evaluator.IsCompatible)
                     throw new TransientWorkerExecutionException("transient-runtime.obstruction-revalidation-required", retryable: false);
                 var key = CaptureContractJson.ComputeCanonicalJsonSha256(new
@@ -149,7 +144,7 @@ internal sealed class TransientDetectorRuntime(
                     profile = profile.ComputeIdentitySha256(),
                     evaluator.GeometryIdentitySha256,
                     request.Observer,
-                    pair.Value.Manifest.Descriptor.Location,
+                    facts.Location,
                     projection,
                     transform,
                     width,
@@ -182,24 +177,6 @@ internal sealed class TransientDetectorRuntime(
                 new TransientSensitivityV1(input.Descriptor.Compatibility.SetpointRegime, 1, 1), masks));
         }
         return output;
-    }
-
-    internal ObservatoryLocation ResolveObservatory(
-        ReconstructionDescriptor descriptor,
-        CameraModuleConfig configuration)
-    {
-        if (descriptor.Location is { } provenance)
-        {
-            var store = deploymentLocationStoreAccessor?.Invoke() ?? throw new TransientWorkerExecutionException(
-                "transient-runtime.location-history-unavailable", retryable: false);
-            return store.Resolve(provenance, descriptor.Timing.ExposureStartedUtc).ToObservatoryLocation();
-        }
-        if (configuration.DeploymentLocation is not null || configuration.DeploymentLocationRedacted)
-        {
-            throw new TransientWorkerExecutionException(
-                "transient-runtime.capture-location-missing", retryable: false);
-        }
-        return configuration.Observatory;
     }
 
     internal static TransientCandidateExtractionOutcome Extract(

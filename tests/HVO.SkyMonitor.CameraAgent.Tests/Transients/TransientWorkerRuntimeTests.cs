@@ -33,6 +33,13 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Transients;
 [SuppressMessage("Performance", "CA1515:Consider making type internal", Justification = "MSTest requires public test classes.")]
 public sealed partial class TransientWorkerRuntimeTests
 {
+    private static ValueTask<IReadOnlyDictionary<int, TransientTemporalSource>> PrepareDetectorSourcesAsync(
+        TransientDetectorRuntime runtime, IReadOnlyDictionary<int, CameraModuleConfig> configurations,
+        TransientDetectionOptions options, IReadOnlyDictionary<int, TransientLoadedFrame> frames,
+        CancellationToken cancellationToken)
+        => runtime.CreateSourcesAsync(new TransientDetectorSourcePreparation().Prepare(
+            configurations, frames, options.ExposureIntegratedStarMask), options, cancellationToken);
+
     [TestMethod]
     public async Task ExposureSweptStarMask_UsesCaptureClockAndIgnoresPoisonedRendererObjects()
     {
@@ -68,15 +75,31 @@ public sealed partial class TransientWorkerRuntimeTests
                 VirtualExposure = clock,
                 Objects = [new("poison", "poison", 3, 3, -12)]
             };
-            var configured = new Dictionary<int, CameraModuleConfig> { [0] = configuration };
-            var first = await runtime.CreateSourcesAsync(configured, options,
-                new Dictionary<int, TransientLoadedFrame> { [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene } } },
-                CancellationToken.None).ConfigureAwait(false);
-            var second = await runtime.CreateSourcesAsync(configured, options,
+            var preparation = new TransientDetectorSourcePreparation();
+            var firstInput = preparation.Prepare(new Dictionary<int, CameraModuleConfig> { [0] = configuration },
+                new Dictionary<int, TransientLoadedFrame> { [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene } } }, true);
+            var alternative = configuration with
+            {
+                Module = configuration.Module with
+                {
+                    Options = System.Text.Json.JsonSerializer.SerializeToElement(new { privateOracle = "alternate-satellite-identity-canary" })
+                }
+            };
+            var secondInput = preparation.Prepare(new Dictionary<int, CameraModuleConfig> { [0] = alternative },
                 new Dictionary<int, TransientLoadedFrame>
                 {
-                    [0] = frame with { Manifest = frame.Manifest with { Scene = firstScene with { Objects = [new("other-truth", "other", 55, 30, 30)] } } }
-                }, CancellationToken.None).ConfigureAwait(false);
+                    [0] = frame with
+                    {
+                        Manifest = frame.Manifest with
+                        {
+                            Scene = firstScene with
+                            { Objects = [new("alternate-satellite-identity-canary", "alternate-oracle", 55, 30, 30)] }
+                        }
+                    }
+                }, true);
+            Assert.AreEqual(firstInput[0], secondInput[0], "Changing private names and positions must not change the measured inputs.");
+            var first = await runtime.CreateSourcesAsync(firstInput, options, CancellationToken.None).ConfigureAwait(false);
+            var second = await runtime.CreateSourcesAsync(secondInput, options, CancellationToken.None).ConfigureAwait(false);
             var star = first[0].Masks.Single(mask => mask.Kind == TransientDetectorMaskKind.Star);
             var changedTruth = second[0].Masks.Single(mask => mask.Kind == TransientDetectorMaskKind.Star);
             Assert.IsTrue(Linear16MaskOperations.IsExcluded(star.Mask, 31, 23));
@@ -126,7 +149,7 @@ public sealed partial class TransientWorkerRuntimeTests
     [TestMethod]
     public void ResolveObservatory_MigratedLegacyContextFailsClosed()
     {
-        var runtime = new TransientDetectorRuntime(new InMemoryCelestialCatalog([]));
+        var preparation = new TransientDetectorSourcePreparation();
         var descriptor = ReconstructableCaptureContractTests.CreateManifest(
             CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
         var configuration = CreateConfiguration() with
@@ -137,7 +160,7 @@ public sealed partial class TransientWorkerRuntimeTests
         };
 
         var exception = Assert.ThrowsExactly<TransientWorkerExecutionException>(() =>
-            runtime.ResolveObservatory(descriptor, configuration));
+            preparation.ResolveObservatory(descriptor, configuration));
 
         Assert.AreEqual("transient-runtime.capture-location-missing", exception.Message);
     }

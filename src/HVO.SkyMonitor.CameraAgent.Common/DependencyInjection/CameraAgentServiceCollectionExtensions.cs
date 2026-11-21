@@ -155,7 +155,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton(provider => new TransientDetectorRuntime(
             provider.GetRequiredService<ICelestialCatalog>(),
             provider.GetService<IConstellationTopology>(),
-            provider.GetService<IPlanetEphemeris>(),
+            provider.GetService<IPlanetEphemeris>()));
+        services.AddSingleton(provider => new TransientDetectorSourcePreparation(
             () => provider.GetService<IDeploymentLocationStore>()));
         services.AddSingleton<TransientWorkerWakeup>();
         services.AddSingleton<TransientCandidateDeliveryWakeup>();

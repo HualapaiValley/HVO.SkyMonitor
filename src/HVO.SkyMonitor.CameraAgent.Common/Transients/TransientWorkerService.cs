@@ -21,6 +21,7 @@ internal sealed class TransientWorkerService(
     SqliteTransientRuntimeStore store,
     ITransientCandidateJournal candidateJournal,
     TransientDetectorRuntime detector,
+    TransientDetectorSourcePreparation detectorPreparation,
     TransientWorkerWakeup wakeup,
     TransientCandidateDeliveryWakeup deliveryWakeup,
     TransientWorkerState state,
@@ -120,9 +121,7 @@ internal sealed class TransientWorkerService(
                 return true;
             }
             failureStage = "input";
-            var sources = await detector.CreateSourcesAsync(
-                await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
-                _options, loaded, cancellationToken).ConfigureAwait(false);
+            var sources = await CreateDetectorSourcesAsync(loaded, cancellationToken).ConfigureAwait(false);
             failureStage = "background";
             var background = TransientTemporalBackgroundFactory.Create(new TransientTemporalBackgroundRequest(
                 TransientTemporalBackgroundKind.CausalProvisional,
@@ -327,9 +326,7 @@ internal sealed class TransientWorkerService(
             var forcedState = deadlineExpired ? TransientEventState.NeedsReview : (TransientEventState?)null;
             if (causalWindowComplete && loaded.Count == 5)
             {
-                var sources = await detector.CreateSourcesAsync(
-                    await ResolveConfigurationsAsync(loaded, cancellationToken).ConfigureAwait(false),
-                    _options, loaded, cancellationToken).ConfigureAwait(false);
+                var sources = await CreateDetectorSourcesAsync(loaded, cancellationToken).ConfigureAwait(false);
                 // Causal evidence freezes every source mask identity. A policy/configuration
                 // change must not turn an unfinished candidate into a different automatic verdict.
                 var causalMasksMatch = CausalMasksMatch(observationExtraction.Background, sources);
@@ -633,6 +630,14 @@ internal sealed class TransientWorkerService(
         await store.MarkCausalCompletionAsync(
             frame.RawCaptureRowId, reason, causalSucceeded, cancellationToken).ConfigureAwait(false);
         await store.RetireBeforeAsync(frame.AgentId, frame.CaptureSequence - 1, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask<IReadOnlyDictionary<int, TransientTemporalSource>> CreateDetectorSourcesAsync(
+        IReadOnlyDictionary<int, TransientLoadedFrame> frames, CancellationToken cancellationToken)
+    {
+        var configurations = await ResolveConfigurationsAsync(frames, cancellationToken).ConfigureAwait(false);
+        var inputs = detectorPreparation.Prepare(configurations, frames, _options.ExposureIntegratedStarMask);
+        return await detector.CreateSourcesAsync(inputs, _options, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<IReadOnlyDictionary<int, CameraModuleConfig>> ResolveConfigurationsAsync(
