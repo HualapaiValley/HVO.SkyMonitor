@@ -27,6 +27,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
             .WithName("CreateCameraAgentProcessingGraphRevision");
+        graphs.MapPost("/revisions/reference-astrometry", CreateReferenceAstrometryRevisionAsync)
+            .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
+            .WithMetadata(RequiredAntiforgeryMetadata.Instance)
+            .WithName("CreateCameraAgentReferenceAstrometryRevision");
         graphs.MapPost("/revisions/{revisionId}/activate", ActivateRevisionAsync)
             .RequireAuthorization(CameraAgentAuthorizationPolicyNames.OperationsMutateV1)
             .WithMetadata(RequiredAntiforgeryMetadata.Instance)
@@ -131,6 +135,25 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
             (key, actor, token) => operations.CreateRevisionAsync(
                 request.Name, request.Revision, request.Pipeline, key, actor, request.Reason, token),
             cancellationToken);
+
+    private static Task<IResult> CreateReferenceAstrometryRevisionAsync(
+        HttpContext context,
+        [FromBody] ReferenceAstrometryRevisionRequest request,
+        IProcessingGraphOperations operations,
+        CancellationToken cancellationToken)
+        => !CameraAgentCredentialAccess.IsForgeryProtected(context)
+            ? Task.FromResult(Problem(StatusCodes.Status400BadRequest, "A valid antiforgery token is required."))
+            : ExecuteMutationAsync(
+                context,
+                async (key, actor, token) =>
+                {
+                    var (revision, selection) = await operations.CreateReferenceAstrometryRevisionAsync(
+                        request.BasisRevisionId, request.Revision, request.ReferenceMagnitude,
+                        key, actor, request.Reason, token)
+                        .ConfigureAwait(false);
+                    return new { revision.RevisionId, CatalogSelection = selection };
+                },
+                cancellationToken);
 
     private static Task<IResult> ActivateRevisionAsync(
         string revisionId,
@@ -352,6 +375,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         {
             return Problem(StatusCodes.Status409Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
         }
+        catch (ReferenceAstrometryCatalogConflictException)
+        {
+            return Problem(StatusCodes.Status409Conflict, ReferenceAstrometryCatalogConflictException.SafeMessage);
+        }
         catch (ProcessingGraphStoreConflictException)
         {
             return Problem(StatusCodes.Status409Conflict, "The processing graph command conflicts with durable state.");
@@ -384,6 +411,9 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         string? Reason = null);
 
     private sealed record ProcessingGraphLifecycleRequest(long? ExpectedVersion = null, string? Reason = null);
+
+    private sealed record ReferenceAstrometryRevisionRequest(
+        string BasisRevisionId, string Revision, double? ReferenceMagnitude = null, string? Reason = null);
 
     private sealed record ProcessingReplayRequest(
         Guid CaptureId,

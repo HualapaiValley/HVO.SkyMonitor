@@ -618,6 +618,8 @@ public sealed class VirtualSkyTransientScenarioTests
         var options = JsonSerializer.SerializeToElement(new
         {
             seed = 2025,
+            // The golden sensor noise is seeded from the scene identity, which includes the candidate cap.
+            maximumResults = 32768,
             magnitudeZeroElectronsPerSecond = 1000d,
             backgroundElectronsPerSecond = 1d,
             psfSigmaPixels = 1d,

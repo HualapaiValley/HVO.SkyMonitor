@@ -94,6 +94,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private int _refreshRequested;
     private int _manualRefreshRequested;
     private long _lastCaptureChangeTimestamp;
+    private bool _gaveDisplayMismatchOneRefresh;
+    private bool _showingBaseOnlyForMismatch;
+    private IncomingLayerPrefetch? _incomingLayerPrefetch;
     private int _disposeStarted;
 
     // Whether each layer kind is shown, as last shown or chosen. It carries the selection from read to read and capture
@@ -107,6 +110,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         None,
         Switch,
         Hold
+    }
+
+    private sealed class IncomingLayerPrefetch(Guid captureId)
+    {
+        private long _revision;
+
+        public Guid CaptureId { get; } = captureId;
+        public long Revision => Volatile.Read(ref _revision);
+        public void Invalidate() => Interlocked.Increment(ref _revision);
     }
 
     [Inject] internal ICameraAgentOperatorUiService OperatorService { get; set; } = default!;
@@ -128,6 +140,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     {
         if (_accessDenied || _disposeStarted != 0 || ArchivedView is not { } archive || ReferenceEquals(archive, _appliedArchive)) return;
         _appliedArchive = archive;
+        _showingBaseOnlyForMismatch = false;
         var capture = archive.Capture;
         var sameCapture = _runCaptureId == capture.CaptureId;
         _runCaptureId = capture.CaptureId;
@@ -253,6 +266,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         using var deadline = new CancellationTokenSource(bound, TimeProvider);
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         await InvokeAsync(() => _refreshing = true);
+        IncomingLayerPrefetch? prefetch = null;
         try
         {
             OperatorUiResult<CameraAgentCurrentSkyView> result;
@@ -266,10 +280,20 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             var displayCaptureId = result.IsSuccess ? result.Value?.Presentation.DisplayCapture?.CaptureId : null;
             var change = CaptureChange.None;
             if (result.IsSuccess && result.Value is { } view)
-                await InvokeAsync(() => change = ClassifyCaptureChange(view, manual, started)).ConfigureAwait(false);
+                await InvokeAsync(() =>
+                {
+                    change = ClassifyCaptureChange(view, manual, started);
+                    if (change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId)
+                    {
+                        prefetch = new(nextCaptureId);
+                        Volatile.Write(ref _incomingLayerPrefetch, prefetch);
+                    }
+                }).ConfigureAwait(false);
+            var requiresEligibleLayers = prefetch is not null && result.Value!.Presentation.StructuredLayersAvailable;
             // The next capture arrives with its overlays in hand, so a change never shows a half-loaded page.
-            var layers = change == CaptureChange.Switch && displayCaptureId is { } nextCaptureId
-                ? await ReadLayersAsync(nextCaptureId, timeout.Token).ConfigureAwait(false)
+            var prefetchedLayersRevision = prefetch?.Revision ?? 0;
+            var layers = prefetch is not null
+                ? await ReadLayersAsync(prefetch.CaptureId, timeout.Token).ConfigureAwait(false)
                 : null;
             if (layers?.Kind == OperatorUiResultKind.Unauthorized)
             {
@@ -277,12 +301,12 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 return;
             }
             timeout.Token.ThrowIfCancellationRequested();
-            // Overlays the read advertised but that could not be read now leave the complete image in place until a
-            // later refresh reads them. A capture whose processing ended without overlays still replaces it.
-            if (change == CaptureChange.Switch && layers is { IsSuccess: false, Kind: not OperatorUiResultKind.Unauthorized } &&
-                result.Value!.Presentation.StructuredLayersAvailable)
+            // If invalidation overtook the prefetch, use the same refresh budget for one replacement read.
+            var revisionAfterPrefetch = prefetch?.Revision ?? 0;
+            if (requiresEligibleLayers && prefetchedLayersRevision != revisionAfterPrefetch && prefetch is not null)
             {
-                change = CaptureChange.Hold;
+                prefetchedLayersRevision = revisionAfterPrefetch;
+                layers = await ReadLayersAsync(prefetch.CaptureId, timeout.Token).ConfigureAwait(false);
             }
             var refreshedCaptureId = displayCaptureId;
             await InvokeAsync(() =>
@@ -301,6 +325,31 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                     return;
                 }
                 if (_viewerOpen) { _refreshing = false; return; }
+                if (prefetchedLayersRevision != (prefetch?.Revision ?? 0) || !IsCurrentAstrometryObservation(layers))
+                    layers = null;
+                var baseOnly = false;
+                if (change == CaptureChange.Switch && result.Value?.Presentation is { } incoming)
+                {
+                    if (requiresEligibleLayers &&
+                        (layers is not { IsSuccess: true, Value: { } incomingLayers } || incomingLayers.CaptureId != displayCaptureId))
+                    {
+                        change = CaptureChange.Hold;
+                    }
+                    else if (requiresEligibleLayers && layers?.Value is { } projection &&
+                        ResolveSelection(incoming, _selectedStage) == CameraAgentPresentationStage.Annotated &&
+                        !LayersMatchDisplay(incoming, projection))
+                    {
+                        // Give transient incompatibility one eligible refresh to heal. A stream of newer
+                        // incompatible captures shares that grace instead of restarting it on every capture.
+                        if (_gaveDisplayMismatchOneRefresh) baseOnly = true;
+                        else change = CaptureChange.Hold;
+                        _gaveDisplayMismatchOneRefresh = true;
+                    }
+                    else
+                    {
+                        _gaveDisplayMismatchOneRefresh = false;
+                    }
+                }
                 var previouslyDisplayedCaptureId = _runCaptureId;
                 if (result.IsSuccess && result.Value is not null && change == CaptureChange.Hold)
                 {
@@ -325,8 +374,9 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         _lineageArtifactId = null;
                         _lineageMessage = null;
                         ResetLayers(displayCaptureId, cancellationToken);
+                        _showingBaseOnlyForMismatch = baseOnly;
                         _lastCaptureChangeTimestamp = started;
-                        if (layers is not null && displayCaptureId is { } shownCaptureId)
+                        if (!baseOnly && layers is not null && displayCaptureId is { } shownCaptureId)
                             ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
                     }
                     var combinedId = _facts?.CombinedLineage?.ArtifactId;
@@ -362,10 +412,15 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 _refreshDeadlineMessage = null;
                 _initialLoading = false;
                 _refreshing = false;
-                // Optional astrometry can finish after display layers. Poll only an unchanged capture's pending
-                // read; immutable retained assessments (including rejection/budget outcomes) need no polling.
-                if (result.IsSuccess && previouslyDisplayedCaptureId == _runCaptureId &&
-                    _layers?.Astrometry is { Solution: null }) _ = RefreshMeasuredEvidenceAsync();
+                if (result.IsSuccess)
+                {
+                    // Pending selected evidence and the history scan share the raw-read permit. Give the
+                    // history scan a chance to finish before starting this tick's optional selected retry.
+                    if (previouslyDisplayedCaptureId == _runCaptureId && _layers?.Astrometry is { Solution: null })
+                        _ = RefreshPendingAstrometryAsync(_layerGeneration, manual);
+                    else
+                        _ = LoadLatestAstrometryAsync(manual);
+                }
                 StateHasChanged();
             }).ConfigureAwait(false);
             if (!_accessDenied && _disposeStarted == 0 && refreshedCaptureId is { } captureId)
@@ -383,6 +438,10 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                 if (_accessDenied || _disposeStarted != 0) return;
                 ShowRefreshDeadlineExceeded(timings, bound, firstRefresh);
             }).ConfigureAwait(false);
+        }
+        finally
+        {
+            Volatile.Write(ref _incomingLayerPrefetch, null);
         }
     }
 
@@ -514,6 +573,8 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         if (_disposeStarted != 0) return;
         _deferredLayers = null;
         _accessDenied = true;
+        _latestAstrometry = null;
+        _latestAstrometryRevision++;
         _lifetime?.Cancel();
         _layerCancellation?.Cancel();
         _viewerOpen = false;
@@ -532,37 +593,42 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     }
 
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2025:Ensure tasks using IDisposable instances complete before the instances are disposed", Justification = "The optional read only uses the captured cancellation token; its generation guard discards late results.")]
-    private void ResetLayers(Guid? captureId, CancellationToken cancellationToken)
+    private void ResetLayers(Guid? captureId, CancellationToken cancellationToken, bool discardDisplayedEvidence = true)
     {
         Interlocked.Increment(ref _layerGeneration);
-        _bindGeneration++;
         var previous = _layerCancellation;
-        _layerCancellation = null;
-        if (previous is not null)
-        {
-            previous.Cancel();
-            previous.Dispose();
-        }
-        _layers = null;
-        ClearAstrometry();
+        _layerCancellation = captureId is not null ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken) : null;
         _deferredLayers = null;
-        _layerMessage = null;
+        _layerLoading = false;
+        _astrometryLoading = false;
+        _saving = false;
         _saveMessage = null;
         _saveError = null;
         _savedArtifactUrl = null;
         _savedOriginalUrl = null;
-        _selectedLayers = new(StringComparer.Ordinal);
-        _layerInteractive = false;
-        _layerImageFailed = false;
-        _layerPreviewAttempt = 0;
-        _layerLoading = false;
-        _layersNotRetained = false;
-        _saving = false;
-        _bindLayers = false;
-        if (captureId is { } id)
+        if (discardDisplayedEvidence)
         {
-            var next = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            _layerCancellation = next;
+            _bindGeneration++;
+            _layers = null;
+            ClearAstrometry();
+            _layerMessage = null;
+            _selectedLayers = new(StringComparer.Ordinal);
+            _layerInteractive = false;
+            _layerImageFailed = false;
+            _layerPreviewAttempt = 0;
+            _layersNotRetained = false;
+            _bindLayers = false;
+        }
+        else if (_layers is not null && !_layerInteractive)
+        {
+            _bindLayers = true;
+        }
+
+        // Publish the replacement lifetime and clear the old view state before cancellation can run continuations.
+        if (previous is not null)
+        {
+            previous.Cancel();
+            previous.Dispose();
         }
     }
 
@@ -572,6 +638,13 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             _layerCancellation is not { IsCancellationRequested: false } cancellation) return;
         _layerLoading = true;
         _ = LoadLayersAsync(id, Volatile.Read(ref _layerGeneration), cancellation.Token);
+    }
+
+    private async Task RefreshPendingAstrometryAsync(long generation, bool manual)
+    {
+        await LoadLatestAstrometryAsync(manual);
+        if (generation == _layerGeneration && _layers?.Astrometry is { Solution: null })
+            await RefreshMeasuredEvidenceAsync();
     }
 
     private async Task RefreshMeasuredEvidenceAsync()
@@ -592,14 +665,18 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
 
     /// <summary>Reads one capture's layers within their own deadline, or null when the page stopped waiting.</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional layers must never break current-image refresh.")]
-    private async Task<OperatorUiResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
+    private async Task<ObservedAstrometryResult<CameraAgentLayeredPresentation>?> ReadLayersAsync(Guid captureId, CancellationToken cancellation)
     {
         try
         {
             using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-read");
-            return await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
+            // A shared flight may have started before invalidation, even on a later manual refresh.
+            var result = Volatile.Read(ref _retainedAstrometryInvalidationRevision) != 0
+                ? await OperatorService.GetCurrentLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false)
+                : await OperatorService.GetLayeredPresentationAsync(captureId, bounded.Token).ConfigureAwait(false);
+            return await ValidateMeasuredLayersAsync(captureId, result, bounded.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -607,14 +684,24 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         }
         catch (Exception)
         {
-            return OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
-                "Structured layers are temporarily unavailable.");
+            return new(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
+                "Structured layers are temporarily unavailable."));
         }
     }
 
-    private void ApplyLayerResult(Guid captureId, long generation, OperatorUiResult<CameraAgentLayeredPresentation> result)
+    private ValueTask<ObservedAstrometryResult<CameraAgentLayeredPresentation>> ValidateMeasuredLayersAsync(Guid captureId,
+        OperatorUiResult<CameraAgentLayeredPresentation> result, CancellationToken cancellation)
     {
-        if (result.Kind == OperatorUiResultKind.Unauthorized)
+        var value = result.Value;
+        return value is not null && (value.Astrometry?.Solution?.Assessment.HasMeasuredMapping == true ||
+            value.Layers.Any(layer => layer.Kind is AstrometricDiagnosticPresentation.AssociationsLayer or AstrometricDiagnosticPresentation.ResidualsLayer))
+            ? ValidateAstrometryPublicationAsync(captureId, result, value.Astrometry, cancellation)
+            : ValueTask.FromResult(new ObservedAstrometryResult<CameraAgentLayeredPresentation>(result));
+    }
+
+    private void ApplyLayerResult(Guid captureId, long generation, ObservedAstrometryResult<CameraAgentLayeredPresentation> observed)
+    {
+        if (observed.Kind == OperatorUiResultKind.Unauthorized)
         {
             if (!_accessDenied) RevokeAccess();
             return;
@@ -625,11 +712,20 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
         // Retain one completed result, not a waiting task or its timeout/cancellation resources.
         if (_viewerOpen)
         {
-            _deferredLayers = (captureId, generation, result);
+            _deferredLayers = (captureId, generation, observed.Result);
             StateHasChanged();
             return;
         }
+        var result = IsCurrentAstrometryObservation(observed) ? observed.Result :
+            OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
+                "Selected measured evidence is temporarily unavailable.");
         _layerLoading = false;
+        if (_showingBaseOnlyForMismatch)
+        {
+            if (!result.IsSuccess || result.Value is not { } compatible || !LayersMatchDisplay(_presentation, compatible)) return;
+            _showingBaseOnlyForMismatch = false;
+            _gaveDisplayMismatchOneRefresh = false;
+        }
         if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
         {
             _layers = value;
@@ -655,17 +751,23 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     private MarkupString LayerSvg => new(_layers is null ? string.Empty : Encoding.UTF8.GetString(_layers.Svg.Span));
 
     private bool ShowLayeredHero => !_layerImageFailed && _selectedStage == CameraAgentPresentationStage.Annotated &&
-        _layers is not null &&
-        _presentation?.DisplayCapture?.CaptureId == _layers.CaptureId &&
-        LayerBaseMatches && SelectedSlot is not null;
+        _layers is { } layers && LayersMatchDisplay(_presentation, layers) && SelectedSlot is not null;
 
-    private bool LayerBaseMatches => _layers is not null &&
-        ProcessedBaseSlot is { DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative, DisplayArtifactId: { } displayId } &&
-        displayId == _layers.BaseArtifactId;
+    private static bool LayersMatchDisplay(CameraAgentCurrentImagePresentation? presentation, CameraAgentLayeredPresentation layers)
+        => presentation?.DisplayCapture?.CaptureId == layers.CaptureId &&
+           FindProcessedBaseSlot(presentation) is
+           {
+               DisplayBasis: CameraAgentPresentationDisplayBasis.RetainedDerivative,
+               DisplayArtifactId: { } displayId
+           } slot && displayId == layers.BaseArtifactId &&
+           (slot.PreviewWidth is null || slot.PreviewWidth == layers.WidthPixels) &&
+           (slot.PreviewHeight is null || slot.PreviewHeight == layers.HeightPixels);
 
-    private string? LayerMessage => _layers is not null && !LayerBaseMatches
-        ? "The retained layer manifest base does not match the resolved Combined display derivative. Showing the unannotated Combined base without layers."
-        : _layerMessage;
+    private string? LayerMessage => _showingBaseOnlyForMismatch
+        ? "The retained layer manifest base does not match an eligible preview. Showing a standard image without selectable layers."
+        : _layers is { } layers && !LayersMatchDisplay(_presentation, layers)
+            ? "The retained layer manifest base does not match the resolved Combined display derivative or its preview dimensions. Showing the unannotated Combined base without layers."
+            : _layerMessage;
 
     // Unknown or failed layer reads are not proof that a capture has no retained layers.
     private bool ProcessedBaseFallback => _selectedStage == CameraAgentPresentationStage.Annotated && !_layersNotRetained;
@@ -678,12 +780,19 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     // The Processed hero and its overlays-off/pending fallback share the Combined slot's display artifact:
     // the lineage-matched retained derivative when one exists, never a generic Preview or the annotated
     // artifact. The slot's ArtifactId stays the linear Combined frame for identity and download.
-    private CameraAgentPresentationSlot? ProcessedBaseSlot => _presentation?.Stages.SingleOrDefault(slot =>
-        slot.Stage == CameraAgentPresentationStage.Combined &&
-        slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
+    private CameraAgentPresentationSlot? ProcessedBaseSlot => FindProcessedBaseSlot(_presentation);
+
+    private static CameraAgentPresentationSlot? FindProcessedBaseSlot(CameraAgentCurrentImagePresentation? presentation)
+        => presentation?.Stages.SingleOrDefault(static slot => slot.Stage == CameraAgentPresentationStage.Combined &&
+            slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null);
 
     private CameraAgentPresentationSlot? DisplaySlot => ProcessedBaseFallback
-        ? ProcessedBaseSlot : SelectedSlot;
+        ? ProcessedBaseSlot ?? (_showingBaseOnlyForMismatch ? FindPlainPreview() : null)
+        : SelectedSlot;
+
+    private CameraAgentPresentationSlot? FindPlainPreview() => _presentation?.Stages.FirstOrDefault(static slot =>
+        slot.Stage is CameraAgentPresentationStage.Calibrated or CameraAgentPresentationStage.Raw &&
+        slot.Availability == CameraAgentPresentationSlotAvailability.Available && slot.PreviewUrl is not null) ?? SelectedSlot;
 
     private string? DisplayContentUrl => DisplaySlot?.ArtifactId is { } artifactId
         ? FormattableString.Invariant($"/api/v1/operations/artifacts/{artifactId:D}/content")
@@ -1353,13 +1462,19 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
     public Task ViewerClosedAsync()
     {
         if (_disposeStarted != 0) return Task.CompletedTask;
-        return InvokeAsync(() =>
+        return InvokeAsync(async () =>
         {
             _viewerOpen = false;
             var pending = _deferredLayers;
             _deferredLayers = null;
-            if (pending is { } result) ApplyLayerResult(result.CaptureId, result.Generation, result.Result);
-            StateHasChanged();
+            if (pending is { } result && _layerCancellation is { IsCancellationRequested: false } layerLifetime)
+            {
+                using var deadline = new CancellationTokenSource(RefreshTimeout, TimeProvider);
+                using var bounded = CancellationTokenSource.CreateLinkedTokenSource(layerLifetime.Token, deadline.Token);
+                var validated = await ValidateMeasuredLayersAsync(result.CaptureId, result.Result, bounded.Token);
+                ApplyLayerResult(result.CaptureId, result.Generation, validated);
+            }
+            if (_disposeStarted == 0) StateHasChanged();
         });
     }
 

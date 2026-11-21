@@ -1093,10 +1093,11 @@ public sealed class CameraAgentCurrentImagePresentationServiceTests
 
     private sealed class StubStructuredLayers(bool available, Exception? failure = null) : ICameraAgentStructuredLayerAvailability
     {
-        public ValueTask<bool> IsAvailableAsync(Guid captureId, CancellationToken cancellationToken)
+        public ValueTask<CameraAgentLayeredPresentationResult> ReadAsync(Guid captureId, CancellationToken cancellationToken)
             => failure is null
-                ? ValueTask.FromResult(available)
-                : ValueTask.FromException<bool>(failure);
+                ? ValueTask.FromResult(new CameraAgentLayeredPresentationResult(
+                    available ? CameraAgentLayeredPresentationStatus.Found : CameraAgentLayeredPresentationStatus.NotRetained))
+                : ValueTask.FromException<CameraAgentLayeredPresentationResult>(failure);
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

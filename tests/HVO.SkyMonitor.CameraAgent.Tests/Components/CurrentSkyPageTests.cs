@@ -1432,7 +1432,7 @@ public sealed partial class CurrentSkyPageTests
             new Uri(context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>().Uri).AbsolutePath));
     }
 
-    private static TestOperatorUiService Configure(BunitContext context)
+    internal static TestOperatorUiService Configure(BunitContext context)
     {
         var service = new TestOperatorUiService
         {

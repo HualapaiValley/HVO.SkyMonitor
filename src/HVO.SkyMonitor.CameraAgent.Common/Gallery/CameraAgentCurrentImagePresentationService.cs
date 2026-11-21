@@ -79,17 +79,14 @@ internal sealed class CameraAgentPresentationRuntime(
 
 internal interface ICameraAgentStructuredLayerAvailability
 {
-    ValueTask<bool> IsAvailableAsync(Guid captureId, CancellationToken cancellationToken);
+    ValueTask<CameraAgentLayeredPresentationResult> ReadAsync(Guid captureId, CancellationToken cancellationToken);
 }
 
 internal sealed class CameraAgentStructuredLayerAvailability(
     ICameraAgentLayeredPresentationService presentations) : ICameraAgentStructuredLayerAvailability
 {
-    public async ValueTask<bool> IsAvailableAsync(Guid captureId, CancellationToken cancellationToken)
-    {
-        var result = await presentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
-        return result.Status == CameraAgentLayeredPresentationStatus.Found;
-    }
+    public ValueTask<CameraAgentLayeredPresentationResult> ReadAsync(Guid captureId, CancellationToken cancellationToken)
+        => presentations.GetAsync(captureId, cancellationToken);
 }
 
 internal sealed class CameraAgentCurrentImagePresentationService(
@@ -169,8 +166,13 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             try
             {
                 using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("layer-availability");
-                structuredLayersAvailable = await structuredLayers.IsAvailableAsync(
-                    display.CaptureId, cancellationToken).ConfigureAwait(false);
+                var layers = await structuredLayers.ReadAsync(display.CaptureId, cancellationToken).ConfigureAwait(false);
+                structuredLayersAvailable = layers.Status == CameraAgentLayeredPresentationStatus.Found;
+                if (structuredLayersAvailable && layers.Presentation is { } presentation && presentation.CaptureId == display.CaptureId)
+                {
+                    projectedCapture = await PreferManifestBaseAsync(display, projectedCapture, presentation,
+                        MaximumPreviewValidationAttempts - validationAttempts, cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -179,7 +181,7 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             catch (Exception exception) when (exception is SqliteException or InvalidDataException or
                 JsonException or ArgumentException or InvalidOperationException or OverflowException)
             {
-                structuredLayersAvailable = false;
+                // Keep the validated image and any successful layer availability evidence.
             }
         }
 
@@ -207,13 +209,36 @@ internal sealed class CameraAgentCurrentImagePresentationService(
         return validation.Presentation;
     }
 
+    private async ValueTask<CameraAgentCapturePresentation> PreferManifestBaseAsync(CameraAgentGalleryCapture capture,
+        CameraAgentCapturePresentation current, CameraAgentLayeredPresentation layers, int remainingAttempts,
+        CancellationToken cancellationToken)
+    {
+        var combined = current.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        if (remainingAttempts == 0 || combined.ArtifactId is null || combined.DisplayArtifactId == layers.BaseArtifactId ||
+            !capture.Artifacts.Any(artifact => artifact.ArtifactId == layers.BaseArtifactId))
+        {
+            return current;
+        }
+
+        // The manifest disambiguates candidates, and normal capture-bound preview validation still proves the reference.
+        var validated = await ValidatePresentationAsync(capture, remainingAttempts, cancellationToken, layers.BaseArtifactId)
+            .ConfigureAwait(false);
+        var alternative = validated.Presentation;
+        var proposed = alternative.Stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
+        return !validated.BoundReached && alternative.SelectedStage == current.SelectedStage && proposed.ArtifactId == combined.ArtifactId &&
+            proposed.DisplayBasis == CameraAgentPresentationDisplayBasis.RetainedDerivative &&
+            proposed.DisplayArtifactId == layers.BaseArtifactId && proposed.PreviewWidth == layers.WidthPixels &&
+            proposed.PreviewHeight == layers.HeightPixels ? alternative : current;
+    }
+
     private async ValueTask<ValidatedPresentation> ValidatePresentationAsync(
         CameraAgentGalleryCapture capture,
         int maximumAttempts,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? manifestBaseArtifactId = null)
     {
         using var phase = CameraAgentCurrentSkyRefreshDiagnostics.Measure("preview-validation");
-        var projection = capturePresentation.ProjectWithRetainedDisplay(capture);
+        var projection = ProjectRetained(capture);
         CameraAgentPresentationStage? selectedStage = null;
         var stages = new CameraAgentPresentationSlot[projection.Stages.Count];
         var attempts = 0;
@@ -244,7 +269,12 @@ internal sealed class CameraAgentCurrentImagePresentationService(
                 if (preview.Status == CameraAgentArtifactReadStatus.Found)
                 {
                     selectedStage ??= slot.Stage;
-                    slot = slot with { DisplayOperation = preview.Operation };
+                    slot = slot with
+                    {
+                        DisplayOperation = preview.Operation,
+                        PreviewWidth = preview.Width,
+                        PreviewHeight = preview.Height
+                    };
                     stages[index] = preview.DisplayPolicy is { } policy
                         ? slot with
                         {
@@ -283,7 +313,7 @@ internal sealed class CameraAgentCurrentImagePresentationService(
                     Artifacts = capture.Artifacts.Where(artifact => !excluded.Contains(artifact.ArtifactId)).ToArray()
                 };
                 projection = useRetainedDisplay
-                    ? capturePresentation.ProjectWithRetainedDisplay(remaining)
+                    ? ProjectRetained(remaining)
                     : capturePresentation.Project(remaining);
                 slot = projection.Stages.Single(candidate => candidate.Stage == slot.Stage);
                 if (slot.Availability != CameraAgentPresentationSlotAvailability.Available)
@@ -299,6 +329,10 @@ internal sealed class CameraAgentCurrentImagePresentationService(
             }
         }
         return new(new CameraAgentCapturePresentation(selectedStage, stages), attempts, boundReached);
+
+        CameraAgentCapturePresentation ProjectRetained(CameraAgentGalleryCapture candidate) => manifestBaseArtifactId is { } baseId
+            ? capturePresentation.ProjectWithRetainedDisplay(candidate, baseId)
+            : capturePresentation.ProjectWithRetainedDisplay(candidate);
     }
 
     private static CameraAgentPresentationSlot Unavailable(CameraAgentPresentationSlot slot, string reason)
@@ -396,11 +430,14 @@ internal sealed class CameraAgentCapturePresentationProjector(
     public CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture)
         => Project(capture, retainedDisplay: true);
 
-    private CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture, bool retainedDisplay)
+    public CameraAgentCapturePresentation ProjectWithRetainedDisplay(CameraAgentGalleryCapture? capture, Guid manifestBaseArtifactId)
+        => Project(capture, retainedDisplay: true, manifestBaseArtifactId);
+
+    private CameraAgentCapturePresentation Project(CameraAgentGalleryCapture? capture, bool retainedDisplay, Guid? manifestBaseArtifactId = null)
     {
         var stages = StageOrder.Select(stage => capture is null
             ? Unavailable(stage, CameraAgentPresentationSlotAvailability.Missing, "NoCapture")
-            : ProjectSlot(capture, stage, retainedDisplay)).ToArray();
+            : ProjectSlot(capture, stage, retainedDisplay, manifestBaseArtifactId)).ToArray();
         var combined = stages.Single(static slot => slot.Stage == CameraAgentPresentationStage.Combined);
         if (combined.DisplayBasis == CameraAgentPresentationDisplayBasis.RetainedDerivative && combined.DisplayArtifactId is { } referenceId)
         {
@@ -429,7 +466,8 @@ internal sealed class CameraAgentCapturePresentationProjector(
     private CameraAgentPresentationSlot ProjectSlot(
         CameraAgentGalleryCapture capture,
         CameraAgentPresentationStage stage,
-        bool retainedDisplay)
+        bool retainedDisplay,
+        Guid? manifestBaseArtifactId)
     {
         var roles = RolesFor(stage);
         var matching = capture.Artifacts.Where(artifact => roles.Contains(artifact.Role)).ToArray();
@@ -473,7 +511,7 @@ internal sealed class CameraAgentCapturePresentationProjector(
         if (available is not null)
         {
             var retained = retainedDisplay && stage == CameraAgentPresentationStage.Combined
-                ? ResolveRetainedDisplayDerivative(capture, available)
+                ? ResolveRetainedDisplayDerivative(capture, available, manifestBaseArtifactId)
                 : null;
             var display = retained ?? available;
             return new CameraAgentPresentationSlot(
@@ -537,12 +575,13 @@ internal sealed class CameraAgentCapturePresentationProjector(
     /// <summary>
     /// Finds the one retained encoded-preview product whose complete lineage is exactly the stage artifact. Any
     /// candidate with a different or wider lineage, another role or recipe, or that is not itself displayable is
-    /// not a substitute, and two distinct matches are ambiguous; every rejection falls back to the stage artifact.
+    /// rejected. The manifest may identify one exact candidate when several derive from the same stage artifact.
     /// A bounded artifact list cannot prove uniqueness (a second match may be hidden), so it also falls back.
     /// </summary>
     private CameraAgentGalleryArtifact? ResolveRetainedDisplayDerivative(
         CameraAgentGalleryCapture capture,
-        CameraAgentGalleryArtifact source)
+        CameraAgentGalleryArtifact source,
+        Guid? manifestBaseArtifactId)
     {
         if (capture.ArtifactsTruncated)
         {
@@ -551,6 +590,7 @@ internal sealed class CameraAgentCapturePresentationProjector(
         var matches = capture.Artifacts
             .Where(artifact => artifact.Role == FrameArtifactRole.Preview &&
                 artifact.ArtifactId != source.ArtifactId &&
+                (manifestBaseArtifactId is null || artifact.ArtifactId == manifestBaseArtifactId) &&
                 string.Equals(artifact.Recipe?.Name, BuiltInProcessingRecipes.EncodedPreview, StringComparison.Ordinal) &&
                 artifact.SourceArtifactIds.Count == 1 &&
                 artifact.SourceArtifactIds[0] == source.ArtifactId)

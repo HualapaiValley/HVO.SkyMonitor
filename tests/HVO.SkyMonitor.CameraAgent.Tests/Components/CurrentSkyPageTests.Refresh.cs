@@ -593,7 +593,7 @@ public sealed partial class CurrentSkyPageTests
     private static string CaptureLink(CameraAgentCurrentSkyView view) => $"/gallery/{view.Presentation.DisplayCapture!.CaptureId:D}";
 
     /// <summary>A clock whose timers fire, and whose elapsed time moves, only when a test advances it.</summary>
-    private sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
+    internal sealed class ManualTimeProvider(DateTimeOffset start) : TimeProvider
     {
         private readonly Lock _gate = new();
         private readonly List<ManualTimer> _timers = [];
