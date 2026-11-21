@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
@@ -68,7 +69,10 @@ public sealed partial class VirtualSkyCameraModuleTests
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement");
         try
         {
-            var now = DateTimeOffset.UtcNow.AddMinutes(-1);
+            // Keep the interrupted Bayer positive on the measured, untrailed scene.
+            var now = format == CameraPixelFormat.BayerRggb16 && calibration == "None" && interrupt && signal == "star"
+                ? DateTimeOffset.ParseExact("2026-11-21T07:21:09.2513482+00:00", "O", CultureInfo.InvariantCulture)
+                : DateTimeOffset.UtcNow.AddMinutes(-1);
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
