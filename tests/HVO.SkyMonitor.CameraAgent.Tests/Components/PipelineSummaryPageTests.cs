@@ -35,6 +35,10 @@ public sealed class PipelineSummaryPageTests
     private const string ToggleReason = "operator pipeline step toggle";
     private const string RawInput = "$raw";
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
+    private static readonly JsonSerializerOptions CompiledOptionsJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
     private static readonly string[] EdgeStageKeys = ["detector-input", "frame-window", "causal-scan", "persist-candidate", "centered-window", "assess"];
 
     [TestMethod]
@@ -193,7 +197,7 @@ public sealed class PipelineSummaryPageTests
         }
     }
 
-    private static async Task AssertCenteredEditorAsync(ICameraAgentScheduleUiService schedule, ICameraAgentProcessingGraphUiService graphs,
+    private static async Task AssertCenteredEditorAsync(ICameraAgentScheduleUiService schedule, CameraAgentProcessingGraphUiService graphs,
         CameraModuleConfig configuration, ICaptureProcessingPipelineFactory factory, string revisionId, CapturePipelineConfig admitted,
         Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
     {
@@ -266,8 +270,7 @@ public sealed class PipelineSummaryPageTests
             Assert.AreEqual(association.StepVersion, ProcessingNodeOptionsForm.DescriptorFor(associationAlias)?.StepVersion);
             Assert.AreEqual(fit.StepVersion, ProcessingNodeOptionsForm.DescriptorFor(fitAlias)?.StepVersion);
             Assert.AreEqual("verified-exposure-association", graph.Nodes.Single(node => node.Id == association.Id).OutputVariant);
-            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web) { Converters = { new JsonStringEnumConverter() } };
-            var fitOptions = fit.EffectiveOptions.Deserialize<MeasuredAstrometryCaptureOptions>(json);
+            var fitOptions = fit.EffectiveOptions.Deserialize<MeasuredAstrometryCaptureOptions>(CompiledOptionsJson);
             Assert.AreEqual(120, fitOptions?.CaptureStride);
             Assert.IsNotNull(fitOptions?.Catalog);
         }

@@ -19,6 +19,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 [TestCategory("Unit")]
 public sealed class CaptureProcessingGraphTests
 {
+    private static readonly string[] LegacyPreviewAliases =
+    [
+        "Calibration", "CalibratedPreview", "RollingCombination", "CombinedPreview", "ImageQuality",
+        "CloudAssessment", "Annotation", "WeatherCloudOverlay", "Storage", "Telemetry"
+    ];
+
+    private static readonly string[] AutomaticAliases = ["Preview", "RollingCombination", "Annotation"];
+
     [TestMethod]
     [DataRow("missing")]
     [DataRow("disabled")]
@@ -871,13 +879,9 @@ public sealed class CaptureProcessingGraphTests
         Assert.AreEqual(
             FrameArtifactRole.AnnotatedPreview,
             preview.EffectiveNodes.Single(static node => node.Alias == "WeatherCloudOverlay").OutputRole);
-        CollectionAssert.AreEquivalent(new[]
-        {
-            "Calibration", "CalibratedPreview", "RollingCombination", "CombinedPreview", "ImageQuality",
-            "CloudAssessment", "Annotation", "WeatherCloudOverlay", "Storage", "Telemetry"
-        }, preview.EffectiveNodes.Select(static node => node.Alias).ToArray());
+        CollectionAssert.AreEquivalent(LegacyPreviewAliases, preview.EffectiveNodes.Select(static node => node.Alias).ToArray());
         Assert.IsFalse(quality.Options!.Value.TryGetProperty("enabled", out _));
-        CollectionAssert.AreEquivalent(new[] { "Preview", "RollingCombination", "Annotation" },
+        CollectionAssert.AreEquivalent(AutomaticAliases,
             registrations.Where(static registration => registration.AutoInclude).Select(static registration => registration.Alias).ToArray());
         foreach (var alias in new[]
         {
