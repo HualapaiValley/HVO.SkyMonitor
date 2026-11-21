@@ -119,6 +119,43 @@ public sealed class OrbitalElementsCompositionTests : OrbitalStoreTestBase
     }
 
     [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RegisteredAutomationServicesCanStopBeforeOrAfterWorkerDisposal(bool disposeFirst)
+    {
+        var services = Services(CreateRoot());
+        var hosted = services.Where(static item => item.ServiceType == typeof(IHostedService)).ToArray();
+        var runnerIndex = Array.FindIndex(hosted, static item => item.ImplementationType == typeof(LocalAutomationRunnerService));
+        Assert.IsGreaterThan(0, runnerIndex);
+        // Retain the production descriptors for the two shutdown paths without starting unrelated services.
+        foreach (var registration in hosted)
+        {
+            if (registration != hosted[runnerIndex - 1] && registration != hosted[runnerIndex])
+            {
+                services.Remove(registration);
+            }
+        }
+        var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
+        await using var lifetime = provider.ConfigureAwait(false);
+        var automation = provider.GetServices<IHostedService>().ToArray();
+        var worker = provider.GetRequiredService<LocalAutomationOffSweepWorker>();
+        Assert.AreSame(worker, automation[0]);
+        Assert.IsInstanceOfType<LocalAutomationRunnerService>(automation[1]);
+        foreach (var service in automation)
+        {
+            await service.StartAsync(default).ConfigureAwait(false);
+        }
+
+        if (disposeFirst)
+        {
+            worker.Dispose();
+        }
+        // The host stops in reverse registration order: the runner stops the worker, then the host stops it.
+        await automation[1].StopAsync(default).ConfigureAwait(false);
+        await automation[0].StopAsync(default).ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task NamedClientHasNoRetryRedirectCookieOrLoggingHandler()
     {
         var provider = Build(CreateRoot());
