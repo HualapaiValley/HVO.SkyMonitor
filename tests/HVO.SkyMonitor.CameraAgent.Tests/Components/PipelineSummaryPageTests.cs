@@ -243,9 +243,7 @@ public sealed class PipelineSummaryPageTests
         Assert.IsTrue(saveEnabled, $"Save disabled after preview. Banner={previewBanner}; route={navigation.Uri}");
         await saveButton.ClickAsync().ConfigureAwait(false);
         var saveBanner = editor.FindAll(".editor-banner").SingleOrDefault()?.TextContent;
-        var diagnostics = string.Join(" | ", graphLog.Invocations.Where(static call => call.Method.Name == nameof(ILogger.Log))
-            .Select(static call => $"{call.Arguments[0]} {call.Arguments[2]} {call.Arguments[3]}"));
-        var saveTrace = $"Save enabled={saveEnabled}; preview={previewBanner}; result={saveResult?.Kind}: {saveResult?.Message}; route={navigation.Uri}; banner={saveBanner}; logs={diagnostics}";
+        var saveTrace = $"Save enabled={saveEnabled}; preview={previewBanner}; result={saveResult?.Kind}: {saveResult?.Message}; route={navigation.Uri}; banner={saveBanner}; logs={GraphDiagnostics(graphLog)}";
         Console.WriteLine(saveTrace);
         Assert.IsNotNull(saveResult, saveTrace);
         Assert.IsTrue(saveResult.IsSuccess, saveTrace);
@@ -257,7 +255,7 @@ public sealed class PipelineSummaryPageTests
         Assert.IsNotNull(saved.Value?.Plan);
         var pipeline = saved.Value.Pipeline;
         AssertGeneratedSteps(generated, pipeline);
-        await AssertStructuralRoundTripAsync(graphs, pipeline, generated).ConfigureAwait(false);
+        await AssertStructuralRoundTripAsync(graphs, pipeline, generated, graphLog).ConfigureAwait(false);
 
         var graph = factory.CreateGraph(configuration with { Pipeline = pipeline });
         try
@@ -279,14 +277,16 @@ public sealed class PipelineSummaryPageTests
     }
 
     private static async Task AssertStructuralRoundTripAsync(ICameraAgentProcessingGraphUiService graphs,
-        CapturePipelineConfig pipeline, IReadOnlyList<CaptureProcessingStepConfig> generated)
+        CapturePipelineConfig pipeline, IReadOnlyList<CaptureProcessingStepConfig> generated,
+        Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
     {
         var model = ProcessingGraphDraftModel.FromPipeline(pipeline, null, "centered-structure", "1");
         model.AddNode("Telemetry");
         model.Nodes.Single(static node => node.Type == "Telemetry").Required = false;
         Assert.IsTrue(model.TryBuild(out var added, out var addErrors), string.Join(' ', addErrors));
         var addition = await graphs.CreateRevisionAsync(model.Name, model.Revision, added, "centered-add", null, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsTrue(addition.IsSuccess, addition.Message);
+        Assert.IsTrue(addition.IsSuccess,
+            $"Add Telemetry: {addition.Kind}: {addition.Message}; logs={GraphDiagnostics(graphLog)}; step changes={DraftStepChanges(pipeline, added)}");
         var reopened = await graphs.GetRevisionDetailAsync(addition.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(reopened.IsSuccess, reopened.Message);
         Assert.IsNotNull(reopened.Value?.Plan);
@@ -297,12 +297,29 @@ public sealed class PipelineSummaryPageTests
         model.Remove(model.Nodes.Single(static node => node.Type == "Telemetry"));
         Assert.IsTrue(model.TryBuild(out var removed, out var removeErrors), string.Join(' ', removeErrors));
         var removal = await graphs.CreateRevisionAsync(model.Name, model.Revision, removed, "centered-remove", null, CancellationToken.None).ConfigureAwait(false);
-        Assert.IsTrue(removal.IsSuccess, removal.Message);
+        Assert.IsTrue(removal.IsSuccess,
+            $"Remove Telemetry: {removal.Kind}: {removal.Message}; logs={GraphDiagnostics(graphLog)}; step changes={DraftStepChanges(reopened.Value.Pipeline, removed)}");
         var final = await graphs.GetRevisionDetailAsync(removal.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
         Assert.IsTrue(final.IsSuccess, final.Message);
         Assert.IsNotNull(final.Value?.Plan);
         Assert.IsFalse(final.Value.Pipeline.Steps.Any(static step => step.Type == "Telemetry"));
         AssertGeneratedSteps(generated, final.Value.Pipeline);
+    }
+
+    private static string GraphDiagnostics(Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
+        => string.Join(" | ", graphLog.Invocations.Where(static call => call.Method.Name == nameof(ILogger.Log))
+            .Select(static call => $"{call.Arguments[0]} {call.Arguments[2]} {call.Arguments[3]}"));
+
+    private static string DraftStepChanges(CapturePipelineConfig prior, CapturePipelineConfig candidate)
+    {
+        var before = prior.Steps.ToDictionary(static step => step.Id ?? step.Type, static step => JsonSerializer.Serialize(step),
+            StringComparer.OrdinalIgnoreCase);
+        var after = candidate.Steps.ToDictionary(static step => step.Id ?? step.Type, static step => JsonSerializer.Serialize(step),
+            StringComparer.OrdinalIgnoreCase);
+        return string.Join(" | ", before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase)
+            .Select(id => (Id: id, Before: before.GetValueOrDefault(id), After: after.GetValueOrDefault(id)))
+            .Where(static step => step.Before != step.After)
+            .Select(static step => $"{step.Id} before={step.Before} after={step.After}"));
     }
 
     private static void AssertGeneratedSteps(IReadOnlyList<CaptureProcessingStepConfig> generated, CapturePipelineConfig pipeline)
