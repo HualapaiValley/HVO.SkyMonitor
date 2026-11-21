@@ -95,11 +95,21 @@ public sealed partial class LifecycleContractTests
         var catalogManifest = Path.Combine(fixture.Paths.CatalogRoot, "current", "manifest.json");
         await File.WriteAllTextAsync(catalogManifest, "{\"manifestVersion\":4,\"catalog\":{\"id\":\"" + fixture.Manifest.Catalog.CatalogId + "\"}}");
 
-        // Seed schema markers for the installer decision. The runtime migration tests exercise the exact E5 layout.
+        // Use a canonical raw-17 input so only the combined minimum selects the paired checkpoint.
+        // The runtime migration tests exercise the exact E5 layout.
         WriteCanonicalV14RawIngressJournal(fixture.Paths);
-        Execute(RawIngressPath(fixture.Paths),
+        var rawPath = RawIngressPath(fixture.Paths);
+        var additions = typeof(LifecycleContractTests).Assembly.GetManifestResourceStream(
+            "HVO.SkyMonitor.Deployment.Cli.Tests.FrozenRawIngressV17Additions.sql")!;
+        await using (additions.ConfigureAwait(false))
+        using (var schema = new StreamReader(additions, leaveOpen: true))
+        {
+            Execute(rawPath, await schema.ReadToEndAsync().ConfigureAwait(false));
+        }
+
+        Execute(rawPath,
             "CREATE TABLE capture_processing_schema(schema_key INTEGER PRIMARY KEY, version INTEGER NOT NULL);" +
-            "INSERT INTO capture_processing_schema VALUES(1, 10); PRAGMA user_version=16;");
+            "INSERT INTO capture_processing_schema VALUES(1, 10);");
         Execute(CameraAgentStateSnapshot.StorePath(fixture.Paths.StateRoot, outbox), "PRAGMA user_version=5;");
         LifecycleOperationState? atCandidateStart = null;
         fixture.Runner.OnComposeUp = image =>

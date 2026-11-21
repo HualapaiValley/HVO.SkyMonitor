@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Modules;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
@@ -12,9 +13,12 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Tests.RawIngress;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -148,6 +152,181 @@ public sealed class AnnotationEnvironmentSourceTests
         Assert.AreEqual(1, annotation.AttemptCount);
         Assert.HasCount(1, annotation.Outputs);
         Assert.IsFalse(harness.Logs.Entries.Any(static entry => entry.EventId == 2013));
+    }
+
+    [TestMethod]
+    public async Task LiveGraph_CenteredAnnotationPublishesFrozenScheduleAndCadenceForGallery()
+    {
+        var requested = new DateTimeOffset(2026, 11, 20, 8, 5, 0, TimeSpan.Zero);
+        var clock = new ExposureTestTimeProvider(requested);
+        var recorder = new AnnotationRecordingExecutor();
+        using var harness = Harness.Create("disabled", recorder, clock);
+        var provider = harness.Provider;
+        var legacy = CreateProjectionConfiguration(harness.Root, drawProjection: false);
+        var steps = legacy.Pipeline.Steps.Select(step => step.Id == "annotation" ? step with
+        {
+            Required = true,
+            Options = JsonSerializer.SerializeToElement(new
+            {
+                drawLabels = false,
+                drawConstellationLines = false,
+                drawImageCircle = false,
+                drawCardinalDirections = false,
+                drawMetadataCorners = true,
+                metadataScale = 1,
+                topLeftTokens = new[] { AnnotationMetadataTokens.ScheduleProfile, AnnotationMetadataTokens.Cadence },
+                topRightTokens = Array.Empty<string>(),
+                bottomLeftTokens = Array.Empty<string>(),
+                bottomRightTokens = Array.Empty<string>(),
+                outputVariant = "mono8-annotated"
+            })
+        } : step).ToArray();
+        var setpoint = new CaptureSetpoint(TimeSpan.FromMilliseconds(50), 1, null, null);
+        var config = legacy with
+        {
+            Module = new CameraModuleDescriptor(nameof(RawCaptureIngressTests.CenteredRunnerModule)),
+            CenteredExposure = new("annotation", CenteredExposureProfile.CurrentExecutionVersion),
+            DeploymentLocation = DeploymentLocationSnapshot.Create("annotation-site", 1, "fixture", null,
+                DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+            Rig = legacy.Rig with
+            {
+                Sensor = legacy.Rig.Sensor with { WidthPixels = 512, HeightPixels = 128 },
+                ControlPolicy = new() { ExposureControl = AutomaticControlOwnership.Disabled, GainControl = AutomaticControlOwnership.Disabled }
+            },
+            Schedule = new("capture-schedule-v1",
+                [new("continuous", setpoint.Exposure, setpoint.Gain, TimeSpan.Zero, CaptureCadenceMode.Continuous)],
+                [new("fixture-window", requested.DayOfWeek,
+                    new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                    new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "continuous")]),
+            Pipeline = legacy.Pipeline with { Steps = steps }
+        };
+
+        var file = config;
+        config = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, file).ConfigureAwait(false);
+        provider.GetRequiredService<CaptureLaneState>().Update([]);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var token = deadline.Token;
+        var schedule = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
+        var provisional = await schedule.WaitForGrantAsync(token).ConfigureAwait(false);
+        var grant = await schedule.ConfirmGrantAsync(provisional, "annotation-fixture", token).ConfigureAwait(false);
+        Assert.IsNotNull(grant);
+        var started = requested.AddMilliseconds(20);
+        var ended = started + setpoint.Exposure;
+        var completed = ended.AddMilliseconds(10);
+        var pixels = new byte[512 * 128 * 2];
+        for (var sample = 0; sample < pixels.Length; sample += 2)
+            pixels[sample] = (byte)(sample % 251);
+        var frame = new CameraFrame(started, 512, 128, CameraPixelFormat.Mono16, pixels,
+            new FrameMetadata(setpoint.Exposure, setpoint.Gain, 10, "centered-annotation-fixture"));
+        var submission = new CaptureLoopSubmission(new(requested, TimeSpan.Zero, CaptureMode.Still, setpoint),
+            new(frame, setpoint, TimeSpan.Zero, CaptureMode.Still, false)
+            {
+                AcquisitionTiming = new(started, ended, completed)
+            }, requested, TimeSpan.Zero, completed - requested)
+        {
+            CenteredAcquisition = new(CaptureCadenceMode.Continuous, TimeSpan.Zero, requested,
+                completed - requested, null, false, null, grant.Evidence)
+        };
+        var ingress = provider.GetRequiredService<RawCaptureIngress>();
+        var resources = new CenteredSceneResources(null, null, null, null, "projection-v1");
+        var reservation = await ingress.ReserveCenteredAsync(config, resources, null, token).ConfigureAwait(false);
+        await ingress.DispatchCenteredAsync(reservation.Pending.Key, setpoint, null, "annotation-fixture", token).ConfigureAwait(false);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var raw = await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false);
+        Assert.AreEqual(started, raw.Manifest.Descriptor.Timing.ExposureStartedUtc);
+        Assert.AreEqual(grant.Evidence, raw.Manifest.Descriptor.RetainedScheduleAdmission);
+        var activeInterval = TimeSpan.FromSeconds(10);
+        var nextSchedule = config.Schedule! with
+        {
+            SetpointProfiles = [config.Schedule.SetpointProfiles.Single() with
+            {
+                CadenceMode = CaptureCadenceMode.MinimumStartInterval,
+                CaptureInterval = activeInterval
+            }]
+        };
+        var scheduleState = await provider.GetRequiredService<SqliteCaptureScheduleStore>().GetSnapshotAsync(token).ConfigureAwait(false);
+        var staged = await schedule.StageAsync(LocalCaptureProfileDefinition.CreateV2(config, nextSchedule),
+            "annotation-next-stage", scheduleState.Version, "fixture", null, token).ConfigureAwait(false);
+        var newRevision = staged.PendingRevision!.RevisionId;
+        await schedule.ActivateAsync(newRevision, "annotation-next-activate", staged.Version, "fixture", null, token)
+            .ConfigureAwait(false);
+        await provider.DisposeAsync().ConfigureAwait(false);
+
+        using var restarted = Harness.Create("disabled", recorder, clock, harness.Root);
+        var reopenedProvider = restarted.Provider;
+        var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(reopenedProvider, file).ConfigureAwait(false);
+        var reopenedSchedule = reopenedProvider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
+        Assert.AreEqual(newRevision, reopenedSchedule.Snapshot!.Revision.RevisionId);
+        Assert.AreNotEqual(grant.Evidence.ScheduleRevisionId, newRevision);
+        Assert.AreEqual(activeInterval, active.Schedule!.SetpointProfiles.Single().CaptureInterval);
+        var options = reopenedProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>();
+        using var reopenedStore = new SqliteCaptureProcessingStore(options, clock);
+        var captureId = raw.Manifest.Descriptor.Capture.CaptureId;
+        Assert.IsNull(await reopenedStore.ReadNodeAsync(captureId, "annotation", token).ConfigureAwait(false));
+        var standard = await DriveLaneAsync(reopenedProvider, "standard", active).ConfigureAwait(false);
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, standard.Result.Outcome, standard.Result.Reason);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, recorder.Outcome);
+        Assert.IsNotNull(recorder.Overlay);
+        Assert.HasCount(2, recorder.Overlay.TopLeft);
+        Assert.AreEqual("SCHEDULE continuous", recorder.Overlay.TopLeft[0]);
+        Assert.AreEqual("CADENCE 0.000 S", recorder.Overlay.TopLeft[1]);
+
+        var captured = standard.Context.RawCapture;
+        Assert.AreEqual(raw.CommittedManifestSha256, captured.CommittedManifestSha256);
+        var factsContext = CreateStepContext(active, standard.Context.Submission with { EffectiveInterval = activeInterval }, captured);
+        factsContext.BeginNode("frame-facts", []);
+        var scene = await CreateSceneAsync(captured.Manifest.Descriptor).ConfigureAwait(false);
+        var facts = await reopenedProvider.GetRequiredService<PresentationMetadataFactsBuilder>().BuildAsync(
+            factsContext, scene, null, [captured.Manifest.Descriptor.Artifact.ArtifactId], [], token, retainFrameFacts: true)
+            .ConfigureAwait(false);
+        Assert.IsNotNull(facts);
+        var serializedFacts = JsonSerializer.Deserialize<PresentationMetadataFactsProductV1>(JsonSerializer.SerializeToUtf8Bytes(facts));
+        Assert.IsNotNull(serializedFacts);
+        Assert.AreEqual("continuous", serializedFacts.Capture.GetProperty("SetpointProfileId").GetString());
+        Assert.AreEqual(0d, serializedFacts.Capture.GetProperty("CadenceSeconds").GetDouble());
+        Assert.AreEqual(0d, serializedFacts.FrameFacts!.Facts.Single(fact => fact.Key == "acquisition.cadenceSeconds").Number);
+
+        var node = await reopenedStore.ReadNodeAsync(captureId, "annotation", token).ConfigureAwait(false);
+        Assert.IsNotNull(node);
+        Assert.AreEqual(DurableProcessingNodeStatus.Completed, node.Status);
+        var retained = node.Outputs.Single();
+        Assert.AreEqual(FrameArtifactRole.AnnotatedPreview, retained.Artifact.Role);
+        Assert.AreEqual(grant.Evidence, retained.Descriptor!.RetainedScheduleAdmission);
+        Assert.AreEqual(TimeSpan.Zero, retained.Descriptor.RetainedEffectiveInterval);
+        using var gallery = new CameraAgentArtifactService(options, reopenedStore, new CameraAgentPreviewEncoder());
+        var opened = await gallery.OpenContentAsync(retained.ArtifactId, token).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, opened.Status);
+        Assert.IsNotNull(opened.Content);
+        await using (opened.Content.ConfigureAwait(false))
+        {
+            using var pixelsRead = new MemoryStream();
+            await opened.Content.CopyToAsync(pixelsRead, token).ConfigureAwait(false);
+            Assert.AreEqual(retained.Artifact.ChecksumSha256, ProcessingIdentity.ComputePayloadSha256(pixelsRead.ToArray()));
+        }
+        var preview = await gallery.GetPreviewAsync(retained.ArtifactId, token).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentArtifactReadStatus.Found, preview.Status);
+        Assert.IsFalse(preview.Content.IsEmpty);
+    }
+
+    private sealed class AnnotationRecordingExecutor : IProcessingRecipeExecutor
+    {
+        private readonly ProcessingRecipeExecutor _renderer = new();
+
+        internal HVO.SkyMonitor.Imaging.MetadataCornerOverlay? Overlay { get; private set; }
+
+        internal ProcessingOutcomeStatus? Outcome { get; private set; }
+
+        public async ValueTask<ProcessingOutcome> ExecuteAsync(
+            ProcessingExecutionRequest request, CancellationToken cancellationToken)
+        {
+            var result = await _renderer.ExecuteAsync(request, cancellationToken).ConfigureAwait(false);
+            if (request.RecipeName == BuiltInProcessingRecipes.Annotation)
+            {
+                Overlay = request.Annotation?.MetadataOverlay;
+                Outcome = result.Status;
+            }
+            return result;
+        }
     }
 
     // The shared presentation facts builder (FrameFactsPresentation and EnvironmentPresentationLayer).
@@ -499,12 +678,15 @@ public sealed class AnnotationEnvironmentSourceTests
     /// <summary>The production composition over a temp root, with logs recorded and the network refused.</summary>
     private sealed class Harness : IDisposable
     {
-        private Harness(string root, ServiceProvider provider, RecordingLoggerProvider logs, FailClosedHandler network)
+        private readonly bool _ownsRoot;
+
+        private Harness(string root, ServiceProvider provider, RecordingLoggerProvider logs, FailClosedHandler network, bool ownsRoot)
         {
             Root = root;
             Provider = provider;
             Logs = logs;
             Network = network;
+            _ownsRoot = ownsRoot;
         }
 
         internal string Root { get; }
@@ -515,9 +697,10 @@ public sealed class AnnotationEnvironmentSourceTests
 
         internal FailClosedHandler Network { get; }
 
-        internal static Harness Create(string profile)
+        internal static Harness Create(
+            string profile, IProcessingRecipeExecutor? executor = null, TimeProvider? clock = null, string? retainedRoot = null)
         {
-            var root = Path.Combine(Path.GetTempPath(), "ci1784-annotation", Guid.NewGuid().ToString("N"));
+            var root = retainedRoot ?? Path.Combine(Path.GetTempPath(), "ci1784-annotation", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             var logs = new RecordingLoggerProvider();
             var network = new FailClosedHandler();
@@ -529,6 +712,11 @@ public sealed class AnnotationEnvironmentSourceTests
             services.AddLogging();
             services.AddSingleton<IConfiguration>(configuration);
             services.AddCameraAgentInfrastructure(configuration);
+            services.AddCameraModule<RawCaptureIngressTests.CenteredRunnerModule>(nameof(RawCaptureIngressTests.CenteredRunnerModule));
+            if (executor is not null)
+                services.AddSingleton(executor);
+            if (clock is not null)
+                services.AddSingleton(clock);
             services.AddSingleton<ILoggerProvider>(logs);
             services.Configure<LoggerFilterOptions>(static options => options.MinLevel = LogLevel.Debug);
             services.AddSingleton<IDeploymentLocationProtector>(new PassThroughLocationProtector());
@@ -538,13 +726,13 @@ public sealed class AnnotationEnvironmentSourceTests
                 serviceProvider.GetRequiredService<TimeProvider>(),
                 serviceProvider.GetRequiredService<IEnvironmentalAcquisitionStateStore>(),
                 serviceProvider.GetRequiredService<IOptions<CameraAgentHostOptions>>().Value.RawIngressRoot));
-            return new Harness(root, services.BuildServiceProvider(), logs, network);
+            return new Harness(root, services.BuildServiceProvider(), logs, network, ownsRoot: retainedRoot is null);
         }
 
         public void Dispose()
         {
             Provider.Dispose();
-            if (Directory.Exists(Root))
+            if (_ownsRoot && Directory.Exists(Root))
             {
                 Directory.Delete(Root, recursive: true);
             }

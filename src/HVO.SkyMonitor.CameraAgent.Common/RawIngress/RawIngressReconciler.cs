@@ -12,7 +12,8 @@ internal sealed class RawIngressReconciler(
     Action? fileFlushRecorder = null,
     Action? directorySyncRecorder = null,
     IReadOnlyList<CaptureLaneDefinition>? laneDefinitions = null,
-    Func<string, Stream>? openPayload = null)
+    Func<string, Stream>? openPayload = null,
+    Func<ArtifactManifestV2, CancellationToken, Task<RecoveredCenteredAdmission>>? prepareCentered = null)
 {
     private readonly string _root = Path.GetFullPath(root);
     private readonly SqliteRawCaptureJournal _journal = journal;
@@ -218,15 +219,22 @@ internal sealed class RawIngressReconciler(
                 sidecar,
                 descriptor.Timing.ExposureStartedUtc,
                 descriptor.Timing.DurableIngressUtc,
-                EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest));
+                EvidenceOrigin: GalleryEvidenceClassifier.Classify(manifest))
+            {
+                CenteredExposure = manifest.CenteredExposure
+            };
             SyncFile(payloadPath);
             SyncFile(sidecarPath);
             SyncDirectory(Path.GetDirectoryName(sidecarPath)!);
             try
             {
-                await (_laneDefinitions.Count == 0
+                var centered = manifest.CenteredExposure is null ? null :
+                    await (prepareCentered ?? throw new InvalidDataException(
+                        "Centered orphan recovery requires the frozen graph and admission services."))
+                        (manifest, cancellationToken).ConfigureAwait(false);
+                await (_laneDefinitions.Count == 0 && centered is null
                     ? _journal.RecoverAsync(entry, cancellationToken)
-                    : _journal.RecoverAsync(entry, _laneDefinitions, cancellationToken)).ConfigureAwait(false);
+                    : _journal.RecoverAsync(entry, _laneDefinitions, cancellationToken, centered)).ConfigureAwait(false);
             }
             catch (RawIngressConflictException)
             {

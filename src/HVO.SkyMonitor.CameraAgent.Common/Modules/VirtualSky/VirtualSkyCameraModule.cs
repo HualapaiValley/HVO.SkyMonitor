@@ -31,6 +31,7 @@ public sealed class VirtualSkyCameraModule(
     IVirtualSkyGraphSelection? graphSelection = null) :
     ICameraModule,
     ICameraSetpointController,
+    ICameraBoundExposureCapture,
     ICameraModuleConfigurationPreflight,
     ICameraFocusPreviewCapture,
     ICameraSimulatedSkyRegime
@@ -74,6 +75,14 @@ public sealed class VirtualSkyCameraModule(
         _config is not null && _options.IlluminationMode == VirtualSkyIlluminationMode.ControlledNight
             ? CaptureSolarRegime.Night
             : null;
+
+    async Task ICameraBoundExposureCapture.InitializeBoundAsync(
+        CameraModuleConfig configuration, Func<string, CancellationToken, ValueTask> fenceAttachment,
+        CancellationToken cancellationToken)
+    {
+        await fenceAttachment("virtual-sky-v1", cancellationToken).ConfigureAwait(false);
+        await InitializeAsync(configuration, cancellationToken).ConfigureAwait(false);
+    }
 
     public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
     {
@@ -167,8 +176,28 @@ public sealed class VirtualSkyCameraModule(
         return ValueTask.FromResult(timeProvider.GetUtcNow().ToUniversalTime());
     }
 
+    private ExposureAttemptKey? _lastBoundAttempt;
+
     public Task<CaptureResult> CaptureAsync(CaptureRequest request, CancellationToken cancellationToken)
-        => CaptureCoreAsync(request, null, cancellationToken);
+        => _config?.CenteredExposure is null
+            ? CaptureCoreAsync(request, null, cancellationToken)
+            : throw new InvalidOperationException("Centered exposure requires a reserved acquisition attempt.");
+
+    public bool EnforcesBoundStartLimit => true;
+
+    public Task<CaptureResult> CaptureBoundAsync(
+        ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        ArgumentNullException.ThrowIfNull(request);
+        if (_config?.CenteredExposure is not { } centered || request.RequestedSetpoint is null ||
+            attempt.Camera != new CameraKey(_config.AgentId!, centered.CameraId) ||
+            _lastBoundAttempt is { } prior && prior.RunId == attempt.RunId && prior.Ordinal >= attempt.Ordinal)
+            throw new InvalidOperationException("Centered exposure requires a fresh attempt and explicit settings.");
+
+        _lastBoundAttempt = attempt;
+        return CaptureCoreAsync(request, null, cancellationToken);
+    }
 
     private VirtualSimulatedFocusOptions SimulatedFocusOptions => _options.SimulatedFocus ?? DefaultSimulatedFocus;
 
@@ -230,8 +259,10 @@ public sealed class VirtualSkyCameraModule(
             ? _options.PsfRadiusPixels
             : VirtualSimulatedFocusOptions.RadiusPixels(_options.PsfRadiusPixels, psfSigmaPixels);
         var config = _config ?? throw new InvalidOperationException("Module has not been initialized.");
-        var captureGraph = preview is null && graphSelection is not null
-            ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
+        var captureGraph = request.BoundGraph is { } boundGraph && request.BoundGraphRevisionId is { } boundRevision
+            ? new VirtualSkyGraphSelection(boundRevision, boundGraph)
+            : preview is null && graphSelection is not null
+                ? await graphSelection.ReadAsync(config, cancellationToken).ConfigureAwait(false) : null;
         var captureDeepSky = _options.DeepSky ?? (captureGraph is null ? _deepSkyAnnotations : ResolveDeepSkyAnnotations(captureGraph.Pipeline));
         var captureCurated = captureGraph is null ? _curatedAnnotations : ResolveCuratedAnnotations(captureGraph.Pipeline);
         var stageProjectedScene = captureGraph is null ? _stageProjectedScene : captureGraph.Pipeline.Steps.Any(step => step.Enabled != false && IsProjectedSceneStep(step));
@@ -253,9 +284,11 @@ public sealed class VirtualSkyCameraModule(
             throw new ArgumentOutOfRangeException(nameof(request), "Virtual exposure must be between zero and one day.");
         // The operational acquisition clock is independent of the requested/fixed scene clocks below.
         // Wait before rendering or staging so an interrupted exposure owns no incomplete frame or artifact.
+        cancellationToken.ThrowIfCancellationRequested();
         var exposureStartedUtc = preview is null
             ? timeProvider.GetUtcNow().ToUniversalTime()
             : request.RequestedStartUtc;
+        request.RequireOpenBoundStart(exposureStartedUtc);
         var exposureEndedUtc = preview is null ? exposureStartedUtc + setpoint.Exposure : exposureStartedUtc;
         if (preview is null)
         {

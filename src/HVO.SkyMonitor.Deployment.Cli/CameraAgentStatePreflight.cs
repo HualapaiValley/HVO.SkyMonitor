@@ -140,6 +140,7 @@ internal static class CameraAgentStatePreflight
             [14] = new(13, RawIngressV13Schema.MigrationContract),
             [15] = new(13, RawIngressV13Schema.RecoveryMigrationContract),
             [16] = new(13, RawIngressV13Schema.EnvironmentalFenceMigrationContract),
+            [17] = new(13, RawIngressV13Schema.CenteredExposureMigrationContract),
         };
 
     /// <summary>
@@ -153,6 +154,7 @@ internal static class CameraAgentStatePreflight
             [14] = RawIngressV13Schema.IsCanonicalV14,
             [15] = RawIngressV13Schema.IsCanonicalV14,
             [16] = RawIngressV13Schema.IsCanonicalV14,
+            [17] = RawIngressV13Schema.IsCanonicalV17,
         };
 
     internal const string RawIngressDriftRemediation =

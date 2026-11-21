@@ -99,6 +99,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private const int AbsoluteMaximumPreviewEncodedBytes = 16 * 1024 * 1024;
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
     private readonly string _root;
+    private readonly LocalArchiveReader? _localArchive;
     private readonly string _databasePath;
     private readonly int _busyTimeoutSeconds;
     private readonly ArtifactReadOptions _options;
@@ -121,9 +122,11 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         IOptions<CameraAgentHostOptions> options,
         SqliteCaptureProcessingStore processingStore,
         ICameraAgentPreviewEncoder previewEncoder,
-        Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null)
+        Microsoft.Extensions.Logging.ILogger<CameraAgentArtifactService>? logger = null,
+        LocalArchiveReader? localArchive = null)
     {
         _logger = logger;
+        _localArchive = localArchive;
         ArgumentNullException.ThrowIfNull(options);
         _processingStore = processingStore ?? throw new ArgumentNullException(nameof(processingStore));
         _previewEncoder = previewEncoder ?? throw new ArgumentNullException(nameof(previewEncoder));
@@ -173,19 +176,31 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 ? await FindReplayOutputEvidenceAsync(connection, executionId, artifactId, cancellationToken)
                     .ConfigureAwait(false)
                 : await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
-            if (evidence.Status != CameraAgentArtifactReadStatus.Found)
+            var archive = evidence.Status == CameraAgentArtifactReadStatus.NotFound &&
+                replayExecutionId is null && !forPreview && _localArchive is not null
+                ? await _localArchive.FindAsync(connection, artifactId, cancellationToken).ConfigureAwait(false)
+                : null;
+            if (evidence.Status != CameraAgentArtifactReadStatus.Found && archive is null)
             {
                 return new(evidence.Status);
             }
 
-            var row = evidence.Row!;
-            var payloadPath = ResolveSafePath(row.PayloadRelativePath);
-            var sidecarPath = ResolveSafePath(row.SidecarRelativePath);
+            var row = evidence.Row;
+            var payloadPath = archive?.PayloadPath ?? ResolveSafePath(row!.PayloadRelativePath);
+            var sidecarPath = archive is null ? ResolveSafePath(row!.SidecarRelativePath) : null;
             ValidatedArtifact validated;
-            var cachedValidation = TryGetValidatedArtifact(row, payloadPath, sidecarPath, out validated);
-            if (!cachedValidation)
+            var cachedValidation = false;
+            if (archive is not null)
             {
-                validated = await ValidateEvidenceAsync(row, cancellationToken).ConfigureAwait(false);
+                validated = CreateValidated(archive.Manifest.Descriptor, archive.Manifest.RelativeArtifactPath);
+            }
+            else
+            {
+                cachedValidation = TryGetValidatedArtifact(row!, payloadPath, sidecarPath!, out validated);
+                if (!cachedValidation)
+                {
+                    validated = await ValidateEvidenceAsync(row!, cancellationToken).ConfigureAwait(false);
+                }
             }
             if (forPreview && PreviewStatus(validated) is { } previewStatus)
             {
@@ -195,7 +210,10 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             {
                 return new(CameraAgentArtifactReadStatus.Gone);
             }
-            EnsurePhysicalPath(payloadPath);
+            if (archive is null)
+                EnsurePhysicalPath(payloadPath);
+            else
+                RawIngressFileStore.EnsureNoSymbolicLinks(archive.StorageRoot, payloadPath);
             payload = new FileStream(
                 payloadPath,
                 FileMode.Open,
@@ -217,9 +235,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 payload = null;
                 return new(CameraAgentArtifactReadStatus.Conflict);
             }
-            if (!cachedValidation)
+            if (!cachedValidation && row is not null)
             {
-                AddValidatedArtifact(row, validated, payloadPath, sidecarPath);
+                AddValidatedArtifact(row, validated, payloadPath, sidecarPath!);
             }
             payload.Position = 0;
             var content = new CameraAgentArtifactContentStream(

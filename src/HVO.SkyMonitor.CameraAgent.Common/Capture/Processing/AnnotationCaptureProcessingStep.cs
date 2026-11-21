@@ -500,13 +500,15 @@ internal sealed class AnnotationCaptureProcessingStep(
         CancellationToken cancellationToken)
     {
         var descriptor = context.ReconstructionDescriptor;
-        var schedule = descriptor?.CycleEvidence?.ScheduleAdmission;
+        var schedule = descriptor?.RetainedScheduleAdmission;
         var scheduledProfile = schedule is null
             ? null
             : context.Config.Schedule?.SetpointProfiles.SingleOrDefault(profile => string.Equals(
                 profile.Id,
                 schedule.SetpointProfileId,
                 StringComparison.Ordinal));
+        var cadence = descriptor?.RetainedEffectiveInterval ?? scheduledProfile?.CaptureInterval ??
+            context.Config.Rig.Pipeline.CaptureInterval;
         var stackProduct = ResolveStackProduct(context, previewProduct);
         var environmentLines = UsesEnvironmentToken()
             ? await CreateEnvironmentLinesAsync(descriptor, cancellationToken).ConfigureAwait(false)
@@ -542,7 +544,7 @@ internal sealed class AnnotationCaptureProcessingStep(
                 AnnotationMetadataTokens.Utc => $"UTC {(descriptor?.Timing.ExposureStartedUtc ?? context.Frame?.TimestampUtc)?.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture) ?? "UNAVAILABLE"}",
                 AnnotationMetadataTokens.ScheduleProfile => $"SCHEDULE {Visible(schedule?.SetpointProfileId)}",
                 AnnotationMetadataTokens.Exposure => $"EXPOSURE {FormatNumber((descriptor?.Controls.EffectiveExposure ?? context.Frame?.Metadata.Exposure)?.TotalSeconds, 3)} S",
-                AnnotationMetadataTokens.Cadence => $"CADENCE {FormatNumber((scheduledProfile?.CaptureInterval ?? context.Config.Rig.Pipeline.CaptureInterval).TotalSeconds, 3)} S",
+                AnnotationMetadataTokens.Cadence => $"CADENCE {FormatNumber(cadence.TotalSeconds, 3)} S",
                 AnnotationMetadataTokens.Gain => $"GAIN {FormatNumber(descriptor?.Controls.EffectiveGain ?? context.Frame?.Metadata.Gain, 3)}",
                 AnnotationMetadataTokens.Offset => $"OFFSET {FormatNumber(descriptor?.Controls.EffectiveOffset ?? context.Frame?.Metadata.Offset, 1)}",
                 AnnotationMetadataTokens.SensorSetpoint => $"SETPOINT {FormatNumber(descriptor?.Controls.TemperatureSetpointC, 1)} C",

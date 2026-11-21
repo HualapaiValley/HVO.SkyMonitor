@@ -1055,7 +1055,7 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual($"ZWO {profile.Model}", frame.Metadata.SourceId);
     }
 
-    private static ZwoAsiCameraModule Module(FakeAsiNativeApi native)
+    internal static ZwoAsiCameraModule Module(FakeAsiNativeApi native)
         => new(TimeProvider.System, _ => native, ResolveEnvironmentVariable);
 
     private static CameraModuleDocument LoadSample(SupportedProfile profile)
@@ -1067,6 +1067,164 @@ public sealed class ZwoAsiCameraModuleTests
             File.ReadAllText(samplePath),
             ConfigurationSerializerOptions)!;
     }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task CenteredZwoPartialWriteCannotRetryOldAttemptAndFreshAttemptSetsBothControls()
+    {
+        var native = new FakeAsiNativeApi();
+        await using var module = Module(native);
+        var settings = CreateConfig() with
+        {
+            CenteredExposure = new("physical", CenteredExposureProfile.CurrentExecutionVersion)
+        };
+        await module.InitializeAsync(settings, CancellationToken.None);
+        Assert.IsFalse(native.Calls.Any(call => call.StartsWith("Set:Exposure:", StringComparison.Ordinal) ||
+            call.StartsWith("Set:Gain:", StringComparison.Ordinal)));
+        var camera = new CameraKey(settings.AgentId!, "physical");
+        var old = new ExposureAttemptKey(camera, Guid.NewGuid(), 104, Guid.NewGuid());
+        var oldRequest = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(100), 16, null, null));
+        native.ExposureStatuses = new([AsiExposureStatus.Idle]);
+        native.ThrowAfterSetting = AsiControlType.Gain;
+        await Assert.ThrowsExactlyAsync<TimeoutException>(() => module.CaptureBoundAsync(old, oldRequest, CancellationToken.None));
+        var callsAfterUncertainSettings = native.Calls.Count;
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            module.CaptureBoundAsync(old, oldRequest, CancellationToken.None));
+        Assert.AreEqual(callsAfterUncertainSettings, native.Calls.Count);
+        Assert.IsFalse(native.Calls.Contains("StartExposure"));
+
+        var fresh = new ExposureAttemptKey(camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        native.ThrowAfterSetting = null;
+        native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+        var result = await module.CaptureBoundAsync(fresh, oldRequest with
+        {
+            RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 9, null, null)
+        }, CancellationToken.None);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(20), result.Frame!.Metadata.Exposure);
+        Assert.AreEqual(9d, result.Frame.Metadata.Gain);
+        Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
+        Assert.IsFalse(FrameWhiteThreshold.TryResolveStored(result.Frame.Layout, out _, out var reason));
+        Assert.AreEqual(FrameWhiteThreshold.OpaqueAdcReason, reason);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task CenteredZwoWorkingAttachAndCancelledApplyNeverStart()
+    {
+        var config = CreateConfig() with
+        {
+            CenteredExposure = new("physical", CenteredExposureProfile.CurrentExecutionVersion)
+        };
+        var working = new FakeAsiNativeApi { RepeatWorkingStatus = true };
+        await using (var module = Module(working))
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                ((ICameraBoundExposureCapture)module).InitializeBoundAsync(config,
+                    (_, _) => ValueTask.CompletedTask, CancellationToken.None));
+            Assert.IsFalse(working.Calls.Any(call => call.StartsWith("Set:", StringComparison.Ordinal) ||
+                call.StartsWith("Roi:", StringComparison.Ordinal) || call.StartsWith("Position:", StringComparison.Ordinal)));
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        var native = new FakeAsiNativeApi { ExposureStatuses = new([AsiExposureStatus.Idle]) };
+        await using var attached = Module(native);
+        await ((ICameraBoundExposureCapture)attached).InitializeBoundAsync(config, (_, _) => ValueTask.CompletedTask,
+            CancellationToken.None);
+        native.Calls.Clear();
+        native.ExposureStatuses = new([AsiExposureStatus.Idle]);
+        native.ControlWritten = type =>
+        {
+            if (type == AsiControlType.Exposure) cancellation.Cancel();
+        };
+        var camera = new CameraKey(config.AgentId!, "physical");
+        var attempt = new ExposureAttemptKey(camera, Guid.NewGuid(), 104, Guid.NewGuid());
+        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(100), 16, null, null));
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            attached.CaptureBoundAsync(attempt, request, cancellation.Token));
+        Assert.IsTrue(native.Calls.Contains("Set:Exposure:100000"));
+        Assert.IsFalse(native.Calls.Any(call => call.StartsWith("Set:Gain:", StringComparison.Ordinal)));
+        Assert.IsFalse(native.Calls.Contains("StartExposure"));
+
+        native.ControlWritten = null;
+        native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+        var fresh = new ExposureAttemptKey(camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        var actual = await attached.CaptureBoundAsync(fresh, request with
+        {
+            RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 9, null, null)
+        }, CancellationToken.None);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(20), actual.Frame!.Metadata.Exposure);
+        Assert.AreEqual(9d, actual.Frame.Metadata.Gain);
+        Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(0, false)]
+    [DataRow(9, false)]
+    [DataRow(10, true)]
+    [DataRow(11, true)]
+    [DataRow(-1, true)]
+    public async Task CenteredZwoReadsBackBothControlsBeforeCheckingExclusiveStartLimit(int shiftMilliseconds, bool refused)
+    {
+        var now = new DateTimeOffset(2026, 11, 20, 9, 0, 0, TimeSpan.Zero);
+        var clock = new ExposureTestTimeProvider(now);
+        var native = new FakeAsiNativeApi { ExposureStatuses = new([AsiExposureStatus.Idle]) };
+        await using var module = new ZwoAsiCameraModule(clock, _ => native, ResolveEnvironmentVariable);
+        var config = CreateConfig() with { CenteredExposure = new("physical", CenteredExposureProfile.CurrentExecutionVersion) };
+        await module.InitializeAsync(config, CancellationToken.None);
+        var camera = new CameraKey(config.AgentId!, "physical");
+        var attempt = new ExposureAttemptKey(camera, Guid.NewGuid(), 104, Guid.NewGuid());
+        native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+        native.ControlRead = type =>
+        {
+            if (type == AsiControlType.Gain)
+                clock.ShiftUtc(TimeSpan.FromMilliseconds(shiftMilliseconds));
+        };
+        var request = new CaptureRequest(now, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(90), 17, null, null))
+        {
+            BoundStartNotBeforeUtc = now,
+            BoundStartBeforeUtc = now.AddMilliseconds(10)
+        };
+        if (refused)
+        {
+            await Assert.ThrowsExactlyAsync<CaptureStartWindowClosedException>(
+                () => module.CaptureBoundAsync(attempt, request, CancellationToken.None));
+            Assert.IsFalse(native.Calls.Contains("StartExposure"));
+            Assert.IsFalse(native.Calls.Contains("StopExposure"));
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+                () => module.CaptureBoundAsync(attempt, request, CancellationToken.None));
+            native.ControlRead = null;
+            if (shiftMilliseconds < 0)
+                clock.ShiftUtc(TimeSpan.FromMilliseconds(-shiftMilliseconds));
+            native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+            request = request with
+            {
+                RequestedStartUtc = clock.GetUtcNow(),
+                BoundStartNotBeforeUtc = clock.GetUtcNow(),
+                BoundStartBeforeUtc = clock.GetUtcNow().AddMilliseconds(10),
+                RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 6, null, null)
+            };
+            attempt = new(camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        }
+
+        var result = await module.CaptureBoundAsync(attempt, request, CancellationToken.None);
+        Assert.AreEqual(request.RequestedSetpoint!.Exposure, result.Frame!.Metadata.Exposure);
+        Assert.AreEqual(request.RequestedSetpoint.Gain, result.Frame.Metadata.Gain);
+        Assert.IsLessThan(request.BoundStartBeforeUtc!.Value, result.AcquisitionTiming!.ExposureStartedUtc);
+        Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
+        Assert.IsTrue(native.Calls.Contains("Set:Exposure:90000"));
+        Assert.IsTrue(native.Calls.Contains("Set:Gain:17"));
+        if (refused)
+        {
+            Assert.IsTrue(native.Calls.Contains("Set:Exposure:20000"));
+            Assert.IsTrue(native.Calls.Contains("Set:Gain:6"));
+        }
+    }
+
+    internal static CameraModuleConfig CreateCenteredTransportTestConfig() => CreateConfig();
 
     private static CameraModuleConfig CreateConfig(CameraModuleDocument document)
         => new(
@@ -1216,9 +1374,9 @@ public sealed class ZwoAsiCameraModuleTests
         public void Free(IntPtr handle) => FreeCalls++;
     }
 
-    private sealed record FakeCamera(AsiCameraInfo Info, byte[] Serial);
+    internal sealed record FakeCamera(AsiCameraInfo Info, byte[] Serial);
 
-    private sealed record SupportedProfile(
+    internal sealed record SupportedProfile(
         string Id,
         string Model,
         int Width,
@@ -1230,7 +1388,7 @@ public sealed class ZwoAsiCameraModuleTests
         long MaximumGain,
         string ExpectedSha256);
 
-    private sealed class FakeAsiNativeApi : IAsiNativeApi
+    internal sealed class FakeAsiNativeApi : IAsiNativeApi
     {
         private readonly Dictionary<AsiControlType, long> _values;
         private readonly SupportedProfile _profile;
@@ -1259,6 +1417,10 @@ public sealed class ZwoAsiCameraModuleTests
         internal List<FakeCamera> Cameras { get; } = [];
         internal List<string> Calls { get; } = [];
         internal Dictionary<AsiControlType, long> ReadbackOverrides { get; } = [];
+        internal AsiControlType? ThrowAfterSetting { get; set; }
+        internal Action<AsiControlType>? ControlWritten { get; set; }
+        internal Action<AsiControlType>? ControlRead { get; set; }
+
         internal Queue<AsiExposureStatus> ExposureStatuses { get; set; } = new([AsiExposureStatus.Success]);
         internal TaskCompletionSource ExposureStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal HashSet<int> FailOpenCameraIds { get; } = [];
@@ -1327,12 +1489,15 @@ public sealed class ZwoAsiCameraModuleTests
         public (long Value, bool Automatic) GetControlValue(int cameraId, AsiControlType type)
         {
             Calls.Add($"Get:{type}");
+            ControlRead?.Invoke(type);
             return (ReadbackOverrides.GetValueOrDefault(type, _values[type]), false);
         }
         public void SetControlValue(int cameraId, AsiControlType type, long value, bool automatic)
         {
             Calls.Add($"Set:{type}:{value}");
             _values[type] = value;
+            ControlWritten?.Invoke(type);
+            if (ThrowAfterSetting == type) throw new TimeoutException("Injected timeout after device write.");
         }
         public void SetRoiFormat(int cameraId, int width, int height, int bin, AsiImageType imageType)
         {

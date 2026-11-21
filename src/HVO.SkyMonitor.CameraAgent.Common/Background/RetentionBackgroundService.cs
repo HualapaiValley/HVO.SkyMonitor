@@ -502,7 +502,9 @@ public sealed class RetentionBackgroundService(
         }
     }
 
-    private static int PruneFrameDirectories(
+    internal Action<string>? BeforeArchiveFileUnlink { get; init; }
+
+    private int PruneFrameDirectories(
         string storageRoot,
         DateOnly cutoffDay,
         PendingArtifacts pending,
@@ -550,11 +552,33 @@ public sealed class RetentionBackgroundService(
                         foreach (var file in Directory.EnumerateFiles(dayDirectory, "*", SearchOption.AllDirectories))
                         {
                             cancellationToken.ThrowIfCancellationRequested();
-                            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, file);
-                            if (!pending.AbsolutePaths.Contains(Path.GetFullPath(file)))
+                            if (!FileSystemFrameStorageService.IsArchiveEvidencePath(file) &&
+                                !pending.AbsolutePaths.Contains(Path.GetFullPath(file)) && File.Exists(file))
                             {
-                                RetainedFileMutations.Delete(file);
+                                FileSystemFrameStorageService.RemoveArchiveFrameFile(storageRoot, file, BeforeArchiveFileUnlink);
                                 deletedFiles++;
+                            }
+                        }
+                        foreach (var marker in Directory.EnumerateFiles(dayDirectory, "*.archive*", SearchOption.AllDirectories))
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            if (!FileSystemFrameStorageService.IsArchiveEvidencePath(marker) ||
+                                pending.AbsolutePaths.Contains(Path.GetFullPath(marker)))
+                                continue;
+                            var payloadPath = Path.ChangeExtension(marker, ".bin");
+                            if (!pending.AbsolutePaths.Contains(payloadPath) &&
+                                !pending.AbsolutePaths.Contains(Path.ChangeExtension(payloadPath, ".json")))
+                            {
+                                var indexGate = FrameIndexLock.ForRoot(storageRoot);
+                                indexGate.Wait(cancellationToken);
+                                try
+                                {
+                                    deletedFiles += FileSystemFrameStorageService.ReclaimArchiveEvidenceIfAbsent(storageRoot, payloadPath);
+                                }
+                                finally
+                                {
+                                    indexGate.Release();
+                                }
                             }
                         }
                         DeleteEmptyDirectories(dayDirectory, cancellationToken);

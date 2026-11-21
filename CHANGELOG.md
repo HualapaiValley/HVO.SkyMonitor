@@ -16,6 +16,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent owners can configure a pinned measured-astrometry reference depth with `hvo-sky astrometry configure` and set the independent `virtualSky.rendererCandidateCap` renderer limit. New VirtualSky astrometry presets default to magnitude 3.25. #1901
 
+- CameraAgent can opt into centered exposure capture with recoverable per-camera admission and retained linear-input evidence (#1919).
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
@@ -24,8 +26,11 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent opens retained file-only archive products through the local archive API and rejects incompatible centered profiles before activation. #1919
+
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 
+- CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 - Current Sky clears measured overlays and calculator results when a repaired astrometric fit is quarantined again, while retaining the verified historical result. #1901
 
 - Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901

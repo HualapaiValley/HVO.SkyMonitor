@@ -1189,6 +1189,97 @@ public sealed class ReconstructableCaptureContractTests
     }
 
     [TestMethod]
+    public void CenteredManifestRequiresTheFrozenGraphAndMatchingAdjacentAttempts()
+    {
+        var original = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var hash = new string('A', 64);
+        var camera = new CameraKey(original.Descriptor.Capture.AgentId, "camera-a");
+        var source = new ExposureAttemptKey(camera, Guid.NewGuid(), 103, Guid.NewGuid());
+        var target = source with { Ordinal = 104, AttemptId = Guid.NewGuid() };
+        var binding = new CenteredExposureBindingV1(source, target, hash);
+        var centered = original with { CenteredExposure = binding, CaptureGraphRevisionId = hash };
+
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(centered));
+        Assert.IsTrue(parsed.IsValid);
+        Assert.AreEqual(binding, parsed.Document!.Manifest.CenteredExposure);
+        Assert.AreEqual(original.IdempotencyKey, parsed.Document.Manifest.IdempotencyKey);
+
+        var invalidManifests = new[]
+        {
+            centered with { CaptureGraphRevisionId = null },
+            centered with { CenteredExposure = binding with { Target = target with { Ordinal = 105 } } },
+            centered with { CenteredExposure = binding with { Target = target with { Camera = camera with { CameraId = "camera-b" } } } },
+            centered with { CenteredExposure = binding with { Target = target with { RunId = Guid.NewGuid() } } },
+            centered with { CenteredExposure = binding with { Target = target with { AttemptId = source.AttemptId } } },
+            centered with { CenteredExposure = binding with { FrozenRunSha256 = new string('Z', 64) } }
+        };
+        foreach (var invalid in invalidManifests)
+        {
+            Assert.AreEqual(CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "centeredExposure"),
+                invalid.Validate());
+        }
+    }
+
+    [TestMethod]
+    public void CenteredAcquisitionRejectsInvalidObservedAndModuleReportingFacts()
+    {
+        var descriptor = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+        var setpoint = new CaptureSetpoint(TimeSpan.FromMilliseconds(20), 7, TimeSpan.FromSeconds(1), 2);
+        var module = new CenteredModuleReportingEvidence(
+            CaptureMode.Still, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint, TimeSpan.Zero, false);
+        var evidence = new CenteredCaptureAcquisitionEvidence(
+            CaptureCadenceMode.MinimumStartInterval, TimeSpan.FromSeconds(1), descriptor.Timing.ExposureStartedUtc,
+            TimeSpan.FromMilliseconds(25), Guid.NewGuid(), false, ["weather"], null)
+        {
+            Module = module
+        };
+
+        Assert.IsTrue((descriptor with { CenteredAcquisition = evidence }).Validate().IsValid);
+        Assert.IsTrue((descriptor with { CenteredAcquisition = evidence with { EnvironmentalUnavailable = true, EnvironmentalBeforeCaptureSources = null } })
+            .Validate().IsValid);
+        Assert.AreEqual("descriptor.centeredAcquisition",
+            (descriptor with { CenteredAcquisition = evidence, CycleEvidence = CreateCycleEvidence(descriptor) }).Validate().FieldPath);
+
+        var invalidAcquisitions = new[]
+        {
+            evidence with { CadenceMode = (CaptureCadenceMode)(-1) },
+            evidence with { EffectiveInterval = TimeSpan.Zero },
+            evidence with { ModuleDuration = TimeSpan.FromTicks(-1) },
+            evidence with { ModuleCallStartedUtc = evidence.ModuleCallStartedUtc.ToOffset(TimeSpan.FromHours(1)) },
+            evidence with { AcquisitionAttemptId = Guid.Empty },
+            evidence with { AcquisitionAttemptId = null, EnvironmentalUnavailable = true, EnvironmentalBeforeCaptureSources = null },
+            evidence with { AcquisitionAttemptId = null },
+            evidence with { EnvironmentalBeforeCaptureSources = [] },
+            evidence with { EnvironmentalBeforeCaptureSources = [" "] },
+            evidence with { EnvironmentalBeforeCaptureSources = [new string('x', 129)] },
+            evidence with { EnvironmentalBeforeCaptureSources = ["weather", "weather"] }
+        };
+        foreach (var invalid in invalidAcquisitions)
+        {
+            Assert.AreEqual(CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition"),
+                (descriptor with { CenteredAcquisition = invalid }).Validate());
+        }
+
+        var invalidReporting = new[]
+        {
+            module with { RequestMode = (CaptureMode)(-1) },
+            module with { ResultMode = (CaptureMode)(-1) },
+            module with { RequestedInterval = TimeSpan.Zero },
+            module with { ProcessingLatency = TimeSpan.FromTicks(-1) },
+            module with { ReportedSetpoint = setpoint with { Exposure = TimeSpan.Zero } },
+            module with { ReportedSetpoint = setpoint with { Gain = double.NaN } },
+            module with { ReportedSetpoint = setpoint with { Gain = -1 } },
+            module with { ReportedSetpoint = setpoint with { TargetFps = 0 } },
+            module with { ReportedSetpoint = setpoint with { NextIntervalOverride = TimeSpan.Zero } }
+        };
+        foreach (var invalid in invalidReporting)
+        {
+            Assert.AreEqual(CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition.module"),
+                (descriptor with { CenteredAcquisition = evidence with { Module = invalid } }).Validate());
+        }
+    }
+
+    [TestMethod]
     public void ParseManifest_WithUnknownOrMalformedVersion_ReturnsStableReason()
     {
         var unknown = CaptureContractJson.ParseManifest("{\"schemaVersion\":\"v3\"}"u8.ToArray());

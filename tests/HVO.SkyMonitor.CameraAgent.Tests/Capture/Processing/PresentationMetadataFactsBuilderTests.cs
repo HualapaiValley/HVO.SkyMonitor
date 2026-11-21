@@ -336,12 +336,13 @@ public sealed partial class PresentationMetadataFactsBuilderTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task ExplicitRichStepProducesVersionedProductsOrFailsAtomicallyWithoutChangingSources(bool oversize)
+    [DataRow(false, false)]
+    [DataRow(true, false)]
+    [DataRow(false, true)]
+    public async Task ExplicitRichStepProducesVersionedProductsOrFailsAtomicallyWithoutChangingSources(bool oversize, bool centered)
     {
         using var store = new SqliteEnvironmentalObservationOutbox();
-        var fixture = await CreateFixtureAsync(store).ConfigureAwait(false);
+        var fixture = await CreateFixtureAsync(store, centered: centered).ConfigureAwait(false);
         var sceneBytes = ProjectedSceneJson.Serialize(fixture.Scene);
         var scene = fixture.Stack with
         {
@@ -386,6 +387,20 @@ public sealed partial class PresentationMetadataFactsBuilderTests
                 Assert.IsTrue(StructuredProcessingProductContracts.IsSupported(product.MediaType, product.SchemaVersion!));
             Assert.IsTrue(fixture.Context.ProcessingProducts.Any(product => product.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion));
             Assert.IsTrue(fixture.Context.ProcessingProducts.Any(product => product.SchemaVersion == PresentationLayerPayloadV1.RichTextSchemaVersion));
+            if (centered)
+            {
+                var facts = PresentationProcessingProducts.ParseMetadataFacts(
+                    fixture.Context.ProcessingProducts.Single(product =>
+                        product.SchemaVersion == PresentationMetadataFactsProductV1.RichTextSchemaVersion).Payload);
+                Assert.AreEqual("continuous", facts.Capture.GetProperty("SetpointProfileId").GetString());
+                Assert.AreEqual(CaptureCadenceMode.Continuous, facts.Capture.GetProperty("CadenceMode").Deserialize<CaptureCadenceMode>());
+                Assert.AreEqual(0d, facts.Capture.GetProperty("CadenceSeconds").GetDouble());
+                CollectionAssert.Contains(facts.Corners.TopRight.ToArray(), "SCHEDULE continuous");
+                var tokens = facts.FrameFacts!.ToContext();
+                Assert.AreEqual(FrameFactsValue.FromText("continuous"), tokens.Get("acquisition.scheduleProfile").Value);
+                Assert.AreEqual(FrameFactsValue.FromText("Continuous"), tokens.Get("acquisition.cadenceMode").Value);
+                Assert.AreEqual(FrameFactsValue.FromNumber(0), tokens.Get("acquisition.cadenceSeconds").Value);
+            }
         }
         Assert.AreEqual(sourceChecksum, fixture.Context.RawCapture.Manifest.Descriptor.Artifact.ChecksumSha256);
         CollectionAssert.AreEqual(sceneBytes, scene.Payload.ToArray());
@@ -430,7 +445,7 @@ public sealed partial class PresentationMetadataFactsBuilderTests
             CancellationToken.None).ConfigureAwait(false);
 
     private async Task<Fixture> CreateFixtureAsync(SqliteEnvironmentalObservationOutbox store,
-        EnvironmentalAcquisitionOptions? acquisition = null)
+        EnvironmentalAcquisitionOptions? acquisition = null, bool centered = false)
     {
         var payload = new byte[8];
         var original = ReconstructableCaptureContractTests.CreateManifest(
@@ -487,6 +502,16 @@ public sealed partial class PresentationMetadataFactsBuilderTests
                 ScheduleAdmission = CreateScheduleAdmission()
             }
         };
+        if (centered)
+        {
+            descriptor = descriptor with
+            {
+                CycleEvidence = null,
+                CenteredAcquisition = new(CaptureCadenceMode.Continuous, TimeSpan.Zero, Epoch,
+                    TimeSpan.FromSeconds(5), null, false, null,
+                    CreateScheduleAdmission() with { SetpointProfileId = "continuous" })
+            };
+        }
         var manifest = original with { Descriptor = descriptor };
         var path = Path.Combine(_root!, "raw.bin");
         await File.WriteAllBytesAsync(path, payload).ConfigureAwait(false);

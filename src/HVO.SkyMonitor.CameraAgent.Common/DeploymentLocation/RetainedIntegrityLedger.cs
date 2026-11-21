@@ -358,6 +358,7 @@ internal sealed partial class RetainedIntegrityLedger : IDisposable
         => Tracked(path) ? Begin([(path, false, Convert.ToHexString(SHA256.HashData(bytes.Span)), null)]) : Empty.Instance;
     internal static IDisposable BeginDelete(string path) => Tracked(path) ? Begin([(path, false, null, null)]) : Empty.Instance;
     internal static IDisposable BeginTrees(params string[] paths) => Begin(paths.Select(path => (path, true, (string?)null, (string?)null)));
+    internal static IDisposable BeginJournalMetadataWrite() => RegistrationLease.Enter();
     internal static IDisposable BeginTreeMove(string source, string destination)
         => Begin([(source, true, null, null), (destination, true, null, Path.GetFullPath(source))]);
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned composite owns the registration lease and mutation; it disposes both in reverse order, including on a disposal failure.")]

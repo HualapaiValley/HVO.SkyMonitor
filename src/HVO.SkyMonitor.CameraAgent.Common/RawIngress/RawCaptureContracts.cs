@@ -113,7 +113,10 @@ internal sealed record RawIngressJournalEntry(
     string State = "committed",
     bool RetentionHold = true,
     GalleryEvidenceOrigin EvidenceOrigin = GalleryEvidenceOrigin.Unknown,
-    bool EvidenceWrittenOff = false);
+    bool EvidenceWrittenOff = false)
+{
+    public CenteredExposureBindingV1? CenteredExposure { get; init; }
+}
 
 internal sealed record RawIngressReconciliationSummary(
     int Inspected,

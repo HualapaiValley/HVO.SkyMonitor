@@ -35,7 +35,7 @@ public sealed class CameraModuleOwnership : IDisposable
         {
             lock (_sync)
             {
-                if (_current is not { } publication)
+                if (_current is not { } publication || publication.Revocation.IsCancellationRequested)
                 {
                     return CameraModuleOwnershipSnapshot.None with { Generation = _generation };
                 }
@@ -51,7 +51,7 @@ public sealed class CameraModuleOwnership : IDisposable
     {
         lock (_sync)
         {
-            if (_disposed || _current is not { } publication)
+            if (_disposed || _current is not { } publication || publication.Revocation.IsCancellationRequested)
             {
                 lease = null;
                 return false;
@@ -66,7 +66,7 @@ public sealed class CameraModuleOwnership : IDisposable
     /// Publishes an initialized module with the configuration it was initialized from. Only the capture owner calls this,
     /// after initialization succeeds.
     /// </summary>
-    internal long Publish(ICameraModule module, CameraModuleConfig? config = null)
+    internal long Publish(ICameraModule module, CameraModuleConfig? config = null, CancellationToken revisionChanged = default)
     {
         ArgumentNullException.ThrowIfNull(module);
         lock (_sync)
@@ -76,7 +76,7 @@ public sealed class CameraModuleOwnership : IDisposable
             {
                 throw new InvalidOperationException("A camera module is already published; revoke it first.");
             }
-            _current = new Publication(module, config, ++_generation);
+            _current = new Publication(module, config, ++_generation, revisionChanged);
             return _current.Generation;
         }
     }
@@ -233,12 +233,15 @@ public sealed class CameraModuleOwnership : IDisposable
         }
     }
 
-    internal sealed class Publication(ICameraModule module, CameraModuleConfig? config, long generation)
+    internal sealed class Publication(
+        ICameraModule module, CameraModuleConfig? config, long generation, CancellationToken revisionChanged)
     {
         public ICameraModule Module { get; } = module;
         public CameraModuleConfig? Config { get; } = config;
         public long Generation { get; } = generation;
-        public CancellationTokenSource Revocation { get; } = new();
+        public CancellationTokenSource Revocation { get; } = revisionChanged.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(revisionChanged)
+            : new();
         public TaskCompletionSource Drained { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int Leases { get; set; }
         public bool Revoked { get; set; }

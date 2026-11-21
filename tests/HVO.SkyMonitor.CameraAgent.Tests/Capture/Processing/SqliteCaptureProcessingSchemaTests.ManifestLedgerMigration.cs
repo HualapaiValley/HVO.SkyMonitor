@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
@@ -53,7 +54,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
         Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion,
             await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
-        Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
+            await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, indexCountSql).ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, """
             SELECT COUNT(*) FROM processing_outputs INDEXED BY ix_processing_outputs_astrometry_lookup
@@ -108,7 +110,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
         Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
-        Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
+            await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
         Assert.AreEqual(variant == "corruptInputs" ? "Corrupt" : variant == "oversizedInputs" ? "ExceedsBounds" : "Recorded",
             await LedgerStateAsync(verify, "Inputs").ConfigureAwait(false));
@@ -193,7 +196,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     {
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
         Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
-        Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
+            await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
         using (var plan = verify.CreateCommand())
         {

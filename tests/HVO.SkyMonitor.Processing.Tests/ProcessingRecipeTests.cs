@@ -430,6 +430,47 @@ public sealed class ProcessingRecipeTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow(FrameStoredCodeTransform.LeftShiftedV1, 44800d, 40d)]
+    [DataRow(FrameStoredCodeTransform.FullRangeScaledV1, 44810d, 40.00915750915751d)]
+    public async Task CenteredNormalizationPredictionMatchesActualPackedLayout(
+        FrameStoredCodeTransform transform, double storedWhite, double storedBlack)
+    {
+        var source = CreateArtifact(FrameArtifactRole.Raw, "source", CameraPixelFormat.Mono16, 2, 2,
+            [1, 0, 2, 0, 99, 99, 3, 0, 4, 0, 88, 88], stride: 6);
+        var rawLayout = source.Layout! with
+        {
+            SampleDepthBits = 12,
+            BlackLevel = 2.5,
+            WhiteLevel = 2799.75,
+            StoredCodeTransform = transform,
+            LevelCodeSpace = FrameLevelCodeSpace.NativeSample
+        };
+        source = source with { Layout = rawLayout };
+        var plain = Request(BuiltInProcessingRecipes.LinearNormalization, EmptyOptions(),
+            ProcessingInputSelector.Raw(), [source], "none");
+        var executor = new ProcessingRecipeExecutor();
+        var legacy = await executor.ExecuteAsync(plain).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.TerminalFailure, legacy.Status);
+        Assert.AreEqual(ProcessingReasonCodes.InvalidLayout, legacy.ReasonCode);
+
+        var workingLayout = CenteredNormalizationLayout.CreateWorkingLayout(rawLayout);
+        var adapted = Request(BuiltInProcessingRecipes.LinearNormalization, EmptyOptions(),
+            ProcessingInputSelector.Raw(), [source with { Layout = workingLayout }], "none");
+        var produced = await executor.ExecuteAsync(adapted).ConfigureAwait(false);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, produced.Status);
+        var output = produced.Products.Single();
+        Assert.AreEqual(CenteredNormalizationLayout.CreateExpectedPackedLayout(rawLayout), output.Layout);
+        Assert.AreEqual(FrameLevelCodeSpace.StoredContainer, output.Layout!.LevelCodeSpace);
+        Assert.AreEqual(storedWhite, output.Layout.WhiteLevel);
+        Assert.AreEqual(storedBlack, output.Layout.BlackLevel!.Value, 1e-12);
+        Assert.AreEqual(4, output.Layout.StrideBytes);
+        CollectionAssert.AreEqual(new byte[] { 1, 0, 2, 0, 3, 0, 4, 0 }, output.Payload.ToArray());
+        Assert.AreEqual(2799.75d, source.Layout!.WhiteLevel);
+        Assert.AreEqual(FrameLevelCodeSpace.NativeSample, source.Layout.LevelCodeSpace);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task LinearNormalizationPacksRowsAndRecordsNoCorrectionProvenance()
     {
         var source = CreateArtifact(
