@@ -98,6 +98,35 @@ public sealed class OnlineWeatherSourceTests
     }
 
     [TestMethod]
+    [DataRow(299, false)]
+    [DataRow(300, true)]
+    public async Task DelayedPollUsesTheLiveClockToEvaluateProviderFreshness(int sampleAgeSeconds, bool expired)
+    {
+        var sampleTime = EnvironmentalHardwareAdapterTests.Epoch;
+        var clock = new Clock { Now = sampleTime.AddSeconds(sampleAgeSeconds) };
+        using var handler = new FakeHandler(_ => Response(200, Hvo));
+        using var client = new WeatherProviderClient(new HttpClient(handler), clock);
+        var source = Create(client, WeatherProvider.Hvo);
+        var result = await source.AcquireAsync(EnvironmentalHardwareAdapterTests.Context() with
+        {
+            ObservedAtUtc = sampleTime.AddMinutes(-3)
+        }, CancellationToken.None).ConfigureAwait(false);
+
+        if (expired)
+        {
+            Assert.AreEqual(EnvironmentalSourceAcquisitionOutcome.Missing, result.Outcome);
+            Assert.AreEqual("provider-stale", result.Reason);
+            Assert.IsNull(result.Fact);
+        }
+        else
+        {
+            Assert.AreEqual(EnvironmentalSourceAcquisitionOutcome.Produced, result.Outcome);
+            Assert.AreEqual(sampleTime, result.Fact!.ObservedAtUtc);
+        }
+        Assert.AreEqual(1, handler.Calls);
+    }
+
+    [TestMethod]
     [DataRow(429, "provider-rate-limited")]
     [DataRow(500, "provider-http-failure")]
     [DataRow(503, "provider-http-failure")]

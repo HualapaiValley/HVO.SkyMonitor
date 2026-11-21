@@ -16,6 +16,8 @@ public sealed class WeatherProviderClient(HttpClient httpClient, TimeProvider ti
     private readonly BoundedHttpClient transport = new(httpClient, timeProvider, SwpcSource.UserAgent);
     private readonly ConcurrentDictionary<string, State> states = new(StringComparer.Ordinal);
 
+    internal DateTimeOffset GetUtcNow() => timeProvider.GetUtcNow();
+
     internal static string RequestIdentity(OnlineWeatherSourceOptions options)
         => HVO.SkyMonitor.AgentCore.CaptureContractJson.ComputeCanonicalJsonSha256(new
         {

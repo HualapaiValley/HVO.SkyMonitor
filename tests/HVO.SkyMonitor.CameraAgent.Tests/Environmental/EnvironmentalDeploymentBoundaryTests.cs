@@ -106,6 +106,43 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         Assert.IsFalse(fixture.Logger.Events.Any(static entry => entry.Id == 2522));
     }
 
+    [TestMethod]
+    public async Task ProtectedLocationStartup_RestartAfterTheBoundarySettlesThePendingSlot()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-restart-{Guid.NewGuid():N}");
+        var location = Location(Epoch.AddDays(-1));
+        try
+        {
+            var initial = new Fixture(Epoch.AddSeconds(-1), location, root: root, protectedStartup: true);
+            await using (initial.ConfigureAwait(false))
+            {
+                await initial.LoadProvisionalLocationAsync().ConfigureAwait(false);
+                await initial.StartAndFireFirstPollAsync().ConfigureAwait(false);
+                await AssertWaitingForLocationAsync(initial).ConfigureAwait(false);
+            }
+
+            var reopened = new Fixture(Epoch + StartupSourcePeriod + TimeSpan.FromSeconds(1), location, root: root,
+                protectedStartup: true);
+            await using (reopened.ConfigureAwait(false))
+            {
+                await reopened.LoadProvisionalLocationAsync().ConfigureAwait(false);
+                await reopened.ReconcileLocationAsync().ConfigureAwait(false);
+                var next = Epoch + StartupSourcePeriod + StartupSourcePeriod;
+                await reopened.StartAndWaitForPollAsync(next).ConfigureAwait(false);
+
+                var state = (await reopened.ReadStatesAsync().ConfigureAwait(false)).Single();
+                Assert.AreEqual(Epoch, state.LastObservedUtc, "Restart must settle the first poll retained in the journal.");
+                Assert.AreEqual(next, state.NextPollUtc);
+                Assert.HasCount(1, await reopened.ReadAttemptsAsync().ConfigureAwait(false));
+                Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     private static async Task AssertWaitingForLocationAsync(Fixture fixture)
     {
         Assert.IsNull(fixture.ProtectedLocation!.Active);
@@ -365,7 +402,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
         public async Task LoadProvisionalLocationAsync()
         {
-            File.Copy(Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"), _configurationPath);
+            if (!File.Exists(_configurationPath))
+                File.Copy(Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"), _configurationPath);
             var configuration = await _loader!.LoadAsync(CancellationToken.None).WaitAsync(HarnessDeadline).ConfigureAwait(false);
             Assert.AreEqual(Location.LocationId, configuration.DeploymentLocation?.LocationId);
             Assert.IsNull(ProtectedLocation!.Active);
