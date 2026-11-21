@@ -63,7 +63,8 @@ public sealed partial class VirtualSkyPipelineTests
         var beforeOutage = await ObserveOutageAsync(async token =>
         {
             var backlog = await ReadStandardBacklogAsync(token).ConfigureAwait(false);
-            return backlog.PendingCount > 0 ? backlog : null;
+            // Lane PendingCount includes rows already leased, retrying or quarantined.
+            return CountWaiting(backlog) > 0 ? backlog : null;
         }, diagnostics).ConfigureAwait(false);
         Assert.AreEqual(1L, beforeOutage.LeasedCount);
 
@@ -117,11 +118,12 @@ public sealed partial class VirtualSkyPipelineTests
                 "A committed raw behind the held lease must not satisfy the preview predicate.");
             var backlog = await ReadStandardBacklogAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(1L, backlog.LeasedCount);
-            Assert.IsGreaterThan(0L, backlog.PendingCount);
+            Assert.IsGreaterThan(0L, CountWaiting(backlog));
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"outage checkpoint={checkpointUtc:O} watermark={watermark} preOutagePending={beforeOutage.PendingCount} "
-                + $"oldest={backlog.OldestPendingUtc:O} leased={backlog.LeasedCount} pending={backlog.PendingCount} "
-                + $"firstRetry={firstRetry} older={olderRaw.Descriptor.Capture.CaptureSequence} measured={measuredCapture.CaptureSequence}"));
+                $"outage checkpoint={checkpointUtc:O} watermark={watermark} preOutageWaiting={CountWaiting(beforeOutage)} "
+                + $"oldestUnfinished={backlog.OldestPendingUtc:O} leased={backlog.LeasedCount} waiting={CountWaiting(backlog)} "
+                + $"firstRetry={firstRetry.Attempt}/{firstRetry.Reason}@{firstRetry.RecordedUtc:O} "
+                + $"older={olderRaw.Descriptor.Capture.CaptureSequence} measured={measuredCapture.CaptureSequence}"));
 
             diagnostics.Stage = "published older and exact post-checkpoint previews during transport retry";
             gate.Release();
@@ -160,7 +162,8 @@ public sealed partial class VirtualSkyPipelineTests
             }, diagnostics).ConfigureAwait(false);
             Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"outage publication observed={publicationObservedUtc:O} older={olderRaw.Descriptor.Capture.CaptureId:D} "
-                + $"measured={raw.CaptureId:D} raw={raw.ArtifactId:D} preview={published.Measured.Descriptor.Artifact.ArtifactId:D} laterRetry={laterRetry}"));
+                + $"measured={raw.CaptureId:D} raw={raw.ArtifactId:D} preview={published.Measured.Descriptor.Artifact.ArtifactId:D} "
+                + $"laterRetry={laterRetry.Attempt}/{laterRetry.Reason}@{laterRetry.RecordedUtc:O}"));
         }
         finally
         {
@@ -182,6 +185,9 @@ public sealed partial class VirtualSkyPipelineTests
 
         async Task<CaptureLaneBacklog> ReadStandardBacklogAsync(CancellationToken token)
             => (await lanes.ReadBacklogsAsync(token).ConfigureAwait(false)).Single(static lane => lane.Lane == "standard");
+
+        static long CountWaiting(CaptureLaneBacklog backlog)
+            => backlog.PendingCount - backlog.LeasedCount - backlog.RetryCount - backlog.QuarantineCount;
 
         async Task<ArtifactManifestV2?> ReadOutagePreviewAsync(Guid executionId, CancellationToken token)
         {
