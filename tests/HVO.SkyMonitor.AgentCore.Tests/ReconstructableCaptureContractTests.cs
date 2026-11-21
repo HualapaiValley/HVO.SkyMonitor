@@ -370,7 +370,10 @@ public sealed class ReconstructableCaptureContractTests
         Assert.IsTrue(parse.IsValid);
         Assert.IsNotNull(parsed);
         Assert.AreEqual(evidence, parsedEvidence);
-        Assert.AreEqual(activeSetpointAppliedUtc, parsed!.Descriptor.Timing.SetpointAppliedUtc);
+        Assert.AreEqual(enriched.Descriptor.Timing, parsed.Descriptor.Timing);
+        Assert.AreEqual<CaptureCadenceMode?>(evidence.CadenceMode, parsed.Descriptor.RetainedCadenceMode);
+        Assert.IsNull(parsed.Descriptor.RetainedEffectiveInterval);
+        Assert.AreEqual(activeSetpointAppliedUtc, parsed.Descriptor.Timing.SetpointAppliedUtc);
         Assert.AreEqual(decidedSetpointAppliedUtc, parsedEvidence!.Decision.SetpointAppliedUtc);
         Assert.AreEqual(10d, parsedEvidence.Decision.ActiveTargetFps);
         Assert.AreEqual(12d, parsedEvidence.Decision.DecidedTargetFps);
@@ -1223,7 +1226,8 @@ public sealed class ReconstructableCaptureContractTests
     [TestMethod]
     public void CenteredAcquisitionRejectsInvalidObservedAndModuleReportingFacts()
     {
-        var descriptor = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]).Descriptor;
+        var manifest = CreateManifest(CameraPixelFormat.Mono16, 2, 2, 4, new byte[8]);
+        var descriptor = manifest.Descriptor;
         var setpoint = new CaptureSetpoint(TimeSpan.FromMilliseconds(20), 7, TimeSpan.FromSeconds(1), 2);
         var module = new CenteredModuleReportingEvidence(
             CaptureMode.Still, TimeSpan.FromSeconds(1), CaptureMode.Still, setpoint, TimeSpan.Zero, false);
@@ -1234,7 +1238,14 @@ public sealed class ReconstructableCaptureContractTests
             Module = module
         };
 
-        Assert.IsTrue((descriptor with { CenteredAcquisition = evidence }).Validate().IsValid);
+        var admitted = manifest with { Descriptor = descriptor with { CenteredAcquisition = evidence } };
+        Assert.IsTrue(admitted.Descriptor.Validate().IsValid);
+        var parsed = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(admitted));
+        Assert.IsTrue(parsed.IsValid);
+        var retained = parsed.Document?.Manifest;
+        Assert.IsNotNull(retained);
+        Assert.AreEqual<TimeSpan?>(evidence.EffectiveInterval, retained.Descriptor.RetainedEffectiveInterval);
+
         Assert.IsTrue((descriptor with { CenteredAcquisition = evidence with { EnvironmentalUnavailable = true, EnvironmentalBeforeCaptureSources = null } })
             .Validate().IsValid);
         Assert.AreEqual("descriptor.centeredAcquisition",

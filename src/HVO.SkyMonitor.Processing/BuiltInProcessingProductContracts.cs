@@ -26,13 +26,14 @@ internal static class BuiltInProcessingProductContracts
             JpegEncoding when primary is not null => primary.Role,
             Annotation or WeatherCloudOverlay => FrameArtifactRole.AnnotatedPreview,
             RollingMean => FrameArtifactRole.Combined,
-            ImageQuality or NoOpAnalyzer or CloudAssessment or ProjectedScene or AstrometryPrediction or MeasuredStellarAssociations or MeasuredAstrometry =>
+            ImageQuality or ExposureMeasurement or NoOpAnalyzer or CloudAssessment or ProjectedScene or AstrometryPrediction or MeasuredStellarAssociations or MeasuredAstrometry =>
                 FrameArtifactRole.Metadata,
             _ => throw new InvalidOperationException("The built-in recipe output contract is unavailable.")
         };
         IReadOnlyList<ProcessingArtifact> sources = request.RecipeName switch
         {
             MeasuredAstrometry when primary is not null => MeasuredAstrometryRecipe.Sources(request, primary),
+            ExposureMeasurement => request.Inputs,
             RollingMean => RollingMeanRecipe.SelectWindow(
                 ProcessingRecipeSupport.ResolveMany(request, out _),
                 ProcessingRecipeSupport.ParseOptions<RollingMeanOptions>(
@@ -106,6 +107,22 @@ internal static class BuiltInProcessingProductContracts
                 JpegImageCodec.ValidateJpeg(payload, cancellationToken);
             }
             catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or OverflowException)
+            {
+                return false;
+            }
+        }
+        if (string.Equals(request.RecipeName, ExposureMeasurement, StringComparison.Ordinal))
+        {
+            try
+            {
+                var recipe = BuiltInProcessingRecipes.CreateExecutionIdentity(
+                    request.RecipeName, request.Options, request.Input);
+                var measurement = ExposureMeasurementProducts.Read(contract.Role, request.OutputVariant, contract.Kind,
+                    contract.MediaType, contract.SchemaVersion, payload, contentIdentitySha256, recipe, contract.SourceArtifactIds);
+                return recipe.IdentitySha256 == recipeIdentitySha256 &&
+                    algorithms.SequenceEqual(ExposureMeasurementRecipe.Algorithms(measurement.Input));
+            }
+            catch (Exception exception) when (exception is ArgumentException or InvalidDataException or JsonException)
             {
                 return false;
             }
@@ -371,6 +388,10 @@ internal static class BuiltInProcessingProductContracts
                 "application/json",
                 [new("image-statistics", ImageStatisticsCalculator.AlgorithmVersion)],
                 primary),
+            ExposureMeasurement => new(ExposureMeasurementProducts.MediaType, false, null,
+                ExposureMeasurementProducts.SchemaVersion, true, null,
+                ExposureMeasurementRecipe.Algorithms(ExposureMeasurementRecipe.Input(identity)),
+                primary.Integration, primary.Compatibility, null, null),
             NoOpAnalyzer => MetadataDetails(
                 "application/json",
                 [new("no-op", "v1")],

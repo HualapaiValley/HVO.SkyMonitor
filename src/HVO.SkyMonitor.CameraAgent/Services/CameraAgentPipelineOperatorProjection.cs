@@ -1,6 +1,7 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -22,24 +23,29 @@ internal sealed record CameraAgentPipelineProfilePreview(
 
 internal static class CameraAgentPipelineOperatorProjection
 {
+    internal const string SystemManagedStepReason = "This step is managed by the centered capture profile.";
+
     internal static CameraAgentPipelineOperatorState CreateState(
         CaptureScheduleOperatorState state,
         CameraModuleConfig currentConfiguration,
-        ICaptureProcessingPipelineFactory pipelineFactory)
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs)
         => new(
-            CreateRevision(state.ActiveRevision, currentConfiguration, pipelineFactory),
+            CreateRevision(state.ActiveRevision, currentConfiguration, pipelineFactory, graphs),
             state.PendingRevision is null
                 ? null
-                : CreateRevision(state.PendingRevision, currentConfiguration, pipelineFactory));
+                : CreateRevision(state.PendingRevision, currentConfiguration, pipelineFactory, graphs));
 
     internal static CaptureProcessingPlanPreview Preview(
         LocalCaptureProfileDefinition profile,
         CameraModuleConfig currentConfiguration,
-        ICaptureProcessingPipelineFactory pipelineFactory)
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs)
     {
         ArgumentNullException.ThrowIfNull(profile);
         ArgumentNullException.ThrowIfNull(currentConfiguration);
         ArgumentNullException.ThrowIfNull(pipelineFactory);
+        ArgumentNullException.ThrowIfNull(graphs);
         var validation = LocalCaptureProfileContract.Validate(profile);
         if (!validation.IsValid)
         {
@@ -47,7 +53,7 @@ internal static class CameraAgentPipelineOperatorProjection
                 $"The local capture profile is invalid ({validation.FieldPath}).",
                 nameof(profile));
         }
-        return pipelineFactory.PreviewPlan(profile.ApplyTo(currentConfiguration));
+        return PreviewConfiguredProfile(profile, currentConfiguration, pipelineFactory, graphs);
     }
 
     internal static LocalCaptureProfileDefinition Toggle(
@@ -69,6 +75,11 @@ internal static class CameraAgentPipelineOperatorProjection
         {
             throw new InvalidOperationException("The processing node identifier is invalid.");
         }
+        if (profile.CenteredExposure is not null &&
+            ExposureMeasurementProducts.IsSystemManagedStepAlias(nodeId))
+        {
+            throw new InvalidOperationException(SystemManagedStepReason);
+        }
         var matches = profile.ProcessingSteps
             .Select((step, index) => (Step: step, Index: index))
             .Where(item => string.Equals(
@@ -79,6 +90,10 @@ internal static class CameraAgentPipelineOperatorProjection
         if (matches.Length != 1)
         {
             throw new InvalidOperationException("The processing node was not found in the desired graph.");
+        }
+        if (ExposureMeasurementProducts.IsSystemManagedStepAlias(matches[0].Step.Type))
+        {
+            throw new InvalidOperationException(SystemManagedStepReason);
         }
         var steps = profile.ProcessingSteps.ToArray();
         steps[matches[0].Index] = matches[0].Step with { Enabled = enabled };
@@ -100,6 +115,10 @@ internal static class CameraAgentPipelineOperatorProjection
         {
             return "The processing node was not found in the desired graph.";
         }
+        if (exception.Message == SystemManagedStepReason)
+        {
+            return SystemManagedStepReason;
+        }
         return exception.Message.Contains("dependency cycle", StringComparison.Ordinal)
             ? "The desired graph contains a dependency cycle."
             : "The desired graph is invalid for this CameraAgent.";
@@ -108,11 +127,17 @@ internal static class CameraAgentPipelineOperatorProjection
     private static CameraAgentPipelineRevisionPlan CreateRevision(
         CaptureScheduleRevisionSnapshot revision,
         CameraModuleConfig currentConfiguration,
-        ICaptureProcessingPipelineFactory pipelineFactory)
+        ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs)
         => new(
             revision.RevisionId,
             revision.RevisionNumber,
             revision.ProfileSha256,
             LocalCaptureProfileContract.Validate(revision.Profile).IsValid,
-            pipelineFactory.PreviewPlan(revision.Profile.ApplyTo(currentConfiguration)));
+            PreviewConfiguredProfile(revision.Profile, currentConfiguration, pipelineFactory, graphs));
+
+    private static CaptureProcessingPlanPreview PreviewConfiguredProfile(
+        LocalCaptureProfileDefinition profile, CameraModuleConfig currentConfiguration,
+        ICaptureProcessingPipelineFactory pipelineFactory, IProcessingGraphOperations graphs)
+        => pipelineFactory.PreviewPlan(graphs.ExpandConfiguredProfile(profile.ApplyTo(currentConfiguration)));
 }

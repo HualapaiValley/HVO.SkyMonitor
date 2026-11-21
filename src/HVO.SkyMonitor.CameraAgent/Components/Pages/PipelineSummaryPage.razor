@@ -3,6 +3,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.Processing
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -231,18 +232,21 @@ else
                         <div><dt>Recipe</dt><dd>@recipe</dd></div>
                     }
                 </dl>
-                <div class="pipeline-inspector-actions">
-                    @if (toggleReason is null)
-                    {
-                        <button type="button" id="@ToggleTriggerId" class="button secondary" disabled="@(_busy || _loading)" @onclick="OpenToggleAsync">@(selected.Enabled ? "Turn off step" : "Turn on step")</button>
-                    }
-                    else
-                    {
-                        <button type="button" id="@ToggleTriggerId" class="button secondary" title="@toggleReason" aria-describedby="pipeline-step-toggle-reason" disabled>@(selected.Enabled ? "Turn off step" : "Turn on step")</button>
-                        <p id="pipeline-step-toggle-reason" class="pipeline-toggle-reason">@toggleReason</p>
-                    }
-                </div>
-                <p class="ops-inspector-footnote">A change is saved as a new immutable revision and applied at the next capture boundary. Earlier revisions stay available in <a href="/operations/schedule">Schedule</a> for rollback.</p>
+                @if (!ExposureMeasurementProducts.IsSystemManagedStepAlias(selected.Alias))
+                {
+                    <div class="pipeline-inspector-actions">
+                        @if (toggleReason is null)
+                        {
+                            <button type="button" id="@ToggleTriggerId" class="button secondary" disabled="@(_busy || _loading)" @onclick="OpenToggleAsync">@(selected.Enabled ? "Turn off step" : "Turn on step")</button>
+                        }
+                        else
+                        {
+                            <button type="button" id="@ToggleTriggerId" class="button secondary" title="@toggleReason" aria-describedby="pipeline-step-toggle-reason" disabled>@(selected.Enabled ? "Turn off step" : "Turn on step")</button>
+                            <p id="pipeline-step-toggle-reason" class="pipeline-toggle-reason">@toggleReason</p>
+                        }
+                    </div>
+                    <p class="ops-inspector-footnote">A change is saved as a new immutable revision and applied at the next capture boundary. Earlier revisions stay available in <a href="/operations/schedule">Schedule</a> for rollback.</p>
+                }
             }
         </aside>
     </section>

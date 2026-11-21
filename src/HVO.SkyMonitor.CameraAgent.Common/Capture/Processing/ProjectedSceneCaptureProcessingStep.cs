@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
@@ -16,20 +15,23 @@ internal class ProjectedSceneCaptureProcessingStep(
     IProjectedSceneStagingReader stagingReader,
     CameraAgentRecipeExecutionAdapter adapter,
     CaptureMaintenanceGate? maintenance = null,
-    IServiceProvider? services = null)
+    IServiceProvider? services = null,
+    CenteredExposureSceneProvider? centeredScenes = null)
     : ConfigurableCaptureProcessingStep<ProjectedSceneCaptureProcessingStepOptions>(metadata, options),
        IDescriptorOnlyCaptureProcessingStep, ICaptureProcessingGraphStep, IDurableCaptureProcessingPostCommit,
        IFrozenAuxiliaryInputCaptureProcessingStep
 {
+    internal const string ExposurePredictionAlias = ExposureCatalogPredictionProducts.StepAlias;
     private const string StageInputName = "virtual-render-scene";
     private const string FrozenInputName = "frozen-projected-scene";
+    internal virtual bool IsExposurePrediction => false;
 
     public bool Enabled => true;
     internal virtual bool IsAstrometryPrediction => false;
     public string RecipeName => IsAstrometryPrediction
         ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene;
     public FrameArtifactRole OutputRole => FrameArtifactRole.Metadata;
-    public string OutputVariant => Options.OutputVariant;
+    public string OutputVariant => IsExposurePrediction ? ExposureCatalogPredictionProducts.Variant : Options.OutputVariant;
     // The producer declaration keeps its v1 family root; expanded consumer capabilities can change plan identity.
     // Actual products carry v3 for a curated collection, v2 for resolved footprints, otherwise v1.
     public string? OutputSchemaVersion => ProjectedSceneV1.CurrentSchemaVersion;
@@ -67,19 +69,33 @@ internal class ProjectedSceneCaptureProcessingStep(
                 return;
             }
             // The raw manifest declares the canonical render scene schema, not the supplemental prediction schema.
-            if (!IsAstrometryPrediction && provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
+            if (!IsAstrometryPrediction && !IsExposurePrediction && provenance?.ProjectedSceneSchemaVersion is { } declaredSchema &&
                 !string.Equals(declaredSchema, scene.SchemaVersion, StringComparison.Ordinal))
             {
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
                 return;
             }
             if ((IsAstrometryPrediction && scene.Kind != ProjectedSceneKind.Predicted) ||
-                (!IsAstrometryPrediction && virtualStage && scene.Kind != ProjectedSceneKind.VirtualRenderAuthoritative))
+                (!IsAstrometryPrediction && !IsExposurePrediction && virtualStage && scene.Kind != ProjectedSceneKind.VirtualRenderAuthoritative))
             {
                 context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
                 return;
             }
             context.RecordCanonicalInput(FrozenInputName, scene.SchemaVersion, scene.SceneIdentitySha256);
+        }
+        else if (IsExposurePrediction)
+        {
+            var facts = context.CenteredExposure is { } binding && centeredScenes is not null
+                ? await centeredScenes.ReadPredictionFactsAsync(new(binding.Source.Camera, binding.Source.RunId,
+                    descriptor.Capture.CaptureId), cancellationToken).ConfigureAwait(false) : null;
+            scene = facts is not null
+                ? await centeredScenes!.ResolvePredictionsAsync(facts, cancellationToken).ConfigureAwait(false) : null;
+            if (scene is null)
+            {
+                context.AddProcessingOutcome(ProcessingOutcome.Skipped("scene.frozen-prediction-input-unavailable"));
+                return;
+            }
+            context.RecordCanonicalInput("centered-catalog-prediction", scene.SchemaVersion, scene.SceneIdentitySha256);
         }
         else if (independentPrediction && context.CenteredExposure is null)
         {
@@ -94,12 +110,12 @@ internal class ProjectedSceneCaptureProcessingStep(
                 throw new InvalidDataException("Independent prediction requires the source output geometry.");
             var start = descriptor.Timing.ExposureStartedUtc;
             var end = ProcessingArtifact.ResolveObservationEndedUtc(start, descriptor.Timing.ExposureEndedUtc, descriptor.Controls.EffectiveExposure);
-            var request = new VisibleSceneRequest(start + TimeSpan.FromTicks((end - start).Ticks / 2),
+            var predictionRequest = new VisibleSceneRequest(start + TimeSpan.FromTicks((end - start).Ticks / 2),
                 new ObserverLocation(site.LatitudeDegrees, site.LongitudeDegrees, site.ElevationMeters), projection,
                 new CatalogQuery(Options.MaximumMagnitude, Options.MaximumResults), metadata.Metadata,
                 horizonPolicy: HorizonPolicy.GeometricHorizon, projectionVersion: context.Config.Rig.Optics.CalibrationVersion,
                 algorithmVersion: Options.AstronomyAlgorithmVersion);
-            var predicted = await new VisibleSceneBuilder(catalog).BuildAsync(request, cancellationToken).ConfigureAwait(false);
+            var predicted = await new VisibleSceneBuilder(catalog).BuildAsync(predictionRequest, cancellationToken).ConfigureAwait(false);
             scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predicted,
                 ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height), source,
                 context.Config.Rig.Optics.CalibrationVersion, context.Config.Rig.Optics.CalibrationVersion);
@@ -141,8 +157,8 @@ internal class ProjectedSceneCaptureProcessingStep(
         }
         else if (context.CenteredExposure is { } centered)
         {
-            var centeredScenes = services?.GetService<CenteredExposureSceneProvider>();
-            scene = centeredScenes is null ? null : await centeredScenes.ResolvePresentationAsync(
+            var sceneProvider = centeredScenes ?? services?.GetService<CenteredExposureSceneProvider>();
+            scene = sceneProvider is null ? null : await sceneProvider.ResolvePresentationAsync(
                 centered, descriptor, Options,
                 independentPrediction ? null : provenance?.VirtualExposure?.CelestialMidpointUtc,
                 cancellationToken).ConfigureAwait(false);
@@ -160,7 +176,6 @@ internal class ProjectedSceneCaptureProcessingStep(
             return;
         }
 
-        var payload = ProjectedSceneJson.Serialize(scene);
         var raw = new ProcessingArtifact(
             descriptor.Artifact.ArtifactId, FrameArtifactRole.Raw, descriptor.Artifact.Variant,
             ProcessingIdentity.CreateRecipeIdentity(descriptor.Artifact.Recipe).IdentitySha256,
@@ -174,22 +189,13 @@ internal class ProjectedSceneCaptureProcessingStep(
             CaptureId = descriptor.Capture.CaptureId,
             DescriptorIdentitySha256 = descriptorSha256
         };
-        var auxiliary = new ProcessingAuxiliaryInput(
-            "scene", ProcessingAuxiliaryInputKind.CanonicalJson, SchemaVersion: scene.SchemaVersion,
-            IdentitySha256: scene.SceneIdentitySha256, Payload: payload)
-        {
-            ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(payload)
-        };
-        var outcome = await context.ExecuteAsync(adapter, new ProcessingExecutionRequest(
-            RecipeName,
-            JsonSerializer.SerializeToElement(new Dictionary<string, object>()),
-            ProcessingInputSelector.Raw(descriptor.Artifact.Variant), [raw], Options.OutputVariant,
-            AuxiliaryInputs: [auxiliary], InputArtifactId: raw.ArtifactId), cancellationToken).ConfigureAwait(false);
-        if (context.IsReplayExecution && provenance?.RequiresProjectedScene == true &&
+        var request = ExposureCatalogPredictionProducts.Request(raw, scene) with { RecipeName = RecipeName, OutputVariant = OutputVariant };
+        var outcome = await context.ExecuteAsync(adapter, request, cancellationToken).ConfigureAwait(false);
+        if (context.IsReplayExecution && (IsExposurePrediction || IsAstrometryPrediction || provenance?.RequiresProjectedScene == true) &&
             outcome.Products.Any(product => !context.FrozenAuxiliaryInputs.Any(input =>
                 input.ArtifactId == ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256))))
         {
-            // Compact captures have one immutable geometry artifact, including across replay/configuration changes.
+            // The frozen geometry artifact is immutable across replay and configuration changes.
             context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure(ProcessingReasonCodes.InvalidProjectedScene));
             return;
         }
@@ -227,8 +233,8 @@ internal class ProjectedSceneCaptureProcessingStep(
             return false;
         }
         var frozen = candidates[0];
-        if (context.SceneProvenance?.RequiresProjectedScene == true &&
-            !string.Equals(frozen.Variant, Options.OutputVariant, StringComparison.Ordinal))
+        if ((IsExposurePrediction || context.SceneProvenance?.RequiresProjectedScene == true) &&
+            !string.Equals(frozen.Variant, OutputVariant, StringComparison.Ordinal))
         {
             failureReason = ProcessingReasonCodes.InvalidProjectedScene;
             return false;
@@ -240,7 +246,7 @@ internal class ProjectedSceneCaptureProcessingStep(
             failureReason = ProcessingReasonCodes.InvalidProjectedScene;
             return false;
         }
-        if (candidate.Source != source)
+        if (candidate.Source != source || IsExposurePrediction && candidate.Kind != ProjectedSceneKind.Predicted)
         {
             failureReason = ProcessingReasonCodes.ProjectedSceneSourceMismatch;
             return false;
@@ -257,7 +263,7 @@ internal class ProjectedSceneCaptureProcessingStep(
 
     public async ValueTask OnCommittedAsync(CaptureDescriptorProcessingContext context, CancellationToken cancellationToken)
     {
-        if (IsAstrometryPrediction || context.SceneProvenance is not
+        if (IsAstrometryPrediction || IsExposurePrediction || context.SceneProvenance is not
             {
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                 ProjectedSceneStageKey: { Length: 64 } stageKey
@@ -280,6 +286,15 @@ internal class ProjectedSceneCaptureProcessingStep(
         await stagingStore.DeleteCompletedAsync(stageKey, cancellationToken).ConfigureAwait(false);
     }
 
+}
+
+internal sealed class ExposureCatalogPredictionCaptureProcessingStep(
+    CaptureProcessingStepMetadata metadata, ProjectedSceneCaptureProcessingStepOptions options,
+    IProjectedSceneStagingStore stagingStore, IProjectedSceneStagingReader stagingReader,
+    CameraAgentRecipeExecutionAdapter adapter, CenteredExposureSceneProvider centeredScenes)
+    : ProjectedSceneCaptureProcessingStep(metadata, options, stagingStore, stagingReader, adapter, centeredScenes: centeredScenes)
+{
+    internal override bool IsExposurePrediction => true;
 }
 
 internal sealed class ProjectedSceneCaptureProcessingStepOptions : IValidatableObject

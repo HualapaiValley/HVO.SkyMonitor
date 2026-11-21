@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Services;
 
@@ -59,7 +60,8 @@ internal sealed class ProcessingGraphDraftModel
                 Enabled = step.Enabled ?? true,
                 DependsOn = new HashSet<string>(step.DependsOn ?? [], StringComparer.Ordinal),
                 Options = step.Options,
-                Publication = step.Publication
+                Publication = step.Publication,
+                SystemManagedStep = ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type) ? step : null
             });
         }
         // Compare the source projection, so merely opening a draft cannot change the graph.
@@ -84,8 +86,10 @@ internal sealed class ProcessingGraphDraftModel
     public void Remove(NodeRow node)
     {
         ArgumentNullException.ThrowIfNull(node);
+        if (node.IsSystemManaged)
+            return;
         Nodes.Remove(node);
-        foreach (var other in Nodes)
+        foreach (var other in Nodes.Where(static row => !row.IsSystemManaged))
         {
             other.DependsOn.Remove(node.Id);
         }
@@ -96,7 +100,7 @@ internal sealed class ProcessingGraphDraftModel
         ArgumentNullException.ThrowIfNull(node);
         var index = Nodes.IndexOf(node);
         var target = index + delta;
-        if (index < 0 || target < 0 || target >= Nodes.Count)
+        if (node.IsSystemManaged || index < 0 || target < 0 || target >= Nodes.Count)
         {
             return;
         }
@@ -114,12 +118,14 @@ internal sealed class ProcessingGraphDraftModel
         return [.. eligible, .. node.DependsOn.Where(dependency => !eligible.Contains(dependency, StringComparer.Ordinal)).OrderBy(static dependency => dependency, StringComparer.Ordinal)];
     }
 
-    /// <summary>Identifiers a node may depend on: the raw input and every node above it in the list.</summary>
+    /// <summary>Editable inputs follow list order. Generated inputs retain the compiler's dependency order.</summary>
     public IReadOnlyList<string> EligibleDependencies(NodeRow node)
     {
         ArgumentNullException.ThrowIfNull(node);
         var index = Nodes.IndexOf(node);
-        return [RawInput, .. Nodes.Take(Math.Max(index, 0)).Select(static row => row.Id.Trim()).Where(static id => id.Length > 0)];
+        return [RawInput, .. Nodes.Where((row, position) => position != index &&
+                (position < index || row.IsSystemManaged || node.IsSystemManaged))
+            .Select(static row => row.Id.Trim()).Where(static id => id.Length > 0)];
     }
 
     public bool TryBuild(out CapturePipelineConfig pipeline, out IReadOnlyList<string> errors)
@@ -156,10 +162,16 @@ internal sealed class ProcessingGraphDraftModel
             {
                 problems.Add($"Node '{node.Id}' needs a type.");
             }
+            if (node.IsSystemManaged && node.SystemManagedStep is null)
+            {
+                problems.Add($"Node '{node.Id}' is supplied by the centered capture profile.");
+            }
             var eligible = EligibleDependencies(node);
             foreach (var dependency in node.DependsOn.Where(dependency => !eligible.Contains(dependency, StringComparer.Ordinal)))
             {
-                problems.Add($"Node '{node.Id}' depends on '{dependency}', which is not the raw input or a node above it.");
+                problems.Add(node.IsSystemManaged
+                    ? $"The centered capture profile supplies '{node.Id}' with input '{dependency}', which is missing from this draft."
+                    : $"Node '{node.Id}' depends on '{dependency}', which is not the raw input or a node above it.");
             }
             if (node.DependsOn.Count == 0)
             {
@@ -177,15 +189,15 @@ internal sealed class ProcessingGraphDraftModel
             // Options and enable edits keep omitted order/id members and dependency ordering intact.
             pipeline = source with
             {
-                Steps = source.Steps.Select((step, index) => step with
+                Steps = source.Steps.Select((step, index) => Nodes[index].SystemManagedStep ?? (step with
                 {
                     Options = Nodes[index].BuildOptions(),
                     Enabled = Nodes[index].Enabled == (step.Enabled ?? true) ? step.Enabled : Nodes[index].Enabled
-                }).ToArray()
+                })).ToArray()
             };
             return true;
         }
-        var steps = Nodes.Select((node, index) => new CaptureProcessingStepConfig(
+        var steps = Nodes.Select((node, index) => node.SystemManagedStep ?? new CaptureProcessingStepConfig(
             node.Type.Trim(),
             node.Id.Trim(),
             (index + 1) * 10,
@@ -226,6 +238,8 @@ internal sealed class ProcessingGraphDraftModel
         public JsonElement? Options { get; init; }
         public CaptureProcessingPublicationPolicy? Publication { get; init; }
         public bool HasOptions => Options is not null;
+        public bool IsSystemManaged => ExposureMeasurementProducts.IsSystemManagedStepAlias(Type);
+        public CaptureProcessingStepConfig? SystemManagedStep { get; init; }
         private ProcessingNodeOptionsForm? _optionsForm;
         public ProcessingNodeOptionsForm? OptionsForm
         {

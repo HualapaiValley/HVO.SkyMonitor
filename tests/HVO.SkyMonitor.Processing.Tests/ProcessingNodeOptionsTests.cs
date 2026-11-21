@@ -59,7 +59,9 @@ public sealed partial class ProcessingNodeOptionsTests
         Assert.AreEqual(1, thickness.MinimumWholeNumber);
         Assert.AreEqual(8, thickness.MaximumWholeNumber);
         Assert.AreEqual("px", thickness.Unit);
-        Assert.HasCount(32, ProcessingNodeOptionsCatalog.BuiltIn.Descriptors);
+        var sceneVersions = ProcessingNodeOptionsCatalog.BuiltIn.Descriptors.Where(descriptor => descriptor.StepAlias == Scene.StepAlias)
+            .Select(static descriptor => descriptor.StepVersion).ToArray();
+        CollectionAssert.AreEquivalent(new[] { "projected-scene-presentation-v12-plain-circle-markers", SceneVersion }, sceneVersions);
         Assert.AreSame(CaptureAnalysisOptionDescriptors.Prediction,
             ProcessingNodeOptionsCatalog.BuiltIn.Resolve("AstrometryPrediction", "canonical-projected-scene-v1").Descriptor);
         Assert.HasCount(2, ProcessingNodeOptionsCatalog.BuiltIn.Upgrades);

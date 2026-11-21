@@ -1,4 +1,5 @@
 @using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing
+@using HVO.SkyMonitor.Processing
 
 <div class="plan-view">
     <dl class="plan-identity">
@@ -14,7 +15,7 @@
             <ol>
                 @foreach (var node in Plan.DesiredNodes)
                 {
-                    <li class="@(node.Enabled ? null : "plan-node--disabled")"><strong>@node.Id</strong><span>@node.Alias / @(node.Required ? "required" : "optional") / @(node.Enabled ? "enabled" : "disabled")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : node.Dependencies.Count == 0 ? "No declared dependencies" : $"depends on {string.Join(", ", node.Dependencies)}")</small></li>
+                    <li class="@(node.Enabled ? null : "plan-node--disabled")"><strong>@node.Id</strong><span>@node.Alias / @(ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? "System-managed step" : node.Required ? "required" : "optional") / @(node.Enabled ? "enabled" : "disabled")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : node.Dependencies.Count == 0 ? "No declared dependencies" : $"depends on {string.Join(", ", node.Dependencies)}")</small></li>
                 }
             </ol>
         </article>

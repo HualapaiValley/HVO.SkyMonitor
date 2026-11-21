@@ -1,14 +1,29 @@
+using System.Security.Claims;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Bunit;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Common.Transients;
 using HVO.SkyMonitor.CameraAgent.Components.Pages;
+using HVO.SkyMonitor.CameraAgent.Endpoints;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
+using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
+using HVO.SkyMonitor.Common.Security;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Components;
@@ -21,7 +36,501 @@ public sealed class PipelineSummaryPageTests
     private const string ToggleReason = "operator pipeline step toggle";
     private const string RawInput = "$raw";
     private static readonly DateTimeOffset Now = ProcessingExecutionPagesTests.Now;
+    private static readonly JsonSerializerOptions CompiledOptionsJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
     private static readonly string[] EdgeStageKeys = ["detector-input", "frame-window", "causal-scan", "persist-candidate", "centered-window", "assess"];
+
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ConfiguredExposureMeasurementUsesAdmissionProfileForApiAndPage(bool centered)
+    {
+        var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-measurement-operations");
+        try
+        {
+            using var provider = StoragePolicyRawIngressIntegrationTests.Provider(root);
+            var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
+            IEnumerable<CaptureProcessingStepConfig> analysis = centered
+                ? ProcessingGraphOperationsTests.RemainingOptionsPipeline(root).Steps.Where(static step =>
+                    step.Type is "ProjectedScene" or "MeasuredStellarAssociations" or "MeasuredAstrometry")
+                : [];
+            JsonElement? synthetic = centered ? JsonSerializer.SerializeToElement(new
+            {
+                strategy = "SyntheticReferences",
+                syntheticCalibration = new SyntheticCalibrationModelV1()
+            }) : null;
+            var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile with
+            {
+                CenteredExposure = centered ? new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) : null,
+                Pipeline = profile.Pipeline with
+                {
+                    Steps = [new("Calibration", "linear", Options: synthetic, DependsOn: [RawInput], Required: false), .. analysis, .. profile.Pipeline.Steps]
+                }
+            }).ConfigureAwait(false);
+            var runtime = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
+            var store = provider.GetRequiredService<SqliteCaptureScheduleStore>();
+            var factory = provider.GetRequiredService<ICaptureProcessingPipelineFactory>();
+            var accessor = provider.GetRequiredService<ICameraAgentConfigurationAccessor>();
+            var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
+            var state = await runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
+            var basis = state.ActiveRevision;
+            Assert.IsFalse(basis.Profile.ProcessingSteps.Any(step => step.Type == ExposureMeasurementProducts.StepAlias));
+            var pendingProfile = basis.Profile with
+            {
+                ProcessingSteps = [.. basis.Profile.ProcessingSteps.Select(step => step.Id == "linear" ? step with { Enabled = false } : step)]
+            };
+
+            var builder = WebApplication.CreateBuilder();
+            builder.Services.AddSingleton(runtime);
+            builder.Services.AddSingleton(store);
+            builder.Services.AddSingleton(factory);
+            builder.Services.AddSingleton(accessor);
+            builder.Services.AddSingleton(graphs);
+            builder.Services.AddSingleton<CameraAgentOperatorTelemetry>();
+            var host = builder.Build();
+            await using var hostLifetime = host.ConfigureAwait(false);
+            host.MapCameraAgentPipelineOperationsEndpoints();
+            host.MapCameraAgentScheduleOperationsEndpoints();
+            Task<(int Status, string Body)> InvokeAsync(string endpoint, string method, object? request,
+                Microsoft.AspNetCore.Routing.RouteValueDictionary? route, CancellationToken token) =>
+                CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync(
+                    host, endpoint, method, request, route, cancellationToken: token);
+            var original = await InvokeAsync("GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(200, original.Status, original.Body);
+            var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            var projection = JsonSerializer.Deserialize<CameraAgentPipelineOperatorState>(original.Body, json)!;
+            var registry = await graphs.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+            var admitted = await graphs.ReadRevisionPipelineAsync(registry.ConfiguredBasicRevisionId, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNotNull(admitted);
+            Assert.AreEqual(factory.PreviewPlan(active with { Pipeline = admitted }).EffectiveSha256,
+                projection.Active.Plan.EffectiveSha256);
+
+            using var telemetry = new CameraAgentOperatorTelemetry();
+            var authentication = new Mock<AuthenticationStateProvider>();
+            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(
+                new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity([new Claim(ClaimTypes.NameIdentifier, "fixture")], "fixture"))));
+            var authorization = new Mock<IAuthorizationService>();
+            authorization.Setup(service => service.AuthorizeAsync(It.IsAny<ClaimsPrincipal>(), It.IsAny<object?>(), It.IsAny<string>()))
+                .ReturnsAsync(AuthorizationResult.Success());
+            var ui = new CameraAgentScheduleUiService(authentication.Object, authorization.Object, runtime, store, accessor,
+                factory, telemetry, TimeProvider.System, NullLogger<CameraAgentScheduleUiService>.Instance, graphs);
+            var same = await ui.GetPipelineAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(projection.Active.Plan.EffectiveSha256, same.Value?.Active.Plan.EffectiveSha256);
+            var graphLog = new Mock<ILogger<CameraAgentProcessingGraphUiService>>();
+            var graphUi = new CameraAgentProcessingGraphUiService(authentication.Object, authorization.Object, graphs, factory,
+                accessor, runtime, TimeProvider.System, graphLog.Object);
+            var owner = new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "fixture"),
+                 new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                IdentityConstants.ApplicationScheme)));
+            using var context = CreateContext(ui);
+            var cut = context.Render<PipelineSummaryPage>();
+            cut.WaitForElement(".ops-pipeline-graph");
+            if (!centered)
+            {
+                Assert.IsFalse(projection.Active.Plan.EffectiveNodes.Any(node => node.Id == ExposureMeasurementProducts.StepAlias));
+                Assert.IsFalse(cut.Markup.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal));
+                await cut.Find(".ops-pipeline-node.step[title='linear']").ClickAsync().ConfigureAwait(false);
+                Assert.IsNotNull(cut.Find("#pipeline-step-toggle"));
+                authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(owner);
+                var sceneOptions = JsonSerializer.SerializeToElement(new { maximumResults = 1 });
+                var editable = admitted with
+                {
+                    Steps = [.. admitted.Steps, new("ProjectedScene", "legacy-scene", Options: sceneOptions,
+                        DependsOn: [RawInput], Required: false)]
+                };
+                var saved = await graphUi.CreateRevisionAsync("legacy-scene-options", "1", editable, "legacy-scene-create", null,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(saved.IsSuccess, saved.Message);
+                var reopened = await graphUi.GetRevisionDetailAsync(saved.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+                var scene = reopened.Value!.Pipeline.Steps.Single(step => step.Id == "legacy-scene");
+                Assert.AreEqual(1, scene.Options!.Value.GetProperty("maximumResults").GetInt32());
+                return;
+            }
+
+            var fixedStep = projection.Active.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
+            CollectionAssert.AreEqual(new[] { RawInput, "linear" }, fixedStep.Dependencies!.ToArray());
+            await cut.Find($".ops-pipeline-node.step[title='{ExposureMeasurementProducts.StepAlias}']").ClickAsync().ConfigureAwait(false);
+            Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
+            Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
+            Assert.Contains("linear", cut.Find(".ops-node-facts").TextContent);
+            Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
+
+            const string predictionAlias = ExposureCatalogPredictionProducts.StepAlias;
+            var prediction = projection.Active.Plan.EffectiveNodes.Single(node => node.Id == predictionAlias);
+            CollectionAssert.AreEqual(new[] { RawInput }, prediction.Dependencies!.ToArray());
+            await cut.Find($".ops-pipeline-node.step[title='{predictionAlias}']").ClickAsync().ConfigureAwait(false);
+            Assert.Contains("Fixed step", cut.Find(".ops-pipeline-inspector").TextContent);
+            Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
+            Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
+
+            var denied = await graphUi.CreateRevisionAsync("centered-options", "denied", admitted, "noncanonical-owner", null,
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Unauthorized, denied.Kind);
+            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(owner);
+            await AssertCenteredEditorAsync(ui, graphUi, active, factory, registry.ConfiguredBasicRevisionId, admitted, graphLog).ConfigureAwait(false);
+            await AssertCenteredScheduleAsync(ui).ConfigureAwait(false);
+            await AssertGeneratedOptionsAreProtectedAsync(provider, active, admitted, graphUi).ConfigureAwait(false);
+            await AssertCalibrationDraftOriginsAsync(provider, active, factory, graphUi, admitted, synthetic!.Value, registry).ConfigureAwait(false);
+
+            var toggle = await ui.TogglePipelineAsync(CameraAgentScheduleUiService.SerializeProfile(basis.Profile), basis.RevisionId,
+                ExposureMeasurementProducts.StepAlias, false, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(toggle.IsSuccess);
+            var predictionToggle = await ui.TogglePipelineAsync(CameraAgentScheduleUiService.SerializeProfile(basis.Profile), basis.RevisionId,
+                predictionAlias, false, CancellationToken.None).ConfigureAwait(false);
+            Assert.IsFalse(predictionToggle.IsSuccess);
+            Assert.AreEqual(CameraAgentPipelineOperatorProjection.SystemManagedStepReason, predictionToggle.Message);
+
+            var pending = await runtime.StageFromBasisAsync(pendingProfile, basis.RevisionId, "measurement-pending-profile",
+                state.StateVersion, "fixture", null, CancellationToken.None).ConfigureAwait(false);
+            var planned = await InvokeAsync("GetCameraAgentPipeline", "GET", null, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(200, planned.Status, planned.Body);
+            var stagedResponse = JsonSerializer.Deserialize<CameraAgentPipelineOperatorState>(planned.Body, json)!;
+            var staged = stagedResponse.Pending!.Plan.EffectiveNodes.Single(node => node.Id == ExposureMeasurementProducts.StepAlias);
+            CollectionAssert.AreEqual(new[] { RawInput }, staged.Dependencies!.ToArray());
+            var preview = await InvokeAsync("PreviewCameraAgentPipeline", "POST", new { Profile = pendingProfile, BasisRevisionId = basis.RevisionId },
+                null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(200, preview.Status, preview.Body);
+            Assert.AreEqual(stagedResponse.Pending.Plan.EffectiveSha256,
+                JsonSerializer.Deserialize<CaptureProcessingPlanPreview>(preview.Body, json)!.EffectiveSha256);
+
+            var disabled = basis.Profile with
+            {
+                ProcessingSteps = [.. basis.Profile.ProcessingSteps,
+                new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, DependsOn: [RawInput, "linear"], Enabled: false)]
+            };
+            var rejected = await InvokeAsync("StageCameraAgentSchedule", "POST", new
+            {
+                Profile = disabled,
+                BasisRevisionId = basis.RevisionId,
+                ExpectedVersion = pending.Version
+            }, null, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(422, rejected.Status, rejected.Body);
+            var unchanged = await runtime.GetOperatorStateAsync(CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(basis.RevisionId, unchanged.ActiveRevision.RevisionId);
+            Assert.AreEqual(pending.PendingRevision?.RevisionId, unchanged.PendingRevision?.RevisionId);
+            await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.CreateRevisionAsync("measurement-removed", "test", active.Pipeline,
+                    "measurement-removed", "fixture", null, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static async Task AssertCalibrationDraftOriginsAsync(ServiceProvider provider, CameraModuleConfig active,
+        ICaptureProcessingPipelineFactory factory, CameraAgentProcessingGraphUiService graphUi, CapturePipelineConfig admitted,
+        JsonElement synthetic, ProcessingGraphRegistryState registry)
+    {
+        var token = CancellationToken.None;
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var configured = await store.ReadRevisionAsync(registry.ConfiguredBasicRevisionId, token).ConfigureAwait(false);
+        Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(configured.Pipeline)[..16], configured.State.Revision);
+        Assert.IsTrue(CalibrationOptions(configured.Pipeline).GetProperty("useStoredLightCodes").GetBoolean());
+
+        var historicalDraft = Draft(synthetic);
+        var historicalId = await StoragePolicyRawIngressIntegrationTests.SeedLegacyRevisionAsync(provider, active,
+            historicalDraft, "historical-reference-options").ConfigureAwait(false);
+        var historical = await store.ReadRevisionAsync(historicalId, token).ConfigureAwait(false);
+        Assert.IsFalse(CalibrationOptions(historical.Pipeline).TryGetProperty("useStoredLightCodes", out _));
+        var historicalPreview = factory.PreviewPlan(active with { Pipeline = historical.Pipeline });
+
+        foreach (var strategy in new[] { "SyntheticReferences", "None", "CalibrationLibrary" })
+        {
+            var usesSynthetic = strategy == "SyntheticReferences";
+            var draft = usesSynthetic ? historicalDraft : Draft(JsonSerializer.SerializeToElement(new { strategy, useStoredLightCodes = true }));
+            var preview = await graphUi.PreviewAsync(draft, token).ConfigureAwait(false);
+            Assert.IsTrue(preview.IsSuccess, $"{strategy}: {preview.Message}");
+            Assert.IsNotNull(preview.Value);
+            var saved = await graphUi.CreateRevisionAsync("reference-option-origin", strategy, draft, "reference-" + strategy, null, token)
+                .ConfigureAwait(false);
+            Assert.IsTrue(saved.IsSuccess, $"{strategy}: {saved.Message}");
+            Assert.IsNotNull(saved.Value);
+            var reopened = await graphUi.GetRevisionDetailAsync(saved.Value.RevisionId, token).ConfigureAwait(false);
+            Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+            Assert.IsNotNull(reopened.Value?.Plan, reopened.Value?.PlanFailure);
+            Assert.AreEqual(preview.Value.DesiredSha256, reopened.Value.Plan.DesiredSha256, strategy);
+            Assert.AreEqual(preview.Value.EffectiveSha256, reopened.Value.Plan.EffectiveSha256, strategy);
+            var frozenOptions = CalibrationOptions(reopened.Value.Pipeline);
+            Assert.AreEqual(usesSynthetic, frozenOptions.TryGetProperty("useStoredLightCodes", out var option), strategy);
+            if (usesSynthetic)
+            {
+                Assert.IsTrue(option.GetBoolean());
+                Assert.AreNotEqual(historicalPreview.EffectiveSha256, preview.Value.EffectiveSha256);
+            }
+
+            var expected = IProcessingGraphOperations.PrepareAuthoredDraft(active with { Pipeline = draft });
+            var graph = factory.CreateGraph(expected);
+            try
+            {
+                var snapshot = await store.ReadRevisionAsync(saved.Value.RevisionId, token).ConfigureAwait(false);
+                Assert.IsTrue(snapshot.IsCompiledBy(graph), strategy);
+                Assert.IsNotNull(graph.SharedPlan);
+                Assert.AreEqual(graph.SharedPlan.DefinitionIdentitySha256, saved.Value.DefinitionIdentitySha256);
+                Assert.AreEqual(graph.SharedPlan.PlanIdentitySha256, saved.Value.SharedPlanIdentitySha256);
+                CollectionAssert.AreEqual(System.Text.Encoding.UTF8.GetBytes(graph.SharedPlan.CanonicalDefinition.GetRawText()), snapshot.DefinitionJson);
+            }
+            finally
+            {
+                graph.DisposeSteps();
+            }
+        }
+
+        var stillHistorical = await graphUi.GetRevisionDetailAsync(historicalId, token).ConfigureAwait(false);
+        Assert.IsTrue(stillHistorical.IsSuccess, stillHistorical.Message);
+        Assert.IsNotNull(stillHistorical.Value?.Plan, stillHistorical.Value?.PlanFailure);
+        Assert.AreEqual(historical.State.DefinitionIdentitySha256, stillHistorical.Value.State.DefinitionIdentitySha256);
+        Assert.AreEqual(historical.State.LocalPlanIdentitySha256, stillHistorical.Value.State.LocalPlanIdentitySha256);
+        Assert.AreEqual(historicalPreview.EffectiveSha256, stillHistorical.Value.Plan.EffectiveSha256);
+        Assert.IsFalse(CalibrationOptions(stillHistorical.Value.Pipeline).TryGetProperty("useStoredLightCodes", out _));
+
+        CapturePipelineConfig Draft(JsonElement options) => admitted with
+        {
+            Steps = admitted.Steps.Select(step => step.Id == "linear" ? step with { Options = options } : step).ToArray()
+        };
+
+        static JsonElement CalibrationOptions(CapturePipelineConfig pipeline)
+            => pipeline.Steps.Single(step => step.Id == "linear").Options!.Value;
+    }
+
+    private static async Task AssertGeneratedOptionsAreProtectedAsync(ServiceProvider provider, CameraModuleConfig active,
+        CapturePipelineConfig admitted, CameraAgentProcessingGraphUiService graphUi)
+    {
+        var token = CancellationToken.None;
+        var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
+        var craftedOptions = JsonSerializer.SerializeToElement(new { maximumResults = 1 });
+        foreach (var alias in new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias })
+        {
+            var changed = admitted with
+            {
+                Steps = [.. admitted.Steps.Select(step => step.Type == alias ? step with { Options = craftedOptions } : step)]
+            };
+            var before = await graphs.GetRegistryAsync(token).ConfigureAwait(false);
+            var result = await graphUi.CreateRevisionAsync("managed-probe", alias, changed, alias, null, token).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Conflict, result.Kind, alias);
+            Assert.IsNull(result.Value, alias);
+            AssertRegistryUnchanged(before, await graphs.GetRegistryAsync(token).ConfigureAwait(false));
+
+            // Seed a revision accepted by the old store so selection rechecks policy without changing history.
+            var historical = await StoragePolicyRawIngressIntegrationTests.SeedLegacyRevisionAsync(provider, active, changed,
+                "historical-" + alias).ConfigureAwait(false);
+            before = await graphs.GetRegistryAsync(token).ConfigureAwait(false);
+            var expectedReason = alias == ExposureMeasurementProducts.StepAlias ? "fixed exposure measurement" : "fixed, durable exposure catalog prediction";
+            var validation = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.ValidateRevisionAsync(historical, "revalidate-" + alias, "fixture", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.Contains(expectedReason, validation.Message);
+            AssertRegistryUnchanged(before, await graphs.GetRegistryAsync(token).ConfigureAwait(false));
+            var activation = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.ActivateRevisionAsync(historical, before.StateVersion, "reactivate-" + alias, "fixture", null, token)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.Contains(expectedReason, activation.Message);
+            AssertRegistryUnchanged(before, await graphs.GetRegistryAsync(token).ConfigureAwait(false));
+            var retained = await graphs.ReadRevisionPipelineAsync(historical, token).ConfigureAwait(false);
+            Assert.IsNotNull(retained);
+            Assert.AreEqual(craftedOptions.GetRawText(), retained.Steps.Single(step => step.Type == alias).Options!.Value.GetRawText());
+        }
+
+        var equivalent = admitted with
+        {
+            Steps = [.. admitted.Steps.Select(static step => step.Type switch
+            {
+                ExposureMeasurementProducts.StepAlias => step with
+                {
+                    Id = null, Order = null, Enabled = null, Options = JsonSerializer.SerializeToElement(new { }),
+                    DependsOn = step.DependsOn!.Select(static id => id.ToUpperInvariant()).ToArray()
+                },
+                ExposureCatalogPredictionProducts.StepAlias => step with
+                {
+                    Id = null, Order = ExposureMeasurementGraphPlan.PredictionDefaultOrder, Enabled = true,
+                    Options = JsonSerializer.SerializeToElement<object?>(null)
+                },
+                _ => step
+            })]
+        };
+        var accepted = await graphUi.CreateRevisionAsync("managed-defaults", "1", equivalent, "managed-defaults-create", null, token)
+            .ConfigureAwait(false);
+        Assert.IsTrue(accepted.IsSuccess, accepted.Message);
+        var validated = await graphUi.ValidateAsync(accepted.Value!.RevisionId, "managed-defaults-validate", null, token).ConfigureAwait(false);
+        Assert.IsTrue(validated.IsSuccess, validated.Message);
+    }
+
+    private static void AssertRegistryUnchanged(ProcessingGraphRegistryState expected, ProcessingGraphRegistryState actual)
+    {
+        Assert.AreEqual(expected.Mode, actual.Mode);
+        Assert.AreEqual(expected.ActiveRevisionId, actual.ActiveRevisionId);
+        Assert.AreEqual(expected.ConfiguredBasicRevisionId, actual.ConfiguredBasicRevisionId);
+        Assert.AreEqual(expected.StateVersion, actual.StateVersion);
+        CollectionAssert.AreEqual(expected.Revisions.ToArray(), actual.Revisions.ToArray());
+    }
+
+    private static async Task AssertCenteredEditorAsync(ICameraAgentScheduleUiService schedule, CameraAgentProcessingGraphUiService graphs,
+        CameraModuleConfig configuration, ICaptureProcessingPipelineFactory factory, string revisionId, CapturePipelineConfig admitted,
+        Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
+    {
+        OperatorUiResult<ProcessingGraphRevisionState>? saveResult = null;
+        var observed = new Mock<ICameraAgentProcessingGraphUiService>(MockBehavior.Strict);
+        observed.SetupGet(service => service.StepAliases).Returns(() => graphs.StepAliases);
+        observed.Setup(service => service.GetRevisionDetailAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns((string id, CancellationToken token) => graphs.GetRevisionDetailAsync(id, token));
+        observed.Setup(service => service.PreviewAsync(It.IsAny<CapturePipelineConfig>(), It.IsAny<CancellationToken>()))
+            .Returns((CapturePipelineConfig pipeline, CancellationToken token) => graphs.PreviewAsync(pipeline, token));
+        observed.Setup(service => service.CreateRevisionAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CapturePipelineConfig>(),
+                It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (string name, string revision, CapturePipelineConfig pipeline, string key, string? reason, CancellationToken token) =>
+                saveResult = await graphs.CreateRevisionAsync(name, revision, pipeline, key, reason, token).ConfigureAwait(false));
+        using var context = CreateContext(schedule, observed.Object);
+        var navigation = context.Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo($"/operations/pipeline/graphs/new?from={Uri.EscapeDataString(revisionId)}");
+        var editor = context.Render<ProcessingGraphEditorPage>();
+        editor.WaitForElement(".node-row");
+        var generated = admitted.Steps.Where(static step => ExposureMeasurementProducts.IsSystemManagedStepAlias(step.Type)).ToArray();
+        Assert.HasCount(2, generated);
+        foreach (var step in generated)
+        {
+            var row = editor.Find($".node-row[data-node-alias='{step.Type}']");
+            Assert.Contains("System-managed step", row.TextContent);
+            foreach (var dependency in step.DependsOn!)
+                Assert.Contains(dependency == RawInput ? "raw capture" : dependency, row.TextContent);
+            Assert.IsEmpty(row.QuerySelectorAll("input, select, button"));
+            Assert.IsEmpty(editor.FindAll($"select option[value='{step.Type}']"));
+        }
+        Assert.IsNotNull(editor.Find(".node-row[data-node-alias='Preview'] input[type='checkbox']"));
+
+        const string associationAlias = ExposureAssociationProducts.StepAlias;
+        const string fitAlias = ExposureAstrometryCaptureProcessingStep.CenteredAlias;
+        var associationOutput = editor.Find($".node-row[data-node-alias='{associationAlias}'] input[id$='-outputVariant']");
+        var stride = editor.Find($".node-row[data-node-alias='{fitAlias}'] input[id$='-captureStride']");
+        Assert.AreEqual(new MeasuredStellarAssociationProcessingStepOptions().OutputVariant, associationOutput.GetAttribute("value"));
+        Assert.AreEqual("60", stride.GetAttribute("value"));
+        await associationOutput.ChangeAsync(new ChangeEventArgs { Value = "verified-exposure-association" }).ConfigureAwait(false);
+        await stride.ChangeAsync(new ChangeEventArgs { Value = "120" }).ConfigureAwait(false);
+        await editor.Find($".node-row[data-node-alias='{fitAlias}'] input[id$='-outputVariant']")
+            .ChangeAsync(new ChangeEventArgs { Value = "verified-exposure-astrometry" }).ConfigureAwait(false);
+        await editor.FindAll("label").Single(static label => label.TextContent.StartsWith("Graph name", StringComparison.Ordinal))
+            .QuerySelector("input")!.ChangeAsync(new ChangeEventArgs { Value = "centered-options" }).ConfigureAwait(false);
+        await editor.Find("form").SubmitAsync().ConfigureAwait(false);
+        editor.WaitForElement(".editor-preview .plan-view");
+        var previewBanner = editor.Find(".editor-banner").TextContent;
+        var saveButton = editor.Find(".editor-actions .btn-primary");
+        var saveEnabled = !saveButton.HasAttribute("disabled");
+        Assert.IsTrue(saveEnabled, $"Save disabled after preview. Banner={previewBanner}; route={navigation.Uri}");
+        await saveButton.ClickAsync().ConfigureAwait(false);
+        var saveBanner = editor.FindAll(".editor-banner").SingleOrDefault()?.TextContent;
+        var saveTrace = $"Save enabled={saveEnabled}; preview={previewBanner}; result={saveResult?.Kind}: {saveResult?.Message}; route={navigation.Uri}; banner={saveBanner}; logs={GraphDiagnostics(graphLog)}";
+        Console.WriteLine(saveTrace);
+        Assert.IsNotNull(saveResult, saveTrace);
+        Assert.IsTrue(saveResult.IsSuccess, saveTrace);
+        var savedId = saveResult.Value!.RevisionId;
+        Assert.AreEqual($"/operations/pipeline/graphs/{Uri.EscapeDataString(savedId)}",
+            editor.FindAll(".editor-banner a").SingleOrDefault()?.GetAttribute("href"), saveTrace);
+        var saved = await graphs.GetRevisionDetailAsync(savedId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(saved.IsSuccess, saved.Message);
+        Assert.IsNotNull(saved.Value?.Plan);
+        var pipeline = saved.Value.Pipeline;
+        AssertGeneratedSteps(generated, pipeline);
+        await AssertStructuralRoundTripAsync(graphs, pipeline, generated, graphLog).ConfigureAwait(false);
+
+        var graph = factory.CreateGraph(configuration with { Pipeline = pipeline });
+        try
+        {
+            var association = graph.SharedPlan!.Nodes.Single(node => node.Definition.StepAlias == associationAlias).Definition;
+            var fit = graph.SharedPlan.Nodes.Single(node => node.Definition.StepAlias == fitAlias).Definition;
+            Assert.AreEqual(association.StepVersion, ProcessingNodeOptionsForm.DescriptorFor(associationAlias)?.StepVersion);
+            Assert.AreEqual(fit.StepVersion, ProcessingNodeOptionsForm.DescriptorFor(fitAlias)?.StepVersion);
+            Assert.AreEqual("verified-exposure-association", graph.Nodes.Single(node => node.Id == association.Id).OutputVariant);
+            var fitOptions = fit.EffectiveOptions.Deserialize<MeasuredAstrometryCaptureOptions>(CompiledOptionsJson);
+            Assert.AreEqual(120, fitOptions?.CaptureStride);
+            Assert.AreEqual("verified-exposure-astrometry", graph.Nodes.Single(node => node.Id == fit.Id).OutputVariant);
+            Assert.IsNotNull(fitOptions?.Catalog);
+        }
+        finally
+        {
+            graph.DisposeSteps();
+        }
+    }
+
+    private static async Task AssertStructuralRoundTripAsync(CameraAgentProcessingGraphUiService graphs,
+        CapturePipelineConfig pipeline, IReadOnlyList<CaptureProcessingStepConfig> generated,
+        Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
+    {
+        var model = ProcessingGraphDraftModel.FromPipeline(pipeline, null, "centered-structure", "1");
+        model.AddNode("Telemetry");
+        var telemetry = model.Nodes.Single(static node => node.Type == "Telemetry");
+        var storage = model.Nodes.Single(static node => node.Type == FileStorageCaptureProcessingStep.StableAlias);
+        telemetry.Required = false;
+        telemetry.ToggleDependency(ProcessingGraphDraftModel.RawInput, selected: false);
+        telemetry.ToggleDependency(storage.Id, selected: true);
+        Assert.IsTrue(model.TryBuild(out var added, out var addErrors), string.Join(' ', addErrors));
+        var addition = await graphs.CreateRevisionAsync(model.Name, model.Revision, added, "centered-add", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(addition.IsSuccess,
+            $"Add Telemetry: {addition.Kind}: {addition.Message}; logs={GraphDiagnostics(graphLog)}; step changes={DraftStepChanges(pipeline, added)}");
+        var reopened = await graphs.GetRevisionDetailAsync(addition.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+        Assert.IsNotNull(reopened.Value?.Plan);
+        var restoredTelemetry = reopened.Value.Pipeline.Steps.Single(static step => step.Type == "Telemetry");
+        Assert.IsFalse(restoredTelemetry.Required);
+        CollectionAssert.AreEqual(new[] { storage.Id }, restoredTelemetry.DependsOn!.ToArray());
+        AssertGeneratedSteps(generated, reopened.Value.Pipeline);
+
+        model = ProcessingGraphDraftModel.FromPipeline(reopened.Value.Pipeline, addition.Value.RevisionId, model.Name, "2");
+        model.Remove(model.Nodes.Single(static node => node.Type == "Telemetry"));
+        Assert.IsTrue(model.TryBuild(out var removed, out var removeErrors), string.Join(' ', removeErrors));
+        var removal = await graphs.CreateRevisionAsync(model.Name, model.Revision, removed, "centered-remove", null, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(removal.IsSuccess,
+            $"Remove Telemetry: {removal.Kind}: {removal.Message}; logs={GraphDiagnostics(graphLog)}; step changes={DraftStepChanges(reopened.Value.Pipeline, removed)}");
+        var final = await graphs.GetRevisionDetailAsync(removal.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
+        Assert.IsTrue(final.IsSuccess, final.Message);
+        Assert.IsNotNull(final.Value?.Plan);
+        Assert.IsFalse(final.Value.Pipeline.Steps.Any(static step => step.Type == "Telemetry"));
+        AssertGeneratedSteps(generated, final.Value.Pipeline);
+    }
+
+    private static string GraphDiagnostics(Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
+        => string.Join(" | ", graphLog.Invocations.Where(static call => call.Method.Name == nameof(ILogger.Log))
+            .Select(static call => $"{call.Arguments[0]} {call.Arguments[2]} {call.Arguments[3]}"));
+
+    private static string DraftStepChanges(CapturePipelineConfig prior, CapturePipelineConfig candidate)
+    {
+        var before = prior.Steps.ToDictionary(static step => step.Id ?? step.Type, static step => JsonSerializer.Serialize(step),
+            StringComparer.OrdinalIgnoreCase);
+        var after = candidate.Steps.ToDictionary(static step => step.Id ?? step.Type, static step => JsonSerializer.Serialize(step),
+            StringComparer.OrdinalIgnoreCase);
+        return string.Join(" | ", before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase)
+            .Select(id => (Id: id, Before: before.GetValueOrDefault(id), After: after.GetValueOrDefault(id)))
+            .Where(static step => step.Before != step.After)
+            .Select(static step => $"{step.Id} before={step.Before} after={step.After}"));
+    }
+
+    private static void AssertGeneratedSteps(IReadOnlyList<CaptureProcessingStepConfig> generated, CapturePipelineConfig pipeline)
+    {
+        Assert.AreEqual(4, pipeline.Steps.Single(step => step.Type == ExposureMeasurementProducts.StepAlias).Order);
+        foreach (var step in generated)
+            Assert.AreEqual(JsonSerializer.Serialize(step), JsonSerializer.Serialize(pipeline.Steps.Single(item => item.Type == step.Type)));
+    }
+
+    private static async Task AssertCenteredScheduleAsync(ICameraAgentScheduleUiService schedule)
+    {
+        using var context = CreateContext(schedule);
+        context.Services.AddSingleton(TimeProvider.System);
+        var page = context.Render<SchedulePage>();
+        await page.WaitForElement("#schedule-edit-open").ClickAsync().ConfigureAwait(false);
+        var processing = page.FindAll(".schedule-steps button").Single(static button => button.TextContent.EndsWith("Processing", StringComparison.Ordinal));
+        await processing.ClickAsync().ConfigureAwait(false);
+        var plan = page.Find("section[aria-labelledby='schedule-step-processing']");
+        Assert.IsFalse(plan.HasAttribute("hidden"));
+        foreach (var alias in new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias })
+        {
+            var row = page.Find($".pipeline-columns li[data-node-alias='{alias}']");
+            Assert.Contains("System-managed step", row.TextContent);
+            Assert.Contains(RawInput, row.TextContent);
+            Assert.IsEmpty(row.QuerySelectorAll("button"));
+        }
+        Assert.IsNotNull(page.Find(".pipeline-columns li[data-node-alias='Calibration'] button"));
+    }
 
     [TestMethod]
     public void Render_DrawsConfiguredGraphAndInspectsFirstStepWithoutOptionValues()
@@ -818,8 +1327,8 @@ public sealed class PipelineSummaryPageTests
     }
 
     private static BunitContext CreateContext(
-        PipelineScheduleService schedule,
-        ProcessingExecutionPagesTests.GraphUiService? graphs = null,
+        ICameraAgentScheduleUiService schedule,
+        ICameraAgentProcessingGraphUiService? graphs = null,
         OperatorUiResult<NamedRigUiCatalog>? rig = null,
         ProcessingGraphExecutionState[]? executions = null,
         OperatorUiResult<TransientOperationsView>? transients = null)

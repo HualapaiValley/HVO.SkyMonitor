@@ -62,7 +62,8 @@ public sealed class CaptureScheduleRuntimeCoordinator(
     ICaptureProcessingPipelineFactory pipelineFactory,
     TimeProvider timeProvider,
     ISolarEventCalculator? solarEventCalculator = null,
-    ICameraModuleConfigurationValidator? moduleConfigurationValidator = null) : IDisposable
+    ICameraModuleConfigurationValidator? moduleConfigurationValidator = null,
+    IProcessingGraphOperations? graphOperations = null) : IDisposable
 {
     private static readonly TimeSpan MaximumClosedPoll = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan MinimumPoll = TimeSpan.FromMilliseconds(1);
@@ -737,6 +738,7 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         {
             FileCameraAgentConfigurationLoader.ValidateConfig(configuration);
             _moduleConfigurationValidator?.Validate(configuration);
+            configuration = graphOperations?.ExpandConfiguredProfile(configuration) ?? configuration;
             var graph = activeProfile ? _pipelineFactory.CreateActiveProfileGraph(configuration) : _pipelineFactory.CreateGraph(configuration);
             graph.DisposeSteps();
         }

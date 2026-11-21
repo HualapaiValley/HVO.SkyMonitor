@@ -14,6 +14,7 @@ public static class BuiltInProcessingRecipes
     public const string Annotation = "annotation";
     public const string RollingMean = "rolling-mean";
     public const string ImageQuality = "image-quality";
+    public const string ExposureMeasurement = "exposure-measurement";
     public const string NoOpAnalyzer = "no-op-analyzer";
     public const string CloudAssessment = "cloud-assessment";
     public const string WeatherCloudOverlay = "weather-cloud-overlay";
@@ -115,6 +116,7 @@ public static class BuiltInProcessingRecipes
         new AnnotationRecipe(),
         new RollingMeanRecipe(),
         new ImageQualityRecipe(),
+        new ExposureMeasurementRecipe(),
         new NoOpAnalyzerRecipe(),
         new CloudAssessmentRecipe(),
         new WeatherCloudOverlayRecipe(),

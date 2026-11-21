@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -95,7 +96,7 @@ internal sealed class CalibrationCaptureProcessingStep(
                     inputs.AddRange(CalibrationReferenceKinds.All.Select(kind => bundle.References[kind]));
                     outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
                         BuiltInProcessingRecipes.ReferenceCalibration,
-                        JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions()),
+                        JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions(Options.UseStoredLightCodes)),
                         ProcessingInputSelector.Raw("source"),
                         inputs,
                         Options.OutputVariant,
@@ -273,6 +274,9 @@ public sealed class CalibrationProcessingStepOptions : IValidatableObject
 
     public SyntheticCalibrationModelV1? SyntheticCalibration { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool UseStoredLightCodes { get; init; }
+
     internal bool UsesSyntheticReferences => string.Equals(Strategy, "SyntheticReferences", StringComparison.Ordinal);
 
     internal bool UsesCalibrationLibrary => string.Equals(Strategy, "CalibrationLibrary", StringComparison.Ordinal);
@@ -298,6 +302,10 @@ public sealed class CalibrationProcessingStepOptions : IValidatableObject
             yield return new ValidationResult(
                 "A synthetic calibration model is only valid with SyntheticReferences.",
                 [nameof(SyntheticCalibration)]);
+        }
+        if (!UsesSyntheticReferences && UseStoredLightCodes)
+        {
+            yield return new ValidationResult("Stored light codes require synthetic calibration references.", [nameof(UseStoredLightCodes)]);
         }
     }
 }

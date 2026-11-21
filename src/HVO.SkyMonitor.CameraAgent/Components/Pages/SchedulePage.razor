@@ -7,6 +7,7 @@
 @using HVO.SkyMonitor.AgentCore
 @using HVO.SkyMonitor.CameraAgent.Common.Scheduling
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.Processing
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -462,7 +463,22 @@ else
                             <p class="editor-note">This revision uses legacy graph inference. Save a cameraagent-local-profile-v2 revision before using step toggles.</p>
                         }
                         <div class="pipeline-columns">
-                            <article><h5>Desired graph</h5><ol>@foreach (var node in _pipelinePlan.DesiredNodes) { <li><div><strong>@node.Id</strong><span>@node.Alias / @(node.Required ? "required" : "optional")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : string.Join(" <- ", node.Dependencies))</small></div><button type="button" class="button secondary small" disabled="@(_busy || !_pipelineCanToggle)" @onclick="() => TogglePipelineAsync(node.Id, !node.Enabled)">@(node.Enabled ? "Disable" : "Enable")</button></li> }</ol></article>
+                            <article>
+                                <h5>Desired graph</h5>
+                                <ol>
+                                    @foreach (var node in _pipelinePlan.DesiredNodes)
+                                    {
+                                        var managed = ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias);
+                                        <li data-node-alias="@node.Alias">
+                                            <div><strong>@node.Id</strong><span>@node.Alias / @(managed ? "System-managed step" : node.Required ? "required" : "optional")</span><small>@(node.Dependencies is null ? "Dependencies unavailable" : string.Join(" <- ", node.Dependencies))</small></div>
+                                            @if (!managed)
+                                            {
+                                                <button type="button" class="button secondary small" disabled="@(_busy || !_pipelineCanToggle)" @onclick="() => TogglePipelineAsync(node.Id, !node.Enabled)">@(node.Enabled ? "Disable" : "Enable")</button>
+                                            }
+                                        </li>
+                                    }
+                                </ol>
+                            </article>
                             <article><h5>Effective graph</h5><ol>@foreach (var node in _pipelinePlan.EffectiveNodes) { <li><div><strong>@node.Id</strong><span>@(node.OutputRole is null ? "Infrastructure" : $"{node.OutputRole}/{node.OutputVariant}")</span><small>@(node.Dependencies is null ? "No declared dependencies" : string.Join(" <- ", node.Dependencies))</small></div></li> }</ol></article>
                         </div>
                     }
