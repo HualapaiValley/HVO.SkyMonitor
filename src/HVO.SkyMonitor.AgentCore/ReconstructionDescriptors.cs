@@ -197,6 +197,9 @@ public sealed record ReconstructionDescriptor(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CaptureCycleEvidence? CycleEvidence { get; init; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredCaptureAcquisitionEvidence? CenteredAcquisition { get; init; }
+
     public CaptureContractValidationResult Validate()
         => ReconstructionDescriptorValidator.Validate(this);
 }
@@ -247,6 +250,30 @@ internal static class ReconstructionDescriptorValidator
         {
             return cycleEvidenceResult;
         }
+        var acquisition = descriptor.CenteredAcquisition;
+        if (acquisition is not null && (descriptor.CycleEvidence is not null ||
+            !Enum.IsDefined(acquisition.CadenceMode) || acquisition.EffectiveInterval <= TimeSpan.Zero ||
+            acquisition.ModuleDuration < TimeSpan.Zero || !IsUtc(acquisition.ModuleCallStartedUtc) ||
+            acquisition.AcquisitionAttemptId == Guid.Empty ||
+            acquisition.EnvironmentalUnavailable && acquisition.AcquisitionAttemptId is null ||
+            acquisition.EnvironmentalBeforeCaptureSources is { } acquisitionSources &&
+                (acquisition.AcquisitionAttemptId is null || acquisitionSources.Count is 0 or > 128 ||
+                 acquisitionSources.Any(source => string.IsNullOrWhiteSpace(source) || source.Length > 128) ||
+                 acquisitionSources.Distinct(StringComparer.Ordinal).Count() != acquisitionSources.Count)))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition");
+        }
+        if (acquisition?.Module is { } reporting &&
+            (!Enum.IsDefined(reporting.RequestMode) || !Enum.IsDefined(reporting.ResultMode) ||
+             reporting.RequestedInterval <= TimeSpan.Zero || reporting.ProcessingLatency < TimeSpan.Zero ||
+             reporting.ReportedSetpoint is not { Exposure.Ticks: > 0 } setpoint ||
+             !double.IsFinite(setpoint.Gain) || setpoint.Gain < 0 ||
+             !IsFinitePositive(setpoint.TargetFps) || setpoint.NextIntervalOverride is { Ticks: <= 0 }))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition.module");
+        }
+        var centeredSchedule = CaptureScheduleContract.ValidateAdmissionEvidence(acquisition?.ScheduleAdmission);
+        if (!centeredSchedule.IsValid) return centeredSchedule;
 
         var locationResult = descriptor.Location?.Validate() ?? CaptureContractValidationResult.Success;
         if (!locationResult.IsValid)
@@ -259,7 +286,7 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidLocationInterval, "descriptor.location.effectiveInterval");
         }
-        if (descriptor.CycleEvidence?.ScheduleAdmission is { } scheduleAdmission &&
+        if ((acquisition?.ScheduleAdmission ?? descriptor.CycleEvidence?.ScheduleAdmission) is { } scheduleAdmission &&
             (descriptor.Location is null ||
              !string.Equals(
                  scheduleAdmission.DeploymentLocationId,
@@ -268,7 +295,7 @@ internal static class ReconstructionDescriptorValidator
              scheduleAdmission.DeploymentLocationVersion != descriptor.Location.Version ||
              descriptor.Timing.ExposureStartedUtc < scheduleAdmission.EffectiveStartUtc ||
              descriptor.Timing.ExposureStartedUtc >= scheduleAdmission.EffectiveEndUtc ||
-             scheduleAdmission.DecisionUtc > descriptor.CycleEvidence.ModuleCallStartedUtc))
+             scheduleAdmission.DecisionUtc > (acquisition?.ModuleCallStartedUtc ?? descriptor.CycleEvidence!.ModuleCallStartedUtc)))
         {
             return Failure(CaptureContractReasonCodes.InvalidSchedule, "descriptor.cycleEvidence.scheduleAdmission");
         }

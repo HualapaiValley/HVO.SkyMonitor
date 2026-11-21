@@ -129,11 +129,31 @@ public sealed class CameraCaptureService(
                 module = _moduleFactory.Create(config.ModuleType);
                 await _rawCaptureIngress.InitializeAsync(captureToken).ConfigureAwait(false);
                 await _captureAdmissionCoordinator.InitializeAsync(captureToken).ConfigureAwait(false);
-                if (_rawCaptureIngress is RawCaptureIngress durableIngress)
-                    await durableIngress.ReconcileCenteredControlAsync(config, captureToken).ConfigureAwait(false);
-                if (config.CenteredExposure is not null && module is not ICameraBoundExposureCapture)
-                    throw new InvalidOperationException("The selected camera cannot bind centered exposure attempts.");
-                await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
+                var durableIngress = _rawCaptureIngress as RawCaptureIngress;
+                if (config.CenteredExposure is not null && (durableIngress is null || module is not ICameraBoundExposureCapture))
+                    throw new InvalidOperationException("The selected camera cannot bind durable centered exposure attempts.");
+                if (config.CenteredExposure is { } centeredProfile && (!centeredProfile.IsValid() ||
+                    string.IsNullOrWhiteSpace(config.AgentId) || config.DeploymentLocation is null))
+                    throw new InvalidOperationException("Centered exposure requires a valid camera identity and authorized site.");
+                var transition = durableIngress is not null && config.AgentId is { } agentId
+                    ? await durableIngress.FenceCenteredOwnerAsync(agentId, config.CenteredExposure?.CameraId,
+                        config.CenteredExposure is null ? null : CaptureContractJson.ComputeCanonicalJsonSha256(config), captureToken)
+                        .ConfigureAwait(false)
+                    : null;
+                string? deviceIdentity = null;
+                if (config.CenteredExposure is not null && transition is { } attachment &&
+                    module is ICameraBoundExposureCapture bound)
+                {
+                    await bound.InitializeBoundAsync(config, async (identity, token) =>
+                    {
+                        await durableIngress!.FenceCenteredDeviceAsync(attachment, identity, token).ConfigureAwait(false);
+                        deviceIdentity = identity;
+                    }, captureToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
+                }
                 if (prepared is not null)
                 {
                     try
@@ -159,6 +179,8 @@ public sealed class CameraCaptureService(
                         throw;
                     }
                 }
+                if (transition is not null)
+                    await durableIngress!.ActivateCenteredOwnerAsync(transition, captureToken).ConfigureAwait(false);
                 moduleInitialized = true;
                 startupPending = null;
                 if (prepared is not null)
@@ -170,7 +192,8 @@ public sealed class CameraCaptureService(
 
                 var hostContext = new CaptureHostContext(
                      config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
-                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger, calibrationLibrary);
+                     _projectedSceneStaging, _projectedSceneLifecycle, _projectedSceneStager, _logger, calibrationLibrary,
+                     deviceIdentity, transition);
 
                 var runner = new CameraModuleRunner(
                     module,

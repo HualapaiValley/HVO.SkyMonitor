@@ -430,7 +430,8 @@ internal sealed partial class CaptureProcessingPersistence(
                         $"processing-deletion-tombstones/{Guid.NewGuid():N}", "retention-expired",
                         sourcePaths.Where(File.Exists).Sum(static path => new FileInfo(path).Length),
                         _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
-                    await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false);
+                    if (!await _store.PlanLifecycleOperationAsync(operation, cancellationToken).ConfigureAwait(false))
+                        continue;
                     await reconciler.ResumeOperationAsync(operation, cancellationToken).ConfigureAwait(false);
                     deletedFiles += sourcePaths.Length;
                 }
@@ -794,7 +795,8 @@ internal sealed partial class CaptureProcessingPersistence(
             }
             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterOutputsPublishedBeforeNodeCommit, node.Id);
             var inputEvidence = context.GetCurrentInputEvidence();
-            var centeredProducts = execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
+            var centeredProducts = rawCapture.Manifest.CenteredExposure is not null &&
+                execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
                 ? CenteredExposureProductReader.CreateSettlements(rawCapture.Manifest, node, status, reason, outputs, inputEvidence)
                 : null;
             await _store.WriteNodeAsync(

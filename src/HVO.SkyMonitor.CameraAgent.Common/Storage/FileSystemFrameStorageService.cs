@@ -6,6 +6,7 @@ using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using Microsoft.Extensions.Logging;
+using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
@@ -465,6 +466,35 @@ public sealed class FileSystemFrameStorageService(
         }
 
         storageRoot = Path.GetFullPath(storageRoot);
+        using var journal = OpenCenteredBrowseJournal(storageRoot);
+        using var visibility = journal?.CreateCommand();
+        if (visibility is not null)
+        {
+            using var schema = journal!.CreateCommand();
+            schema.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('processing_outputs', 'processing_execution_outputs');";
+            if (schema.ExecuteScalar() is 2L)
+            {
+                visibility.CommandText = """
+                    SELECT NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture)
+                       OR EXISTS (
+                           SELECT 1 FROM processing_outputs output
+                           JOIN processing_execution_outputs association
+                             ON association.output_identity_sha256 = output.output_identity_sha256
+                           WHERE output.capture_id = $capture AND output.artifact_id = $artifact
+                             AND output.payload_relative_path = $path AND output.availability_state = 'Available'
+                             AND association.published_flag = 1
+                       );
+                    """;
+            }
+            else
+            {
+                visibility.CommandText = "SELECT NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture);";
+            }
+            visibility.Parameters.Add("$capture", SqliteType.Text);
+            visibility.Parameters.Add("$artifact", SqliteType.Text);
+            visibility.Parameters.Add("$path", SqliteType.Text);
+        }
+
         var references = new List<StoredFrameCandidate>();
         var seenArtifactIds = new HashSet<Guid>();
         var indexGate = FrameIndexLock.ForRoot(storageRoot);
@@ -507,7 +537,8 @@ public sealed class FileSystemFrameStorageService(
                 if (payloadPath is null || metadataPath is null || !File.Exists(metadataPath) ||
                     !TryReadMetadataFile(metadataPath, out var sidecarMetadata, out var versionedBinding) ||
                     !Matches(indexedMetadata, sidecarMetadata) ||
-                    versionedBinding is not null && !MatchesVersionedBinding(storageRoot, payloadPath, versionedBinding))
+                    versionedBinding is not null && (!MatchesVersionedBinding(storageRoot, payloadPath, versionedBinding) ||
+                        !IsPublishedForCompatibility(visibility, versionedBinding, indexedMetadata.ArtifactId)))
                 {
                     _logger.FrameBrowseEntrySkipped(indexPath);
                     continue;
@@ -572,7 +603,9 @@ public sealed class FileSystemFrameStorageService(
                 null);
             versionedBinding = new VersionedSidecarBinding(
                 manifest.RelativeArtifactPath,
-                descriptor.Layout.ByteLength);
+                descriptor.Layout.ByteLength,
+                descriptor.Capture.CaptureId,
+                manifest.ProducerStepId is not null);
             return true;
         }
         catch (JsonException)
@@ -585,6 +618,50 @@ public sealed class FileSystemFrameStorageService(
             metadata = null!;
             return false;
         }
+    }
+
+    private static SqliteConnection? OpenCenteredBrowseJournal(string root)
+    {
+        var path = Path.Combine(root, "journal", "raw-ingress.db");
+        if (!File.Exists(path))
+            return null;
+
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, path);
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, path + "-wal");
+        RawIngressFileStore.EnsureNoSymbolicLinks(root, path + "-shm");
+        SqliteConnection? owned = new(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            DefaultTimeout = 1
+        }.ToString());
+        try
+        {
+            owned.Open();
+            using var command = owned.CreateCommand();
+            command.CommandText = "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'centered_exposure_attempts');";
+            if (command.ExecuteScalar() is not 1L)
+                return null;
+
+            var result = owned;
+            owned = null;
+            return result;
+        }
+        finally
+        {
+            owned?.Dispose();
+        }
+    }
+
+    private static bool IsPublishedForCompatibility(
+        SqliteCommand? visibility, VersionedSidecarBinding binding, Guid artifactId)
+    {
+        if (visibility is null || !binding.HasProducer)
+            return true;
+        visibility.Parameters["$capture"].Value = binding.CaptureId.ToString("N");
+        visibility.Parameters["$artifact"].Value = artifactId.ToString("N");
+        visibility.Parameters["$path"].Value = binding.RelativeArtifactPath.Replace('\\', '/');
+        return visibility.ExecuteScalar() is 1L;
     }
 
     private static bool MatchesVersionedBinding(
@@ -731,7 +808,8 @@ public sealed class FileSystemFrameStorageService(
 
     private sealed record StoredFrameCandidate(StoredFrameReference Reference, Guid ArtifactId);
 
-    private sealed record VersionedSidecarBinding(string RelativeArtifactPath, long ByteLength);
+    private sealed record VersionedSidecarBinding(
+        string RelativeArtifactPath, long ByteLength, Guid CaptureId, bool HasProducer);
 
     public void Dispose() => GC.SuppressFinalize(this);
 

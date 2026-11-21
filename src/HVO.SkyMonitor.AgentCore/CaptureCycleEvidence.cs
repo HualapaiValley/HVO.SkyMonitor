@@ -2,6 +2,30 @@ using System.Text.Json.Serialization;
 
 namespace HVO.SkyMonitor.AgentCore;
 
+/// <summary>Observed acquisition facts without a control decision for a later exposure.</summary>
+public sealed record CenteredCaptureAcquisitionEvidence(
+    CaptureCadenceMode CadenceMode,
+    TimeSpan EffectiveInterval,
+    DateTimeOffset ModuleCallStartedUtc,
+    TimeSpan ModuleDuration,
+    Guid? AcquisitionAttemptId,
+    bool EnvironmentalUnavailable,
+    IReadOnlyList<string>? EnvironmentalBeforeCaptureSources,
+    CaptureScheduleAdmissionEvidence? ScheduleAdmission)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredModuleReportingEvidence? Module { get; init; }
+}
+
+/// <summary>Module-reported facts retained for downstream capture telemetry.</summary>
+public sealed record CenteredModuleReportingEvidence(
+    CaptureMode RequestMode,
+    TimeSpan RequestedInterval,
+    CaptureMode ResultMode,
+    CaptureSetpoint ReportedSetpoint,
+    TimeSpan ProcessingLatency,
+    bool RequiresImmediateUpload);
+
 /// <summary>Identifies why a camera module call began.</summary>
 public enum CaptureStartReason
 {

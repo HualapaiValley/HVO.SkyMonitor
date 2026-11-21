@@ -15,17 +15,25 @@ internal sealed record CenteredRunSnapshot(
     CenteredSceneResources SceneResources,
     string? LinearNodeId,
     string? LinearVariant,
-    CenteredCalibrationBinding? Calibration)
+    CenteredCalibrationBinding? Calibration,
+    string? DeviceIdentity = null,
+    CenteredScheduleBinding? Schedule = null)
 {
     internal byte[] Serialize() => JsonSerializer.SerializeToUtf8Bytes(this);
 }
 
 internal sealed record CenteredCalibrationBinding(string BundleId, string BundleIdentitySha256, long StateVersion);
 
+internal sealed record CenteredScheduleBinding(
+    string Revision, string LocalProfile, string Profile, string Interval, string? Override, CaptureCadenceMode Cadence);
+
+internal sealed record CenteredOwnerTransition(string AgentId, string? CameraId, Guid AttachmentId);
+
 internal sealed record CenteredPendingAttempt(
     ExposureAttemptKey Key, CenteredRunSnapshot Run, string RunHash, Guid? SourceCaptureId);
 
-internal sealed record CenteredRawEvidence(ArtifactManifestV2 Manifest, string ManifestSha256, CenteredRunSnapshot Run);
+internal sealed record CenteredRawEvidence(
+    ArtifactManifestV2 Manifest, string ManifestSha256, CenteredRunSnapshot Run, bool IsCommitted);
 
 internal sealed record CenteredJournalRuntime(
     CenteredRunSnapshot Run, bool IsOpen, CenteredAcquisitionHead? Head, CenteredRuntimeHolds Holds);
@@ -35,6 +43,14 @@ internal sealed partial class SqliteRawCaptureJournal
     private const int MaximumOpenCenteredRuns = 32;
 
     internal const string CenteredSchemaSql = """
+        CREATE TABLE centered_acquisition_owners (
+            agent_id TEXT PRIMARY KEY,
+            camera_id TEXT,
+            attachment_id TEXT NOT NULL,
+            profile_identity TEXT,
+            device_identity TEXT,
+            active_flag INTEGER NOT NULL CHECK (active_flag IN (0, 1))
+        );
         CREATE TABLE centered_exposure_runs (
             run_id TEXT PRIMARY KEY,
             agent_id TEXT NOT NULL,
@@ -42,6 +58,9 @@ internal sealed partial class SqliteRawCaptureJournal
             snapshot_json BLOB NOT NULL,
             snapshot_sha256 TEXT NOT NULL,
             calibration_bundle_id TEXT,
+            device_identity TEXT,
+            linear_node_id TEXT,
+            linear_variant TEXT,
             closed_reason TEXT
         );
         CREATE UNIQUE INDEX ux_centered_open_run ON centered_exposure_runs(agent_id, camera_id)
@@ -62,19 +81,24 @@ internal sealed partial class SqliteRawCaptureJournal
             WHERE status = 'pending';
         CREATE TABLE centered_exposure_products (
             revision INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL,
+            camera_id TEXT NOT NULL,
             capture_id TEXT NOT NULL,
             execution_id TEXT NOT NULL,
             producer TEXT NOT NULL,
             schema_version TEXT NOT NULL,
             variant TEXT NOT NULL,
             output_identity TEXT,
+            artifact_id TEXT,
             payload_sha256 TEXT,
+            content_identity_sha256 TEXT,
             disposition TEXT NOT NULL,
             reason TEXT,
             provenance_json BLOB,
             UNIQUE (capture_id, execution_id, producer, schema_version, variant)
         );
         CREATE INDEX ix_centered_product_capture ON centered_exposure_products(capture_id, revision);
+        CREATE INDEX ix_centered_product_camera ON centered_exposure_products(agent_id, camera_id, revision);
         CREATE TABLE centered_exposure_holds (
             owner_id TEXT PRIMARY KEY,
             capture_id TEXT NOT NULL,
@@ -86,30 +110,38 @@ internal sealed partial class SqliteRawCaptureJournal
         """;
 
     internal async Task ExpireCenteredRunsAsync(
-        string agentId, string? cameraId, string reason, bool uncertainOnly, CancellationToken cancellationToken)
+        string agentId, string cameraId, string reason, bool uncertainOnly, CancellationToken cancellationToken)
     {
-        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath);
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
+        await ExpireCenteredRunsAsync(connection, transaction, agentId, cameraId, reason, uncertainOnly, cancellationToken)
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ExpireCenteredRunsAsync(
+        SqliteConnection connection, SqliteTransaction transaction, string agentId, string cameraId,
+        string reason, bool uncertainOnly, CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
             UPDATE centered_exposure_runs SET closed_reason = $reason
-            WHERE closed_reason IS NULL AND agent_id = $agent AND ($camera IS NULL OR camera_id = $camera)
+            WHERE closed_reason IS NULL AND agent_id = $agent AND camera_id = $camera
                 AND ($uncertain_only = 0 OR EXISTS (
                     SELECT 1 FROM centered_exposure_attempts
                     WHERE run_id = centered_exposure_runs.run_id AND status = 'dispatched'));
             UPDATE centered_exposure_attempts SET status = 'expired', reason = $reason
             WHERE status IN ('pending', 'dispatched') AND run_id IN (
                 SELECT run_id FROM centered_exposure_runs WHERE closed_reason IS NOT NULL
-                AND agent_id = $agent AND ($camera IS NULL OR camera_id = $camera));
+                AND agent_id = $agent AND camera_id = $camera);
             """;
         command.Parameters.AddWithValue("$agent", agentId);
-        command.Parameters.AddWithValue("$camera", (object?)cameraId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$camera", cameraId);
         command.Parameters.AddWithValue("$uncertain_only", uncertainOnly ? 1 : 0);
         command.Parameters.AddWithValue("$reason", reason);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     internal async Task StartCenteredRunAsync(
@@ -117,14 +149,15 @@ internal sealed partial class SqliteRawCaptureJournal
         ExposureAttemptKey initial,
         CancellationToken cancellationToken)
     {
-        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath);
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            INSERT INTO centered_exposure_runs(run_id, agent_id, camera_id, snapshot_json, snapshot_sha256, calibration_bundle_id)
-            SELECT $run, $agent, $camera, $json, $hash, $calibration
+            INSERT INTO centered_exposure_runs(run_id, agent_id, camera_id, snapshot_json, snapshot_sha256,
+                calibration_bundle_id, device_identity, linear_node_id, linear_variant)
+            SELECT $run, $agent, $camera, $json, $hash, $calibration, $device, $linear_node, $linear_variant
             WHERE (SELECT COUNT(*) FROM centered_exposure_runs WHERE closed_reason IS NULL) < $limit;
             """;
         var json = snapshot.Serialize();
@@ -135,9 +168,39 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Parameters.AddWithValue("$hash", PayloadChecksum.ComputeSha256(json));
         command.Parameters.AddWithValue("$limit", MaximumOpenCenteredRuns);
         command.Parameters.AddWithValue("$calibration", (object?)snapshot.Calibration?.BundleId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$device", (object?)snapshot.DeviceIdentity ?? DBNull.Value);
+        command.Parameters.AddWithValue("$linear_node", (object?)snapshot.LinearNodeId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$linear_variant", (object?)snapshot.LinearVariant ?? DBNull.Value);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             throw new InvalidOperationException("The centered exposure run limit was reached.");
         await InsertCenteredAttemptAsync(connection, transaction, initial, null, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+    {
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            UPDATE centered_exposure_attempts
+            SET status = 'expired', reason = 'metering.source-evidence-unavailable'
+            WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal AND status = 'pending'
+              AND EXISTS (
+                SELECT 1 FROM centered_exposure_runs WHERE run_id = $run AND agent_id = $agent
+                    AND camera_id = $camera AND closed_reason IS NULL);
+            """;
+        AddAttemptParameters(command, attempt);
+        command.Parameters.AddWithValue("$agent", attempt.Camera.AgentId);
+        command.Parameters.AddWithValue("$camera", attempt.Camera.CameraId);
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+            throw new RawIngressConflictException("The centered attempt could not be retired before opening a fresh target.");
+        command.CommandText = """
+            UPDATE centered_exposure_runs SET closed_reason = 'metering.source-evidence-unavailable' WHERE run_id = $run;
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -176,9 +239,13 @@ internal sealed partial class SqliteRawCaptureJournal
         CaptureSetpoint settings,
         CaptureMeteringEvidence? evidence,
         string reason,
+        CenteredOwnerTransition? owner,
         CancellationToken cancellationToken)
     {
-        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath);
+        if (owner is not null && (owner.AgentId != attempt.Camera.AgentId || owner.CameraId != attempt.Camera.CameraId))
+            throw new RawIngressConflictException("The dispatch belongs to a different camera attachment.");
+
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         using var command = connection.CreateCommand();
@@ -189,11 +256,17 @@ internal sealed partial class SqliteRawCaptureJournal
             WHERE attempt_id = $attempt AND ordinal = $ordinal AND status = 'pending'
               AND run_id = $run AND EXISTS (
                 SELECT 1 FROM centered_exposure_runs WHERE run_id = $run AND agent_id = $agent
-                    AND camera_id = $camera AND closed_reason IS NULL);
+                    AND camera_id = $camera AND closed_reason IS NULL
+                    AND ($attachment IS NULL OR EXISTS (
+                        SELECT 1 FROM centered_acquisition_owners owner
+                        WHERE owner.agent_id = $agent AND owner.camera_id = $camera AND owner.active_flag = 1
+                          AND owner.attachment_id = $attachment
+                          AND owner.device_identity = centered_exposure_runs.device_identity)));
             """;
         AddAttemptParameters(command, attempt);
         command.Parameters.AddWithValue("$agent", attempt.Camera.AgentId);
         command.Parameters.AddWithValue("$camera", attempt.Camera.CameraId);
+        command.Parameters.AddWithValue("$attachment", (object?)owner?.AttachmentId.ToString("N") ?? DBNull.Value);
         command.Parameters.AddWithValue("$requested", JsonSerializer.SerializeToUtf8Bytes(settings));
         command.Parameters.AddWithValue("$metering", evidence is null ? DBNull.Value : JsonSerializer.SerializeToUtf8Bytes(evidence));
         command.Parameters.AddWithValue("$reason", reason);
@@ -275,7 +348,7 @@ internal sealed partial class SqliteRawCaptureJournal
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT raw.manifest_json, raw.manifest_sha256
+            SELECT raw.manifest_json, raw.manifest_sha256, raw.state = 'committed'
             FROM centered_exposure_attempts attempt
             JOIN raw_captures raw ON raw.capture_id = attempt.capture_id
             JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
@@ -284,11 +357,13 @@ internal sealed partial class SqliteRawCaptureJournal
         AddExposureParameters(command, key);
         ArtifactManifestV2 manifest;
         string manifestHash;
+        bool isCommitted;
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
             var json = await reader.GetFieldValueAsync<byte[]>(0, cancellationToken).ConfigureAwait(false);
             manifestHash = reader.GetString(1);
+            isCommitted = reader.GetBoolean(2);
             if (PayloadChecksum.ComputeSha256(json) != manifestHash)
                 throw new InvalidDataException("The centered raw manifest differs from its journal identity.");
             manifest = ParseCenteredManifest(json);
@@ -299,7 +374,7 @@ internal sealed partial class SqliteRawCaptureJournal
             throw new InvalidDataException("The centered raw manifest differs from its exposure key.");
         var run = await ReadCenteredRunAsync(connection, null, key.RunId, binding.FrozenRunSha256, cancellationToken)
             .ConfigureAwait(false);
-        return new(manifest, manifestHash, run);
+        return new(manifest, manifestHash, run, isCommitted);
     }
 
     internal async Task<CenteredJournalRuntime?> ReadCenteredRuntimeAsync(

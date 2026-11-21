@@ -640,8 +640,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 .ConfigureAwait(false);
             outputPublication[index] = execution is null ||
                 execution.AllowAutomaticPublication &&
-                (execution.ExecutionClass != ProcessingGraphExecutionClass.Live ||
-                 centeredProducts?.Any(product => product.OutputIdentity == outputs[index].OutputIdentitySha256) == true) ||
+                (centeredProducts is null ||
+                 centeredProducts.Any(product => product.OutputIdentity == outputs[index].OutputIdentitySha256)) ||
                 !inserted && await IsOutputPublishedAsync(
                     connection, transaction, outputs[index].OutputIdentitySha256, cancellationToken)
                     .ConfigureAwait(false);
@@ -1566,7 +1566,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         return new(values, values.Count == maximumCount ? values[^1].OperationId : null);
     }
 
-    internal async ValueTask PlanLifecycleOperationAsync(
+    internal async ValueTask<bool> PlanLifecycleOperationAsync(
         ProcessingLifecycleOperation operation,
         CancellationToken cancellationToken)
     {
@@ -1577,7 +1577,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             INSERT INTO processing_lifecycle_operations(
                 operation_id, kind, output_identity_sha256, source_relative_path,
                 companion_relative_path, destination_relative_path, reason, observed_bytes, planned_unix_ms, phase)
-            VALUES($id, $kind, $output, $source, $companion, $destination, $reason, $bytes, $now, $phase)
+            SELECT $id, $kind, $output, $source, $companion, $destination, $reason, $bytes, $now, $phase
+            WHERE $kind <> 'delete' OR NOT EXISTS (
+                SELECT 1 FROM centered_exposure_holds
+                WHERE output_identity = $output AND expires_unix_ms > $now)
             ON CONFLICT(operation_id) DO NOTHING;
             """;
         command.Parameters.AddWithValue("$id", operation.OperationId);
@@ -1590,7 +1593,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$bytes", operation.ObservedBytes);
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$phase", operation.Phase);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 0;
     }
 
     internal async ValueTask SetLifecyclePhaseAsync(string operationId, string phase, CancellationToken cancellationToken)

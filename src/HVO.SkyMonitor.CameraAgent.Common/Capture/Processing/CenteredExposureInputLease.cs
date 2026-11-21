@@ -37,35 +37,61 @@ internal sealed class CenteredExposureInputCustody(
         var storageGate = StorageLifecycleLock.ForRoot(persistence.StorageRoot);
         var owner = Guid.NewGuid();
         var expires = clock.GetUtcNow().Add(duration);
-        await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var lookup = await TryPinAsync().ConfigureAwait(false);
+        if (lookup is null) return null;
+        var provenance = lookup.Provenance!;
+
+        var handedOff = false;
         try
         {
-            await storageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                var lookup = await reader.ReadLinearCoreAsync(expected.Exposure, cancellationToken).ConfigureAwait(false);
-                if (lookup?.Product != expected || lookup.Provenance is not { } provenance)
-                    return null;
+            var linear = await persistence.RestoreCenteredLinearAsync(expected, cancellationToken).ConfigureAwait(false);
+            if (clock.GetUtcNow() >= expires) return null;
+            if (linear.DescriptorIdentitySha256 != provenance.LinearDescriptorSha256)
+                throw new InvalidDataException("The retained linear descriptor differs from its centered product provenance.");
 
-                var linear = await persistence.RestoreCenteredLinearAsync(expected, cancellationToken).ConfigureAwait(false);
-                var raw = await ingress.ReadCenteredRawAsync(expected.Exposure, cancellationToken).ConfigureAwait(false);
-                if (raw is null || !ingress.CenteredFrameFilesExist(raw.Manifest))
-                    return null;
-
-                var bytes = checked(lookup.Exposure.Raw.Layout.ByteLength + linear.Payload.Length);
-                if (!await store.TryHoldCenteredInputAsync(owner, expected, bytes, expires, cancellationToken)
-                    .ConfigureAwait(false))
-                    return null;
-                return new(store, owner, new(lookup.Exposure, linear, provenance), expires);
-            }
-            finally
-            {
-                storageGate.Release();
-            }
+            var lease = new CenteredExposureInputLease(store, owner, new(lookup.Exposure, linear, provenance), expires);
+            handedOff = true;
+            return lease;
         }
         finally
         {
-            rawGate.Release();
+            if (!handedOff) await store.ReleaseCenteredInputHoldAsync(owner).ConfigureAwait(false);
+        }
+
+        async Task<LinearExposureLookup?> TryPinAsync()
+        {
+            // The two lifecycle gates protect only identity and pin acquisition, never a full-frame read.
+            await rawGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await storageGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var candidate = await reader.ReadLinearCoreAsync(expected.Exposure, cancellationToken).ConfigureAwait(false);
+                    if (candidate?.Product != expected ||
+                        candidate.Disposition is not (LinearExposureDisposition.Calibrated or LinearExposureDisposition.QualifiedNormalizationOnly) ||
+                        candidate.Provenance is null)
+                        return null;
+
+                    var output = await store.ReadOutputByArtifactIdAsync(expected.ArtifactId, cancellationToken).ConfigureAwait(false);
+                    if (output?.Descriptor is not { } descriptor || output.AvailabilityState != "Available")
+                        return null;
+                    if (!ingress.CenteredFrameFilesExist(candidate.Exposure.Raw))
+                        return null;
+
+                    var bytes = checked(candidate.Exposure.Raw.Layout.ByteLength + descriptor.Layout.ByteLength);
+                    return await store.TryHoldCenteredInputAsync(owner, expected, bytes, expires, cancellationToken)
+                        .ConfigureAwait(false) ? candidate : null;
+                }
+                finally
+                {
+                    storageGate.Release();
+                }
+            }
+            finally
+            {
+                rawGate.Release();
+            }
         }
     }
 }

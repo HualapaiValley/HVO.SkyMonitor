@@ -20,12 +20,13 @@ internal sealed record CenteredPredictionFacts(
     CaptureLocationProvenance Location,
     CameraRigConfig Rig,
     FrameLayoutDescriptor Layout,
-    CenteredSceneResources Resources);
+    CenteredSceneResources Resources,
+    ProjectedSceneCaptureProcessingStepOptions PredictionOptions);
 
 internal sealed class CenteredExposureSceneProvider(
     RawCaptureIngress ingress,
-    CaptureProjectedSceneStager stager,
-    ICelestialCatalog catalog,
+    CaptureProjectedSceneStager? stager,
+    ICelestialCatalog? catalog,
     Func<IDeploymentLocationStore?> resolveLocations,
     IConstellationTopology? topology = null,
     IPlanetEphemeris? ephemeris = null)
@@ -38,12 +39,13 @@ internal sealed class CenteredExposureSceneProvider(
         var descriptor = raw.Manifest.Descriptor;
         return new(new(descriptor.Capture.CaptureId, descriptor.Artifact.ArtifactId,
                 CaptureContractJson.ComputeDescriptorSha256(descriptor)),
-            descriptor.Timing, raw.Run.Location, raw.Run.Configuration.Rig, descriptor.Layout, raw.Run.SceneResources);
+            descriptor.Timing, raw.Run.Location, raw.Run.Configuration.Rig, descriptor.Layout, raw.Run.SceneResources,
+            CaptureProjectedSceneStager.ResolveOptions(raw.Run.Configuration) ?? new());
     }
 
     internal Task<ProjectedSceneV1?> ResolvePredictionsAsync(
         CenteredPredictionFacts facts, CancellationToken cancellationToken)
-        => BuildPredictedSceneAsync(facts, new ProjectedSceneCaptureProcessingStepOptions(), cancellationToken);
+        => BuildPredictedSceneAsync(facts, facts.PredictionOptions, cancellationToken);
 
     internal async Task<ProjectedSceneV1?> ResolvePresentationAsync(
         CenteredExposureBindingV1 binding,
@@ -64,7 +66,7 @@ internal sealed class CenteredExposureSceneProvider(
         CancellationToken cancellationToken,
         DateTimeOffset? virtualPresentationEpoch = null)
     {
-        if (facts.Resources.Stars is null || stager.FrozenResources != facts.Resources ||
+        if (facts.Resources.Stars is null || stager?.FrozenResources != facts.Resources ||
             catalog is not ICelestialCatalogMetadataSource metadata)
             return null;
 
@@ -75,7 +77,13 @@ internal sealed class CenteredExposureSceneProvider(
         if (locations is null) return null;
         var site = locations.Resolve(facts.Location, timing.ExposureStartedUtc);
         if (!site.IsEffectiveAt(effectiveUtc)) return null;
-        var projection = RigProjectionContextFactory.Create(facts.Rig);
+        var native = RigProjectionContextFactory.CreateNative(facts.Rig);
+        if (facts.Layout.Readout is { } geometry &&
+            (geometry.NativeWidth != native.WidthPixels || geometry.NativeHeight != native.HeightPixels))
+            return null;
+        var projection = facts.Layout.Readout is { } readout
+            ? RigProjectionContextFactory.CreateReadoutView(native, readout)
+            : RigProjectionContextFactory.Create(facts.Rig);
         if (projection.WidthPixels != facts.Layout.Width || projection.HeightPixels != facts.Layout.Height)
             return null;
 

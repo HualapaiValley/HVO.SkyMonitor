@@ -22,7 +22,8 @@ internal sealed partial class SqliteRawCaptureJournal(
     ICaptureLaneFaultInjector? laneFaultInjector = null,
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null,
-    Action? inspectionSourceOpenedSeam = null)
+    Action? inspectionSourceOpenedSeam = null,
+    CenteredExposureProductChanges? centeredProductChanges = null)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
     internal const int CurrentSchemaVersion = 17;
@@ -526,10 +527,14 @@ internal sealed partial class SqliteRawCaptureJournal(
                 connection, transaction, rawRowId, entry, liveExecution, cancellationToken).ConfigureAwait(false);
         }
         await BindCenteredAdmissionAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        var centeredProductPublished = entry.CenteredExposure is not null && liveExecution is not null &&
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(
+                connection, transaction, liveExecution.ExecutionId, cancellationToken).ConfigureAwait(false);
         _laneFaultInjector.Inject(CaptureLaneFaultPoint.AfterWorkRowsInserted);
         _faultInjector.Inject(RawIngressFaultPoint.AfterJournalRowInserted);
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (centeredProductPublished) centeredProductChanges?.NotifyCommitted();
         return RawIngressOutcome.Committed;
     }
 
@@ -1453,14 +1458,18 @@ internal sealed partial class SqliteRawCaptureJournal(
     internal Task<RawIngressOutcome> RecoverAsync(
         RawIngressJournalEntry entry,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
-        CancellationToken cancellationToken)
-        => TrackTransactionAsync("recovery", () => RecoverCoreAsync(entry, laneDefinitions, cancellationToken));
+        CancellationToken cancellationToken,
+        RecoveredCenteredAdmission? centered = null)
+        => TrackTransactionAsync("recovery", () => RecoverCoreAsync(entry, laneDefinitions, centered, cancellationToken));
 
     private async Task<RawIngressOutcome> RecoverCoreAsync(
         RawIngressJournalEntry entry,
         IReadOnlyList<CaptureLaneDefinition> laneDefinitions,
+        RecoveredCenteredAdmission? centered,
         CancellationToken cancellationToken)
     {
+        if ((entry.CenteredExposure is null) != (centered is null))
+            throw new InvalidDataException("Centered recovery requires the exact frozen live execution and lane context.");
         using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournal(_databasePath, entry.CaptureId.ToString("N"), entry.ManifestJson);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
@@ -1536,8 +1545,19 @@ internal sealed partial class SqliteRawCaptureJournal(
         var recoveredRowId = await ReadLastInsertRowIdAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
         await InsertLaneWorkAsync(
             connection, transaction, recoveredRowId, entry, laneDefinitions, cancellationToken).ConfigureAwait(false);
+        if (centered is not null)
+        {
+            await InsertContextAsync(connection, transaction, recoveredRowId, centered.ContextJson,
+                centered.ContextSha256, cancellationToken).ConfigureAwait(false);
+            await InsertLiveExecutionAsync(connection, transaction, recoveredRowId, entry,
+                centered.Execution, cancellationToken).ConfigureAwait(false);
+        }
         await BindCenteredAdmissionAsync(connection, transaction, entry, cancellationToken).ConfigureAwait(false);
+        var centeredProductPublished = centered is not null &&
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(
+                connection, transaction, centered.Execution.ExecutionId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (centeredProductPublished) centeredProductChanges?.NotifyCommitted();
         return RawIngressOutcome.Committed;
     }
 

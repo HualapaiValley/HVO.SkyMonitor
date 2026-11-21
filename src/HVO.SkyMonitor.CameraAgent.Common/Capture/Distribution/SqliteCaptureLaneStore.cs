@@ -20,7 +20,8 @@ internal sealed class SqliteCaptureLaneStore(
     TimeProvider timeProvider,
     ICaptureLaneFaultInjector faultInjector,
     Action<TimeSpan>? lockWaitRecorder = null,
-    Action? evidenceInvalidated = null) : ICaptureLaneStore
+    Action? evidenceInvalidated = null,
+    CenteredExposureProductChanges? centeredProductChanges = null) : ICaptureLaneStore
 {
     private static readonly JsonSerializerOptions EnvelopeJsonOptions = new(JsonSerializerDefaults.Web);
     private readonly string _root = Path.GetFullPath(root);
@@ -155,6 +156,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lane.Name, cancellationToken)
+                .ConfigureAwait(false);
             if (!_hasExecutionSchema)
             {
                 _hasExecutionSchema = await HasExecutionSchemaAsync(connection, cancellationToken, transaction)
@@ -169,7 +172,7 @@ internal sealed class SqliteCaptureLaneStore(
                 connection, transaction, lane, now, cancellationToken).ConfigureAwait(false);
             if (candidate is null || !IsEligible(candidate, now))
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 return null;
             }
 
@@ -181,6 +184,12 @@ internal sealed class SqliteCaptureLaneStore(
                 if (!parsed.IsValid || parsed.Document?.Manifest is not { } manifest)
                 {
                     throw new InvalidDataException("Capture lane work references an invalid committed manifest.");
+                }
+                if (manifest.CenteredExposure is not null && lane.Name == "standard" &&
+                    (candidate.ExecutionId is null || candidate.ContextJson is null || candidate.ContextSha256 is null))
+                {
+                    await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
+                    return null;
                 }
                 if (!string.Equals(
                         CaptureContractJson.ComputeManifestSha256(candidate.ManifestJson),
@@ -246,7 +255,7 @@ internal sealed class SqliteCaptureLaneStore(
                     candidate.Required ? "quarantined" : "abandoned",
                     candidate.Required ? "evidence-invalid" : "evidence-expired",
                     cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 if (candidate.Required) evidenceInvalidated?.Invoke();
                 return null;
             }
@@ -296,7 +305,7 @@ internal sealed class SqliteCaptureLaneStore(
                 }
             }
             await SetRawRetentionHoldAsync(connection, transaction, candidate.RawRowId, hold: true, cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterClaimCommitted);
             return new CaptureLaneLease(
                 candidate.WorkId,
@@ -395,6 +404,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lease.Lane, cancellationToken)
+                .ConfigureAwait(false);
             if (lease.Context.Execution is not null)
             {
                 await ExpireLiveExecutionsAsync(
@@ -403,12 +414,12 @@ internal sealed class SqliteCaptureLaneStore(
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             if (current.State == "completed" && string.Equals(current.CompletionToken, lease.LeaseToken, StringComparison.Ordinal))
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 return;
             }
             if (current.State != "leased")
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
             }
             _faultInjector.Inject(CaptureLaneFaultPoint.BeforeCompletionCommit);
@@ -421,7 +432,7 @@ internal sealed class SqliteCaptureLaneStore(
             {
                 await ExpireLiveExecutionsAsync(
                     connection, transaction, completedUtc, cancellationToken).ConfigureAwait(false);
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException(
                     $"Capture lane '{lease.Lane}' crossed its processing deadline before completion.");
             }
@@ -444,7 +455,7 @@ internal sealed class SqliteCaptureLaneStore(
                 }
             }
             await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(CaptureLaneFaultPoint.AfterCompletionCommit);
         }
         finally
@@ -464,6 +475,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lease.Lane, cancellationToken)
+                .ConfigureAwait(false);
             if (lease.Context.Execution is not null)
             {
                 await ExpireLiveExecutionsAsync(
@@ -472,7 +485,7 @@ internal sealed class SqliteCaptureLaneStore(
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             if (current.State != "leased")
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 throw new CaptureLaneLeaseLostException($"Capture lane '{lease.Lane}' lease ownership was lost.");
             }
             EnsureOwned(lease, current, _timeProvider.GetUtcNow());
@@ -522,7 +535,7 @@ internal sealed class SqliteCaptureLaneStore(
                     cancellationToken).ConfigureAwait(false);
                 await RecomputeRetentionHoldAsync(connection, transaction, current.RawRowId, cancellationToken).ConfigureAwait(false);
             }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
             _faultInjector.Inject(retry ? CaptureLaneFaultPoint.AfterRetryCommit : CaptureLaneFaultPoint.AfterQuarantineCommit);
             return deferred
                 ? CaptureLaneHandlerOutcome.Deferred
@@ -543,6 +556,8 @@ internal sealed class SqliteCaptureLaneStore(
         {
             using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
             using var transaction = BeginImmediate(connection);
+            var revisionBefore = await ReadCenteredRevisionAsync(connection, transaction, lease.Lane, cancellationToken)
+                .ConfigureAwait(false);
             if (lease.Context.Execution is not null)
             {
                 await ExpireLiveExecutionsAsync(
@@ -551,7 +566,7 @@ internal sealed class SqliteCaptureLaneStore(
             var current = await ReadOwnershipAsync(connection, transaction, lease.WorkId, cancellationToken).ConfigureAwait(false);
             if (current.State != "leased")
             {
-                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
                 return;
             }
             EnsureOwned(lease, current, _timeProvider.GetUtcNow());
@@ -577,7 +592,7 @@ internal sealed class SqliteCaptureLaneStore(
                     connection, transaction, execution.ExecutionId, ProcessingGraphExecutionStatus.Pending,
                     null, terminal: false, observedUtc: null, cancellationToken).ConfigureAwait(false);
             }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await CommitWithCenteredWakeAsync(connection, transaction, revisionBefore, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -1001,18 +1016,38 @@ LIMIT 1;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<long?> ReadCenteredRevisionAsync(
+        SqliteConnection connection, SqliteTransaction transaction, string lane, CancellationToken cancellationToken)
+    {
+        if (centeredProductChanges is null || lane != "standard") return null;
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT COALESCE(MAX(revision), 0) FROM centered_exposure_products;";
+        return (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
+    }
+
+    private async Task CommitWithCenteredWakeAsync(
+        SqliteConnection connection, SqliteTransaction transaction, long? revisionBefore, CancellationToken cancellationToken)
+    {
+        var changed = revisionBefore is not null &&
+            await ReadCenteredRevisionAsync(connection, transaction, "standard", cancellationToken).ConfigureAwait(false) != revisionBefore;
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (changed) centeredProductChanges!.NotifyCommitted();
+    }
+
     private async Task ExpireLiveExecutionsAsync(
         SqliteConnection connection,
         SqliteTransaction transaction,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        var rawRows = new List<long>();
+        var rawRows = new HashSet<long>();
+        var executions = new HashSet<Guid>();
         using (var read = connection.CreateCommand())
         {
             read.Transaction = transaction;
             read.CommandText = """
-                SELECT DISTINCT COALESCE(pin.raw_capture_row_id, raw.raw_capture_row_id)
+                SELECT DISTINCT COALESCE(pin.raw_capture_row_id, raw.raw_capture_row_id), execution.execution_id
                 FROM processing_executions execution
                 JOIN raw_captures raw ON raw.capture_id = execution.capture_id
                                      AND raw.raw_artifact_id = execution.primary_artifact_id
@@ -1024,7 +1059,11 @@ LIMIT 1;
                 """;
             read.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
             using var reader = await read.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) rawRows.Add(reader.GetInt64(0));
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rawRows.Add(reader.GetInt64(0));
+                executions.Add(Guid.ParseExact(reader.GetString(1), "N"));
+            }
         }
         if (rawRows.Count == 0) return;
         using (var expire = connection.CreateCommand())
@@ -1074,6 +1113,9 @@ LIMIT 1;
             expire.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
             await expire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
+        foreach (var execution in executions)
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(connection, transaction, execution, cancellationToken)
+                .ConfigureAwait(false);
         foreach (var rawRow in rawRows)
         {
             await RecomputeRetentionHoldAsync(connection, transaction, rawRow, cancellationToken).ConfigureAwait(false);
@@ -1166,6 +1208,9 @@ LIMIT 1;
         command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        if (terminal)
+            await SqliteCaptureProcessingStore.PublishMissingCenteredLinearAsync(connection, transaction, executionId, cancellationToken)
+                .ConfigureAwait(false);
         foreach (var rawRow in rawRows)
         {
             await RecomputeRetentionHoldAsync(connection, transaction, rawRow, cancellationToken).ConfigureAwait(false);

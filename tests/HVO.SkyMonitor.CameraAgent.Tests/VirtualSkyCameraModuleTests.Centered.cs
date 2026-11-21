@@ -25,15 +25,23 @@ public sealed partial class VirtualSkyCameraModuleTests
             AgentId = "virtual-fixture",
             CenteredExposure = new("virtual-one", CenteredExposureProfile.CurrentExecutionVersion)
         };
-        var module = CreateModule(FixtureUtc);
+        var module = CreateModule(FixtureUtc, new ExposureTestTimeProvider(FixtureUtc, autoAdvance: true));
         await using var captureModule = module.ConfigureAwait(false);
         await module.InitializeAsync(config, CancellationToken.None).ConfigureAwait(false);
         var attempt = new ExposureAttemptKey(new(config.AgentId!, "virtual-one"), Guid.NewGuid(), 101, Guid.NewGuid());
-        var request = new CaptureRequest(FixtureUtc, TimeSpan.FromSeconds(1), CaptureMode.Still,
+        var request = new CaptureRequest(FixtureUtc.AddMilliseconds(-1), TimeSpan.FromSeconds(1), CaptureMode.Still,
             new(TimeSpan.FromMilliseconds(20), 10, null, null));
         var result = await module.CaptureBoundAsync(attempt, request, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(result.Frame);
         Assert.IsNotNull(result.Frame.Layout);
+        Assert.IsNotNull(result.AcquisitionTiming);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(1), result.AcquisitionTiming.ExposureStartedUtc - request.RequestedStartUtc);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(20),
+            result.AcquisitionTiming.ExposureEndedUtc - result.AcquisitionTiming.ExposureStartedUtc);
+        var virtualExposure = result.Frame.Metadata.Scene!.VirtualExposure!;
+        Assert.AreEqual(request.RequestedStartUtc, virtualExposure.RequestedStartUtc);
+        Assert.AreEqual(request.RequestedStartUtc, virtualExposure.ScenarioStartUtc);
+        Assert.AreEqual(virtualExposure.CelestialMidpointUtc, result.Frame.Metadata.Scene.SceneUtc);
         Assert.AreEqual(format, result.Frame.Layout.PixelFormat);
         Assert.AreEqual(TimeSpan.FromMilliseconds(20), result.Frame.Metadata.Exposure);
         Assert.AreEqual(10d, result.Frame.Metadata.Gain);

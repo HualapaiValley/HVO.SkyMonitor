@@ -49,7 +49,7 @@ internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMeta
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Config.CenteredExposure is not null && !context.IsReplayExecution)
+        if (context.Config.CenteredExposure is not null || context.RawCapture?.Manifest.CenteredExposure is not null)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.centered-measurement-required"));
             return;
