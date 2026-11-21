@@ -33,6 +33,18 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true,
         DisplayName = "ExposureMeasurement_RejectsFitAndReplaysItsOriginalAssessmentAfterRestart")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true)]
+    [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true, "star", false,
+        FrameStoredCodeTransform.RightAlignedV1, 0, "", false, "2026-11-21T13:27:27.3434303+00:00",
+        DisplayName = "BayerHfdFormerFailureOne")]
+    [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true, "star", false,
+        FrameStoredCodeTransform.RightAlignedV1, 0, "", false, "2026-11-21T14:10:09.7993480+00:00",
+        DisplayName = "BayerHfdFormerFailureTwo")]
+    [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true, "star", false,
+        FrameStoredCodeTransform.RightAlignedV1, 0, "", false, "2026-11-21T14:40:09.9363480+00:00",
+        DisplayName = "BayerHfdFormerFailureThree")]
+    [DataRow(CameraPixelFormat.Mono16, "None", true, 1, false, false, "star", false,
+        FrameStoredCodeTransform.RightAlignedV1, 0, "", false, "2026-11-21T13:27:27.3434303+00:00",
+        DisplayName = "MonoHfdSameFailureAnchor")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", DisplayName = "ExposureMeasurement_ReferenceCalibratedMonoReplaysMeasuredStar")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank",
         DisplayName = "ExposureMeasurement_ReferenceCalibratedMonoReplaysAssessedEmpty")]
@@ -65,15 +77,17 @@ public sealed partial class VirtualSkyCameraModuleTests
         CameraPixelFormat format, string calibration, bool declareReadout = true, int referenceGain = 1, bool fit = false,
         bool interrupt = false, string signal = "star", bool expireLinear = false,
         FrameStoredCodeTransform transform = FrameStoredCodeTransform.RightAlignedV1, int publicationFailures = 0,
-        string archiveFault = "", bool noPredictionCatalog = false)
+        string archiveFault = "", bool noPredictionCatalog = false, string? fixtureUtc = null)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-exposure-measurement");
         try
         {
-            // Keep the interrupted Bayer positive on the measured, untrailed scene.
-            var now = format == CameraPixelFormat.BayerRggb16 && calibration == "None" && interrupt && signal == "star"
-                ? DateTimeOffset.ParseExact("2026-11-21T07:21:09.2513482+00:00", "O", CultureInfo.InvariantCulture)
-                : DateTimeOffset.UtcNow.AddMinutes(-1);
+            fixtureUtc ??= format == CameraPixelFormat.BayerRggb16 && calibration == "None" && interrupt && signal == "star"
+                ? "2026-11-21T07:21:09.2513482+00:00" : null;
+            var now = fixtureUtc is null ? DateTimeOffset.UtcNow.AddMinutes(-1)
+                : DateTimeOffset.ParseExact(fixtureUtc, "O", CultureInfo.InvariantCulture);
+            var verifyBayerReplay = format == CameraPixelFormat.BayerRggb16 &&
+                fixtureUtc == "2026-11-21T13:27:27.3434303+00:00";
             var profile = StoragePolicyRawIngressIntegrationTests.Profile(root);
             var durable = new CaptureProcessingPublicationPolicy(CaptureProcessingPersistenceMode.DurableLocal);
             var camera = CreateConfig(format, 224, 224);
@@ -319,6 +333,17 @@ public sealed partial class VirtualSkyCameraModuleTests
                         transform, expectedLevels).ConfigureAwait(false);
                 Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, outcome.Outcome, outcome.Reason);
                 await laneStore.CompleteAsync(lease, CancellationToken.None).ConfigureAwait(false);
+                if (verifyBayerReplay)
+                {
+                    // Live work has priority over archived replay. Settle the real N+1 admitted during the interruption.
+                    var next = await laneStore.ClaimAsync(lane, "exposure-measurement-next", active, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    Assert.IsNotNull(next);
+                    Assert.AreNotEqual(exposure.CaptureId, next.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId);
+                    var settledNext = await handler.HandleAsync(next.Context, CancellationToken.None).ConfigureAwait(false);
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, settledNext.Outcome, settledNext.Reason);
+                    await laneStore.CompleteAsync(next, CancellationToken.None).ConfigureAwait(false);
+                }
 
                 var id = await operations.ReadLiveExecutionIdAsync(receipt.Manifest.Descriptor.Capture.CaptureId, CancellationToken.None)
                     .ConfigureAwait(false);
@@ -419,6 +444,20 @@ public sealed partial class VirtualSkyCameraModuleTests
                                 Math.Abs(detection.Pixel.X - 112) < 2 && Math.Abs(detection.Pixel.Y - 112) < 2),
                                 "The independently placed zenith star must be measured near the optical center.");
                             Assert.IsGreaterThan(0, measurement.Hfd.ValidCount ?? 0, measurement.Hfd.Reason);
+                            if (fixtureUtc is not null)
+                            {
+                                var detection = measurement.Sources.Detections.Single(value =>
+                                    Math.Abs(value.Pixel.X - 112) < 2 && Math.Abs(value.Pixel.Y - 112) < 2);
+                                var focus = measurement.Hfd.Samples.Single(sample => sample.DetectionIndex == detection.Index);
+                                Assert.AreEqual(0, detection.SaturatedSampleCount);
+                                Assert.AreEqual(FocusStarReasonCodes.Valid, focus.Reason);
+                                Assert.IsTrue(focus.DiameterPixels is > 2.4 and < 3.3);
+                                var wasFlagged = format == CameraPixelFormat.BayerRggb16 &&
+                                    fixtureUtc != "2026-11-21T07:21:09.2513482+00:00";
+                                Assert.AreEqual(wasFlagged, detection.Conditions.HasFlag(StellarSourceConditions.Trailed));
+                                Assert.AreEqual(wasFlagged, focus.BayerCoreTrailUpperPixels is >= 0 and < 3);
+                                TestContext.WriteLine(JsonSerializer.Serialize(new { now, format, exposure, detection, focus }));
+                            }
                         }
                         else if (signal == "blank")
                         {
@@ -627,8 +666,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var options = historical.Steps.Single(step => step.Id == "linear").Options!.Value;
                 Assert.IsFalse(options.TryGetProperty("useStoredLightCodes", out _));
             }
-            if (fit && publicationFailures == 0 && !noPredictionCatalog)
-                await AssertRejectedAssessmentReplayAsync(reopened, originalExecution, originalMeasurement).ConfigureAwait(false);
+            if (fit && publicationFailures == 0 && !noPredictionCatalog || verifyBayerReplay)
+                await AssertMeasurementReplayAsync(reopened, originalExecution, originalMeasurement, fit).ConfigureAwait(false);
         }
         finally
         {
@@ -757,8 +796,8 @@ public sealed partial class VirtualSkyCameraModuleTests
         }
     }
 
-    private static async Task AssertRejectedAssessmentReplayAsync(ServiceProvider provider, ProcessingGraphExecutionState original,
-        ExposureMeasurementV1 originalMeasurement)
+    private static async Task AssertMeasurementReplayAsync(ServiceProvider provider, ProcessingGraphExecutionState original,
+        ExposureMeasurementV1 originalMeasurement, bool fit)
     {
         var token = CancellationToken.None;
         var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
@@ -767,7 +806,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         var live = await graphs.ReadExecutionDetailAsync(original.ExecutionId, token).ConfigureAwait(false);
         Assert.IsNotNull(live);
         var requested = await graphs.SubmitReplayAsync(new(original.CaptureId, original.GraphRevisionId, original.PrimaryArtifactId),
-            "measurement-rejected-fit-replay", "measurement-test", token).ConfigureAwait(false);
+            "measurement-archived-replay", "measurement-test", token).ConfigureAwait(false);
         Assert.AreNotEqual(original.ExecutionId, requested.Execution.ExecutionId);
         var lease = await store.ClaimReplayAsync("measurement-rejected-fit", token).ConfigureAwait(false);
         Assert.IsNotNull(lease);
@@ -794,7 +833,10 @@ public sealed partial class VirtualSkyCameraModuleTests
         var replay = await graphs.ReadExecutionDetailAsync(requested.Execution.ExecutionId, token).ConfigureAwait(false);
         Assert.IsNotNull(replay);
         Assert.AreEqual(original.GraphRevisionId, replay.Execution.GraphRevisionId);
-        foreach (var step in new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, "associated", "fit" })
+        Assert.AreEqual(original.LocalPlanIdentitySha256, replay.Execution.LocalPlanIdentitySha256);
+        string[] steps = fit ? [ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias, "associated", "fit"]
+            : [ExposureMeasurementProducts.StepAlias, "linear", "scene"];
+        foreach (var step in steps)
         {
             var liveNode = live.Nodes.Single(node => node.NodeId == step);
             var replayed = replay.Nodes.Single(node => node.NodeId == step);
@@ -806,9 +848,16 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var expected = liveNode.Outputs.Single(item => item.Variant == output.Variant);
                 Assert.AreEqual(expected.ArtifactId, output.ArtifactId);
                 Assert.AreEqual(expected.OutputIdentitySha256, output.OutputIdentitySha256);
+                Assert.AreEqual(expected.PayloadSha256, output.PayloadSha256);
                 CollectionAssert.AreEqual(expected.SourceArtifactIds.ToArray(), output.SourceArtifactIds.ToArray());
             }
         }
+
+        var ui = MeasurementOperations(provider, graphs);
+        var reopened = await ui.GetExecutionDetailAsync(replay.Execution.ExecutionId, token).ConfigureAwait(false);
+        Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+        Assert.AreEqual(JsonSerializer.Serialize(originalMeasurement), JsonSerializer.Serialize(reopened.Value?.ExposureMeasurement?.Measurement));
+        if (!fit) return;
 
         var associationId = Assert.ContainsSingle(replay.Nodes.Single(node => node.NodeId == "associated").Outputs).ArtifactId;
         var associationRow = await store.ReadOutputByArtifactIdAsync(associationId, token).ConfigureAwait(false);
@@ -825,10 +874,6 @@ public sealed partial class VirtualSkyCameraModuleTests
         var solution = MeasuredAstrometryJson.Parse(restored.Payload);
         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
         Assert.AreEqual(associationId, solution.MeasuredArtifactId);
-        var ui = MeasurementOperations(provider, graphs);
-        var reopened = await ui.GetExecutionDetailAsync(replay.Execution.ExecutionId, token).ConfigureAwait(false);
-        Assert.IsTrue(reopened.IsSuccess, reopened.Message);
-        Assert.AreEqual(JsonSerializer.Serialize(originalMeasurement), JsonSerializer.Serialize(reopened.Value?.ExposureMeasurement?.Measurement));
     }
 
     private static async Task AssertMappedLinearAsync(ServiceProvider provider, IExposureProductReader reader,

@@ -53,6 +53,12 @@ public static class ExposureMeasurementBindings
     public static ProcessingExecutionRequest Request(LinearExposureLookup settled,
         ProcessingArtifact raw, LinearExposureInputV1? borrowed,
         ProjectionContext? aperture = null, double? nativePixelPitchMicrometers = null)
+        => Request(settled, raw, borrowed, aperture, nativePixelPitchMicrometers, retainedOutputIdentitySha256: null);
+
+    /// <summary>Preserves the historical recipe when recomputing an already-committed measurement.</summary>
+    public static ProcessingExecutionRequest Request(LinearExposureLookup settled,
+        ProcessingArtifact raw, LinearExposureInputV1? borrowed, ProjectionContext? aperture,
+        double? nativePixelPitchMicrometers, string? retainedOutputIdentitySha256)
     {
         var input = FromAdmitted(settled, aperture, nativePixelPitchMicrometers);
         if ((input.Linear is null) != (borrowed is null) ||
@@ -62,7 +68,7 @@ public static class ExposureMeasurementBindings
                 !Same(borrowed.Provenance.LinearPayloadSha256, input.Linear.PayloadSha256) ||
                 !Same(borrowed.Provenance.OutputIdentitySha256, input.Linear.OutputIdentitySha256)))
             throw Invalid("borrowed linear product");
-        return ExposureMeasurementProducts.Request(input, raw, borrowed?.Linear);
+        return ExposureMeasurementProducts.Request(input, raw, borrowed?.Linear, retainedOutputIdentitySha256);
     }
 
     /// <summary>Reads a committed live measurement without opening raw or linear pixel payloads.</summary>

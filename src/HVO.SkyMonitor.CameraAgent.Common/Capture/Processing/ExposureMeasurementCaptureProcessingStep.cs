@@ -83,7 +83,16 @@ internal sealed class ExposureMeasurementCaptureProcessingStep(
         var raw = CameraAgentRecipeExecutionAdapter.CreateArtifact(context.Config, context.Artifacts!.Raw,
             descriptor.Artifact.Variant, context.AcquisitionTiming, descriptor);
         var (aperture, pitch) = CaptureExposureMeasurementReader.Geometry(evidence, settled.Exposure.Geometry.Layout);
-        var request = ExposureMeasurementBindings.Request(settled, raw, linear, aperture, pitch);
+        string? retainedOutputIdentity = null;
+        if (context.IsReplayExecution && linear?.Linear.Layout?.PixelFormat == CameraPixelFormat.BayerRggb16)
+        {
+            var key = settled.Exposure.Key;
+            var slot = new ExposureProductSlot(CaptureExposureMeasurementReader.LiveExecution(key, evidence),
+                ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
+            var retained = await inputs.ReadProductAsync(key, slot, cancellationToken).ConfigureAwait(false);
+            retainedOutputIdentity = retained?.Product?.OutputIdentitySha256;
+        }
+        var request = ExposureMeasurementBindings.Request(settled, raw, linear, aperture, pitch, retainedOutputIdentity);
         var outcome = await adapter.ExecuteAsync(context, request, cancellationToken).ConfigureAwait(false);
         context.AddProcessingOutcome(outcome);
     }

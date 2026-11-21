@@ -23,6 +23,12 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 {
     private const string UnqualifiedSource = "linear-input-unavailable";
     private const string NoSources = "no-candidates";
+    internal const string TrailedSource = "trailed-source";
+
+    // Interpolated CFA luminance shares raw samples within a 3-by-3 footprint. Nine disjoint
+    // pixel groups bound the combined local noise scale to three times the independent sum.
+    private const double BayerNoiseCorrelationFactor = 3;
+    private static readonly double TrailDivisionPixels = new StellarMeasurementOptions().MinimumTrailLengthPixels;
     private static readonly FocusStarMeasurementOptions FocusOptions = new(
         ApertureRadiusPixels: 12, AnnulusInnerRadiusPixels: 15, AnnulusOuterRadiusPixels: 22,
         MinimumApertureRadiusPixels: 6);
@@ -46,15 +52,18 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     }
 
     public JsonElement NormalizeOptions(JsonElement options)
-        => ExposureMeasurementProducts.SerializeInput(ExposureMeasurementProducts.ReadInput(options));
+    {
+        var (input, bayerCoreTrail) = ExposureMeasurementProducts.ReadParameters(options);
+        return ExposureMeasurementProducts.SerializeParameters(input, bayerCoreTrail);
+    }
 
     internal static ExposureMeasurementInputV1 Input(ProcessingRecipeIdentity recipe)
-        => ExposureMeasurementProducts.ReadInput(recipe.Descriptor.Options.GetProperty("parameters"));
+        => ExposureMeasurementProducts.ReadParameters(recipe.Descriptor.Options.GetProperty("parameters")).Input;
 
     public ValueTask<ProcessingOutcome> ExecuteAsync(ProcessingExecutionRequest request,
         ProcessingRecipeIdentity identity, CancellationToken cancellationToken)
     {
-        var input = Input(identity);
+        var (input, bayerCoreTrail) = ExposureMeasurementProducts.ReadParameters(identity.Descriptor.Options.GetProperty("parameters"));
         var sources = request.Inputs;
         if (request.OutputVariant != ExposureMeasurementProducts.Variant || request.Annotation is not null ||
             request.AuxiliaryInputs is { Count: > 0 } ||
@@ -70,7 +79,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         var rawBrightness = Brightness(raw, cancellationToken);
         var linearClipping = linear is null ? null : Brightness(linear, cancellationToken).SensorClipping;
         var (stars, hfd) = Measure(raw, linear, rawBrightness.SensorClipping, linearClipping,
-            input.ApertureProjection, cancellationToken);
+            input.ApertureProjection, bayerCoreTrail, cancellationToken);
         var result = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
             input, rawBrightness, null, linearClipping, stars, hfd);
         var payload = ExposureMeasurementProducts.Serialize(result);
@@ -149,7 +158,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
 
     private static (ExposureSourcesV1, ExposureHfdV1) Measure(ProcessingArtifact raw,
         ProcessingArtifact? linear, ExposureClippingV1 sensorClipping, ExposureClippingV1? outputClipping,
-        ProjectionContext? aperture,
+        ProjectionContext? aperture, bool bayerCoreTrail,
         CancellationToken cancellationToken)
     {
         if (sensorClipping.StoredWhite is not { } sensorWhite)
@@ -184,7 +193,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         };
         var stars = new ExposureSourcesV1(status, reason, measured.CandidateCount, measured.AvailableBackgroundTileCount,
             measured.SettingsIdentitySha256.ToUpperInvariant(), pattern, measured.Detections, measured.Exclusions);
-        return (stars, MeasureFocus(stars, samples.Span, valid.Span, clipped, layout, cfa, cancellationToken));
+        return (stars, MeasureFocus(stars, samples.Span, valid.Span, clipped, layout, cfa, bayerCoreTrail, cancellationToken));
     }
 
     private static (ReadOnlyMemory<double> Samples, bool[] Clipped, ReadOnlyMemory<bool> Valid) Prepare(
@@ -223,7 +232,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
     }
 
     private static ExposureHfdV1 MeasureFocus(ExposureSourcesV1 stars, ReadOnlySpan<double> pixels,
-        ReadOnlySpan<bool> valid, ReadOnlySpan<bool> clipped, FrameLayoutDescriptor layout, bool cfa,
+        ReadOnlySpan<bool> valid, ReadOnlySpan<bool> clipped, FrameLayoutDescriptor layout, bool cfa, bool bayerCoreTrail,
         CancellationToken cancellationToken)
     {
         if (FocusUnavailableReason(stars, layout) is { } unavailable)
@@ -242,7 +251,9 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
         foreach (var detection in stars.Detections.Take(count))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (FocusDetectionRejection(detection.Conditions) is { } rejection)
+            var rejection = FocusDetectionRejection(detection.Conditions);
+            var checkCore = bayerCoreTrail && rejection == TrailedSource;
+            if (rejection is not null && !checkCore)
             {
                 results.Add(new(detection.Index, rejection, null));
                 continue;
@@ -251,7 +262,7 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             var y0 = (int)detection.Pixel.Y - windowRadius;
             if (x0 < 0 || y0 < 0 || x0 + diameter > layout.Width || y0 + diameter > layout.Height)
             {
-                results.Add(new(detection.Index, FocusStarReasonCodes.ApertureTruncated, null));
+                results.Add(new(detection.Index, rejection ?? FocusStarReasonCodes.ApertureTruncated, null));
                 continue;
             }
             for (var y = 0; y < diameter; y++)
@@ -266,11 +277,20 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
                         : clipped[sourceStart + x];
             }
 
+            var upper = checkCore
+                ? BayerCoreTrailUpperBound(windowPixels, windowValid, windowClipped, diameter, x0, y0, detection)
+                : null;
+            if (checkCore && (upper is null || !IsRoundBayerCore(upper.Value)))
+            {
+                results.Add(new(detection.Index, TrailedSource, null));
+                continue;
+            }
+
             var focus = FocusStarMeasurer.Measure(windowPixels, windowValid, windowClipped,
                 diameter, diameter, detection.Pixel, x0, y0, FocusOptions, cancellationToken);
             if (focus.HalfFluxDiameterPixels is not > 0 || !focus.HasMeasurement)
             {
-                results.Add(new(detection.Index, focus.ReasonCode, null));
+                results.Add(new(detection.Index, rejection ?? focus.ReasonCode, null));
                 continue;
             }
             var center = focus.Centroid!.Value;
@@ -278,12 +298,15 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             var dy = center.Y - detection.Pixel.Y;
             if (dx * dx + dy * dy > 1)
             {
-                results.Add(new(detection.Index, "focus-centroid-mismatch", null));
+                results.Add(new(detection.Index, rejection ?? "focus-centroid-mismatch", null));
                 continue;
             }
 
             widths.Add(focus.HalfFluxDiameterPixels.Value);
-            results.Add(new(detection.Index, FocusStarReasonCodes.Valid, focus.HalfFluxDiameterPixels.Value));
+            results.Add(new(detection.Index, FocusStarReasonCodes.Valid, focus.HalfFluxDiameterPixels.Value)
+            {
+                BayerCoreTrailUpperPixels = upper
+            });
         }
 
         var omitted = stars.Detections.Count - count;
@@ -292,9 +315,77 @@ internal sealed class ExposureMeasurementRecipe : IProcessingRecipe
             ExposureMeasurementProducts.Median(widths), omitted, FocusSettings, results);
     }
 
+    internal static bool IsRoundBayerCore(double upper)
+        => double.IsFinite(upper) && upper >= 0 && upper < TrailDivisionPixels;
+
+    private static double? BayerCoreTrailUpperBound(ReadOnlySpan<double> pixels, ReadOnlySpan<bool> valid,
+        ReadOnlySpan<bool> clipped, int width, int originX, int originY, StellarDetection detection)
+    {
+        // The existing minimum focus aperture bounds this independent shape check. Squared signal
+        // weights the star's core above noisy wings. Subtract the local noise variance so the
+        // squared background has zero expected weight.
+        var radius = FocusOptions.MinimumApertureRadiusPixels;
+        var cx = detection.Pixel.X - originX;
+        var cy = detection.Pixel.Y - originY;
+        var centerX = (int)cx;
+        var centerY = (int)cy;
+        var extent = (int)Math.Ceiling(radius);
+        var noise = detection.NoiseSigma * detection.NoiseSigma;
+        double mass = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+        for (var y = centerY - extent; y <= centerY + extent; y++)
+        {
+            for (var x = centerX - extent; x <= centerX + extent; x++)
+            {
+                var dx = x + 0.5 - cx;
+                var dy = y + 0.5 - cy;
+                if (dx * dx + dy * dy > radius * radius) continue;
+                var index = y * width + x;
+                if (!valid[index] || clipped[index]) return null;
+                var excess = pixels[index] - detection.Background;
+                var weight = excess * excess - noise;
+                mass += weight;
+                sx += weight * dx;
+                sy += weight * dy;
+                sxx += weight * dx * dx;
+                sxy += weight * dx * dy;
+                syy += weight * dy * dy;
+            }
+        }
+        if (!(mass > 0)) return null;
+        var mx = sx / mass;
+        var my = sy / mass;
+        var delta = (sxx - syy) / mass - mx * mx + my * my;
+        var cross = 2 * (sxy / mass - mx * my);
+        var quadrupole = Math.Sqrt(delta * delta + cross * cross);
+        var trace = (sxx + syy) / mass - mx * mx - my * my;
+        if (!(trace > quadrupole)) return null;
+
+        double uncertainty = 0;
+        for (var y = centerY - extent; y <= centerY + extent; y++)
+        {
+            for (var x = centerX - extent; x <= centerX + extent; x++)
+            {
+                var dx = x + 0.5 - cx;
+                var dy = y + 0.5 - cy;
+                if (dx * dx + dy * dy > radius * radius) continue;
+                var excess = pixels[y * width + x] - detection.Background;
+                dx -= mx;
+                dy -= my;
+                var q = dx * dx - dy * dy - delta;
+                var u = 2 * dx * dy - cross;
+                var weightVariance = 4 * Math.Max(0, excess * excess - noise) * noise + 2 * noise * noise;
+                uncertainty += weightVariance * (q * q + u * u);
+            }
+        }
+        // For a Gaussian optical core, squaring halves its covariance. A uniform trail's
+        // variance is length squared / 12. Keep a flagged source out of HFD when the
+        // resulting equivalent trail plus the correlated noise allowance reaches the division.
+        return Math.Sqrt(24 * (quadrupole + BayerNoiseCorrelationFactor * Math.Sqrt(uncertainty) / mass));
+    }
+
     internal static string? FocusDetectionRejection(StellarSourceConditions conditions)
         => conditions.HasFlag(StellarSourceConditions.Saturated) ? FocusStarReasonCodes.Saturated
-            : conditions.HasFlag(StellarSourceConditions.Trailed) ? "trailed-source" : null;
+            : conditions.HasFlag(StellarSourceConditions.Trailed) ? TrailedSource : null;
 
     internal static string? FocusUnavailableReason(ExposureSourcesV1 sources, FrameLayoutDescriptor? layout)
     {
