@@ -187,6 +187,8 @@ public sealed class VirtualSkyCameraModule(
             ? CaptureCoreAsync(request, null, cancellationToken)
             : throw new InvalidOperationException("Centered exposure requires a reserved acquisition attempt.");
 
+    public bool EnforcesBoundStartLimit => true;
+
     public Task<CaptureResult> CaptureBoundAsync(
         ExposureAttemptKey attempt, CaptureRequest request, CancellationToken cancellationToken)
     {
@@ -286,9 +288,11 @@ public sealed class VirtualSkyCameraModule(
             throw new ArgumentOutOfRangeException(nameof(request), "Virtual exposure must be between zero and one day.");
         // The operational acquisition clock is independent of the requested/fixed scene clocks below.
         // Wait before rendering or staging so an interrupted exposure owns no incomplete frame or artifact.
+        cancellationToken.ThrowIfCancellationRequested();
         var exposureStartedUtc = preview is null
             ? timeProvider.GetUtcNow().ToUniversalTime()
             : request.RequestedStartUtc;
+        request.RequireOpenBoundStart(exposureStartedUtc);
         var exposureEndedUtc = preview is null ? exposureStartedUtc + setpoint.Exposure : exposureStartedUtc;
         if (preview is null)
         {

@@ -16,17 +16,22 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Parameters.AddWithValue("$agent", agentId);
         string? previous = null;
         string? previousProfile = null;
+        var hasPrior = false;
         var previousActive = false;
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
+                hasPrior = true;
                 previous = await reader.IsDBNullAsync(0, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(0);
                 previousProfile = await reader.IsDBNullAsync(1, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(1);
                 previousActive = reader.GetBoolean(2);
             }
         }
-        if (previous is null && cameraId is null) return null;
+        // An existing row records centered ownership in this agent's history. A legacy
+        // attachment (possibly to a different device) cannot clear that transport precaution.
+        var needsLegacyQuiescence = cameraId is null && hasPrior;
+        if (cameraId is null && !needsLegacyQuiescence) return null;
         if (previous is not null && (previous != cameraId || previousProfile != profileIdentity))
             await ExpireCenteredRunsAsync(connection, transaction, agentId, previous, "profile-replaced", false, cancellationToken)
                 .ConfigureAwait(false);
@@ -37,7 +42,7 @@ internal sealed partial class SqliteRawCaptureJournal
             await ExpireCenteredRunsAsync(connection, transaction, agentId, cameraId, "target-progress-unknown", true, cancellationToken)
                 .ConfigureAwait(false);
 
-        var transition = new CenteredOwnerTransition(agentId, cameraId, Guid.NewGuid());
+        var transition = new CenteredOwnerTransition(agentId, cameraId, Guid.NewGuid(), needsLegacyQuiescence);
         command.CommandText = """
             INSERT INTO centered_acquisition_owners(agent_id, camera_id, attachment_id, profile_identity, active_flag)
             VALUES ($agent, $camera, $attachment, $profile, 0)

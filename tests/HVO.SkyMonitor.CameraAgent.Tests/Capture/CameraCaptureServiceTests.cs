@@ -537,6 +537,7 @@ public sealed class CameraCaptureServiceTests
     private sealed class RigRecordingModule(TimeProvider clock) : ICameraModule
     {
         private int _captures;
+        public int CaptureCalls => Volatile.Read(ref _captures);
         public CameraModuleConfig? InitializedConfig { get; private set; }
         public string Id => "test";
         public string DisplayName => "Test";
@@ -667,6 +668,118 @@ public sealed class CameraCaptureServiceTests
                 stale.ReleaseInitialization.TrySetResult();
                 await service.StopAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
             }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [TestMethod]
+    public async Task PendingRig_InterveningScheduleActivationRevokesPreparedAttachmentBeforeCapture()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-prepared-revision-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var token = deadline.Token;
+        try
+        {
+            var clock = new FixedClock(new DateTimeOffset(2026, 9, 28, 20, 0, 0, TimeSpan.Zero));
+            var config = CreateConfig() with
+            {
+                AgentId = "prepared-before-c",
+                DeploymentLocation = DeploymentLocationSnapshot.Create("test-location", 1, "test", null,
+                    DateTimeOffset.UnixEpoch, null, 0, 0, 0, "UTC"),
+                Schedule = new("capture-schedule-v1",
+                    [new("night", TimeSpan.FromMilliseconds(1), 0, TimeSpan.FromSeconds(1))],
+                    [new("monday", DayOfWeek.Monday,
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue),
+                        new(CaptureScheduleBoundaryKind.FixedLocalTime, new TimeOnly(23, 59)), "night")])
+            };
+            var options = Options.Create(new CameraAgentHostOptions { RawIngressRoot = root, RawIngressReserveBytes = 0 });
+            using var ingress = CreateDurableIngress(options, clock);
+            using var store = new SqliteCaptureScheduleStore(ingress, options, clock);
+            using var telemetry = new CaptureControlTelemetry();
+            using var admission = new CaptureAdmissionCoordinator(ingress, options, clock, telemetry);
+            var pipeline = new EmptyPipelineFactory();
+            using var runtime = new CaptureScheduleRuntimeCoordinator(store, admission,
+                ingress.State, HealthyLanes(clock, options), pipeline, clock);
+            using var lifetime = new TestHostApplicationLifetime();
+            using var ownership = new CameraModuleOwnership();
+            var named = new SqliteNamedRigProfileStore(ingress, options, clock, store, runtime);
+            var accessor = new CameraAgentConfigurationAccessor();
+            await new CameraAgentConfigurationInitializer(new StaticLoader(config), accessor, pipeline,
+                NullLogger<CameraAgentConfigurationInitializer>.Instance, store, namedRigProfiles: named)
+                .StartAsync(token).ConfigureAwait(false);
+            await runtime.InitializeAsync(config, token).ConfigureAwait(false);
+            var active = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+            var selection = (await named.GetAsync(token).ConfigureAwait(false)).Selection;
+            var profile = await named.SaveProfileNameAsync(null, "Prepared B", token).ConfigureAwait(false);
+            var camera = await named.SaveEquipmentAsync(null, "camera", "Camera",
+                JsonSerializer.SerializeToElement(new NamedCameraEquipment(config.Module, config.Rig.Sensor, config.Rig.Readout)),
+                token).ConfigureAwait(false);
+            var optics = await named.SaveEquipmentAsync(null, "optics", "Optics B",
+                JsonSerializer.SerializeToElement(config.Rig.Optics with { FocalLengthMillimeters = 1 }), token).ConfigureAwait(false);
+            var mount = await named.SaveEquipmentAsync(null, "mount", "Mount",
+                JsonSerializer.SerializeToElement(config.Rig.Orientation), token).ConfigureAwait(false);
+            var rigB = await named.ComposeAsync(profile.ProfileId, camera.RevisionId, optics.RevisionId,
+                mount.RevisionId, token).ConfigureAwait(false);
+            var pending = await named.StageAsync(rigB.RevisionId, selection.Version, "prepare-b", "owner", true,
+                active.ActiveRevision.RevisionId, active.ActiveRevision.ProfileSha256, token).ConfigureAwait(false);
+            named.SnapshotStartupPendingSelection((await named.GetAsync(token).ConfigureAwait(false)).Selection);
+
+            var preparedModule = new RigRecordingModule(clock);
+            var nextModule = new RigRecordingModule(clock);
+            var factory = new SequenceModuleFactory(preparedModule, nextModule);
+            string? nextRevisionId = null;
+            CaptureScheduleCaptureContext committed = default;
+            var activationFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var service = new CameraCaptureService(accessor, factory, ingress, new RecordingDistributor(), clock,
+                new AstronomyEnginePlanetEphemeris(), telemetry, admission, new FleetRuntimeState(clock), lifetime,
+                NullLogger<CameraCaptureService>.Instance, scheduleRuntimeCoordinator: runtime, namedRigProfiles: named,
+                moduleOwnership: ownership)
+            {
+                PreparedAttachmentCommitted = async (attachment, ct) =>
+                {
+                    committed = attachment;
+                    try
+                    {
+                        var current = attachment.Snapshot.Revision.Profile;
+                        var profileC = current.Schedule.SetpointProfiles.Single() with { CaptureInterval = TimeSpan.FromSeconds(2) };
+                        var next = current with { Schedule = current.Schedule with { SetpointProfiles = [profileC] } };
+                        var currentState = await store.GetSnapshotAsync(ct).ConfigureAwait(false);
+                        var staged = await runtime.StageAsync(next, "stage-c", currentState.Version, "owner", null, ct)
+                            .ConfigureAwait(false);
+                        nextRevisionId = staged.PendingRevision!.RevisionId;
+                        await runtime.ActivateAsync(nextRevisionId, "activate-c", staged.Version, "owner", null, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IOException)
+                    {
+                        activationFailure.TrySetResult(ex);
+                        throw;
+                    }
+                }
+            };
+            await service.StartAsync(token).ConfigureAwait(false);
+            await lifetime.ApplicationStartedObserved.Task.WaitAsync(token).ConfigureAwait(false);
+            lifetime.NotifyStarted();
+            try
+            {
+                var result = await Task.WhenAny(ingress.Captured.Task, activationFailure.Task,
+                    Task.Delay(Timeout.InfiniteTimeSpan, token)).ConfigureAwait(false);
+                var diagnostics = activationFailure.Task.IsCompletedSuccessfully
+                    ? (await activationFailure.Task.ConfigureAwait(false)).ToString()
+                    : $"{named.PendingRuntimeFailure}; {named.ActiveRuntimeFailure}; factory calls {factory.CreateCalls}";
+                Assert.AreSame(ingress.Captured.Task, result, diagnostics);
+                var capture = await ingress.Captured.Task.ConfigureAwait(false);
+                Assert.AreEqual(pending.ScheduleRevisionId, committed.Snapshot.Revision.RevisionId);
+                Assert.IsTrue(committed.RevisionChanged.IsCancellationRequested);
+                Assert.IsNotNull(nextRevisionId);
+                Assert.AreEqual(nextRevisionId, capture.Manifest.Descriptor.CycleEvidence!.ScheduleAdmission!.ScheduleRevisionId);
+                Assert.AreEqual(0, preparedModule.CaptureCalls);
+                Assert.AreEqual(2, factory.CreateCalls);
+                Assert.IsTrue(ownership.TryAcquire(out var lease));
+                using var activeLease = lease!;
+                Assert.AreSame(nextModule, activeLease.Module);
+            }
+            finally { await service.StopAsync(CancellationToken.None).ConfigureAwait(false); }
         }
         finally { Directory.Delete(root, true); }
     }

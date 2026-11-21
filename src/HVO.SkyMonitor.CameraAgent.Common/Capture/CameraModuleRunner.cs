@@ -221,16 +221,26 @@ internal sealed class CameraModuleRunner
 
             using var acceptedAdmission = admission;
             CenteredExposureReservation? reservation = null;
+            DateTimeOffset? boundStartBeforeUtc = null;
             if (centered is not null)
             {
                 try
                 {
+                    if (scheduleGrant is not null)
+                    {
+                        var end = scheduleGrant.Evidence.EffectiveEndUtc;
+                        boundStartBeforeUtc = scheduleGrant.Decision.NextTransitionUtc is { } next && next < end ? next : end;
+                        if (!boundModule!.EnforcesBoundStartLimit)
+                            throw new InvalidOperationException("The selected camera cannot enforce the confirmed shutter start limit.");
+                    }
                     var scheduleBinding = scheduleGrant?.Evidence is { } grant
                         ? new CenteredScheduleBinding(grant.ScheduleRevisionSha256, grant.LocalProfileSha256,
                             grant.SetpointProfileId, grant.IntervalId, grant.OverrideId, cadenceMode)
                         : null;
                     reservation = await centered.ReserveCenteredAsync(scheduleBinding,
-                        scheduleGrant?.AdmissionWasInterrupted == true, cancellationToken).ConfigureAwait(false);
+                        scheduleGrant?.AdmissionWasInterrupted == true,
+                        scheduleGrant?.AdmissionStateVersion ?? _captureAdmissionCoordinator?.Snapshot.Version,
+                        cancellationToken).ConfigureAwait(false);
                     var initial = scheduleGrant?.Decision.Reason is null or CaptureScheduleAdmissionReason.LegacyCompatibility
                         ? ExposureController.Initial(config.Rig.Pipeline,
                             hostMetered ? ResolveSolarRegime(config, UtcNow()) : CaptureSolarRegime.Night)
@@ -282,7 +292,8 @@ internal sealed class CameraModuleRunner
                 request = request with
                 {
                     BoundGraphRevisionId = reservation.Revision.State.RevisionId,
-                    BoundGraph = reservation.Revision.Pipeline
+                    BoundGraph = reservation.Revision.Pipeline,
+                    BoundStartBeforeUtc = boundStartBeforeUtc
                 };
             CaptureResult? result;
             EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
@@ -302,13 +313,7 @@ internal sealed class CameraModuleRunner
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     acquisitionUtc = UtcNow();
-                    if (scheduleGrant?.Evidence is { } verified && acquisitionUtc >= verified.EffectiveEndUtc)
-                    {
-                        admission.MarkNoPublicationRequired();
-                        previousStartTimestamp = null;
-                        previousStartUtc = null;
-                        continue;
-                    }
+                    request.RequireOpenBoundStart(acquisitionUtc);
                     acquisitionStart = _timeProvider.GetTimestamp();
                     previousStartTimestamp = acquisitionStart;
                     previousStartUtc = acquisitionUtc;
@@ -317,6 +322,16 @@ internal sealed class CameraModuleRunner
                     ? await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false)
                     : await boundModule!.CaptureBoundAsync(reservation.Pending.Key, request, cancellationToken)
                         .ConfigureAwait(false);
+            }
+            catch (CaptureStartWindowClosedException) when (reservation is not null)
+            {
+                admission.MarkNoPublicationRequired();
+                await centered!.CenteredIngress.RefuseCenteredStartAsync(reservation.Pending.Key, CancellationToken.None)
+                    .ConfigureAwait(false);
+                previousStartTimestamp = null;
+                previousStartUtc = null;
+                recovering = false;
+                continue;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {

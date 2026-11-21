@@ -527,6 +527,14 @@ internal sealed partial class RawCaptureIngress :
                 {
                     expectedDescriptor = expectedDescriptor with { CycleEvidence = null };
                 }
+                if (manifest.Descriptor.CenteredAcquisition?.Module is { RequestedSetpoint: null } &&
+                    expectedDescriptor.CenteredAcquisition is { Module: { } reporting } acquisition)
+                {
+                    expectedDescriptor = expectedDescriptor with
+                    {
+                        CenteredAcquisition = acquisition with { Module = reporting with { RequestedSetpoint = null } }
+                    };
+                }
                 if (manifest.Descriptor.Location is null)
                 {
                     expectedDescriptor = expectedDescriptor with { Location = null };
@@ -905,7 +913,9 @@ internal sealed partial class RawCaptureIngress :
         CameraModuleConfig configuration,
         ReconstructionDescriptor descriptor)
     {
-        var requested = new CaptureSetpoint(
+        var acquisition = descriptor.CenteredAcquisition;
+        var reporting = acquisition?.Module;
+        var requested = reporting?.RequestedSetpoint ?? new CaptureSetpoint(
             descriptor.Controls.RequestedExposure,
             descriptor.Controls.RequestedGain,
             null,
@@ -915,8 +925,6 @@ internal sealed partial class RawCaptureIngress :
             descriptor.Controls.EffectiveGain,
             null,
             null);
-        var acquisition = descriptor.CenteredAcquisition;
-        var reporting = acquisition?.Module;
         var effectiveInterval = acquisition?.EffectiveInterval ?? configuration.Rig.Pipeline.CaptureInterval;
         var request = new CaptureRequest(
             descriptor.Timing.RequestedStartUtc,

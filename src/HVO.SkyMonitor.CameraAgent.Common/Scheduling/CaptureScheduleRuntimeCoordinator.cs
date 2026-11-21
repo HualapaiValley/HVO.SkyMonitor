@@ -151,12 +151,16 @@ public sealed class CaptureScheduleRuntimeCoordinator(
         return prepared with { PreparedStateVersion = state.Version };
     }
 
-    public async Task CommitPreparedStartupAsync(CaptureScheduleRuntimeSnapshot prepared,
+    public Task CommitPreparedStartupAsync(CaptureScheduleRuntimeSnapshot prepared,
+        Func<CancellationToken, Task> commit, CancellationToken cancellationToken)
+        => CommitPreparedAttachmentAsync(prepared, commit, cancellationToken);
+
+    internal async Task<CaptureScheduleCaptureContext> CommitPreparedAttachmentAsync(CaptureScheduleRuntimeSnapshot prepared,
         Func<CancellationToken, Task> commit, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(prepared);
         ArgumentNullException.ThrowIfNull(commit);
-        await _admissionCoordinator.ExecuteConfigurationBoundaryAsync(async token =>
+        return await _admissionCoordinator.ExecuteConfigurationBoundaryAsync(async token =>
             {
                 await _gate.WaitAsync(token).ConfigureAwait(false);
                 try
@@ -172,13 +176,22 @@ public sealed class CaptureScheduleRuntimeCoordinator(
                     {
                         await commit(token).ConfigureAwait(false);
                         CancellationTokenSource previous;
+                        CaptureScheduleCaptureContext committed;
                         lock (_stateGate)
                         {
                             Volatile.Write(ref _snapshot, prepared);
                             previous = Interlocked.Exchange(ref _revisionChanged, new CancellationTokenSource());
+                            committed = new(prepared, _revisionChanged.Token);
                         }
-                        await previous.CancelAsync().ConfigureAwait(false);
-                        return true;
+                        try
+                        {
+                            await previous.CancelAsync().ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            previous.Dispose();
+                        }
+                        return committed;
                     }
                     catch
                     {

@@ -74,10 +74,11 @@ internal sealed class CaptureHostContext(
     }
 
     internal Task<CenteredExposureReservation> ReserveCenteredAsync(
-        CenteredScheduleBinding? schedule, bool admissionInterrupted, CancellationToken cancellationToken)
+        CenteredScheduleBinding? schedule, bool admissionInterrupted, long? admissionStateVersion,
+        CancellationToken cancellationToken)
         => CenteredIngress.ReserveCenteredAsync(
             _configuration, projectedSceneStager?.FrozenResources ?? new(null, null, null, null, "unavailable"),
-            calibrationLibrary, cancellationToken, centeredDeviceIdentity, schedule, admissionInterrupted);
+            calibrationLibrary, cancellationToken, centeredDeviceIdentity, schedule, admissionInterrupted, admissionStateVersion);
 
     internal Task DispatchCenteredAsync(
         ExposureAttemptKey attempt, CaptureSetpoint setpoint, CaptureMeteringEvidence? metering, string reason,

@@ -27,6 +27,8 @@ public sealed class FileSystemFrameStorageService(
 
     private readonly ILogger<FileSystemFrameStorageService> _logger = logger;
 
+    internal Action? BrowseJournalDiscovered { get; init; }
+
     public async ValueTask<StoredFrameReference> SaveAsync(
         string storageRoot,
         FrameArtifact artifact,
@@ -63,17 +65,8 @@ public sealed class FileSystemFrameStorageService(
 
         storageRoot = Path.GetFullPath(storageRoot);
         var timestamp = frame.TimestampUtc.ToUniversalTime();
-        var directory = Path.Combine(
-            storageRoot,
-            "frames",
-            timestamp.Year.ToString("D4", CultureInfo.InvariantCulture),
-            timestamp.Month.ToString("D2", CultureInfo.InvariantCulture),
-            timestamp.Day.ToString("D2", CultureInfo.InvariantCulture),
-            artifact.Role.ToString());
-
-        var stem = string.Concat(timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture), "-", artifact.ArtifactId.ToString("N"));
-
-        var payloadPath = Path.Combine(directory, string.Concat(stem, ".bin"));
+        var payloadPath = GetPayloadPath(storageRoot, timestamp, artifact.ArtifactId, artifact.Role);
+        var directory = Path.GetDirectoryName(payloadPath)!;
         var metadata = new StoredFrameMetadata(
             artifact.ArtifactId,
             artifact.Role,
@@ -91,7 +84,7 @@ public sealed class FileSystemFrameStorageService(
                 frame.Metadata.Extra,
                 frame.Metadata.Scene));
 
-        var metadataPath = Path.Combine(directory, string.Concat(stem, ".json"));
+        var metadataPath = Path.ChangeExtension(payloadPath, ".json");
         var relativePayloadPath = Path.GetRelativePath(storageRoot, payloadPath);
         ValidateVersionedDescriptorAgreement(descriptor, artifact, frame);
 
@@ -467,6 +460,7 @@ public sealed class FileSystemFrameStorageService(
 
         storageRoot = Path.GetFullPath(storageRoot);
         using var journal = OpenCenteredBrowseJournal(storageRoot);
+        BrowseJournalDiscovered?.Invoke();
         using var visibility = journal?.CreateCommand();
         if (visibility is not null)
         {
@@ -475,7 +469,8 @@ public sealed class FileSystemFrameStorageService(
             if (schema.ExecuteScalar() is 2L)
             {
                 visibility.CommandText = """
-                    SELECT NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture)
+                    SELECT ($requires_settlement = 0
+                            AND NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture))
                        OR EXISTS (
                            SELECT 1 FROM processing_outputs output
                            JOIN processing_execution_outputs association
@@ -488,11 +483,15 @@ public sealed class FileSystemFrameStorageService(
             }
             else
             {
-                visibility.CommandText = "SELECT NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture);";
+                visibility.CommandText = """
+                    SELECT $requires_settlement = 0
+                        AND NOT EXISTS (SELECT 1 FROM centered_exposure_attempts WHERE capture_id = $capture);
+                    """;
             }
             visibility.Parameters.Add("$capture", SqliteType.Text);
             visibility.Parameters.Add("$artifact", SqliteType.Text);
             visibility.Parameters.Add("$path", SqliteType.Text);
+            visibility.Parameters.Add("$requires_settlement", SqliteType.Integer);
         }
 
         var references = new List<StoredFrameCandidate>();
@@ -605,7 +604,8 @@ public sealed class FileSystemFrameStorageService(
                 manifest.RelativeArtifactPath,
                 descriptor.Layout.ByteLength,
                 descriptor.Capture.CaptureId,
-                manifest.ProducerStepId is not null);
+                manifest.ProducerStepId is not null,
+                descriptor.Artifact.Role != FrameArtifactRole.Raw && descriptor.CenteredAcquisition is not null);
             return true;
         }
         catch (JsonException)
@@ -656,11 +656,14 @@ public sealed class FileSystemFrameStorageService(
     private static bool IsPublishedForCompatibility(
         SqliteCommand? visibility, VersionedSidecarBinding binding, Guid artifactId)
     {
-        if (visibility is null || !binding.HasProducer)
+        if (visibility is null)
+            return !binding.RequiresSettlement;
+        if (!binding.HasProducer && !binding.RequiresSettlement)
             return true;
         visibility.Parameters["$capture"].Value = binding.CaptureId.ToString("N");
         visibility.Parameters["$artifact"].Value = artifactId.ToString("N");
         visibility.Parameters["$path"].Value = binding.RelativeArtifactPath.Replace('\\', '/');
+        visibility.Parameters["$requires_settlement"].Value = binding.RequiresSettlement ? 1 : 0;
         return visibility.ExecuteScalar() is 1L;
     }
 
@@ -771,20 +774,20 @@ public sealed class FileSystemFrameStorageService(
         return File.Exists(currentPath) ? currentPath : null;
     }
 
-    private static string GetPayloadPath(
-        string storageRoot,
-        StoredFrameMetadata metadata)
+    private static string GetPayloadPath(string storageRoot, StoredFrameMetadata metadata)
+        => GetPayloadPath(storageRoot, metadata.TimestampUtc.ToUniversalTime(), metadata.ArtifactId, metadata.Role);
+
+    internal static string GetPayloadPath(string storageRoot, DateTimeOffset timestamp, Guid artifactId, FrameArtifactRole role)
     {
-        var timestamp = metadata.TimestampUtc.ToUniversalTime();
         var stem = string.Concat(
             timestamp.ToString("yyyy-MM-dd_HH-mm-ss.fff'Z'", CultureInfo.InvariantCulture),
-            "-", metadata.ArtifactId.ToString("N"));
+            "-", artifactId.ToString("N"));
         return Path.Combine(
             storageRoot, "frames",
             timestamp.Year.ToString("D4", CultureInfo.InvariantCulture),
             timestamp.Month.ToString("D2", CultureInfo.InvariantCulture),
             timestamp.Day.ToString("D2", CultureInfo.InvariantCulture),
-            metadata.Role.ToString(), string.Concat(stem, ".bin"));
+            role.ToString(), string.Concat(stem, ".bin"));
     }
 
     private sealed record StoredFrameMetadata(
@@ -809,7 +812,7 @@ public sealed class FileSystemFrameStorageService(
     private sealed record StoredFrameCandidate(StoredFrameReference Reference, Guid ArtifactId);
 
     private sealed record VersionedSidecarBinding(
-        string RelativeArtifactPath, long ByteLength, Guid CaptureId, bool HasProducer);
+        string RelativeArtifactPath, long ByteLength, Guid CaptureId, bool HasProducer, bool RequiresSettlement);
 
     public void Dispose() => GC.SuppressFinalize(this);
 

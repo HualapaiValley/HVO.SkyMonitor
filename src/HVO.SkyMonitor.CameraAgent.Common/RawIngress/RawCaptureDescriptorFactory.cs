@@ -152,6 +152,9 @@ internal static class RawCaptureDescriptorFactory
             ModuleCallStartedUtc = acquisition.ModuleCallStartedUtc.ToUniversalTime(),
             Module = new(submission.Request.Mode, submission.Request.TargetInterval, submission.Result.Mode,
                 submission.Result.NextSetpoint, submission.Result.ProcessingLatency, submission.Result.RequiresImmediateUpload)
+            {
+                RequestedSetpoint = submission.Request.RequestedSetpoint
+            }
         };
     }
 

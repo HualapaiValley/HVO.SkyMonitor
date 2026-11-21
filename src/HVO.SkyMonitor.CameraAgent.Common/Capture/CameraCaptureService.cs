@@ -65,6 +65,7 @@ public sealed class CameraCaptureService(
     private readonly CameraModuleOwnership? _moduleOwnership = moduleOwnership;
     private static readonly TimeSpan RestartDelay = TimeSpan.FromSeconds(5);
     internal TimeSpan ModuleLeaseDrainTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    internal Func<CaptureScheduleCaptureContext, CancellationToken, Task>? PreparedAttachmentCommitted { get; init; }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Capture loop must continue after transient module failures.")]
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -150,6 +151,11 @@ public sealed class CameraCaptureService(
                         deviceIdentity = identity;
                     }, captureToken).ConfigureAwait(false);
                 }
+                else if (transition?.RequiresLegacyQuiescence == true && module is ICameraBoundExposureCapture legacyBound)
+                {
+                    await legacyBound.InitializeBoundAsync(config, static (_, _) => ValueTask.CompletedTask, captureToken)
+                        .ConfigureAwait(false);
+                }
                 else
                 {
                     await module.InitializeAsync(config, captureToken).ConfigureAwait(false);
@@ -158,11 +164,15 @@ public sealed class CameraCaptureService(
                 {
                     try
                     {
-                        await _scheduleRuntimeCoordinator!.CommitPreparedStartupAsync(prepared,
-                            token => namedRigProfiles!.CommitInitializedAsync(pending!, config, token),
-                            stoppingToken).ConfigureAwait(false);
-                        captureContext = _scheduleRuntimeCoordinator.CaptureContext;
+                        captureContext = await _scheduleRuntimeCoordinator!.CommitPreparedAttachmentAsync(prepared, async token =>
+                        {
+                            await namedRigProfiles!.CommitInitializedAsync(pending!, config, token).ConfigureAwait(false);
+                            if (transition is not null)
+                                await durableIngress!.ActivateCenteredOwnerAsync(transition, token).ConfigureAwait(false);
+                        }, stoppingToken).ConfigureAwait(false);
                         startupPending = null;
+                        if (PreparedAttachmentCommitted is { } afterCommit)
+                            await afterCommit(captureContext.Value, stoppingToken).ConfigureAwait(false);
                     }
                     catch (CaptureScheduleStoreConflictException) when (
                         _captureAdmissionCoordinator.Snapshot.State != CaptureAdmissionState.Unavailable)
@@ -179,7 +189,7 @@ public sealed class CameraCaptureService(
                         throw;
                     }
                 }
-                if (transition is not null)
+                if (prepared is null && transition is not null)
                     await durableIngress!.ActivateCenteredOwnerAsync(transition, captureToken).ConfigureAwait(false);
                 moduleInitialized = true;
                 startupPending = null;
@@ -188,7 +198,14 @@ public sealed class CameraCaptureService(
                 namedRigProfiles?.ReportActiveRuntimeFailure(null);
                 _fleetRuntimeState.ModuleAvailable();
                 _logger.CameraModuleInitialized(module.DisplayName);
-                _moduleOwnership?.Publish(module, config);
+                using var runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                    captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
+                if (runnerCancellation.IsCancellationRequested)
+                {
+                    if (stoppingToken.IsCancellationRequested) break;
+                    continue;
+                }
+                _moduleOwnership?.Publish(module, config, runnerCancellation.Token);
 
                 var hostContext = new CaptureHostContext(
                      config, _rawCaptureIngress, _captureDistributor, _environmentalTriggers,
@@ -206,8 +223,6 @@ public sealed class CameraCaptureService(
                     _fleetRuntimeState,
                     _scheduleRuntimeCoordinator,
                     _environmentalTriggers);
-                using var runnerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                    captureToken, captureContext?.RevisionChanged ?? CancellationToken.None);
                 await runner.RunAsync(runnerCancellation.Token).ConfigureAwait(false);
                 if (_scheduleRuntimeCoordinator is not null &&
                     runnerCancellation.IsCancellationRequested && !stoppingToken.IsCancellationRequested)

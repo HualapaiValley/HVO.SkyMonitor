@@ -200,6 +200,13 @@ public sealed record ReconstructionDescriptor(
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CenteredCaptureAcquisitionEvidence? CenteredAcquisition { get; init; }
 
+    [JsonIgnore]
+    public CaptureScheduleAdmissionEvidence? RetainedScheduleAdmission
+        => CenteredAcquisition?.ScheduleAdmission ?? CycleEvidence?.ScheduleAdmission;
+
+    [JsonIgnore]
+    public CaptureCadenceMode? RetainedCadenceMode => CenteredAcquisition?.CadenceMode ?? CycleEvidence?.CadenceMode;
+
     public CaptureContractValidationResult Validate()
         => ReconstructionDescriptorValidator.Validate(this);
 }
@@ -252,7 +259,7 @@ internal static class ReconstructionDescriptorValidator
         }
         var acquisition = descriptor.CenteredAcquisition;
         if (acquisition is not null && (descriptor.CycleEvidence is not null ||
-            !Enum.IsDefined(acquisition.CadenceMode) || acquisition.EffectiveInterval <= TimeSpan.Zero ||
+            !CaptureScheduleContract.IsValidCaptureInterval(acquisition.CadenceMode, acquisition.EffectiveInterval) ||
             acquisition.ModuleDuration < TimeSpan.Zero || !IsUtc(acquisition.ModuleCallStartedUtc) ||
             acquisition.AcquisitionAttemptId == Guid.Empty ||
             acquisition.EnvironmentalUnavailable && acquisition.AcquisitionAttemptId is null ||
@@ -265,12 +272,20 @@ internal static class ReconstructionDescriptorValidator
         }
         if (acquisition?.Module is { } reporting &&
             (!Enum.IsDefined(reporting.RequestMode) || !Enum.IsDefined(reporting.ResultMode) ||
-             reporting.RequestedInterval <= TimeSpan.Zero || reporting.ProcessingLatency < TimeSpan.Zero ||
+             !CaptureScheduleContract.IsValidCaptureInterval(acquisition.CadenceMode, reporting.RequestedInterval) ||
+             reporting.ProcessingLatency < TimeSpan.Zero ||
              reporting.ReportedSetpoint is not { Exposure.Ticks: > 0 } setpoint ||
              !double.IsFinite(setpoint.Gain) || setpoint.Gain < 0 ||
              !IsFinitePositive(setpoint.TargetFps) || setpoint.NextIntervalOverride is { Ticks: <= 0 }))
         {
             return Failure(CaptureContractReasonCodes.InvalidTimingOrder, "descriptor.centeredAcquisition.module");
+        }
+        if (acquisition?.Module?.RequestedSetpoint is { } requested &&
+            (requested.Exposure != descriptor.Controls.RequestedExposure ||
+             requested.Gain != descriptor.Controls.RequestedGain ||
+             !IsFinitePositive(requested.TargetFps) || requested.NextIntervalOverride is { Ticks: <= 0 }))
+        {
+            return Failure(CaptureContractReasonCodes.InvalidControls, "descriptor.centeredAcquisition.module.requestedSetpoint");
         }
         var centeredSchedule = CaptureScheduleContract.ValidateAdmissionEvidence(acquisition?.ScheduleAdmission);
         if (!centeredSchedule.IsValid) return centeredSchedule;
@@ -286,7 +301,7 @@ internal static class ReconstructionDescriptorValidator
         {
             return Failure(CaptureContractReasonCodes.InvalidLocationInterval, "descriptor.location.effectiveInterval");
         }
-        if ((acquisition?.ScheduleAdmission ?? descriptor.CycleEvidence?.ScheduleAdmission) is { } scheduleAdmission &&
+        if (descriptor.RetainedScheduleAdmission is { } scheduleAdmission &&
             (descriptor.Location is null ||
              !string.Equals(
                  scheduleAdmission.DeploymentLocationId,

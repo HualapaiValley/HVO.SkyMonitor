@@ -24,7 +24,11 @@ public sealed record CenteredModuleReportingEvidence(
     CaptureMode ResultMode,
     CaptureSetpoint ReportedSetpoint,
     TimeSpan ProcessingLatency,
-    bool RequiresImmediateUpload);
+    bool RequiresImmediateUpload)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureSetpoint? RequestedSetpoint { get; init; }
+}
 
 /// <summary>Identifies why a camera module call began.</summary>
 public enum CaptureStartReason

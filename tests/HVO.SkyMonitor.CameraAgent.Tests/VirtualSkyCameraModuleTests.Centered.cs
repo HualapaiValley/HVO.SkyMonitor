@@ -31,6 +31,11 @@ public sealed partial class VirtualSkyCameraModuleTests
         var attempt = new ExposureAttemptKey(new(config.AgentId!, "virtual-one"), Guid.NewGuid(), 101, Guid.NewGuid());
         var request = new CaptureRequest(FixtureUtc.AddMilliseconds(-1), TimeSpan.FromSeconds(1), CaptureMode.Still,
             new(TimeSpan.FromMilliseconds(20), 10, null, null));
+        var refused = request with { BoundStartBeforeUtc = FixtureUtc };
+        await Assert.ThrowsExactlyAsync<CaptureStartWindowClosedException>(() =>
+            module.CaptureBoundAsync(attempt, refused, CancellationToken.None)).ConfigureAwait(false);
+        attempt = new(attempt.Camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        request = request with { BoundStartBeforeUtc = FixtureUtc.AddMilliseconds(1) };
         var result = await module.CaptureBoundAsync(attempt, request, CancellationToken.None).ConfigureAwait(false);
         Assert.IsNotNull(result.Frame);
         Assert.IsNotNull(result.Frame.Layout);

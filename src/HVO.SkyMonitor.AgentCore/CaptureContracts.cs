@@ -14,6 +14,17 @@ public sealed record CaptureRequest(
 
     [JsonIgnore]
     public CapturePipelineConfig? BoundGraph { get; init; }
+
+    /// <summary>The exclusive shutter-start limit for a confirmed bound capture grant.</summary>
+    [JsonIgnore]
+    public DateTimeOffset? BoundStartBeforeUtc { get; init; }
+
+    /// <summary>Check the confirmed grant at the device-owned shutter boundary.</summary>
+    public void RequireOpenBoundStart(DateTimeOffset utc)
+    {
+        if (BoundStartBeforeUtc is { } limit && utc >= limit)
+            throw new CaptureStartWindowClosedException();
+    }
 }
 
 public sealed record CaptureResult(

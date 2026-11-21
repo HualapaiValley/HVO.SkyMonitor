@@ -109,11 +109,9 @@ internal sealed class FileStorageCaptureProcessingStep(
                             throw new InvalidDataException(
                                 "Per-step upload publication requires a reconstructable processing product.");
                         }
-                        var descriptor = DerivativeDescriptorFactory.Create(
-                            rawCapture.Manifest.Descriptor,
-                            artifact.ArtifactId,
-                            artifact.Frame.Metadata.SourceId ?? Name,
-                            product);
+                        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                            Options.StorageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name,
+                            product, cancellationToken).ConfigureAwait(false);
                         var published = await _frameStorageService.SaveAsync(
                             Options.StorageRoot,
                             artifact,
@@ -151,11 +149,9 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     if (product is not null && context.RawCapture is { } rawCapture)
                     {
-                        var descriptor = DerivativeDescriptorFactory.Create(
-                            rawCapture.Manifest.Descriptor,
-                            artifact.ArtifactId,
-                            artifact.Frame.Metadata.SourceId ?? Name,
-                            product);
+                        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                            Options.StorageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name,
+                            product, cancellationToken).ConfigureAwait(false);
                         // Canonical pixels were already committed with their producer identity.
                         // Reuse those exact facts even when a broad Storage policy selects them.
                         var manifestProducerStepId = metadataAlreadyStoredUnderRoot || policy?.StepId is not null

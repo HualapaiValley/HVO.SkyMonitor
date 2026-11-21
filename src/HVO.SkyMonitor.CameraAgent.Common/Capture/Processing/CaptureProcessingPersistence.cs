@@ -756,11 +756,9 @@ internal sealed partial class CaptureProcessingPersistence(
                 else
                 {
                     var artifact = context.FindArtifact(product);
-                    var descriptor = DerivativeDescriptorFactory.Create(
-                        rawCapture.Manifest.Descriptor,
-                        artifact.ArtifactId,
-                        artifact.Frame.Metadata.SourceId ?? node.Id,
-                        product);
+                    var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+                        _storageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? node.Id,
+                        product, cancellationToken).ConfigureAwait(false);
                     var stored = await _frameStorage.SaveAsync(
                         _storageRoot, artifact, descriptor, node.Id, cancellationToken).ConfigureAwait(false);
                     var relativePayloadPath = NormalizeRelativePath(stored.RelativePath);

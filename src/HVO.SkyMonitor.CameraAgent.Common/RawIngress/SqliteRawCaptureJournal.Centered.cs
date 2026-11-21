@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -19,6 +20,9 @@ internal sealed record CenteredRunSnapshot(
     string? DeviceIdentity = null,
     CenteredScheduleBinding? Schedule = null)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AdmissionStateVersion { get; init; }
+
     internal byte[] Serialize() => JsonSerializer.SerializeToUtf8Bytes(this);
 }
 
@@ -27,7 +31,8 @@ internal sealed record CenteredCalibrationBinding(string BundleId, string Bundle
 internal sealed record CenteredScheduleBinding(
     string Revision, string LocalProfile, string Profile, string Interval, string? Override, CaptureCadenceMode Cadence);
 
-internal sealed record CenteredOwnerTransition(string AgentId, string? CameraId, Guid AttachmentId);
+internal sealed record CenteredOwnerTransition(
+    string AgentId, string? CameraId, Guid AttachmentId, bool RequiresLegacyQuiescence = false);
 
 internal sealed record CenteredPendingAttempt(
     ExposureAttemptKey Key, CenteredRunSnapshot Run, string RunHash, Guid? SourceCaptureId);
@@ -177,7 +182,14 @@ internal sealed partial class SqliteRawCaptureJournal
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal async Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+    internal Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+        => ExpireCenteredTargetAsync(attempt, "pending", "metering.source-evidence-unavailable", cancellationToken);
+
+    internal Task RefuseCenteredStartAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
+        => ExpireCenteredTargetAsync(attempt, "dispatched", "schedule.start-window-closed", cancellationToken);
+
+    private async Task ExpireCenteredTargetAsync(
+        ExposureAttemptKey attempt, string status, string reason, CancellationToken cancellationToken)
     {
         using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -186,8 +198,8 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Transaction = transaction;
         command.CommandText = """
             UPDATE centered_exposure_attempts
-            SET status = 'expired', reason = 'metering.source-evidence-unavailable'
-            WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal AND status = 'pending'
+            SET status = 'expired', reason = $reason
+            WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal AND status = $status
               AND EXISTS (
                 SELECT 1 FROM centered_exposure_runs WHERE run_id = $run AND agent_id = $agent
                     AND camera_id = $camera AND closed_reason IS NULL);
@@ -195,11 +207,11 @@ internal sealed partial class SqliteRawCaptureJournal
         AddAttemptParameters(command, attempt);
         command.Parameters.AddWithValue("$agent", attempt.Camera.AgentId);
         command.Parameters.AddWithValue("$camera", attempt.Camera.CameraId);
+        command.Parameters.AddWithValue("$status", status);
+        command.Parameters.AddWithValue("$reason", reason);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             throw new RawIngressConflictException("The centered attempt could not be retired before opening a fresh target.");
-        command.CommandText = """
-            UPDATE centered_exposure_runs SET closed_reason = 'metering.source-evidence-unavailable' WHERE run_id = $run;
-            """;
+        command.CommandText = "UPDATE centered_exposure_runs SET closed_reason = $reason WHERE run_id = $run;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -294,19 +306,22 @@ internal sealed partial class SqliteRawCaptureJournal
         command.CommandText = """
             SELECT requested_json FROM centered_exposure_attempts
             WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal
-                AND status IN ('dispatched', 'expired') AND capture_id IS NULL;
+                AND status IN ('dispatched', 'expired') AND capture_id IS NULL
+                AND reason IS NOT 'schedule.start-window-closed';
             """;
         AddAttemptParameters(command, binding.Source);
         var requestedJson = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as byte[];
         var request = requestedJson is null ? null : JsonSerializer.Deserialize<CaptureSetpoint>(requestedJson);
+        var recorded = manifest.Descriptor.CenteredAcquisition?.Module?.RequestedSetpoint;
         if (request is null || request.Exposure != manifest.Descriptor.Controls.RequestedExposure ||
-            request.Gain != manifest.Descriptor.Controls.RequestedGain)
+            request.Gain != manifest.Descriptor.Controls.RequestedGain || recorded is not null && recorded != request)
             throw new RawIngressConflictException("The actual capture is not bound to the dispatched settings request.");
 
         command.CommandText = """
             UPDATE centered_exposure_attempts SET status = 'observed', capture_id = $capture
             WHERE attempt_id = $attempt AND run_id = $run AND ordinal = $ordinal
-                AND status IN ('dispatched', 'expired') AND requested_json IS NOT NULL AND capture_id IS NULL;
+                AND status IN ('dispatched', 'expired') AND requested_json IS NOT NULL AND capture_id IS NULL
+                AND reason IS NOT 'schedule.start-window-closed';
             """;
         command.Parameters.AddWithValue("$capture", entry.CaptureId.ToString("N"));
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
