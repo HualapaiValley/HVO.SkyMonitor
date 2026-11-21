@@ -42,13 +42,11 @@ public sealed partial class LocalAutomationRunnerService(
         await base.StartAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    public override async Task StopAsync(CancellationToken cancellationToken)
+    public override Task StopAsync(CancellationToken cancellationToken)
     {
-        await base.StopAsync(cancellationToken).ConfigureAwait(false);
-        if (offSweepWorker is not null)
-        {
-            await offSweepWorker.StopAsync(cancellationToken).ConfigureAwait(false);
-        }
+        var runnerStop = base.StopAsync(cancellationToken);
+        // A callback on the runner's token can fault its stop while an off-sweep claim still holds authority.
+        return offSweepWorker is null ? runnerStop : Task.WhenAll(runnerStop, offSweepWorker.StopAsync(cancellationToken));
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
