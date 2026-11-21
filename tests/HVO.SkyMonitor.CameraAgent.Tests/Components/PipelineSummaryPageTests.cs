@@ -532,8 +532,9 @@ public sealed class PipelineSummaryPageTests
         using var context = CreateContext(schedule);
         context.Services.AddSingleton(TimeProvider.System);
         var page = context.Render<SchedulePage>();
-        await page.WaitForElement("#schedule-edit-open").ClickAsync().ConfigureAwait(false);
-        var processing = page.FindAll(".schedule-steps button").Single(static button => button.TextContent.EndsWith("Processing", StringComparison.Ordinal));
+        await page.WaitForElement("#schedule-edit-open:not([disabled])").ClickAsync().ConfigureAwait(false);
+        var processing = page.WaitForElements("dialog.schedule-editor .schedule-steps button")
+            .Single(static button => button.TextContent.EndsWith("Processing", StringComparison.Ordinal));
         await processing.ClickAsync().ConfigureAwait(false);
         var plan = page.Find("section[aria-labelledby='schedule-step-processing']");
         Assert.IsFalse(plan.HasAttribute("hidden"));
