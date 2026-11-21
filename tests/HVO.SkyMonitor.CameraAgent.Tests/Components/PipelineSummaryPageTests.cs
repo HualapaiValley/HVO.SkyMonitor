@@ -280,7 +280,7 @@ public sealed class PipelineSummaryPageTests
         }
     }
 
-    private static async Task AssertStructuralRoundTripAsync(ICameraAgentProcessingGraphUiService graphs,
+    private static async Task AssertStructuralRoundTripAsync(CameraAgentProcessingGraphUiService graphs,
         CapturePipelineConfig pipeline, IReadOnlyList<CaptureProcessingStepConfig> generated,
         Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
     {
