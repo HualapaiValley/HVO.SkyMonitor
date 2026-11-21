@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.Processing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -38,6 +39,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
         if (!readyBeforePoll)
         {
+            await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
             await AssertWaitingForLocationAsync(fixture).ConfigureAwait(false);
             fixture.Clock.AdvanceTo(Epoch.AddSeconds(1));
             await fixture.ReconcileLocationAsync().ConfigureAwait(false);
@@ -50,6 +52,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         var attempts = await fixture.ReadAttemptsAsync().ConfigureAwait(false);
         Assert.HasCount(1, attempts, "Scrub completion must settle the original due slot.");
         var initial = attempts.Single();
+        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
         Assert.AreEqual(next, (await fixture.ReadStatesAsync().ConfigureAwait(false)).Single().NextPollUtc);
         if (effectiveAtDue)
         {
@@ -87,6 +90,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         await using var fixtureLifetime = fixture.ConfigureAwait(false);
         await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
         await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
+        await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
         await AssertWaitingForLocationAsync(fixture).ConfigureAwait(false);
         if (corruptHistory)
         {
@@ -107,32 +111,65 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     }
 
     [TestMethod]
-    public async Task ProtectedLocationStartup_RestartAfterTheBoundarySettlesThePendingSlot()
+    [DataRow(true, 1, 0, DisplayName = "Healthy stop before first due retains ordinary cadence")]
+    [DataRow(false, 1, 0, DisplayName = "Overdue held slot is settled on restart")]
+    [DataRow(false, 2, 0, DisplayName = "Two starts before recovery preserve the first held slot")]
+    [DataRow(false, 1, 5_000, DisplayName = "Held due time retains sub-millisecond precision")]
+    public async Task ProtectedLocationStartup_RestartSeparatesHeldAndOrdinarySchedule(
+        bool readyBeforeStop, int restartWindows, int epochOffsetTicks)
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-restart-{Guid.NewGuid():N}");
         var location = Location(Epoch.AddDays(-1));
+        var due = Epoch.AddTicks(epochOffsetTicks);
         try
         {
-            var initial = new Fixture(Epoch.AddSeconds(-1), location, root: root, protectedStartup: true);
+            var initial = new Fixture(due.AddSeconds(-1), location, root: root, protectedStartup: true, startupEpoch: due);
             await using (initial.ConfigureAwait(false))
             {
                 await initial.LoadProvisionalLocationAsync().ConfigureAwait(false);
-                await initial.StartAndFireFirstPollAsync().ConfigureAwait(false);
-                await AssertWaitingForLocationAsync(initial).ConfigureAwait(false);
+                if (readyBeforeStop)
+                {
+                    await initial.ReconcileLocationAsync().ConfigureAwait(false);
+                    await initial.StartAndWaitForPollAsync(due).ConfigureAwait(false);
+                    Assert.IsNull(await initial.ReadLocationHeldPollAsync().ConfigureAwait(false));
+                    Assert.IsEmpty(await initial.ReadAttemptsAsync().ConfigureAwait(false));
+                }
+                else
+                {
+                    await initial.StartAndFireFirstPollAsync().ConfigureAwait(false);
+                    await initial.WaitForLocationHoldAsync().ConfigureAwait(false);
+                    await AssertWaitingForLocationAsync(initial).ConfigureAwait(false);
+                }
             }
 
-            var reopened = new Fixture(Epoch + StartupSourcePeriod + TimeSpan.FromSeconds(1), location, root: root,
-                protectedStartup: true);
+            for (var window = 1; window < restartWindows; window++)
+            {
+                var stillPending = new Fixture((due + StartupSourcePeriod * window).AddSeconds(1), location, root: root,
+                    protectedStartup: true, startupEpoch: due);
+                await using (stillPending.ConfigureAwait(false))
+                {
+                    await stillPending.LoadProvisionalLocationAsync().ConfigureAwait(false);
+                    await stillPending.StartAndWaitForScheduleWriteAsync().ConfigureAwait(false);
+                    await AssertWaitingForLocationAsync(stillPending).ConfigureAwait(false);
+                }
+            }
+
+            var currentSlot = due + StartupSourcePeriod * restartWindows;
+            var reopened = new Fixture(currentSlot.AddSeconds(1), location, root: root, protectedStartup: true,
+                startupEpoch: due);
             await using (reopened.ConfigureAwait(false))
             {
-                await reopened.LoadProvisionalLocationAsync().ConfigureAwait(false);
-                await reopened.ReconcileLocationAsync().ConfigureAwait(false);
-                var next = Epoch + StartupSourcePeriod + StartupSourcePeriod;
+                await reopened.LoadLocationAsync(expectProvisional: !readyBeforeStop).ConfigureAwait(false);
+                if (!readyBeforeStop) await reopened.ReconcileLocationAsync().ConfigureAwait(false);
+                var next = currentSlot + StartupSourcePeriod;
                 await reopened.StartAndWaitForPollAsync(next).ConfigureAwait(false);
 
+                var expected = readyBeforeStop ? currentSlot : due;
                 var state = (await reopened.ReadStatesAsync().ConfigureAwait(false)).Single();
-                Assert.AreEqual(Epoch, state.LastObservedUtc, "Restart must settle the first poll retained in the journal.");
-                Assert.AreEqual(next, state.NextPollUtc);
+                Assert.AreEqual(expected, reopened.Publisher.Facts.Single().ObservedAtUtc);
+                Assert.AreEqual(JournalTime(expected), state.LastObservedUtc);
+                Assert.AreEqual(JournalTime(next), state.NextPollUtc);
+                Assert.IsNull(await reopened.ReadLocationHeldPollAsync().ConfigureAwait(false));
                 Assert.HasCount(1, await reopened.ReadAttemptsAsync().ConfigureAwait(false));
                 Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
             }
@@ -143,11 +180,30 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         }
     }
 
+    [TestMethod]
+    public async Task ProtectedLocationStartup_HealthySourceDoesNotParseUnrelatedRetiredRuntimeRows()
+    {
+        var fixture = new Fixture(Epoch, Location(Epoch.AddDays(-1)), protectedStartup: true);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+        await fixture.WriteRetiredRuntimeRowAsync().ConfigureAwait(false);
+        await fixture.StartAndWaitForPollAsync(Epoch + StartupSourcePeriod).ConfigureAwait(false);
+
+        Assert.AreEqual(Epoch, fixture.Publisher.Facts.Single().ObservedAtUtc);
+        Assert.HasCount(1, await fixture.ReadAttemptsAsync().ConfigureAwait(false));
+        Assert.IsFalse(fixture.Logger.Events.Any(static entry => entry.Id == 2526));
+    }
+
+    private static DateTimeOffset JournalTime(DateTimeOffset value)
+        => DateTimeOffset.FromUnixTimeMilliseconds(value.ToUnixTimeMilliseconds());
+
     private static async Task AssertWaitingForLocationAsync(Fixture fixture)
     {
         Assert.IsNull(fixture.ProtectedLocation!.Active);
         var pending = (await fixture.ReadStatesAsync().ConfigureAwait(false)).Single();
-        Assert.AreEqual(Epoch, pending.NextPollUtc, "A due source must retain its slot while the protected location is unavailable.");
+        Assert.AreEqual(JournalTime(fixture.StartupEpoch), pending.NextPollUtc, "A due source must retain its slot while the protected location is unavailable.");
+        Assert.AreEqual(fixture.StartupEpoch, await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
         Assert.IsNull(pending.LastDisposition);
         Assert.IsEmpty(await fixture.ReadAttemptsAsync().ConfigureAwait(false));
         Assert.AreEqual(0L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
@@ -312,13 +368,14 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         private readonly CancellationTokenSource _applicationStopping = new();
         private readonly FileCameraAgentConfigurationLoader? _loader;
         private readonly RetainedIntegrityScrubService? _scrub;
+        private readonly SignalingScheduleStore? _scheduleWitness;
         private readonly string _configurationPath;
         private readonly bool _ownsRoot;
         private bool _started;
         private readonly int _sourceCount;
 
         public Fixture(DateTimeOffset startup, DeploymentLocationSnapshot location, int sourceCount = 1, string? root = null,
-            bool protectedStartup = false, bool useExplicitEffectiveFrom = true)
+            bool protectedStartup = false, bool useExplicitEffectiveFrom = true, DateTimeOffset? startupEpoch = null)
         {
             Root = root ?? Path.Combine(Path.GetTempPath(), $"hvo-environmental-boundary-{Guid.NewGuid():N}");
             Directory.CreateDirectory(Root);
@@ -326,6 +383,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             _sourceCount = sourceCount;
             Clock = new ManualClock(startup);
             Location = location;
+            StartupEpoch = startupEpoch ?? Epoch;
             _store = new SqliteEnvironmentalObservationOutbox(timeProvider: Clock);
             Publisher = new RecordingPublisher(_store, Root);
             _telemetry = new EnvironmentalAcquisitionTelemetry(Clock);
@@ -353,7 +411,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                         Kind = EnvironmentalObservationKind.AirTemperature,
                         Required = true,
                         Triggers = [EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionTrigger.BeforeCapture],
-                        ScheduleEpochUtc = Epoch,
+                        ScheduleEpochUtc = StartupEpoch,
                         PeriodSeconds = protectedStartup ? (int)StartupSourcePeriod.TotalSeconds : 30,
                         ValidForSeconds = 120,
                         StaleAfterSeconds = 45,
@@ -376,16 +434,19 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                     ProtectedLocation, hostLifetime: lifetime.Object, timeProvider: Clock);
                 _scrub = new RetainedIntegrityScrubService(_loader, NullLogger<RetainedIntegrityScrubService>.Instance,
                     Clock, locations: ProtectedLocation, hostLifetime: lifetime.Object);
+                _scheduleWitness = new SignalingScheduleStore(_store);
             }
             Coordinator = new EnvironmentalAcquisitionCoordinator(
                 factory, Publisher, (IDeploymentLocationStore?)ProtectedLocation ?? new FixedLocationStore(location),
                 options, Clock, _store, _telemetry);
             _service = new EnvironmentalAcquisitionService(
-                Coordinator, _store, new NoopRetentionStore(), _telemetry, Clock, options, Logger);
+                Coordinator, (IEnvironmentalAcquisitionStateStore?)_scheduleWitness ?? _store,
+                new NoopRetentionStore(), _telemetry, Clock, options, Logger);
         }
 
         public string Root { get; }
         public ManualClock Clock { get; }
+        public DateTimeOffset StartupEpoch { get; }
         public DeploymentLocationSnapshot Location { get; }
         public ProtectedDeploymentLocationStore? ProtectedLocation { get; }
         public bool RetainedIntegrityRecoveryRequired => _loader!.RetainedIntegrityRecoveryRequired;
@@ -395,20 +456,34 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
         public async Task StartAndWaitForPollAsync(DateTimeOffset nextPoll)
         {
-            await _service.StartAsync(CancellationToken.None).ConfigureAwait(false);
-            _started = true;
+            await StartAsync().ConfigureAwait(false);
             await Clock.WaitForTimerAsync(nextPoll, _sourceCount).WaitAsync(HarnessDeadline).ConfigureAwait(false);
         }
 
-        public async Task LoadProvisionalLocationAsync()
+        private async Task StartAsync()
+        {
+            await _service.StartAsync(CancellationToken.None).ConfigureAwait(false);
+            _started = true;
+        }
+
+        public Task LoadProvisionalLocationAsync() => LoadLocationAsync(expectProvisional: true);
+
+        public async Task LoadLocationAsync(bool expectProvisional)
         {
             if (!File.Exists(_configurationPath))
                 File.Copy(Path.Combine(AppContext.BaseDirectory, "cameraagent.sample.json"), _configurationPath);
             var configuration = await _loader!.LoadAsync(CancellationToken.None).WaitAsync(HarnessDeadline).ConfigureAwait(false);
             Assert.AreEqual(Location.LocationId, configuration.DeploymentLocation?.LocationId);
-            Assert.IsNull(ProtectedLocation!.Active);
-            Assert.IsTrue(ProtectedLocation.RequiresDeploymentLocationReconciliation);
-            Assert.IsFalse(ProtectedLocation.RecentRetainedEvidenceReady);
+            if (expectProvisional)
+            {
+                Assert.IsNull(ProtectedLocation!.Active);
+                Assert.IsTrue(ProtectedLocation.RequiresDeploymentLocationReconciliation);
+                Assert.IsFalse(ProtectedLocation.RecentRetainedEvidenceReady);
+            }
+            else
+            {
+                Assert.IsNotNull(ProtectedLocation!.Active);
+            }
             await _scrub!.StartAsync(CancellationToken.None).ConfigureAwait(false);
         }
 
@@ -421,8 +496,35 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         public async Task StartAndFireFirstPollAsync()
         {
             // The worker registers this timer only after durably recording the due slot.
-            await StartAndWaitForPollAsync(Epoch).ConfigureAwait(false);
-            Clock.AdvanceTo(Epoch);
+            await StartAndWaitForPollAsync(StartupEpoch).ConfigureAwait(false);
+            Clock.AdvanceTo(StartupEpoch);
+        }
+
+        public async Task StartAndWaitForScheduleWriteAsync()
+        {
+            await StartAsync().ConfigureAwait(false);
+            await _scheduleWitness!.ScheduleWritten.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        }
+
+        public Task WaitForLocationHoldAsync()
+            => _scheduleWitness!.HoldWritten.Task.WaitAsync(HarnessDeadline);
+
+        public ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync()
+            => ((IEnvironmentalLocationHeldPollStore)_store).ReadLocationHeldPollAsync(
+                Root, Coordinator.Sources.Single(), CancellationToken.None);
+
+        public async Task WriteRetiredRuntimeRowAsync()
+        {
+            await _store.InitializeAsync(Root, CancellationToken.None).ConfigureAwait(false);
+            var path = Path.Combine(Root, ".environment", "environmental-observation-outbox.db");
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString());
+            await connection.OpenAsync().ConfigureAwait(false);
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO environmental_source_runtime(source_id, observation_kind, required, consecutive_failures)
+                VALUES('retired-source', 'RetiredKind', 0, 0);
+                """;
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
         public ValueTask<IReadOnlyList<EnvironmentalSourceRuntimeState>> ReadStatesAsync()
@@ -465,6 +567,48 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                 Directory.Delete(Root, recursive: true);
             }
         }
+    }
+
+    private sealed class SignalingScheduleStore(SqliteEnvironmentalObservationOutbox inner)
+        : IEnvironmentalAcquisitionStateStore, IEnvironmentalLocationHeldPollStore
+    {
+        public TaskCompletionSource ScheduleWritten { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource HoldWritten { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask UpdateSourceScheduleAsync(string root, EnvironmentalSourceDescriptor source,
+            DateTimeOffset nextPollUtc, CancellationToken cancellationToken)
+        {
+            await inner.UpdateSourceScheduleAsync(root, source, nextPollUtc, cancellationToken).ConfigureAwait(false);
+            ScheduleWritten.TrySetResult();
+        }
+
+        public ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync(string root, EnvironmentalSourceDescriptor source,
+            CancellationToken cancellationToken)
+            => ((IEnvironmentalLocationHeldPollStore)inner).ReadLocationHeldPollAsync(root, source, cancellationToken);
+
+        public async ValueTask<DateTimeOffset> HoldLocationPollAsync(string root, EnvironmentalSourceDescriptor source,
+            DateTimeOffset due, CancellationToken cancellationToken)
+        {
+            var heldDue = await ((IEnvironmentalLocationHeldPollStore)inner).HoldLocationPollAsync(
+                root, source, due, cancellationToken).ConfigureAwait(false);
+            HoldWritten.TrySetResult();
+            return heldDue;
+        }
+
+        public ValueTask<bool> RecordCaptureRegimeAsync(string root, long captureSequence, Guid captureId,
+            CaptureSolarRegime regime, DateTimeOffset observedAtUtc, CancellationToken cancellationToken)
+            => inner.RecordCaptureRegimeAsync(root, captureSequence, captureId, regime, observedAtUtc, cancellationToken);
+
+        public ValueTask RecordAttemptAsync(string root, EnvironmentalSourceDescriptor source, EnvironmentalAcquisitionReceipt receipt,
+            long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
+            => inner.RecordAttemptAsync(root, source, receipt, captureSequence, captureId, cancellationToken);
+
+        public ValueTask<IReadOnlyList<EnvironmentalSourceRuntimeState>> ReadSourceStatesAsync(string root, CancellationToken cancellationToken)
+            => inner.ReadSourceStatesAsync(root, cancellationToken);
+
+        public ValueTask<IReadOnlyList<EnvironmentalAcquisitionAttemptRecord>> ReadAttemptsAsync(string root, int maximumResults,
+            CancellationToken cancellationToken)
+            => inner.ReadAttemptsAsync(root, maximumResults, cancellationToken);
     }
 
     private sealed class RecordingPublisher(SqliteEnvironmentalObservationOutbox store, string root)

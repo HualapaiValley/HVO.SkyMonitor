@@ -857,7 +857,9 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
-    public async Task VersionThreeMigratesRetentionIndexesWithoutChangingPersistedPayloads()
+    [DataRow(3)]
+    [DataRow(4)]
+    public async Task HistoricalSchemaMigratesWithoutChangingPersistedPayloads(int version)
     {
         var fact = CreateObservation(Guid.NewGuid());
         var scope = Guid.NewGuid();
@@ -877,7 +879,10 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         {
             await setup.OpenAsync().ConfigureAwait(false);
             using var downgrade = setup.CreateCommand();
-            downgrade.CommandText = "DROP INDEX IF EXISTS ix_environment_on_demand_retention; DROP INDEX IF EXISTS ix_environment_attempt_retention; PRAGMA user_version=3;";
+            if (version == 3)
+                downgrade.CommandText = "DROP TABLE environmental_location_held_polls; DROP INDEX ix_environment_on_demand_retention; DROP INDEX ix_environment_attempt_retention; PRAGMA user_version=3;";
+            else
+                downgrade.CommandText = "DROP TABLE environmental_location_held_polls; PRAGMA user_version=4;";
             await downgrade.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         using var migrated = new SqliteEnvironmentalObservationOutbox();
@@ -893,7 +898,9 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         var availability = await migrated.ReadCaptureAvailabilityAsync(_root!, Guid.NewGuid(), scope, CancellationToken.None).ConfigureAwait(false);
         CollectionAssert.Contains(availability.UnavailableSources.ToArray(), "sqm");
         inspect.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(4L, await inspect.ExecuteScalarAsync().ConfigureAwait(false));
+        Assert.AreEqual(5L, await inspect.ExecuteScalarAsync().ConfigureAwait(false));
+        inspect.CommandText = "SELECT COUNT(*) FROM environmental_location_held_polls;";
+        Assert.AreEqual(0L, await inspect.ExecuteScalarAsync().ConfigureAwait(false));
         inspect.CommandText = "SELECT COUNT(*) FROM sqlite_schema WHERE name IN ('ix_environment_on_demand_retention','ix_environment_attempt_retention');";
         Assert.AreEqual(2L, await inspect.ExecuteScalarAsync().ConfigureAwait(false));
         inspect.CommandText = "EXPLAIN QUERY PLAN SELECT idempotency_key FROM environmental_on_demand_commands WHERE updated_unix_ms < 100 ORDER BY updated_unix_ms, idempotency_key LIMIT 1000;";
@@ -913,7 +920,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         {
             await setup.OpenAsync().ConfigureAwait(false);
             using var change = setup.CreateCommand();
-            change.CommandText = "DROP INDEX ix_environment_on_demand_retention; DROP INDEX ix_environment_attempt_retention; DROP INDEX ix_environment_attempt_source; PRAGMA user_version=3;";
+            change.CommandText = "DROP TABLE environmental_location_held_polls; DROP INDEX ix_environment_on_demand_retention; DROP INDEX ix_environment_attempt_retention; DROP INDEX ix_environment_attempt_source; PRAGMA user_version=3;";
             await change.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         var before = ReadDatabaseFiles(path);
@@ -933,7 +940,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         await connection.OpenAsync().ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = "PRAGMA user_version;";
-        Assert.AreEqual(4L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
+        Assert.AreEqual(5L, (long)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA journal_mode;";
         Assert.AreEqual("wal", (string)(await command.ExecuteScalarAsync().ConfigureAwait(false))!);
         command.CommandText = "PRAGMA synchronous;";
@@ -1024,7 +1031,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
 
     [TestMethod]
     [DataRow(1)]
-    [DataRow(5)]
+    [DataRow(6)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The switch selects one of two fixed test statements.")]
     public async Task UnsupportedVersionMarkerIsRejectedWithoutMutation(int version)
     {
@@ -1042,7 +1049,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
             command.CommandText = version switch
             {
                 1 => "PRAGMA user_version=1;",
-                5 => "PRAGMA user_version=5;",
+                6 => "PRAGMA user_version=6;",
                 _ => throw new InvalidOperationException("Unsupported test schema version.")
             };
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -1076,7 +1083,7 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
         Assert.AreEqual(1, enabled);
         using (var command = setup.CreateCommand())
         {
-            command.CommandText = "PRAGMA wal_autocheckpoint=0; PRAGMA user_version=5;";
+            command.CommandText = "PRAGMA wal_autocheckpoint=0; PRAGMA user_version=6;";
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         var filesBefore = ReadDatabaseFiles(databasePath);

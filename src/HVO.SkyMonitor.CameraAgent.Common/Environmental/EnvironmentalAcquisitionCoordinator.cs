@@ -28,7 +28,10 @@ public sealed record EnvironmentalAcquisitionReceipt(
     DateTimeOffset StartedUtc,
     DateTimeOffset CompletedUtc,
     DateTimeOffset? ObservedAtUtc = null,
-    DateTimeOffset? StaleAfterUtc = null);
+    DateTimeOffset? StaleAfterUtc = null)
+{
+    internal DateTimeOffset? HeldLocationPollUtc { get; init; }
+}
 
 public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
 {
@@ -105,10 +108,18 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             ? locations.WaitForInitialActiveAsync(cancellationToken)
             : Task.CompletedTask;
 
+    internal bool IsInitialDeploymentLocationPending => _deploymentLocation is ProtectedDeploymentLocationStore { Active: null };
+
+    internal ValueTask<EnvironmentalAcquisitionReceipt> AcquireScheduledSourceAsync(
+        string sourceId, DateTimeOffset due, bool locationHeld, CancellationToken cancellationToken)
+        => AcquireSourceWithBudgetAsync(sourceId, EnvironmentalAcquisitionTrigger.Periodic, due,
+            null, null, null, cancellationToken, heldLocationPollUtc: locationHeld ? due : null);
+
     private async ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceWithBudgetAsync(
         string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
         int? acquisitionBudgetMilliseconds, long? captureSequence, Guid? captureId, CancellationToken cancellationToken,
-        bool joinBusy = false, Func<EnvironmentalAcquisitionReceipt, Task>? settleFirstReceipt = null)
+        bool joinBusy = false, Func<EnvironmentalAcquisitionReceipt, Task>? settleFirstReceipt = null,
+        DateTimeOffset? heldLocationPollUtc = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         using var acquisitionBudget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -160,7 +171,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             }
             var receipt = Receipt(
                 sourceId, trigger, acquisitionBudgetMilliseconds.HasValue ? EnvironmentalAcquisitionDisposition.TimedOut : EnvironmentalAcquisitionDisposition.Coalesced,
-                acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started);
+                acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started)
+                with { HeldLocationPollUtc = heldLocationPollUtc };
             LogReceipt(source.Descriptor, receipt);
             await RecordAttemptAsync(source.Descriptor, receipt, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
@@ -179,6 +191,8 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             {
                 first = Receipt(sourceId, trigger, EnvironmentalAcquisitionDisposition.TimedOut, "before-capture-timeout", null, started);
             }
+            if (heldLocationPollUtc.HasValue)
+                first = first with { HeldLocationPollUtc = heldLocationPollUtc };
             LogReceipt(source.Descriptor, first);
             // Capture evidence must survive shutdown even if the diagnostic attempt write is interrupted.
             if (settleFirstReceipt is not null) await settleFirstReceipt(first).ConfigureAwait(false);
