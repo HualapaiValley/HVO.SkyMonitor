@@ -1,10 +1,12 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Orbital;
 using HVO.SkyMonitor.CameraAgent.Common.OrbitalPlanning;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.Processing;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
@@ -47,6 +49,15 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             throw new InvalidOperationException("Capture satellite prediction requires an explicit v2 graph.");
         var raw = context.Artifacts?.Raw ?? throw new InvalidDataException("Satellite prediction requires the exact raw capture.");
         var source = CreateSource(context.Config, raw, descriptor, context.AcquisitionTiming);
+        var scene = context.RawCapture?.Manifest.Scene;
+        var lineageValid = VirtualSkyNamedPass.TryReadPredictionLineage(context.Config, scene, out var named);
+        var observedShutter = lineageValid && named is not null ? VirtualSkyNamedPass.ReadObservedShutter(scene, descriptor) : null;
+        var namedFailure = !lineageValid ? "NamedPassPredictionLineageUnavailable" :
+            named is not null && observedShutter is null ? "NamedPassPredictionTimingUnavailable" : null;
+        // Whole-millisecond observations already match the descriptor. Keep their existing evidence format.
+        var virtualShutter = observedShutter is { } shutter &&
+            (shutter.ScenarioStartUtc != descriptor.Timing.ExposureStartedUtc || shutter.ScenarioEndUtc != descriptor.Timing.ExposureEndedUtc)
+            ? shutter : null;
         CaptureSatelliteInputV1 input;
         ReadOnlyMemory<byte>? result;
         OrbitalSnapshotReadResult? exactSnapshot = null;
@@ -57,17 +68,24 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
             var frozen = context.GetFrozenAuxiliaryInputs();
             var evidence = frozen.SingleOrDefault(static p => p.SchemaVersion == CaptureSatelliteProducts.InputSchema)
                 ?? throw new InvalidDataException("Replay requires the original retained satellite inputs.");
-            input = CaptureSatelliteProducts.ParseInput(evidence.Payload.Span);
-            result = frozen.SingleOrDefault(static p => p.SchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion)?.Payload;
+            input = BindPreparedShutter(CaptureSatelliteProducts.ParseInput(evidence.Payload.Span), virtualShutter, namedFailure);
+            result = input.Plan is null ? null :
+                frozen.SingleOrDefault(static p => p.SchemaVersion == CaptureOrbitalPredictionJson.SchemaVersion)?.Payload;
         }
         else
         {
             var prepared = await workStore.PrepareAsync(context, Name, Options.OutputVariant,
-                () => ResolveAsync(context, descriptor, cancellationToken), cancellationToken).ConfigureAwait(false);
-            prepared = await workStore.PinAsync(prepared, cancellationToken).ConfigureAwait(false);
-            input = prepared.Input;
-            exactSnapshot = await ReadExactAsync(input, cancellationToken).ConfigureAwait(false);
-            result = await workStore.ReadOrPredictAsync(prepared, source, exactSnapshot, cancellationToken).ConfigureAwait(false);
+                () => ResolveAsync(context, descriptor, named, virtualShutter, namedFailure, cancellationToken), cancellationToken).ConfigureAwait(false);
+            input = BindPreparedShutter(prepared.Input, virtualShutter, namedFailure);
+            result = null;
+            if (ReferenceEquals(input, prepared.Input))
+            {
+                prepared = await workStore.PinAsync(prepared, cancellationToken).ConfigureAwait(false);
+                input = BindPreparedShutter(prepared.Input, virtualShutter, namedFailure);
+                exactSnapshot = await ReadExactAsync(input, cancellationToken).ConfigureAwait(false);
+                if (input.Plan is not null)
+                    result = await workStore.ReadOrPredictAsync(prepared, source, exactSnapshot, cancellationToken).ConfigureAwait(false);
+            }
         }
         exactSnapshot ??= await ReadExactAsync(input, cancellationToken).ConfigureAwait(false);
         if (CaptureContractJson.ComputeDescriptorSha256(input.Descriptor) != CaptureContractJson.ComputeDescriptorSha256(descriptor))
@@ -102,8 +120,19 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         return exact;
     }
 
+    private static CaptureSatelliteInputV1 BindPreparedShutter(CaptureSatelliteInputV1 input,
+        VirtualExposureProvenance? shutter, string? namedFailure)
+    {
+        if (input.Plan is null)
+            return input;
+        // Previously prepared work can predate the exact shutter binding. Never publish its coarse plan as a named result.
+        var reason = namedFailure ?? (input.VirtualShutter != shutter ? "NamedPassPredictionTimingMismatch" : null);
+        return reason is null ? input : input with { Plan = null, UnavailableReason = reason, VirtualShutter = shutter };
+    }
+
     private async ValueTask<CaptureSatelliteInputV1> ResolveAsync(CaptureProcessingContext context,
-        ReconstructionDescriptor descriptor, CancellationToken cancellationToken)
+        ReconstructionDescriptor descriptor, VirtualSkyNamedPass.NamedPassPredictionLineage? named,
+        VirtualExposureProvenance? virtualShutter, string? namedFailure, CancellationToken cancellationToken)
     {
         DeploymentLocationSnapshot? location = null;
         if (descriptor.Location is { } provenance)
@@ -121,15 +150,30 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         }
         ObserverLocation? observer = location is null ? null :
             new(location.LatitudeDegrees, location.LongitudeDegrees, location.ElevationMeters);
-        var exposure = new OrbitalUtcInterval(descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc);
+        var exposure = virtualShutter is { } shutter
+            ? new OrbitalUtcInterval(shutter.ScenarioStartUtc, shutter.ScenarioEndUtc)
+            : new OrbitalUtcInterval(descriptor.Timing.ExposureStartedUtc, descriptor.Timing.ExposureEndedUtc);
         // Both seams are already warmed by startup/refresh. Any cold materialization happens on this durable lane.
-        var snapshot = await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false);
+        var selectionPolicy = CaptureSatelliteTracksOptions.CreateSelectionPolicy(Options.AllowStaleDiagnostics);
+        var pin = named?.Inputs ?? Options.PinnedInputs;
+        var snapshot = namedFailure is not null ? OrbitalSnapshotReadResult.Unavailable(OrbitalSnapshotUnavailableReason.IntegrityFailure) :
+            pin is null ? await snapshots.ReadCurrentAsync(cancellationToken).ConfigureAwait(false) :
+                await snapshots.ReadExactAsync(pin.SnapshotManifestSha256, cancellationToken).ConfigureAwait(false);
         var time = await timeSource.ResolveAsync(exposure, cancellationToken).ConfigureAwait(false);
         var available = time.Source == CameraAgentOrbitalTimeDataSource.Override ? Options.OverrideTimeDataAvailableUtc :
             new[] { time.EarthOrientationProvenance?.RetrievedUtc, time.LeapSecondsProvenance?.RetrievedUtc }.Max();
-        var reason = time.Data is null ? "TimeInputsUnavailable:" + time.Problem :
+        var reason = namedFailure ?? (named is not null && !MatchesNamedPass(named, selectionPolicy) ? "NamedPassPredictionInputsMismatch" :
+            time.Data is null ? "TimeInputsUnavailable:" + time.Problem :
             available is null ? "TimeAvailabilityUnknown" : available > descriptor.Timing.DurableIngressUtc ? "TimeNotOriginallyAvailable" :
-            descriptor.Layout.Readout is null ? "ReadoutGeometryUnavailable" : observer is null ? "CaptureLocationUnavailable" : null;
+            descriptor.Layout.Readout is null ? "ReadoutGeometryUnavailable" : observer is null ? "CaptureLocationUnavailable" : null);
+        if (pin is not null)
+        {
+            if (snapshot.Snapshot?.Manifest.ManifestSha256 != pin.SnapshotManifestSha256)
+                reason ??= "PinnedSnapshotUnavailable";
+            if (time.Data?.EarthOrientationSha256 != pin.EarthOrientationSha256 ||
+                time.Data?.LeapSecondsSha256 != pin.LeapSecondsSha256)
+                reason ??= "PinnedTimeInputsUnavailable";
+        }
         if (time.Data is { } data && (data.EarthOrientationCoverage is not { } coverage ||
             coverage.StartUtc > exposure.StartUtc || coverage.EndUtc < exposure.EndUtc ||
             data.LeapTableCoverage.StartUtc > exposure.StartUtc || data.LeapTableCoverage.EndUtc < exposure.EndUtc))
@@ -168,19 +212,31 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
                 CaptureContractJson.ComputeCanonicalJsonSha256(context.Config.Rig.Optics), null, null,
                 OrbitalProjectionCoordinates.ReadoutView, projection,
                 ProjectedSceneImageTransformV1.Identity(descriptor.Layout.Width, descriptor.Layout.Height), HorizonPolicy.GeometricHorizon);
-            var timing = new OrbitalTimingFacts(exposure, OrbitalTimingBasis.Reported, descriptor.Timing.ReadoutCompletedUtc,
-                OrbitalTimingBasis.Reported, "capture-descriptor-command-status-observations-v1", AstrometricClockFacts.NotSupplied);
+            // A millisecond readout report in the shutter-close bucket cannot establish its exact ordering.
+            var readoutUtc = descriptor.Timing.ReadoutCompletedUtc >= exposure.EndUtc
+                ? descriptor.Timing.ReadoutCompletedUtc : (DateTimeOffset?)null;
+            var timing = new OrbitalTimingFacts(exposure, OrbitalTimingBasis.Reported, readoutUtc,
+                readoutUtc is null ? OrbitalTimingBasis.Unknown : OrbitalTimingBasis.Reported,
+                virtualShutter is null ? "capture-descriptor-command-status-observations-v1" : "virtual-sky-named-shutter-utc-ticks-v1",
+                AstrometricClockFacts.NotSupplied);
             var model = OrbitalPredictionModel.Create(time.Data!, assumeEllipsoidalHeight: true);
             plan = new(descriptor, observer!.Value, geometry, timing, model, Options.Bounds,
                 new(CaptureOrbitalAssessmentMode.OriginalAvailability, descriptor.Timing.DurableIngressUtc,
                     descriptor.Timing.DurableIngressUtc, available!.Value), snapshot,
-                new([new("celestrak:gp:active", 0)], Options.AllowStaleDiagnostics),
+                selectionPolicy,
                 Options.CatalogNumbers.Select(static n => new OrbitalObjectIdentity("norad", n)),
-                context.Config.Rig.HorizonObstruction is null ? null : context.Config.Rig);
+                context.Config.Rig.HorizonObstruction is null ? null : context.Config.Rig, virtualShutter);
+            if (pin?.ExpectedRecords is { } records && plan.Plan.Selections.Any(selection =>
+                    selection.SelectedRecord?.RecordSha256 != records[selection.ObjectIdentity.CatalogNumber]))
+            {
+                plan = null;
+                reason = "PinnedRecordSelectionMismatch";
+            }
         }
         return new(CaptureSatelliteProducts.InputSchema, descriptor, context.Config.Rig, observer, OptionalBytes(plan?.SerializePlan()),
             OptionalBytes(manifest), null, OptionalBytes(eop), OptionalBytes(leaps), time.Source.ToString(), available, reason)
         {
+            VirtualShutter = virtualShutter,
             RequestOptions = JsonSerializer.SerializeToElement(Options),
             TimeProvenance = JsonSerializer.SerializeToElement(new
             {
@@ -192,6 +248,20 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
         };
     }
 
+    private bool MatchesNamedPass(VirtualSkyNamedPass.NamedPassPredictionLineage named, OrbitalSelectionPolicy selection)
+    {
+        var expected = named.Inputs;
+        var records = expected.ExpectedRecords!;
+        if (named.SelectionPolicySha256 != selection.IdentitySha256 || Options.CatalogNumbers.Any(number => !records.ContainsKey(number)))
+            return false;
+        return Options.PinnedInputs is not { } configured ||
+            configured.SnapshotManifestSha256 == expected.SnapshotManifestSha256 &&
+            configured.EarthOrientationSha256 == expected.EarthOrientationSha256 &&
+            configured.LeapSecondsSha256 == expected.LeapSecondsSha256 &&
+            (configured.ExpectedRecords is null ||
+             configured.ExpectedRecords.All(entry => records.TryGetValue(entry.Key, out var hash) && hash == entry.Value));
+    }
+
     private static ReadOnlyMemory<byte>? OptionalBytes(byte[]? bytes)
     {
         if (bytes is null) return default;
@@ -201,11 +271,16 @@ internal sealed class CaptureSatelliteTracksProcessingStep(
 
 public sealed class CaptureSatelliteTracksOptions : IValidatableObject
 {
+    internal static OrbitalSelectionPolicy CreateSelectionPolicy(bool allowStaleDiagnostics)
+        => new([new(CelesTrakGpSource.DatasetKey, 0)], allowStaleDiagnostics);
+
     [Required, MaxLength(96), MinLength(1)]
     public string OutputVariant { get; init; } = "capture-satellites-v1";
     public IReadOnlyList<string> CatalogNumbers { get; init; } = [];
     public bool AllowStaleDiagnostics { get; init; }
     public DateTimeOffset? OverrideTimeDataAvailableUtc { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CaptureSatellitePinnedInputs? PinnedInputs { get; init; }
     public OrbitalQueryBounds Bounds { get; init; } = new(32, 120, 100_000, 32, 32, 8192, 200, 1, .1);
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
@@ -219,5 +294,14 @@ public sealed class CaptureSatelliteTracksOptions : IValidatableObject
             Bounds.MaximumSamples > 8192 || Bounds.MaximumElapsedMilliseconds > 10_000 ||
             OverrideTimeDataAvailableUtc is { Offset: var offset } && offset != TimeSpan.Zero)
             yield return new ValidationResult("Satellite bounds or time availability exceed the capture contract.");
+        if (PinnedInputs is { } pin && (!OrbitalContract.IsSha256(pin.SnapshotManifestSha256) ||
+            !OrbitalContract.IsSha256(pin.EarthOrientationSha256) || !OrbitalContract.IsSha256(pin.LeapSecondsSha256) ||
+            pin.ExpectedRecords is { } records && (records.Count != CatalogNumbers.Count ||
+                CatalogNumbers.Any(number => !records.TryGetValue(number, out var hash) || !OrbitalContract.IsSha256(hash)))))
+            yield return new ValidationResult("Pinned satellite inputs require valid uppercase SHA-256 identities and a matching optional record set.");
     }
 }
+
+/// <summary>Exact local inputs required when a capture profile uses a frozen orbital scenario.</summary>
+public sealed record CaptureSatellitePinnedInputs(string SnapshotManifestSha256, string EarthOrientationSha256, string LeapSecondsSha256,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyDictionary<string, string>? ExpectedRecords = null);
