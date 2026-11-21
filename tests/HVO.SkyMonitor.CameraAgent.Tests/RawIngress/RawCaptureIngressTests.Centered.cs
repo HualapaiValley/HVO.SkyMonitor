@@ -7,6 +7,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
@@ -20,9 +21,11 @@ using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.Imaging;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Common.Environmental;
 using HVO.SkyMonitor.Fleet.Contracts;
@@ -1245,14 +1248,32 @@ public sealed partial class RawCaptureIngressTests
     [DataRow("in-time")]
     [DataRow("deadline")]
     [DataRow("receipt-retry")]
+    [DataRow("predecessor")]
+    [DataRow("predecessor-sidecar")]
+    [DataRow("long-root")]
+    [DataRow("legacy-long-stage")]
+    [DataRow("selected-without-export")]
     public async Task CenteredTwoRootArchiveListsOnlyExactStorageReceiptAndReclaimsIt(string scenario)
     {
         var root = CreateRoot();
-        var archive = CreateRoot();
+        var archiveBase = CreateRoot();
+        var archive = archiveBase;
+        var longRoot = scenario is "long-root" or "legacy-long-stage";
+        if (longRoot && OperatingSystem.IsLinux())
+        {
+            for (var depth = 0; depth < 17; depth++)
+                archive = Path.Combine(archive, new string('d', 215));
+            Directory.CreateDirectory(archive);
+        }
         var detached = CreateRoot();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(40));
         var token = deadline.Token;
-        using var fault = new CenteredArchiveBarrier(scenario == "receipt-retry", token);
+        var retryReceipt = scenario is "receipt-retry" or "legacy-long-stage";
+        var loseSidecar = scenario == "predecessor-sidecar";
+        var skipExport = scenario == "selected-without-export";
+        using var fault = new CenteredArchiveBarrier(retryReceipt, token);
+        var predecessor = scenario is "predecessor" or "predecessor-sidecar";
+        byte[]? predecessorSidecar = null;
         try
         {
             var captured = Timestamp(8).AddMinutes(5);
@@ -1273,20 +1294,49 @@ public sealed partial class RawCaptureIngressTests
                     Steps =
                     [
                         new("Calibration", "linear", DependsOn: ["$raw"]),
-                        new("CalibratedPreview", "CalibratedPreview", DependsOn: ["linear"]),
-                        new("Storage", "ArchiveStorage", Order: 30, DependsOn: ["CalibratedPreview"],
-                            Options: JsonSerializer.SerializeToElement(archiveOptions)),
+                        new("CalibratedPreview", "CalibratedPreview", DependsOn: ["linear"],
+                            Publication: skipExport ? new(CaptureProcessingPersistenceMode.DurableLocal) : null),
+                        new("sToRaGe", skipExport ? "ArchiveStorage" : " ArchiveStorage ", Order: 30, DependsOn: ["CalibratedPreview"],
+                            Options: longRoot ? JsonSerializer.SerializeToElement(new { storageRoot = archive })
+                                : JsonSerializer.SerializeToElement(archiveOptions)),
                         new("Storage", "ArchiveAgain", Order: 40, DependsOn: ["CalibratedPreview"],
                             Options: JsonSerializer.SerializeToElement(archiveOptions)),
                         new("Telemetry", "tail", Order: 50, DependsOn: ["ArchiveStorage", "ArchiveAgain"])
                     ]
                 }
             };
+            if (predecessor)
+            {
+                fault.PreparePredecessor = () =>
+                {
+                    var source = Directory.GetFiles(root, "*.bin", SearchOption.AllDirectories)
+                        .Single(path => Path.GetFileName(Path.GetDirectoryName(path)) == "Preview");
+                    var manifest = CaptureContractJson.ParseManifest(
+                        File.ReadAllBytes(Path.ChangeExtension(source, ".json"))).Document!.Manifest;
+                    Assert.IsNotNull(manifest.Descriptor.CenteredAcquisition);
+                    predecessorSidecar = CaptureContractJson.Serialize(manifest with
+                    {
+                        Descriptor = manifest.Descriptor with { CenteredAcquisition = null }
+                    });
+                    var destination = Path.Combine(archive, manifest.RelativeArtifactPath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                    File.WriteAllBytes(Path.ChangeExtension(destination, ".json"), predecessorSidecar);
+                    Assert.IsFalse(File.Exists(destination));
+                };
+            }
             var provider = ProcessingGraphOperationsTests.CreateProvider(root, new Dictionary<string, string?>
             {
                 ["CameraAgent:ProcessingGraphs:LiveDeadlineSeconds"] = "10"
             }, clock,
-                configureServices: services => services.AddSingleton<ICaptureProcessingFaultInjector>(fault));
+                configureServices: services =>
+                {
+                    services.AddSingleton<ICaptureProcessingFaultInjector>(fault);
+                    if (predecessor)
+                    {
+                        services.AddSingleton<IRawIngressFaultInjector>(new OneShotFaultInjector(RawIngressFaultPoint.SidecarDirectorySynced));
+                        services.AddSingleton<ILogger<FileSystemFrameStorageService>>(new ArchiveSaveInterruption(archive));
+                    }
+                });
             await using var providerScope = provider.ConfigureAwait(false);
             config = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, config).ConfigureAwait(false);
             var ingress = provider.GetRequiredService<RawCaptureIngress>();
@@ -1294,7 +1344,21 @@ public sealed partial class RawCaptureIngressTests
             var submission = CenteredSubmission(captured);
             await ingress.DispatchCenteredAsync(reservation.Pending.Key, submission.Request.RequestedSetpoint!, null, "fixture", token)
                 .ConfigureAwait(false);
-            await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false);
+            if (predecessor)
+            {
+                await Assert.ThrowsExactlyAsync<InjectedRawIngressFaultException>(async () =>
+                    await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false)).ConfigureAwait(false);
+                var ids = RawCaptureDescriptorFactory.CreateStableIds(config, submission);
+                var started = RawCaptureDescriptorFactory.ResolveExposureStartedUtc(submission, submission.Result.Frame!);
+                var rawSidecar = RawIngressFileStore.GetPaths(root, started, ids.ArtifactId).SidecarAbsolutePath;
+                await WritePredecessorSidecarAsync(rawSidecar, await File.ReadAllBytesAsync(rawSidecar, token).ConfigureAwait(false), token)
+                    .ConfigureAwait(false);
+                await ingress.InitializeAsync(token).ConfigureAwait(false);
+            }
+            else
+            {
+                await ingress.AcceptCenteredAsync(config, submission, reservation, token).ConfigureAwait(false);
+            }
 
             var lanes = provider.GetRequiredService<ICaptureLaneStore>();
             await lanes.InitializeLanesAsync(token).ConfigureAwait(false);
@@ -1303,14 +1367,134 @@ public sealed partial class RawCaptureIngressTests
             Assert.IsNotNull(claimed);
             var handler = provider.GetRequiredService<StandardCaptureLaneHandler>();
             var worker = Task.Run(async () => await handler.HandleAsync(claimed.Context, token).ConfigureAwait(false), token);
-            var storage = provider.GetRequiredService<IFrameStorageService>();
+            var storage = (FileSystemFrameStorageService)provider.GetRequiredService<IFrameStorageService>();
             var day = DateOnly.FromDateTime(captured.UtcDateTime);
             StoredFrameReference stored;
             string receiptPath;
             byte[] pixels;
             byte[] sidecar;
+            RetentionBackgroundService CreateRetention(Action<string>? beforeUnlink = null) => new(
+                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
+                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), clock,
+                provider.GetRequiredService<IArtifactOutbox>(), new FixedCapacityProvider(long.MaxValue),
+                new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance)
+            {
+                BeforeArchiveFileUnlink = beforeUnlink
+            };
             try
             {
+                if (skipExport)
+                {
+                    await fault.Later.Task.WaitAsync(token).ConfigureAwait(false);
+                    Assert.IsFalse(Directory.Exists(archive) &&
+                        Directory.EnumerateFiles(archive, "*.bin", SearchOption.AllDirectories).Any(),
+                        "The actual Storage step selected but did not export CalibratedPreview.");
+                    var captureId = claimed.Context.RawCapture.Manifest.Descriptor.Capture.CaptureId;
+                    var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+                    var storageNode = await store.ReadNodeAsync(captureId, "ArchiveStorage", token).ConfigureAwait(false);
+                    Assert.IsNotNull(storageNode);
+                    Assert.AreEqual(DurableProcessingNodeStatus.Completed, storageNode.Status);
+                    var producer = await store.ReadNodeAsync(captureId, "CalibratedPreview", token).ConfigureAwait(false);
+                    var output = producer!.Outputs.Single();
+                    var outputDescriptor = output.Descriptor!;
+                    Assert.IsTrue(storageNode.Inputs!.Any(input => input.Selected && input.ArtifactId == output.ArtifactId));
+                    Assert.IsFalse(storageNode.Inputs!.Any(input => input.Name == "centered-archive"));
+
+                    var archivePayload = Path.Combine(archive, output.PayloadRelativePath);
+                    Directory.CreateDirectory(Path.GetDirectoryName(archivePayload)!);
+                    File.Copy(Path.Combine(root, output.PayloadRelativePath), archivePayload);
+                    File.Copy(Path.Combine(root, output.SidecarRelativePath), Path.ChangeExtension(archivePayload, ".json"));
+                    var originalIndex = Directory.GetFiles(Path.Combine(root, "index"), "*.jsonl").Single();
+                    Directory.CreateDirectory(Path.Combine(archive, "index"));
+                    File.Copy(originalIndex, Path.Combine(archive, "index", Path.GetFileName(originalIndex)));
+                    var old = JsonSerializer.SerializeToElement(new
+                    {
+                        root = StorageRootIdentity.Key(archive),
+                        relativePath = output.PayloadRelativePath.Replace('\\', '/'),
+                        captureId,
+                        executionId = claimed.Context.Execution!.ExecutionId,
+                        storageNode = "ArchiveStorage",
+                        producer = "CalibratedPreview",
+                        artifactId = output.ArtifactId,
+                        outputIdentity = output.OutputIdentitySha256,
+                        contentIdentity = output.ContentIdentitySha256,
+                        descriptorSha256 = CaptureContractJson.ComputeDescriptorSha256(outputDescriptor),
+                        payloadSha256 = outputDescriptor.Artifact.ChecksumSha256
+                    });
+                    await File.WriteAllTextAsync(FileSystemFrameStorageService.ArchiveReceiptPath(archivePayload), old.GetRawText(), token)
+                        .ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    fault.Finish.Set();
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, (await worker.WaitAsync(token).ConfigureAwait(false)).Outcome);
+                    await lanes.CompleteAsync(claimed, token).ConfigureAwait(false);
+                    return;
+                }
+                if (predecessor)
+                {
+                    var saveInterrupted = await worker.WaitAsync(token).ConfigureAwait(false);
+                    Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, saveInterrupted.Outcome);
+                    Assert.AreEqual("processing.step-exception", saveInterrupted.Reason);
+                    Assert.IsNotNull(predecessorSidecar);
+                    var interruptedPayload = Directory.GetFiles(archive, "*.bin", SearchOption.AllDirectories).Single();
+                    var interruptedSidecar = Path.ChangeExtension(interruptedPayload, ".json");
+                    var interruptedStage = FileSystemFrameStorageService.ArchiveStagePath(interruptedPayload);
+                    var interruptedFinal = FileSystemFrameStorageService.ArchiveReceiptPath(interruptedPayload);
+                    Assert.IsTrue(File.Exists(interruptedStage));
+                    Assert.IsFalse(File.Exists(interruptedFinal));
+                    CollectionAssert.AreEqual(predecessorSidecar, await File.ReadAllBytesAsync(interruptedSidecar, token).ConfigureAwait(false));
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+
+                    var precommit = await ReadLegacyArchiveReceiptAsync(interruptedStage, archive, token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(interruptedFinal, precommit.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    if (loseSidecar)
+                    {
+                        File.Delete(interruptedSidecar);
+                        Assert.IsTrue(File.Exists(interruptedPayload));
+                    }
+                    else
+                    {
+                        var artifactId = CaptureContractJson.ParseManifest(predecessorSidecar).Document!.Manifest.Descriptor.Artifact.ArtifactId;
+                        var rootOwnedConfig = config with
+                        {
+                            Pipeline = config.Pipeline with
+                            {
+                                Steps = config.Pipeline.Steps.Where(step => step.Id?.Trim() == "ArchiveStorage").ToArray()
+                            }
+                        };
+                        using (var retention = CreateRetention(_ => throw new IOException("Interrupted before archive file removal.")))
+                        {
+                            clock.ShiftUtc(TimeSpan.FromDays(3));
+                            await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                                await retention.ApplyRetentionAsync(rootOwnedConfig, token).ConfigureAwait(false)).ConfigureAwait(false);
+                            clock.ShiftUtc(TimeSpan.FromDays(-3));
+                        }
+                        Assert.IsTrue(File.Exists(interruptedPayload));
+                        Assert.IsTrue(File.Exists(interruptedStage));
+                        Assert.IsTrue(File.Exists(interruptedFinal));
+                        Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+
+                        storage.BeforeArchiveFileUnlink = path =>
+                        {
+                            if (path.EndsWith(".json", StringComparison.Ordinal))
+                                throw new IOException("Interrupted between archive file removals.");
+                        };
+                        var storedBeforeRemoval = new StoredFrameReference(Path.GetRelativePath(archive, interruptedPayload),
+                            interruptedPayload, captured, FrameArtifactRole.Preview);
+                        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+                            await storage.RemoveAsync(archive, storedBeforeRemoval, artifactId, token).ConfigureAwait(false))
+                            .ConfigureAwait(false);
+                        storage.BeforeArchiveFileUnlink = null;
+                        Assert.IsFalse(File.Exists(interruptedPayload));
+                        Assert.IsTrue(File.Exists(interruptedSidecar));
+                        Assert.IsTrue(File.Exists(interruptedStage));
+                        Assert.IsTrue(File.Exists(interruptedFinal));
+                    }
+                    await lanes.ReleaseAsync(claimed, token).ConfigureAwait(false);
+                    claimed = await lanes.ClaimAsync(standard, "archive-save-retry", config, token).ConfigureAwait(false);
+                    Assert.IsNotNull(claimed);
+                    worker = Task.Run(async () => await handler.HandleAsync(claimed.Context, token).ConfigureAwait(false), token);
+                }
                 await fault.Staged.Task.WaitAsync(token).ConfigureAwait(false);
                 var payload = Directory.GetFiles(archive, "*.bin", SearchOption.AllDirectories).Single();
                 var stagePath = FileSystemFrameStorageService.ArchiveStagePath(payload);
@@ -1318,6 +1502,21 @@ public sealed partial class RawCaptureIngressTests
                 Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
                 Assert.IsTrue(File.Exists(stagePath));
                 Assert.IsFalse(File.Exists(receiptPath));
+                if (predecessor)
+                {
+                    var recoveredSidecar = await File.ReadAllBytesAsync(Path.ChangeExtension(payload, ".json"), token)
+                        .ConfigureAwait(false);
+                    if (loseSidecar)
+                    {
+                        Assert.AreEqual(
+                            CaptureContractJson.ParseManifest(predecessorSidecar!).Document!.Manifest.IdempotencyKey,
+                            CaptureContractJson.ParseManifest(recoveredSidecar).Document!.Manifest.IdempotencyKey);
+                    }
+                    else
+                    {
+                        CollectionAssert.AreEqual(predecessorSidecar, recoveredSidecar);
+                    }
+                }
                 if (scenario == "deadline")
                 {
                     // Cross the durable UTC deadline without firing the independent monotonic cancellation timer.
@@ -1340,18 +1539,31 @@ public sealed partial class RawCaptureIngressTests
                     Assert.AreEqual("processing.live-deadline", expired.FailureReason);
                     Assert.IsFalse(File.Exists(receiptPath));
                     Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    var oldExpired = await ReadLegacyArchiveReceiptAsync(stagePath, archive, token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(receiptPath, oldExpired.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
                     Assert.IsTrue(File.Exists(payload));
                     Assert.IsTrue(File.Exists(claimed.Context.RawCapture.StoredFrame.AbsolutePath));
                     return;
                 }
                 fault.Publish.Set();
-                if (scenario == "receipt-retry")
+                if (retryReceipt)
                 {
                     var interrupted = await worker.WaitAsync(token).ConfigureAwait(false);
                     Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure, interrupted.Outcome);
                     Assert.AreEqual("processing.post-commit-incomplete", interrupted.Reason);
                     Assert.IsFalse(File.Exists(receiptPath));
                     Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    if (scenario == "legacy-long-stage")
+                    {
+                        var historicalStage = await ReadLegacyArchiveReceiptAsync(stagePath, archive, token).ConfigureAwait(false);
+                        historicalStage["storageNode"] = string.Empty;
+                        if (OperatingSystem.IsLinux())
+                            Assert.IsTrue(System.Text.Encoding.UTF8.GetByteCount(historicalStage.ToJsonString()) > 4096);
+                        await File.WriteAllTextAsync(stagePath, historicalStage.ToJsonString(), token).ConfigureAwait(false);
+                        using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+                        await SetArchiveEvidenceAsync(journal, LegacyArchiveIdentity(historicalStage), token).ConfigureAwait(false);
+                    }
                     await lanes.ReleaseAsync(claimed, token).ConfigureAwait(false);
                     claimed = await lanes.ClaimAsync(standard, "archive-receipt-retry", config, token).ConfigureAwait(false);
                     Assert.IsNotNull(claimed);
@@ -1370,6 +1582,35 @@ public sealed partial class RawCaptureIngressTests
                 }
                 pixels = await File.ReadAllBytesAsync(payload, token).ConfigureAwait(false);
                 sidecar = await File.ReadAllBytesAsync(Path.ChangeExtension(payload, ".json"), token).ConfigureAwait(false);
+                using var reopened = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+                Assert.AreEqual(stored, reopened.List(archive, day, FrameArtifactRole.Preview, 10).Single());
+                var modernReceipt = await File.ReadAllBytesAsync(receiptPath, token).ConfigureAwait(false);
+                var modern = JsonNode.Parse(modernReceipt)!.AsObject();
+                Assert.AreEqual("ArchiveStorage", modern["storageNode"]!.GetValue<string>());
+                Assert.AreEqual("centered-archive-receipt-v2", modern["schemaVersion"]!.GetValue<string>());
+                Assert.AreEqual(64, modern["root"]!.GetValue<string>().Length);
+                Assert.IsTrue(modernReceipt.Length < 4096);
+                if (longRoot && OperatingSystem.IsLinux())
+                    Assert.IsTrue(payload.Length > 3700);
+
+                if (predecessor && !loseSidecar)
+                {
+                    CollectionAssert.AreEqual(predecessorSidecar, sidecar);
+                    using var journal = await OpenJournalAsync(root).ConfigureAwait(false);
+                    var oldCommitted = await ReadLegacyArchiveReceiptAsync(receiptPath, archive, token).ConfigureAwait(false);
+                    await SetArchiveEvidenceAsync(journal, LegacyArchiveIdentity(oldCommitted), token).ConfigureAwait(false);
+                    await File.WriteAllTextAsync(receiptPath, oldCommitted.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.AreEqual(stored, storage.List(archive, day, FrameArtifactRole.Preview, 10).Single());
+                    Assert.HasCount(0, reopened.List(archive, day, FrameArtifactRole.Preview, 10), "A detached old receipt has no source authority.");
+                    oldCommitted["executionId"] = Guid.NewGuid();
+                    await File.WriteAllTextAsync(receiptPath, oldCommitted.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    oldCommitted["executionId"] = claimed.Context.Execution!.ExecutionId;
+                    oldCommitted["relativePath"] = "frames/wrong.bin";
+                    await File.WriteAllTextAsync(receiptPath, oldCommitted.ToJsonString(), token).ConfigureAwait(false);
+                    Assert.HasCount(0, storage.List(archive, day, FrameArtifactRole.Preview, 10));
+                    await File.WriteAllBytesAsync(receiptPath, modernReceipt, token).ConfigureAwait(false);
+                }
                 var copied = Path.Combine(detached, stored.RelativePath);
                 Directory.CreateDirectory(Path.GetDirectoryName(copied)!);
                 File.Copy(payload, copied);
@@ -1377,11 +1618,9 @@ public sealed partial class RawCaptureIngressTests
                 var sourceIndex = Directory.GetFiles(Path.Combine(archive, "index"), "*.jsonl").Single();
                 Directory.CreateDirectory(Path.Combine(detached, "index"));
                 File.Copy(sourceIndex, Path.Combine(detached, "index", Path.GetFileName(sourceIndex)));
-                Assert.HasCount(0, storage.List(detached, day, FrameArtifactRole.Preview, 10));
+                Assert.HasCount(predecessor ? 1 : 0, storage.List(detached, day, FrameArtifactRole.Preview, 10));
                 File.Copy(receiptPath, FileSystemFrameStorageService.ArchiveReceiptPath(copied));
                 Assert.HasCount(0, storage.List(detached, day, FrameArtifactRole.Preview, 10), "A receipt cannot travel to another root.");
-                using var reopened = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
-                Assert.AreEqual(stored, reopened.List(archive, day, FrameArtifactRole.Preview, 10).Single());
             }
             finally
             {
@@ -1391,19 +1630,18 @@ public sealed partial class RawCaptureIngressTests
             var handled = await worker.WaitAsync(token).ConfigureAwait(false);
             Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, handled.Outcome, handled.Reason);
             await lanes.CompleteAsync(claimed, token).ConfigureAwait(false);
+            if (longRoot)
+                return;
             var index = Directory.GetFiles(Path.Combine(archive, "index"), "*.jsonl").Single();
             var indexBytes = await File.ReadAllBytesAsync(index, token).ConfigureAwait(false);
             clock.Advance(TimeSpan.FromDays(3));
-            var retention = new RetentionBackgroundService(
-                provider.GetRequiredService<ICameraAgentConfigurationAccessor>(),
-                provider.GetRequiredService<IOptions<CameraAgentHostOptions>>(), clock,
-                provider.GetRequiredService<IArtifactOutbox>(), new FixedCapacityProvider(long.MaxValue),
-                new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance);
-            using (retention)
+            using (var retention = CreateRetention())
                 await retention.ApplyRetentionAsync(config, token).ConfigureAwait(false);
             Assert.IsFalse(File.Exists(receiptPath));
             Assert.IsFalse(File.Exists(FileSystemFrameStorageService.ArchiveStagePath(stored.AbsolutePath)));
             Assert.IsFalse(File.Exists(stored.AbsolutePath));
+            if (predecessor)
+                return;
             Directory.CreateDirectory(Path.GetDirectoryName(stored.AbsolutePath)!);
             Directory.CreateDirectory(Path.GetDirectoryName(index)!);
             await File.WriteAllBytesAsync(stored.AbsolutePath, pixels, token).ConfigureAwait(false);
@@ -1415,8 +1653,56 @@ public sealed partial class RawCaptureIngressTests
         finally
         {
             DeleteRoot(root);
-            DeleteRoot(archive);
+            DeleteRoot(archiveBase);
             DeleteRoot(detached);
+        }
+    }
+
+    private static string LegacyArchiveIdentity(JsonObject receipt)
+    {
+        var staged = receipt.DeepClone().AsObject();
+        staged["storageNode"] = string.Empty;
+        return CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(staged));
+    }
+
+    private static async Task SetArchiveEvidenceAsync(SqliteConnection journal, string identity, CancellationToken token)
+    {
+        using var oldWriter = journal.CreateCommand();
+        oldWriter.CommandText = """
+            UPDATE processing_node_inputs SET identity_sha256 = $identity
+            WHERE node_id = 'ArchiveStorage' AND kind = 'CanonicalContext' AND name = 'centered-archive';
+            """;
+        oldWriter.Parameters.AddWithValue("$identity", identity);
+        Assert.AreEqual(1, await oldWriter.ExecuteNonQueryAsync(token).ConfigureAwait(false));
+    }
+
+    private static async Task<JsonObject> ReadLegacyArchiveReceiptAsync(
+        string receiptPath, string root, CancellationToken cancellationToken)
+    {
+        var receipt = JsonNode.Parse(await File.ReadAllBytesAsync(receiptPath, cancellationToken).ConfigureAwait(false))!.AsObject();
+        receipt.Remove("schemaVersion");
+        receipt["root"] = StorageRootIdentity.Key(root);
+        receipt["storageNode"] = "ArchiveStorage";
+        return receipt;
+    }
+
+    private sealed class ArchiveSaveInterruption(string root) : ILogger<FileSystemFrameStorageService>
+    {
+        private readonly string _destinationPrefix = Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar;
+        private int _interrupted;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (eventId.Id == 2004 && state is IEnumerable<KeyValuePair<string, object?>> fields &&
+                fields.Any(field => field.Key == "Path" && field.Value is string path &&
+                    path.StartsWith(_destinationPrefix, StringComparison.Ordinal)) &&
+                Interlocked.Exchange(ref _interrupted, 1) == 0)
+                throw new IOException("Interrupted after the destination files and compatibility index were saved.");
         }
     }
 
@@ -1426,10 +1712,15 @@ public sealed partial class RawCaptureIngressTests
         internal TaskCompletionSource Later { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal ManualResetEventSlim Publish { get; } = new();
         internal ManualResetEventSlim Finish { get; } = new();
+        internal Action? PreparePredecessor { get; set; }
+        private int _predecessorPrepared;
         private int _receiptFault;
 
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
+            if (point == CaptureProcessingFaultPoint.BeforeNodeExecution && nodeId == "ArchiveStorage" &&
+                Interlocked.Exchange(ref _predecessorPrepared, 1) == 0)
+                PreparePredecessor?.Invoke();
             if (point == CaptureProcessingFaultPoint.AfterArchiveCopyStaged && nodeId == "ArchiveStorage")
             {
                 Staged.TrySetResult();

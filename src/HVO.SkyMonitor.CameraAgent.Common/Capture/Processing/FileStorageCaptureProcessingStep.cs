@@ -112,20 +112,8 @@ internal sealed class FileStorageCaptureProcessingStep(
                             throw new InvalidDataException(
                                 "Per-step upload publication requires a reconstructable processing product.");
                         }
-                        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
-                            Options.StorageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name,
-                            product, cancellationToken).ConfigureAwait(false);
-                        var published = await _frameStorageService.SaveAsync(
-                            Options.StorageRoot,
-                            artifact,
-                            descriptor,
-                            producerStepId!,
-                            cancellationToken).ConfigureAwait(false);
-                        if (exportsCenteredCopy)
-                        {
-                            await StageCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, published,
-                                cancellationToken).ConfigureAwait(false);
-                        }
+                        var (published, descriptor) = await SaveDerivativeAsync(context, rawCapture, artifact, product,
+                            producerStepId, producerStepId, exportsCenteredCopy, cancellationToken).ConfigureAwait(false);
                         await _artifactOutbox.EnqueueAsync(
                             Options.StorageRoot,
                             new ArtifactManifestV2(
@@ -157,30 +145,13 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     if (product is not null && context.RawCapture is { } rawCapture)
                     {
-                        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
-                            Options.StorageRoot, rawCapture.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name,
-                            product, cancellationToken).ConfigureAwait(false);
                         // Canonical pixels were already committed with their producer identity.
                         // Reuse those exact facts even when a broad Storage policy selects them.
                         var manifestProducerStepId = metadataAlreadyStoredUnderRoot || policy?.StepId is not null
                             ? producerStepId : null;
-                        stored = manifestProducerStepId is null
-                            ? await _frameStorageService.SaveAsync(
-                                Options.StorageRoot,
-                                artifact,
-                                descriptor,
-                                cancellationToken).ConfigureAwait(false)
-                            : await _frameStorageService.SaveAsync(
-                                Options.StorageRoot,
-                                artifact,
-                                descriptor,
-                                producerStepId!,
-                                cancellationToken).ConfigureAwait(false);
-                        if (exportsCenteredCopy)
-                        {
-                            await StageCenteredArchiveAsync(context, rawCapture, product, producerStepId, descriptor, stored,
-                                cancellationToken).ConfigureAwait(false);
-                        }
+                        ReconstructionDescriptor descriptor;
+                        (stored, descriptor) = await SaveDerivativeAsync(context, rawCapture, artifact, product,
+                            producerStepId, manifestProducerStepId, exportsCenteredCopy, cancellationToken).ConfigureAwait(false);
                         uploadManifest = new ArtifactManifestV2(
                             ArtifactManifestV2.CurrentSchemaVersion,
                             descriptor,
@@ -346,20 +317,32 @@ internal sealed class FileStorageCaptureProcessingStep(
     private static bool IsExplicitPipeline(CameraModuleConfig config)
         => config.Pipeline is { SchemaVersion: CapturePipelineSchemaVersions.ExplicitV2 };
 
-    private async ValueTask StageCenteredArchiveAsync(
-        CaptureProcessingContext context, RawIngress.RawCaptureReceipt raw, ProcessingProduct product, string? producer,
-        ReconstructionDescriptor descriptor, StoredFrameReference stored, CancellationToken cancellationToken)
+    private async ValueTask<(StoredFrameReference Stored, ReconstructionDescriptor Descriptor)> SaveDerivativeAsync(
+        CaptureProcessingContext context, RawIngress.RawCaptureReceipt raw, FrameArtifact artifact, ProcessingProduct product,
+        string? producer, string? manifestProducer, bool exportsCenteredCopy, CancellationToken cancellationToken)
     {
-        if (_frameStorageService is not FileSystemFrameStorageService ||
+        var descriptor = await DerivativeDescriptorFactory.CreateForStorageAsync(
+            Options.StorageRoot, raw.Manifest.Descriptor, artifact, artifact.Frame.Metadata.SourceId ?? Name, product, cancellationToken)
+            .ConfigureAwait(false);
+        if (!exportsCenteredCopy)
+        {
+            var saved = manifestProducer is null
+                ? await _frameStorageService.SaveAsync(Options.StorageRoot, artifact, descriptor, cancellationToken).ConfigureAwait(false)
+                : await _frameStorageService.SaveAsync(Options.StorageRoot, artifact, descriptor, manifestProducer, cancellationToken)
+                    .ConfigureAwait(false);
+            return (saved, descriptor);
+        }
+        if (_frameStorageService is not FileSystemFrameStorageService frameStorage ||
             context.ProcessingExecution is not { } execution || context.CurrentNodeId is not { } storageNode ||
             producer is null)
             throw new InvalidDataException("The centered archive copy has no authorized Storage execution.");
 
-        var identity = await FileSystemFrameStorageService.StageArchiveAsync(Options.StorageRoot, stored, descriptor,
+        var (stored, savedDescriptor, identity) = await frameStorage.SaveArchiveAsync(Options.StorageRoot, artifact, descriptor, manifestProducer,
             raw, execution, producer, product.OutputIdentitySha256, product.ContentIdentitySha256, cancellationToken)
             .ConfigureAwait(false);
         context.RecordArchivePublication(stored.RelativePath.Replace('\\', '/'), identity);
         faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, storageNode);
+        return (stored, savedDescriptor);
     }
 
     bool IDurableCaptureProcessingPostCommit.RequiresSuccessfulCommitCallback => true;
