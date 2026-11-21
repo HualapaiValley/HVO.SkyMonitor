@@ -202,12 +202,14 @@ public interface IEnvironmentalAcquisitionStateStore
         CancellationToken cancellationToken);
 }
 
+internal sealed record EnvironmentalLocationPollSlot(DateTimeOffset DueUtc, bool Settled);
+
 internal interface IEnvironmentalLocationHeldPollStore
 {
-    ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync(
+    ValueTask<EnvironmentalLocationPollSlot?> ReadLocationHeldPollAsync(
         string root, EnvironmentalSourceDescriptor source, CancellationToken cancellationToken);
 
-    ValueTask<DateTimeOffset> HoldLocationPollAsync(
+    ValueTask<EnvironmentalLocationPollSlot> HoldLocationPollAsync(
         string root, EnvironmentalSourceDescriptor source, DateTimeOffset due, CancellationToken cancellationToken);
 }
 

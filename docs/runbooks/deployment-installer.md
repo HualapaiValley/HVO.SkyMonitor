@@ -2995,9 +2995,10 @@ procedure; never delete the ledger/evidence to force adoption. An agent that
 predates this ledger cannot maintain it after rollback, so a later new agent
 will detect those unexplained changes and refuse qualification.
 
-The image's combined row-MAC, environmental-schema, processing-ledger and local-automation-schema reader boundary is
-`bc5ca7489c4090c299c416309519ab72da4a8cdb`, declared by the image's
-`minimum-compatible-revision`. This advances beyond the processing-only boundary
+The image declares `e9bc66a58ec4f9902f7d6f25c89057832eff9fbc` as its
+`minimum-compatible-revision`. This reader settles environmental schema-5 polls durably and
+its boundary makes the installer take a paired checkpoint before adopting schema-3 or schema-4 journals. The prior combined-reader
+boundary `bc5ca7489c4090c299c416309519ab72da4a8cdb` advanced beyond the processing-only boundary
 `4293871b7c4cf38ce0e0e4ea969aa9a6de057eea` in development/v1 `38320d3a` so that
 upgrading from that automation-schema-3 reader still takes a paired pre-upgrade
 checkpoint before automation schema 4 is opened. Processing schema 9 and its

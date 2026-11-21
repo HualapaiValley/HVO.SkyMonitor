@@ -516,10 +516,15 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
 | `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 3, reads 2 to 3 |
-| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4; the distinct combined-reader boundary `bc5ca7489c4090c299c416309519ab72da4a8cdb` requires a paired checkpoint even from development/v1 `38320d3a` (processing schema 9, automation schema 3). Rollback restores schema 3 for that previous reader |
+| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4. The current image boundary also preserves the paired checkpoint first required by `bc5ca7489c4090c299c416309519ab72da4a8cdb` for adoption from development/v1 `38320d3a` (processing schema 9, automation schema 3). Rollback restores schema 3 for that previous reader |
 | `orbitalElements` | `raw/.orbital-elements/orbital-elements.db`, with its content files beside it | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): the provider floor and halt must never be rewound |
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 | `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
+
+The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
+The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
+journal without the settlement column is refused unchanged. Retain or archive that rehearsal state and restore
+the verified paired v4 checkpoint before adopting the released reader.
 
 - The state snapshot of #1340 copies every store here except `orbitalElements`, `spaceWeather` and
   `calibrationFamilies`. The calibration-family store (#1475) holds approved calibration families and which one is

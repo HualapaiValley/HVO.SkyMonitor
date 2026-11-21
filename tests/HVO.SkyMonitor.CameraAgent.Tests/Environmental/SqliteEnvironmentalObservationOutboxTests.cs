@@ -910,6 +910,42 @@ public sealed class SqliteEnvironmentalObservationOutboxTests
     }
 
     [TestMethod]
+    public async Task UnpublishedSchemaFiveIsRefusedWithoutChangingItsPendingSlot()
+    {
+        using (var current = new SqliteEnvironmentalObservationOutbox())
+            await current.EnqueueAsync(_root!, CreateObservation(Guid.NewGuid()), CancellationToken.None).ConfigureAwait(false);
+        SqliteConnection.ClearAllPools();
+        var databasePath = Path.Combine(_root!, ".environment", "environmental-observation-outbox.db");
+        var due = Epoch.AddTicks(5_000);
+        using (var setup = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+        {
+            await setup.OpenAsync().ConfigureAwait(false);
+            using var command = setup.CreateCommand();
+            command.CommandText = """
+                DROP TABLE environmental_location_held_polls;
+                CREATE TABLE environmental_location_held_polls(
+                    source_id TEXT NOT NULL PRIMARY KEY REFERENCES environmental_source_runtime(source_id) ON DELETE CASCADE,
+                    source_type TEXT NOT NULL CHECK(length(source_type) BETWEEN 1 AND 128),
+                    schedule_epoch_utc_ticks INTEGER NOT NULL CHECK(schedule_epoch_utc_ticks BETWEEN 0 AND 3155378975999999999),
+                    period_seconds INTEGER NOT NULL CHECK(period_seconds > 0),
+                    due_utc_ticks INTEGER NOT NULL CHECK(due_utc_ticks BETWEEN schedule_epoch_utc_ticks AND 3155378975999999999)) STRICT;
+                INSERT INTO environmental_source_runtime(source_id, observation_kind, required, consecutive_failures)
+                    VALUES('sqm', 'SkyQuality', 1, 0);
+                INSERT INTO environmental_location_held_polls VALUES('sqm', 'SkyQualityMeter', $epoch, 1200, $due);
+                """;
+            command.Parameters.AddWithValue("$epoch", Epoch.UtcTicks);
+            command.Parameters.AddWithValue("$due", due.UtcTicks);
+            await command.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        var before = ReadDatabaseFiles(databasePath);
+        using var rejected = new SqliteEnvironmentalObservationOutbox();
+        var error = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await rejected.InitializeAsync(_root!, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        StringAssert.Contains(error.Message, "state-disposition", StringComparison.Ordinal);
+        AssertDatabaseFilesUnchanged(before, ReadDatabaseFiles(databasePath));
+    }
+
+    [TestMethod]
     public async Task MalformedVersionThreeIsRejectedBeforeIndexMigrationWithoutMutation()
     {
         using (var current = new SqliteEnvironmentalObservationOutbox())
