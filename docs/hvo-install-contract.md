@@ -512,7 +512,7 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 16, reads 13 to 16. `io.hvo.skymonitor.raw-ingress-schema` 16 and `raw-ingress-migration` `canonical-v13-v14-v15-to-v16` also declare it |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
-| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5 |
+| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Reader boundary `bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56` selects a paired checkpoint before upgrade from schema 3 or 4. Rollback to either older reader uses that checkpoint |
 | `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
 | `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 3, reads 2 to 3 |
