@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -10,6 +11,7 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
     internal const int MeasurementOrder = 4;
     internal const int PredictionDefaultOrder = 20;
     private const string RawInput = "$raw";
+    private static readonly JsonNodeOptions CalibrationOptionNames = new() { PropertyNameCaseInsensitive = true };
     private static readonly CaptureProcessingPublicationPolicy Durable = new(CaptureProcessingPersistenceMode.DurableLocal);
 
     internal static void EnsureMatchesProfile(CapturePipelineConfig pipeline, CenteredExposureProfile? centered)
@@ -111,6 +113,22 @@ internal sealed class ExposureMeasurementGraphPlan : ICenteredExposureGraphExten
     private static CaptureProcessingStepConfig CreateMeasurement(string? calibrationId)
         => new(ExposureMeasurementProducts.StepAlias, ExposureMeasurementProducts.StepAlias, Order: MeasurementOrder,
             DependsOn: calibrationId is null ? [RawInput] : [RawInput, calibrationId], Required: false, Enabled: true, Publication: Durable);
+
+    internal static CapturePipelineConfig FreezeSyntheticReferenceCodeDomain(CapturePipelineConfig pipeline)
+        => pipeline with { Steps = pipeline.Steps.Select(FreezeSyntheticReferenceCodeDomain).ToArray() };
+
+    private static CaptureProcessingStepConfig FreezeSyntheticReferenceCodeDomain(CaptureProcessingStepConfig step)
+    {
+        if (step.Enabled == false || !Matches(step.Type, "Calibration") || step.Options is not { ValueKind: JsonValueKind.Object } element ||
+            JsonNode.Parse(element.GetRawText(), CalibrationOptionNames) is not JsonObject options)
+            return step;
+
+        if (options["strategy"] is JsonValue strategy && strategy.TryGetValue<string>(out var value) && value == "SyntheticReferences")
+            options["useStoredLightCodes"] = true;
+        else if (!options.Remove("useStoredLightCodes"))
+            return step;
+        return step with { Options = JsonSerializer.SerializeToElement(options) };
+    }
 
     private static CaptureProcessingStepConfig CreatePrediction()
         => new(ExposureCatalogPredictionProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias,

@@ -75,7 +75,8 @@ public static class ReferenceCalibrationProfileJson
     }
 }
 
-public sealed record ReferenceCalibrationOptions();
+public sealed record ReferenceCalibrationOptions(
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool UseStoredLightCodes = false);
 
 internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
 {
@@ -113,6 +114,17 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
         {
             return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
                 ProcessingReasonCodes.UnsupportedFormat, nameof(light.Layout)));
+        }
+
+        var options = ProcessingRecipeSupport.ParseOptions<ReferenceCalibrationOptions>(request.Options);
+        if (options.UseStoredLightCodes && NormalizeCompleteLayout(lightLayout) is not
+            {
+                SampleDepthBits: 16, ContainerDepthBits: 16, StoredCodeTransform: FrameStoredCodeTransform.IdentityV1,
+                LevelCodeSpace: FrameLevelCodeSpace.StoredContainer, WhiteLevel: ushort.MaxValue
+            })
+        {
+            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
+                ProcessingReasonCodes.CalibrationReferenceLayoutMismatch, nameof(light.Layout)));
         }
 
         var profileInput = request.AuxiliaryInputs?.SingleOrDefault(input =>
@@ -186,8 +198,10 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
         Linear16CalibrationResult correction;
         try
         {
+            // Synthetic masters carry the same bias pedestal as the stored light. The bias master removes it.
+            var inputLayout = options.UseStoredLightCodes ? lightLayout with { BlackLevel = 0 } : lightLayout;
             var normalizedLight = CalibrationMasterBuilder.Normalize(
-                new CalibrationSourceFrame(lightLayout, light.Payload), cancellationToken);
+                new CalibrationSourceFrame(inputLayout, light.Payload), cancellationToken);
             correction = Linear16ReferenceCalibration.Correct(
                 new Linear16Frame(
                     normalizedLight.Layout.Width,

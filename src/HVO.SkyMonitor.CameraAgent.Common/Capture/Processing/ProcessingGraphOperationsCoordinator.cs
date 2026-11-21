@@ -765,6 +765,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingGraphDefinition? sourceDefinition = null,
         bool retainedCapture = false)
     {
+        if (!retainedCapture && sourceDefinition is null && configuration.CenteredExposure is not null)
+            configuration = configuration with { Pipeline = ExposureMeasurementGraphPlan.FreezeSyntheticReferenceCodeDomain(configuration.Pipeline) };
         using var graph = new DisposableProcessingGraph(sourceDefinition is null
             ? retainedCapture ? _pipelineFactory.CreateRetainedGraph(configuration) : _pipelineFactory.CreateGraph(configuration)
             : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));

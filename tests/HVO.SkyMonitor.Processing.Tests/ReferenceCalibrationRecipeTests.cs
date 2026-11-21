@@ -101,6 +101,31 @@ public sealed class ReferenceCalibrationRecipeTests
     }
 
     [TestMethod]
+    public async Task ExecuteAsync_SubtractsStoredLightPedestalOnlyThroughTheBiasMaster()
+    {
+        var fixture = CreateFixture();
+        var storedLight = fixture.Light with { Layout = fixture.Light.Layout! with { BlackLevel = 100 } };
+        var request = fixture.Request with
+        {
+            Inputs = fixture.Request.Inputs.Select(input => input.ArtifactId == storedLight.ArtifactId ? storedLight : input).ToArray()
+        };
+        var executor = new ProcessingRecipeExecutor();
+        var legacy = await executor.ExecuteAsync(request);
+        var corrected = await executor.ExecuteAsync(request with
+        {
+            Options = JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions(UseStoredLightCodes: true))
+        });
+
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, legacy.Status, legacy.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, corrected.Status, corrected.ReasonCode);
+        var original = legacy.Products.Single();
+        var fixedProduct = corrected.Products.Single();
+        CollectionAssert.AreEqual(Bytes([300, 401, 300, 401]), original.Payload.ToArray());
+        CollectionAssert.AreEqual(Bytes([500, 500, 500, 500]), fixedProduct.Payload.ToArray());
+        Assert.AreNotEqual(original.OutputIdentitySha256, fixedProduct.OutputIdentitySha256);
+    }
+
+    [TestMethod]
     public async Task ExecuteAsync_MissingCorruptStaleAndInvalidFlatReferencesFailBeforePublication()
     {
         var missing = CreateFixture(omitKind: CalibrationReferenceKinds.Dark);

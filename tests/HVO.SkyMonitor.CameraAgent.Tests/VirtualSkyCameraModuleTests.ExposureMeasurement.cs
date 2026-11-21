@@ -31,6 +31,7 @@ public sealed partial class VirtualSkyCameraModuleTests
     [DataRow(CameraPixelFormat.Mono16, "None", true, 1, true,
         DisplayName = "ExposureMeasurement_RejectsFitAndReplaysItsOriginalAssessmentAfterRestart")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true)]
+    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", DisplayName = "ExposureMeasurement_ReferenceCalibratedMonoReplaysMeasuredStar")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", false, 10)]
     [DataRow(CameraPixelFormat.Mono16, "None", false)]
@@ -131,6 +132,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             ProcessingGraphExecutionState originalExecution;
             ExposureProductLookup? originalPublication = null;
             ExposureMeasurementV1? originalMeasurement = null;
+            MonoReferenceReplayWitness? referenceReplay = null;
             using var cancellation = new CancellationTokenSource();
             var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
             var publication = publicationFailures > 0 ? new MeasurementPublicationIo(publicationFailures) : null;
@@ -401,6 +403,23 @@ public sealed partial class VirtualSkyCameraModuleTests
                             Assert.AreEqual(ExposureMeasurementStatus.Unsuitable, measurement.Sources.Status, measurement.Sources.Reason);
                             Assert.IsNull(measurement.Hfd.MeanPixels);
                         }
+                        if (format == CameraPixelFormat.Mono16 && references is not null && (signal is "star" or "blank"))
+                        {
+                            Assert.AreEqual(0L, measurement.RawBrightness.SensorClipping.Count);
+                            Assert.AreEqual(0L, measurement.LinearOutputClipping?.Count);
+                            if (signal == "star")
+                            {
+                                var detection = measurement.Sources.Detections.Single(item =>
+                                    Math.Abs(item.Pixel.X - 112) < 2 && Math.Abs(item.Pixel.Y - 112) < 2);
+                                Assert.AreEqual(0, detection.SaturatedSampleCount);
+                                Assert.IsTrue(measurement.Hfd.Samples.Any(sample =>
+                                    sample.DetectionIndex == detection.Index && sample.DiameterPixels > 0));
+                            }
+                            var linearId = Assert.ContainsSingle(execution.Nodes.Single(item => item.NodeId == "linear").Outputs).ArtifactId;
+                            var bytes = await ReadReferenceReplayPayloadAsync(provider, root, linearId).ConfigureAwait(false);
+                            var replacement = references with { Seed = references.Seed + 1 };
+                            referenceReplay = new(receipt.Manifest.Descriptor, replacement, execution, bytes);
+                        }
                     }
                     else
                     {
@@ -494,7 +513,9 @@ public sealed partial class VirtualSkyCameraModuleTests
             using var reopened = MeasurementProvider(root, location, new InMemoryCelestialCatalog([]));
             var restartedIngress = reopened.GetRequiredService<RawCaptureIngress>();
             await restartedIngress.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
-            var switched = file with { CenteredExposure = null, Rig = file.Rig with { Orientation = new RigOrientation(80, 15, 5) } };
+            var replacementHostProfile = referenceReplay is null ? file with { CenteredExposure = null } :
+                WithReplacementReferences(file, referenceReplay.Replacement);
+            var switched = replacementHostProfile with { Rig = replacementHostProfile.Rig with { Orientation = new RigOrientation(80, 15, 5) } };
             reopened.GetRequiredService<ICameraAgentConfigurationAccessor>().SetConfiguration(switched);
             await restartedIngress.ReconcileCenteredControlAsync(switched, CancellationToken.None, exposure.Camera)
                 .ConfigureAwait(false);
@@ -561,6 +582,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 "The original source, centroid positions/flux, and HFD samples and summary must survive unchanged.");
             if (expireLinear || storedLevels is not null)
                 Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, restored.Measurement.Input.Step3Disposition);
+            if (referenceReplay is not null)
+                await AssertMonoReferenceReplayAsync(reopened, switched, referenceReplay, originalMeasurement, root).ConfigureAwait(false);
             if (fit && publicationFailures == 0 && !noPredictionCatalog)
                 await AssertRejectedAssessmentReplayAsync(reopened, originalExecution, originalMeasurement).ConfigureAwait(false);
         }

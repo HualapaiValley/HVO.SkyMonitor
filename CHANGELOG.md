@@ -20,6 +20,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
+
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 
 - Allow runtime control after a backup is settled or fully recovered, while retaining its journal. #1878
