@@ -847,10 +847,13 @@ public sealed class CameraCaptureServiceTests
                 var current = await store.GetSnapshotAsync(token).ConfigureAwait(false);
                 var profile = current.ActiveRevision.Profile;
                 var window = profile.Schedule.WeeklyWindows.Single();
-                var next = profile with { Schedule = profile.Schedule with
+                var next = profile with
                 {
-                    WeeklyWindows = [window with { Start = new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue) }]
-                } };
+                    Schedule = profile.Schedule with
+                    {
+                        WeeklyWindows = [window with { Start = new(CaptureScheduleBoundaryKind.FixedLocalTime, TimeOnly.MinValue) }]
+                    }
+                };
                 var staged = await runtime.StageAsync(next, "stage-focus-c", current.Version, "fixture", null, token)
                     .ConfigureAwait(false);
                 var revision = staged.PendingRevision!.RevisionId;

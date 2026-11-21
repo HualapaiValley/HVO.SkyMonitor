@@ -222,10 +222,13 @@ internal sealed class SqliteCaptureLaneStore(
                         submission.Request.RequestedSetpoint != new CaptureSetpoint(
                             controls.RequestedExposure, controls.RequestedGain, null, null))
                         throw new InvalidDataException("The predecessor lane request differs from its retained dispatch.");
-                    envelope = envelope with { Submission = submission with
+                    envelope = envelope with
                     {
-                        Request = submission.Request with { RequestedSetpoint = request }
-                    } };
+                        Submission = submission with
+                        {
+                            Request = submission.Request with { RequestedSetpoint = request }
+                        }
+                    };
                 }
                 var capturedRig = candidate.ContextJson is not null && candidate.ContextSha256 is not null
                     ? JsonSerializer.Deserialize<CaptureLaneEnvelope>(candidate.ContextJson,

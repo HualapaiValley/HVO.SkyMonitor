@@ -48,10 +48,13 @@ public sealed partial class RawCaptureIngressTests
             var blackoutStart = clock.GetUtcNow().AddSeconds(1);
             var blackoutEnd = blackoutStart.AddSeconds(2);
             if (missedBlackout)
-                config = config with { Schedule = config.Schedule! with
+                config = config with
                 {
-                    Blackouts = [new("missed", blackoutStart, blackoutEnd)]
-                } };
+                    Schedule = config.Schedule! with
+                    {
+                        Blackouts = [new("missed", blackoutStart, blackoutEnd)]
+                    }
+                };
             var freshTarget = missedBlackout || pauseAndResume;
             var captures = new List<(ExposureAttemptKey Key, CaptureRequest Request, CaptureResult Result)>();
             ExposureKey first;
@@ -400,7 +403,10 @@ public sealed partial class RawCaptureIngressTests
         manager.SetupGet(item => item.SupportsUserSecurityStamp).Returns(true);
         manager.Setup(item => item.FindByIdAsync("fixture-owner")).ReturnsAsync(new ApplicationUser
         {
-            Id = "fixture-owner", NormalizedEmail = email.ToUpperInvariant(), IsSiteOwner = true, SecurityStamp = "fixture-stamp"
+            Id = "fixture-owner",
+            NormalizedEmail = email.ToUpperInvariant(),
+            IsSiteOwner = true,
+            SecurityStamp = "fixture-stamp"
         });
         manager.Setup(item => item.GetSecurityStampAsync(It.IsAny<ApplicationUser>())).ReturnsAsync("fixture-stamp");
 
