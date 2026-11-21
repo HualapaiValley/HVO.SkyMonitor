@@ -180,21 +180,26 @@ public sealed partial class EnvironmentalAcquisitionService(
             {
                 if (confirmSettlement)
                 {
-                    heldDue = await heldPollStore!.ReadLocationHeldPollAsync(
+                    var slot = await heldPollStore!.ReadLocationHeldPollAsync(
                         options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
+                    heldDue = slot is { Settled: false } ? slot.DueUtc : null;
                     confirmSettlement = false;
                     if (heldDue.HasValue)
                         await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, cancellationToken).ConfigureAwait(false);
                     else
                     {
-                        initialPoll = false;
                         due = NextDue(source, timeProvider.GetUtcNow());
                     }
                 }
-                if (initialPoll && heldPollStore is not null && !heldDue.HasValue)
+                if (initialPoll && heldPollStore is not null)
                 {
-                    heldDue = await heldPollStore.ReadLocationHeldPollAsync(
+                    var slot = await heldPollStore.ReadLocationHeldPollAsync(
                         options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
+                    if (slot is { Settled: false })
+                        heldDue = slot.DueUtc;
+                    else if (slot is not null && due <= slot.DueUtc)
+                        due = NextDue(source, slot.DueUtc);
+                    initialPoll = false;
                 }
                 due = heldDue ?? await ResolveDueAsync(source, due, cancellationToken).ConfigureAwait(false);
                 await stateStore.UpdateSourceScheduleAsync(
@@ -211,9 +216,14 @@ public sealed partial class EnvironmentalAcquisitionService(
                 }
                 if (!heldDue.HasValue && heldPollStore is not null && coordinator.IsInitialDeploymentLocationPending)
                 {
-                    heldDue = await heldPollStore.HoldLocationPollAsync(
+                    var slot = await heldPollStore.HoldLocationPollAsync(
                         options.Value.RawIngressRoot, source, due, cancellationToken).ConfigureAwait(false);
-                    due = heldDue.Value;
+                    if (slot.Settled)
+                    {
+                        due = NextDue(source, slot.DueUtc);
+                        continue;
+                    }
+                    heldDue = due = slot.DueUtc;
                 }
                 // Keep the due timestamp while the protected store reconciles startup authority.
                 // Wait before entering the coordinator so capture triggers retain their own budgets.
@@ -225,7 +235,6 @@ public sealed partial class EnvironmentalAcquisitionService(
                     continue;
                 }
                 heldDue = null;
-                initialPoll = false;
                 due = NextDue(source, timeProvider.GetUtcNow());
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -196,6 +196,59 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     }
 
     [TestMethod]
+    public async Task ProtectedLocationStartup_RestartWithinPeriodDoesNotReacquireASettledHold()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-settled-{Guid.NewGuid():N}");
+        var location = Location(Epoch.AddDays(-1));
+        var device = new BlockingSkyQualityMeter();
+        device.ReleaseFirstRead.TrySetResult();
+        var next = Epoch + StartupSourcePeriod;
+        try
+        {
+            var initial = new Fixture(Epoch.AddSeconds(-1), location, root: root, protectedStartup: true, device: device);
+            await using (initial.ConfigureAwait(false))
+            {
+                await initial.LoadProvisionalLocationAsync().ConfigureAwait(false);
+                await initial.StartAndFireFirstPollAsync().ConfigureAwait(false);
+                await initial.WaitForLocationHoldAsync().ConfigureAwait(false);
+                initial.Clock.AdvanceTo(Epoch.AddSeconds(1));
+                await initial.ReconcileLocationAsync().ConfigureAwait(false);
+                await initial.Clock.WaitForTimerAsync(next).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+                Assert.AreEqual(1L, (await initial.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+                Assert.AreEqual(new EnvironmentalLocationPollSlot(Epoch, true),
+                    await initial.ReadLocationPollSlotAsync().ConfigureAwait(false));
+                Assert.AreEqual(next, (await initial.ReadStatesAsync().ConfigureAwait(false)).Single().NextPollUtc);
+            }
+
+            var reopened = new Fixture(Epoch.AddSeconds(2), location, root: root, protectedStartup: true, device: device);
+            await using (reopened.ConfigureAwait(false))
+            {
+                await reopened.LoadLocationAsync(expectProvisional: false).ConfigureAwait(false);
+                await reopened.StartAndWaitForPollAsync(next).ConfigureAwait(false);
+                Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+                Assert.HasCount(1, await reopened.ReadAttemptsAsync().ConfigureAwait(false));
+
+                await Assert.ThrowsAsync<InvalidDataException>(() => reopened.Coordinator
+                    .AcquireScheduledSourceAsync("source-0", Epoch, locationHeld: true, CancellationToken.None).AsTask()
+                    .WaitAsync(HarnessDeadline)).ConfigureAwait(false);
+                Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+                Assert.HasCount(1, await reopened.ReadAttemptsAsync().ConfigureAwait(false));
+                Assert.AreEqual(new EnvironmentalLocationPollSlot(Epoch, true),
+                    await reopened.HoldLocationPollAsync().ConfigureAwait(false));
+
+                reopened.Clock.AdvanceTo(next);
+                await reopened.Clock.WaitForTimerAsync(next + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+                Assert.AreEqual(2L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+                Assert.HasCount(2, await reopened.ReadAttemptsAsync().ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task ProtectedLocationStartup_QueuedTriggerFailureDoesNotRepeatACommittedHeldPoll()
     {
         var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
@@ -229,6 +282,61 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         var periodic = (await fixture.ReadAttemptsAsync().ConfigureAwait(false))
             .Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.Periodic);
         Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, periodic.Disposition);
+        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ProtectedLocationStartup_BusyCaptureDoesNotTakeOwnershipOfAHeldPoll(bool refuseCoalescedAttempt)
+    {
+        var device = new BlockingSkyQualityMeter();
+        var fixture = new Fixture(Epoch.AddSeconds(1), Location(Epoch.AddDays(-1)), protectedStartup: true, device: device);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+        await fixture.PersistLocationHoldAsync().ConfigureAwait(false);
+        if (refuseCoalescedAttempt) await fixture.RefuseCoalescedAttemptAsync().ConfigureAwait(false);
+
+        var captureId = Guid.NewGuid();
+        var capture = fixture.Coordinator.AcquireSourceAsync("source-0", EnvironmentalAcquisitionTrigger.AfterCapture,
+            Epoch.AddSeconds(1), 1, captureId, CancellationToken.None).AsTask();
+        try
+        {
+            await device.FirstRead.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+            var poll = fixture.Coordinator.AcquireScheduledSourceAsync("source-0", Epoch, locationHeld: true,
+                CancellationToken.None).AsTask();
+            if (refuseCoalescedAttempt)
+            {
+                await Assert.ThrowsAsync<SqliteException>(() => poll.WaitAsync(HarnessDeadline)).ConfigureAwait(false);
+                Assert.AreEqual(Epoch, await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+            }
+            else
+            {
+                var receipt = await poll.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+                Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, receipt.Disposition);
+                Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+            }
+        }
+        finally
+        {
+            device.ReleaseFirstRead.TrySetResult();
+        }
+
+        var captureReceipt = await capture.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, captureReceipt.Disposition);
+        if (refuseCoalescedAttempt)
+            await fixture.StartAndWaitForPollAsync(Epoch + StartupSourcePeriod).ConfigureAwait(false);
+
+        Assert.AreEqual(refuseCoalescedAttempt ? 2L : 1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        var attempts = await fixture.ReadAttemptsAsync().ConfigureAwait(false);
+        Assert.HasCount(2, attempts);
+        var captured = attempts.Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.AfterCapture);
+        Assert.AreEqual(captureId, captured.CaptureId);
+        Assert.AreEqual(captureReceipt.ObservationId, captured.ObservationId);
+        var periodic = attempts.Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.Periodic);
+        Assert.AreEqual(refuseCoalescedAttempt ? EnvironmentalAcquisitionDisposition.Produced : EnvironmentalAcquisitionDisposition.Coalesced,
+            periodic.Disposition);
         Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
     }
 
@@ -442,7 +550,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private readonly ServiceProvider _services = new ServiceCollection().BuildServiceProvider();
+        private readonly ServiceProvider _services;
         private readonly SqliteEnvironmentalObservationOutbox _store;
         private readonly EnvironmentalAcquisitionTelemetry _telemetry;
         private readonly EnvironmentalAcquisitionService _service;
@@ -457,7 +565,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         private readonly int _sourceCount;
 
         public Fixture(DateTimeOffset startup, DeploymentLocationSnapshot location, int sourceCount = 1, string? root = null,
-            bool protectedStartup = false, bool useExplicitEffectiveFrom = true, DateTimeOffset? startupEpoch = null)
+            bool protectedStartup = false, bool useExplicitEffectiveFrom = true, DateTimeOffset? startupEpoch = null,
+            IEnvironmentalDevice? device = null)
         {
             Root = root ?? Path.Combine(Path.GetTempPath(), $"hvo-environmental-boundary-{Guid.NewGuid():N}");
             Directory.CreateDirectory(Root);
@@ -466,6 +575,9 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             Clock = new ManualClock(startup);
             Location = location;
             StartupEpoch = startupEpoch ?? Epoch;
+            var services = new ServiceCollection();
+            if (device is not null) services.AddSingleton(device);
+            _services = services.BuildServiceProvider();
             _store = new SqliteEnvironmentalObservationOutbox(timeProvider: Clock);
             Publisher = new RecordingPublisher(_store, Root);
             _telemetry = new EnvironmentalAcquisitionTelemetry(Clock);
@@ -489,8 +601,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                     Sources = Enumerable.Range(0, sourceCount).Select(index => new EnvironmentalSourceConfiguration
                     {
                         Id = $"source-{index}",
-                        Type = "VirtualEnvironment",
-                        Kind = EnvironmentalObservationKind.AirTemperature,
+                        Type = device is null ? "VirtualEnvironment" : "SkyQualityMeter",
+                        Kind = device is null ? EnvironmentalObservationKind.AirTemperature : EnvironmentalObservationKind.SkyQuality,
                         Required = true,
                         Triggers = protectedStartup
                             ? [EnvironmentalAcquisitionTrigger.Periodic, EnvironmentalAcquisitionTrigger.BeforeCapture, EnvironmentalAcquisitionTrigger.AfterCapture]
@@ -499,14 +611,17 @@ public sealed class EnvironmentalDeploymentBoundaryTests
                         PeriodSeconds = protectedStartup ? (int)StartupSourcePeriod.TotalSeconds : 30,
                         ValidForSeconds = 120,
                         StaleAfterSeconds = 45,
-                        Options = CaptureContractJson.SerializeToElement(new VirtualEnvironmentalSourceOptions(
-                            1118 + index, Epoch, 12.5, null))
+                        Options = device is null
+                            ? CaptureContractJson.SerializeToElement(new VirtualEnvironmentalSourceOptions(1118 + index, Epoch, 12.5, null))
+                            : CaptureContractJson.SerializeToElement(new EnvironmentalDeviceOptions("device"))
                     }).ToArray()
                 }
             });
             var factory = new EnvironmentalSourceFactory(_services,
                 [new EnvironmentalSourceRegistration(
-                    "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions))]);
+                    "VirtualEnvironment", typeof(VirtualEnvironmentalSource), typeof(VirtualEnvironmentalSourceOptions)),
+                 new EnvironmentalSourceRegistration(
+                    "SkyQualityMeter", typeof(SkyQualityMeterSource), typeof(EnvironmentalDeviceOptions))]);
             if (protectedStartup)
             {
                 var lifetime = new Mock<IHostApplicationLifetime>();
@@ -593,9 +708,34 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         public Task WaitForLocationHoldAsync()
             => _scheduleWitness!.HoldWritten.Task.WaitAsync(HarnessDeadline);
 
-        public ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync()
+        public async ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync()
+        {
+            var slot = await ReadLocationPollSlotAsync().ConfigureAwait(false);
+            return slot is { Settled: false } ? slot.DueUtc : null;
+        }
+
+        public ValueTask<EnvironmentalLocationPollSlot?> ReadLocationPollSlotAsync()
             => ((IEnvironmentalLocationHeldPollStore)_store).ReadLocationHeldPollAsync(
                 Root, Coordinator.Sources.Single(), CancellationToken.None);
+
+        public ValueTask<EnvironmentalLocationPollSlot> HoldLocationPollAsync()
+            => ((IEnvironmentalLocationHeldPollStore)_store).HoldLocationPollAsync(
+                Root, Coordinator.Sources.Single(), StartupEpoch, CancellationToken.None);
+
+        public async Task PersistLocationHoldAsync()
+        {
+            var source = Coordinator.Sources.Single();
+            await _store.UpdateSourceScheduleAsync(Root, source, StartupEpoch, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(new EnvironmentalLocationPollSlot(StartupEpoch, false), await HoldLocationPollAsync().ConfigureAwait(false));
+        }
+
+        public async Task RefuseCoalescedAttemptAsync()
+            => await ExecuteJournalStatementAsync("""
+                CREATE TRIGGER test_refuse_coalesced_attempt
+                BEFORE INSERT ON environmental_acquisition_attempts
+                WHEN NEW.trigger = 'Periodic' AND NEW.outcome = 'Coalesced'
+                BEGIN SELECT RAISE(ABORT, 'test coalesced attempt persistence failure'); END;
+                """).ConfigureAwait(false);
 
         public async Task WriteRetiredRuntimeRowAsync()
             => await ExecuteJournalStatementAsync("""
@@ -665,6 +805,27 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         }
     }
 
+    private sealed class BlockingSkyQualityMeter : IEnvironmentalDevice
+    {
+        private int _reads;
+        public TaskCompletionSource FirstRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseFirstRead { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<EnvironmentalDeviceSample> ReadAsync(string deviceId, string command, DateTimeOffset receivedAtUtc,
+            CancellationToken cancellationToken)
+        {
+            var read = Interlocked.Increment(ref _reads);
+            if (read == 1)
+            {
+                FirstRead.TrySetResult();
+                await ReleaseFirstRead.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            var sampled = Epoch.AddMilliseconds(read);
+            return new EnvironmentalDeviceSample(System.Text.Encoding.ASCII.GetBytes(EnvironmentalHardwareAdapterTests.Sqm),
+                sampled, false, ReceivedAtUtc: sampled);
+        }
+    }
+
     private sealed class SignalingScheduleStore(SqliteEnvironmentalObservationOutbox inner)
         : IEnvironmentalAcquisitionStateStore, IEnvironmentalLocationHeldPollStore
     {
@@ -678,17 +839,17 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             ScheduleWritten.TrySetResult();
         }
 
-        public ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync(string root, EnvironmentalSourceDescriptor source,
+        public ValueTask<EnvironmentalLocationPollSlot?> ReadLocationHeldPollAsync(string root, EnvironmentalSourceDescriptor source,
             CancellationToken cancellationToken)
             => ((IEnvironmentalLocationHeldPollStore)inner).ReadLocationHeldPollAsync(root, source, cancellationToken);
 
-        public async ValueTask<DateTimeOffset> HoldLocationPollAsync(string root, EnvironmentalSourceDescriptor source,
+        public async ValueTask<EnvironmentalLocationPollSlot> HoldLocationPollAsync(string root, EnvironmentalSourceDescriptor source,
             DateTimeOffset due, CancellationToken cancellationToken)
         {
-            var heldDue = await ((IEnvironmentalLocationHeldPollStore)inner).HoldLocationPollAsync(
+            var slot = await ((IEnvironmentalLocationHeldPollStore)inner).HoldLocationPollAsync(
                 root, source, due, cancellationToken).ConfigureAwait(false);
             HoldWritten.TrySetResult();
-            return heldDue;
+            return slot;
         }
 
         public ValueTask<bool> RecordCaptureRegimeAsync(string root, long captureSequence, Guid captureId,

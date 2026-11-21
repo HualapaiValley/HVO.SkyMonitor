@@ -897,9 +897,9 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             using var settle = connection.CreateCommand();
             settle.Transaction = transaction;
             settle.CommandText = """
-                DELETE FROM environmental_location_held_polls
+                UPDATE environmental_location_held_polls SET settled = 1
                 WHERE source_id = $source AND source_type = $type AND schedule_epoch_utc_ticks = $epoch
-                    AND period_seconds = $period AND due_utc_ticks = $due;
+                    AND period_seconds = $period AND due_utc_ticks = $due AND settled = 0;
                 """;
             BindLocationHeldPollScope(settle, source);
             settle.Parameters.AddWithValue("$due", heldDue.UtcTicks);
@@ -908,7 +908,7 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         }
     }
 
-    async ValueTask<DateTimeOffset?> IEnvironmentalLocationHeldPollStore.ReadLocationHeldPollAsync(
+    async ValueTask<EnvironmentalLocationPollSlot?> IEnvironmentalLocationHeldPollStore.ReadLocationHeldPollAsync(
         string root, EnvironmentalSourceDescriptor source, CancellationToken cancellationToken)
     {
         root = NormalizeRoot(root);
@@ -916,16 +916,16 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT due_utc_ticks FROM environmental_location_held_polls
+            SELECT due_utc_ticks, settled FROM environmental_location_held_polls
             WHERE source_id = $source AND source_type = $type AND schedule_epoch_utc_ticks = $epoch
                 AND period_seconds = $period;
             """;
         BindLocationHeldPollScope(command, source);
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is long ticks
-            ? new DateTimeOffset(ticks, TimeSpan.Zero) : null;
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadLocationPollSlot(reader) : null;
     }
 
-    async ValueTask<DateTimeOffset> IEnvironmentalLocationHeldPollStore.HoldLocationPollAsync(
+    async ValueTask<EnvironmentalLocationPollSlot> IEnvironmentalLocationHeldPollStore.HoldLocationPollAsync(
         string root, EnvironmentalSourceDescriptor source, DateTimeOffset due, CancellationToken cancellationToken)
     {
         root = NormalizeRoot(root);
@@ -933,22 +933,32 @@ public sealed class SqliteEnvironmentalObservationOutbox(
         using var connection = await OpenAsync(root, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO environmental_location_held_polls(source_id, source_type, schedule_epoch_utc_ticks, period_seconds, due_utc_ticks)
-            VALUES($source, $type, $epoch, $period, $due)
+            INSERT INTO environmental_location_held_polls(source_id, source_type, schedule_epoch_utc_ticks, period_seconds, due_utc_ticks, settled)
+            VALUES($source, $type, $epoch, $period, $due, 0)
             ON CONFLICT(source_id) DO UPDATE SET
                 due_utc_ticks = CASE
                     WHEN source_type = excluded.source_type AND schedule_epoch_utc_ticks = excluded.schedule_epoch_utc_ticks
-                        AND period_seconds = excluded.period_seconds THEN due_utc_ticks
+                        AND period_seconds = excluded.period_seconds
+                        AND (settled = 0 OR due_utc_ticks >= excluded.due_utc_ticks) THEN due_utc_ticks
                     ELSE excluded.due_utc_ticks END,
+                settled = CASE
+                    WHEN source_type = excluded.source_type AND schedule_epoch_utc_ticks = excluded.schedule_epoch_utc_ticks
+                        AND period_seconds = excluded.period_seconds AND due_utc_ticks >= excluded.due_utc_ticks THEN settled
+                    ELSE 0 END,
                 source_type = excluded.source_type, schedule_epoch_utc_ticks = excluded.schedule_epoch_utc_ticks,
                 period_seconds = excluded.period_seconds
-            RETURNING due_utc_ticks;
+            RETURNING due_utc_ticks, settled;
             """;
         BindLocationHeldPollScope(command, source);
         command.Parameters.AddWithValue("$due", due.UtcTicks);
-        var ticks = (long)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
-        return new DateTimeOffset(ticks, TimeSpan.Zero);
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            throw new InvalidDataException("The environmental poll slot was not recorded.");
+        return ReadLocationPollSlot(reader);
     }
+
+    private static EnvironmentalLocationPollSlot ReadLocationPollSlot(SqliteDataReader reader)
+        => new(new DateTimeOffset(reader.GetInt64(0), TimeSpan.Zero), reader.GetBoolean(1));
 
     private static void BindLocationHeldPollScope(SqliteCommand command, EnvironmentalSourceDescriptor source)
     {
@@ -3904,7 +3914,8 @@ public sealed class SqliteEnvironmentalObservationOutbox(
             source_type TEXT NOT NULL CHECK(length(source_type) BETWEEN 1 AND 128),
             schedule_epoch_utc_ticks INTEGER NOT NULL CHECK(schedule_epoch_utc_ticks BETWEEN 0 AND 3155378975999999999),
             period_seconds INTEGER NOT NULL CHECK(period_seconds > 0),
-            due_utc_ticks INTEGER NOT NULL CHECK(due_utc_ticks BETWEEN schedule_epoch_utc_ticks AND 3155378975999999999)) STRICT;
+            due_utc_ticks INTEGER NOT NULL CHECK(due_utc_ticks BETWEEN schedule_epoch_utc_ticks AND 3155378975999999999),
+            settled INTEGER NOT NULL CHECK(settled IN (0, 1))) STRICT;
         """;
 
     private const string CanonicalSchemaSql = SchemaSql + OperationsSchemaSql + LocalSchemaSql;
