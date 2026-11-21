@@ -47,6 +47,9 @@ public static class DirectCentroidRegistration
     private const int MinimumVerificationCount = 3;
     private const double CandidateRadius = 1.25;
     private const double MaximumResidual = .85;
+    private const double FitRmsLimit = .50;
+    private const double HoldoutRmsLimit = .55;
+    private const double PlateRmsLimit = .55;
     private const double MinimumScale = .97;
     private const double MaximumScale = 1.03;
 
@@ -81,14 +84,14 @@ public static class DirectCentroidRegistration
         {
             return Failure(DirectRegistrationStatus.NoDirectMatch);
         }
-        var trainingStatus = Check(best.Fit, width, height, MinimumFitCount, .50);
+        var trainingStatus = Check(best.Fit, width, height, MinimumFitCount, FitRmsLimit);
         if (trainingStatus != DirectRegistrationStatus.Verified)
         {
             return Failure(trainingStatus, best.Fit);
         }
         var count = MatchPoints(best.Map, sourceHeldOut, heldOut, hits);
         var verification = hits.AsSpan(0, count);
-        var status = Check(verification, width, height, MinimumVerificationCount, .55);
+        var status = Check(verification, width, height, MinimumVerificationCount, HoldoutRmsLimit);
         var report = Report(status, best.Fit, verification);
         if (status != DirectRegistrationStatus.Verified)
         {
@@ -171,7 +174,7 @@ public static class DirectCentroidRegistration
                     }
                 }
                 var witness = refinedHits.AsSpan(0, inliers);
-                if (Check(witness, width, height, minimum, .55) == DirectRegistrationStatus.Verified &&
+                if (Check(witness, width, height, minimum, HoldoutRmsLimit) == DirectRegistrationStatus.Verified &&
                     Contradicts(best.Map, witness))
                 {
                     return true;
@@ -212,7 +215,7 @@ public static class DirectCentroidRegistration
             if (grid is not null)
             {
                 return Distinct(refined, best!.Map, width, height) &&
-                    Check(matches, width, height, minimum, .55) == DirectRegistrationStatus.Verified &&
+                    Check(matches, width, height, minimum, HoldoutRmsLimit) == DirectRegistrationStatus.Verified &&
                     Contradicts(best.Map, matches);
             }
             if (Better(count, error, best))
@@ -234,12 +237,12 @@ public static class DirectCentroidRegistration
         var references = Select(reference, width, height).Take(FeatureLimit).ToArray();
         var count = MatchPoints(map, sources, references, hits);
         var verification = hits.AsSpan(0, count);
-        var status = Check(verification, width, height, MinimumFitCount + MinimumVerificationCount, .55);
+        var status = Check(verification, width, height, MinimumFitCount + MinimumVerificationCount, PlateRmsLimit);
         cancellationToken.ThrowIfCancellationRequested();
         return Report(status, [], verification);
     }
 
-    /// <summary>Validates a retained relative map and the shape of its independently verified correspondence report.</summary>
+    /// <summary>Validates a retained relative map and its independently verified correspondence report.</summary>
     public static bool IsVerifiedSimilarity(ImageSimilarity map, DirectRegistrationCheck? check) =>
         IsSupportedSimilarity(map) && IsVerifiedCheck(check, platePair: false);
 
@@ -265,11 +268,23 @@ public static class DirectCentroidRegistration
 
         var sourceIds = new HashSet<int>();
         var referenceIds = new HashSet<int>();
-        return ValidMatches(fit) && ValidMatches(verification);
+        return (platePair || ValidMatches(fit, FitRmsLimit)) &&
+            ValidMatches(verification, platePair ? PlateRmsLimit : HoldoutRmsLimit);
 
-        bool ValidMatches(IReadOnlyList<RegistrationCentroidMatch> matches) => matches.All(match =>
-            match is { SourceIndex: >= 0, ReferenceIndex: >= 0, ResidualPixels: >= 0 and <= MaximumResidual } &&
-            sourceIds.Add(match.SourceIndex) && referenceIds.Add(match.ReferenceIndex));
+        bool ValidMatches(IReadOnlyList<RegistrationCentroidMatch> matches, double rmsLimit)
+        {
+            var sum = 0.0;
+            foreach (var match in matches)
+            {
+                if (match is not { SourceIndex: >= 0, ReferenceIndex: >= 0, ResidualPixels: >= 0 and <= MaximumResidual } ||
+                    !sourceIds.Add(match.SourceIndex) || !referenceIds.Add(match.ReferenceIndex))
+                {
+                    return false;
+                }
+                sum += match.ResidualPixels * match.ResidualPixels;
+            }
+            return WithinRmsLimit(sum, matches.Count, rmsLimit);
+        }
     }
 
     private static StellarDetection[] Select(IReadOnlyList<StellarDetection> points, int width, int height)
@@ -511,10 +526,13 @@ public static class DirectCentroidRegistration
             }
             sum += match.SquaredResidual;
         }
-        return sum <= matches.Length * rmsLimit * rmsLimit
+        return WithinRmsLimit(sum, matches.Length, rmsLimit)
             ? DirectRegistrationStatus.Verified
             : DirectRegistrationStatus.ResidualExceeded;
     }
+
+    private static bool WithinRmsLimit(double sumSquaredResiduals, int count, double rmsLimit) =>
+        sumSquaredResiduals <= count * rmsLimit * rmsLimit;
 
     private static bool HasSpread(ReadOnlySpan<Match> matches, int width, int height, bool reference)
     {

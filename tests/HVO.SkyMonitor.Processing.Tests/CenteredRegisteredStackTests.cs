@@ -295,6 +295,33 @@ public sealed class CenteredRegisteredStackTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow("fit", .49, .52)]
+    [DataRow("verification", .54, .56)]
+    public async Task RetainedRelativeReportMustMeetItsOwnRmsLimit(string group, double withinLimit, double aboveLimit)
+    {
+        var outcome = await ShiftedMonoWindow();
+        var retained = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        var planes = outcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray();
+        var good = CenteredRegisteredStackEvidence.Read(WithResiduals(withinLimit));
+        good.VerifyPlanes(planes);
+        Assert.IsNotNull(CenteredRegisteredStackRecipe.ReconstructSourceMap(good, 1, new Dictionary<Guid, ProcessingArtifact>()));
+        TestContext.WriteLine($"Relative {group} RMS {withinLimit:F2} reopened and verified.");
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(WithResiduals(.80)));
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(WithResiduals(aboveLimit)));
+        TestContext.WriteLine($"Relative {group} RMS 0.80 and {aboveLimit:F2} rejected.");
+
+        ProcessingProduct WithResiduals(double residual) =>
+            RewriteEvidence(retained, json =>
+            {
+                foreach (var match in json["sources"]![3]!["pairCheck"]![group]!.AsArray())
+                {
+                    match!["residualPixels"] = residual;
+                }
+            });
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task PlaneReaderChecksAllSupportBitsIncludingSinglySupportedPixels()
     {
         var outcome = await ShiftedMonoWindow();
@@ -569,6 +596,37 @@ public sealed class CenteredRegisteredStackTests
         Assert.AreEqual(reference.X, mapped.X, .85);
         Assert.AreEqual(reference.Y, mapped.Y, .85);
         Assert.IsNotNull(evidence.Sources[1].Plate?.UncertaintyReason);
+        var retainedEvidence = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        var probes = FieldStars.Select((star, index) => new StellarDetection(index, new(star.X + .5, star.Y + .5),
+            200 - index, 100, 1, 1, 0, 0)).ToArray();
+        var within = CheckPlate(.54);
+        Assert.AreEqual(DirectRegistrationStatus.Verified, within.Status);
+        var verifiedPlate = CenteredRegisteredStackEvidence.Read(WithPlateCheck(within));
+        verifiedPlate.VerifyPlanes(planes);
+        Assert.IsNotNull(CenteredRegisteredStackRecipe.ReconstructSourceMap(verifiedPlate, -1, retained));
+        var excessive = CheckPlate(.80);
+        Assert.AreEqual(DirectRegistrationStatus.ResidualExceeded, excessive.Status);
+        Assert.HasCount(12, excessive.Verification);
+        TestContext.WriteLine("Plate RMS 0.54 reopened and verified. The producer returned ResidualExceeded for twelve 0.80 px matches.");
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(
+            WithPlateCheck(excessive with { Status = DirectRegistrationStatus.Verified })));
+        var justAbove = CheckPlate(.56);
+        Assert.AreEqual(DirectRegistrationStatus.ResidualExceeded, justAbove.Status);
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(
+            WithPlateCheck(justAbove with { Status = DirectRegistrationStatus.Verified })));
+        TestContext.WriteLine("Plate RMS 0.80 and 0.56 rejected after changing only the producer's status to Verified.");
+
+        DirectRegistrationCheck CheckPlate(double shift) =>
+            DirectCentroidRegistration.VerifyPlatePair(new ImageSimilarity(1, 0, shift, 0), probes, probes, Width, Height);
+
+        ProcessingProduct WithPlateCheck(DirectRegistrationCheck check) =>
+            RewriteEvidence(retainedEvidence, json =>
+            {
+                var report = json["sources"]![1]!["pairCheck"]!;
+                report["status"] = check.Status.ToString();
+                report["verification"] = JsonSerializer.SerializeToNode(check.Verification, JsonSerializerOptions.Web);
+            });
+
         retained.Remove(first.Pin.Plate!.Context.ArtifactId);
         Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackRecipe.ReconstructSourceMap(evidence, -1, retained));
 
