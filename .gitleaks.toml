@@ -112,3 +112,10 @@ targetRules = ["generic-api-key"]
 condition = "AND"
 commits = ["b3423622d197a476d5147bbec6e9b70b01ba8fcf"]
 paths = ['''^docs/validation/issue-1041-run3-local-gate\.json$''']
+
+[[allowlists]]
+description = """The released CameraAgent v0.9.0 writer computes the synthetic manifest's idempotencyKey as the unkeyed SHA-256 of its canonical descriptor. This digest identifies duplicate artifacts and grants no access. The generic rule matched the digest in this fixture's introducing commit."""
+targetRules = ["generic-api-key"]
+condition = "AND"
+commits = ["742d3590ef764a3d6b8d623ada2f4bef185edcb3"]
+paths = ['''^tests/HVO\.SkyMonitor\.CameraAgent\.Tests/Fixtures/legacy-local-archive/frames/2026/01/02/Calibrated/2026-01-02_03-04-06\.000Z-f866ce6a86b74289bbe1247cc658f198\.json$''']

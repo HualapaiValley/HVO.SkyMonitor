@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DependencyInjection;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
@@ -37,7 +38,7 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
     public async Task ReleasedLocalArchiveListsLooksUpAndOpensAfterRestartUntilJournalApplies()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-local-archive-http");
-        var archive = Path.Combine(root, "storage-a");
+        var archive = Path.Combine(root, "storage-b");
         var fixtures = Path.Combine(AppContext.BaseDirectory, "Fixtures", "legacy-local-archive");
         try
         {
@@ -50,8 +51,31 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
             }
 
             var id = Guid.Parse("f866ce6a-86b7-4289-bbe1-247cc658f198");
-            var config = StoragePolicyRawIngressIntegrationTests.Profile(root);
+            var startup = StoragePolicyRawIngressIntegrationTests.Profile(root);
+            var archiveStorage = startup.Pipeline.Steps.Single(static step => step.Type == "Storage") with
+            {
+                Id = "storage-b",
+                Enabled = false,
+                Options = JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
+                {
+                    StorageRoot = archive,
+                    UpdateLatestFrame = false
+                })
+            };
+            startup = startup with { Pipeline = startup.Pipeline with { Steps = [.. startup.Pipeline.Steps, archiveStorage] } };
+            var config = startup with
+            {
+                Pipeline = startup.Pipeline with
+                {
+                    Steps = startup.Pipeline.Steps.Select(static step => step.Type == "Storage"
+                        ? step with { Enabled = step.Id == "storage-b" }
+                        : step).ToArray()
+                }
+            };
             var expected = new byte[] { 1, 2, 3, 4 };
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+            await AssertArchiveFollowsActiveStorageAsync(root, startup, config, id, expected, timeout.Token)
+                .ConfigureAwait(false);
             for (var reopen = 0; reopen < 2; reopen++)
             {
                 var app = CreateApp(root, config);
@@ -80,6 +104,52 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task AssertArchiveFollowsActiveStorageAsync(string root, CameraModuleConfig startup,
+        CameraModuleConfig archiveProfile, Guid artifactId, byte[] pixels, CancellationToken token)
+    {
+        var app = CreateApp(root, startup);
+        await using var scope = app.ConfigureAwait(false);
+        var schedule = app.Services.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
+        var store = app.Services.GetRequiredService<SqliteCaptureScheduleStore>();
+        var initial = await schedule.InitializeAsync(startup, token).ConfigureAwait(false);
+        await AssertArchiveAsync(app, artifactId, FrameArtifactRole.Calibrated, expected: null, token).ConfigureAwait(false);
+        var beforeStage = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+        var profile = LocalCaptureProfileDefinition.CreateV2(archiveProfile, startup.Schedule!);
+        var staged = await CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync(
+            app, "StageCameraAgentSchedule", HttpMethods.Post,
+            new { profile, basisRevisionId = initial.Revision.RevisionId, expectedVersion = beforeStage.Version },
+            idempotencyKey: "stage-archive", antiforgeryValidated: true, cancellationToken: token).ConfigureAwait(false);
+        Assert.AreEqual(StatusCodes.Status200OK, staged.Status, staged.Body);
+        var pending = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+        Assert.IsNotNull(pending.PendingRevision);
+
+        var archiveRevision = pending.PendingRevision.RevisionId;
+        await SelectRevisionAsync("ActivateCameraAgentSchedule", archiveRevision, "activate-archive",
+            "storage-b", pixels).ConfigureAwait(false);
+        await SelectRevisionAsync("RollbackCameraAgentSchedule", initial.Revision.RevisionId, "rollback-archive",
+            "storage", expected: null).ConfigureAwait(false);
+        await SelectRevisionAsync("ActivateCameraAgentSchedule", archiveRevision, "restore-archive",
+            "storage-b", pixels).ConfigureAwait(false);
+
+        async Task SelectRevisionAsync(string endpoint, string revisionId, string key, string storageId, byte[]? expected)
+        {
+            var before = await store.GetSnapshotAsync(token).ConfigureAwait(false);
+            var result = await CameraAgentProcessingGraphOperationsEndpointsTests.InvokeForBodyAsync(
+                app, endpoint, HttpMethods.Post, new { revisionId, expectedVersion = before.Version },
+                idempotencyKey: key, antiforgeryValidated: true, cancellationToken: token).ConfigureAwait(false);
+            Assert.AreEqual(StatusCodes.Status200OK, result.Status, result.Body);
+            var durable = (await store.GetSnapshotAsync(token).ConfigureAwait(false)).ActiveRevision;
+            Assert.AreEqual(revisionId, durable.RevisionId);
+            Assert.AreEqual(storageId, durable.Profile.ProcessingSteps.Single(IsEnabledStorage).Id);
+            var active = schedule.Snapshot!;
+            Assert.AreEqual(revisionId, active.Revision.RevisionId);
+            Assert.AreEqual(storageId, active.Configuration.Pipeline.Steps.Single(IsEnabledStorage).Id);
+            await AssertArchiveAsync(app, artifactId, FrameArtifactRole.Calibrated, expected, token).ConfigureAwait(false);
+        }
+
+        static bool IsEnabledStorage(CaptureProcessingStepConfig step) => step.Type == "Storage" && step.Enabled != false;
     }
 
     [TestMethod]
@@ -265,12 +335,14 @@ public sealed class CameraAgentArchiveProfileCompatibilityTests
             .ConfigureAwait(false);
         Assert.AreEqual(StatusCodes.Status200OK, page.Status);
         using var listed = JsonDocument.Parse(page.Body);
-        Assert.AreEqual(expected is not null, listed.RootElement.GetProperty("items").EnumerateArray()
-            .Any(item => item.GetProperty("artifactId").GetGuid() == artifactId));
+        var isListed = listed.RootElement.GetProperty("items").EnumerateArray()
+            .Any(item => item.GetProperty("artifactId").GetGuid() == artifactId);
         var lookup = await ReadAsync("GetCameraAgentProduct", $"/api/v1/operations/gallery/products/{artifactId:D}", null, artifactId)
             .ConfigureAwait(false);
         var content = await ReadAsync("GetCameraAgentArtifactContent", $"/api/v1/operations/artifacts/{artifactId:D}/content", null, artifactId)
             .ConfigureAwait(false);
+        Assert.AreEqual(expected is not null, isListed,
+            $"Archive detail returned HTTP {lookup.Status} and content returned HTTP {content.Status}.");
         if (expected is null)
         {
             Assert.AreEqual(StatusCodes.Status404NotFound, lookup.Status);
