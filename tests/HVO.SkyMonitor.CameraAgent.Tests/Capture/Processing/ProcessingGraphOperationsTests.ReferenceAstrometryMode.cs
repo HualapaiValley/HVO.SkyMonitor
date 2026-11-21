@@ -109,19 +109,26 @@ public sealed partial class ProcessingGraphOperationsTests
                 var profile = LocalCaptureProfileDefinition.CreateV2(
                     legacy with { CenteredExposure = new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) },
                     legacy.Schedule!);
-                var staged = await schedule.StageAsync(profile, "stage-centered", null, actor, reason, token).ConfigureAwait(false);
+                var scheduleState = await schedule.GetOperatorStateAsync(token).ConfigureAwait(false);
+                var staged = await schedule.StageAsync(profile, "stage-centered", scheduleState.StateVersion, actor, reason, token)
+                    .ConfigureAwait(false);
                 await schedule.ActivateAsync(staged.PendingRevision!.RevisionId, "activate-centered", staged.Version,
                     actor, reason, token).ConfigureAwait(false);
                 var centered = schedule.Snapshot!.Configuration;
                 Assert.IsNotNull(centered.CenteredExposure);
                 Assert.AreEqual(CameraPixelFormat.Mono16, centered.Rig.Readout?.PixelFormat);
-                var centeredRegistry = await operations.EnsureConfiguredBasicAsync(centered, token).ConfigureAwait(false);
                 var commandCount = CountRows(root, "processing_graph_commands");
 
+                // Only the active schedule has changed. The configured-basic graph has not been refreshed.
                 allowRead.SetResult();
                 AssertIncompatible(await pending.ConfigureAwait(false));
-                AssertIncompatible(await CreatePresetAsync(centeredRegistry.ConfiguredBasicRevisionId, centeredKey).ConfigureAwait(false));
                 Assert.IsNull(await ReadReceiptAsync(legacyBasis, pendingKey).ConfigureAwait(false));
+                Assert.AreEqual(commandCount, CountRows(root, "processing_graph_commands"));
+                Assert.HasCount(active.Revisions.Count,
+                    (await store.ReadRegistryAsync(token).ConfigureAwait(false)).Revisions);
+
+                var centeredRegistry = await operations.EnsureConfiguredBasicAsync(centered, token).ConfigureAwait(false);
+                AssertIncompatible(await CreatePresetAsync(centeredRegistry.ConfiguredBasicRevisionId, centeredKey).ConfigureAwait(false));
                 Assert.IsNull(await ReadReceiptAsync(centeredRegistry.ConfiguredBasicRevisionId, centeredKey).ConfigureAwait(false));
                 Assert.AreEqual(created, await CreatePresetAsync(legacyBasis, issuedKey).ConfigureAwait(false));
                 var retained = await ReadReceiptAsync(legacyBasis, issuedKey).ConfigureAwait(false)
