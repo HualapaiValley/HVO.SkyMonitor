@@ -107,6 +107,7 @@ public sealed partial class RawCaptureIngressTests
         DROP TABLE centered_exposure_products;
         DROP TABLE centered_exposure_attempts;
         DROP TABLE centered_exposure_runs;
+        DROP TABLE centered_acquisition_owners;
         """;
 
     private static async Task RevertProfilesToV13Async(SqliteConnection connection)

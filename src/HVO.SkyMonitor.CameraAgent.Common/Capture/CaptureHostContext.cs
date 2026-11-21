@@ -25,7 +25,9 @@ internal sealed class CaptureHostContext(
     ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
     CaptureProjectedSceneStager? projectedSceneStager = null,
     ILogger? logger = null,
-    SqliteCalibrationLibraryStore? calibrationLibrary = null) : ICaptureHostContext
+    SqliteCalibrationLibraryStore? calibrationLibrary = null,
+    string? centeredDeviceIdentity = null,
+    CenteredOwnerTransition? centeredOwner = null) : ICaptureHostContext
 {
     private static readonly Meter Meter = new("HVO.SkyMonitor.CameraAgent.ProcessingGraph");
     private static readonly Counter<long> ProjectedSceneStagingOutcomes = Meter.CreateCounter<long>(
@@ -39,16 +41,19 @@ internal sealed class CaptureHostContext(
     internal RawCaptureIngress CenteredIngress => _rawCaptureIngress as RawCaptureIngress ??
         throw new InvalidOperationException("Centered exposure requires CameraAgent durable raw ingress.");
 
-    internal async Task PublishCenteredAsync(
+    internal async Task<TimeSpan> PublishCenteredAsync(
         CaptureLoopSubmission submission,
         CenteredExposureReservation reservation,
         CancellationToken cancellationToken)
     {
         RawCaptureReceipt receipt;
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        TimeSpan ingressElapsed;
         try
         {
             receipt = await CenteredIngress.AcceptCenteredAsync(
                 _configuration, submission, reservation, cancellationToken).ConfigureAwait(false);
+            ingressElapsed = System.Diagnostics.Stopwatch.GetElapsedTime(started);
         }
         catch
         {
@@ -65,12 +70,19 @@ internal sealed class CaptureHostContext(
         if (environmentalTriggers is not null)
             await environmentalTriggers.AfterCaptureAsync(receipt, submission, cancellationToken).ConfigureAwait(false);
         _captureDistributor.NotifyCommittedCapture();
+        return ingressElapsed;
     }
 
-    internal Task<CenteredExposureReservation> ReserveCenteredAsync(CancellationToken cancellationToken)
+    internal Task<CenteredExposureReservation> ReserveCenteredAsync(
+        CenteredScheduleBinding? schedule, bool admissionInterrupted, CancellationToken cancellationToken)
         => CenteredIngress.ReserveCenteredAsync(
             _configuration, projectedSceneStager?.FrozenResources ?? new(null, null, null, null, "unavailable"),
-            calibrationLibrary, cancellationToken);
+            calibrationLibrary, cancellationToken, centeredDeviceIdentity, schedule, admissionInterrupted);
+
+    internal Task DispatchCenteredAsync(
+        ExposureAttemptKey attempt, CaptureSetpoint setpoint, CaptureMeteringEvidence? metering, string reason,
+        CancellationToken cancellationToken)
+        => CenteredIngress.DispatchCenteredAsync(attempt, setpoint, metering, reason, cancellationToken, centeredOwner);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Physical projected-scene analysis is optional; acquired raw pixels must reach ingress for any recoverable analysis/provider failure.")]
     public async ValueTask PublishAsync(CaptureLoopSubmission submission, CancellationToken cancellationToken)

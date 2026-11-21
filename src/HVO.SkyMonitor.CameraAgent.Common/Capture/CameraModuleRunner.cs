@@ -225,7 +225,12 @@ internal sealed class CameraModuleRunner
             {
                 try
                 {
-                    reservation = await centered.ReserveCenteredAsync(cancellationToken).ConfigureAwait(false);
+                    var scheduleBinding = scheduleGrant?.Evidence is { } grant
+                        ? new CenteredScheduleBinding(grant.ScheduleRevisionSha256, grant.LocalProfileSha256,
+                            grant.SetpointProfileId, grant.IntervalId, grant.OverrideId, cadenceMode)
+                        : null;
+                    reservation = await centered.ReserveCenteredAsync(scheduleBinding,
+                        scheduleGrant?.AdmissionWasInterrupted == true, cancellationToken).ConfigureAwait(false);
                     var initial = scheduleGrant?.Decision.Reason is null or CaptureScheduleAdmissionReason.LegacyCompatibility
                         ? ExposureController.Initial(config.Rig.Pipeline,
                             hostMetered ? ResolveSolarRegime(config, UtcNow()) : CaptureSolarRegime.Night)
@@ -246,7 +251,7 @@ internal sealed class CameraModuleRunner
                         continue;
                     }
                     nextSetpoint = centeredSetpoint.Setpoint;
-                    await centered.CenteredIngress.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
+                    await centered.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
                         centeredSetpoint.Metering, centeredSetpoint.Reason, cancellationToken).ConfigureAwait(false);
                 }
                 catch
@@ -281,6 +286,8 @@ internal sealed class CameraModuleRunner
                 };
             CaptureResult? result;
             EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
+            var acquisitionStart = moduleCallStartedTimestamp;
+            var acquisitionUtc = moduleCallStartedUtc;
             using var cycleActivity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-cycle");
             cycleActivity?.SetTag("cadence.mode", cadenceMode.ToString());
             cycleActivity?.SetTag("start.reason", effectiveSchedule.StartReason.ToString());
@@ -290,6 +297,21 @@ internal sealed class CameraModuleRunner
                 {
                     environmentalAcquisition = await _environmentalTriggers.BeforeCaptureAsync(moduleCallStartedUtc, cancellationToken)
                         .ConfigureAwait(false);
+                }
+                if (reservation is not null)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    acquisitionUtc = UtcNow();
+                    if (scheduleGrant?.Evidence is { } verified && acquisitionUtc >= verified.EffectiveEndUtc)
+                    {
+                        admission.MarkNoPublicationRequired();
+                        previousStartTimestamp = null;
+                        previousStartUtc = null;
+                        continue;
+                    }
+                    acquisitionStart = _timeProvider.GetTimestamp();
+                    previousStartTimestamp = acquisitionStart;
+                    previousStartUtc = acquisitionUtc;
                 }
                 result = reservation is null
                     ? await _module.CaptureAsync(request, cancellationToken).ConfigureAwait(false)
@@ -349,12 +371,17 @@ internal sealed class CameraModuleRunner
             {
                 if (result.Frame?.Layout is null || result.AcquisitionTiming is null)
                     throw new InvalidOperationException("Centered capture requires actual layout and observed acquisition timing.");
-                var centeredSubmission = new CaptureLoopSubmission(request, result, moduleCallStartedUtc, targetInterval,
-                    _timeProvider.GetElapsedTime(moduleCallStartedTimestamp));
-                await centered!.PublishCenteredAsync(centeredSubmission, reservation, cancellationToken).ConfigureAwait(false);
+                var acquisitionElapsed = _timeProvider.GetElapsedTime(acquisitionStart);
+                var centeredSubmission = new CaptureLoopSubmission(request, result, acquisitionUtc, targetInterval, acquisitionElapsed)
+                {
+                    CenteredAcquisition = new(cadenceMode, targetInterval, acquisitionUtc, acquisitionElapsed,
+                        environmentalAcquisition?.Id, environmentalAcquisition?.Unavailable == true,
+                        environmentalAcquisition?.BeforeCaptureSources, scheduleGrant?.Evidence)
+                };
+                var ingressElapsed = await centered!.PublishCenteredAsync(centeredSubmission, reservation, cancellationToken)
+                    .ConfigureAwait(false);
                 acceptedAdmission.MarkPublished();
-                _fleetRuntimeState?.CaptureSucceeded(result,
-                    _timeProvider.GetElapsedTime(moduleCallStartedTimestamp), TimeSpan.Zero);
+                _fleetRuntimeState?.CaptureSucceeded(result, acquisitionElapsed, ingressElapsed);
                 recovering = false;
                 continue;
             }

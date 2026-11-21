@@ -10,8 +10,11 @@ public static class CenteredNormalizationLayout
     public static FrameLayoutDescriptor CreateWorkingLayout(FrameLayoutDescriptor rawLayout)
     {
         ArgumentNullException.ThrowIfNull(rawLayout);
-        if (rawLayout is not { LevelCodeSpace: FrameLevelCodeSpace.NativeSample, BlackLevel: { } black,
-            StoredCodeTransform: FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1 } ||
+        if (rawLayout is not
+            {
+                LevelCodeSpace: FrameLevelCodeSpace.NativeSample, BlackLevel: { } black,
+                StoredCodeTransform: FrameStoredCodeTransform.LeftShiftedV1 or FrameStoredCodeTransform.FullRangeScaledV1
+            } ||
             !FrameWhiteThreshold.TryResolveStored(rawLayout, out var white, out _))
             return rawLayout;
 

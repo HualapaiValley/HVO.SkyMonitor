@@ -76,6 +76,14 @@ public sealed class VirtualSkyCameraModule(
             ? CaptureSolarRegime.Night
             : null;
 
+    async Task ICameraBoundExposureCapture.InitializeBoundAsync(
+        CameraModuleConfig configuration, Func<string, CancellationToken, ValueTask> fenceAttachment,
+        CancellationToken cancellationToken)
+    {
+        await fenceAttachment("virtual-sky-v1", cancellationToken).ConfigureAwait(false);
+        await InitializeAsync(configuration, cancellationToken).ConfigureAwait(false);
+    }
+
     public Task InitializeAsync(CameraModuleConfig config, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(config);

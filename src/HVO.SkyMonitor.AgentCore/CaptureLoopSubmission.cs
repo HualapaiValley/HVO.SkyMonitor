@@ -20,6 +20,9 @@ public sealed record CaptureLoopSubmission(
     /// <summary>Gets the optional acquisition-critical evidence for this capture cycle.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CaptureCycleEvidence? CycleEvidence { get; init; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CenteredCaptureAcquisitionEvidence? CenteredAcquisition { get; init; }
 }
 
 /// <summary>

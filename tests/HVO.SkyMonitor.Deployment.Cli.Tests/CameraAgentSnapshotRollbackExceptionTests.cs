@@ -64,7 +64,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     [TestMethod]
-    [DataRow(RawIngressSchema, "16", "16", null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
+    [DataRow(RawIngressSchema, null, null, null, "does not make the installer take a snapshot", DisplayName = "an unchanged label")]
     [DataRow("io.hvo.skymonitor.component", "CameraAgent-previous", "CameraAgent-previous", null, "does not make the installer take a snapshot", DisplayName = "a label the installer does not compare")]
     [DataRow(RawIngressSchema, "14", "13", null, "not the one the frozen release declares", DisplayName = "a previous value the frozen release does not declare")]
     [DataRow(RawIngressSchema, "14", "14", "undeclared", "not the one this release declares", DisplayName = "a candidate value this release does not declare")]
@@ -74,7 +74,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         ArgumentNullException.ThrowIfNull(label);
         var fixture = LoadFixture();
         var candidate = ReadDockerfileLabels();
-        if (frozenValue is not null) fixture["imageLabels"]![label] = frozenValue;
+        fixture["imageLabels"]![label] = frozenValue ?? candidate[label];
         Declare(fixture, label,
             previousValue ?? fixture["imageLabels"]![label]!.GetValue<string>(),
             candidateValue ?? candidate[label]);
