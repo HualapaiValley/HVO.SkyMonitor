@@ -54,6 +54,7 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Parameters.AddWithValue("$profile", (object?)profileIdentity ?? DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await NotifyCenteredExpiryCommittedAsync(connection, agentId).ConfigureAwait(false);
         return transition;
     }
 
@@ -84,6 +85,7 @@ internal sealed partial class SqliteRawCaptureJournal
             await ExpireCenteredRunsAsync(connection, transaction, transition.AgentId, transition.CameraId!,
                 "device-changed", false, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await NotifyCenteredExpiryCommittedAsync(connection, transition.AgentId).ConfigureAwait(false);
     }
 
     internal async Task ActivateCenteredOwnerAsync(CenteredOwnerTransition transition, CancellationToken cancellationToken)

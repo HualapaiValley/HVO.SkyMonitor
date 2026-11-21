@@ -117,6 +117,7 @@ internal sealed class StandardCaptureLaneHandler(
                     _logger,
                     processingToken,
                     _maximumAttempts,
+                    timeProvider: _timeProvider,
                     faultInjector: _faultInjector,
                     ensureLiveStoragePolicy: _graphOperations is { } operations
                         ? token => operations.EnsureLiveStoragePolicyAsync(item.Config, token)
