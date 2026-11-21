@@ -41,32 +41,62 @@ internal sealed partial class SqliteCaptureProcessingStore
             THEN 'Calibration' ELSE run.linear_node_id END
         """;
 
+    private const string CommittedArchivePublicationsSql = """
+        SELECT input.variant, input.identity_sha256
+        FROM processing_executions execution
+        JOIN raw_captures raw ON raw.capture_id = execution.capture_id
+                             AND raw.raw_artifact_id = execution.primary_artifact_id
+        JOIN centered_exposure_attempts exposure ON exposure.capture_id = raw.capture_id
+        JOIN processing_execution_nodes bound
+          ON bound.execution_id = execution.execution_id AND bound.node_id = $node
+        JOIN processing_nodes node
+          ON node.capture_id = raw.capture_id AND node.node_id = bound.node_id
+          AND node.plan_sha256 = bound.plan_sha256 AND node.attempt = bound.attempt_count
+          AND node.completed_unix_ms = bound.completed_unix_ms
+        JOIN processing_node_inputs input ON input.capture_id = node.capture_id AND input.node_id = node.node_id
+        WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
+          AND execution.trigger_kind = 'capture' AND execution.allow_automatic_publication = 1
+          AND bound.status = 'Completed' AND node.status = 'Completed'
+          AND input.kind = 'CanonicalContext' AND input.name = 'centered-archive' AND input.schema_version = $schema
+        """;
+
+    private static SqliteCommand CreateCommittedArchivePublicationsQuery(
+        SqliteConnection connection, Guid executionId, string nodeId)
+    {
+        var command = connection.CreateCommand();
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$node", nodeId);
+        command.Parameters.AddWithValue("$schema", Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion);
+        return command;
+    }
+
+    internal static bool IsCommittedArchivePublication(
+        SqliteConnection connection, Guid executionId, Guid captureId, string nodeId, string path, string identity)
+    {
+        using var command = CreateCommittedArchivePublicationsQuery(connection, executionId, nodeId);
+        // The exact copy input was written by Storage after saving, then committed under the live lease.
+        // Merely selecting a derivative can result in a successful Storage node with no exported copy.
+        command.CommandText = CommittedArchivePublicationsSql + """
+
+             AND raw.capture_id = $capture AND input.variant = $path AND input.identity_sha256 = $identity
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$capture", captureId.ToString("N"));
+        command.Parameters.AddWithValue("$path", path);
+        command.Parameters.AddWithValue("$identity", identity);
+        return command.ExecuteScalar() is string;
+    }
+
     internal async ValueTask<IReadOnlyList<(string RelativePath, string Identity)>> ReadCommittedArchivePublicationsAsync(
         Guid executionId, string nodeId, CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        using var command = connection.CreateCommand();
-        command.CommandText = """
-            SELECT input.variant, input.identity_sha256
-            FROM processing_executions execution
-            JOIN centered_exposure_attempts exposure ON exposure.capture_id = execution.capture_id
-            JOIN processing_execution_nodes bound
-              ON bound.execution_id = execution.execution_id AND bound.node_id = $node
-            JOIN processing_nodes node
-              ON node.capture_id = execution.capture_id AND node.node_id = bound.node_id
-              AND node.plan_sha256 = bound.plan_sha256 AND node.attempt = bound.attempt_count
-              AND node.completed_unix_ms = bound.completed_unix_ms
-            JOIN processing_node_inputs input ON input.capture_id = node.capture_id AND input.node_id = node.node_id
-            WHERE execution.execution_id = $execution AND execution.execution_class = 'Live'
-              AND execution.trigger_kind = 'capture' AND execution.allow_automatic_publication = 1
-              AND bound.status = 'Completed' AND node.status = 'Completed'
-              AND input.kind = 'CanonicalContext' AND input.name = 'centered-archive' AND input.schema_version = $schema
+        using var command = CreateCommittedArchivePublicationsQuery(connection, executionId, nodeId);
+        command.CommandText = CommittedArchivePublicationsSql + """
+
             ORDER BY input.input_ordinal;
             """;
-        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
-        command.Parameters.AddWithValue("$node", nodeId);
-        command.Parameters.AddWithValue("$schema", Storage.FileSystemFrameStorageService.ArchiveEvidenceVersion);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<(string, string)>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

@@ -337,12 +337,12 @@ internal sealed class FileStorageCaptureProcessingStep(
             producer is null)
             throw new InvalidDataException("The centered archive copy has no authorized Storage execution.");
 
-        var (stored, identity) = await frameStorage.SaveArchiveAsync(Options.StorageRoot, artifact, descriptor, manifestProducer,
+        var (stored, savedDescriptor, identity) = await frameStorage.SaveArchiveAsync(Options.StorageRoot, artifact, descriptor, manifestProducer,
             raw, execution, producer, product.OutputIdentitySha256, product.ContentIdentitySha256, cancellationToken)
             .ConfigureAwait(false);
         context.RecordArchivePublication(stored.RelativePath.Replace('\\', '/'), identity);
         faults?.Inject(CaptureProcessingFaultPoint.AfterArchiveCopyStaged, storageNode);
-        return (stored, descriptor);
+        return (stored, savedDescriptor);
     }
 
     bool IDurableCaptureProcessingPostCommit.RequiresSuccessfulCommitCallback => true;
