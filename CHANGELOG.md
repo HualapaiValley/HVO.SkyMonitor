@@ -24,7 +24,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent can opt into centered exposure capture with recoverable per-camera admission and retained linear-input evidence (#1919).
 
-- Centered capture closes each five-slot window on its original deadline and retains the registration evidence under the center exposure. #1921
+- Centered capture tracks actual shutter requests in five-slot windows that close on their original deadlines. The capture's window record preserves shutter refusals and remains available when the center arrives after closure. #1921
 
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 

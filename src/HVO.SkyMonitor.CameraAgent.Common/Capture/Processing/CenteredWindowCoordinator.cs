@@ -45,8 +45,7 @@ internal sealed partial class CenteredWindowCoordinator(
         {
             await store.TryCloseCenteredWindowAsync(identity, journal, cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (exception is IOException or InvalidDataException or
-            Microsoft.Data.Sqlite.SqliteException or KeyNotFoundException or System.Text.Json.JsonException or ArgumentException or FormatException)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             CloseFailed(logger, identity, exception);
         }
@@ -61,12 +60,17 @@ internal sealed partial class CenteredWindowCoordinator(
 
     private async Task ExecuteRuntimeAsync(CancellationToken stoppingToken)
     {
-        await ingress!.WaitForCenteredWindowEvidenceAsync(stoppingToken).ConfigureAwait(false);
+        var evidenceReady = false;
         var observed = -1L;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                if (!evidenceReady)
+                {
+                    await ingress!.WaitForCenteredWindowEvidenceAsync(stoppingToken).ConfigureAwait(false);
+                    evidenceReady = true;
+                }
                 var version = wakeup!.Version;
                 var recovered = await store.RecoverUnobservedCenteredEvidenceAsync(stoppingToken).ConfigureAwait(false);
                 if (version != observed || recovered)
@@ -76,9 +80,10 @@ internal sealed partial class CenteredWindowCoordinator(
                 }
                 await CloseDueAsync(stoppingToken).ConfigureAwait(false);
             }
-            catch (Microsoft.Data.Sqlite.SqliteException exception)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                observed = wakeup!.Version;
+                // Retry the sweep after a failed read or recovery even if the wakeup version is unchanged.
+                observed = -1;
                 ReadDueFailed(logger, exception);
                 await Task.Delay(TimerResolution, timeProvider, stoppingToken).ConfigureAwait(false);
                 continue;
@@ -109,7 +114,7 @@ internal sealed partial class CenteredWindowCoordinator(
             {
                 await CloseDueAsync(stoppingToken).ConfigureAwait(false);
             }
-            catch (Microsoft.Data.Sqlite.SqliteException exception)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 ReadDueFailed(logger, exception);
             }

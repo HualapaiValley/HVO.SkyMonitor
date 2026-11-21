@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Processing;
 
@@ -32,7 +33,9 @@ internal sealed record CenteredWindowSlotTime(
     DateTimeOffset ExpectedStartUtc,
     string CadenceRevision,
     string? BoundaryReason = null,
-    TimeSpan ExpectedIntegration = default);
+    TimeSpan ExpectedIntegration = default,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TimeSpan? Tolerance = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Continuous = false);
 
 internal sealed record CenteredWindowInput(
     ExposureKey Key,
@@ -180,7 +183,8 @@ internal static class CenteredWindowScheduler
                     string.IsNullOrWhiteSpace(change.NewCadenceRevision))) ||
                 sameCadence != change.IsCommittedDispatchAdjustment ||
                 (sameCadence && (change.FirstAffectedStartUtc is not { } requested || change.Interval is not { } cadence ||
-                    ((requested - change.AnchorStartUtc) - cadence).Duration() > cadence / 2)))
+                    (change.Tolerance is null && change.Continuous != true &&
+                        ((requested - change.AnchorStartUtc) - cadence).Duration() > cadence / 2))))
                 throw new InvalidDataException("A centered cadence change is not anchored to its committed predecessor.");
 
             for (var next = index + 1; next < times.Count; next++)
@@ -191,7 +195,9 @@ internal static class CenteredWindowScheduler
                         ExpectedStartUtc = (next == index + 1 ? change.FirstAffectedStartUtc : null) ??
                             times[next - 1].ExpectedStartUtc + step,
                         CadenceRevision = change.NewCadenceRevision!,
-                        ExpectedIntegration = change.ExpectedIntegration ?? times[next].ExpectedIntegration
+                        ExpectedIntegration = change.ExpectedIntegration ?? times[next].ExpectedIntegration,
+                        Tolerance = change.Tolerance ?? times[next].Tolerance,
+                        Continuous = change.Continuous ?? times[next].Continuous
                     }
                     : times[next] with { BoundaryReason = change.BoundaryReason };
             }
@@ -218,10 +224,10 @@ internal static class CenteredWindowScheduler
         for (var index = 0; index < SlotCount; index++)
         {
             var time = times[index];
-            var gap = index == 0 ? TimeSpan.MaxValue : time.ExpectedStartUtc - times[index - 1].ExpectedStartUtc;
+            var tolerance = time.Tolerance ?? schedule.SlotTolerance;
             if (time.ExpectedStartUtc.Offset != TimeSpan.Zero || string.IsNullOrWhiteSpace(time.CadenceRevision) ||
-                time.ExpectedIntegration < TimeSpan.Zero ||
-                gap <= schedule.SlotTolerance || gap - schedule.SlotTolerance <= schedule.SlotTolerance)
+                time.ExpectedIntegration < TimeSpan.Zero || tolerance < TimeSpan.Zero ||
+                (index > 0 && !Separated(times[index - 1], time, schedule.SlotTolerance)))
                 throw new InvalidDataException("Centered window slot times must be UTC, ordered, and unambiguous within the pinned tolerance.");
         }
 
@@ -262,6 +268,16 @@ internal static class CenteredWindowScheduler
             return null;
 
         return new(schedule, cutoff, slots.MoveToImmutable());
+    }
+
+    private static bool Separated(CenteredWindowSlotTime previous, CenteredWindowSlotTime next, TimeSpan legacyTolerance)
+    {
+        var gap = next.ExpectedStartUtc - previous.ExpectedStartUtc;
+        var nextTolerance = next.Tolerance ?? legacyTolerance;
+        // Continuous observations are bound to exact dispatched attempts. Adjacent
+        // requests need chronological order, but they do not promise a time grid.
+        return gap > TimeSpan.Zero && (previous.Continuous || next.Continuous ||
+            (gap > nextTolerance && gap - nextTolerance > (previous.Tolerance ?? legacyTolerance)));
     }
 
     private static Dictionary<DateTimeOffset, CenteredWindowSlotObservation> IndexEvidence(
@@ -335,7 +351,7 @@ internal static class CenteredWindowScheduler
             throw new InvalidDataException("A centered window slot has inconsistent admitted exposure evidence.");
         }
 
-        if ((input.Timing.ExposureStartedUtc - time.ExpectedStartUtc).Duration() > schedule.SlotTolerance)
+        if ((input.Timing.ExposureStartedUtc - time.ExpectedStartUtc).Duration() > (time.Tolerance ?? schedule.SlotTolerance))
         {
             return new(offset, time, CenteredWindowSlotState.OutsideTolerance, "exposure-start-outside-tolerance", input, null, attempt);
         }

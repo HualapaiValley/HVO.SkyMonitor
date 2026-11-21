@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 
@@ -24,7 +25,9 @@ internal sealed record CenteredWindowCalendarChange(
     TimeSpan? ExpectedIntegration = null,
     string? BoundaryReason = null,
     DateTimeOffset? FirstAffectedStartUtc = null,
-    bool IsCommittedDispatchAdjustment = false);
+    bool IsCommittedDispatchAdjustment = false,
+    TimeSpan? Tolerance = null,
+    bool? Continuous = null);
 
 internal sealed record CenteredWindowJournalSnapshot(
     string GenerationId,
@@ -508,21 +511,77 @@ internal sealed partial class SqliteCaptureProcessingStore
             WHERE window.reference_capture_id = $reference;
             """;
         command.Parameters.AddWithValue("$reference", referenceCaptureId.ToString("N"));
+        string? identity = null;
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                identity = reader.GetString(0);
+                var reason = ReadCenteredFailure(reader, 2);
+                if (reason is InvalidCheckpoint or CapacityExhausted)
+                {
+                    return new(null, null, new(identity, new(reader.GetString(3), reader.GetString(4)),
+                        Guid.ParseExact(reader.GetString(5), "N"), new(reader.GetInt64(1), TimeSpan.Zero), reason));
+                }
+            }
+        }
+        if (identity is null)
+            return await ReadLateCenteredWindowAsync(transaction, command, referenceCaptureId, cancellationToken)
+                .ConfigureAwait(false);
+        var row = await ReadCenteredWindowAsync(transaction, identity, cancellationToken).ConfigureAwait(false);
+        return new(row.Checkpoint, row.Disposition, null);
+    }
+
+    private static async ValueTask<CenteredWindowReadState?> ReadLateCenteredWindowAsync(
+        SqliteTransaction transaction, SqliteCommand command, Guid referenceCaptureId, CancellationToken cancellationToken)
+    {
+        // This link is for lookup only. The frozen reference stays absent and
+        // downstream window publication continues using its original reference column.
+        command.CommandText = """
+            SELECT window.window_sha256, attempt.attempt_id, attempt.ordinal, run.run_id, run.agent_id, run.camera_id,
+                raw.manifest_json, raw.manifest_sha256, run.snapshot_json, run.snapshot_sha256
+            FROM centered_exposure_attempts attempt
+            JOIN processing_centered_attempt_calendar calendar ON calendar.attempt_id = attempt.attempt_id
+                AND calendar.run_id = attempt.run_id
+            JOIN processing_centered_windows window ON window.window_sha256 = calendar.window_sha256
+            JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+            JOIN raw_captures raw ON raw.capture_id = attempt.capture_id AND raw.agent_id = run.agent_id
+            WHERE attempt.capture_id = $reference AND attempt.status = 'observed' AND raw.state = 'committed'
+                AND window.terminal = 1 AND window.reference_capture_id IS NULL AND window.closure_json IS NOT NULL;
+            """;
         string identity;
+        ExposureAttemptKey attempt;
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
             if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 return null;
             identity = reader.GetString(0);
-            var reason = ReadCenteredFailure(reader, 2);
-            if (reason is InvalidCheckpoint or CapacityExhausted)
-            {
-                return new(null, null, new(identity, new(reader.GetString(3), reader.GetString(4)),
-                    Guid.ParseExact(reader.GetString(5), "N"), new(reader.GetInt64(1), TimeSpan.Zero), reason));
-            }
+            attempt = new(new(reader.GetString(4), reader.GetString(5)), Guid.ParseExact(reader.GetString(3), "N"),
+                reader.GetInt64(2), Guid.ParseExact(reader.GetString(1), "N"));
+            var manifestBytes = await reader.GetFieldValueAsync<byte[]>(6, cancellationToken).ConfigureAwait(false);
+            var snapshotBytes = await reader.GetFieldValueAsync<byte[]>(8, cancellationToken).ConfigureAwait(false);
+            var manifest = CaptureContractJson.ParseManifest(manifestBytes).Document?.Manifest;
+            var snapshotHash = reader.GetString(9);
+            if (PayloadChecksum.ComputeSha256(manifestBytes) != reader.GetString(7) ||
+                PayloadChecksum.ComputeSha256(snapshotBytes) != snapshotHash ||
+                manifest?.CenteredExposure is not { } binding || binding.Source != attempt ||
+                binding.FrozenRunSha256 != snapshotHash || manifest.Descriptor.Capture.CaptureId != referenceCaptureId)
+                throw new InvalidDataException("The late centered capture differs from its reserved attempt.");
+            var run = JsonSerializer.Deserialize<CenteredRunSnapshot>(snapshotBytes);
+            if (run?.RunId != attempt.RunId || run.Camera != attempt.Camera ||
+                run.GraphRevisionId != manifest.CaptureGraphRevisionId)
+                throw new InvalidDataException("The late centered capture differs from its frozen run.");
         }
+
         var row = await ReadCenteredWindowAsync(transaction, identity, cancellationToken).ConfigureAwait(false);
-        return new(row.Checkpoint, row.Disposition, null);
+        if (row.Checkpoint.ReferenceAttempt != attempt)
+            throw new InvalidDataException("The late centered capture does not match the window's reserved attempt.");
+        return row.Disposition is
+        {
+            IsTerminal: true, Publication: null,
+            Closure.Center: { State: CenteredWindowSlotState.MissingExposure, Input: null }
+        }
+            ? new(row.Checkpoint, row.Disposition, null) : null;
     }
 
     private static async ValueTask<(CenteredWindowCheckpoint Checkpoint, CenteredWindowDisposition? Disposition)>

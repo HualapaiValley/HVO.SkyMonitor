@@ -219,9 +219,10 @@ internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
         CancellationToken cancellationToken,
         DateTimeOffset? requestedStart = null,
         TimeSpan requestedInterval = default,
-        CenteredOwnerTransition? owner = null)
+        CenteredOwnerTransition? owner = null,
+        CenteredDispatchSchedule? schedule = null)
         => _journal.DispatchCenteredAttemptAsync(attempt, settings, evidence, reason, owner, cancellationToken,
-            requestedStart, requestedInterval);
+            requestedStart, requestedInterval, schedule);
 
     internal Task ExpireCenteredPendingAsync(ExposureAttemptKey attempt, CancellationToken cancellationToken)
         => _journal.ExpireCenteredPendingAsync(attempt, cancellationToken);

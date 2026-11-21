@@ -266,10 +266,14 @@ internal sealed partial class SqliteCaptureProcessingStore
     internal async ValueTask<bool> RecoverUnobservedCenteredEvidenceAsync(CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        using var integrity = DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite();
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
 #pragma warning disable CA1849 // An immediate transaction establishes the observation snapshot before sampling its clock.
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
+        var now = _timeProvider.GetUtcNow();
+        var holdsRecovered = await CenteredWindowRuntimeJournal.RetryOpenHoldsAsync(transaction, now, cancellationToken)
+            .ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
@@ -307,11 +311,11 @@ internal sealed partial class SqliteCaptureProcessingStore
                 SELECT change_id FROM processing_centered_output_availability WHERE observed_ticks IS NULL
                 ORDER BY change_id LIMIT 128);
             """;
-        command.Parameters.AddWithValue("$observed", _timeProvider.GetUtcNow().UtcTicks);
+        command.Parameters.AddWithValue("$observed", now.UtcTicks);
         command.Parameters.AddWithValue("$unobserved", CenteredWindowRuntimeJournal.UnobservedCalendarTicks);
         var observed = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return observed;
+        return observed || holdsRecovered;
     }
 
     internal async Task<ExposureProductLookup?> ReadCenteredProductAsync(
@@ -386,6 +390,37 @@ internal sealed partial class SqliteCaptureProcessingStore
         return (product, provenance);
     }
 
+    internal const long CenteredWindowMetadataReserveBytes = 4 * 1024 * 1024;
+
+    // Every owner counts toward the same row limit. Each capture's raw file and each exact
+    // leased output count once, including where the window already reserves their storage.
+    // A window reserves space for future products as well as the products that already exist.
+    internal const string CenteredInputHoldBudgetSql = """
+        WITH owners AS MATERIALIZED (
+            SELECT capture_id, output_identity, bytes
+            FROM centered_exposure_holds WHERE expires_unix_ms > $now
+            UNION ALL
+            SELECT $capture, $output, $bytes
+        ), backed AS (
+            SELECT capture_id, output_identity, MAX(bytes) AS bytes
+            FROM owners GROUP BY capture_id, output_identity
+        ), capture_sizes AS (
+            SELECT COALESCE(raw.payload_length, 0) AS raw_bytes,
+                MAX(CASE WHEN backed.output_identity GLOB 'raw:*' THEN backed.bytes END) AS window_bytes,
+                SUM(CASE WHEN backed.output_identity GLOB 'raw:*' THEN 0
+                         ELSE MAX(backed.bytes - COALESCE(raw.payload_length, 0), 0) END) AS linear_bytes
+            FROM backed LEFT JOIN raw_captures raw ON raw.capture_id = backed.capture_id
+            GROUP BY backed.capture_id, raw.payload_length
+        )
+        INSERT INTO centered_exposure_holds(owner_id, capture_id, output_identity, bytes, expires_unix_ms)
+        SELECT $owner, $capture, $output, $bytes, $expires
+        WHERE $expires > $now
+          AND (SELECT COUNT(*) FROM owners) <= 64
+          AND (SELECT SUM(CASE WHEN window_bytes IS NULL THEN raw_bytes + linear_bytes
+                               ELSE MAX(window_bytes, raw_bytes + linear_bytes + $metadata) END)
+               FROM capture_sizes) <= 536870912
+        """;
+
     internal async Task<bool> TryHoldCenteredInputAsync(
         Guid owner, ExposureProductRef product, long bytes, DateTimeOffset expiresUtc, CancellationToken cancellationToken)
     {
@@ -402,12 +437,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             """;
         command.Parameters.AddWithValue("$now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        command.CommandText = """
-            INSERT INTO centered_exposure_holds(owner_id, capture_id, output_identity, bytes, expires_unix_ms)
-            SELECT $owner, $capture, $output, $bytes, $expires
-            WHERE $expires > $now
-              AND (SELECT COUNT(*) FROM centered_exposure_holds) < 64
-              AND (SELECT COALESCE(SUM(bytes), 0) FROM centered_exposure_holds) + $bytes <= 536870912
+        command.CommandText = CenteredInputHoldBudgetSql + """
+
               AND NOT EXISTS (SELECT 1 FROM processing_lifecycle_operations operation
                               WHERE operation.output_identity_sha256 = $output AND operation.kind IN ('delete', 'quarantine'))
               AND EXISTS (SELECT 1 FROM centered_exposure_products product
@@ -422,6 +453,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.Parameters.AddWithValue("$capture", product.Exposure.CaptureId.ToString("N"));
         command.Parameters.AddWithValue("$output", product.OutputIdentitySha256);
         command.Parameters.AddWithValue("$bytes", bytes);
+        command.Parameters.AddWithValue("$metadata", CenteredWindowMetadataReserveBytes);
         command.Parameters.AddWithValue("$expires", expiresUtc.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$execution", product.Slot.ExecutionId.ToString("N"));
         command.Parameters.AddWithValue("$producer", product.Slot.Producer);

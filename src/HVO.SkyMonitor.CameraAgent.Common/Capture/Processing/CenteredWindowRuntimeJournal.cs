@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Diagnostics.Metrics;
 using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
@@ -11,6 +12,28 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
 {
     // The existing non-null calendar tick can carry a pending commit observation outside the UTC range.
     internal const long UnobservedCalendarTicks = long.MaxValue;
+
+    internal const string HoldRefusalMetricName = "camera_agent.centered_window.input_hold.refused";
+    private static readonly Meter CustodyMeter = new(CaptureProcessingTelemetry.MeterName);
+    private static readonly Counter<long> HoldRefusals = CustodyMeter.CreateCounter<long>(HoldRefusalMetricName, "{hold}");
+
+    internal const string RefreshHoldsSql = """
+        SELECT window.window_sha256, raw.capture_id, raw.raw_artifact_id, raw.payload_length,
+            window.registration_deadline_utc_ticks
+        FROM processing_centered_attempt_calendar changed
+        JOIN processing_centered_attempt_calendar observer ON observer.run_id = changed.run_id
+            AND observer.slot BETWEEN changed.slot - 2 AND changed.slot + 2
+        JOIN processing_centered_windows window ON window.window_sha256 = observer.window_sha256
+        JOIN processing_centered_attempt_calendar input ON input.run_id = observer.run_id
+            AND input.slot BETWEEN observer.slot - 2 AND observer.slot + 2
+        JOIN centered_exposure_attempts admitted ON admitted.attempt_id = input.attempt_id
+        JOIN raw_captures raw ON raw.capture_id = admitted.capture_id
+        WHERE changed.attempt_id = $attempt AND changed.slot IN (observer.slot, input.slot)
+            AND window.terminal = 0 AND window.closure_json IS NULL
+            AND (input.admitted_ticks IS NULL OR input.admitted_ticks <= window.deadline_utc_ticks)
+            AND window.deadline_utc_ticks >= $now AND raw.state = 'committed'
+        ORDER BY observer.slot, input.slot;
+        """;
 
     public async ValueTask<CenteredWindowJournalSnapshot> ReadWindowEvidenceAsync(
         SqliteTransaction transaction, CenteredWindowCheckpoint checkpoint, DateTimeOffset cutoffUtc,
@@ -25,13 +48,22 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
             var fact = calendar.Find(item => item.Offset == offset);
             var previous = calendar.Find(item => item.Offset == offset - 1);
             var index = offset + CenteredWindowScheduler.CenterIndex;
-            if (fact is not null && (fact.Cadence != times[index].CadenceRevision ||
-                fact.Start != times[index].ExpectedStartUtc || fact.Integration != times[index].ExpectedIntegration))
+            var projected = times[index];
+            var dispatch = fact ?? (offset == 1 ? calendar.Find(item => item.Offset == 2) : null);
+            // A dispatch across a gap carries the skipped predecessor's nominal time.
+            // Its dispatch observation makes that hole visible at the same cutoff.
+            CenteredWindowSlotTime? revised = fact is null
+                ? CenteredWindowRuntimeSchedule.ReadProjectedPredecessor(dispatch?.ProjectedPredecessorJson)
+                : new(fact.Start, fact.Cadence, ExpectedIntegration: fact.Integration, Continuous: fact.Continuous,
+                    Tolerance: projected.Tolerance.HasValue ? CenteredWindowRuntimeSchedule.SlotTolerance(fact.Interval) : null);
+            if (dispatch is not null && revised is not null && revised != projected)
             {
                 var anchor = times[index - 1];
-                changes.Add(new(offset - 1, anchor.ExpectedStartUtc, fact.Dispatched, anchor.CadenceRevision, fact.Cadence,
-                    fact.Interval, fact.Integration, FirstAffectedStartUtc: fact.Start,
-                    IsCommittedDispatchAdjustment: anchor.CadenceRevision == fact.Cadence));
+                changes.Add(new(offset - 1, anchor.ExpectedStartUtc, dispatch.Dispatched, anchor.CadenceRevision,
+                    revised.CadenceRevision, dispatch.Interval, revised.ExpectedIntegration,
+                    FirstAffectedStartUtc: revised.ExpectedStartUtc,
+                    IsCommittedDispatchAdjustment: anchor.CadenceRevision == revised.CadenceRevision,
+                    Tolerance: revised.Tolerance, Continuous: revised.Continuous));
                 times = CenteredWindowScheduler.ResolveCalendar(checkpoint, changes.ToImmutable(), cutoffUtc);
             }
             else if (fact is null && previous?.Expired is { } expired && previous.ExpiryReason is { } reason &&
@@ -65,7 +97,8 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
                 observations.Add(new(time, input, products, Attempt: fact.Attempt));
             }
             else if (fact.Expired is { } failed &&
-                (fact.ExpiryReason == "target-progress-unknown" || cutoffUtc >= checkpoint.Schedule.DeadlineUtc))
+                (fact.ExpiryReason is "target-progress-unknown" or "schedule.start-window-closed" ||
+                    cutoffUtc >= checkpoint.Schedule.DeadlineUtc))
             {
                 var uncertain = fact.ExpiryReason == "target-progress-unknown";
                 observations.Add(new(time, EmptySlotSettledUtc: failed, EmptySlotReason: fact.ExpiryReason,
@@ -97,6 +130,10 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
             WITH slots AS (
                 SELECT t.*, center.slot AS center_slot, attempt.ordinal, raw.capture_id, raw.manifest_json, raw.manifest_sha256,
                     run.snapshot_json, run.snapshot_sha256,
+                    COALESCE(json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
+                        '$.projectedTimes[2].continuous'), 0) AS continuous,
+                    json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
+                        '$.projectedTimes[1]') AS projected_predecessor,
                     CASE WHEN raw.capture_id IS NOT NULL THEN (
                         SELECT MIN(clock.settled_ticks)
                         FROM centered_exposure_products product
@@ -114,6 +151,7 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
                     AND t.slot BETWEEN center.slot - 2 AND center.slot + 2
                 JOIN centered_exposure_attempts attempt ON attempt.attempt_id = t.attempt_id
                 JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
+                LEFT JOIN processing_centered_windows window ON window.window_sha256 = t.window_sha256
                 LEFT JOIN raw_captures raw ON raw.capture_id = attempt.capture_id AND raw.state = 'committed'
                     AND raw.agent_id = run.agent_id
                 WHERE center.attempt_id = $attempt AND run.agent_id = $agent AND run.camera_id = $camera
@@ -125,7 +163,7 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
             SELECT slot - center_slot, start_ticks, interval_ticks, integration_ticks, cadence,
                 MIN(dispatched_ticks, COALESCE(raw_ticks, dispatched_ticks)), raw_ticks, expired_ticks, expired_reason,
                 attempt_id, ordinal, CASE WHEN raw_ticks <= $cutoff THEN capture_id END, manifest_json, manifest_sha256,
-                snapshot_json, snapshot_sha256
+                snapshot_json, snapshot_sha256, continuous, projected_predecessor
             FROM observed
             WHERE MIN(dispatched_ticks, COALESCE(raw_ticks, dispatched_ticks)) <= $cutoff
             ORDER BY slot;
@@ -175,7 +213,8 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
             facts.Add(new(reader.GetInt32(0), At(reader, 1), TimeSpan.FromTicks(reader.GetInt64(2)),
                 TimeSpan.FromTicks(reader.GetInt64(3)), reader.GetString(4), At(reader, 5),
                 capture is null ? null : At(reader, 6), expiry, expiry is null ? null : reader.GetString(8),
-                attempt, capture, manifest, manifestHash, run));
+                attempt, capture, manifest, manifestHash, run, reader.GetBoolean(16),
+                await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(17)));
         }
         return facts;
     }
@@ -184,7 +223,8 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
 
     private sealed record CalendarFact(int Offset, DateTimeOffset Start, TimeSpan Interval, TimeSpan Integration,
         string Cadence, DateTimeOffset Dispatched, DateTimeOffset? Admitted, DateTimeOffset? Expired, string? ExpiryReason,
-        ExposureAttemptKey Attempt, Guid? CaptureId, ArtifactManifestV2? Manifest, string? ManifestHash, CenteredRunSnapshot Run);
+        ExposureAttemptKey Attempt, Guid? CaptureId, ArtifactManifestV2? Manifest, string? ManifestHash, CenteredRunSnapshot Run,
+        bool Continuous, string? ProjectedPredecessorJson);
 
     internal static async Task MarkAdmittedAsync(SqliteTransaction transaction, ExposureAttemptKey attempt,
         DateTimeOffset now, CancellationToken cancellationToken)
@@ -235,36 +275,66 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
     {
         using var command = transaction.Connection!.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
-            SELECT window.window_sha256, raw.capture_id, raw.raw_artifact_id, raw.payload_length,
-                window.registration_deadline_utc_ticks
-            FROM processing_centered_attempt_calendar changed
-            JOIN processing_centered_attempt_calendar observer ON observer.run_id = changed.run_id
-            JOIN processing_centered_windows window ON window.window_sha256 = observer.window_sha256
-            JOIN processing_centered_attempt_calendar input ON input.run_id = observer.run_id
-                AND input.slot BETWEEN observer.slot - 2 AND observer.slot + 2
-            JOIN centered_exposure_attempts admitted ON admitted.attempt_id = input.attempt_id
-            JOIN raw_captures raw ON raw.capture_id = admitted.capture_id
-            WHERE changed.attempt_id = $attempt AND changed.slot IN (observer.slot, input.slot)
-                AND window.terminal = 0 AND window.closure_json IS NULL
-                AND (input.admitted_ticks IS NULL OR input.admitted_ticks <= window.deadline_utc_ticks)
-                AND window.deadline_utc_ticks >= $now AND raw.state = 'committed'
-            ORDER BY observer.slot, input.slot;
-            """;
+        command.CommandText = RefreshHoldsSql;
         command.Parameters.AddWithValue("$attempt", attempt.AttemptId.ToString("N"));
         command.Parameters.AddWithValue("$now", now.UtcTicks);
-        var candidates = new List<HoldCandidate>();
-        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                candidates.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), At(reader, 4)));
-        }
-
+        var candidates = await ReadHoldCandidatesAsync(command, cancellationToken).ConfigureAwait(false);
         foreach (var candidate in candidates)
             await HoldAsync(transaction, candidate, now, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task HoldAsync(SqliteTransaction transaction, HoldCandidate candidate, DateTimeOffset now,
+    internal static async Task<bool> RetryOpenHoldsAsync(SqliteTransaction transaction, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        using var command = transaction.Connection!.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            WITH pending AS MATERIALIZED (
+                SELECT window_sha256, deadline_utc_ticks, registration_deadline_utc_ticks, checkpoint_json
+                FROM processing_centered_windows
+                WHERE terminal = 0 AND closure_json IS NULL AND deadline_utc_ticks >= $now
+                ORDER BY deadline_utc_ticks, window_sha256 LIMIT $limit
+            )
+            SELECT window.window_sha256, raw.capture_id, raw.raw_artifact_id, raw.payload_length,
+                window.registration_deadline_utc_ticks
+            FROM pending window
+            JOIN processing_centered_attempt_calendar observer ON observer.attempt_id = REPLACE(
+                CASE WHEN json_valid(window.checkpoint_json)
+                     THEN json_extract(window.checkpoint_json, '$.referenceAttempt.attemptId') END, '-', '')
+                AND observer.window_sha256 = window.window_sha256
+            JOIN processing_centered_attempt_calendar input ON input.run_id = observer.run_id
+                AND input.slot BETWEEN observer.slot - 2 AND observer.slot + 2
+            JOIN centered_exposure_attempts admitted ON admitted.attempt_id = input.attempt_id
+            JOIN raw_captures raw ON raw.capture_id = admitted.capture_id
+            WHERE (input.admitted_ticks IS NULL OR input.admitted_ticks <= window.deadline_utc_ticks)
+                AND raw.state = 'committed'
+                AND NOT EXISTS (
+                    SELECT 1 FROM processing_centered_window_holds owner
+                    JOIN centered_exposure_holds hold ON hold.owner_id = owner.owner_id
+                    WHERE owner.window_sha256 = window.window_sha256 AND hold.capture_id = raw.capture_id
+                      AND hold.expires_unix_ms > $now_ms)
+            ORDER BY window.deadline_utc_ticks, window.window_sha256, input.slot;
+            """;
+        command.Parameters.AddWithValue("$now", now.UtcTicks);
+        command.Parameters.AddWithValue("$now_ms", now.ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$limit", CenteredWindowRuntimeSchedule.MaximumPendingWindows);
+        var candidates = await ReadHoldCandidatesAsync(command, cancellationToken).ConfigureAwait(false);
+        var added = false;
+        foreach (var candidate in candidates)
+            added |= await HoldAsync(transaction, candidate, now, cancellationToken).ConfigureAwait(false);
+        return added;
+    }
+
+    private static async Task<List<HoldCandidate>> ReadHoldCandidatesAsync(SqliteCommand command, CancellationToken cancellationToken)
+    {
+        var candidates = new List<HoldCandidate>();
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            candidates.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetInt64(3), At(reader, 4)));
+        return candidates;
+    }
+
+    private static async Task<bool> HoldAsync(SqliteTransaction transaction, HoldCandidate candidate, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         var id = ProcessingIdentity.CreateArtifactId(ProcessingIdentity.ComputePayloadSha256(
@@ -272,25 +342,35 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
         using var command = transaction.Connection!.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            INSERT INTO centered_exposure_holds(owner_id, capture_id, output_identity, bytes, expires_unix_ms)
-            SELECT $owner, $capture, $raw, $bytes, $expires
-            WHERE $expires > $now
-                AND (SELECT COUNT(*) FROM centered_exposure_holds WHERE expires_unix_ms > $now) < 64
-                AND (SELECT COALESCE(SUM(bytes), 0) FROM centered_exposure_holds WHERE expires_unix_ms > $now) + $bytes <= 536870912
-            ON CONFLICT(owner_id) DO NOTHING;
-            INSERT INTO processing_centered_window_holds(window_sha256, owner_id)
-            SELECT $window, $owner FROM centered_exposure_holds WHERE owner_id = $owner
-            ON CONFLICT(window_sha256, owner_id) DO NOTHING;
+            SELECT EXISTS (SELECT 1 FROM centered_exposure_holds WHERE owner_id = $owner);
             """;
         command.Parameters.AddWithValue("$owner", id);
-        command.Parameters.AddWithValue("$window", candidate.Window);
+        if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is 1L)
+            return false;
+
+        command.CommandText = SqliteCaptureProcessingStore.CenteredInputHoldBudgetSql + ";";
         command.Parameters.AddWithValue("$capture", candidate.CaptureId);
-        command.Parameters.AddWithValue("$raw", "raw:" + candidate.RawId);
+        command.Parameters.AddWithValue("$output", "raw:" + candidate.RawId);
+        const long metadata = SqliteCaptureProcessingStore.CenteredWindowMetadataReserveBytes;
         // Reserve raw, packed linear, mask and bounded per-capture science metadata.
-        command.Parameters.AddWithValue("$bytes", checked(candidate.RawBytes * 3 + 4 * 1024 * 1024));
+        command.Parameters.AddWithValue("$bytes", checked(candidate.RawBytes * 3 + metadata));
+        command.Parameters.AddWithValue("$metadata", metadata);
         command.Parameters.AddWithValue("$expires", candidate.Expires.ToUnixTimeMilliseconds());
         command.Parameters.AddWithValue("$now", now.ToUnixTimeMilliseconds());
+        if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
+        {
+            HoldRefusals.Add(1);
+            return false;
+        }
+
+        command.CommandText = """
+            INSERT INTO processing_centered_window_holds(window_sha256, owner_id)
+            VALUES ($window, $owner)
+            ON CONFLICT(window_sha256, owner_id) DO NOTHING;
+            """;
+        command.Parameters.AddWithValue("$window", candidate.Window);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     private sealed record HoldCandidate(string Window, string CaptureId, string RawId, long RawBytes, DateTimeOffset Expires);

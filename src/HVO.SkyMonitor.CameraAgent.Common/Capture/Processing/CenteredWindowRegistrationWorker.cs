@@ -1,6 +1,7 @@
+using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
-using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -24,25 +25,15 @@ internal sealed partial class CenteredWindowRegistrationWorker(
         var batch = await store.ReadPendingCenteredRegistrationsAsync(_lastVisited, BatchSize, cancellationToken).ConfigureAwait(false);
         foreach (var work in batch)
         {
-            CenteredWindowClosure? closure = null;
             try
             {
                 var workState = await store.ReadCenteredWindowDispositionAsync(work.WindowIdentity, cancellationToken).ConfigureAwait(false);
                 if (workState is { IsTerminal: false })
-                {
-                    closure = workState.Closure;
-                    await RegisterAsync(closure, cancellationToken).ConfigureAwait(false);
-                }
+                    await RegisterAsync(workState.Closure, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is IOException or Microsoft.Data.Sqlite.SqliteException or KeyNotFoundException)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                ReportFailure(logger, work.WindowIdentity, exception);
-            }
-            catch (Exception exception) when (exception is InvalidDataException or ArgumentException or System.Text.Json.JsonException)
-            {
-                if (closure is not null)
-                    await store.FailCenteredRegistrationAsync(closure, "registration.invalid-retained-evidence", journal,
-                        cancellationToken).ConfigureAwait(false);
+                // The durable queue retains interrupted work for a retry or expiry.
                 ReportFailure(logger, work.WindowIdentity, exception);
             }
         }
@@ -81,20 +72,30 @@ internal sealed partial class CenteredWindowRegistrationWorker(
         {
             // Closure owns the durable expiry and releases the run's holds.
         }
+        catch (Exception exception) when (exception is InvalidDataException or ArgumentException or JsonException)
+        {
+            ReportFailure(logger, closure.Schedule.Identity, exception);
+            await store.FailCenteredRegistrationAsync(closure, "registration.invalid-retained-evidence", journal,
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (ingress is not null)
-            await ingress.WaitForCenteredWindowEvidenceAsync(stoppingToken).ConfigureAwait(false);
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1), timeProvider);
+        var evidenceReady = ingress is null;
         do
         {
             try
             {
+                if (!evidenceReady)
+                {
+                    await ingress!.WaitForCenteredWindowEvidenceAsync(stoppingToken).ConfigureAwait(false);
+                    evidenceReady = true;
+                }
                 await RegisterPendingAsync(stoppingToken).ConfigureAwait(false);
             }
-            catch (Microsoft.Data.Sqlite.SqliteException exception)
+            catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 ReportFailure(logger, "registration-queue", exception);
             }

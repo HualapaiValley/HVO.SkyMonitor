@@ -109,6 +109,7 @@ internal sealed class CameraModuleRunner
         DateTimeOffset? previousStartUtc = null;
         var recovering = false;
         TimeSpan? moduleDelayOverride = null;
+        TimeSpan? previousDispatchedInterval = null;
         string? activeProfileKey = null;
 
         while (!cancellationToken.IsCancellationRequested)
@@ -258,9 +259,22 @@ internal sealed class CameraModuleRunner
                         continue;
                     }
                     nextSetpoint = centeredSetpoint.Setpoint;
+                    DateTimeOffset? overrunTarget = null;
+                    var dispatchReadyUtc = UtcNow();
+                    if (cadenceMode == CaptureCadenceMode.MinimumStartInterval && previousStartUtc.HasValue &&
+                        dispatchReadyUtc - effectiveSchedule.RequestedStartUtc >
+                        CenteredWindowRuntimeSchedule.SlotTolerance(targetInterval))
+                    {
+                        overrunTarget = effectiveSchedule.RequestedStartUtc;
+                        effectiveSchedule = new(dispatchReadyUtc, CaptureStartReason.DeadlineOverrun);
+                    }
+                    var dispatchSchedule = new CenteredDispatchSchedule(effectiveSchedule.RequestedStartUtc, targetInterval,
+                        cadenceMode, previousDispatchedInterval is { } priorInterval && priorInterval != targetInterval,
+                        overrunTarget);
                     await centered.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
-                        centeredSetpoint.Metering, centeredSetpoint.Reason,
-                        effectiveSchedule.RequestedStartUtc, targetInterval, cancellationToken).ConfigureAwait(false);
+                        centeredSetpoint.Metering, centeredSetpoint.Reason, dispatchSchedule, cancellationToken)
+                        .ConfigureAwait(false);
+                    previousDispatchedInterval = targetInterval;
                 }
                 catch
                 {

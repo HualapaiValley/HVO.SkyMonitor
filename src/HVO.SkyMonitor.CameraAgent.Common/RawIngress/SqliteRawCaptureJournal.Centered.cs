@@ -239,7 +239,19 @@ internal sealed partial class SqliteRawCaptureJournal
             throw new RawIngressConflictException("The centered attempt could not be retired before opening a fresh target.");
         command.CommandText = "UPDATE centered_exposure_runs SET closed_reason = $reason WHERE run_id = $run;";
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        var trackRefusal = _centeredWindowWakeup is not null && status == "dispatched";
+        if (trackRefusal)
+        {
+            command.CommandText = """
+                UPDATE processing_centered_attempt_calendar SET expired_ticks = $unobserved, expired_reason = $reason
+                WHERE attempt_id = $attempt AND run_id = $run AND expired_ticks IS NULL;
+                """;
+            command.Parameters.AddWithValue("$unobserved", CenteredWindowRuntimeJournal.UnobservedCalendarTicks);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        if (trackRefusal)
+            await NotifyCenteredExpiryCommittedAsync(connection, attempt.Camera.AgentId).ConfigureAwait(false);
     }
 
     internal async Task<CenteredPendingAttempt?> ReadCenteredPendingAsync(CameraKey camera, CancellationToken cancellationToken)
@@ -280,7 +292,8 @@ internal sealed partial class SqliteRawCaptureJournal
         CenteredOwnerTransition? owner,
         CancellationToken cancellationToken,
         DateTimeOffset? requestedStart = null,
-        TimeSpan requestedInterval = default)
+        TimeSpan requestedInterval = default,
+        CenteredDispatchSchedule? schedule = null)
     {
         if (owner is not null && (owner.AgentId != attempt.Camera.AgentId || owner.CameraId != attempt.Camera.CameraId))
             throw new RawIngressConflictException("The dispatch belongs to a different camera attachment.");
@@ -312,14 +325,16 @@ internal sealed partial class SqliteRawCaptureJournal
         command.Parameters.AddWithValue("$reason", reason);
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
             throw new InvalidOperationException("The centered exposure attempt is no longer dispatchable.");
-        if (requestedStart is { } start && _centeredWindowWakeup is not null)
+        if (schedule is null && requestedStart is { } start)
+            schedule = new(start, requestedInterval);
+        if (schedule is { } dispatch && _centeredWindowWakeup is not null)
         {
-            await CenteredWindowRuntimeSchedule.TrackDispatchedAsync(transaction, attempt, start, requestedInterval,
+            await CenteredWindowRuntimeSchedule.TrackDispatchedAsync(transaction, attempt, dispatch,
                 settings.Exposure, _utcNow(), cancellationToken).ConfigureAwait(false);
             _faultInjector.BeforeCenteredDispatchCommit();
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        if (requestedStart is not null && _centeredWindowWakeup is not null)
+        if (schedule is not null && _centeredWindowWakeup is not null)
         {
             try
             {

@@ -17,6 +17,47 @@ public sealed class CenteredWindowSchedulerTests
     internal static readonly DateTimeOffset Start = new(2026, 11, 20, 2, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
+    public void LegacySlotBytesAndClosureIdentitySurviveCalendarMetadata()
+    {
+        var schedule = Schedule(4, 12);
+        var exposures = Enumerable.Range(101, 5).Select(sequence => Exposure(sequence, (sequence - 101) * 2)).ToImmutableArray();
+        var times = Times(exposures);
+        var legacy = JsonSerializer.SerializeToUtf8Bytes(times.Select(time => new
+        {
+            time.ExpectedStartUtc,
+            time.CadenceRevision,
+            time.BoundaryReason,
+            time.ExpectedIntegration
+        }).ToArray());
+        var reopenedTimes = JsonSerializer.Deserialize<ImmutableArray<CenteredWindowSlotTime>>(legacy);
+        CollectionAssert.AreEqual(legacy, JsonSerializer.SerializeToUtf8Bytes(reopenedTimes));
+        var closure = CenteredWindowScheduler.TryClose(schedule, reopenedTimes, exposures, schedule.DeadlineUtc);
+        Assert.IsNotNull(closure);
+        var oldClosure = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            closure.Schedule,
+            closure.EvidenceCutoffUtc,
+            Slots = closure.Slots.Select(slot => new
+            {
+                slot.Offset,
+                Time = new
+                {
+                    slot.Time.ExpectedStartUtc,
+                    slot.Time.CadenceRevision,
+                    slot.Time.BoundaryReason,
+                    slot.Time.ExpectedIntegration
+                },
+                slot.State,
+                slot.Reason,
+                slot.Input,
+                slot.Products,
+                slot.Attempt
+            }).ToArray()
+        });
+        Assert.AreEqual(PayloadChecksum.ComputeSha256(oldClosure), closure.Identity);
+    }
+
+    [TestMethod]
     public void TwoOverlappingWindowsKeepTheirActualCenterAndFiveDistinctInputs()
     {
         var exposures = Enumerable.Range(101, 6).Select(sequence => Exposure(sequence, (sequence - 101) * 2)).ToImmutableArray();

@@ -13,7 +13,10 @@ public sealed record CenteredWindowSnapshot(Guid ReferenceCaptureId, string Wind
     CenteredStackDisposition? StackDisposition, ImmutableArray<Guid> ContributingCaptureIds,
     ImmutableArray<CenteredWindowSlotSnapshot> Slots);
 
-/// <summary>Reads the original live scheduling and registration evidence for an exact admitted center.</summary>
+/// <summary>
+/// Reads the original live scheduling and registration evidence for an exact admitted center.
+/// A capture admitted after its missing-center window closed resolves to that same closure, with no center exposure.
+/// </summary>
 public interface ICenteredWindowReader
 {
     ValueTask<CenteredWindowSnapshot?> ReadAsync(Guid referenceCaptureId, CancellationToken cancellationToken);
