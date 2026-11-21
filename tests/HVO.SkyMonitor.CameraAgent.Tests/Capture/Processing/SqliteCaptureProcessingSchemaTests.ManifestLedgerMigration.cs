@@ -109,7 +109,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             Assert.IsNull(await store.ReadNormalizationPlanAsync(Guid.ParseExact(new string('1', 32), "N"), "migrated-attempt", CancellationToken.None).ConfigureAwait(false));
         }
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion,
+            await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
         Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
             await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
@@ -147,7 +148,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var retried = new SqliteCaptureProcessingStore(fixture.Options);
         await retried.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion,
+            await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
         Assert.AreEqual(4L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_execution_manifest_counts;").ConfigureAwait(false));
     }
 
@@ -195,7 +197,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     private static async Task AssertMigratedSurrogateLedgersAsync(SchemaFixture fixture, string corruptKind)
     {
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion,
+            await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
         Assert.AreEqual((long)SqliteRawCaptureJournal.CurrentSchemaVersion,
             await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
