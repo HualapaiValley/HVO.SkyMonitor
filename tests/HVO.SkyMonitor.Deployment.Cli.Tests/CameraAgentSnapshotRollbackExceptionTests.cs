@@ -21,6 +21,8 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     private const string RawIngressSchema = "io.hvo.skymonitor.raw-ingress-schema";
     private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
     private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
+    private const string CombinedReaderRevision = "33903f07a1dd86166fc17197df981b32d45013a1";
+    private const string ProcessingV10Reader = "ac373b8f9f3f7e02a0281e73b969d224181ae089";
     private const string EnvironmentalV5Reader = "bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56";
 
     /// <summary>
@@ -77,7 +79,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
             JsonSerializer.SerializeToElement(candidate));
         var changes = CameraAgentStateMigration.DeclaredChanges(paths, installed, installed.UpgradeCompatibility,
             target, Path.Combine(paths.StateRoot, "absent", "raw-ingress.db"));
-        Assert.AreEqual(EnvironmentalV5Reader, candidate[MinimumCompatibleRevision]);
+        Assert.AreEqual(CombinedReaderRevision, candidate[MinimumCompatibleRevision]);
         Assert.HasCount(1, AssertBoundaryAndRawIngressChanges(changes, previous, candidate, 1, string.Join("; ", changes)));
     }
 
@@ -216,7 +218,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
         var candidate = ReadDockerfileLabels();
         const string boundary = "io.hvo.skymonitor.minimum-compatible-revision";
         Assert.AreEqual("ead49e46a3705a507f7a08aa5c8a2a46dcb58e3c", previous[boundary]);
-        Assert.AreEqual(EnvironmentalV5Reader, candidate[boundary]);
+        Assert.AreEqual(CombinedReaderRevision, candidate[boundary]);
         Assert.AreEqual("5f5d253dd38308b8e62be9a1e32194dd675d0b60", exception["previousImageRevision"]!.GetValue<string>());
         CollectionAssert.AreEquivalent(ReadSchemaThreeImageLabels().ToArray(), previous.ToArray());
         // Isolate the processing-ledger checkpoint trigger from unrelated reader-capability upgrades.
@@ -238,13 +240,18 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     }
 
     [TestMethod]
-    public void RetainedAstrometryIndexUpgradeCheckpointsWithUnchangedRawIngressLabels()
+    [DataRow("bc5ca7489c4090c299c416309519ab72da4a8cdb", DisplayName = "Previous release to combined reader")]
+    [DataRow(ProcessingV10Reader, DisplayName = "Processing-only reader to combined reader")]
+    [DataRow(EnvironmentalV5Reader, DisplayName = "Environmental-only reader to combined reader")]
+    public void RetainedAstrometryIndexUpgradeCheckpointsWithUnchangedRawIngressLabels(string installedBoundary)
     {
+        ArgumentNullException.ThrowIfNull(installedBoundary);
         var candidate = ReadDockerfileLabels();
-        // The immediate processing-schema-9 predecessor has the same raw-ingress schema and migration labels.
+        Assert.AreEqual(CombinedReaderRevision, candidate[MinimumCompatibleRevision]);
+        // Align the other labels so only the combined reader's boundary can select the checkpoint.
         var previous = new Dictionary<string, string>(candidate, StringComparer.Ordinal)
         {
-            [MinimumCompatibleRevision] = "bc5ca7489c4090c299c416309519ab72da4a8cdb"
+            [MinimumCompatibleRevision] = installedBoundary
         };
         var paths = InstallationPaths.Create(Path.Combine(Path.GetTempPath(), $"hvo-astrometry-boundary-{Guid.NewGuid():N}"),
             Guid.NewGuid(), "catalog");

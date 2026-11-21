@@ -2719,6 +2719,12 @@ journal stays at schema 16. The image advances `minimum-compatible-revision` so
 the installer takes the paired checkpoint before startup and restores it if an
 older reader is needed for rollback.
 
+**Combined environmental and processing readers (Refs #1901 and #1938).** The
+image names the joined reader revision as its minimum compatibility boundary.
+An upgrade from either the processing-10-only image or the environmental-5-only
+image changes that label. The installer checkpoints both stores and their paired
+state before startup. Rollback restores the schemas paired with the previous image.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a
