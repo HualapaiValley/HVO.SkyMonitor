@@ -21,7 +21,7 @@ public sealed class CameraAgentSnapshotRollbackExceptionTests
     private const string RawIngressSchema = "io.hvo.skymonitor.raw-ingress-schema";
     private const string RawIngressMigration = "io.hvo.skymonitor.raw-ingress-migration";
     private const string MinimumCompatibleRevision = "io.hvo.skymonitor.minimum-compatible-revision";
-    private const string EnvironmentalV5Reader = "bc14cc415973f6d106cfe8f1c2fb9bfbedbc9a56";
+    private const string EnvironmentalV5Reader = "e9bc66a58ec4f9902f7d6f25c89057832eff9fbc";
 
     /// <summary>
     /// The reader-capability labels a boundary test copies from the frozen release so that only the boundary under test
