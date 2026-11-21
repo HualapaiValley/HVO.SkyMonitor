@@ -52,6 +52,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent protects the live VirtualSky compatibility revision from retirement, allows retirement of unused compatibility revisions and unrelated graphs that occupy a compatibility revision name, and creates a replayable successor for an ineligible journal entry. #1901
 
+- CameraAgent keeps the first scheduled environmental reading pending while it recovers the deployment location. Once the location is available, it records the reading or explains why the scheduled time falls outside the location’s effective interval. #1938
+
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 
 - Allow runtime control after a backup is settled or fully recovered, while retaining its journal. #1878

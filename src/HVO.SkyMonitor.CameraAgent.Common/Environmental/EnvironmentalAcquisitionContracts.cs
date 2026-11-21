@@ -202,6 +202,15 @@ public interface IEnvironmentalAcquisitionStateStore
         CancellationToken cancellationToken);
 }
 
+internal interface IEnvironmentalLocationHeldPollStore
+{
+    ValueTask<DateTimeOffset?> ReadLocationHeldPollAsync(
+        string root, EnvironmentalSourceDescriptor source, CancellationToken cancellationToken);
+
+    ValueTask<DateTimeOffset> HoldLocationPollAsync(
+        string root, EnvironmentalSourceDescriptor source, DateTimeOffset due, CancellationToken cancellationToken);
+}
+
 public enum EnvironmentalOnDemandClaimDisposition
 {
     Claimed,
