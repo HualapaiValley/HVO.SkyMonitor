@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- The centered registration recipe aligns calibrated monochrome and linear RGB exposures on the center capture and records which exposures contributed to each pixel. #1169
+
 - Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920
 
 - CameraAgent Current Sky shows the latest accepted retained measured pointing, rotation, local pixel scale and capture time, with previous-capture results kept separate from selected-image diagnostics. Virtual Sky can measure astrometry alongside its existing scene overlays. #1901
