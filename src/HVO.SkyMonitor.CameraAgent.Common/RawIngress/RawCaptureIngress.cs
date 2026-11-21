@@ -76,7 +76,8 @@ internal sealed partial class RawCaptureIngress :
         IProjectedSceneStagingReconciler? projectedSceneStaging = null,
         ProjectedSceneStageLifecycleCoordinator? projectedSceneLifecycle = null,
         ProcessingGraphOperationsCoordinator? graphOperations = null,
-        Capture.CaptureMaintenanceGate? maintenanceGate = null)
+        Capture.CaptureMaintenanceGate? maintenanceGate = null,
+        CenteredExposureProductChanges? centeredProductChanges = null)
     {
         _options = options.Value;
         _capacityProvider = capacityProvider;
@@ -106,7 +107,7 @@ internal sealed partial class RawCaptureIngress :
             _options.CaptureDistribution,
             resolvedLaneFaultInjector,
             timeProvider.GetUtcNow,
-            _options.TransientDetection);
+            _options.TransientDetection, centeredProductChanges: centeredProductChanges);
         _files = new RawIngressFileStore(
             root,
             faultInjector,
@@ -120,7 +121,7 @@ internal sealed partial class RawCaptureIngress :
             timeProvider,
             resolvedLaneFaultInjector,
             laneTelemetry is null ? null : new Action<TimeSpan>(laneTelemetry.RecordLockWait),
-            InvalidateEvidence);
+            InvalidateEvidence, centeredProductChanges);
     }
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
@@ -183,7 +184,8 @@ internal sealed partial class RawCaptureIngress :
                         _telemetry.RecordFileFlush,
                         _telemetry.RecordDirectorySync,
                         _lanePolicy.Definitions,
-                        _faultInjector.OpenPayloadForVerification)
+                        _faultInjector.OpenPayloadForVerification,
+                        PrepareRecoveredCenteredAdmissionAsync)
                          .RunAsync(EnterInitializationMaintenanceAsync, cancellationToken, interruptionToken).ConfigureAwait(false)
                     : new RawIngressReconciliationSummary(0, 0, 0, 0, 0, 0);
                 var projectedSceneBacklog = 0;
@@ -520,7 +522,7 @@ internal sealed partial class RawCaptureIngress :
                     submission,
                     identity,
                     payloadSha256,
-                    manifest.Descriptor.Timing.DurableIngressUtc);
+                    manifest.Descriptor.Timing.DurableIngressUtc, centered is null ? null : binding!.Revision.Pipeline);
                 if (manifest.Descriptor.CycleEvidence is null)
                 {
                     expectedDescriptor = expectedDescriptor with { CycleEvidence = null };
@@ -575,7 +577,7 @@ internal sealed partial class RawCaptureIngress :
                     submission,
                     identity,
                     payloadSha256,
-                    _timeProvider.GetUtcNow());
+                    _timeProvider.GetUtcNow(), centered is null ? null : binding!.Revision.Pipeline);
                 var previewManifest = new ArtifactManifestV2(
                     ArtifactManifestV2.CurrentSchemaVersion,
                     previewDescriptor,
@@ -602,7 +604,7 @@ internal sealed partial class RawCaptureIngress :
                     submission,
                     identity,
                     payloadSha256,
-                    _timeProvider.GetUtcNow());
+                    _timeProvider.GetUtcNow(), centered is null ? null : binding!.Revision.Pipeline);
                 manifest = new ArtifactManifestV2(
                     ArtifactManifestV2.CurrentSchemaVersion,
                     descriptor,
@@ -654,6 +656,7 @@ internal sealed partial class RawCaptureIngress :
             var committedSubmission = submission with
             {
                 CycleEvidence = committedDescriptor.CycleEvidence,
+                CenteredAcquisition = committedDescriptor.CenteredAcquisition,
                 Result = submission.Result with { AcquisitionTiming = committedTiming }
             };
             ProcessingLiveExecutionSeed? liveExecution = null;
@@ -669,9 +672,10 @@ internal sealed partial class RawCaptureIngress :
                 liveExecution = prepared.Seed;
                 durableConfiguration = prepared.Configuration;
             }
-            var context = CaptureLaneEnvelopeSerializer.Serialize(
-                durableConfiguration,
-                committedSubmission);
+            // The centered sidecar is the durable source of the submission projection in both admission paths.
+            var context = centered is null
+                ? CaptureLaneEnvelopeSerializer.Serialize(durableConfiguration, committedSubmission)
+                : SerializeCenteredLaneEnvelope(durableConfiguration, committedDescriptor);
             RawIngressOutcome outcome;
             using (var commitActivity = RawIngressTelemetry.ActivitySource.StartActivity("sqlite.commit"))
             {
@@ -890,6 +894,13 @@ internal sealed partial class RawCaptureIngress :
         }
     }
 
+    private static (byte[] Json, string Sha256) SerializeCenteredLaneEnvelope(
+        CameraModuleConfig configuration, ReconstructionDescriptor descriptor)
+    {
+        var envelope = CreateRecoveredEnvelope(configuration, descriptor);
+        return CaptureLaneEnvelopeSerializer.Serialize(envelope.Configuration, envelope.Submission);
+    }
+
     private static CaptureLaneEnvelope CreateRecoveredEnvelope(
         CameraModuleConfig configuration,
         ReconstructionDescriptor descriptor)
@@ -904,12 +915,17 @@ internal sealed partial class RawCaptureIngress :
             descriptor.Controls.EffectiveGain,
             null,
             null);
+        var acquisition = descriptor.CenteredAcquisition;
+        var reporting = acquisition?.Module;
+        var effectiveInterval = acquisition?.EffectiveInterval ?? configuration.Rig.Pipeline.CaptureInterval;
         var request = new CaptureRequest(
             descriptor.Timing.RequestedStartUtc,
-            configuration.Rig.Pipeline.CaptureInterval,
-            CaptureMode.Still,
+            reporting?.RequestedInterval ?? effectiveInterval,
+            reporting?.RequestMode ?? CaptureMode.Still,
             requested);
-        var result = new CaptureResult(null, effective, TimeSpan.Zero, CaptureMode.Still, false)
+        var result = new CaptureResult(null, reporting?.ReportedSetpoint ?? effective,
+            reporting?.ProcessingLatency ?? TimeSpan.Zero, reporting?.ResultMode ?? CaptureMode.Still,
+            reporting?.RequiresImmediateUpload ?? false)
         {
             AcquisitionTiming = new CaptureAcquisitionTiming(
                 descriptor.Timing.ExposureStartedUtc,
@@ -924,11 +940,13 @@ internal sealed partial class RawCaptureIngress :
             new CaptureLoopSubmission(
                 request,
                 result,
-                descriptor.CycleEvidence?.ModuleCallStartedUtc ?? descriptor.Timing.RequestedStartUtc,
-                configuration.Rig.Pipeline.CaptureInterval,
-                TimeSpan.Zero)
+                acquisition?.ModuleCallStartedUtc ??
+                    descriptor.CycleEvidence?.ModuleCallStartedUtc ?? descriptor.Timing.RequestedStartUtc,
+                effectiveInterval,
+                acquisition?.ModuleDuration ?? TimeSpan.Zero)
             {
-                CycleEvidence = descriptor.CycleEvidence
+                CycleEvidence = descriptor.CycleEvidence,
+                CenteredAcquisition = acquisition
             });
     }
 

@@ -44,7 +44,8 @@ public sealed record LocalCaptureProfileDefinition(
             configuration.Rig,
             configuration.Pipeline.Steps,
             schedule,
-            CapturePipelineDependencyPolicy.RejectEnabledDependent) { CenteredExposure = configuration.CenteredExposure };
+            CapturePipelineDependencyPolicy.RejectEnabledDependent)
+        { CenteredExposure = configuration.CenteredExposure };
     }
 
     public static LocalCaptureProfileDefinition CreateForConfiguration(
@@ -75,7 +76,8 @@ public sealed record LocalCaptureProfileDefinition(
             configuration.Rig,
             configuration.Pipeline.Steps,
             schedule,
-            configuration.Pipeline.DependencyPolicy) { CenteredExposure = configuration.CenteredExposure };
+            configuration.Pipeline.DependencyPolicy)
+        { CenteredExposure = configuration.CenteredExposure };
     }
 
     public CameraModuleConfig ApplyTo(CameraModuleConfig configuration)

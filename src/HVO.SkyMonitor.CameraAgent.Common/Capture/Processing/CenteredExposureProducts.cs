@@ -1,6 +1,6 @@
 using System.Collections.Immutable;
-using System.Text.Json;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 
@@ -15,7 +15,11 @@ internal sealed record CenteredProductSettlement(
     string? PayloadSha256,
     ExposureProductAvailability Availability,
     string? Reason,
-    LinearInputProvenanceV1? Linear);
+    LinearInputProvenanceV1? Linear)
+{
+    internal Guid? ArtifactId { get; init; }
+    internal string? ContentIdentitySha256 { get; init; }
+}
 
 internal sealed class CenteredExposureProductReader(
     RawCaptureIngress ingress, SqliteCaptureProcessingStore store) : IExposureProductReader
@@ -44,12 +48,25 @@ internal sealed class CenteredExposureProductReader(
 
     private static double? EstimateCenterScale(CameraRigConfig rig, FrameLayoutDescriptor layout)
     {
-        if (rig.Optics.FocalLengthMillimeters <= 0 || rig.Sensor.PixelSizeMicrons <= 0 ||
-            layout.Readout is { } readout && readout.BinX != readout.BinY)
+        if (layout.Readout is null && rig.Readout is not null)
             return null;
+        try
+        {
+            var native = RigProjectionContextFactory.CreateNative(rig);
+            var projection = layout.Readout is { } readout
+                ? RigProjectionContextFactory.CreateReadoutView(native, readout)
+                : native;
+            if (projection.WidthPixels != layout.Width || projection.HeightPixels != layout.Height ||
+                projection.FocalLengthXPixels != projection.FocalLengthYPixels)
+                return null;
 
-        return Math.Atan(rig.Sensor.PixelSizeMicrons * (layout.Readout?.BinX ?? 1) /
-            (1000 * rig.Optics.FocalLengthMillimeters)) * (180 * 3600 / Math.PI);
+            // Angular scale at the optical axis, where each supported projection has derivative f.
+            return (180 * 3600 / Math.PI) / projection.FocalLengthXPixels;
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     public async ValueTask<LinearExposureLookup?> ReadLinearAsync(ExposureKey key, CancellationToken cancellationToken)
@@ -63,9 +80,7 @@ internal sealed class CenteredExposureProductReader(
         var raw = await ingress.ReadCenteredRawAsync(key, cancellationToken).ConfigureAwait(false);
         if (raw is null) return null;
         var exposure = CreateExposure(key, raw);
-        if (raw.Run.LinearNodeId is null)
-            return new(exposure, LinearExposureDisposition.Unavailable, null, null, null, "linear.no-configured-step");
-        var (product, provenance, fallback, unavailableReason) = await store.ReadCenteredLinearAsync(key, raw, cancellationToken)
+        var (product, provenance) = await store.ReadCenteredLinearAsync(key, raw, cancellationToken)
             .ConfigureAwait(false);
         var disposition = product?.Availability switch
         {
@@ -75,9 +90,9 @@ internal sealed class CenteredExposureProductReader(
             ExposureProductAvailability.Failed => LinearExposureDisposition.Failed,
             ExposureProductAvailability.Unavailable or ExposureProductAvailability.MissingEvidence =>
                 LinearExposureDisposition.Unavailable,
-            _ => fallback
+            _ => LinearExposureDisposition.Pending
         };
-        return new(exposure, disposition, product?.Revision, product?.Product, provenance, product?.Reason ?? unavailableReason);
+        return new(exposure, disposition, product?.Revision, product?.Product, provenance, product?.Reason);
     }
 
     public async ValueTask<ExposureProductLookup?> ReadProductAsync(
@@ -110,12 +125,16 @@ internal sealed class CenteredExposureProductReader(
 
         var raw = manifest.Descriptor;
         var key = new ExposureKey(centered.Source.Camera, centered.Source.RunId, raw.Capture.CaptureId);
-        if (node.OutputRole == FrameArtifactRole.Calibrated)
+        if (node.Step is CalibrationCaptureProcessingStep)
             return [CreateLinearSettlement(key, raw, node, status, reason, outputs.SingleOrDefault(), inputs)];
 
         return outputs.Select(output => new CenteredProductSettlement(key, node.Id,
             output.ProductSchemaVersion ?? ArtifactManifestV2.CurrentSchemaVersion, output.Artifact.Variant,
-            output.OutputIdentitySha256, output.Artifact.ChecksumSha256, ExposureProductAvailability.Available, null, null)).ToArray();
+            output.OutputIdentitySha256, output.Artifact.ChecksumSha256, ExposureProductAvailability.Available, null, null)
+        {
+            ArtifactId = output.ArtifactId,
+            ContentIdentitySha256 = output.ContentIdentitySha256
+        }).ToArray();
     }
 
     private static CenteredProductSettlement CreateLinearSettlement(
@@ -154,6 +173,13 @@ internal sealed class CenteredExposureProductReader(
             return new(key, node.Id, LinearSchemaVersion, variant, null, null,
                 ExposureProductAvailability.Incompatible, "linear.unqualified-output", null);
 
+        var masterHashes = disposition == LinearExposureDisposition.Calibrated
+            ? ReadMasterHashes(sourceIds, inputs)
+            : [];
+        if (masterHashes.IsDefault)
+            return new(key, node.Id, LinearSchemaVersion, variant, null, null,
+                ExposureProductAvailability.MissingEvidence, "linear.calibration-master-evidence-missing", null);
+
         var provenance = new LinearInputProvenanceV1(disposition, raw.Artifact.ArtifactId,
             CaptureContractJson.ComputeDescriptorSha256(raw), raw.Artifact.ChecksumSha256,
             linear.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(linear),
@@ -164,25 +190,33 @@ internal sealed class CenteredExposureProductReader(
             Reason = disposition == LinearExposureDisposition.QualifiedNormalizationOnly ? "linear.explicit-no-correction" : null,
             CalibrationBundleIdentitySha256 = inputs.SingleOrDefault(input => input.Name == "centered-calibration-bundle")
                 ?.IdentitySha256,
-            CalibrationPayloadHashes = ReadMasterHashes(recipe.Descriptor.Options)
+            CalibrationPayloadHashes = masterHashes
         };
         return new(key, node.Id, LinearSchemaVersion, variant, output.OutputIdentitySha256, linear.Artifact.ChecksumSha256,
-            ExposureProductAvailability.Available, null, provenance);
+            ExposureProductAvailability.Available, null, provenance)
+        {
+            ArtifactId = output.ArtifactId,
+            ContentIdentitySha256 = output.ContentIdentitySha256
+        };
     }
 
-    private static ImmutableArray<string> ReadMasterHashes(JsonElement options)
+    private static ImmutableArray<string> ReadMasterHashes(
+        IReadOnlyList<Guid> sources, IReadOnlyList<DurableProcessingNodeInput> inputs)
     {
-        if (!options.TryGetProperty("auxiliaryInputs", out var auxiliary) || auxiliary.ValueKind != JsonValueKind.Array)
-            return [];
-        var hashes = ImmutableArray.CreateBuilder<string>();
-        foreach (var input in auxiliary.EnumerateArray())
+        var kinds = CalibrationReferenceKinds.All;
+        if (sources.Count != kinds.Count + 1)
+            return default;
+
+        var hashes = ImmutableArray.CreateBuilder<string>(kinds.Count);
+        for (var index = 0; index < kinds.Count; index++)
         {
-            if (input.GetProperty("kind").GetString() == "Artifact" &&
-                input.GetProperty("name").GetString() is { } name && name.EndsWith("-reference", StringComparison.Ordinal) &&
-                input.GetProperty("identitySha256").GetString() is { Length: 64 } hash)
-                hashes.Add(hash);
+            var name = $"centered-master-{kinds[index]}";
+            var input = inputs.SingleOrDefault(input => input.Name == name);
+            if (input?.ArtifactId != sources[index + 1] || input.IdentitySha256 is not { Length: 64 } hash)
+                return default;
+            hashes.Add(hash);
         }
-        return hashes.ToImmutable();
+        return hashes.MoveToImmutable();
     }
 
     private static bool HasSamePixelGeometry(FrameLayoutDescriptor raw, FrameLayoutDescriptor output) =>

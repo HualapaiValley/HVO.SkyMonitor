@@ -1108,6 +1108,57 @@ public sealed class ZwoAsiCameraModuleTests
         Assert.AreEqual(FrameWhiteThreshold.OpaqueAdcReason, reason);
     }
 
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task CenteredZwoWorkingAttachAndCancelledApplyNeverStart()
+    {
+        var config = CreateConfig() with
+        {
+            CenteredExposure = new("physical", CenteredExposureProfile.CurrentExecutionVersion)
+        };
+        var working = new FakeAsiNativeApi { RepeatWorkingStatus = true };
+        await using (var module = Module(working))
+        {
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                ((ICameraBoundExposureCapture)module).InitializeBoundAsync(config,
+                    (_, _) => ValueTask.CompletedTask, CancellationToken.None));
+            Assert.IsFalse(working.Calls.Any(call => call.StartsWith("Set:", StringComparison.Ordinal) ||
+                call.StartsWith("Roi:", StringComparison.Ordinal) || call.StartsWith("Position:", StringComparison.Ordinal)));
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        var native = new FakeAsiNativeApi { ExposureStatuses = new([AsiExposureStatus.Idle]) };
+        await using var attached = Module(native);
+        await ((ICameraBoundExposureCapture)attached).InitializeBoundAsync(config, (_, _) => ValueTask.CompletedTask,
+            CancellationToken.None);
+        native.Calls.Clear();
+        native.ExposureStatuses = new([AsiExposureStatus.Idle]);
+        native.ControlWritten = type =>
+        {
+            if (type == AsiControlType.Exposure) cancellation.Cancel();
+        };
+        var camera = new CameraKey(config.AgentId!, "physical");
+        var attempt = new ExposureAttemptKey(camera, Guid.NewGuid(), 104, Guid.NewGuid());
+        var request = new CaptureRequest(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), CaptureMode.Still,
+            new(TimeSpan.FromMilliseconds(100), 16, null, null));
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() =>
+            attached.CaptureBoundAsync(attempt, request, cancellation.Token));
+        Assert.IsTrue(native.Calls.Contains("Set:Exposure:100000"));
+        Assert.IsFalse(native.Calls.Any(call => call.StartsWith("Set:Gain:", StringComparison.Ordinal)));
+        Assert.IsFalse(native.Calls.Contains("StartExposure"));
+
+        native.ControlWritten = null;
+        native.ExposureStatuses = new([AsiExposureStatus.Idle, AsiExposureStatus.Success]);
+        var fresh = new ExposureAttemptKey(camera, Guid.NewGuid(), 1, Guid.NewGuid());
+        var actual = await attached.CaptureBoundAsync(fresh, request with
+        {
+            RequestedSetpoint = new(TimeSpan.FromMilliseconds(20), 9, null, null)
+        }, CancellationToken.None);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(20), actual.Frame!.Metadata.Exposure);
+        Assert.AreEqual(9d, actual.Frame.Metadata.Gain);
+        Assert.AreEqual(1, native.Calls.Count(call => call == "StartExposure"));
+    }
+
     private static CameraModuleConfig CreateConfig(CameraModuleDocument document)
         => new(
             new ObservatoryLocation(0, 0, 0, "UTC"),
@@ -1300,6 +1351,7 @@ public sealed class ZwoAsiCameraModuleTests
         internal List<string> Calls { get; } = [];
         internal Dictionary<AsiControlType, long> ReadbackOverrides { get; } = [];
         internal AsiControlType? ThrowAfterSetting { get; set; }
+        internal Action<AsiControlType>? ControlWritten { get; set; }
 
         internal Queue<AsiExposureStatus> ExposureStatuses { get; set; } = new([AsiExposureStatus.Success]);
         internal TaskCompletionSource ExposureStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1375,6 +1427,7 @@ public sealed class ZwoAsiCameraModuleTests
         {
             Calls.Add($"Set:{type}:{value}");
             _values[type] = value;
+            ControlWritten?.Invoke(type);
             if (ThrowAfterSetting == type) throw new TimeoutException("Injected timeout after device write.");
         }
         public void SetRoiFormat(int cameraId, int width, int height, int bin, AsiImageType imageType)

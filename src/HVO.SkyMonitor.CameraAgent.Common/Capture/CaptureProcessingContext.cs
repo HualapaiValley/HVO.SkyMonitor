@@ -403,6 +403,22 @@ public sealed class CaptureProcessingContext
                 schemaVersion, identitySha256, false)
         ]);
 
+    internal void RecordCenteredCalibrationMasters(
+        ReferenceCalibrationProfileV1 profile, IReadOnlyDictionary<string, ProcessingArtifact> references)
+    {
+        foreach (var kind in CalibrationReferenceKinds.All)
+        {
+            var master = references[kind];
+            var descriptor = profile.References.Single(reference => reference.Kind == kind);
+            if (descriptor.ArtifactId != master.ArtifactId)
+                throw new InvalidDataException("The calibration master differs from its verified profile.");
+            AppendInputEvidence([new DurableProcessingNodeInput(
+                _currentInputs.Count, "Artifact", $"centered-master-{kind}", master.ArtifactId, master.Role, kind,
+                master.RecipeIdentitySha256, "calibration-master-payload-v1",
+                descriptor.PayloadSha256, false)]);
+        }
+    }
+
     private void AppendInputEvidence(List<DurableProcessingNodeInput> evidence)
     {
         if (_currentInputs.Count + evidence.Count > 128 || evidence.Any(static input =>

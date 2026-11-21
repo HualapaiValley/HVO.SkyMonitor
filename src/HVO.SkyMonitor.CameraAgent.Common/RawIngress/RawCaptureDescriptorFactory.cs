@@ -41,16 +41,19 @@ internal static class RawCaptureDescriptorFactory
         CaptureLoopSubmission submission,
         RawCaptureIdentity identity,
         string payloadSha256,
-        DateTimeOffset durableIngressUtc)
+        DateTimeOffset durableIngressUtc,
+        CapturePipelineConfig? boundPipeline = null)
     {
         var frame = submission.Result.Frame ?? throw new ArgumentException("A raw frame is required.", nameof(submission));
         var timing = ResolveTiming(submission, frame, durableIngressUtc);
         _ = configuration.ResolveObservatory(timing.ExposureStartedUtc);
-        ValidateScheduleEvidence(configuration, submission.CycleEvidence?.ScheduleAdmission);
+        ValidateScheduleEvidence(configuration,
+            submission.CenteredAcquisition?.ScheduleAdmission ?? submission.CycleEvidence?.ScheduleAdmission);
         var requestedSetpoint = submission.Request.RequestedSetpoint;
         var rigElement = CaptureContractJson.SerializeToElement(configuration.Rig);
-        var processingSteps = configuration.Pipeline.Steps;
-        var processingProfile = CreateProcessingProfile(configuration);
+        var effectiveProcessing = boundPipeline is null ? configuration : configuration with { Pipeline = boundPipeline };
+        var processingSteps = effectiveProcessing.Pipeline.Steps;
+        var processingProfile = CreateProcessingProfile(effectiveProcessing);
         var calibrationSteps = processingSteps
             .Where(static step => step.Type.Contains("Calibration", StringComparison.OrdinalIgnoreCase))
             .ToArray();
@@ -133,7 +136,22 @@ internal static class RawCaptureDescriptorFactory
                 payloadSha256))
         {
             CycleEvidence = NormalizeEvidence(submission.CycleEvidence),
+            CenteredAcquisition = configuration.CenteredExposure is null ? null : CreateCenteredAcquisition(configuration, submission),
             Location = configuration.DeploymentLocation?.ToProvenance()
+        };
+    }
+
+    private static CenteredCaptureAcquisitionEvidence CreateCenteredAcquisition(
+        CameraModuleConfig configuration, CaptureLoopSubmission submission)
+    {
+        var acquisition = submission.CenteredAcquisition ?? new(
+            configuration.Rig.Pipeline.CadenceMode, submission.EffectiveInterval,
+            submission.CaptureStartedUtc, submission.LoopDuration, null, false, null, null);
+        return acquisition with
+        {
+            ModuleCallStartedUtc = acquisition.ModuleCallStartedUtc.ToUniversalTime(),
+            Module = new(submission.Request.Mode, submission.Request.TargetInterval, submission.Result.Mode,
+                submission.Result.NextSetpoint, submission.Result.ProcessingLatency, submission.Result.RequiresImmediateUpload)
         };
     }
 

@@ -877,6 +877,11 @@ public sealed partial class SqliteCalibrationLibraryStore(
     public async Task<CalibrationLibraryStateSnapshot> GetStateAsync(CancellationToken cancellationToken)
     {
         await _rawCaptureIngress.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadStateAfterRawInitializationAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<CalibrationLibraryStateSnapshot> ReadStateAfterRawInitializationAsync(CancellationToken cancellationToken)
+    {
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginRead(connection);
         var state = await ReadStateAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
@@ -1345,8 +1350,10 @@ public sealed partial class SqliteCalibrationLibraryStore(
                         SELECT 1 FROM centered_exposure_runs run WHERE run.calibration_bundle_id = b.bundle_id
                           AND (run.closed_reason IS NULL OR EXISTS (
                               SELECT 1 FROM centered_exposure_attempts attempt
-                              JOIN processing_executions execution ON execution.capture_id = attempt.capture_id
-                              WHERE attempt.run_id = run.run_id AND execution.status IN ('Pending','Running')
+                              JOIN raw_captures raw ON raw.capture_id = attempt.capture_id
+                              JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
+                              WHERE attempt.run_id = run.run_id AND work.lane_name = 'standard'
+                                AND work.state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                           ))
                     )
                     ORDER BY a.bundle_id, a.ordinal;
@@ -1370,8 +1377,10 @@ public sealed partial class SqliteCalibrationLibraryStore(
                         SELECT 1 FROM centered_exposure_runs run WHERE run.calibration_bundle_id = b.bundle_id
                           AND (run.closed_reason IS NULL OR EXISTS (
                               SELECT 1 FROM centered_exposure_attempts attempt
-                              JOIN processing_executions execution ON execution.capture_id = attempt.capture_id
-                              WHERE attempt.run_id = run.run_id AND execution.status IN ('Pending','Running')
+                              JOIN raw_captures raw ON raw.capture_id = attempt.capture_id
+                              JOIN capture_lane_work work ON work.raw_capture_row_id = raw.raw_capture_row_id
+                              WHERE attempt.run_id = run.run_id AND work.lane_name = 'standard'
+                                AND work.state IN ('pending', 'leased', 'retry_wait', 'quarantined')
                           ))
                     )
                     ORDER BY bundle_id;

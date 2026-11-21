@@ -90,6 +90,8 @@ internal sealed class CalibrationCaptureProcessingStep(
                         Options.SyntheticCalibration!,
                         cancellationToken).ConfigureAwait(false);
                     var inputs = new List<ProcessingArtifact> { input };
+                    if (context.RawCapture?.Manifest.CenteredExposure is not null)
+                        context.RecordCenteredCalibrationMasters(bundle.Profile, bundle.References);
                     inputs.AddRange(CalibrationReferenceKinds.All.Select(kind => bundle.References[kind]));
                     outcome = await adapter.ExecuteAsync(context, new ProcessingExecutionRequest(
                         BuiltInProcessingRecipes.ReferenceCalibration,
@@ -161,8 +163,11 @@ internal sealed class CalibrationCaptureProcessingStep(
                             return;
                         }
                         if (frozen?.Calibration is { } pinned)
+                        {
                             context.RecordCanonicalInput("centered-calibration-bundle", "calibration-library-bundle-v1",
                                 pinned.BundleIdentitySha256);
+                            context.RecordCenteredCalibrationMasters(libraryInputs.Profile, libraryInputs.References);
+                        }
                         var inputs = new List<ProcessingArtifact> { input };
                         inputs.AddRange(CalibrationReferenceKinds.All.Select(kind => libraryInputs.References[kind]));
                         var selectionJson = JsonSerializer.SerializeToUtf8Bytes(CaptureContractJson.Canonicalize(

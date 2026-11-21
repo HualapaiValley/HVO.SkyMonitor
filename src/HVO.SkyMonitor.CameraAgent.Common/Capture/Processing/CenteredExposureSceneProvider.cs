@@ -25,8 +25,8 @@ internal sealed record CenteredPredictionFacts(
 
 internal sealed class CenteredExposureSceneProvider(
     RawCaptureIngress ingress,
-    CaptureProjectedSceneStager stager,
-    ICelestialCatalog catalog,
+    CaptureProjectedSceneStager? stager,
+    ICelestialCatalog? catalog,
     Func<IDeploymentLocationStore?> resolveLocations,
     IConstellationTopology? topology = null,
     IPlanetEphemeris? ephemeris = null)
@@ -66,7 +66,7 @@ internal sealed class CenteredExposureSceneProvider(
         CancellationToken cancellationToken,
         DateTimeOffset? virtualPresentationEpoch = null)
     {
-        if (facts.Resources.Stars is null || stager.FrozenResources != facts.Resources ||
+        if (facts.Resources.Stars is null || stager?.FrozenResources != facts.Resources ||
             catalog is not ICelestialCatalogMetadataSource metadata)
             return null;
 

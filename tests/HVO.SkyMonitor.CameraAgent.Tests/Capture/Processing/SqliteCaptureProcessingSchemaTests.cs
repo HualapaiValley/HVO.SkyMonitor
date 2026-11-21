@@ -401,6 +401,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     }
 
     [TestMethod]
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Uses the current raw schema integer constant.")]
     public async Task RawVersionMarkerWithoutCanonicalRawSchemaIsRejectedWithoutProcessingMutation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"hvo-processing-schema-invalid-raw-{Guid.NewGuid():N}");
@@ -412,7 +413,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             {
                 await connection.OpenAsync().ConfigureAwait(false);
                 using var command = connection.CreateCommand();
-                command.CommandText = "PRAGMA user_version = 16;";
+                command.CommandText = FormattableString.Invariant($"PRAGMA user_version = {SqliteRawCaptureJournal.CurrentSchemaVersion};");
                 await command.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             var options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
