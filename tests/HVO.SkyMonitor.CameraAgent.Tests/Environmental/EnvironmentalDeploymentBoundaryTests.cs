@@ -343,47 +343,59 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     [TestMethod]
     public async Task ProtectedLocationStartup_CoalescedDispositionSurvivesShutdownBeforeCaptureDrains()
     {
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-environmental-coalesced-{Guid.NewGuid():N}");
         var location = Location(Epoch.AddDays(-1));
         var device = new BlockingSkyQualityMeter();
-        var fixture = new Fixture(Epoch.AddSeconds(1), location, protectedStartup: true, device: device);
-        await using var fixtureLifetime = fixture.ConfigureAwait(false);
-        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
-        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
-        await fixture.PersistLocationHoldAsync().ConfigureAwait(false);
-
-        using var shutdown = new CancellationTokenSource();
-        var capture = fixture.Coordinator.AcquireSourceAsync("source-0", EnvironmentalAcquisitionTrigger.AfterCapture,
-            Epoch.AddSeconds(1), 1, Guid.NewGuid(), shutdown.Token).AsTask();
+        var captureAt = Epoch.AddSeconds(1);
         var next = Epoch + StartupSourcePeriod;
         try
         {
-            await device.FirstRead.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
-            await fixture.StartAndWaitForPollAsync(next).ConfigureAwait(false);
-            await fixture.StopAsync().WaitAsync(HarnessDeadline).ConfigureAwait(false);
+            var fixture = new Fixture(captureAt, location, root: root, protectedStartup: true, device: device);
+            EnvironmentalAcquisitionAttemptRecord original;
+            await using (fixture.ConfigureAwait(false))
+            {
+                await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+                await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+                await fixture.PersistLocationHoldAsync().ConfigureAwait(false);
+
+                using var shutdown = new CancellationTokenSource();
+                var capture = fixture.Coordinator.AcquireSourceAsync("source-0", EnvironmentalAcquisitionTrigger.AfterCapture,
+                    captureAt, 1, Guid.NewGuid(), shutdown.Token).AsTask();
+                try
+                {
+                    await device.FirstRead.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
+                    await fixture.StartAndWaitForPollAsync(next).ConfigureAwait(false);
+                    await fixture.StopAsync().WaitAsync(HarnessDeadline).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await shutdown.CancelAsync().ConfigureAwait(false);
+                }
+                await Assert.ThrowsAsync<OperationCanceledException>(() => capture.WaitAsync(HarnessDeadline)).ConfigureAwait(false);
+                Assert.AreEqual(new EnvironmentalLocationPollSlot(Epoch, true),
+                    await fixture.ReadLocationPollSlotAsync().ConfigureAwait(false));
+                Assert.AreEqual(0L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+                original = (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single();
+                Assert.AreEqual(EnvironmentalAcquisitionTrigger.Periodic, original.Trigger);
+                Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, original.Disposition);
+            }
+
+            var reopened = new Fixture(next.AddSeconds(1), location, root: root, protectedStartup: true, device: device);
+            await using var reopenedLifetime = reopened.ConfigureAwait(false);
+            await reopened.LoadLocationAsync(expectProvisional: false).ConfigureAwait(false);
+            await reopened.StartAndWaitForPollAsync(next + StartupSourcePeriod).ConfigureAwait(false);
+            Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+            var attempts = await reopened.ReadAttemptsAsync().ConfigureAwait(false);
+            Assert.HasCount(2, attempts);
+            Assert.IsTrue(attempts.Contains(original));
+            Assert.AreEqual(EnvironmentalAcquisitionTrigger.Periodic,
+                attempts.Single(static attempt => attempt.Disposition == EnvironmentalAcquisitionDisposition.Produced).Trigger);
+            CollectionAssert.AreEqual(new[] { captureAt, next }, device.RequestedTimes.ToArray());
         }
         finally
         {
-            await shutdown.CancelAsync().ConfigureAwait(false);
+            Directory.Delete(root, recursive: true);
         }
-        await Assert.ThrowsAsync<OperationCanceledException>(() => capture.WaitAsync(HarnessDeadline)).ConfigureAwait(false);
-        Assert.AreEqual(new EnvironmentalLocationPollSlot(Epoch, true),
-            await fixture.ReadLocationPollSlotAsync().ConfigureAwait(false));
-        Assert.AreEqual(0L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
-        var original = (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single();
-        Assert.AreEqual(EnvironmentalAcquisitionTrigger.Periodic, original.Trigger);
-        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, original.Disposition);
-
-        var reopened = new Fixture(next.AddSeconds(1), location, root: fixture.Root, protectedStartup: true, device: device);
-        await using var reopenedLifetime = reopened.ConfigureAwait(false);
-        await reopened.LoadLocationAsync(expectProvisional: false).ConfigureAwait(false);
-        await reopened.StartAndWaitForPollAsync(next + StartupSourcePeriod).ConfigureAwait(false);
-        Assert.AreEqual(1L, (await reopened.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
-        var attempts = await reopened.ReadAttemptsAsync().ConfigureAwait(false);
-        Assert.HasCount(2, attempts);
-        Assert.IsTrue(attempts.Contains(original));
-        Assert.AreEqual(EnvironmentalAcquisitionTrigger.Periodic,
-            attempts.Single(static attempt => attempt.Disposition == EnvironmentalAcquisitionDisposition.Produced).Trigger);
-        CollectionAssert.AreEqual(new[] { Epoch.AddSeconds(1), next }, device.RequestedTimes.ToArray());
     }
 
     [TestMethod]
