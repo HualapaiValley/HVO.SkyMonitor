@@ -100,6 +100,11 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         long? captureSequence = null, Guid? captureId = null, CancellationToken cancellationToken = default)
         => AcquireSourceWithBudgetAsync(sourceId, trigger, observedAtUtc, null, captureSequence, captureId, cancellationToken);
 
+    internal Task WaitForInitialDeploymentLocationAsync(CancellationToken cancellationToken)
+        => _deploymentLocation is ProtectedDeploymentLocationStore locations
+            ? locations.WaitForInitialActiveAsync(cancellationToken)
+            : Task.CompletedTask;
+
     private async ValueTask<EnvironmentalAcquisitionReceipt> AcquireSourceWithBudgetAsync(
         string sourceId, EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc,
         int? acquisitionBudgetMilliseconds, long? captureSequence, Guid? captureId, CancellationToken cancellationToken,

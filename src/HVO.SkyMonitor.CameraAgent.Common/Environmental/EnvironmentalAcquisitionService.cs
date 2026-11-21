@@ -187,6 +187,9 @@ public sealed partial class EnvironmentalAcquisitionService(
                 {
                     await Task.Delay(delay, timeProvider, cancellationToken).ConfigureAwait(false);
                 }
+                // Keep the due timestamp while the protected store reconciles startup authority.
+                // Wait before entering the coordinator so capture triggers retain their own budgets.
+                await coordinator.WaitForInitialDeploymentLocationAsync(cancellationToken).ConfigureAwait(false);
                 await AcquireAsync(source, due, cancellationToken).ConfigureAwait(false);
                 due = NextDue(source, timeProvider.GetUtcNow());
             }
