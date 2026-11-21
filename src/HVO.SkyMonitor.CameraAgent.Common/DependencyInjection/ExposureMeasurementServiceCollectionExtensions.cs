@@ -12,9 +12,11 @@ internal static class ExposureMeasurementServiceCollectionExtensions
         services.AddSingleton<CaptureExposureMeasurementReader>();
         services.AddSingleton<IExposureMeasurementRunReader>(provider => provider.GetRequiredService<CaptureExposureMeasurementReader>());
         services.AddSingleton(new CaptureProcessingStepRegistration(ProjectedSceneCaptureProcessingStep.ExposurePredictionAlias,
-            typeof(ExposureCatalogPredictionCaptureProcessingStep), typeof(ProjectedSceneCaptureProcessingStepOptions), 20, AutoInclude: false));
+            typeof(ExposureCatalogPredictionCaptureProcessingStep), typeof(ProjectedSceneCaptureProcessingStepOptions),
+            ExposureMeasurementGraphPlan.PredictionDefaultOrder, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(ExposureMeasurementProducts.StepAlias,
-            typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions), 4, AutoInclude: false));
+            typeof(ExposureMeasurementCaptureProcessingStep), typeof(ExposureMeasurementStepOptions),
+            ExposureMeasurementGraphPlan.MeasurementOrder, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(ExposureAssociationProducts.StepAlias,
             typeof(ExposureStellarAssociationCaptureProcessingStep), typeof(MeasuredStellarAssociationProcessingStepOptions), 16, AutoInclude: false));
         services.AddSingleton(new CaptureProcessingStepRegistration(ExposureAstrometryCaptureProcessingStep.CenteredAlias,

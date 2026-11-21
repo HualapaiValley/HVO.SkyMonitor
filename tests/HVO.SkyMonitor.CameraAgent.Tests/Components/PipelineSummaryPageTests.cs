@@ -109,6 +109,13 @@ public sealed class PipelineSummaryPageTests
                 factory, telemetry, TimeProvider.System, NullLogger<CameraAgentScheduleUiService>.Instance, graphs);
             var same = await ui.GetPipelineAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(projection.Active.Plan.EffectiveSha256, same.Value?.Active.Plan.EffectiveSha256);
+            var graphLog = new Mock<ILogger<CameraAgentProcessingGraphUiService>>();
+            var graphUi = new CameraAgentProcessingGraphUiService(authentication.Object, authorization.Object, graphs, factory,
+                accessor, runtime, TimeProvider.System, graphLog.Object);
+            var owner = new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, "fixture"),
+                 new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
+                IdentityConstants.ApplicationScheme)));
             using var context = CreateContext(ui);
             var cut = context.Render<PipelineSummaryPage>();
             cut.WaitForElement(".ops-pipeline-graph");
@@ -118,6 +125,20 @@ public sealed class PipelineSummaryPageTests
                 Assert.IsFalse(cut.Markup.Contains(ExposureMeasurementProducts.StepAlias, StringComparison.Ordinal));
                 await cut.Find(".ops-pipeline-node.step[title='linear']").ClickAsync().ConfigureAwait(false);
                 Assert.IsNotNull(cut.Find("#pipeline-step-toggle"));
+                authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(owner);
+                var sceneOptions = JsonSerializer.SerializeToElement(new { maximumResults = 1 });
+                var editable = admitted with
+                {
+                    Steps = [.. admitted.Steps, new("ProjectedScene", "legacy-scene", Options: sceneOptions,
+                        DependsOn: [RawInput], Required: false)]
+                };
+                var saved = await graphUi.CreateRevisionAsync("legacy-scene-options", "1", editable, "legacy-scene-create", null,
+                    CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(saved.IsSuccess, saved.Message);
+                var reopened = await graphUi.GetRevisionDetailAsync(saved.Value!.RevisionId, CancellationToken.None).ConfigureAwait(false);
+                Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+                var scene = reopened.Value!.Pipeline.Steps.Single(step => step.Id == "legacy-scene");
+                Assert.AreEqual(1, scene.Options!.Value.GetProperty("maximumResults").GetInt32());
                 return;
             }
 
@@ -137,19 +158,13 @@ public sealed class PipelineSummaryPageTests
             Assert.Contains("Raw frame", cut.Find(".ops-node-facts").TextContent);
             Assert.IsEmpty(cut.FindAll("#pipeline-step-toggle"));
 
-            var graphLog = new Mock<ILogger<CameraAgentProcessingGraphUiService>>();
-            var graphUi = new CameraAgentProcessingGraphUiService(authentication.Object, authorization.Object, graphs, factory,
-                accessor, runtime, TimeProvider.System, graphLog.Object);
             var denied = await graphUi.CreateRevisionAsync("centered-options", "denied", admitted, "noncanonical-owner", null,
                 CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(OperatorUiResultKind.Unauthorized, denied.Kind);
-            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(
-                new AuthenticationState(new ClaimsPrincipal(new ClaimsIdentity(
-                    [new Claim(ClaimTypes.NameIdentifier, "fixture"),
-                     new Claim(CanonicalCredentialClaims.AccountTypeClaim, CanonicalCredentialClaims.UserAccountType)],
-                    IdentityConstants.ApplicationScheme))));
+            authentication.Setup(service => service.GetAuthenticationStateAsync()).ReturnsAsync(owner);
             await AssertCenteredEditorAsync(ui, graphUi, active, factory, registry.ConfiguredBasicRevisionId, admitted, graphLog).ConfigureAwait(false);
             await AssertCenteredScheduleAsync(ui).ConfigureAwait(false);
+            await AssertGeneratedOptionsAreProtectedAsync(provider, active, admitted, graphUi).ConfigureAwait(false);
 
             var toggle = await ui.TogglePipelineAsync(CameraAgentScheduleUiService.SerializeProfile(basis.Profile), basis.RevisionId,
                 ExposureMeasurementProducts.StepAlias, false, CancellationToken.None).ConfigureAwait(false);
@@ -197,6 +212,76 @@ public sealed class PipelineSummaryPageTests
         }
     }
 
+    private static async Task AssertGeneratedOptionsAreProtectedAsync(ServiceProvider provider, CameraModuleConfig active,
+        CapturePipelineConfig admitted, CameraAgentProcessingGraphUiService graphUi)
+    {
+        var token = CancellationToken.None;
+        var graphs = provider.GetRequiredService<IProcessingGraphOperations>();
+        var craftedOptions = JsonSerializer.SerializeToElement(new { maximumResults = 1 });
+        foreach (var alias in new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias })
+        {
+            var changed = admitted with
+            {
+                Steps = [.. admitted.Steps.Select(step => step.Type == alias ? step with { Options = craftedOptions } : step)]
+            };
+            var before = await graphs.GetRegistryAsync(token).ConfigureAwait(false);
+            var result = await graphUi.CreateRevisionAsync("managed-probe", alias, changed, alias, null, token).ConfigureAwait(false);
+            Assert.AreEqual(OperatorUiResultKind.Conflict, result.Kind, alias);
+            Assert.IsNull(result.Value, alias);
+            AssertRegistryUnchanged(before, await graphs.GetRegistryAsync(token).ConfigureAwait(false));
+
+            // Seed a revision accepted by the old store so selection rechecks policy without changing history.
+            var historical = await StoragePolicyRawIngressIntegrationTests.SeedLegacyRevisionAsync(provider, active, changed,
+                "historical-" + alias).ConfigureAwait(false);
+            before = await graphs.GetRegistryAsync(token).ConfigureAwait(false);
+            var expectedReason = alias == ExposureMeasurementProducts.StepAlias ? "fixed exposure measurement" : "fixed, durable exposure catalog prediction";
+            var validation = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.ValidateRevisionAsync(historical, "revalidate-" + alias, "fixture", null, token).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.Contains(expectedReason, validation.Message);
+            AssertRegistryUnchanged(before, await graphs.GetRegistryAsync(token).ConfigureAwait(false));
+            var activation = await Assert.ThrowsExactlyAsync<ProcessingGraphStoreConflictException>(async () =>
+                await graphs.ActivateRevisionAsync(historical, before.StateVersion, "reactivate-" + alias, "fixture", null, token)
+                    .ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.Contains(expectedReason, activation.Message);
+            AssertRegistryUnchanged(before, await graphs.GetRegistryAsync(token).ConfigureAwait(false));
+            var retained = await graphs.ReadRevisionPipelineAsync(historical, token).ConfigureAwait(false);
+            Assert.IsNotNull(retained);
+            Assert.AreEqual(craftedOptions.GetRawText(), retained.Steps.Single(step => step.Type == alias).Options!.Value.GetRawText());
+        }
+
+        var equivalent = admitted with
+        {
+            Steps = [.. admitted.Steps.Select(static step => step.Type switch
+            {
+                ExposureMeasurementProducts.StepAlias => step with
+                {
+                    Id = null, Order = null, Enabled = null, Options = JsonSerializer.SerializeToElement(new { }),
+                    DependsOn = step.DependsOn!.Select(static id => id.ToUpperInvariant()).ToArray()
+                },
+                ExposureCatalogPredictionProducts.StepAlias => step with
+                {
+                    Id = null, Order = ExposureMeasurementGraphPlan.PredictionDefaultOrder, Enabled = true,
+                    Options = JsonSerializer.SerializeToElement<object?>(null)
+                },
+                _ => step
+            })]
+        };
+        var accepted = await graphUi.CreateRevisionAsync("managed-defaults", "1", equivalent, "managed-defaults-create", null, token)
+            .ConfigureAwait(false);
+        Assert.IsTrue(accepted.IsSuccess, accepted.Message);
+        var validated = await graphUi.ValidateAsync(accepted.Value!.RevisionId, "managed-defaults-validate", null, token).ConfigureAwait(false);
+        Assert.IsTrue(validated.IsSuccess, validated.Message);
+    }
+
+    private static void AssertRegistryUnchanged(ProcessingGraphRegistryState expected, ProcessingGraphRegistryState actual)
+    {
+        Assert.AreEqual(expected.Mode, actual.Mode);
+        Assert.AreEqual(expected.ActiveRevisionId, actual.ActiveRevisionId);
+        Assert.AreEqual(expected.ConfiguredBasicRevisionId, actual.ConfiguredBasicRevisionId);
+        Assert.AreEqual(expected.StateVersion, actual.StateVersion);
+        CollectionAssert.AreEqual(expected.Revisions.ToArray(), actual.Revisions.ToArray());
+    }
+
     private static async Task AssertCenteredEditorAsync(ICameraAgentScheduleUiService schedule, CameraAgentProcessingGraphUiService graphs,
         CameraModuleConfig configuration, ICaptureProcessingPipelineFactory factory, string revisionId, CapturePipelineConfig admitted,
         Mock<ILogger<CameraAgentProcessingGraphUiService>> graphLog)
@@ -238,6 +323,8 @@ public sealed class PipelineSummaryPageTests
         Assert.AreEqual("60", stride.GetAttribute("value"));
         await associationOutput.ChangeAsync(new ChangeEventArgs { Value = "verified-exposure-association" }).ConfigureAwait(false);
         await stride.ChangeAsync(new ChangeEventArgs { Value = "120" }).ConfigureAwait(false);
+        await editor.Find($".node-row[data-node-alias='{fitAlias}'] input[id$='-outputVariant']")
+            .ChangeAsync(new ChangeEventArgs { Value = "verified-exposure-astrometry" }).ConfigureAwait(false);
         await editor.FindAll("label").Single(static label => label.TextContent.StartsWith("Graph name", StringComparison.Ordinal))
             .QuerySelector("input")!.ChangeAsync(new ChangeEventArgs { Value = "centered-options" }).ConfigureAwait(false);
         await editor.Find("form").SubmitAsync().ConfigureAwait(false);
@@ -272,6 +359,7 @@ public sealed class PipelineSummaryPageTests
             Assert.AreEqual("verified-exposure-association", graph.Nodes.Single(node => node.Id == association.Id).OutputVariant);
             var fitOptions = fit.EffectiveOptions.Deserialize<MeasuredAstrometryCaptureOptions>(CompiledOptionsJson);
             Assert.AreEqual(120, fitOptions?.CaptureStride);
+            Assert.AreEqual("verified-exposure-astrometry", graph.Nodes.Single(node => node.Id == fit.Id).OutputVariant);
             Assert.IsNotNull(fitOptions?.Catalog);
         }
         finally

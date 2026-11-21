@@ -226,17 +226,18 @@ public sealed partial class StoragePolicyRawIngressIntegrationTests
         return snapshot.Configuration;
     }
 
-    internal static async Task<string> SeedLegacyRevisionAsync(ServiceProvider provider, CameraModuleConfig profile, CapturePipelineConfig pipeline)
+    internal static async Task<string> SeedLegacyRevisionAsync(ServiceProvider provider, CameraModuleConfig profile, CapturePipelineConfig pipeline,
+        string name = "legacy-storage")
     {
         var compiler = typeof(ProcessingGraphOperationsCoordinator).GetMethod("CreateRevisionSnapshot", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var snapshot = (ProcessingGraphRevisionSnapshot)compiler.Invoke(Operations(provider),
-            [profile with { Pipeline = pipeline }, "legacy-storage", "1", DateTimeOffset.UtcNow, ProcessingGraphRevisionLifecycle.Draft, null, false])!;
+            [profile with { Pipeline = pipeline }, name, "1", DateTimeOffset.UtcNow, ProcessingGraphRevisionLifecycle.Draft, null, false])!;
         var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
-        var created = await store.InsertNamedRevisionAsync(snapshot, "old-create", "old-host", null, CancellationToken.None).ConfigureAwait(false);
-        await store.ValidateRevisionAsync(created.RevisionId, "old-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        var created = await store.InsertNamedRevisionAsync(snapshot, name + "-create", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        await store.ValidateRevisionAsync(created.RevisionId, name + "-validate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
         var registry = await Operations(provider).GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
-        var active = await store.ActivateRevisionAsync(created.RevisionId, registry.StateVersion, "old-activate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
-        await store.RollbackRevisionAsync(registry.ActiveRevisionId, active.StateVersion, "old-rollback", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        var active = await store.ActivateRevisionAsync(created.RevisionId, registry.StateVersion, name + "-activate", "old-host", null, CancellationToken.None).ConfigureAwait(false);
+        await store.RollbackRevisionAsync(registry.ActiveRevisionId, active.StateVersion, name + "-rollback", "old-host", null, CancellationToken.None).ConfigureAwait(false);
         return created.RevisionId;
     }
 
