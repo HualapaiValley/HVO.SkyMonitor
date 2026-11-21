@@ -27,6 +27,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using HVO.SkyMonitor.Deployment;
+using HVO.SkyMonitor.Deployment.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Logging;
@@ -136,10 +137,16 @@ public sealed class CameraAgentLifecycleEndpointsTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task RecoveryClient_ReplaysDurableReceiptOverHttpWithoutUndoingLaterPause(bool restart)
+    [DataRow(false, "operator-image")]
+    [DataRow(true, "operator-image")]
+    [DataRow(false, "signed")]
+    [DataRow(true, "signed")]
+    [DataRow(false, "signed-race")]
+    [DataRow(false, "signed-wrong-operation")]
+    [DataRow(false, "legacy-race-control")]
+    public async Task RecoveryClient_FencesPauseOwnershipAndReplaysDurableReceipts(bool restart, string mode)
     {
+        ArgumentNullException.ThrowIfNull(mode);
         var root = Directory.CreateTempSubdirectory("hvo-recovery-http-");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var cancellationToken = deadline.Token;
@@ -148,7 +155,9 @@ public sealed class CameraAgentLifecycleEndpointsTests
         WebApplication? app = null;
         var journalPath = Path.Combine(root.FullName, "journal", "raw-ingress.db");
         var operationId = Guid.NewGuid();
+        var pauseCommandId = Guid.NewGuid();
         var commandId = Guid.NewGuid();
+        var signed = mode.StartsWith("signed", StringComparison.Ordinal);
         using var lostAcknowledgement = new LostAcknowledgementHandler();
         try
         {
@@ -174,11 +183,55 @@ public sealed class CameraAgentLifecycleEndpointsTests
             }
 
             var client = await StartAsync().ConfigureAwait(false);
-            await coordinator!.PauseAsync("upgrade-pause", 0, "installer", "upgrade", cancellationToken).ConfigureAwait(false);
+            if (signed)
+            {
+                await coordinator!.PauseAsync($"lifecycle:{pauseCommandId:D}:pause", null, $"installer-lifecycle:{pauseCommandId:D}",
+                    $"transactional lifecycle operation {operationId:D} pause", cancellationToken).ConfigureAwait(false);
+                await Assert.ThrowsExactlyAsync<InstallerException>(() => client.VerifyOwnedUpgradeResumeAsync("wrong-token", cancellationToken))
+                    .ConfigureAwait(false);
+                await client.VerifyOwnedUpgradeResumeAsync("exact-token", cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await coordinator!.PauseAsync("upgrade-pause", 0, "installer", "upgrade", cancellationToken).ConfigureAwait(false);
+            }
             Assert.AreEqual(2L, coordinator.Snapshot.Version);
+            if (mode is "signed-race" or "legacy-race-control")
+            {
+                // Land an accepted no-op in the exact interval between CLI admission checks and the resume request.
+                var later = await coordinator.PauseAsync("operator-no-op", 2, "owner", "retain the pause", cancellationToken)
+                    .ConfigureAwait(false);
+                Assert.IsFalse(later.Changed);
+                Assert.AreEqual(2L, later.Version);
+            }
+            if (mode == "legacy-race-control")
+            {
+                var resumed = await client.ResumeRecoveryAsync(operationId, commandId, 2, "exact-token", cancellationToken)
+                    .ConfigureAwait(false);
+                Assert.IsTrue(resumed.Changed);
+                Assert.AreEqual(CaptureAdmissionState.Running, coordinator.Snapshot.State);
+                Assert.AreEqual(3L, coordinator.Snapshot.Version);
+                return;
+            }
+            if (mode is "signed-race" or "signed-wrong-operation")
+            {
+                var attemptedOperation = mode == "signed-race" ? operationId : Guid.NewGuid();
+                await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeOwnedUpgradeAsync(
+                    attemptedOperation, pauseCommandId, commandId, 2, "exact-token", cancellationToken)).ConfigureAwait(false);
+                Assert.AreEqual(2L, coordinator.Snapshot.Version);
+                Assert.AreEqual(CaptureAdmissionState.Paused, coordinator.Snapshot.State);
+                var commands = await coordinator.GetRecentCommandsAsync(5, cancellationToken).ConfigureAwait(false);
+                Assert.AreEqual(mode == "signed-race" ? 2 : 1, commands.Count);
+                Assert.IsTrue(commands.All(command => command.TargetState == CaptureAdmissionState.Paused));
+                return;
+            }
+
+            Task<LifecycleResumeReceipt> ResumeAsync(CameraAgentLifecycleClient transport, Guid id, string token)
+                => signed ? transport.ResumeOwnedUpgradeAsync(operationId, pauseCommandId, id, 2, token, cancellationToken)
+                    : transport.ResumeRecoveryAsync(operationId, id, 2, token, cancellationToken);
+
             var interruptedClient = new CameraAgentLifecycleClient(new Uri(app!.Urls.Single()), lostAcknowledgement);
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => interruptedClient.ResumeRecoveryAsync(
-                operationId, commandId, 2, "exact-token", cancellationToken)).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => ResumeAsync(interruptedClient, commandId, "exact-token")).ConfigureAwait(false);
             Assert.AreEqual(3L, coordinator.Snapshot.Version);
             await coordinator.PauseAsync("operator-pause", 3, "owner", "remain paused", cancellationToken).ConfigureAwait(false);
             Assert.AreEqual(5L, coordinator.Snapshot.Version);
@@ -190,9 +243,8 @@ public sealed class CameraAgentLifecycleEndpointsTests
                 coordinator.Dispose();
                 client = await StartAsync().ConfigureAwait(false);
             }
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeRecoveryAsync(
-                operationId, commandId, 2, "wrong-token", cancellationToken)).ConfigureAwait(false);
-            var receipt = await client.ResumeRecoveryAsync(operationId, commandId, 2, "exact-token", cancellationToken).ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => ResumeAsync(client, commandId, "wrong-token")).ConfigureAwait(false);
+            var receipt = await ResumeAsync(client, commandId, "exact-token").ConfigureAwait(false);
             Assert.IsTrue(receipt.Replayed);
             Assert.IsTrue(receipt.Changed);
             Assert.AreEqual("Running", receipt.State);
@@ -200,9 +252,8 @@ public sealed class CameraAgentLifecycleEndpointsTests
             Assert.AreEqual(CaptureAdmissionState.Paused, coordinator!.Snapshot.State);
             Assert.AreEqual(5L, coordinator.Snapshot.Version);
             Assert.IsTrue(coordinator.Snapshot.IsInitialized);
-            await client.ResumeRecoveryAsync(operationId, commandId, 2, "exact-token", cancellationToken).ConfigureAwait(false);
-            await Assert.ThrowsExactlyAsync<InstallerException>(() => client.ResumeRecoveryAsync(
-                operationId, Guid.NewGuid(), 2, "exact-token", cancellationToken)).ConfigureAwait(false);
+            await ResumeAsync(client, commandId, "exact-token").ConfigureAwait(false);
+            await Assert.ThrowsExactlyAsync<InstallerException>(() => ResumeAsync(client, Guid.NewGuid(), "exact-token")).ConfigureAwait(false);
             using var connection = new SqliteConnection($"Data Source={journalPath};Pooling=False");
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             using var count = connection.CreateCommand();

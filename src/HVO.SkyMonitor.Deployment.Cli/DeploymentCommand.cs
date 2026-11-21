@@ -156,6 +156,7 @@ internal sealed record LifecycleRequest : DeploymentCommand
     public bool DryRun { get; init; }
     public bool Resume { get; init; }
     public bool RestoreOnly { get; init; }
+    public bool LeavePaused { get; init; }
     public Guid? RecoveryOperationId { get; init; }
     public string? ImageReference { get; init; }
     public string? ImageArchive { get; init; }
@@ -255,14 +256,22 @@ internal sealed record LifecycleRequest : DeploymentCommand
         }
         if (Resume && DryRun) throw new InstallUsageException("--resume cannot be combined with --dry-run.");
         if (RestoreOnly && (!Resume || Operation != LifecycleOperationKind.Upgrade ||
-                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty ||
-                            Release is not null))
+                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty))
         {
             throw new InstallUsageException(
-                "--restore-only requires upgrade --resume --operation-id and the original operator-supplied image request; release recovery is not supported.");
+                "--restore-only requires upgrade --resume --operation-id and the original image request.");
         }
-        if (!RestoreOnly && RecoveryOperationId is not null)
-            throw new InstallUsageException("--operation-id requires --restore-only.");
+        if (RestoreOnly && Release is not null &&
+            (ImageSource == ReleaseImageSource.Registry || AllowQuarantinedReadiness))
+        {
+            throw new InstallUsageException("Signed restore-only requires the original offline release archive and full application readiness.");
+        }
+        if (LeavePaused && (!Resume || RestoreOnly || Operation != LifecycleOperationKind.Upgrade ||
+                            RecoveryOperationId is null || RecoveryOperationId == Guid.Empty || Release is null ||
+                            ImageSource == ReleaseImageSource.Registry || AllowQuarantinedReadiness))
+            throw new InstallUsageException("--leave-paused requires upgrade --resume --operation-id and the original offline release archive.");
+        if (!RestoreOnly && !LeavePaused && RecoveryOperationId is not null)
+            throw new InstallUsageException("--operation-id requires --restore-only or --leave-paused.");
         if (ConfirmRemovedOperationId is not null &&
             (Operation != LifecycleOperationKind.Purge || !Resume || ConfirmRemovedOperationId == Guid.Empty))
         {

@@ -3703,7 +3703,30 @@ public sealed partial class LifecycleContractTests
             return Task.FromResult(RecoveryContinuity);
         }
 
+        public bool SupportsOwnedUpgradeResume { get; set; } = true;
+        public int OwnedRecoveryResumeCalls { get; private set; }
+
+        public Task VerifyOwnedUpgradeResumeAsync(string verificationToken, CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("lifecycle-token", verificationToken);
+            return SupportsOwnedUpgradeResume
+                ? Task.CompletedTask
+                : throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
+        }
+
+        public Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+            long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+        {
+            Assert.IsTrue(SupportsOwnedUpgradeResume);
+            Assert.AreNotEqual(Guid.Empty, pauseCommandId);
+            OwnedRecoveryResumeCalls++;
+            return ExecuteRecoveryResumeAsync(commandId, expectedVersion, verificationToken);
+        }
+
         public Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+            => ExecuteRecoveryResumeAsync(commandId, expectedVersion, verificationToken);
+
+        private Task<LifecycleResumeReceipt> ExecuteRecoveryResumeAsync(Guid commandId, long expectedVersion, string verificationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             Assert.AreEqual(2L, expectedVersion);

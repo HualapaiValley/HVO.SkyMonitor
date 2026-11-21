@@ -590,27 +590,7 @@ internal static partial class CameraAgentStateSnapshot
 
     private static StoreFacts ReadFacts(SqliteConnection connection)
     {
-        long userVersion;
-        using (var version = connection.CreateCommand())
-        {
-            version.CommandText = "PRAGMA user_version;";
-            userVersion = Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture);
-        }
-        var schema = new StringBuilder();
-        var tables = new List<string>();
-        using (var objects = connection.CreateCommand())
-        {
-            objects.CommandText = "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_schema ORDER BY type, name;";
-            using var reader = objects.ExecuteReader();
-            while (reader.Read())
-            {
-                var type = reader.GetString(0);
-                var name = reader.GetString(1);
-                schema.Append(type).Append('\u001f').Append(name).Append('\u001f').Append(reader.GetString(2))
-                    .Append('\u001f').Append(reader.GetString(3)).Append('\u001e');
-                if (type == "table") tables.Add(name);
-            }
-        }
+        var (userVersion, schema, tables) = ReadSchema(connection);
         var counts = new List<StateSnapshotTableCount>(tables.Count);
         foreach (var table in tables)
         {
@@ -621,9 +601,82 @@ internal static partial class CameraAgentStateSnapshot
             counts.Add(new StateSnapshotTableCount(table, Convert.ToInt64(count.ExecuteScalar(), CultureInfo.InvariantCulture)));
         }
         return new StoreFacts(
-            userVersion,
-            Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(schema.ToString()))),
-            counts);
+            userVersion, Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Concat(schema)))), counts);
+    }
+
+    private static (long UserVersion, List<string> Objects, List<string> Tables) ReadSchema(SqliteConnection connection)
+    {
+        long userVersion;
+        using (var version = connection.CreateCommand())
+        {
+            version.CommandText = "PRAGMA user_version;";
+            userVersion = Convert.ToInt64(version.ExecuteScalar(), CultureInfo.InvariantCulture);
+        }
+        var schema = new List<string>();
+        var tables = new List<string>();
+        using (var objects = connection.CreateCommand())
+        {
+            objects.CommandText = "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_schema ORDER BY type, name;";
+            using var reader = objects.ExecuteReader();
+            while (reader.Read())
+            {
+                var type = reader.GetString(0);
+                var name = reader.GetString(1);
+                schema.Add(string.Concat(type, "\u001f", name, "\u001f", reader.GetString(2), "\u001f", reader.GetString(3), "\u001e"));
+                if (type == "table") tables.Add(name);
+            }
+        }
+        return (userVersion, schema, tables);
+    }
+
+    /// <summary>Proves the running predecessor still has the checkpoint's schema while allowing its own writes.</summary>
+    internal static void VerifyRestoredSchemas(
+        InstallationPaths paths, LifecycleStateSnapshot reference, StateSnapshotManifest snapshot, CancellationToken cancellationToken)
+    {
+        var snapshotRoot = SnapshotRoot(paths, reference.OperationId, reference.SnapshotId);
+        foreach (var store in snapshot.Databases.Where(static store => store.Present))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = StorePath(paths.StateRoot, store.RelativePath);
+            SafeFileSystem.EnsureSafeExistingAncestors(path);
+            try
+            {
+                EnsureRegularStore(path, store.RelativePath);
+                List<string> retainedObjects;
+                long? retainedProcessingVersion = null;
+                using (var checkpoint = CameraAgentStatePreflight.ReadOnlyDatabase.Open(SnapshotFile(snapshotRoot, store)))
+                {
+                    var (_, objects, tables) = ReadSchema(checkpoint.Connection);
+                    retainedObjects = objects;
+                    if (tables.Contains("capture_processing_schema", StringComparer.Ordinal))
+                        retainedProcessingVersion = ReadCaptureProcessingSchema(checkpoint.Connection);
+                }
+                using (var database = CameraAgentStatePreflight.ReadOnlyDatabase.Open(path))
+                {
+                    var (userVersion, currentObjects, _) = ReadSchema(database.Connection);
+                    // Some components create their tables and indexes on first use after startup. Preserve those additions
+                    // while requiring the original schema objects and version markers to agree with the checkpoint.
+                    if (userVersion == store.UserVersion &&
+                        currentObjects.ToHashSet(StringComparer.Ordinal).IsSupersetOf(retainedObjects) &&
+                        (retainedProcessingVersion is null || retainedProcessingVersion == ReadCaptureProcessingSchema(database.Connection)))
+                        continue;
+                }
+            }
+            catch (SqliteException exception)
+            {
+                throw new InstallerException("Signed restore-only could not read the restored checkpoint schema.", exception);
+            }
+            throw new InstallerException($"Signed restore-only live schema differs from the checkpoint for '{CameraAgentStateDiagnostics.Reason(store.RelativePath)}'.");
+        }
+    }
+
+    private static long ReadCaptureProcessingSchema(SqliteConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT version FROM capture_processing_schema WHERE schema_key = 1;";
+        return command.ExecuteScalar() is long version && version > 0
+            ? version
+            : throw new InstallerException("Signed restore-only could not prove the capture-processing schema version.");
     }
 
     private static async Task<string> CopySyncedAsync(string source, string destination, CancellationToken cancellationToken)

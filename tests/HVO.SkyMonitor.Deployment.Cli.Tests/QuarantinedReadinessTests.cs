@@ -92,6 +92,53 @@ public sealed partial class QuarantinedReadinessTests
     }
 
     [TestMethod]
+    public async Task WaitForHealth_DeploymentLocationDeferredThenReady_RequiresSuccessfulSemanticHealth()
+    {
+        using var handler = new ScriptedHandler((_, count, _) => Task.FromResult(count switch
+        {
+            2 => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            {
+                Content = new StringContent(Health(0, null, "deployment-location"))
+            },
+            4 => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(Health(0, null))
+            },
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+        }));
+        var client = new OwnerBootstrapClient(new Uri("http://camera.invalid"), handler);
+
+        await client.WaitForHealthAsync(Catalog, CancellationToken.None, TimeSpan.FromSeconds(10));
+
+        Assert.AreEqual(4, handler.RequestCount);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task WaitForHealth_InFlightProbeHonorsDeadlineAndCallerCancellation(bool cancel)
+    {
+        using var handler = new ScriptedHandler(async (_, _, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        using var caller = new CancellationTokenSource();
+        var client = new OwnerBootstrapClient(new Uri("http://camera.invalid"), handler);
+        var pending = client.WaitForHealthAsync(Catalog, caller.Token, TimeSpan.FromMilliseconds(200));
+        if (cancel)
+        {
+            await caller.CancelAsync();
+            await Assert.ThrowsAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(4)));
+        }
+        else
+        {
+            var exception = await Assert.ThrowsExactlyAsync<InstallerException>(() => pending.WaitAsync(TimeSpan.FromSeconds(4)));
+            StringAssert.Contains(exception.Message, "did not become ready within", StringComparison.Ordinal);
+        }
+    }
+
+    [TestMethod]
     public void Flags_AreAttestationsAndDoNotChangeTheJournaledRequest()
     {
         var id = Guid.Parse("0e4af399-9984-48eb-b119-27ac3e327756");

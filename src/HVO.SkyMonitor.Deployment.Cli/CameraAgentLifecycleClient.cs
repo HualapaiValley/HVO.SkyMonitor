@@ -13,6 +13,11 @@ internal interface ICameraAgentLifecycleClient
     Task ResumeAsync(Guid operationId, string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleContinuity> ReadContinuityAsync(string verificationToken, CancellationToken cancellationToken);
     Task<LifecycleResumeReceipt> ResumeRecoveryAsync(Guid operationId, Guid commandId, long expectedVersion, string verificationToken, CancellationToken cancellationToken);
+    Task VerifyOwnedUpgradeResumeAsync(string verificationToken, CancellationToken cancellationToken)
+        => throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
+    Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+        => throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
 }
 
 internal sealed record LifecycleContinuity(
@@ -50,6 +55,7 @@ internal sealed class CameraAgentLifecycleClient(
     HttpMessageHandler? handler = null,
     LifecycleBudgets? budgets = null) : ICameraAgentLifecycleClient
 {
+    private static readonly Uri OwnedUpgradeResumeRoute = new("/api/internal/deployment/lifecycle/resume-owned-upgrade", UriKind.Relative);
     private readonly LifecycleBudgets _budgets = budgets ?? LifecycleBudgets.Default;
 
     // Lifecycle commands target a durable capture-control state rather than a
@@ -133,6 +139,30 @@ internal sealed class CameraAgentLifecycleClient(
             cancellationToken, commandId, expectedVersion).ConfigureAwait(false))!;
     }
 
+    public async Task VerifyOwnedUpgradeResumeAsync(string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        try
+        {
+            using var response = await WithBudgetAsync(_budgets.ReadTimeout,
+                token => client.GetAsync(OwnedUpgradeResumeRoute, token), cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.NoContent) return;
+        }
+        catch (Exception exception) when (exception is BudgetExceededException or HttpRequestException)
+        {
+            throw new InstallerException("The predecessor's atomic signed restore-only admission could not be verified.", exception);
+        }
+        throw new InstallerException("The predecessor does not provide authenticated atomic signed restore-only admission. Capture remains paused.");
+    }
+
+    public async Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+    {
+        using var client = CreateClient(verificationToken);
+        return (await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
+            cancellationToken, commandId, expectedVersion, pauseCommandId: pauseCommandId).ConfigureAwait(false))!;
+    }
+
     private async Task<LifecycleResumeReceipt?> PostCommandAsync(
         HttpClient client,
         string action,
@@ -141,7 +171,8 @@ internal sealed class CameraAgentLifecycleClient(
         CancellationToken cancellationToken,
         Guid? retainedCommandId = null,
         long? expectedVersion = null,
-        Guid? commandIdentity = null)
+        Guid? commandIdentity = null,
+        Guid? pauseCommandId = null)
     {
         var commandId = commandIdentity ?? retainedCommandId ?? Guid.NewGuid();
         var payload = new Dictionary<string, object>
@@ -150,6 +181,13 @@ internal sealed class CameraAgentLifecycleClient(
             ["reason"] = $"transactional lifecycle operation {operationId:D} {action}"
         };
         if (expectedVersion is not null) payload["expectedVersion"] = expectedVersion.Value;
+        var route = new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative);
+        if (pauseCommandId is { } pause)
+        {
+            route = OwnedUpgradeResumeRoute;
+            payload["upgradeOperationId"] = operationId;
+            payload["pauseCommandId"] = pause;
+        }
         try
         {
             while (true)
@@ -162,7 +200,7 @@ internal sealed class CameraAgentLifecycleClient(
                 using var response = await WithBudgetAsync(
                     remaining,
                     token => client.PostAsJsonAsync(
-                        new Uri($"/api/internal/deployment/lifecycle/{action}", UriKind.Relative),
+                        route,
                         payload,
                         token),
                     cancellationToken).ConfigureAwait(false);

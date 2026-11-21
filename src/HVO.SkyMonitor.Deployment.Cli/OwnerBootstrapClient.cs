@@ -9,7 +9,7 @@ namespace HVO.SkyMonitor.Deployment;
 internal interface IOwnerBootstrapClient
 {
     /// <summary>
-    /// Waits until the host is alive and its catalog health check reports <paramref name="expectedCatalog"/>.
+    /// Waits for successful application health and the catalog check for <paramref name="expectedCatalog"/>.
     /// With <paramref name="allowQuarantinedReadiness"/>, an otherwise ready host whose only unhealthy checks are a
     /// processing-lane quarantine is ready too.
     /// </summary>
@@ -28,6 +28,9 @@ internal interface IOwnerBootstrapClient
         string verificationToken,
         InstallationVerificationExpectation expectation,
         CancellationToken cancellationToken);
+
+    Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
+        => throw new InstallerException("The running instance did not prove that Fleet heartbeat is disabled.");
 }
 
 internal sealed record InstallationVerificationExpectation(
@@ -65,6 +68,44 @@ internal sealed class OwnerBootstrapClient(
         RegexOptions.CultureInvariant | RegexOptions.Compiled,
         TimeSpan.FromSeconds(1));
 
+    public async Task VerifyFleetDisabledAsync(CancellationToken cancellationToken)
+    {
+        using var ownedHandler = handler is null ? new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false } : null;
+        using var client = new HttpClient(handler ?? ownedHandler!, disposeHandler: false)
+        {
+            BaseAddress = baseAddress,
+            MaxResponseContentBufferSize = 1024 * 1024,
+            Timeout = TimeSpan.FromSeconds(5)
+        };
+        try
+        {
+            using var response = await client.GetAsync(new Uri("/health", UriKind.Relative), cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+            {
+                var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+                using var document = JsonDocument.Parse(bytes);
+                if (ReportsFleetDisabled(document.RootElement)) return;
+            }
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException ||
+                                          exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
+        {
+            throw new InstallerException("Leave-paused could not read the running instance's Fleet heartbeat state.", exception);
+        }
+        throw new InstallerException("Leave-paused requires the running instance to report that Fleet heartbeat is disabled.");
+    }
+
+    internal static bool ReportsFleetDisabled(JsonElement document)
+        => document.ValueKind == JsonValueKind.Object && document.TryGetProperty("checks", out var checks) &&
+           checks.ValueKind == JsonValueKind.Array &&
+           checks.EnumerateArray().Where(static item => HasString(item, "name", "fleet-heartbeat")).ToArray() is [var fleet] &&
+           HasString(fleet, "status", "Healthy") &&
+           HasString(fleet, "description", "Fleet heartbeat is disabled/not configured.");
+
+    private static bool HasString(JsonElement element, string name, string value)
+        => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var field) &&
+           field.ValueKind == JsonValueKind.String && field.GetString() == value;
+
     public async Task WaitForHealthAsync(
         ApprovedCatalogContract expectedCatalog,
         CancellationToken cancellationToken,
@@ -72,6 +113,10 @@ internal sealed class OwnerBootstrapClient(
         bool allowQuarantinedReadiness = false)
     {
         ArgumentNullException.ThrowIfNull(expectedCatalog);
+        cancellationToken.ThrowIfCancellationRequested();
+        var budget = timeout ?? TimeSpan.FromMinutes(3);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(budget);
         using var ownedHandler = handler is null
             ? new HttpClientHandler
             {
@@ -83,44 +128,60 @@ internal sealed class OwnerBootstrapClient(
         using var client = new HttpClient(handler ?? ownedHandler!, disposeHandler: false)
         {
             BaseAddress = baseAddress,
+            MaxResponseContentBufferSize = 1024 * 1024,
             Timeout = TimeSpan.FromSeconds(5)
         };
-        var deadline = DateTimeOffset.UtcNow + (timeout ?? TimeSpan.FromMinutes(3));
         string? latest = null;
-        while (DateTimeOffset.UtcNow < deadline)
+        try
         {
-            try
+            while (true)
             {
-                using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative), cancellationToken).ConfigureAwait(false);
-                using var health = await client.GetAsync(new Uri("/health", UriKind.Relative), cancellationToken).ConfigureAwait(false);
-                latest = await health.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                if (alive.IsSuccessStatusCode && health.IsSuccessStatusCode)
+                deadline.Token.ThrowIfCancellationRequested();
+                try
                 {
-                    using var document = JsonDocument.Parse(latest);
-                    if (QuarantinedReadiness.CatalogMatches(document.RootElement, expectedCatalog))
+                    using var alive = await client.GetAsync(new Uri("/alive", UriKind.Relative), deadline.Token).ConfigureAwait(false);
+                    using var health = await client.GetAsync(new Uri("/health", UriKind.Relative), deadline.Token).ConfigureAwait(false);
+                    latest = await health.Content.ReadAsStringAsync(deadline.Token).ConfigureAwait(false);
+                    deadline.Token.ThrowIfCancellationRequested();
+                    if (alive.IsSuccessStatusCode && health.IsSuccessStatusCode)
                     {
-                        return;
+                        using var document = JsonDocument.Parse(latest);
+                        if (document.RootElement.GetProperty("status").GetString() is "Healthy" or "Degraded" &&
+                            QuarantinedReadiness.CatalogMatches(document.RootElement, expectedCatalog))
+                        {
+                            deadline.Token.ThrowIfCancellationRequested();
+                            return;
+                        }
+                        latest = "CameraAgent readiness report or catalog identity does not match the instance.";
+                    }
+                    else if (allowQuarantinedReadiness && alive.IsSuccessStatusCode &&
+                             health.StatusCode == HttpStatusCode.ServiceUnavailable)
+                    {
+                        using var document = JsonDocument.Parse(latest);
+                        if (QuarantinedReadiness.TryAccept(document.RootElement, expectedCatalog, out var reason))
+                        {
+                            deadline.Token.ThrowIfCancellationRequested();
+                            return;
+                        }
+                        latest = reason;
                     }
                 }
-                else if (allowQuarantinedReadiness && alive.IsSuccessStatusCode &&
-                         health.StatusCode == HttpStatusCode.ServiceUnavailable)
+                catch (OperationCanceledException) when (!deadline.IsCancellationRequested)
                 {
-                    using var document = JsonDocument.Parse(latest);
-                    if (QuarantinedReadiness.TryAccept(document.RootElement, expectedCatalog, out var reason))
-                    {
-                        return;
-                    }
-
-                    latest = reason;
+                    latest = "A CameraAgent health probe timed out.";
                 }
+                catch (Exception exception) when (exception is HttpRequestException or JsonException or InvalidOperationException or KeyNotFoundException)
+                {
+                    latest = exception.Message;
+                }
+                await Task.Delay(TimeSpan.FromSeconds(2), deadline.Token).ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
-            {
-                latest = exception.Message;
-            }
-            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken).ConfigureAwait(false);
         }
-        throw new InstallerException($"CameraAgent health did not become ready: {Redaction.SafeDiagnostic(latest ?? string.Empty)}");
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && deadline.IsCancellationRequested)
+        {
+            throw new InstallerException(
+                $"CameraAgent health did not become ready within {budget.TotalSeconds:g} seconds: {Redaction.SafeDiagnostic(latest ?? "No complete health report was received.")}");
+        }
     }
 
     public async Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)

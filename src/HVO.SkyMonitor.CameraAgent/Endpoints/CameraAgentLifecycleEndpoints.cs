@@ -19,6 +19,9 @@ internal static class CameraAgentLifecycleEndpoints
         group.MapGet("/state", ReadStateAsync);
         group.MapPost("/pause", PauseAsync);
         group.MapPost("/resume", ResumeAsync);
+        group.MapGet("/resume-owned-upgrade", (HttpContext context, IConfiguration configuration) =>
+            IsAuthorized(context, configuration) ? Results.NoContent() : Results.Unauthorized());
+        group.MapPost("/resume-owned-upgrade", ResumeOwnedUpgradeAsync);
         return endpoints;
     }
 
@@ -64,6 +67,36 @@ internal static class CameraAgentLifecycleEndpoints
         CaptureAdmissionCoordinator coordinator,
         CancellationToken cancellationToken)
         => ExecuteAsync(request, context, configuration, coordinator, coordinator.ResumeAsync, "resume", cancellationToken);
+
+    private static async Task<IResult> ResumeOwnedUpgradeAsync(
+        OwnedUpgradeResumeRequest request, HttpContext context, IConfiguration configuration,
+        CaptureAdmissionCoordinator coordinator, CancellationToken cancellationToken)
+    {
+        if (!IsAuthorized(context, configuration)) return Results.Unauthorized();
+        if (request.OperationId == Guid.Empty || request.UpgradeOperationId == Guid.Empty ||
+            request.PauseCommandId == Guid.Empty || request.OperationId == request.PauseCommandId ||
+            request.ExpectedVersion is not >= 0 or long.MaxValue)
+            return Results.BadRequest();
+        if (!coordinator.Snapshot.IsInitialized)
+        {
+            context.Response.Headers.RetryAfter = InitializationRetryAfterSeconds.ToString(CultureInfo.InvariantCulture);
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+        try
+        {
+            return Results.Ok(await coordinator.ResumeOwnedUpgradeAsync(
+                request.UpgradeOperationId, request.PauseCommandId, request.OperationId, request.ExpectedVersion.Value,
+                cancellationToken).ConfigureAwait(false));
+        }
+        catch (CaptureControlValidationException)
+        {
+            return Results.BadRequest();
+        }
+        catch (CaptureControlConflictException)
+        {
+            return Results.Conflict();
+        }
+    }
 
     private static async Task<IResult> ExecuteAsync(
         LifecycleControlRequest request,
@@ -111,6 +144,7 @@ internal static class CameraAgentLifecycleEndpoints
     }
 
     private sealed record LifecycleControlRequest(Guid OperationId, long? ExpectedVersion = null, string? Reason = null);
+    private sealed record OwnedUpgradeResumeRequest(Guid OperationId, Guid UpgradeOperationId, Guid PauseCommandId, long? ExpectedVersion);
 
     private sealed record LifecycleStateResponse(
         OperationsSection<OperationsCaptureControlState> CaptureControl,
