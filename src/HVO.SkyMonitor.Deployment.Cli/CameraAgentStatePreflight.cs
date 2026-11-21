@@ -153,7 +153,7 @@ internal static class CameraAgentStatePreflight
             [13] = RawIngressV13Schema.IsCanonical,
             [14] = RawIngressV13Schema.IsCanonicalV14,
             [15] = RawIngressV13Schema.IsCanonicalV14,
-            [16] = RawIngressV13Schema.IsCanonicalV14,
+            [16] = RawIngressV13Schema.IsCanonicalV16,
             [17] = RawIngressV13Schema.IsCanonicalV17,
         };
 

@@ -301,6 +301,12 @@ public static class CameraAgentServiceCollectionExtensions
             provider.GetRequiredService<CenteredExposureProductReader>());
         services.AddSingleton<ICenteredExposureRuntimeReader>(provider => provider.GetRequiredService<RawCaptureIngress>());
         services.AddSingleton<CenteredExposureInputCustody>();
+        services.AddSingleton<CenteredWindowWakeup>();
+        services.AddSingleton<ICenteredWindowJournal, CenteredWindowRuntimeJournal>();
+        services.AddSingleton<ICenteredWindowReader, CenteredWindowReader>();
+        services.AddSingleton<ICenteredWindowRegistrationSource, CenteredWindowRetainedRegistrationSource>();
+        services.AddSingleton<CenteredWindowCoordinator>();
+        services.AddSingleton<CenteredWindowRegistrationWorker>();
         services.AddSingleton<ProcessingReplayWakeup>();
         services.AddSingleton(provider => new ProcessingGraphOperationsCoordinator(
             provider.GetRequiredService<ICaptureProcessingPipelineFactory>(),
@@ -392,6 +398,8 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<CaptureAdmissionInitializationService>();
         services.AddHostedService<AfterApplicationStartedService<CaptureAdmissionInitializationService>>();
         services.AddHostedService<CaptureProcessingStateRefreshService>();
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<CenteredWindowCoordinator>());
+        services.AddSingleton<IHostedService>(provider => provider.GetRequiredService<CenteredWindowRegistrationWorker>());
         services.AddHostedService<DerivedProductReconciliationService>();
         services.AddHostedService<ProjectedSceneStageReconciliationService>();
         services.AddSingleton<IProcessingRetentionHolds>(provider =>

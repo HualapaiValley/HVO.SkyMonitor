@@ -23,7 +23,8 @@ internal sealed partial class SqliteRawCaptureJournal(
     Func<DateTimeOffset>? utcNow = null,
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null,
-    CenteredExposureProductChanges? centeredProductChanges = null)
+    CenteredExposureProductChanges? centeredProductChanges = null,
+    CenteredWindowWakeup? centeredWindowWakeup = null)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
     internal const int CurrentSchemaVersion = 17;
@@ -69,7 +70,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         "ix_processing_outputs_role",
         "ix_processing_outputs_recipe",
         "ix_processing_outputs_product",
-        "ix_processing_outputs_astrometry_lookup",
+        LegacyAstrometryJournalSchema.LookupIndexName,
         "ix_processing_outputs_retention_available",
         "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact",
@@ -88,6 +89,22 @@ internal sealed partial class SqliteRawCaptureJournal(
         "ix_processing_execution_pins_active",
         "ix_processing_execution_output_pins_active",
         "ix_processing_execution_outputs_publication",
+        "processing_centered_view_bases", "ix_processing_centered_view_live_bases",
+        "ix_processing_centered_view_reference", "ix_processing_centered_view_single",
+        "ix_processing_centered_view_capture", "processing_centered_view_members",
+        "processing_centered_view_changes", "ix_processing_centered_view_change_stream",
+        "processing_centered_view_revisions", "ix_processing_centered_view_revision_order",
+        "processing_centered_view_intervals", "ix_processing_centered_view_current",
+        "ix_processing_centered_view_history", "processing_centered_view_selections", "ix_processing_centered_view_current_stream",
+        "ix_processing_centered_view_archive_reference", "processing_centered_view_cursors",
+        "processing_centered_view_retry", "ix_processing_centered_view_retry_due",
+        "processing_centered_view_window_work", "ix_processing_centered_view_window_live_base",
+        "processing_centered_view_trail_work", "ix_processing_centered_view_trail_due", "ix_processing_centered_view_trail_capture",
+        "processing_centered_windows", "ix_processing_centered_windows_pending", "ix_processing_centered_windows_reference",
+        "processing_centered_attempt_calendar", "processing_centered_product_clock", "processing_centered_window_holds",
+        "ix_processing_centered_product_clock_pending",
+        "processing_centered_output_availability", "ix_processing_centered_output_availability_cutoff",
+        "ix_processing_centered_output_availability_pending",
         "transient_worker_frames",
         "ix_transient_worker_frames_ready",
         "transient_worker_candidates",
@@ -104,6 +121,7 @@ internal sealed partial class SqliteRawCaptureJournal(
     private readonly Func<DateTimeOffset> _utcNow = utcNow ?? SystemUtcNow;
     private readonly TransientDetectionOptions _transientOptions = transientOptions ?? new TransientDetectionOptions();
     private readonly Action? _inspectionSourceOpenedSeam = inspectionSourceOpenedSeam;
+    private readonly CenteredWindowWakeup? _centeredWindowWakeup = centeredWindowWakeup;
 
     internal string DatabasePath => _databasePath;
 
@@ -553,6 +571,7 @@ internal sealed partial class SqliteRawCaptureJournal(
         _faultInjector.Inject(RawIngressFaultPoint.BeforeJournalTransactionCommit);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (centeredProductPublished) centeredProductChanges?.NotifyCommitted();
+        await NotifyCenteredAdmissionCommittedAsync(connection, entry).ConfigureAwait(false);
         return RawIngressOutcome.Committed;
     }
 
@@ -1590,6 +1609,7 @@ internal sealed partial class SqliteRawCaptureJournal(
                 connection, transaction, centered.Execution.ExecutionId, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (centeredProductPublished) centeredProductChanges?.NotifyCommitted();
+        await NotifyCenteredAdmissionCommittedAsync(connection, entry).ConfigureAwait(false);
         return RawIngressOutcome.Committed;
     }
 
@@ -2083,7 +2103,12 @@ internal sealed partial class SqliteRawCaptureJournal(
                 !actualSchemaDefinitions.TryGetValue(expected.Key, out var actual) ||
                 !string.Equals(actual, expected.Value, StringComparison.Ordinal)) ||
             actualSchemaDefinitions.Keys.Any(name =>
-                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)))
+                !expectedDefinitions.ContainsKey(name) && !SharedSchemaObjectNames.Contains(name)) ||
+            (actualSchemaDefinitions.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName) &&
+             version != CurrentSchemaVersion &&
+             (version != PreviousEnvironmentalFenceSchemaVersion ||
+              !await SqliteCaptureProcessingStore.HasCanonicalAstrometryJournalSchemaAsync(
+                  connection, transaction, cancellationToken).ConfigureAwait(false))))
         {
             throw new InvalidDataException(
                 $"Raw ingress SQLite schema is not the canonical schema {version} definition.");

@@ -27,7 +27,12 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
     public const long MaximumInputBytes = 224L * 1024 * 1024;
     private readonly ICenteredStackInputReader _reader = reader ?? throw new ArgumentNullException(nameof(reader));
 
-    public ProcessingRecipeDefinition Definition { get; } = new(RecipeName, "1.0.0", RecipeVersion, ProcessingOperationKind.Window);
+    private static readonly ProcessingRecipeDefinition RecipeDefinition = new(RecipeName, "1.0.0", RecipeVersion, ProcessingOperationKind.Window);
+
+    public ProcessingRecipeDefinition Definition => RecipeDefinition;
+
+    public static ProcessingRecipeIdentity FixedIdentity { get; } =
+        ProcessingIdentity.CreateRecipeIdentity(RecipeDefinition, NormalizeFixedOptions(default));
 
     public static ProcessingExecutionRequest CreateRequest(CenteredStackPlanV1 plan,
         string linearVariant, string outputVariant, IReadOnlyList<ProcessingArtifact> artifacts)
@@ -96,7 +101,9 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
                 ? artifact : throw new InvalidDataException("Published plate evidence is missing or changed.");
     }
 
-    public JsonElement NormalizeOptions(JsonElement options)
+    public JsonElement NormalizeOptions(JsonElement options) => NormalizeFixedOptions(options);
+
+    private static JsonElement NormalizeFixedOptions(JsonElement options)
     {
         if (options.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null) &&
             (options.ValueKind != JsonValueKind.Object || options.EnumerateObject().Any()))

@@ -22,6 +22,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent can opt into centered exposure capture with recoverable per-camera admission and retained linear-input evidence (#1919).
 
+- Centered capture closes each five-slot window on its original deadline and retains the registration evidence under the center exposure. #1921
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
@@ -33,6 +35,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
+- CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
 
