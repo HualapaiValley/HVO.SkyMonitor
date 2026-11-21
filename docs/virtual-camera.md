@@ -638,10 +638,15 @@ recorded. The legacy magnitude is treated as approximate V-like photometry,
 not as new HYG 4.4 band/epoch semantics or a completeness guarantee for a real
 camera. PSF size does not change with source magnitude.
 
-The star limit for one capture comes from the host's operator scene object
-limit, `CameraAgent:SkyMap:MaximumObjects` (default 200), read once per
-capture; without a host limit it is the module's `maximumResults`. The
-geometry walks the complete merged magnitude and constellation-endpoint query
+The ordinary VirtualSky renderer defaults to 2,000 candidates per exposure.
+Use `hvo-sky config set virtualSky.rendererCandidateCap=2000` to set an
+independent, version-checked limit from 1 through 100,000. CameraAgent stores it
+as `CameraAgent:VirtualSky:RendererCandidateCap` and reads it for the next exposure.
+Clear it with `hvo-sky config set virtualSky.rendererCandidateCap=` to inherit
+an explicit `CameraAgent:SkyMap:MaximumObjects` or the profile's
+`module.options.maximumResults`. The sky map keeps its own
+200-object default. The geometry walks the complete merged magnitude and
+constellation-endpoint query
 in magnitude-then-ID order and keeps the brightest stars whose PSF support
 crosses the frame during the exposure, up to the limit; past it, only
 constellation endpoint stars are still evaluated. Solar-system bodies and the
@@ -662,9 +667,9 @@ depth never depends on a host setting: the W1/W2 canonical workloads
 (`cameraagent.standalone-w6.json`, `cameraagent.standalone-w6-mono8.json`),
 the split-host `*.full.json` modules, `cameraagent.asi178mc-comparison.json`
 and the `virtual-asi174-mono8-roi-bin4.json` readout fixture. The
-operator-facing `cameraagent.sample.json` and
-`cameraagent.standalone-production-smoke.json` follow the operator limit, as an
-installed camera does.
+operator-facing `cameraagent.sample.json` sets a camera profile limit of 2,000.
+The standalone production smoke profile sets 32,768. An explicit host renderer
+limit or legacy sky-map override takes precedence for either profile.
 
 `stellar-exposure-iau1976-bounded-midpoint-v1` projects the complete bounded
 selection over the exact celestial interval, including off-frame centers whose

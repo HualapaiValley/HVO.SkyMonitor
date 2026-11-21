@@ -107,16 +107,24 @@ public sealed class SqliteCaptureScheduleStore(
     public Task<CaptureScheduleStoreSnapshot> InitializeAsync(
         CameraModuleConfig fileConfiguration,
         CancellationToken cancellationToken)
-        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, cancellationToken);
+        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, validateBootstrap: null, cancellationToken);
+
+    internal Task<CaptureScheduleStoreSnapshot> InitializeAsync(
+        CameraModuleConfig fileConfiguration,
+        Action<CameraModuleConfig> validateBootstrap,
+        CancellationToken cancellationToken)
+        => InitializeAsync(fileConfiguration, preserveFileIdentity: false, validateBootstrap, cancellationToken);
 
     internal Task<CaptureScheduleStoreSnapshot> InitializeRuntimeAsync(
         CameraModuleConfig effectiveConfiguration,
+        Action<CameraModuleConfig> validateBootstrap,
         CancellationToken cancellationToken)
-        => InitializeAsync(effectiveConfiguration, preserveFileIdentity: true, cancellationToken);
+        => InitializeAsync(effectiveConfiguration, preserveFileIdentity: true, validateBootstrap, cancellationToken);
 
     private async Task<CaptureScheduleStoreSnapshot> InitializeAsync(
         CameraModuleConfig configuration,
         bool preserveFileIdentity,
+        Action<CameraModuleConfig>? validateBootstrap,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -139,6 +147,7 @@ public sealed class SqliteCaptureScheduleStore(
                 await VerifyNamedRigAsync(connection, transaction, snapshot.ActiveRevision.Profile, cancellationToken).ConfigureAwait(false);
             if (snapshot is null)
             {
+                validateBootstrap?.Invoke(configuration);
                 var source = configuration.Schedule is null ? "legacy-bootstrap" : "file-bootstrap";
                 var revision = await InsertRevisionAsync(
                     connection, transaction, fileProfile, source, "system", "initial configuration", cancellationToken)

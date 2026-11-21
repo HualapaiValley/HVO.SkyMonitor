@@ -49,7 +49,8 @@ public sealed class CameraAgentConfigurationInitializer(
             config = await _loader.LoadForRetainedIntegrityScrubAsync(cancellationToken).ConfigureAwait(false);
         if (_scheduleStore is not null)
         {
-            var schedule = await _scheduleStore.InitializeAsync(config, cancellationToken).ConfigureAwait(false);
+            var schedule = await _scheduleStore.InitializeAsync(config,
+                configuration => _pipelineFactory.CreateGraph(configuration).DisposeSteps(), cancellationToken).ConfigureAwait(false);
             if (_namedRigProfiles is not null)
             {
                 var startupSelection = (await _namedRigProfiles.GetAsync(cancellationToken).ConfigureAwait(false)).Selection;
@@ -79,7 +80,7 @@ public sealed class CameraAgentConfigurationInitializer(
         {
             _ = await _calibrationReconciler.ReconcileAsync(cancellationToken).ConfigureAwait(false);
         }
-        var graph = _pipelineFactory.CreateGraph(config);
+        var graph = _scheduleStore is null ? _pipelineFactory.CreateGraph(config) : _pipelineFactory.CreateActiveProfileGraph(config);
         graph.DisposeSteps();
         _accessor.SetConfiguration(config);
         _logger.ConfigurationInitialized(config.ModuleType);

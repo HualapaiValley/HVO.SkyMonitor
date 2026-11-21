@@ -2712,6 +2712,13 @@ from the previous layout; rollback to an older binary uses the retained paired
 checkpoint. The previous-release SQL images are unchanged; the declared exception
 names only the processing marker/version and the new ledger table.
 
+**Retained astrometry lookup (Refs #1901).** Processing schema 10 adds a partial
+index for retained measured astrometry solutions. Startup upgrades schema 9 in
+one transaction and preserves the existing outputs and attempt records. The raw
+journal stays at schema 16. The image advances `minimum-compatible-revision` so
+the installer takes the paired checkpoint before startup and restores it if an
+older reader is needed for rollback.
+
 **Legacy migration rule, still enforced by current tests.** A CameraAgent schema change must stay readable by the previous release for one release: add
 first, remove in a later release. The unit test `PreviousReleaseStoreReadabilityTests` holds every CameraAgent SQLite
 store to it. `tests/fixtures/state-compatibility/previous-release/` freezes each of the previous release's stores as a

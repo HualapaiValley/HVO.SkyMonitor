@@ -414,6 +414,12 @@ public sealed class CameraAgentReplayUiServiceTests
             CancellationToken cancellationToken)
             => throw new NotSupportedException();
 
+        public ValueTask<(ProcessingGraphRevisionState Revision, MeasuredAstrometryCatalogSelection Selection)>
+            CreateReferenceAstrometryRevisionAsync(
+                string basisRevisionId, string revision, double? referenceMagnitude,
+                string idempotencyKey, string actor, string? reason, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
         public ValueTask<ProcessingGraphRegistryState> RollbackRevisionAsync(
             string revisionId, long expectedVersion, string idempotencyKey, string actor, string? reason,
             CancellationToken cancellationToken)

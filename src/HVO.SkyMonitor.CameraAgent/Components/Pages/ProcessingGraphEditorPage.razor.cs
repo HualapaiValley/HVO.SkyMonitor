@@ -190,6 +190,7 @@ public sealed partial class ProcessingGraphEditorPage : ComponentBase, IAsyncDis
             "Calibration" => "calibration",
             "RollingCombination" => "rolling-combination",
             "ProjectedScene" => "projected-scene",
+            "AstrometryPrediction" => "astrometry-prediction",
             "MeasuredStellarAssociations" => "measured-stellar-associations",
             "MeasuredAstrometry" => "measured-astrometry",
             "CaptureSatelliteTracks" => "capture-satellite-tracks",

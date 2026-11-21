@@ -145,7 +145,9 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
     }
 
     [TestMethod]
-    public async Task VirtualStageProducesAuthoritativeSourceBoundMetadataWithoutRawRead()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task VirtualStageProducesAuthoritativeSourceBoundMetadataWithoutRawRead(bool legacyIndependentPrediction)
     {
         var root = CreateRoot();
         try
@@ -161,7 +163,7 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
                 ProjectedSceneStageSchemaVersion: StagedProjectedSceneDocument.CurrentSchemaVersion,
                 ProjectedSceneStageKey: stageKey));
             File.Delete(fixture.PayloadPath);
-            var step = CreateStep(staging);
+            var step = CreateStep(staging, options: new() { IndependentPrediction = legacyIndependentPrediction });
 
             await step.ProcessAsync(fixture.Context, CancellationToken.None).ConfigureAwait(false);
 
@@ -948,11 +950,12 @@ public sealed class ProjectedSceneCaptureProcessingStepTests
         IProjectedSceneStagingStore? stagingStore = null,
         CameraAgentRecipeExecutionAdapter? adapter = null,
         IProjectedSceneStagingReader? stagingReader = null,
-        HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureMaintenanceGate? maintenance = null)
+        HVO.SkyMonitor.CameraAgent.Common.Capture.CaptureMaintenanceGate? maintenance = null,
+        ProjectedSceneCaptureProcessingStepOptions? options = null)
     {
         return new ProjectedSceneCaptureProcessingStep(
             new CaptureProcessingStepMetadata("projected-scene", "ProjectedScene", 0),
-            new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, stagingReader ?? staging,
+            options ?? new ProjectedSceneCaptureProcessingStepOptions(), stagingStore ?? staging, stagingReader ?? staging,
             adapter ?? new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()), maintenance);
     }
 
