@@ -322,6 +322,62 @@ public sealed class CenteredRegisteredStackTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task ProducerVerifiedRelativeReportAtRmsCutoffReopens(bool fitCutoff)
+    {
+        var source = FieldStars.Select((star, index) => new StellarDetection(index, new(star.X + .5, star.Y + .5),
+            200 - index, 100, 1, 1, 0, 0)).ToArray();
+        var reference = source.ToArray();
+        // These fixed, mixed perturbations put one producer sum exactly at its own inclusive cutoff.
+        (int Index, double X, double Y)[] perturbed = fitCutoff
+            ?
+            [
+                (0, 27.12647647177526, 21.11454430113261), (2, 82.98285055420278, 16.80980361654045),
+                (3, 110.06554714256012, 27.792475173583714), (5, 139.98171119402394, 46.95588612884335),
+                (6, 108.26321978992249, 81.79928985825158), (8, 91.995608516104, 107.45648657870537),
+                (9, 61.94679110424578, 91.45075439091725), (11, 16.88217200666814, 84.95832191566922)
+            ]
+            :
+            [
+                (1, 57.36933930186058, 24.197421336838236), (4, 132.46346708060676, 20.13062106912187),
+                (7, 130.80327878118757, 98.59617187042227), (10, 35.360226884971816, 105.06623700197864)
+            ];
+        foreach (var (index, x, y) in perturbed)
+        {
+            reference[index] = reference[index] with { Pixel = new(x, y) };
+        }
+
+        var fit = DirectCentroidRegistration.Fit(source, reference, Width, Height);
+        Assert.AreEqual(DirectRegistrationStatus.Verified, fit.Check.Status);
+        Assert.HasCount(8, fit.Check.Fit);
+        Assert.HasCount(4, fit.Check.Verification);
+        var fittedMap = fit.Map ?? throw new AssertFailedException("The verified fit did not return a map.");
+        var matches = fitCutoff ? fit.Check.Fit : fit.Check.Verification;
+        var limit = fitCutoff ? 8 * .50 * .50 : 4 * .55 * .55;
+        var reSquared = matches.Sum(match => match.ResidualPixels * match.ResidualPixels);
+        Assert.AreEqual(Math.BitIncrement(limit), reSquared);
+
+        var outcome = await ShiftedMonoWindow();
+        var retained = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        var rewritten = RewriteEvidence(retained, json =>
+        {
+            var contributor = json["sources"]![3]!;
+            var report = JsonSerializer.SerializeToNode(fit.Check, JsonSerializerOptions.Web)!;
+            report["status"] = fit.Check.Status.ToString();
+            contributor["pairCheck"] = report;
+            contributor["similarity"] = JsonSerializer.SerializeToNode(fittedMap, JsonSerializerOptions.Web);
+        });
+        TestContext.WriteLine($"Relative {(fitCutoff ? "fit" : "holdout")} producer {fit.Check.Status}, " +
+            $"limit={limit:R}, sum re-squared={reSquared:R}.");
+        var reopened = CenteredRegisteredStackEvidence.Read(rewritten);
+        reopened.VerifyPlanes(outcome.Products.Where(product => product.Kind == ProcessingProductKind.PixelData).ToArray());
+        var map = CenteredRegisteredStackRecipe.ReconstructSourceMap(reopened, 1, new Dictionary<Guid, ProcessingArtifact>());
+        Assert.AreEqual(fittedMap.SourceToReference(new(80, 64)), map!.SourceToReference(new(80, 64)));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task PlaneReaderChecksAllSupportBitsIncludingSinglySupportedPixels()
     {
         var outcome = await ShiftedMonoWindow();
@@ -615,6 +671,28 @@ public sealed class CenteredRegisteredStackTests
         Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(
             WithPlateCheck(justAbove with { Status = DirectRegistrationStatus.Verified })));
         TestContext.WriteLine("Plate RMS 0.80 and 0.56 rejected after changing only the producer's status to Verified.");
+
+        // Keep the reviewer's original transform and the producer's unchanged report.
+        var cutoffMap = new ImageSimilarity(1, 0, 0.0026785000000000003, 0.5499934778138283);
+        var cutoff = DirectCentroidRegistration.VerifyPlatePair(cutoffMap, probes, probes, Width, Height);
+        Assert.AreEqual(DirectRegistrationStatus.Verified, cutoff.Status);
+        Assert.HasCount(12, cutoff.Verification);
+        const double limit = 12 * .55 * .55;
+        var originalSum = 0.0;
+        foreach (var probe in probes)
+        {
+            var projected = cutoffMap.SourceToReference(probe.Pixel)!.Value;
+            var dx = projected.X - probe.Pixel.X;
+            var dy = projected.Y - probe.Pixel.Y;
+            originalSum += dx * dx + dy * dy;
+        }
+        Assert.AreEqual(limit, originalSum);
+        var reSquared = cutoff.Verification.Sum(match => match.ResidualPixels * match.ResidualPixels);
+        Assert.AreEqual(Math.BitIncrement(limit), reSquared);
+        TestContext.WriteLine($"Plate producer {cutoff.Status}, sum={originalSum:R}, limit={limit:R}, sum re-squared={reSquared:R}.");
+        var reopenedCutoff = CenteredRegisteredStackEvidence.Read(WithPlateCheck(cutoff));
+        reopenedCutoff.VerifyPlanes(planes);
+        Assert.IsNotNull(CenteredRegisteredStackRecipe.ReconstructSourceMap(reopenedCutoff, -1, retained));
 
         DirectRegistrationCheck CheckPlate(double shift) =>
             DirectCentroidRegistration.VerifyPlatePair(new ImageSimilarity(1, 0, shift, 0), probes, probes, Width, Height);

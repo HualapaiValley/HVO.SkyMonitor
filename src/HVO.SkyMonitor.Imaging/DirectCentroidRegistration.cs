@@ -281,7 +281,11 @@ public static class DirectCentroidRegistration
                 {
                     return false;
                 }
-                sum += match.ResidualPixels * match.ResidualPixels;
+                // The producer saves a rounded square root of its squared distance.
+                // The previous representable positive root is a lower bound before rounding.
+                // Squaring and adding these nonnegative bounds in report order cannot exceed the original sum.
+                var lowerRoot = match.ResidualPixels > 0 ? Math.BitDecrement(match.ResidualPixels) : 0;
+                sum += lowerRoot * lowerRoot;
             }
             return WithinRmsLimit(sum, matches.Count, rmsLimit);
         }
