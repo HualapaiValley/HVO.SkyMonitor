@@ -473,12 +473,8 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predicted,
             ProjectedSceneImageTransformV1.Identity(raw.Layout!.Width, raw.Layout.Height),
             new(row.Pin.Key.CaptureId, raw.ArtifactId, raw.DescriptorIdentitySha256!), rig.Optics.CalibrationVersion, predicted.Request.ProjectionVersion);
-        var sceneBytes = ProjectedSceneJson.Serialize(scene);
-        var sceneArtifact = FromProduct(raw, await ProduceAsync(new(BuiltInProcessingRecipes.ProjectedScene, default,
-            ProcessingInputSelector.Raw(raw.Variant), [raw], "predicted",
-            AuxiliaryInputs: [new("scene", ProcessingAuxiliaryInputKind.CanonicalJson,
-                SchemaVersion: scene.SchemaVersion, IdentitySha256: scene.SceneIdentitySha256, Payload: sceneBytes)
-                { ChecksumSha256 = ProcessingIdentity.ComputePayloadSha256(sceneBytes) }]), token).ConfigureAwait(false));
+        var sceneArtifact = FromProduct(raw, await ProduceAsync(
+            ExposureCatalogPredictionProducts.Request(raw, scene), token).ConfigureAwait(false));
         var expected = ExposureMeasurementBindings.FromAdmitted(row.Settlement, projection, rig.Sensor.PixelSizeMicrons);
         var associated = ExposureAssociationProducts.Associate(raw, row.Measurement, expected, sceneArtifact,
             ExposureAssociationProducts.Variant, cancellationToken: token);
