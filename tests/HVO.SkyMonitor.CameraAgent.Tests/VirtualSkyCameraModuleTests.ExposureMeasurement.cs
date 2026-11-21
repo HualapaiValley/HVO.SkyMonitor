@@ -12,6 +12,7 @@ using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.Imaging;
@@ -494,6 +495,12 @@ public sealed partial class VirtualSkyCameraModuleTests
                         var association = execution.Nodes.Single(item => item.NodeId == "associated");
                         Assert.AreEqual("Completed", association.Status, association.Reason);
                         var associationOutput = Assert.ContainsSingle(association.Outputs);
+                        if (publicationFailures == 0)
+                        {
+                            var prediction = execution.Nodes.Single(item => item.NodeId == ExposureCatalogPredictionProducts.StepAlias);
+                            Assert.Contains(Assert.ContainsSingle(prediction.Outputs).ArtifactId, associationOutput.SourceArtifactIds);
+                            await AssertAuthoritativeSceneUploadAsync(provider, lease.Context, execution).ConfigureAwait(false);
+                        }
                         Assert.Contains(artifactId, associationOutput.SourceArtifactIds);
                         var fitting = execution.Nodes.Single(item => item.NodeId == "fit");
                         Assert.AreEqual("Completed", fitting.Status, fitting.Reason);
@@ -627,6 +634,70 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private async Task AssertAuthoritativeSceneUploadAsync(ServiceProvider provider, CaptureLaneHandlerContext context,
+        ProcessingGraphExecutionDetail execution)
+    {
+        var token = CancellationToken.None;
+        var raw = context.RawCapture.Manifest;
+        Assert.IsNotNull(raw.Scene);
+        Assert.IsTrue(raw.Scene.RequiresProjectedScene);
+        Assert.IsNotNull(raw.Scene.ProjectedSceneStageKey);
+        var ownedStages = await provider.GetRequiredService<RawCaptureIngress>().GetOwnedStageKeysAsync(token).ConfigureAwait(false);
+        Assert.DoesNotContain(raw.Scene.ProjectedSceneStageKey, ownedStages);
+        var canonicalNode = execution.Nodes.Single(node => node.NodeId == "scene");
+        var predictionNode = execution.Nodes.Single(node => node.NodeId == ExposureCatalogPredictionProducts.StepAlias);
+        var canonical = Assert.ContainsSingle(canonicalNode.Outputs);
+        var prediction = Assert.ContainsSingle(predictionNode.Outputs);
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var canonicalOutput = await store.ReadOutputByArtifactIdAsync(canonical.ArtifactId, token).ConfigureAwait(false);
+        var predictionOutput = await store.ReadOutputByArtifactIdAsync(prediction.ArtifactId, token).ConfigureAwait(false);
+        Assert.IsNotNull(canonicalOutput);
+        Assert.IsNotNull(predictionOutput);
+        Assert.AreEqual("projected-scene-v1", canonical.Variant);
+        Assert.AreEqual(ExposureCatalogPredictionProducts.Variant, prediction.Variant);
+        Assert.AreEqual(BuiltInProcessingRecipes.ProjectedScene, canonicalOutput.Artifact.Recipe.Name);
+        Assert.AreEqual(canonicalOutput.Artifact.Recipe.Name, predictionOutput.Artifact.Recipe.Name);
+        Assert.AreEqual(ProjectedSceneV1.CurrentSchemaVersion, canonicalOutput.ProductSchemaVersion);
+        Assert.AreEqual(canonicalOutput.ProductSchemaVersion, predictionOutput.ProductSchemaVersion);
+        Assert.AreNotEqual(canonical.ArtifactId, prediction.ArtifactId);
+        CollectionAssert.AreEqual(new[] { raw.Descriptor.Artifact.ArtifactId }, canonical.SourceArtifactIds.ToArray());
+        CollectionAssert.AreEqual(canonical.SourceArtifactIds.ToArray(), prediction.SourceArtifactIds.ToArray());
+
+        var upload = provider.GetRequiredService<UploadCaptureLaneHandler>();
+        var outbox = provider.GetRequiredService<IArtifactOutbox>();
+        var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+        var root = persistence.StorageRoot;
+        var result = await upload.HandleAsync(context with { Lane = "upload" }, token).ConfigureAwait(false);
+        var queued = await outbox.GetRetentionHoldsAsync(root, token).ConfigureAwait(false);
+        TestContext.WriteLine(JsonSerializer.Serialize(new
+        {
+            raw.Descriptor.Capture.CaptureId,
+            Raw = raw.Descriptor.Artifact.ArtifactId,
+            Canonical = new { canonicalNode.NodeId, canonical.ArtifactId, canonical.Variant, canonical.OutputIdentitySha256,
+                canonicalOutput.ProductSchemaVersion, canonicalOutput.Artifact.Recipe.Name },
+            Prediction = new { predictionNode.NodeId, prediction.ArtifactId, prediction.Variant, prediction.OutputIdentitySha256,
+                predictionOutput.ProductSchemaVersion, predictionOutput.Artifact.Recipe.Name },
+            Outcome = result.Outcome.ToString(),
+            result.Reason,
+            EnqueuedCount = queued.Count,
+            Enqueued = queued.Select(hold => hold.ArtifactId)
+        }));
+        Assert.AreEqual(CaptureLaneHandlerOutcome.Completed, result.Outcome, result.Reason);
+        CollectionAssert.AreEquivalent(new[] { raw.Descriptor.Artifact.ArtifactId, canonical.ArtifactId },
+            queued.Select(hold => hold.ArtifactId).ToArray());
+        var manifest = await persistence.FindCommittedSceneUploadAsync(raw.Descriptor, token).ConfigureAwait(false);
+        Assert.IsNotNull(manifest);
+        Assert.AreEqual(canonical.ArtifactId, manifest.Descriptor.Artifact.ArtifactId);
+        Assert.AreEqual(canonical.OutputIdentitySha256, manifest.Descriptor.OutputIdentitySha256);
+        Assert.AreEqual(canonicalNode.NodeId, manifest.ProducerStepId);
+        var enqueued = await outbox.ReadAsync(root, manifest.IdempotencyKey, token).ConfigureAwait(false);
+        Assert.IsNotNull(enqueued);
+        CollectionAssert.AreEqual(StructuredProcessingProductManifestJson.Serialize(manifest), enqueued.ManifestBytes.ToArray());
+        await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+            await persistence.CreateSceneUploadManifestAsync(raw.Descriptor, predictionOutput, token).ConfigureAwait(false))
+            .ConfigureAwait(false);
     }
 
     private static async Task AssertNamedPredictionDependenciesAsync(ServiceProvider provider, CameraModuleConfig active,

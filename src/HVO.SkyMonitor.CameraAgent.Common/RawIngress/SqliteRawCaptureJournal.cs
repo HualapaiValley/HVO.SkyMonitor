@@ -571,13 +571,11 @@ internal sealed partial class SqliteRawCaptureJournal(
     }
 
     /// <summary>
-    /// The captures, as <c>N</c>-format IDs, whose processing node running <paramref name="recipeName"/> is durably
-    /// complete. The capture processing store keeps its nodes in this journal, and a snapshot restore rewinds them with
-    /// it; a journal the store has not initialized has none.
+    /// The captures, as <c>N</c>-format IDs, whose canonical scene node is durably complete. A snapshot restore
+    /// rewinds processing nodes with this journal. A journal the processing store has not initialized has none.
     /// </summary>
-    internal async Task<IReadOnlySet<string>> ReadCompletedNodeCapturesAsync(string recipeName, CancellationToken cancellationToken)
+    internal async Task<IReadOnlySet<string>> ReadCompletedCanonicalSceneCapturesAsync(CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(recipeName);
         var captures = new HashSet<string>(StringComparer.Ordinal);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using (var exists = connection.CreateCommand())
@@ -588,8 +586,15 @@ internal sealed partial class SqliteRawCaptureJournal(
         }
         using var command = connection.CreateCommand();
         // Matches the recipe as ix_processing_nodes_recipe indexes it.
-        command.CommandText = "SELECT capture_id FROM processing_nodes WHERE upper(recipe_name) = $recipe AND status = $status;";
-        command.Parameters.AddWithValue("$recipe", recipeName.ToUpperInvariant());
+        command.CommandText = """
+            SELECT node.capture_id FROM processing_nodes node
+            WHERE upper(node.recipe_name) = $recipe AND node.status = $status
+              AND NOT (node.node_id = $prediction_node COLLATE NOCASE AND node.output_variant IS $prediction_variant
+                       AND EXISTS (SELECT 1 FROM centered_exposure_attempts attempt WHERE attempt.capture_id = node.capture_id));
+            """;
+        command.Parameters.AddWithValue("$recipe", BuiltInProcessingRecipes.ProjectedScene.ToUpperInvariant());
+        command.Parameters.AddWithValue("$prediction_node", ExposureCatalogPredictionProducts.StepAlias);
+        command.Parameters.AddWithValue("$prediction_variant", ExposureCatalogPredictionProducts.Variant);
         command.Parameters.AddWithValue("$status", nameof(DurableProcessingNodeStatus.Completed));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))

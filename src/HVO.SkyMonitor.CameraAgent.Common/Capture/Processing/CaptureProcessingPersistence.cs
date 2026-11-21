@@ -56,7 +56,8 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var schemaVersion in ProjectedSceneV1.SupportedSchemaVersions)
         {
             candidates.AddRange(await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
-                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene).ConfigureAwait(false));
+                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene,
+                excludeExposurePrediction: descriptor.CenteredAcquisition is not null).ConfigureAwait(false));
         }
         if (candidates.Count == 0) return null;
         if (candidates.Count != 1)
@@ -74,6 +75,7 @@ internal sealed partial class CaptureProcessingPersistence(
     {
         if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
             output.Artifact.Recipe.Name != BuiltInProcessingRecipes.ProjectedScene ||
+            IsExposurePredictionOutput(descriptor, output.Artifact.SourceId, output.Artifact.Variant) ||
             !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(output.ProductSchemaVersion) ||
             output.Artifact.SourceArtifactIds.Count != 1 ||
             output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
@@ -95,6 +97,13 @@ internal sealed partial class CaptureProcessingPersistence(
                 product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
             output.PayloadRelativePath, output.Artifact.SourceId);
     }
+
+    // Centered catalog prediction shares the scene recipe and schema. Its fixed producer
+    // and variant distinguish it from the renderer's scene, whose alias and variant are configurable.
+    internal static bool IsExposurePredictionOutput(ReconstructionDescriptor? raw, string? producer, string? variant)
+        => raw?.CenteredAcquisition is not null &&
+            string.Equals(producer, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(variant, ExposureCatalogPredictionProducts.Variant, StringComparison.Ordinal);
 
     private readonly SqliteCaptureProcessingStore _store = store;
     private readonly IFrameStorageService _frameStorage = frameStorage;

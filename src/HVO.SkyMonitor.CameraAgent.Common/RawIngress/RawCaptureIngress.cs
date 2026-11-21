@@ -352,8 +352,7 @@ internal sealed partial class RawCaptureIngress :
     public async ValueTask<IReadOnlySet<string>> GetOwnedStageKeysAsync(
         CancellationToken cancellationToken)
     {
-        var consumed = await _journal.ReadCompletedNodeCapturesAsync(
-            HVO.SkyMonitor.Processing.BuiltInProcessingRecipes.ProjectedScene, cancellationToken).ConfigureAwait(false);
+        var consumed = await _journal.ReadCompletedCanonicalSceneCapturesAsync(cancellationToken).ConfigureAwait(false);
         var owned = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var entry in _journal.EnumerateAsync(cancellationToken).ConfigureAwait(false))
         {
