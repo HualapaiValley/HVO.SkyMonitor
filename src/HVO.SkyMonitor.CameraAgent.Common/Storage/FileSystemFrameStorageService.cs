@@ -2,12 +2,17 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Logging;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.Data.Sqlite;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 
@@ -15,7 +20,8 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Storage;
 
 public sealed class FileSystemFrameStorageService(
     ILogger<FileSystemFrameStorageService> logger,
-    Capture.CaptureMaintenanceGate? maintenance = null) : IFrameStorageService, IDisposable
+    Capture.CaptureMaintenanceGate? maintenance,
+    IOptions<CameraAgentHostOptions>? hostOptions) : IFrameStorageService, IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -29,7 +35,15 @@ public sealed class FileSystemFrameStorageService(
 
     private readonly ILogger<FileSystemFrameStorageService> _logger = logger;
 
+    public FileSystemFrameStorageService(
+        ILogger<FileSystemFrameStorageService> logger, Capture.CaptureMaintenanceGate? maintenance = null)
+        : this(logger, maintenance, null)
+    {
+    }
+
     internal Action? BrowseJournalDiscovered { get; init; }
+
+    internal Action<string>? BeforeArchiveFileUnlink { get; set; }
 
     public async ValueTask<StoredFrameReference> SaveAsync(
         string storageRoot,
@@ -38,7 +52,7 @@ public sealed class FileSystemFrameStorageService(
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
-        return await SaveCoreAsync(storageRoot, artifact, descriptor, null, cancellationToken).ConfigureAwait(false);
+        return await SaveCoreAsync(storageRoot, artifact, descriptor, null, null, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<StoredFrameReference> SaveAsync(
@@ -50,7 +64,7 @@ public sealed class FileSystemFrameStorageService(
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentException.ThrowIfNullOrWhiteSpace(producerStepId);
-        return await SaveCoreAsync(storageRoot, artifact, descriptor, producerStepId, cancellationToken).ConfigureAwait(false);
+        return await SaveCoreAsync(storageRoot, artifact, descriptor, producerStepId, null, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<StoredFrameReference> SaveCoreAsync(
@@ -58,6 +72,7 @@ public sealed class FileSystemFrameStorageService(
         FrameArtifact artifact,
         ReconstructionDescriptor descriptor,
         string? producerStepId,
+        ArchivePublicationReceipt? archive,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
@@ -96,8 +111,6 @@ public sealed class FileSystemFrameStorageService(
         RawIngressFileStore.SyncDirectoryHierarchy(storageRoot, directory);
         var payloadExists = File.Exists(payloadPath);
         var sidecarExists = File.Exists(metadataPath);
-        if (!payloadExists || !sidecarExists)
-            DeleteArchiveReceipt(storageRoot, payloadPath);
         var upgradeProducerSidecar = await ValidateExistingVersionedEvidenceAsync(
             storageRoot,
             descriptor,
@@ -105,9 +118,25 @@ public sealed class FileSystemFrameStorageService(
             metadataPath,
             relativePayloadPath,
             producerStepId,
+            archive?.Producer,
             payloadExists,
             sidecarExists,
             cancellationToken).ConfigureAwait(false);
+        if (archive is not null)
+        {
+            await StageArchiveAsync(storageRoot, payloadPath, archive, payloadExists && sidecarExists, cancellationToken)
+                .ConfigureAwait(false);
+            // An archived copy can retain an authentic older producerless sidecar. The receipt
+            // records the producer without requiring a change to those immutable bytes.
+            upgradeProducerSidecar = false;
+        }
+        else if ((!payloadExists || !sidecarExists || upgradeProducerSidecar) &&
+            (File.Exists(ArchiveStagePath(payloadPath)) || File.Exists(ArchiveReceiptPath(payloadPath))))
+        {
+            if (!payloadExists || !sidecarExists)
+                throw new InvalidDataException("Restoring a known centered archive requires its live Storage authority.");
+            upgradeProducerSidecar = false;
+        }
         if (payloadExists && sidecarExists)
         {
             RawIngressFileStore.SyncFile(storageRoot, payloadPath);
@@ -231,6 +260,7 @@ public sealed class FileSystemFrameStorageService(
         string sidecarPath,
         string relativePayloadPath,
         string? producerStepId,
+        string? archiveProducer,
         bool payloadExists,
         bool sidecarExists,
         CancellationToken cancellationToken)
@@ -256,7 +286,8 @@ public sealed class FileSystemFrameStorageService(
             var existing = parsed.Document?.Manifest;
             if (!parsed.IsValid || existing is null ||
                 !string.Equals(existing.IdempotencyKey, CaptureContractJson.ComputeDescriptorSha256(descriptor), StringComparison.Ordinal) ||
-                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal))
+                !string.Equals(existing.RelativeArtifactPath, relativePayloadPath, StringComparison.Ordinal) ||
+                archiveProducer is not null && existing.ProducerStepId is { } retainedProducer && retainedProducer != archiveProducer)
             {
                 throw new InvalidDataException("Existing derivative sidecar conflicts with the requested output identity.");
             }
@@ -296,29 +327,30 @@ public sealed class FileSystemFrameStorageService(
             return;
         }
 
-        foreach (var removal in removals)
+        storageRoot = Path.GetFullPath(storageRoot);
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            ArgumentNullException.ThrowIfNull(removal.StoredFrame);
-            var payloadPath = removal.StoredFrame.AbsolutePath;
-            DeleteArchiveReceipt(storageRoot, payloadPath);
-            if (File.Exists(payloadPath))
+            foreach (var removal in removals)
             {
-                RetainedFileMutations.Delete(payloadPath);
-            }
-
-            var metadataPath = Path.ChangeExtension(payloadPath, ".json");
-            if (File.Exists(metadataPath))
-            {
-                RetainedFileMutations.Delete(metadataPath);
+                cancellationToken.ThrowIfCancellationRequested();
+                ArgumentNullException.ThrowIfNull(removal.StoredFrame);
+                var payloadPath = removal.StoredFrame.AbsolutePath;
+                RemoveArchiveFrameFile(storageRoot, payloadPath, BeforeArchiveFileUnlink);
+                RemoveArchiveFrameFile(storageRoot, Path.ChangeExtension(payloadPath, ".json"), BeforeArchiveFileUnlink);
+                ReclaimArchiveEvidenceIfAbsent(storageRoot, payloadPath);
             }
         }
+        finally
+        {
+            indexGate.Release();
+        }
 
-        storageRoot = Path.GetFullPath(storageRoot);
         foreach (var dateGroup in removals.GroupBy(static removal => DateOnly.FromDateTime(removal.StoredFrame.TimestampUtc.UtcDateTime)))
         {
             var artifactIds = dateGroup.Select(static removal => removal.ArtifactId).ToHashSet();
             var indexPath = Path.Combine(storageRoot, "index", $"frames_{dateGroup.Key:yyyy-MM-dd}.jsonl");
-            var indexGate = FrameIndexLock.ForRoot(storageRoot);
             await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -652,7 +684,7 @@ public sealed class FileSystemFrameStorageService(
         return command;
     }
 
-    private static bool IsPublishedForCompatibility(
+    private bool IsPublishedForCompatibility(
         string storageRoot, string payloadPath, SqliteCommand? visibility, VersionedSidecarBinding binding,
         Guid artifactId)
     {
@@ -673,9 +705,21 @@ public sealed class FileSystemFrameStorageService(
         // journal initialized during discovery cannot lend its staged output the standalone fallback.
         using var lateJournal = OpenCenteredBrowseJournal(storageRoot);
         using var lateVisibility = lateJournal is null ? null : CreateBrowseVisibility(lateJournal);
-        return lateVisibility is null
-            ? !HasRetainedCenteredRaw(storageRoot, binding)
-            : ReadBrowseVisibility(lateVisibility, binding, artifactId);
+        if (lateVisibility is not null)
+            return ReadBrowseVisibility(lateVisibility, binding, artifactId);
+
+        var indexGate = FrameIndexLock.ForRoot(storageRoot);
+        indexGate.Wait();
+        try
+        {
+            return !File.Exists(archived) && !File.Exists(ArchiveStagePath(payloadPath)) &&
+                File.Exists(payloadPath) && File.Exists(Path.ChangeExtension(payloadPath, ".json")) &&
+                !HasRetainedCenteredRaw(storageRoot, binding);
+        }
+        finally
+        {
+            indexGate.Release();
+        }
     }
 
     private static bool HasRetainedCenteredRaw(string storageRoot, VersionedSidecarBinding binding)
@@ -702,14 +746,14 @@ public sealed class FileSystemFrameStorageService(
     }
 
     internal const string ArchiveEvidenceVersion = "centered-archive-copy-v1";
+    private const string ArchiveReceiptVersion = "centered-archive-receipt-v2";
+    private const int ArchiveReceiptMaximumBytes = 4096;
 
-    internal static async ValueTask<string> StageArchiveAsync(
-        string storageRoot, StoredFrameReference stored, ReconstructionDescriptor descriptor, RawCaptureReceipt raw,
+    internal async ValueTask<(StoredFrameReference Stored, string Identity)> SaveArchiveAsync(
+        string storageRoot, FrameArtifact frame, ReconstructionDescriptor descriptor, string? manifestProducer, RawCaptureReceipt raw,
         ProcessingExecutionContext execution, string producer, string outputIdentity, string? contentIdentity,
         CancellationToken cancellationToken)
     {
-        var payloadPath = stored.AbsolutePath;
-        var relativePath = stored.RelativePath.Replace('\\', '/');
         var artifact = descriptor.Artifact;
         if (raw.Manifest.CenteredExposure is null || execution.ExecutionId == Guid.Empty ||
             execution.ExecutionClass != ProcessingGraphExecutionClass.Live || !execution.AllowAutomaticPublication ||
@@ -718,22 +762,75 @@ public sealed class FileSystemFrameStorageService(
             artifact.ArtifactId != ProcessingIdentity.CreateArtifactId(outputIdentity))
             throw new InvalidDataException("The archive copy is not bound to its centered execution output.");
 
-        var receipt = new ArchivePublicationReceipt(StorageRootIdentity.Key(storageRoot), relativePath,
+        var root = StorageRootIdentity.CanonicalPath(storageRoot);
+        var payloadPath = GetPayloadPath(root, frame.Frame.TimestampUtc.ToUniversalTime(), artifact.ArtifactId, artifact.Role);
+        var relativePath = Path.GetRelativePath(root, payloadPath).Replace('\\', '/');
+        var receipt = new ArchivePublicationReceipt(ArchiveRootDigest(root), relativePath,
             descriptor.Capture.CaptureId, execution.ExecutionId, string.Empty, producer, artifact.ArtifactId,
-            outputIdentity, contentIdentity, CaptureContractJson.ComputeDescriptorSha256(descriptor), artifact.ChecksumSha256);
-        var path = ArchiveStagePath(payloadPath);
+            outputIdentity, contentIdentity, CaptureContractJson.ComputeDescriptorSha256(descriptor), artifact.ChecksumSha256,
+            ArchiveReceiptVersion);
+        var stored = await SaveCoreAsync(root, frame, descriptor, manifestProducer, receipt, cancellationToken).ConfigureAwait(false);
+        return (stored, ArchiveIdentity(receipt));
+    }
+
+    private static async ValueTask StageArchiveAsync(
+        string storageRoot, string payloadPath, ArchivePublicationReceipt expected, bool complete,
+        CancellationToken cancellationToken)
+    {
+        var stagePath = ArchiveStagePath(payloadPath);
+        var finalPath = ArchiveReceiptPath(payloadPath);
         var indexGate = FrameIndexLock.ForRoot(storageRoot);
         await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteAtomicallyAsync(storageRoot, path, JsonSerializer.SerializeToUtf8Bytes(receipt, SerializerOptions),
-                cancellationToken).ConfigureAwait(false);
+            var staged = ReadArchiveReceipt(storageRoot, stagePath);
+            var final = ReadArchiveReceipt(storageRoot, finalPath);
+            if (staged is not null && (!string.IsNullOrEmpty(staged.StorageNode) ||
+                    !MatchesArchiveCopy(storageRoot, staged, expected)) ||
+                final is not null && (string.IsNullOrWhiteSpace(final.StorageNode) ||
+                    !MatchesArchiveCopy(storageRoot, final, expected)))
+                throw new InvalidDataException("The retained archive evidence differs from the exact requested copy.");
+
+            if (staged is null)
+                await WriteAtomicallyAsync(storageRoot, stagePath, EncodeArchiveReceipt(expected), cancellationToken)
+                    .ConfigureAwait(false);
+            else if (staged.SchemaVersion is null)
+                await ReplaceAtomicallyAsync(storageRoot, stagePath, EncodeArchiveReceipt(expected), cancellationToken)
+                    .ConfigureAwait(false);
+
+            if (!complete && final is not null)
+            {
+                RetainedFileMutations.Delete(finalPath);
+                RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(finalPath)!);
+            }
         }
         finally
         {
             indexGate.Release();
         }
-        return ArchiveIdentity(receipt);
+    }
+
+    private static bool MatchesArchiveCopy(string root, ArchivePublicationReceipt actual, ArchivePublicationReceipt expected)
+        => MatchesArchiveRoot(root, actual) &&
+            (actual with { Root = expected.Root, StorageNode = string.Empty, SchemaVersion = ArchiveReceiptVersion }) == expected;
+
+    private static string ArchiveRootDigest(string root)
+        => PayloadChecksum.ComputeSha256(Encoding.UTF8.GetBytes(StorageRootIdentity.Key(root)));
+
+    private static bool MatchesArchiveRoot(string root, ArchivePublicationReceipt receipt)
+        => receipt.SchemaVersion switch
+        {
+            ArchiveReceiptVersion => receipt.Root == ArchiveRootDigest(root),
+            null => receipt.Root == StorageRootIdentity.Key(root),
+            _ => false
+        };
+
+    private static byte[] EncodeArchiveReceipt(ArchivePublicationReceipt receipt)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(receipt, SerializerOptions);
+        if (bytes.Length > ArchiveReceiptMaximumBytes)
+            throw new InvalidDataException("The archive receipt exceeds its length limit.");
+        return bytes;
     }
 
     internal static async ValueTask PublishCommittedArchiveAsync(
@@ -744,26 +841,23 @@ public sealed class FileSystemFrameStorageService(
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, payloadPath);
         var stagePath = ArchiveStagePath(payloadPath);
         var receiptPath = ArchiveReceiptPath(payloadPath);
+        var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
+        if (!File.Exists(payloadPath) && !File.Exists(sidecarPath))
+            return; // Retention removed the copy after its Storage node committed.
         var final = ReadArchiveReceipt(storageRoot, receiptPath);
         if (final is not null)
         {
-            // The first committed Storage node owns the receipt. Another authorized node can
-            // export the same copy without replacing its attribution.
-            if (!string.IsNullOrWhiteSpace(final.StorageNode) && final.ExecutionId == executionId &&
-                final.Root == StorageRootIdentity.Key(storageRoot) && final.RelativePath == relativePath &&
-                ArchiveIdentity(final) == identity)
+            if (string.IsNullOrWhiteSpace(final.StorageNode) || !MatchesCommittedArchive(final))
+                throw new InvalidDataException("The existing archive receipt differs from the committed copy.");
+            // A second authorized Storage node keeps the first exact post-commit receipt.
+            if (final.SchemaVersion == ArchiveReceiptVersion && File.Exists(payloadPath) && File.Exists(sidecarPath))
                 return;
-            throw new InvalidDataException("The existing archive receipt differs from the committed copy.");
         }
 
-        var staged = ReadArchiveReceipt(storageRoot, stagePath);
-        if (staged is null && !File.Exists(payloadPath) && !File.Exists(Path.ChangeExtension(payloadPath, ".json")))
-            return; // Retention removed the copy after its Storage node committed.
-        if (staged is null || staged.Root != StorageRootIdentity.Key(storageRoot) ||
-            staged.RelativePath != relativePath || staged.ExecutionId != executionId || ArchiveIdentity(staged) != identity)
+        var staged = ReadArchiveReceipt(storageRoot, stagePath) ?? final;
+        if (staged is null || !MatchesCommittedArchive(staged))
             throw new InvalidDataException("The staged archive differs from the committed copy.");
 
-        var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
         if (!TryReadMetadataFile(sidecarPath, out var metadata, out var binding) || binding is null ||
             !MatchesVersionedBinding(storageRoot, payloadPath, binding) ||
@@ -783,14 +877,30 @@ public sealed class FileSystemFrameStorageService(
         await indexGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var receipt = staged with { StorageNode = nodeId };
-            await WriteAtomicallyAsync(storageRoot, receiptPath,
-                JsonSerializer.SerializeToUtf8Bytes(receipt, SerializerOptions), cancellationToken).ConfigureAwait(false);
+            var receipt = staged with
+            {
+                Root = ArchiveRootDigest(storageRoot),
+                SchemaVersion = ArchiveReceiptVersion,
+                StorageNode = nodeId
+            };
+            if (final is null)
+                await WriteAtomicallyAsync(storageRoot, receiptPath, EncodeArchiveReceipt(receipt), cancellationToken)
+                    .ConfigureAwait(false);
+            else
+                await ReplaceAtomicallyAsync(storageRoot, receiptPath, EncodeArchiveReceipt(receipt), cancellationToken)
+                    .ConfigureAwait(false);
         }
         finally
         {
             indexGate.Release();
         }
+
+        bool MatchesCommittedArchive(ArchivePublicationReceipt receipt)
+            => receipt.ExecutionId == executionId && receipt.RelativePath == relativePath &&
+               MatchesArchiveRoot(storageRoot, receipt) &&
+               (ArchiveIdentity(receipt) == identity ||
+                ArchiveIdentity(receipt with { Root = StorageRootIdentity.Key(storageRoot), SchemaVersion = null }) == identity ||
+                ArchiveIdentity(receipt with { Root = ArchiveRootDigest(storageRoot), SchemaVersion = ArchiveReceiptVersion }) == identity);
     }
 
     private static string ArchiveIdentity(ArchivePublicationReceipt receipt)
@@ -802,32 +912,114 @@ public sealed class FileSystemFrameStorageService(
             return null;
         RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
         using var stream = File.OpenRead(path);
-        if (stream.Length > 4096)
+        if (stream.Length > ArchiveReceiptMaximumBytes)
             throw new InvalidDataException("The archive receipt exceeds its length limit.");
         return JsonSerializer.Deserialize<ArchivePublicationReceipt>(stream, SerializerOptions)
             ?? throw new InvalidDataException("The archive receipt is missing its evidence.");
     }
 
-    private static bool MatchesArchiveReceipt(
+    private bool MatchesArchiveReceipt(
         string storageRoot, string path, VersionedSidecarBinding binding, Guid artifactId)
     {
         try
         {
             var receipt = ReadArchiveReceipt(storageRoot, path);
             return receipt is not null && !string.IsNullOrWhiteSpace(receipt.StorageNode) &&
-                MatchesArchiveBinding(storageRoot, receipt, binding, artifactId);
+                MatchesArchiveBinding(storageRoot, receipt, binding, artifactId) &&
+                (receipt.SchemaVersion == ArchiveReceiptVersion || HasCommittedPredecessorArchive(storageRoot, receipt));
         }
-        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or ArgumentException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or ArgumentException or UnauthorizedAccessException or SqliteException)
         {
             return false;
         }
+    }
+
+    private bool HasCommittedPredecessorArchive(string storageRoot, ArchivePublicationReceipt receipt)
+    {
+        var sourceRoot = hostOptions?.Value.RawIngressRoot;
+        if (receipt.SchemaVersion is not null || string.IsNullOrWhiteSpace(sourceRoot) ||
+            StorageRootIdentity.AreEqual(sourceRoot, storageRoot))
+            return false;
+        using var source = OpenCenteredBrowseJournal(sourceRoot);
+        if (source is null)
+            return false;
+        using var proof = source.CreateCommand();
+        // The exact node commit already checked its durable lease and deadline inside the journal.
+        // Completed timestamps are recorded by the worker and can come from a different clock.
+        proof.CommandText = """
+            SELECT execution.graph_revision_id, raw.manifest_json, raw.manifest_sha256,
+                   execution.configuration_json, output.descriptor_json,
+                   EXISTS (SELECT 1 FROM processing_node_inputs input
+                           WHERE input.capture_id = node.capture_id AND input.node_id = node.node_id
+                             AND input.kind = 'CanonicalContext' AND input.name = 'centered-archive'
+                             AND input.schema_version = $schema AND input.variant = $path
+                             AND input.identity_sha256 = $identity)
+            FROM processing_executions execution
+            JOIN raw_captures raw ON raw.capture_id = execution.capture_id
+                                 AND raw.raw_artifact_id = execution.primary_artifact_id
+            JOIN centered_exposure_attempts exposure ON exposure.capture_id = raw.capture_id
+            JOIN processing_execution_nodes bound ON bound.execution_id = execution.execution_id AND bound.node_id = $storage
+            JOIN processing_nodes node ON node.capture_id = raw.capture_id AND node.node_id = bound.node_id
+                 AND node.plan_sha256 = bound.plan_sha256 AND node.attempt = bound.attempt_count
+                 AND node.completed_unix_ms = bound.completed_unix_ms
+            LEFT JOIN processing_outputs output ON output.output_identity_sha256 = $output
+                 AND output.capture_id = raw.capture_id AND output.artifact_id = $artifact
+                 AND output.content_identity_sha256 IS $content
+                 AND EXISTS (SELECT 1 FROM processing_execution_outputs association
+                             WHERE association.execution_id = execution.execution_id AND association.node_id = $producer
+                               AND association.output_identity_sha256 = output.output_identity_sha256)
+                 AND EXISTS (SELECT 1 FROM processing_node_inputs input
+                             WHERE input.capture_id = node.capture_id AND input.node_id = node.node_id
+                               AND input.kind = 'Artifact' AND input.artifact_id = output.artifact_id AND input.selected_flag = 1)
+            WHERE execution.execution_id = $execution AND execution.capture_id = $capture
+              AND execution.execution_class = 'Live' AND execution.trigger_kind = 'capture'
+              AND execution.allow_automatic_publication = 1 AND bound.status = 'Completed' AND node.status = 'Completed';
+            """;
+        proof.Parameters.AddWithValue("$schema", ArchiveEvidenceVersion);
+        proof.Parameters.AddWithValue("$path", receipt.RelativePath);
+        proof.Parameters.AddWithValue("$identity", ArchiveIdentity(receipt));
+        proof.Parameters.AddWithValue("$storage", receipt.StorageNode);
+        proof.Parameters.AddWithValue("$output", receipt.OutputIdentity);
+        proof.Parameters.AddWithValue("$artifact", receipt.ArtifactId.ToString("N"));
+        proof.Parameters.AddWithValue("$content", (object?)receipt.ContentIdentity ?? DBNull.Value);
+        proof.Parameters.AddWithValue("$producer", receipt.Producer);
+        proof.Parameters.AddWithValue("$execution", receipt.ExecutionId.ToString("N"));
+        proof.Parameters.AddWithValue("$capture", receipt.CaptureId.ToString("N"));
+        using var reader = proof.ExecuteReader();
+        if (!reader.Read())
+            return false;
+        var revision = reader.GetString(0);
+        var raw = reader.GetFieldValue<byte[]>(1);
+        var manifest = CaptureContractJson.ParseManifest(raw).Document?.Manifest;
+        if (CaptureContractJson.ComputeManifestSha256(raw) != reader.GetString(2) ||
+            manifest?.CenteredExposure is null || manifest.CaptureGraphRevisionId != revision ||
+            manifest.Descriptor.Capture.CaptureId != receipt.CaptureId ||
+            ProcessingGraphOperationsCoordinator.GetLiveExecutionId(receipt.CaptureId, revision) != receipt.ExecutionId)
+            return false;
+        if (reader.GetBoolean(5))
+            return true; // The later predecessor already recorded exact destination evidence.
+        if (reader.IsDBNull(4))
+            return false;
+
+        var output = CaptureContractJson.ParseManifest(reader.GetFieldValue<byte[]>(4)).Document?.Manifest?.Descriptor;
+        if (output is null || output.Capture.CaptureId != receipt.CaptureId || output.Artifact.ArtifactId != receipt.ArtifactId ||
+            output.Artifact.ChecksumSha256 != receipt.PayloadSha256 ||
+            (CaptureContractJson.ComputeDescriptorSha256(output) != receipt.DescriptorSha256 &&
+             CaptureContractJson.ComputeDescriptorSha256(output with { CenteredAcquisition = null }) != receipt.DescriptorSha256))
+            return false;
+        var configuration = JsonSerializer.Deserialize<CameraModuleConfig>(reader.GetFieldValue<byte[]>(3), SerializerOptions);
+        return configuration?.Pipeline.Steps.Any(step =>
+            RetentionBackgroundService.IsFileStorageStep(step.Type) &&
+            (step.Id ?? FileStorageCaptureProcessingStep.StableAlias) == receipt.StorageNode &&
+            step.Options?.Deserialize<FileStorageCaptureProcessingStepOptions>(SerializerOptions) is { StorageRoot.Length: > 0 } options &&
+            StorageRootIdentity.AreEqual(options.StorageRoot, storageRoot)) == true;
     }
 
     private static bool MatchesArchiveBinding(
         string storageRoot, ArchivePublicationReceipt receipt, VersionedSidecarBinding binding, Guid artifactId)
         => receipt.ExecutionId != Guid.Empty && !string.IsNullOrWhiteSpace(receipt.Producer) &&
            (binding.Producer is null || binding.Producer == receipt.Producer) &&
-           receipt.Root == StorageRootIdentity.Key(storageRoot) &&
+           MatchesArchiveRoot(storageRoot, receipt) &&
            receipt.RelativePath == binding.RelativeArtifactPath.Replace('\\', '/') &&
            receipt.CaptureId == binding.CaptureId && receipt.ArtifactId == artifactId &&
            ProcessingIdentity.CreateArtifactId(receipt.OutputIdentity) == artifactId &&
@@ -840,16 +1032,46 @@ public sealed class FileSystemFrameStorageService(
 
     internal static string ArchiveStagePath(string payloadPath) => Path.ChangeExtension(payloadPath, ArchiveStageExtension);
 
-    internal static void DeleteArchiveReceipt(string storageRoot, string payloadPath)
+    internal static bool IsArchiveEvidencePath(string path)
+        => Path.GetExtension(path) is ".archive" or ArchiveStageExtension;
+
+    internal static void RemoveArchiveFrameFile(string storageRoot, string path, Action<string>? beforeUnlink)
     {
-        foreach (var path in new[] { ArchiveReceiptPath(payloadPath), ArchiveStagePath(payloadPath) })
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
+        if (!File.Exists(path))
+            return;
+        if (beforeUnlink is not null &&
+            (File.Exists(ArchiveReceiptPath(path)) || File.Exists(ArchiveStagePath(path))))
+            beforeUnlink(path);
+        RetainedFileMutations.Delete(path);
+    }
+
+    internal static int ReclaimArchiveEvidenceIfAbsent(string storageRoot, string payloadPath)
+    {
+        var receiptPath = ArchiveReceiptPath(payloadPath);
+        var stagePath = ArchiveStagePath(payloadPath);
+        var hasReceipt = File.Exists(receiptPath);
+        var hasStage = File.Exists(stagePath);
+        var sidecarPath = Path.ChangeExtension(payloadPath, ".json");
+        if ((!hasReceipt && !hasStage) || File.Exists(payloadPath) || File.Exists(sidecarPath))
+            return 0;
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, payloadPath);
+        RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, sidecarPath);
+        var directory = Path.GetDirectoryName(payloadPath)!;
+        // Make the absences durable before an interrupted sweep can forget the copy's custody.
+        RawIngressFileStore.SyncDirectory(directory);
+        if (hasReceipt)
         {
-            if (!File.Exists(path))
-                continue;
-            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, path);
-            RetainedFileMutations.Delete(path);
-            RawIngressFileStore.SyncDirectory(Path.GetDirectoryName(path)!);
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, receiptPath);
+            RetainedFileMutations.Delete(receiptPath);
         }
+        if (hasStage)
+        {
+            RawIngressFileStore.EnsureNoSymbolicLinks(storageRoot, stagePath);
+            RetainedFileMutations.Delete(stagePath);
+        }
+        RawIngressFileStore.SyncDirectory(directory);
+        return (hasReceipt ? 1 : 0) + (hasStage ? 1 : 0);
     }
 
     private static bool MatchesVersionedBinding(
@@ -1002,7 +1224,8 @@ public sealed class FileSystemFrameStorageService(
 
     private sealed record ArchivePublicationReceipt(
         string Root, string RelativePath, Guid CaptureId, Guid ExecutionId, string StorageNode, string Producer,
-        Guid ArtifactId, string OutputIdentity, string? ContentIdentity, string DescriptorSha256, string PayloadSha256);
+        Guid ArtifactId, string OutputIdentity, string? ContentIdentity, string DescriptorSha256, string PayloadSha256,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SchemaVersion = null);
 
     public void Dispose() => GC.SuppressFinalize(this);
 
