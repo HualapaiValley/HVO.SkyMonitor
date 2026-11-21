@@ -12,11 +12,49 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- CameraAgent Current Sky shows the latest accepted retained measured pointing, rotation, local pixel scale and capture time, with previous-capture results kept separate from selected-image diagnostics. Virtual Sky can measure astrometry alongside its existing scene overlays. #1901
+
+- CameraAgent owners can configure a pinned measured-astrometry reference depth with `hvo-sky astrometry configure` and set the independent `virtualSky.rendererCandidateCap` renderer limit. New VirtualSky astrometry presets default to magnitude 3.25. #1901
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
+
+### Changed
+
+- Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
 ### Fixed
 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
+
+- Current Sky clears measured overlays and calculator results when a repaired astrometric fit is quarantined again, while retaining the verified historical result. #1901
+
+- Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901
+
+- Current Sky briefly keeps the previous layered image and its tools while it checks the incoming capture’s layers against its rendered display base. #1901
+
+- Current Sky rechecks skipped astrometry evidence so repairs published by another store can restore the latest accepted fit. #1901
+
+- Current Sky keeps the previous image visible while it rereads advertised layers for an incoming capture after invalidation. #1901
+
+- Current Sky keeps the initial retained astrometry lookup running across refresh deadlines, resumes the search after an interrupted refresh and keeps selected-image diagnostics available while it checks rejected assessments. A temporary read failure preserves the displayed fit until the reader can verify the latest result again. Current Sky removes any displayed fit whose assessment or required input is quarantined or removed by retention. The selected image's calculator and measured overlays follow the validity of that image's own fit, including after the headline advances. A pending layer or assessment read cannot restore tools for a fit that was invalidated while it ran. Searches keep their progress past confirmed quarantines when a refresh times out. The page can verify an older fit after quarantine while continuing to check the selected image. A manual refresh requested during a history read also checks the latest retained fit once that read finishes. Confirmed invalidation withdraws matching tools immediately and prevents an outstanding history read from showing a rejected incoming fit. #1901
+
+- Configuring the CameraAgent astrometry reference magnitude preserves separate canonical stellar associations. The first preset reuses a solver-free graph’s existing prediction, including on generated compatibility revisions and operator-selected graphs. #1901
+
+- Equatorial-to-horizontal calculations at the zenith and nadir stay finite when floating-point rounding reaches slightly outside the sine range. #1901
+
+- Legacy VirtualSky graphs preserve their canonical scene and keep measured fits independent when annotations share stellar associations. Between fits or after a fit failure, Storage continues archiving images with their retained canonical scene. Dense exposures bound the published scene separately from the renderer and continue admitting raw captures. #1901
+
+- New CameraAgent execution details show the measured fit as optional for Storage and Telemetry, while keeping each run's original graph evidence available for replay. #1901
+
+- Required CameraAgent Telemetry reports skipped or failed optional astrometry fits, including skips caused by an upstream failure, while standard capture and archiving continue. #1901
+
+- VirtualSky continues capturing when a saved graph already uses the default astrometry prediction output name. Migration assigns the prediction a free name and preserves the existing output. #1901
+
+- CameraAgent resumes raw capture and canonical processing after restarting with a saved graph whose astrometry solver and associations use different scenes. Live solves are skipped with a processing warning. #1901
+
+- CameraAgent protects the live VirtualSky compatibility revision from retirement, allows retirement of unused compatibility revisions and unrelated graphs that occupy a compatibility revision name, and creates a replayable successor for an ineligible journal entry. #1901
+
+- CameraAgent keeps the first scheduled environmental reading pending while it recovers the deployment location. It records one reading or explicit outcome for that slot and keeps the outcome across restarts. The environmental schema upgrade takes a paired checkpoint so rollback can restore the older journal. #1938
 
 - The offline LogicHost candidate verifier rejects standalone deep-sky packages such as OpenNGC when declared as the required star catalog. #1896
 

@@ -9,6 +9,9 @@ public interface ICaptureProcessingPipelineFactory
 
     CaptureProcessingGraph CreateGraph(CameraModuleConfig config);
 
+    /// <summary>Restores an already committed active profile under the current acquisition policy.</summary>
+    CaptureProcessingGraph CreateActiveProfileGraph(CameraModuleConfig config) => CreateGraph(config);
+
     /// <summary>Restores a frozen graph for retained evidence without applying new-acquisition configuration policy.</summary>
     CaptureProcessingGraph CreateRetainedGraph(CameraModuleConfig config) => CreateGraph(config);
 
@@ -19,4 +22,11 @@ public interface ICaptureProcessingPipelineFactory
         => CreateGraph(config);
 
     CaptureProcessingPlanPreview PreviewPlan(CameraModuleConfig config);
+}
+
+internal enum CaptureProcessingGraphCompilation
+{
+    Proposal,
+    ActiveProfile,
+    RetainedCapture
 }

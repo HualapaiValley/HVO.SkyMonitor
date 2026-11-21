@@ -7,6 +7,23 @@ namespace HVO.SkyMonitor.Astronomy.Tests;
 public sealed class CoordinateTransformsTests
 {
     [TestMethod]
+    [DataRow(90d)]
+    [DataRow(-90d)]
+    public void EquatorialToHorizontal_RoundTripsZenithAndNadir(double altitude)
+    {
+        // VirtualSky confirmation site 27, at the failed exposure midpoint.
+        var utc = new DateTimeOffset(2026, 6, 8, 7, 0, 16, TimeSpan.Zero);
+        const double latitude = 8.15433515;
+        const double longitude = -64.32037447;
+        var equatorial = CoordinateTransforms.HorizontalToEquatorial(new AltAzPoint(altitude, 0), utc, latitude, longitude);
+
+        var result = CoordinateTransforms.EquatorialToHorizontal(equatorial, utc, latitude, longitude);
+
+        Assert.AreEqual(altitude, result.AltitudeDegrees, 1e-10);
+        Assert.IsTrue(double.IsFinite(result.AzimuthDegrees));
+    }
+
+    [TestMethod]
     public void EquatorialToHorizontal_AtNorthPole_UsesDeclinationForAltitude()
     {
         var result = CoordinateTransforms.EquatorialToHorizontal(

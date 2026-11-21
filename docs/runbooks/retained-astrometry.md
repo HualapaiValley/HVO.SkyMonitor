@@ -6,13 +6,25 @@ the current SQLite/file publisher, replay pins, source-retention graph and
 structured-product upload contract; it introduces no database layout or recovery
 protocol conversion.
 
+`hvo-sky astrometry configure` adds the optional independent prediction and
+measurement branch to an active VirtualSky graph. It uses 3.25 for a new branch
+and keeps a coherent existing reference magnitude when the option is omitted.
+Use `--reference-magnitude MAG` to set a different depth. Compatible real camera
+profiles require that option, compatible linear 16-bit readout, and calibrated
+capture-time rig and site. The current ZWO RAW16 profile declares opaque
+sample codes and requires its own readout qualification.
+The command generates the pin from the verified installed catalog, sets the
+prediction and numerical solver depth, then activates a new graph revision.
+It preserves unrelated steps and camera settings. A missing, incomplete, or
+mismatched pinned catalog prevents the command from changing the active graph.
+
 Configure the stable `MeasuredAstrometry` alias in an **explicit v2** graph.
-Its two direct dependencies must be durable `ProjectedScene` and
-`MeasuredStellarAssociations` nodes. Set its `required` to `false` and its
-publication to `durable-local`. Keep an enabled Storage retention owner. Keep
-raw storage independent of this optional branch; an optional metadata Storage
-branch may depend on astrometry for upload. Cadence skips must not become a
-required dependency of raw publication.
+Its two direct dependencies must be a durable scene producer and durable
+`MeasuredStellarAssociations` for that same scene. In a single-scene graph the
+producer is `ProjectedScene`. For Virtual Sky with a separate canonical render
+scene, use the [opt-in AstrometryPrediction graph](current-sky-measured-astrometry.md).
+Set `required` to `false` and publication to `durable-local`. Keep an enabled
+Storage retention owner and keep raw storage independent of the optional analysis.
 
 `MeasuredAstrometryCaptureOptions` accepts:
 
@@ -20,7 +32,8 @@ required dependency of raw publication.
 | --- | --- |
 | `outputVariant` | Default `measured-astrometry-v1`; context uses the `-context` suffix. |
 | `captureStride` | Default/minimum 60, maximum 1,000,000. Only `(captureSequence - 1) % captureStride == 0` executes on the live durable worker. At five-second acquisition this samples one capture per five minutes. |
-| `catalog` | Required `AstrometryCatalogSnapshotV1`: immutable metadata, complete bounded star selection, package provenance, completeness flag/limit and coordinate model. Maximum 2,500 rows and 2 MiB context. Materialize from a verified local adapter before configuring the revision; no network/current catalog lookup occurs during execution. Incomplete selections retain `Unavailable`. |
+| `catalog` | Inline `AstrometryCatalogSnapshotV1` with immutable metadata, complete bounded star selection, package provenance, completeness flag/limit and coordinate model. Maximum 2,500 rows and 2 MiB context. Materialize from a verified local adapter before configuring the revision. Incomplete selections retain `Unavailable`. |
+| `catalogSelection` | Alternative to the inline snapshot. Pins the catalog and selection identities of a complete selection from the installed local adapter. See the Virtual Sky configuration for the pin fields. |
 | `clock` | Explicit `AstrometricClockFacts`; defaults to `NotSupplied`, with no invented timing precision. |
 | `previousAccepted` | Optional exact native accepted assessment. The frozen context retains it and references its source raw artifact. Stale/incompatible priors retain rejection and never launch cold fallback. |
 | `recipe` | Existing normalized `MeasuredAstrometryOptions`: solver, diagnostics, uncertainty and cooperative execution budget (20 seconds default, 60 seconds maximum). |

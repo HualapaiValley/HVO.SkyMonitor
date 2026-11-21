@@ -1,6 +1,5 @@
 using System.Net;
 using System.Text.Json;
-using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Data;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using HVO.SkyMonitor.CameraAgent.Testing;
@@ -14,33 +13,25 @@ public sealed partial class RunManifestEndpointTests
     [TestMethod]
     public async Task CorruptAuxiliaryDescriptorRefusesOnlyManifestAndRecoversOverAuthenticatedHttp()
     {
-        using var scope = AssemblyHooks.Fixture.CreateCameraAgentScope();
-        var operations = scope.ServiceProvider.GetRequiredService<IProcessingGraphOperations>();
-        ProcessingGraphExecutionDetail? detail = null;
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        while (detail is null)
-        {
-            var runs = await operations.ReadExecutionsAsync(ProcessingGraphExecutionClass.Live, 10, deadline.Token).ConfigureAwait(false);
-            var completed = runs.Where(static run => run.Status == ProcessingGraphExecutionStatus.Completed).ToArray();
-            if (completed.Length >= 2)
-            {
-                foreach (var run in completed)
-                {
-                    var candidate = await operations.ReadRunManifestAsync(run.ExecutionId, deadline.Token).ConfigureAwait(false);
-                    if (candidate?.Nodes.SelectMany(static node => node.Outputs).Any() == true) { detail = candidate; break; }
-                }
-            }
-            if (detail is null) await Task.Delay(50, deadline.Token).ConfigureAwait(false);
-        }
-        var auxiliary = await AuxiliaryRunManifestEvidenceFixture.CreateAsync(AssemblyHooks.Fixture.StorageRoot,
-            detail.Nodes.SelectMany(static node => node.Outputs).First().ArtifactId).ConfigureAwait(false);
+        using var fixture = new CameraAgentIntegrationFixture();
+        await InitializeRetainedCaptureFixtureAsync(fixture).ConfigureAwait(false);
+        using var scope = fixture.CreateCameraAgentScope();
+        var (reference, consumer) = await PrepareRetainedCapturesAsync(fixture, scope.ServiceProvider).ConfigureAwait(false);
+        var executionId = consumer.Detail.Execution.ExecutionId;
+        var consumerArtifactId = consumer.Preview.ArtifactId;
+        var referenceArtifactId = reference.Preview.ArtifactId;
+        var missing = await Assert.ThrowsExactlyAsync<AssertFailedException>(() =>
+            AuxiliaryRunManifestEvidenceFixture.CreateAsync(fixture.StorageRoot, consumerArtifactId, Guid.Empty)).ConfigureAwait(false);
+        StringAssert.Contains(missing.Message, $"Reference artifact {Guid.Empty:D} must be retained", StringComparison.Ordinal);
+        var auxiliary = await AuxiliaryRunManifestEvidenceFixture.CreateAsync(
+            fixture.StorageRoot, consumerArtifactId, referenceArtifactId).ConfigureAwait(false);
         await using var auxiliaryLifetime = auxiliary.ConfigureAwait(false);
         var owner = await scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>()
             .FindByEmailAsync("owner@cameraagent.integration").ConfigureAwait(false);
         Assert.IsNotNull(owner);
-        using var client = AssemblyHooks.Fixture.CreateCameraAgentClient();
+        using var client = fixture.CreateCameraAgentClient();
         client.DefaultRequestHeaders.Add(IntegrationUserAuthenticationHandler.UserIdHeader, owner.Id);
-        var path = $"/api/v1/operations/processing-graphs/executions/{detail.Execution.ExecutionId:D}";
+        var path = $"/api/v1/operations/processing-graphs/executions/{executionId:D}";
         using var before = await client.GetAsync(new Uri(path + "/manifest", UriKind.Relative)).ConfigureAwait(false);
         Assert.AreEqual(HttpStatusCode.OK, before.StatusCode);
         var expected = await before.Content.ReadAsByteArrayAsync().ConfigureAwait(false);

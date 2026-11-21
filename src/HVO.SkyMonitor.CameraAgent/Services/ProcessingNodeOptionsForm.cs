@@ -62,6 +62,7 @@ public sealed class ProcessingNodeOptionsForm
             "CLOUDASSESSMENT" => CloudAssessmentOptionDescriptors.Descriptor.StepVersion,
             "CALIBRATION" => CalibrationOptionDescriptors.Normalization.StepVersion,
             "PROJECTEDSCENE" => "canonical-projected-scene-v1",
+            "ASTROMETRYPREDICTION" => CaptureAnalysisOptionDescriptors.Prediction.StepVersion,
             "MEASUREDSTELLARASSOCIATIONS" => CaptureAnalysisOptionDescriptors.StellarAssociations.StepVersion,
             "MEASUREDASTROMETRY" => CaptureAnalysisOptionDescriptors.Astrometry.StepVersion,
             "CAPTURESATELLITETRACKS" => CaptureSatelliteOptionDescriptors.Tracks.StepVersion,

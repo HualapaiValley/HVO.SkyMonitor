@@ -27,6 +27,7 @@ internal static class RawIngressV13Schema
         "processing_execution_outputs", "processing_execution_manifest_counts", "processing_replay_work", "ix_processing_outputs_capture_node",
         "ix_processing_outputs_window", "ix_processing_nodes_status", "ix_processing_nodes_recipe",
         "ix_processing_outputs_role", "ix_processing_outputs_recipe", "ix_processing_outputs_product",
+        "ix_processing_outputs_astrometry_lookup",
         "ix_processing_outputs_retention_available", "ix_processing_outputs_retention_unavailable",
         "ix_processing_output_sources_artifact", "ix_processing_node_inputs_artifact",
         "ix_processing_graph_revisions_active", "ix_processing_graph_revisions_name",

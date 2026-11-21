@@ -7,6 +7,276 @@ namespace HVO.SkyMonitor.CameraAgent.Components.Pages;
 public sealed partial class CurrentSkyPage
 {
     private CameraAgentRetainedAstrometry? _astrometry;
+    private CameraAgentLatestAstrometry? _latestAstrometry;
+    private long _latestAstrometryRevision;
+    private long _retainedAstrometryInvalidationRevision;
+    private long _astrometryObservationRevision;
+    private bool _latestAstrometryLoading;
+    private bool _latestAstrometryRefreshQueued;
+    private bool? _latestAstrometryReadSucceeded;
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Optional summary reads must not fail the image view.")]
+    private async Task LoadLatestAstrometryAsync(bool manual = false)
+    {
+        if (IsArchived || _accessDenied || _disposeStarted != 0) return;
+        if (_latestAstrometryLoading)
+        {
+            _latestAstrometryRefreshQueued |= manual;
+            return;
+        }
+
+        _latestAstrometryRefreshQueued = false;
+        _latestAstrometryLoading = true;
+        var revision = ++_latestAstrometryRevision;
+        var previous = _latestAstrometry;
+        var selected = SelectedMeasurementIdentity();
+        var selectedRevision = _astrometryReadRevision;
+        var invalidationRevision = _retainedAstrometryInvalidationRevision;
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
+            using var bounded = CancellationTokenSource.CreateLinkedTokenSource(_lifetime!.Token, deadline.Token);
+            var result = await OperatorService.GetLatestAcceptedAstrometryAsync(bounded.Token, previous, selected).ConfigureAwait(false);
+            await InvokeAsync(async () =>
+            {
+                await ApplyLatestAstrometryReadAsync(result, previous, selected, selectedRevision,
+                    invalidationRevision, revision, bounded.Token);
+                ReplayQueuedLatestAstrometryRefresh(revision);
+            });
+        }
+        catch (Exception)
+        {
+            await InvokeAsync(() =>
+            {
+                if (!IsCurrentLatestAstrometryRead(revision)) return;
+                _latestAstrometryLoading = false;
+                _latestAstrometryReadSucceeded = false;
+                StateHasChanged();
+                ReplayQueuedLatestAstrometryRefresh(revision);
+            });
+        }
+    }
+
+    private void ReplayQueuedLatestAstrometryRefresh(long revision)
+    {
+        // Even a successful read can have verified its result before the explicit refresh.
+        // A new read consumes the queued request and takes its own current identities and deadline.
+        if (IsCurrentLatestAstrometryRead(revision) && _latestAstrometryRefreshQueued)
+            _ = LoadLatestAstrometryAsync();
+    }
+
+    private async Task ApplyLatestAstrometryReadAsync(OperatorUiResult<CameraAgentLatestAstrometryRead> result,
+        CameraAgentLatestAstrometry? previous, CameraAgentAstrometryAssessmentIdentity? requestedSelection,
+        long requestedSelectionRevision, long requestedInvalidationRevision, long revision, CancellationToken cancellation)
+    {
+        if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+        if (!IsCurrentLatestAstrometryRead(revision)) return;
+
+        var read = result.Value;
+        if (read is not null) Interlocked.Increment(ref _astrometryObservationRevision);
+        var summary = SummaryIdentity(read?.Summary);
+        var previousInvalid = read?.PreviousSummaryInvalidated == true ? SummaryIdentity(previous) : null;
+        var selectedInvalid = read?.SelectedAssessmentInvalidated == true ? requestedSelection : null;
+        if (SameIdentity(previousInvalid, selectedInvalid)) selectedInvalid = null;
+
+        var requiresFreshSummary = _retainedAstrometryInvalidationRevision != requestedInvalidationRevision;
+        var rejectedSummary = SameIdentity(summary, previousInvalid) || SameIdentity(summary, selectedInvalid);
+        var reloadReportedSelection = false;
+        var hasReportedInvalidation = previousInvalid is not null || selectedInvalid is not null;
+        // An exact rejection suspends matching tools before any asynchronous recheck. A fresh
+        // authorized layer or standalone read can install a repaired fit, including the same identity.
+        if (previousInvalid is not null) reloadReportedSelection |= InvalidateAstrometryEvidence(previousInvalid);
+        if (selectedInvalid is not null) reloadReportedSelection |= InvalidateAstrometryEvidence(selectedInvalid);
+        var reportedInvalidationRevision = _retainedAstrometryInvalidationRevision;
+        if (hasReportedInvalidation)
+        {
+            StateHasChanged();
+            if (reloadReportedSelection) TryLoadLayers(_runCaptureId);
+        }
+
+        // Keep the bounded history flight active until its exact observations are applied.
+        // A newer manual refresh is queued even while this response is awaiting a point check.
+        while (IsCurrentLatestAstrometryRead(revision))
+        {
+            var selected = SelectedMeasurementIdentity();
+            var selectionRevision = _astrometryReadRevision;
+            var invalidationRevision = _retainedAstrometryInvalidationRevision;
+            var selectedState = CameraAgentAstrometryPublicationState.Indeterminate;
+            var summaryState = CameraAgentAstrometryPublicationState.Available;
+            var checkedSelection = read is not null && selected is not null && selectionRevision != requestedSelectionRevision;
+            if (checkedSelection)
+            {
+                selectedState = await ObserveAstrometryPublicationAsync(selected!, cancellation);
+                if (!IsCurrentLatestAstrometryRead(revision)) return;
+            }
+
+            // A selected measurement may have proved this headline invalid while the history read
+            // was returning. An older successful response cannot undo that observation.
+            if (summary is not null && !rejectedSummary &&
+                (requiresFreshSummary || invalidationRevision != reportedInvalidationRevision))
+                summaryState = checkedSelection && SameIdentity(summary, selected)
+                    ? selectedState : await ObserveAstrometryPublicationAsync(summary, cancellation);
+
+            if (!IsCurrentLatestAstrometryRead(revision)) return;
+            if (selectionRevision != _astrometryReadRevision || invalidationRevision != _retainedAstrometryInvalidationRevision)
+                continue;
+
+            var completed = read?.Completed == true && result.IsSuccess && !cancellation.IsCancellationRequested &&
+                !rejectedSummary && summaryState == CameraAgentAstrometryPublicationState.Available;
+            var reloadSelected = false;
+            var currentInvalid = selectedState == CameraAgentAstrometryPublicationState.Invalidated ? selected : null;
+            // This observation belongs to the selection revision checked above. A repair can
+            // republish the same identity after the earlier history flags were applied.
+            ApplyInvalidation(currentInvalid);
+            if (summaryState == CameraAgentAstrometryPublicationState.Invalidated && !SameIdentity(summary, previousInvalid) &&
+                !SameIdentity(summary, selectedInvalid) && !SameIdentity(summary, currentInvalid))
+                ApplyInvalidation(summary);
+
+            _latestAstrometryLoading = false;
+            _latestAstrometryReadSucceeded = completed;
+            if (completed) _latestAstrometry = read!.Summary;
+            StateHasChanged();
+            if (reloadSelected) TryLoadLayers(_runCaptureId);
+            return;
+
+            void ApplyInvalidation(CameraAgentAstrometryAssessmentIdentity? identity)
+            {
+                if (identity is null || selectedState == CameraAgentAstrometryPublicationState.Available &&
+                    SameIdentity(identity, selected)) return;
+                if (SameIdentity(identity, summary)) completed = false;
+                reloadSelected |= InvalidateAstrometryEvidence(identity);
+            }
+        }
+    }
+
+    private bool IsCurrentLatestAstrometryRead(long revision) =>
+        revision == _latestAstrometryRevision && _disposeStarted == 0 && !_accessDenied && !IsArchived;
+
+    private CameraAgentAstrometryAssessmentIdentity? SelectedMeasurementIdentity()
+        => RetainedIdentity(_layers?.Astrometry) ?? RetainedIdentity(_astrometry);
+
+    private static CameraAgentAstrometryAssessmentIdentity? SummaryIdentity(CameraAgentLatestAstrometry? value)
+        => value is null ? null : new(value.CaptureId, value.ArtifactId, value.SolutionIdentitySha256);
+
+    private static bool SameIdentity(CameraAgentAstrometryAssessmentIdentity? first, CameraAgentAstrometryAssessmentIdentity? second)
+        => first is not null && second is not null && first.CaptureId == second.CaptureId && first.ArtifactId == second.ArtifactId &&
+           string.Equals(first.SolutionIdentitySha256, second.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
+
+    private bool InvalidateAstrometryEvidence(CameraAgentAstrometryAssessmentIdentity identity, bool retryIncomingPrefetch = true)
+    {
+        Interlocked.Increment(ref _retainedAstrometryInvalidationRevision);
+        Interlocked.Increment(ref _astrometryObservationRevision);
+        WithdrawLatestAstrometry(identity);
+        // A confirmed invalidation only fences a pending switch to the affected capture.
+        if (retryIncomingPrefetch &&
+            Volatile.Read(ref _incomingLayerPrefetch) is { } prefetch && prefetch.CaptureId == identity.CaptureId)
+            prefetch.Invalidate();
+        if (_runCaptureId != identity.CaptureId) return false;
+
+        var layered = _layers?.Astrometry;
+        var matchingEvidence = Matches(layered, identity) || Matches(_astrometry, identity);
+        var hasVerifiedEvidence = RetainedIdentity(layered) is not null || RetainedIdentity(_astrometry) is not null;
+        // A pending read can carry the invalidated fit even if neither projection has installed it yet.
+        // Rotate both read lifetimes. Keep a separately verified replacement already on the same frame.
+        ResetLayers(identity.CaptureId, _lifetime!.Token, discardDisplayedEvidence: matchingEvidence || !hasVerifiedEvidence);
+        return true;
+    }
+
+    private void WithdrawLatestAstrometry(CameraAgentAstrometryAssessmentIdentity identity)
+    {
+        if (!SameIdentity(SummaryIdentity(_latestAstrometry), identity)) return;
+        _latestAstrometry = null;
+        _latestAstrometryReadSucceeded = false;
+    }
+
+    private static CameraAgentAstrometryAssessmentIdentity? RetainedIdentity(CameraAgentRetainedAstrometry? value)
+        => value is { Solution.Assessment.HasMeasuredMapping: true, ArtifactId: { } artifact, SolutionIdentitySha256: { } hash }
+            ? new(value.CaptureId, artifact, hash) : null;
+
+    private static bool Matches(CameraAgentRetainedAstrometry? value, CameraAgentAstrometryAssessmentIdentity identity)
+        => value is not null && value.CaptureId == identity.CaptureId && value.ArtifactId == identity.ArtifactId &&
+            string.Equals(value.SolutionIdentitySha256, identity.SolutionIdentitySha256, StringComparison.OrdinalIgnoreCase);
+
+    private sealed record ObservedAstrometryResult<T>(OperatorUiResult<T> Result, long? ObservationRevision = null)
+    {
+        public OperatorUiResultKind Kind => Result.Kind;
+        public bool IsSuccess => Result.IsSuccess;
+        public T? Value => Result.Value;
+    }
+
+    private bool IsCurrentAstrometryObservation<T>(ObservedAstrometryResult<T>? observed)
+        => observed?.ObservationRevision is not { } revision || revision == Volatile.Read(ref _astrometryObservationRevision);
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "An unverified optional measurement is never published.")]
+    private async ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryObservationAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellation)
+    {
+        if (!cancellation.IsCancellationRequested)
+        {
+            try
+            {
+                return await OperatorService.ReadAstrometryPublicationStateAsync(identity, cancellation).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // A failed point read is indeterminate. It supplies no evidence of quarantine.
+            }
+        }
+        return OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Indeterminate);
+    }
+
+    private async ValueTask<CameraAgentAstrometryPublicationState> ObserveAstrometryPublicationAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellation)
+    {
+        var observation = await ReadAstrometryObservationAsync(identity, cancellation);
+        if (observation.Kind == OperatorUiResultKind.Unauthorized) RevokeAccess();
+        return !cancellation.IsCancellationRequested && observation.IsSuccess
+            ? observation.Value : CameraAgentAstrometryPublicationState.Indeterminate;
+    }
+
+    private async ValueTask<ObservedAstrometryResult<T>> ValidateAstrometryPublicationAsync<T>(
+        Guid captureId, OperatorUiResult<T> result, CameraAgentRetainedAstrometry? evidence, CancellationToken cancellation)
+    {
+        if (!result.IsSuccess) return new(result);
+        if (RetainedIdentity(evidence) is { } identity && identity.CaptureId == captureId)
+        {
+            var generation = Volatile.Read(ref _layerGeneration);
+            while (!cancellation.IsCancellationRequested)
+            {
+                var revision = Volatile.Read(ref _astrometryObservationRevision);
+                var observation = await ReadAstrometryObservationAsync(identity, cancellation).ConfigureAwait(false);
+                if (observation.Kind == OperatorUiResultKind.Unauthorized)
+                    return new(OperatorUiResult<T>.Failure(OperatorUiResultKind.Unauthorized, observation.Message ?? "Access denied."));
+                if (cancellation.IsCancellationRequested || !observation.IsSuccess ||
+                    observation.Value == CameraAgentAstrometryPublicationState.Indeterminate) break;
+                if (revision != Volatile.Read(ref _astrometryObservationRevision)) continue;
+                if (observation.Value == CameraAgentAstrometryPublicationState.Available) return new(result, revision);
+                if (observation.Value == CameraAgentAstrometryPublicationState.Invalidated)
+                {
+                    var withdrawn = false;
+                    await InvokeAsync(() => withdrawn = ApplyObservedAstrometryInvalidation(identity, generation, revision, cancellation)).ConfigureAwait(false);
+                    if (!withdrawn && revision != Volatile.Read(ref _astrometryObservationRevision) &&
+                        generation == Volatile.Read(ref _layerGeneration)) continue;
+                }
+                break;
+            }
+        }
+        return new(OperatorUiResult<T>.Failure(OperatorUiResultKind.Unavailable, "Selected measured evidence is temporarily unavailable."));
+    }
+
+    private bool ApplyObservedAstrometryInvalidation(CameraAgentAstrometryAssessmentIdentity identity, long generation,
+        long revision, CancellationToken cancellation)
+    {
+        if (generation != _layerGeneration || revision != _astrometryObservationRevision || cancellation.IsCancellationRequested ||
+            _disposeStarted != 0 || _accessDenied) return false;
+
+        // An incoming fit can be invalid before either view has installed it. Fence outstanding
+        // history without restarting the same prefetch whose result is already being rejected.
+        InvalidateAstrometryEvidence(identity, retryIncomingPrefetch: false);
+        StateHasChanged();
+        return true;
+    }
+
     private bool _astrometryLoading;
     private long _astrometryReadRevision;
     private string? _calculatorResult;
@@ -70,12 +340,16 @@ public sealed partial class CurrentSkyPage
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5), TimeProvider);
             using var bounded = CancellationTokenSource.CreateLinkedTokenSource(cancellation, deadline.Token);
             var result = await OperatorService.GetRetainedAstrometryAsync(captureId, bounded.Token).ConfigureAwait(false);
+            var observed = result.Value?.Solution?.Assessment.HasMeasuredMapping == true
+                ? await ValidateAstrometryPublicationAsync(captureId, result, result.Value, bounded.Token).ConfigureAwait(false)
+                : new(result);
             await InvokeAsync(() =>
             {
                 // Authorization revocation is never hidden by a late response or by a changed capture.
-                if (result.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
+                if (observed.Kind == OperatorUiResultKind.Unauthorized) { RevokeAccess(); return; }
                 if (revision != _astrometryReadRevision || generation != _layerGeneration || captureId != _runCaptureId || _disposeStarted != 0 || _accessDenied || cancellation.IsCancellationRequested) return;
-                ApplyAstrometry(captureId, result.Value ?? new(captureId, "Unavailable", "retained-read-unavailable"));
+                var eligible = IsCurrentAstrometryObservation(observed) ? observed.Value : null;
+                ApplyAstrometry(captureId, eligible ?? new(captureId, "Unavailable", "retained-read-unavailable"));
                 StateHasChanged();
             });
         }
@@ -91,10 +365,11 @@ public sealed partial class CurrentSkyPage
         }
     }
 
-    private void CalculatePixelToSky()
+    private void CalculatePixelToSky((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
+        if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
         _calculatorResult = "Enter finite source-pixel coordinates inside the retained aperture and above the geometric horizon.";
-        if (!CanCalculate || _pixelX is not { } x || _pixelY is not { } y || !InsideSource(x, y)) return;
+        if (_pixelX is not { } x || _pixelY is not { } y || !InsideSource(x, y)) return;
         var point = _astrometry!.Mapping!.PixelToSky(new(x, y));
         if (point is not { AboveGeometricHorizon: true }) return;
         _skyCoordinates = "equatorial";
@@ -103,10 +378,11 @@ public sealed partial class CurrentSkyPage
         _calculatorResult = FormattableString.Invariant($"RA {_skyFirst:0.########} h, Dec {_skySecond:0.########}° (mean of date); altitude {point.Horizontal.AltitudeDegrees:0.########}°, azimuth {point.Horizontal.AzimuthDegrees:0.########}°. Epoch {point.CoordinateEpochUtc:O}. Point uncertainty withheld; fit RMS is not prediction uncertainty.");
     }
 
-    private void CalculateSkyToPixel()
+    private void CalculateSkyToPixel((long Revision, CameraAgentPresentationStage? Stage) requested)
     {
+        if (requested != (_astrometryReadRevision, _selectedStage) || !CanCalculate) return;
         _calculatorResult = "Enter finite RA [0, 24) h / Dec [−90, 90]°, or altitude [0, 90]° / azimuth [0, 360)°. The point must lie within the retained aperture above the horizon.";
-        if (!CanCalculate || _skyFirst is not { } first || _skySecond is not { } second || !double.IsFinite(first) || !double.IsFinite(second)) return;
+        if (_skyFirst is not { } first || _skySecond is not { } second || !double.IsFinite(first) || !double.IsFinite(second)) return;
         EquatorialPoint equatorial;
         if (_skyCoordinates == "horizontal")
         {

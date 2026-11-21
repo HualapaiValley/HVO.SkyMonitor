@@ -28,7 +28,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
     private string? _storageRoot;
     private CatalogFixtureInstallation? _catalogFixture;
 
-    public async Task InitializeAsync()
+    public async Task InitializeAsync(Action<IServiceCollection>? configureServices = null)
     {
         _storageRoot = Path.Combine(Path.GetTempPath(), $"hvo-cameraagent-standalone-integration-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_storageRoot);
@@ -85,6 +85,7 @@ internal sealed class CameraAgentIntegrationFixture : IDisposable
                 {
                     services.Remove(drainService);
                 }
+                configureServices?.Invoke(services);
             });
         });
 

@@ -308,6 +308,19 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
             ? OperatorUiResult<CameraAgentCurrentSkyView>.Success(new(presentation.Value, null, null))
             : OperatorUiResult<CameraAgentCurrentSkyView>.Failure(presentation.Kind, presentation.Message ?? "unavailable");
     }
+    internal Func<CancellationToken, CameraAgentLatestAstrometry?, ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>>> LatestAstrometryHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true)));
+    internal Func<CancellationToken, CameraAgentLatestAstrometry?, CameraAgentAstrometryAssessmentIdentity?, ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>>>? LatestAstrometrySelectionHandler { get; set; }
+    public ValueTask<OperatorUiResult<CameraAgentLatestAstrometryRead>> GetLatestAcceptedAstrometryAsync(
+        CancellationToken cancellationToken, CameraAgentLatestAstrometry? previousSummary = null,
+        CameraAgentAstrometryAssessmentIdentity? selectedAssessment = null)
+        => LatestAstrometrySelectionHandler is { } handler ? handler(cancellationToken, previousSummary, selectedAssessment)
+            : LatestAstrometryHandler(cancellationToken, previousSummary);
+    internal Func<CameraAgentAstrometryAssessmentIdentity, CancellationToken, ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>>> AstrometryPublicationHandler { get; set; } =
+        (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentAstrometryPublicationState>.Success(CameraAgentAstrometryPublicationState.Available));
+    public ValueTask<OperatorUiResult<CameraAgentAstrometryPublicationState>> ReadAstrometryPublicationStateAsync(
+        CameraAgentAstrometryAssessmentIdentity identity, CancellationToken cancellationToken)
+        => AstrometryPublicationHandler(identity, cancellationToken);
     internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>>> AstrometryHandler { get; set; } =
         (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(new(id, "NotRetained", "assessment-not-retained")));
     public ValueTask<OperatorUiResult<CameraAgentRetainedAstrometry>> GetRetainedAstrometryAsync(Guid captureId, CancellationToken cancellationToken)
@@ -321,6 +334,9 @@ internal sealed class TestOperatorUiService : ICameraAgentOperatorUiService, ICa
     public ValueTask<OperatorUiResult<CameraAgentProductPage>> GetProductPageAsync(CameraAgentProductQuery query, CancellationToken cancellationToken) => ProductPageHandler(query, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentProductDetail>> GetProductDetailAsync(Guid artifactId, CancellationToken cancellationToken) => ProductDetailHandler(artifactId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetLayeredPresentationAsync(Guid captureId, CancellationToken cancellationToken) => PresentationHandler(captureId, cancellationToken);
+    internal Func<Guid, CancellationToken, ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>>>? CurrentPresentationHandler { get; set; }
+    public ValueTask<OperatorUiResult<CameraAgentLayeredPresentation>> GetCurrentLayeredPresentationAsync(Guid captureId, CancellationToken cancellationToken)
+        => (CurrentPresentationHandler ?? PresentationHandler)(captureId, cancellationToken);
     public ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>> SaveLayeredPresentationAsync(Guid captureId, IReadOnlyList<string> enabledLayerIdentitySha256, CancellationToken cancellationToken) => MaterializationHandler(captureId, enabledLayerIdentitySha256, cancellationToken);
 
     internal Func<Guid, string, IReadOnlyList<string>, CancellationToken, ValueTask<OperatorUiResult<CameraAgentPresentationMaterializationReceipt>>> FrozenMaterializationHandler { get; set; } =

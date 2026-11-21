@@ -185,6 +185,9 @@ internal sealed partial class CameraAgentSettingsService(
                 CameraAgentSettingsCatalogue.CurrentSkyGroup => await WriteFileIntegerAsync(found,
                     CameraAgentSettingsCatalogue.MinimumRefreshInterval, values, current.Version, actor, cancellationToken)
                     .ConfigureAwait(false),
+                CameraAgentSettingsCatalogue.VirtualSkyGroup => await WriteFileIntegerAsync(found,
+                    CameraAgentSettingsCatalogue.RendererCandidateCap, values, current.Version, actor, cancellationToken)
+                    .ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.LocationGroup => await WriteLocationAsync(found, values, request.ExpectedVersion!,
                     actor, command, reason, cancellationToken).ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.CameraGroup => await WriteCameraAsync(found, values, current.Version, actor,
@@ -268,6 +271,9 @@ internal sealed partial class CameraAgentSettingsService(
                     .ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.CurrentSkyGroup => await ReadFileIntegerAsync(group,
                     CameraAgentSettingsCatalogue.MinimumRefreshInterval, currentSkyRefresh.Seconds, cancellationToken)
+                    .ConfigureAwait(false),
+                CameraAgentSettingsCatalogue.VirtualSkyGroup => await ReadFileIntegerAsync(group,
+                    CameraAgentSettingsCatalogue.RendererCandidateCap, sceneObjectBound.ConfiguredRendererCandidateCap, cancellationToken)
                     .ConfigureAwait(false),
                 CameraAgentSettingsCatalogue.LocationGroup => ReadLocation(group),
                 CameraAgentSettingsCatalogue.CameraGroup => await ReadCameraAsync(group, cancellationToken).ConfigureAwait(false),
@@ -372,13 +378,12 @@ internal sealed partial class CameraAgentSettingsService(
             => values.TryGetValue(definition.Key, out var value) ? (string?)value : existing;
     }
 
-    // Sky map and Current Sky: one whole number in the settings file, read back through the live configuration so an
-    // override is visible. The value in effect is what its consumer reads now.
+    // Read a whole-number setting back through live configuration. A null value represents an inherited override.
 
     private async Task<CameraAgentSettingsGroupState> ReadFileIntegerAsync(
         CameraAgentSettingsGroup group,
         CameraAgentSettingDefinition definition,
-        int effective,
+        int? effective,
         CancellationToken cancellationToken)
     {
         var snapshot = settingsFile is null ? null : await settingsFile.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -400,7 +405,7 @@ internal sealed partial class CameraAgentSettingsService(
         var problem = unusable
             ? string.Create(CultureInfo.InvariantCulture,
                 $"The settings file value is not a whole number from {definition.Minimum:N0} to {definition.Maximum:N0}, ") +
-              "so the default applies until it is corrected."
+              "so the fallback applies until it is corrected."
             : null;
 
         return new(group.Name, snapshot?.Version ?? UnavailableVersion, canWrite, reason,
