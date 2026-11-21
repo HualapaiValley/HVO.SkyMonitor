@@ -30,6 +30,7 @@ internal static class CameraAgentPipelineOperationsEndpoints
     private static async Task<IResult> GetAsync(
         CaptureScheduleRuntimeCoordinator runtime,
         ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CancellationToken cancellationToken)
     {
@@ -39,7 +40,7 @@ internal static class CameraAgentPipelineOperationsEndpoints
             var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
             var state = await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false);
             return Results.Ok(CameraAgentPipelineOperatorProjection.CreateState(
-                state, current.Configuration, pipelineFactory));
+                state, current.Configuration, pipelineFactory, graphs));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -60,6 +61,7 @@ internal static class CameraAgentPipelineOperationsEndpoints
         CaptureScheduleRuntimeCoordinator runtime,
         SqliteCaptureScheduleStore store,
         ICaptureProcessingPipelineFactory pipelineFactory,
+        IProcessingGraphOperations graphs,
         ICameraAgentConfigurationAccessor configurationAccessor,
         CameraAgentOperatorTelemetry telemetry,
         CancellationToken cancellationToken)
@@ -74,7 +76,7 @@ internal static class CameraAgentPipelineOperationsEndpoints
             var profile = CameraAgentScheduleOperatorProjection.RestoreOpaqueOptions(request.Profile, basis.Profile);
             var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
             var plan = CameraAgentPipelineOperatorProjection.Preview(
-                profile, current.Configuration, pipelineFactory);
+                profile, current.Configuration, pipelineFactory, graphs);
             outcome = "valid";
             return Results.Ok(plan);
         }

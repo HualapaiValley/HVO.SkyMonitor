@@ -91,8 +91,21 @@ public static class MeasuredStellarAssociator
         StellarLabelPolicySettingsV1 labelPolicy,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(measurement);
+        return Associate(scene, measurement.Detections, measurement.Exclusions,
+            measurement.Status == StellarMeasurementStatus.Completed, settings, labelPolicy, cancellationToken);
+    }
+
+    internal static MeasuredStellarAssociationEntries Associate(
+        ProjectedSceneV1 scene,
+        IReadOnlyList<StellarDetection> detections,
+        IReadOnlyList<StellarMeasurementExclusion> exclusions,
+        bool measurementCompleted,
+        MeasuredStellarAssociationSettingsV1 settings,
+        StellarLabelPolicySettingsV1 labelPolicy,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(labelPolicy);
         settings.Validate();
@@ -100,9 +113,8 @@ public static class MeasuredStellarAssociator
         var aperture = new ProjectedSceneAperture(scene);
         var stars = scene.Objects.Where(static item => item.Kind == CelestialObjectKind.Star)
             .OrderBy(static item => item.Id, StringComparer.Ordinal).ToArray();
-        var detections = measurement.Detections;
         var unmatched = new List<MeasuredStellarUnmatchedPredictionV1>();
-        if (measurement.Status != StellarMeasurementStatus.Completed)
+        if (!measurementCompleted)
         {
             foreach (var star in stars)
                 unmatched.Add(Unmatched(star, aperture.Contains(star.Pixel)
@@ -174,7 +186,6 @@ public static class MeasuredStellarAssociator
             detectionAssigned[pair.Detection] = pair.Star;
         }
 
-        var exclusions = measurement.Exclusions;
         var associations = new List<MeasuredStellarAssociationV1>();
         var starCategory = new int[stars.Length];
         for (var index = 0; index < stars.Length; index++)
@@ -293,6 +304,20 @@ public static class MeasuredStellarAssociator
     private static MeasuredStellarUnmatchedPredictionV1 Unmatched(ProjectedCelestialObject star, string reason) =>
         new(star.Id, Round(star.Magnitude, ValueDecimals), Round(star.Pixel.X, PositionDecimals),
             Round(star.Pixel.Y, PositionDecimals), reason);
+
+    internal static bool MatchesDetection(MeasuredStellarAssociationV1 member, IReadOnlyList<StellarDetection> detections)
+    {
+        if (member.DetectionIndex < 0 || member.DetectionIndex >= detections.Count)
+            return false;
+        var detection = detections[member.DetectionIndex];
+        var covariance = detection.CentroidCovariance;
+        return member.MeasuredX == Round(detection.Pixel.X, PositionDecimals) &&
+               member.MeasuredY == Round(detection.Pixel.Y, PositionDecimals) &&
+               member.Flux == Round(detection.Flux, ValueDecimals) && member.SignalToNoise == Round(detection.SignalToNoise) &&
+               member.CovarianceXX == Round(covariance?.XX) && member.CovarianceXY == Round(covariance?.XY) &&
+               member.CovarianceYY == Round(covariance?.YY) && member.SaturatedSampleCount == detection.SaturatedSampleCount &&
+               member.Trailed == detection.Conditions.HasFlag(StellarSourceConditions.Trailed);
+    }
 
     /// <summary>Squared Mahalanobis residual under the prediction variance plus the source's centroid covariance.</summary>
     private static double NormalizedSquared(StellarDetection detection, PixelPoint expected, double predictionSigma)

@@ -12,6 +12,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Added
 
+- Centered CameraAgent pipeline runs show per-exposure brightness, stellar centroids, and half-flux diameter in Operations. #1920
+
 - Opt-in VirtualSky profiles can render a checksum-pinned orbital pass through ordinary Mono16 or Bayer RGGB16 acquisition, with synthetic brightness controls and separate predicted and measured trail evidence. #1927
 
 - CameraAgent Current Sky shows the latest accepted retained measured pointing, rotation, local pixel scale and capture time, with previous-capture results kept separate from selected-image diagnostics. Virtual Sky can measure astrometry alongside its existing scene overlays. #1901
@@ -28,11 +30,14 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
+
 - CameraAgent opens retained file-only archive products through the local archive API and rejects incompatible centered profiles before activation. #1919
 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
+
 - Current Sky clears measured overlays and calculator results when a repaired astrometric fit is quarantined again, while retaining the verified historical result. #1901
 
 - Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901

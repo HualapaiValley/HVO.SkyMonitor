@@ -97,7 +97,8 @@ internal sealed class CameraAgentScheduleUiService(
     ICaptureProcessingPipelineFactory pipelineFactory,
     CameraAgentOperatorTelemetry telemetry,
     TimeProvider timeProvider,
-    ILogger<CameraAgentScheduleUiService> logger) : ICameraAgentScheduleUiService
+    ILogger<CameraAgentScheduleUiService> logger,
+    IProcessingGraphOperations graphs) : ICameraAgentScheduleUiService
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -286,7 +287,7 @@ internal sealed class CameraAgentScheduleUiService(
             var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
             var state = await runtime.GetOperatorStateAsync(cancellationToken).ConfigureAwait(false);
             return OperatorUiResult<CameraAgentPipelineOperatorState>.Success(
-                CameraAgentPipelineOperatorProjection.CreateState(state, current.Configuration, pipelineFactory));
+                CameraAgentPipelineOperatorProjection.CreateState(state, current.Configuration, pipelineFactory, graphs));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -488,7 +489,7 @@ internal sealed class CameraAgentScheduleUiService(
             profile = transform(profile);
             var current = runtime.Snapshot ?? throw new InvalidOperationException("The pipeline runtime is unavailable.");
             var plan = CameraAgentPipelineOperatorProjection.Preview(
-                profile, current.Configuration, pipelineFactory);
+                profile, current.Configuration, pipelineFactory, graphs);
             return OperatorUiResult<CameraAgentPipelineProfilePreview>.Success(new(
                 basisRevisionId,
                 SerializeProfile(profile),

@@ -14,7 +14,7 @@ internal sealed class CaptureAstrometryExecutionGate : IDisposable
 }
 
 /// <summary>Explicit sampled background work on admitted raw. Inputs come from the frozen graph and its dependencies.</summary>
-internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
+internal class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
     MeasuredAstrometryCaptureOptions options, CameraAgentRecipeExecutionAdapter adapter, CaptureAstrometryExecutionGate gate,
     CaptureProcessingPersistence? persistence = null, IServiceProvider? services = null)
     : ConfigurableCaptureProcessingStep<MeasuredAstrometryCaptureOptions>(metadata, options), ICaptureProcessingGraphStep,
@@ -22,6 +22,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
 {
     internal const string Alias = "MeasuredAstrometry";
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    protected virtual string AssociationRecipe => BuiltInProcessingRecipes.MeasuredStellarAssociations;
     public bool Enabled => true;
     public string RecipeName => BuiltInProcessingRecipes.MeasuredAstrometry;
     internal bool UsesAstrometryPrediction => Options.UseAstrometryPrediction;
@@ -38,7 +39,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
                 ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene },
             new HashSet<string>(ProjectedSceneV1.SupportedSchemaVersions)),
         new(new HashSet<FrameArtifactRole> { FrameArtifactRole.Metadata },
-            new HashSet<string> { BuiltInProcessingRecipes.MeasuredStellarAssociations },
+            new HashSet<string> { AssociationRecipe },
             new HashSet<string> { MeasuredStellarAssociationsV1.CurrentSchemaVersion })
     ];
     public IReadOnlyList<CaptureProcessingOutputDescriptor> Outputs =>
@@ -53,7 +54,8 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
     public override async ValueTask ProcessAsync(CaptureProcessingContext context, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Config.CenteredExposure is not null || context.RawCapture?.Manifest.CenteredExposure is not null)
+        if (AssociationRecipe == BuiltInProcessingRecipes.MeasuredStellarAssociations &&
+            (context.Config.CenteredExposure is not null || context.RawCapture?.Manifest.CenteredExposure is not null))
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.centered-measurement-required"));
             return;
@@ -67,7 +69,7 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.crossed-scene-dependencies"));
             return;
         }
-        if (!context.IsReplayExecution && (descriptor.Capture.CaptureSequence - 1) % Options.CaptureStride != 0)
+        if (!context.IsReplayExecution && (CaptureOrdinal(context, descriptor) - 1) % Options.CaptureStride != 0)
         {
             context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.capture-cadence"));
             return;
@@ -77,37 +79,18 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
         var dependencies = context.GetDependencyProducts();
         var scene = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => ProjectedSceneV1.IsSupportedSchemaVersion(p.SchemaVersion)));
         var measured = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, dependencies.Single(p => p.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion));
-        ProcessingProduct? newContext = null;
-        ProcessingArtifact frozen;
+        await ValidateMeasuredInputAsync(context, raw, measured, scene, cancellationToken).ConfigureAwait(false);
         if (context.IsReplayExecution)
         {
-            if (context.FrozenAuxiliaryInputFailure is not null)
-                throw new InvalidDataException("The original astrometry context is missing or altered.");
-            frozen = context.GetFrozenAuxiliaryInputs().Single(p => p.SchemaVersion == MeasuredAstrometryContextV1.CurrentSchemaVersion);
-        }
-        else
-        {
-            var catalog = Options.Catalog ?? await (Options.CatalogSelection
-                ?? throw new InvalidDataException("A pinned astrometry catalog is required."))
-                .ResolveAsync(services?.GetService<IAstrometricCatalogSource>(), cancellationToken).ConfigureAwait(false);
-            var input = RetainedAstrometryProducts.CreateContext(raw, measured, scene, catalog, Options.Clock, Options.PreviousAccepted);
-            newContext = RetainedAstrometryProducts.CreateContextProduct(input, raw, measured, scene, OutputVariant + "-context");
-            frozen = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, newContext);
-        }
-        if (context.IsReplayExecution)
-        {
-            var retained = context.GetFrozenAuxiliaryInputs().Single(p => p.SchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
-            var product = RetainedAstrometryProducts.Product(retained);
-            if (product.Variant != OutputVariant) throw new InvalidDataException("Replay cannot rename an immutable assessment.");
-            var originalOptions = product.Recipe.Descriptor.Options.GetProperty("parameters")
-                .Deserialize<MeasuredAstrometryOptions>(Json)!;
-            var originalRequest = RetainedAstrometryProducts.Request(raw, measured, scene, frozen, originalOptions, OutputVariant);
-            _ = RetainedAstrometryProducts.Verify(originalRequest, product, cancellationToken);
-            context.RecordExecutionRequest(originalRequest);
-            context.RecordExecutionRoute(ProcessingNodeExecutionRoute.InProcess);
-            LayeredPresentationCaptureProcessing.Add(context, RetainedAstrometryProducts.Product(frozen), product);
+            ReplayRetainedAssessment(context, raw, measured, scene, cancellationToken);
             return;
         }
+        var catalog = Options.Catalog ?? await (Options.CatalogSelection
+            ?? throw new InvalidDataException("A pinned astrometry catalog is required."))
+            .ResolveAsync(services?.GetService<IAstrometricCatalogSource>(), cancellationToken).ConfigureAwait(false);
+        var input = RetainedAstrometryProducts.CreateContext(raw, measured, scene, catalog, Options.Clock, Options.PreviousAccepted);
+        var newContext = RetainedAstrometryProducts.CreateContextProduct(input, raw, measured, scene, OutputVariant + "-context");
+        var frozen = CameraAgentRecipeExecutionAdapter.CreateArtifact(context, newContext);
         var request = RetainedAstrometryProducts.Request(raw, measured, scene, frozen, Options.Recipe, OutputVariant);
         await gate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -131,6 +114,76 @@ internal sealed class MeasuredAstrometryCaptureProcessingStep(CaptureProcessingS
             LayeredPresentationCaptureProcessing.Add(context, newContext is null ? [solution] : [newContext, solution]);
         }
         finally { gate.Semaphore.Release(); }
+    }
+
+    private void ReplayRetainedAssessment(CaptureProcessingContext context, ProcessingArtifact raw, ProcessingArtifact measured,
+        ProcessingArtifact scene, CancellationToken cancellationToken)
+    {
+        if (context.FrozenAuxiliaryInputFailure == FrozenAuxiliaryInputFailure.Altered)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure("astrometry.frozen-evidence-invalid"));
+            return;
+        }
+        var inputs = context.GetFrozenAuxiliaryInputs();
+        var frozen = inputs.SingleOrDefault(p => p.SchemaVersion == MeasuredAstrometryContextV1.CurrentSchemaVersion);
+        var retained = inputs.SingleOrDefault(p => p.SchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion);
+        if (frozen is null || retained is null)
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.Skipped("astrometry.frozen-evidence-unavailable"));
+            return;
+        }
+
+        var contextProduct = RetainedAstrometryProducts.CreateContextProduct(MeasuredAstrometryJson.ParseContext(frozen.Payload),
+            raw, measured, scene, OutputVariant + "-context");
+        var assessment = RetainedAstrometryProducts.Product(retained);
+        if (frozen.Variant != contextProduct.Variant || frozen.ArtifactId != ProcessingIdentity.CreateArtifactId(contextProduct.OutputIdentitySha256) ||
+            frozen.RecipeIdentitySha256 != contextProduct.Recipe.IdentitySha256 ||
+            frozen.ContentIdentitySha256 != contextProduct.ContentIdentitySha256 ||
+            frozen.SourceArtifactIds is not { } lineage || !lineage.SequenceEqual(contextProduct.SourceArtifactIds) ||
+            assessment.Variant != OutputVariant || retained.ArtifactId != ProcessingIdentity.CreateArtifactId(assessment.OutputIdentitySha256))
+        {
+            context.AddProcessingOutcome(ProcessingOutcome.TerminalFailure("astrometry.frozen-evidence-invalid"));
+            return;
+        }
+        var originalOptions = assessment.Recipe.Descriptor.Options.GetProperty("parameters")
+            .Deserialize<MeasuredAstrometryOptions>(Json)!;
+        var request = RetainedAstrometryProducts.Request(raw, measured, scene, frozen, originalOptions, OutputVariant);
+        _ = RetainedAstrometryProducts.Verify(request, assessment, cancellationToken);
+        context.RecordExecutionRequest(request);
+        context.RecordExecutionRoute(ProcessingNodeExecutionRoute.InProcess);
+        var outcome = ProcessingOutcome.Produced(contextProduct, assessment);
+        context.RecordExecutionOutcome(outcome);
+        context.AddProcessingOutcome(outcome);
+    }
+
+    protected virtual ValueTask ValidateMeasuredInputAsync(CaptureProcessingContext context, ProcessingArtifact raw,
+        ProcessingArtifact association, ProcessingArtifact scene, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+
+    protected virtual long CaptureOrdinal(CaptureProcessingContext context, ReconstructionDescriptor descriptor) =>
+        descriptor.Capture.CaptureSequence;
+}
+
+internal sealed class ExposureAstrometryCaptureProcessingStep(CaptureProcessingStepMetadata metadata,
+    MeasuredAstrometryCaptureOptions options, CameraAgentRecipeExecutionAdapter adapter, CaptureAstrometryExecutionGate gate,
+    CaptureProcessingPersistence persistence, CaptureExposureMeasurementReader reader, IServiceProvider services)
+    : MeasuredAstrometryCaptureProcessingStep(metadata, options, adapter, gate, persistence, services)
+{
+    internal const string CenteredAlias = CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias;
+    protected override string AssociationRecipe => ExposureAssociationProducts.RecipeName;
+
+    protected override long CaptureOrdinal(CaptureProcessingContext context, ReconstructionDescriptor descriptor) =>
+        context.RawCapture?.Manifest.CenteredExposure?.Source.Ordinal ??
+        throw new InvalidDataException("Centered astrometry requires an admitted attempt ordinal.");
+
+    protected override async ValueTask ValidateMeasuredInputAsync(CaptureProcessingContext context, ProcessingArtifact raw,
+        ProcessingArtifact association, ProcessingArtifact scene, CancellationToken cancellationToken)
+    {
+        if (context.GetDependencyProducerStepId(scene.ArtifactId) != ExposureCatalogPredictionProducts.StepAlias)
+            throw new InvalidDataException("Centered astrometry requires the fixed exposure catalog prediction.");
+        if (association.SourceArtifactIds is not { Count: 3 } lineage)
+            throw new InvalidDataException("Centered astrometry requires retained measurement lineage.");
+        var (retained, measurement) = await reader.ReadDependencyAsync(context, lineage[1], cancellationToken).ConfigureAwait(false);
+        ExposureAssociationProducts.VerifyMeasurement(association, raw, retained, measurement, scene);
     }
 }
 

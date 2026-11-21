@@ -191,6 +191,8 @@ public sealed class CompactSceneUploadLaneTests
             var scene = await provider.GetRequiredService<CaptureProcessingPersistence>().FindCommittedSceneUploadAsync(
                 lease.Context.RawCapture.Manifest.Descriptor, CancellationToken.None).ConfigureAwait(false);
             Assert.IsNotNull(scene, "The canonical scene remains local even when uploads are disabled.");
+            Assert.AreEqual(ExposureCatalogPredictionProducts.Variant, scene.Descriptor.Artifact.Variant,
+                "The configured canonical producer can use a nondefault variant.");
             var queued = await outbox.ReadAsync(root, scene.IdempotencyKey, CancellationToken.None).ConfigureAwait(false);
             if (uploadImages)
             {
@@ -264,7 +266,11 @@ public sealed class CompactSceneUploadLaneTests
         return CreateConfiguration(root, withStorage: false) with
         {
             Pipeline = new CapturePipelineConfig([
-                new("ProjectedScene", "scene", DependsOn: ["$raw"]),
+                new("ProjectedScene", "scene", DependsOn: ["$raw"],
+                    Options: JsonSerializer.SerializeToElement(new ProjectedSceneCaptureProcessingStepOptions
+                    {
+                        OutputVariant = ExposureCatalogPredictionProducts.Variant
+                    })),
                 new("Preview", "preview", DependsOn: ["$raw"]),
                 new("Storage", "storage", Options: JsonSerializer.SerializeToElement(new FileStorageCaptureProcessingStepOptions
                 {

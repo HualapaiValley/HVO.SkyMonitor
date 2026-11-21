@@ -52,6 +52,10 @@ public sealed class ProcessingNodeOptionsForm
         {
             return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, PreviewOptionDescriptors.VersionFor(options)).Descriptor;
         }
+        if (string.Equals(alias, ExposureAssociationProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+            return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, ExposureAssociationProducts.ImplementationVersion).Descriptor;
+        if (string.Equals(alias, CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias, StringComparison.OrdinalIgnoreCase))
+            return ProcessingNodeOptionsCatalog.BuiltIn.Resolve(alias, CaptureAnalysisOptionDescriptors.CenteredAstrometry.StepVersion).Descriptor;
         var version = alias.ToUpperInvariant() switch
         {
             "SCENESTYLEPRESENTATIONLAYERV1" => SceneStylePresentation.ProducerVersion,

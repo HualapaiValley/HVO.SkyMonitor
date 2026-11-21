@@ -5,6 +5,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Components.Shared;
+using HVO.SkyMonitor.Processing;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using Microsoft.AspNetCore.Components;
@@ -95,6 +96,14 @@ public sealed partial class ProcessingExecutionDetailPage : SiteTimeComponent, I
     private static string FormatBytes(long bytes) => bytes >= 1_048_576
         ? $"{(bytes / 1_048_576d).ToString("0.##", CultureInfo.InvariantCulture)} MiB"
         : $"{bytes.ToString("N0", CultureInfo.InvariantCulture)} B";
+
+    private static string MeasurementNumber(double? value) =>
+        value?.ToString("0.##", CultureInfo.InvariantCulture) ?? "Unavailable";
+
+    private static string ClippingLabel(ExposureClippingV1? clipping) =>
+        clipping?.Count is { } count
+            ? string.Create(CultureInfo.InvariantCulture, $"{count} at or above {clipping.StoredWhite}")
+            : clipping?.Reason ?? "Unavailable";
 
     /// <summary>The recorded retention state of one artifact, distinct from its content availability.</summary>
     private string RetentionLabel(Guid artifactId) =>

@@ -354,6 +354,7 @@ public static class CameraAgentServiceCollectionExtensions
         services.AddSingleton<ICameraAgentLayeredPresentationService, CameraAgentLayeredPresentationService>();
         services.AddSingleton<ICameraAgentRetainedAstrometryService, CameraAgentRetainedAstrometryService>();
         services.AddSingleton<CaptureProcessingPersistence>();
+        services.AddExposureMeasurement();
         services.AddSingleton<SqliteNightlyProductStore>();
         services.AddSingleton<INightlyProductCatalog>(static provider =>
             provider.GetRequiredService<SqliteNightlyProductStore>());

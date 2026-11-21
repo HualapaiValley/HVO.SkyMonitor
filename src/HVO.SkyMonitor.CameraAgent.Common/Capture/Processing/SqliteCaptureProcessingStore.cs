@@ -887,7 +887,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         string? productSchemaVersion,
         int maximumCount,
         CancellationToken cancellationToken,
-        string? recipeName = null)
+        string? recipeName = null,
+        bool excludeExposurePrediction = false)
     {
         ArgumentOutOfRangeException.ThrowIfEqual(captureId, Guid.Empty);
         if (maximumCount is < 1 or > MaximumProductQueryCount) throw new ArgumentOutOfRangeException(nameof(maximumCount));
@@ -903,6 +904,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             FROM processing_outputs AS output
             WHERE capture_id = $capture_id
               AND ($recipe IS NULL OR json_extract(descriptor_json, '$.artifact.recipe.name') = $recipe)
+              AND ($exclude_prediction = 0 OR NOT (node_id = $prediction_node COLLATE NOCASE AND variant = $prediction_variant))
               AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
                                WHERE association.output_identity_sha256 = output.output_identity_sha256)
                    OR EXISTS (SELECT 1 FROM processing_execution_outputs association
@@ -917,6 +919,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             FROM processing_outputs AS output
             WHERE capture_id = $capture_id AND product_schema_version = $schema
               AND ($recipe IS NULL OR json_extract(descriptor_json, '$.artifact.recipe.name') = $recipe)
+              AND ($exclude_prediction = 0 OR NOT (node_id = $prediction_node COLLATE NOCASE AND variant = $prediction_variant))
               AND (NOT EXISTS (SELECT 1 FROM processing_execution_outputs association
                                WHERE association.output_identity_sha256 = output.output_identity_sha256)
                    OR EXISTS (SELECT 1 FROM processing_execution_outputs association
@@ -928,6 +931,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         command.Parameters.AddWithValue("$capture_id", captureId.ToString("N"));
         command.Parameters.AddWithValue("$schema", (object?)productSchemaVersion ?? DBNull.Value);
         command.Parameters.AddWithValue("$recipe", (object?)recipeName ?? DBNull.Value);
+        command.Parameters.AddWithValue("$exclude_prediction", excludeExposurePrediction);
+        command.Parameters.AddWithValue("$prediction_node", ExposureCatalogPredictionProducts.StepAlias);
+        command.Parameters.AddWithValue("$prediction_variant", ExposureCatalogPredictionProducts.Variant);
         command.Parameters.AddWithValue("$limit", maximumCount);
         var products = new List<DurableCaptureProduct>(maximumCount);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);

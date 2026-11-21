@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
 using HVO.SkyMonitor.CameraAgent.Components.Operations;
 using HVO.SkyMonitor.CameraAgent.Services;
+using HVO.SkyMonitor.Processing;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -303,6 +304,8 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
     /// </summary>
     private string? ToggleUnavailableReason()
     {
+        if (SelectedNode is { Alias: var selectedAlias } && ExposureMeasurementProducts.IsSystemManagedStepAlias(selectedAlias))
+            return CameraAgentPipelineOperatorProjection.SystemManagedStepReason;
         if (_pipeline is null)
         {
             return "The processing graph is not loaded.";
@@ -912,10 +915,19 @@ public sealed partial class PipelineSummaryPage : ComponentBase, IAsyncDisposabl
         => string.Concat(node.Alias, " / ", node.Required ? "required" : "optional", node.Enabled ? "" : " / off");
 
     private static string StepKind(CaptureProcessingPlanNode node)
-        => string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
+        => ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias) ? "Fixed step" :
+            string.Concat(node.Required ? "Required step" : "Optional step", node.Enabled ? "" : " / off");
 
     private static string StepDescription(CaptureProcessingPlanNode node)
     {
+        if (string.Equals(node.Alias, ExposureMeasurementProducts.StepAlias, StringComparison.OrdinalIgnoreCase))
+        {
+            return "Records raw brightness, measured centroids and half-flux diameter for each exposure as inputs permit.";
+        }
+        if (ExposureMeasurementProducts.IsSystemManagedStepAlias(node.Alias))
+        {
+            return "Builds an independent catalog prediction for the selected centered association or astrometry steps.";
+        }
         if (!node.Enabled)
         {
             return "This step is off. It stays in the configured graph and is left out of the effective graph until it is turned back on.";

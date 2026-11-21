@@ -283,8 +283,13 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 var sceneId = astrometry.Config.DependsOn.Single(id => nodesById[id].Step is ProjectedSceneCaptureProcessingStep);
                 var measurement = astrometry.Config.DependsOn.Select(id => nodesById[id])
                     .Single(static producer => producer.Step is MeasuredStellarAssociationCaptureProcessingStep);
-                if (measurement.Config.DependsOn is not { Count: 1 } measuredInputs ||
-                    !string.Equals(measuredInputs[0], sceneId, StringComparison.OrdinalIgnoreCase))
+                var measuredInputs = measurement.Config.DependsOn ?? [];
+                var measuredScenes = measurement.Step is ICenteredRawPrimaryCaptureProcessingStep
+                    ? measuredInputs.Where(id => nodesById.TryGetValue(id, out var producer) &&
+                        producer.Step is ProjectedSceneCaptureProcessingStep).ToArray()
+                    : measuredInputs;
+                if (measuredScenes is not [var measuredScene] ||
+                    !string.Equals(measuredScene, sceneId, StringComparison.OrdinalIgnoreCase))
                 {
                     if (compilation == CaptureProcessingGraphCompilation.Proposal)
                     {
@@ -386,7 +391,8 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
         CameraModuleConfig config,
         IReadOnlyList<(CaptureProcessingStepConfig Config, ICaptureProcessingStep Step)> configured)
     {
-        var scenes = configured.Where(static item => item.Step is ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false }).ToArray();
+        var scenes = configured.Where(static item =>
+            item.Step is ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false, IsExposurePrediction: false }).ToArray();
         var annotations = configured.Where(static item => item.Step is AnnotationCaptureProcessingStep).ToArray();
         var sceneBearing = string.Equals(config.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase) ||
             annotations.Any(static item =>
@@ -1252,6 +1258,20 @@ internal sealed class CaptureProcessingPipelineFactory : ICaptureProcessingPipel
                 item.Config.Publication,
                 optionalDependencies,
                 planNode.IdentitySha256));
+        }
+        if (ordered.SingleOrDefault(node => node.Step is ExposureMeasurementCaptureProcessingStep) is { } measurement)
+        {
+            // Keep the shared graph's order for all other nodes. Its ready-batch ordering would otherwise
+            // put unrelated raw consumers (including Storage and scene construction) ahead of step 4,
+            // merely because step 4 waits for its own step-three settlement.
+            var prerequisites = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { measurement.Id };
+            for (var index = ordered.Count - 1; index >= 0; index--)
+            {
+                if (prerequisites.Contains(ordered[index].Id))
+                    prerequisites.UnionWith(ordered[index].Dependencies);
+            }
+            return ordered.Where(node => prerequisites.Contains(node.Id))
+                .Concat(ordered.Where(node => !prerequisites.Contains(node.Id))).ToList();
         }
         return ordered;
     }

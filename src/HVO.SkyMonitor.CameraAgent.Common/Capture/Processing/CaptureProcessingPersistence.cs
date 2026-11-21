@@ -29,7 +29,8 @@ internal sealed partial class CaptureProcessingPersistence(
     IFrameStorageService frameStorage,
     CaptureProcessingTelemetry telemetry,
     ILogger<CaptureProcessingPersistence> logger,
-    ICaptureProcessingFaultInjector? faultInjector = null) : IProcessingRetentionHolds, IProcessingOutputExpiration
+    ICaptureProcessingFaultInjector? faultInjector = null) :
+    IProcessingRetentionHolds, IProcessingOutputExpiration
 {
     private readonly string _storageRoot = Path.GetFullPath(options.Value.RawIngressRoot);
     internal string StorageRoot => _storageRoot;
@@ -55,7 +56,8 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var schemaVersion in ProjectedSceneV1.SupportedSchemaVersions)
         {
             candidates.AddRange(await _store.ReadCaptureProductsAsync(descriptor.Capture.CaptureId,
-                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene).ConfigureAwait(false));
+                schemaVersion, 2, cancellationToken, BuiltInProcessingRecipes.ProjectedScene,
+                excludeExposurePrediction: descriptor.CenteredAcquisition is not null).ConfigureAwait(false));
         }
         if (candidates.Count == 0) return null;
         if (candidates.Count != 1)
@@ -73,6 +75,7 @@ internal sealed partial class CaptureProcessingPersistence(
     {
         if (output.ProductManifest is not { ByteLength: > 0 and <= ProjectedSceneJson.MaximumPayloadBytes } ||
             output.Artifact.Recipe.Name != BuiltInProcessingRecipes.ProjectedScene ||
+            IsExposurePredictionOutput(descriptor, output.Artifact.SourceId, output.Artifact.Variant) ||
             !SceneProvenance.IsRetainedProjectedSceneSchemaVersion(output.ProductSchemaVersion) ||
             output.Artifact.SourceArtifactIds.Count != 1 ||
             output.Artifact.SourceArtifactIds[0] != descriptor.Artifact.ArtifactId ||
@@ -94,6 +97,13 @@ internal sealed partial class CaptureProcessingPersistence(
                 product.Kind, product.SchemaVersion!, product.ContentIdentitySha256!),
             output.PayloadRelativePath, output.Artifact.SourceId);
     }
+
+    // Centered catalog prediction shares the scene recipe and schema. Its fixed producer
+    // and variant distinguish it from the renderer's scene, whose alias and variant are configurable.
+    internal static bool IsExposurePredictionOutput(ReconstructionDescriptor? raw, string? producer, string? variant)
+        => raw?.CenteredAcquisition is not null &&
+            string.Equals(producer, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(variant, ExposureCatalogPredictionProducts.Variant, StringComparison.Ordinal);
 
     private readonly SqliteCaptureProcessingStore _store = store;
     private readonly IFrameStorageService _frameStorage = frameStorage;
@@ -548,32 +558,7 @@ internal sealed partial class CaptureProcessingPersistence(
         foreach (var output in outputs)
         {
             var restored = await RestoreOutputAsync(output, cancellationToken).ConfigureAwait(false);
-            var observationStartedUtc = output.Descriptor?.Timing.ExposureStartedUtc;
-            DateTimeOffset? observationEndedUtc = observationStartedUtc is { } startedUtc && output.Descriptor is { } descriptor
-                ? ProcessingArtifact.ResolveObservationEndedUtc(
-                    startedUtc, descriptor.Timing.ExposureEndedUtc, restored.Product.TotalIntegration)
-                : null;
-            artifacts.Add(new ProcessingArtifact(
-                restored.ArtifactId,
-                restored.Product.Role,
-                restored.Product.Variant,
-                restored.Product.Recipe.IdentitySha256,
-                restored.Product.MediaType,
-                restored.Product.Layout,
-                restored.Product.Payload,
-                restored.CreatedUtc,
-                restored.Product.TotalIntegration,
-                restored.Product.Compatibility,
-                CaptureSequence: output.CaptureSequence,
-                SourceArtifactIds: restored.Product.SourceArtifactIds,
-                ObservationStartedUtc: observationStartedUtc,
-                ObservationEndedUtc: observationEndedUtc)
-            {
-                ProductKind = restored.Product.Kind,
-                SchemaVersion = restored.Product.SchemaVersion,
-                ContentIdentitySha256 = restored.Product.ContentIdentitySha256,
-                RecipeDescriptor = restored.Product.Recipe.Descriptor
-            });
+            artifacts.Add(CreateProcessingArtifact(output, restored));
         }
         return artifacts;
     }
@@ -986,7 +971,11 @@ internal sealed partial class CaptureProcessingPersistence(
         }
         var artifactId = ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256);
         DecodedImage? encodedImage = null;
-        if (product.Role == FrameArtifactRole.Metadata)
+        if (product.MediaType == ExposureMeasurementProducts.MediaType)
+        {
+            _ = ExposureMeasurementProducts.VerifyRawBinding(ExposureMeasurementProducts.Read(product), sourceDescriptor);
+        }
+        else if (product.Role == FrameArtifactRole.Metadata)
         {
             try
             {
@@ -1245,6 +1234,11 @@ internal sealed partial class CaptureProcessingPersistence(
             SchemaVersion = manifest.ProductSchemaVersion,
             ContentIdentitySha256 = manifest.ContentIdentitySha256
         };
+        if (product.MediaType == ExposureMeasurementProducts.MediaType &&
+            ExposureMeasurementProducts.Read(product).Input.Raw.CaptureId != output.Capture.CaptureId)
+        {
+            throw new InvalidDataException("The exposure measurement differs from the durable capture.");
+        }
         return new RestoredProcessingOutput(
             manifest.Artifact.ArtifactId,
             manifest.Artifact.CreatedUtc,

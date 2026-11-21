@@ -45,18 +45,24 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
 
     internal static bool MeasuredInputIsValid(ProcessingArtifact measuredArtifact, ProcessingArtifact raw)
     {
-        return measuredArtifact.ProductKind == ProcessingProductKind.Metadata && measuredArtifact.Role == FrameArtifactRole.Metadata &&
-            measuredArtifact.MediaType == StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType &&
-            measuredArtifact.SchemaVersion == MeasuredStellarAssociationsV1.CurrentSchemaVersion &&
-            measuredArtifact.ContentIdentitySha256 is not null && measuredArtifact.SourceArtifactIds is { Count: 1 } &&
+        if (measuredArtifact.ProductKind != ProcessingProductKind.Metadata || measuredArtifact.Role != FrameArtifactRole.Metadata ||
+            measuredArtifact.MediaType != StructuredProcessingProductContracts.MeasuredStellarAssociationsMediaType ||
+            measuredArtifact.SchemaVersion != MeasuredStellarAssociationsV1.CurrentSchemaVersion ||
+            measuredArtifact.ContentIdentitySha256 is null || measuredArtifact.RecipeDescriptor is not { } descriptor ||
+            !MeasuredAstrometryJson.Same(ProcessingIdentity.CreateRecipeIdentity(descriptor).IdentitySha256,
+                measuredArtifact.RecipeIdentitySha256))
+            return false;
+
+        if (descriptor.Name == ExposureAssociationProducts.RecipeName)
+            return ExposureAssociationProducts.Matches(measuredArtifact, raw);
+        return
+            measuredArtifact.SourceArtifactIds is { Count: 1 } &&
             measuredArtifact.SourceArtifactIds[0] == raw.ArtifactId &&
-            measuredArtifact.RecipeDescriptor is
+            descriptor is
             {
                 Name: BuiltInProcessingRecipes.MeasuredStellarAssociations,
                 SemanticVersion: "1.0.0", ImplementationVersion: "measured-stellar-associations-v1"
-            } &&
-            MeasuredAstrometryJson.Same(ProcessingIdentity.CreateRecipeIdentity(measuredArtifact.RecipeDescriptor).IdentitySha256,
-                measuredArtifact.RecipeIdentitySha256);
+            };
     }
 
     internal static IReadOnlyList<ProcessingArtifact> Sources(ProcessingExecutionRequest request, ProcessingArtifact raw)
@@ -249,7 +255,8 @@ internal sealed class MeasuredAstrometryRecipe : IProcessingRecipe
             frame.DetectionAlgorithmVersion != measured.Measurement.AlgorithmVersion ||
             !MeasuredAstrometryJson.Same(frame.DetectionSettingsIdentitySha256, measured.Measurement.SettingsIdentitySha256))
             return "astrometry.source-lineage-mismatch";
-        if (scene.Source.CaptureId != frame.CaptureId || scene.Source.ArtifactId != raw.ArtifactId ||
+        if (!ExposureAssociationProducts.MatchesScene(measuredArtifact, scene) ||
+            scene.Source.CaptureId != frame.CaptureId || scene.Source.ArtifactId != raw.ArtifactId ||
             !MeasuredAstrometryJson.Same(scene.Source.ArtifactIdentitySha256, frame.SourceDescriptorSha256) ||
             !MeasuredAstrometryJson.Same(scene.SceneIdentitySha256, measured.Scene.SceneIdentitySha256) ||
             measured.Scene.Kind != scene.Kind || scene.Kind != ProjectedSceneKind.Predicted ||

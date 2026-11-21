@@ -24,6 +24,42 @@ public sealed class ProcessingExecutionPagesTests
     private static readonly Guid CompletedId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid CaptureId = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
+    [TestMethod]
+    [DataRow(ExposureMeasurementStatus.Empty, 0, "no-candidates")]
+    [DataRow(ExposureMeasurementStatus.Unavailable, null, "linear-input-unavailable")]
+    [DataRow(ExposureMeasurementStatus.Unsuitable, 0, "all-candidates-rejected")]
+    public void RunExposureMeasurementDistinguishesZeroFromUnavailableAndRejected(
+        ExposureMeasurementStatus status, int? validCount, string reason)
+    {
+        using var context = new BunitContext();
+        ConfigureTransientRun(context);
+        context.Services.AddSingleton<ICameraAgentOperatorUiService>(new TestOperatorUiService());
+        var raw = new ExposureMeasurementSourceV1(CaptureId, Guid.NewGuid(), new string('A', 64),
+            new string('B', 64), new string('C', 64), null,
+            new(2, 2, 4, CameraPixelFormat.Mono16, FrameByteOrder.LittleEndian, 16, 16,
+                FrameSamplePacking.ByteAligned, ColorFilterArrayPattern.None, 0, 65535, 8));
+        var measurement = new ExposureMeasurementV1(ExposureMeasurementProducts.SchemaVersion,
+            new(raw, null, ExposureCalibrationDisposition.Missing, "no-master", "orientation"),
+            new(4, 0, 65535, 65535, 3, new(65535, 1, null)), null, null,
+            new(status, reason, validCount, null, null, null, [], []),
+            new(status, reason, validCount, null, null, 0, null, []));
+        var node = new CameraAgentProcessingNodeView(ExposureMeasurementProducts.StepAlias, false,
+            new string('A', 64), "Completed", null, 1, Now, Now, [], [], []);
+        context.Services.AddSingleton<ICameraAgentProcessingGraphUiService>(new GraphUiService
+        {
+            Detail = new(Now, CameraAgentProcessingExecutionProjection.Summarize(
+                Execution(CompletedId, ProcessingGraphExecutionClass.Live, ProcessingGraphExecutionStatus.Completed)),
+                "shared", "local", [node])
+            { ExposureMeasurement = new(measurement, null) }
+        });
+        var cut = context.Render<ProcessingExecutionDetailPage>(parameters => parameters.Add(page => page.ExecutionId, CompletedId));
+        cut.WaitForElement("section[aria-label='Exposure measurements']");
+        var facts = cut.Find("section[aria-label='Exposure measurements']").TextContent;
+        Assert.Contains("1 at or above 65535", facts);
+        Assert.Contains(reason, facts);
+        Assert.Contains(validCount is null ? "Unavailable / Unavailable" : $"0 / {status}", facts);
+    }
+
     private static void ConfigureTransientRun(BunitContext context)
     {
         ConfigureDiagram(context);

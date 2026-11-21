@@ -34,6 +34,20 @@ public static class RigProjectionContextFactory
         return TransformReadout(native, readout, divideByBins: true);
     }
 
+    /// <summary>Resolves the projection of the actual delivered frame using its admitted readout geometry.</summary>
+    public static ProjectionContext? CreateDeliveredView(CameraRigConfig rig, FrameLayoutDescriptor layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        var projection = CreateNative(rig);
+        if (layout.Readout is { } readout)
+        {
+            if (readout.NativeWidth != projection.WidthPixels || readout.NativeHeight != projection.HeightPixels)
+                return null;
+            projection = CreateReadoutView(projection, readout);
+        }
+        return projection.WidthPixels == layout.Width && projection.HeightPixels == layout.Height ? projection : null;
+    }
+
     /// <summary>Resolves deterministic image-circle and cardinal landmarks without sensor-bound clipping.</summary>
     public static ProjectionAnnotationLandmarks? CreateAnnotationLandmarks(ProjectionContext projection)
     {

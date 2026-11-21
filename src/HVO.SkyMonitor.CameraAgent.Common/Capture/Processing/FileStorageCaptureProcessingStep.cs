@@ -210,8 +210,8 @@ internal sealed class FileStorageCaptureProcessingStep(
                     }
                     queueForUpload = false;
                 }
-                var isCanonicalScene = SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion);
-                if (isCanonicalScene || metadataAlreadyStoredUnderRoot && !queueForUpload)
+                var isProjectedScene = SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion);
+                if (isProjectedScene || metadataAlreadyStoredUnderRoot && !queueForUpload)
                 {
                     continue;
                 }
@@ -284,8 +284,11 @@ internal sealed class FileStorageCaptureProcessingStep(
         CancellationToken cancellationToken)
     {
         if (!allowAutomaticPublication || !_centralIntegrationEnabled) return;
-        var scenes = products.Where(static product =>
-            SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion)).ToArray();
+        var scenes = products.Where(product =>
+            SceneProvenance.IsRetainedProjectedSceneSchemaVersion(product.SchemaVersion) &&
+            !CaptureProcessingPersistence.IsExposurePredictionOutput(context.ReconstructionDescriptor,
+                context.GetDependencyProducerStepId(ProcessingIdentity.CreateArtifactId(product.OutputIdentitySha256)),
+                product.Variant)).ToArray();
         if (needsSceneUpload && scenes.Length != 1)
             throw new InvalidDataException("Compact image upload requires one declared canonical scene dependency.");
         foreach (var product in scenes)

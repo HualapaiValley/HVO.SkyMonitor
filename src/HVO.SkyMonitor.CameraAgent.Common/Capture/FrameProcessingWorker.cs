@@ -12,6 +12,7 @@ using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using HVO.SkyMonitor.CameraAgent.Common.Storage;
 using HVO.SkyMonitor.CameraAgent.Replay;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Extensions.Logging;
@@ -208,10 +209,18 @@ internal sealed class FrameProcessingWorker
                 }
             }
             var statuses = new Dictionary<string, DurableProcessingNodeStatus>(StringComparer.OrdinalIgnoreCase);
+            var measurement = graph.Nodes.SingleOrDefault(node => node.Step is ExposureMeasurementCaptureProcessingStep);
+            // The centered measurement remains non-fatal once settled, but must not be discarded on its first
+            // transient failure (or on the first transient failure of its pinned step-three input).
+            bool RetryCenteredMeasurement(CaptureProcessingGraphNode node) => measurement is not null &&
+                (node == measurement || measurement.Dependencies.Contains(node.Id, StringComparer.OrdinalIgnoreCase));
+
             string? deferredRetryReason = null;
             foreach (var node in graph.Nodes)
             {
-                if (storagePolicyMismatch && (node.Step is not ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false } || rawCapture?.Manifest.Scene is null))
+                if (storagePolicyMismatch &&
+                    (node.Step is not ProjectedSceneCaptureProcessingStep { IsAstrometryPrediction: false, IsExposurePrediction: false } ||
+                     rawCapture?.Manifest.Scene is null))
                     continue;
                 // Retain scene evidence when possible without promoting an optional node into a lane/admission fault.
                 var required = node.Required;
@@ -454,10 +463,12 @@ internal sealed class FrameProcessingWorker
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure && attempt >= maximumAttempts)
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
-                    reason = "processing.optional-exhausted";
+                    if (!RetryCenteredMeasurement(node))
+                        reason = "processing.optional-exhausted";
                 }
                 if (!required && status == DurableProcessingNodeStatus.RetryableFailure &&
-                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch)
+                    item.Execution?.ExecutionClass == ProcessingGraphExecutionClass.Live && !storagePolicyMismatch &&
+                    !RetryCenteredMeasurement(node))
                 {
                     status = DurableProcessingNodeStatus.TerminalFailure;
                     reason = "processing.optional-degraded";
@@ -465,23 +476,8 @@ internal sealed class FrameProcessingWorker
                 var products = exception is null
                     ? outcomes.SelectMany(static value => value.Products).ToArray()
                     : [];
-                foreach (var product in products)
-                {
-                    context.RegisterProcessingProduct(product);
-                }
-                telemetry.RecordNode(node, status, reason, duration, executionClass);
-                if (logger.IsEnabled(LogLevel.Debug))
-                {
-                    logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
-                }
-                nodeActivity?.SetStatus(
-                    status == DurableProcessingNodeStatus.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error,
-                    reason);
-                context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
-                    node.Id,
-                    duration,
-                    status == DurableProcessingNodeStatus.Completed,
-                    reason));
+                if (node != measurement)
+                    ObserveOutcome();
                 if (persistence is not null && rawCapture is not null)
                 {
                     if (status == DurableProcessingNodeStatus.Completed &&
@@ -522,12 +518,37 @@ internal sealed class FrameProcessingWorker
                     }
                     else
                     {
-                        await persistence.WriteNodeAsync(
-                            rawCapture, node, status, reason, persistedAttempt,
-                            startedUtc, completedUtc, duration,
-                            outcome?.Status,
-                            item.WorkId, item.LeaseToken,
-                            products, context, item.Execution, cancellationToken).ConfigureAwait(false);
+                        try
+                        {
+                            await persistence.WriteNodeAsync(
+                                rawCapture, node, status, reason, persistedAttempt,
+                                startedUtc, completedUtc, duration,
+                                outcome?.Status,
+                                item.WorkId, item.LeaseToken,
+                                products, context, item.Execution, cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (IOException caught) when (
+                            node == measurement && status == DurableProcessingNodeStatus.Completed &&
+                            products is [{ SchemaVersion: ExposureMeasurementProducts.SchemaVersion }] &&
+                            rawCapture.Manifest.CenteredExposure is not null &&
+                            item.Execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
+                            !FileSystemFaultCompatibility.IsContainmentFailure(caught))
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            // Only a successful fixed product's publication is retried here, not source reads,
+                            // invalid immutable evidence, lost leases, or the SQLite node transaction.
+                            logger.CaptureProcessingStepFailed(node.Id, context.Submission.CaptureStartedUtc, caught);
+                            reason = ExposureMeasurementRunRead.PublicationIoReason;
+                            status = attempt < maximumAttempts
+                                ? DurableProcessingNodeStatus.RetryableFailure
+                                : DurableProcessingNodeStatus.TerminalFailure;
+                            var publicationOutcome = status == DurableProcessingNodeStatus.RetryableFailure
+                                ? ProcessingOutcomeStatus.RetryableFailure
+                                : ProcessingOutcomeStatus.TerminalFailure;
+                            await persistence.CompleteOutputlessExecutionNodeAsync(item.Execution, node, status, reason,
+                                persistedAttempt, timeProvider.GetUtcNow(), duration, publicationOutcome,
+                                context.CurrentExecutionRoute, cancellationToken).ConfigureAwait(false);
+                        }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             status == DurableProcessingNodeStatus.Completed &&
                             node.Step is IDurableCaptureProcessingPostCommit committed)
@@ -540,6 +561,8 @@ internal sealed class FrameProcessingWorker
                         }
                     }
                 }
+                if (node == measurement)
+                    ObserveOutcome();
                 statuses[node.Id] = status;
                 if (required)
                 {
@@ -564,6 +587,23 @@ internal sealed class FrameProcessingWorker
                     (DurableProcessingNodeStatus.TerminalFailure or DurableProcessingNodeStatus.Skipped))
                 {
                     return AbandonStorageMismatch(CaptureStoragePolicy.SceneUnavailableLaneReason);
+                }
+
+                void ObserveOutcome()
+                {
+                    // The fixed product must not reach a dependent node before the durable commit.
+                    if (node != measurement || status == DurableProcessingNodeStatus.Completed)
+                    {
+                        foreach (var product in products)
+                            context.RegisterProcessingProduct(product);
+                    }
+                    telemetry.RecordNode(node, status, reason, duration, executionClass);
+                    if (logger.IsEnabled(LogLevel.Debug))
+                        logger.CaptureProcessingNodeOutcome(node.Id, status.ToString());
+                    nodeActivity?.SetStatus(
+                        status == DurableProcessingNodeStatus.Completed ? ActivityStatusCode.Ok : ActivityStatusCode.Error, reason);
+                    context.AddStepTelemetry(new CaptureProcessingStepTelemetry(
+                        node.Id, duration, status == DurableProcessingNodeStatus.Completed, reason));
                 }
             }
             if (storagePolicyMismatch)
