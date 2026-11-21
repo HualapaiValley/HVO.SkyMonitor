@@ -9,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Scheduling;
@@ -506,7 +507,9 @@ public sealed partial class VirtualSkyCameraModuleTests
                         Assert.AreEqual(AstrometricAssessmentStatus.Rejected, solution.Assessment.Status, solution.Assessment.Reason);
                         Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
                         if (publicationFailures == 0)
+                        {
                             await AssertNamedPredictionDependenciesAsync(provider, active, operations, originalExecution.GraphRevisionId).ConfigureAwait(false);
+                        }
                     }
 
                     if (expireLinear)

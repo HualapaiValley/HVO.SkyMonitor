@@ -1,5 +1,4 @@
--- Canonical additions from the runtime-initialized raw v17 journal. Apply to FrozenRawIngressV14.sql.
-
+-- Raw schema 17 additions from 1dea5e36beb9955dd480fcd7ba6038cbd42b1617. Apply after FrozenRawIngressV14.sql.
 CREATE TABLE centered_acquisition_owners (
     agent_id TEXT PRIMARY KEY,
     camera_id TEXT,
@@ -8,7 +7,20 @@ CREATE TABLE centered_acquisition_owners (
     device_identity TEXT,
     active_flag INTEGER NOT NULL CHECK (active_flag IN (0, 1))
 );
-
+CREATE TABLE centered_exposure_runs (
+    run_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    camera_id TEXT NOT NULL,
+    snapshot_json BLOB NOT NULL,
+    snapshot_sha256 TEXT NOT NULL,
+    calibration_bundle_id TEXT,
+    device_identity TEXT,
+    linear_node_id TEXT,
+    linear_variant TEXT,
+    closed_reason TEXT
+);
+CREATE UNIQUE INDEX ux_centered_open_run ON centered_exposure_runs(agent_id, camera_id)
+    WHERE closed_reason IS NULL;
 CREATE TABLE centered_exposure_attempts (
     attempt_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES centered_exposure_runs(run_id),
@@ -21,15 +33,8 @@ CREATE TABLE centered_exposure_attempts (
     reason TEXT,
     UNIQUE (run_id, ordinal)
 );
-
-CREATE TABLE centered_exposure_holds (
-    owner_id TEXT PRIMARY KEY,
-    capture_id TEXT NOT NULL,
-    output_identity TEXT NOT NULL,
-    bytes INTEGER NOT NULL CHECK (bytes > 0),
-    expires_unix_ms INTEGER NOT NULL
-);
-
+CREATE INDEX ix_centered_pending_source ON centered_exposure_attempts(source_capture_id)
+    WHERE status = 'pending';
 CREATE TABLE centered_exposure_products (
     revision INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id TEXT NOT NULL,
@@ -48,30 +53,13 @@ CREATE TABLE centered_exposure_products (
     provenance_json BLOB,
     UNIQUE (capture_id, execution_id, producer, schema_version, variant)
 );
-
-CREATE TABLE centered_exposure_runs (
-    run_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    camera_id TEXT NOT NULL,
-    snapshot_json BLOB NOT NULL,
-    snapshot_sha256 TEXT NOT NULL,
-    calibration_bundle_id TEXT,
-    device_identity TEXT,
-    linear_node_id TEXT,
-    linear_variant TEXT,
-    closed_reason TEXT
-);
-
-CREATE INDEX ix_centered_hold_capture ON centered_exposure_holds(capture_id, expires_unix_ms);
-
-CREATE INDEX ix_centered_pending_source ON centered_exposure_attempts(source_capture_id)
-    WHERE status = 'pending';
-
-CREATE INDEX ix_centered_product_camera ON centered_exposure_products(agent_id, camera_id, revision);
-
 CREATE INDEX ix_centered_product_capture ON centered_exposure_products(capture_id, revision);
-
-CREATE UNIQUE INDEX ux_centered_open_run ON centered_exposure_runs(agent_id, camera_id)
-    WHERE closed_reason IS NULL;
-
-PRAGMA user_version=17;
+CREATE INDEX ix_centered_product_camera ON centered_exposure_products(agent_id, camera_id, revision);
+CREATE TABLE centered_exposure_holds (
+    owner_id TEXT PRIMARY KEY,
+    capture_id TEXT NOT NULL,
+    output_identity TEXT NOT NULL,
+    bytes INTEGER NOT NULL CHECK (bytes > 0),
+    expires_unix_ms INTEGER NOT NULL
+);
+CREATE INDEX ix_centered_hold_capture ON centered_exposure_holds(capture_id, expires_unix_ms);

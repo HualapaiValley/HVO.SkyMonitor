@@ -189,8 +189,8 @@ internal sealed record CaptureProcessingOperationalState(
 
 internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 {
-    internal const int CurrentSchemaVersion = 10;
-    private const string AstrometryLookupIndexPrefix = "CREATE INDEX ix_processing_outputs_astrometry_lookup";
+    internal const int CurrentSchemaVersion = 12;
+    private const string AstrometryLookupIndexPrefix = "CREATE INDEX " + LegacyAstrometryJournalSchema.LookupIndexName;
     internal const int MaximumGalleryInputsPerNode = 8;
     internal const int MaximumProductQueryCount = 128;
     internal const int MaximumOutputSourceCount = LayeredPresentationJson.MaximumSourceArtifactCount;
@@ -249,19 +249,44 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         LIMIT $maximum_candidates;
         """;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private static readonly string LegacySchema9Sql = CreateLegacySchema9Sql();
+    private const string AstrometryLookupIndexSql = LegacyAstrometryJournalSchema.LookupIndexDefinition + ";";
+    private static string SchemaBeforeAstrometryIndexSql =>
+        SchemaSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
+    private static readonly string ViewsBeforeRuntimeSchemaSql = SchemaBeforeAstrometryIndexSql
+        .Replace("version = 12", "version = 11", StringComparison.Ordinal)
+        .Replace("VALUES (1, 12)", "VALUES (1, 11)", StringComparison.Ordinal)
+        .Replace(CenteredViewRuntimeSchemaSql, string.Empty, StringComparison.Ordinal);
+    private static readonly string LegacySchema11Sql = ViewsBeforeRuntimeSchemaSql
+        .Replace(CenteredWindowSchemaSql, LegacyCenteredWindowCheckpointSchemaSql, StringComparison.Ordinal);
+    private static readonly string LegacySchema10Sql = ViewsBeforeRuntimeSchemaSql
+        .Replace("version = 11", "version = 10", StringComparison.Ordinal)
+        .Replace("VALUES (1, 11)", "VALUES (1, 10)", StringComparison.Ordinal)
+        .Replace(CenteredViewSchemaSql, string.Empty, StringComparison.Ordinal);
+    private static readonly string LegacySchema9Sql = LegacySchema10Sql
+        .Replace("version = 10", "version = 9", StringComparison.Ordinal)
+        .Replace("VALUES (1, 10)", "VALUES (1, 9)", StringComparison.Ordinal)
+        .Replace(CenteredWindowSchemaSql, string.Empty, StringComparison.Ordinal);
     private static readonly string LegacySchema8Sql = CreateLegacySchema8Sql();
     private static readonly string LegacySchema5Sql = CreateLegacySchema5Sql();
     private static readonly string LegacySchema6Sql = CreateLegacySchema6Sql();
     private static readonly string LegacySchema7Sql = CreateLegacySchema7Sql();
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema10Definitions =
+        new(() => CreateSchemaDefinitions(LegacySchema10Sql));
+    private static readonly Lazy<Dictionary<string, string>> LegacyAstrometrySchema10Definitions =
+        new(() => CreateSchemaDefinitions(LegacySchema10Sql.Replace(CenteredWindowSchemaSql, string.Empty, StringComparison.Ordinal) +
+            "\n" + LegacyAstrometryJournalSchema.LookupIndexDefinition + ";"));
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema11Definitions =
+        new(() => CreateSchemaDefinitions(LegacySchema11Sql));
+    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema9Definitions =
+        new(() => CreateSchemaDefinitions(LegacySchema9Sql));
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchemaDefinitions =
         new(CreateCanonicalSchemaDefinitions);
+    private static readonly Lazy<Dictionary<string, string>> PreAstrometrySchema12Definitions =
+        new(() => CreateSchemaDefinitions(SchemaBeforeAstrometryIndexSql));
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema5Definitions =
         new(CreateCanonicalSchema5Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema6Definitions =
         new(CreateCanonicalSchema6Definitions);
-    private static readonly Lazy<Dictionary<string, string>> CanonicalSchema9Definitions =
-        new(CreateCanonicalSchema9Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema8Definitions =
         new(CreateCanonicalSchema8Definitions);
     private static readonly Lazy<Dictionary<string, string>> CanonicalSchema7Definitions =
@@ -291,20 +316,25 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     internal static string LegacySchema7SqlForTests => LegacySchema7Sql;
     internal static string LegacySchema8SqlForTests => LegacySchema8Sql;
     internal static string LegacySchema9SqlForTests => LegacySchema9Sql;
+    internal static string LegacySchema10SqlForTests => LegacySchema10Sql;
+    internal static string LegacySchema11SqlForTests => LegacySchema11Sql;
 
     private readonly Microsoft.Extensions.Logging.ILogger? _logger;
 
     private readonly CenteredExposureProductChanges? _centeredProductChanges;
+    private readonly CenteredWindowWakeup? _centeredWindowWakeup;
 
     public SqliteCaptureProcessingStore(
         IOptions<CameraAgentHostOptions> options,
         TimeProvider? timeProvider = null,
         ICaptureProcessingFaultInjector? faultInjector = null,
         Microsoft.Extensions.Logging.ILogger<SqliteCaptureProcessingStore>? logger = null,
-        CenteredExposureProductChanges? centeredProductChanges = null)
+        CenteredExposureProductChanges? centeredProductChanges = null,
+        CenteredWindowWakeup? centeredWindowWakeup = null)
     {
         _logger = logger;
         _centeredProductChanges = centeredProductChanges;
+        _centeredWindowWakeup = centeredWindowWakeup;
         ArgumentNullException.ThrowIfNull(options);
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);
@@ -347,7 +377,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             var migrateSchema7 = !initializeSchema && inspection.ProcessingVersion == 7;
             var migrateSchema8 = !initializeSchema && inspection.ProcessingVersion == 8;
             var migrateSchema9 = !initializeSchema && inspection.ProcessingVersion == 9;
+            var migrateSchema10 = !initializeSchema && inspection.ProcessingVersion == 10;
+            var migrateSchema11 = !initializeSchema && inspection.ProcessingVersion == 11;
             if (!initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 && !migrateSchema8 && !migrateSchema9 &&
+                !migrateSchema10 && !migrateSchema11 &&
                 inspection.ProcessingVersion != CurrentSchemaVersion)
             {
                 var version = inspection.ProcessingVersion ?? 0;
@@ -389,6 +422,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await ValidateSchema5Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateSchema5Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredWindowSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredViewSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -401,6 +436,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await MigrateSchema6Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix).ConfigureAwait(false);
                 await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredWindowSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredViewSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -413,17 +450,18 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await MigrateSchema7Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix).ConfigureAwait(false);
                 await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredWindowSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredViewSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
-            else if (migrateSchema8 || migrateSchema9)
+            else if (migrateSchema8)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
                 using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
                 _faultInjector.Inject(CaptureProcessingFaultPoint.AfterSchemaTransactionBegan, "schema");
-                if (migrateSchema8) await ValidateSchema8Async(connection, transaction, cancellationToken).ConfigureAwait(false);
-                else await ValidateSchema9Async(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await ValidateSchema8Async(connection, transaction, cancellationToken).ConfigureAwait(false);
                 using (var marker = connection.CreateCommand())
                 {
                     marker.Transaction = transaction;
@@ -432,13 +470,66 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 }
                 await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken,
                     "CREATE TABLE capture_processing_schema(", "INSERT INTO capture_processing_schema(", AstrometryLookupIndexPrefix).ConfigureAwait(false);
-                if (migrateSchema8) await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await MigrateManifestLedgersAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredWindowSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await AddCenteredViewSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (migrateSchema9 || migrateSchema10 || migrateSchema11)
+            {
+                using var integrity = migrateSchema11 ? DeploymentLocation.RetainedIntegrityLedger.BeginJournalMetadataWrite() : null;
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+                using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+                _faultInjector.Inject(CaptureProcessingFaultPoint.AfterSchemaTransactionBegan, "schema");
+                var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+                var migrateLegacyAstrometry = migrateSchema10 && actual.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName);
+                var hasAvailability = actual.ContainsKey(CenteredAvailabilityTable);
+                var hasEarlierCutoffIndex = migrateSchema10 && actual.TryGetValue(
+                    "ix_processing_centered_output_availability_cutoff", out var cutoffIndex) &&
+                    cutoffIndex == LegacySchema10WithAvailabilityDefinitions.Value["ix_processing_centered_output_availability_cutoff"];
+                var expectedSchema = migrateSchema9 ? CanonicalSchema9Definitions.Value :
+                    migrateSchema11 ? CanonicalSchema11Definitions.Value :
+                    migrateLegacyAstrometry ? LegacyAstrometrySchema10Definitions.Value :
+                    !hasAvailability ? LegacySchema10BeforeAvailabilityDefinitions.Value :
+                    hasEarlierCutoffIndex ? LegacySchema10WithAvailabilityDefinitions.Value : CanonicalSchema10Definitions.Value;
+                if (!MatchesSchemaDefinitions(actual, expectedSchema))
+                    throw new InvalidDataException(
+                        $"Capture processing SQLite schema is not the canonical schema {inspection.ProcessingVersion} definition.");
+
+                if (migrateSchema11)
+                    await UpgradeUnstartedWindowCheckpointAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+
+                using (var marker = connection.CreateCommand())
+                {
+                    marker.Transaction = transaction;
+                    marker.CommandText = "DROP TABLE capture_processing_schema;";
+                    await marker.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken,
+                    "CREATE TABLE capture_processing_schema(", "INSERT INTO capture_processing_schema(").ConfigureAwait(false);
+                if (!migrateLegacyAstrometry)
+                    await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix)
+                        .ConfigureAwait(false);
+                if (migrateSchema9 || migrateLegacyAstrometry)
+                    await AddCenteredWindowSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                if (!migrateSchema11)
+                    await AddCenteredViewSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                else
+                    await AddCenteredViewRuntimeSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                if (migrateSchema9 || migrateSchema11 || migrateLegacyAstrometry)
+                    await SeedCenteredAvailabilityHistoryAsync(transaction, cancellationToken).ConfigureAwait(false);
+                else if (!hasAvailability || hasEarlierCutoffIndex)
+                    await AdoptCenteredAvailabilityHistoryAsync(transaction, hasAvailability, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
                 _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
             else
             {
+                await EnsureCurrentCenteredSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
             }
             await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -535,6 +626,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ProjectedSceneV1.IsSupportedSchemaVersion(output.Schema));
         foreach (var output in unavailable)
         {
+            if (deterministic)
+                await PreserveCenteredSceneHeaderAsync(transaction, output.Output, cancellationToken).ConfigureAwait(false);
             using var history = connection.CreateCommand();
             history.Transaction = transaction;
             history.CommandText = """
@@ -644,6 +737,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             await EnsureExecutionLeaseAsync(connection, transaction, execution, cancellationToken).ConfigureAwait(false);
         }
         var outputPublication = new bool[outputs.Count];
+        List<long>? restoredAvailability = null;
         var outputInserted = false;
         for (var index = 0; index < outputs.Count; index++)
         {
@@ -651,6 +745,10 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 connection, transaction, captureId, node.Id, outputs[index], execution is not null, cancellationToken)
                 .ConfigureAwait(false);
             outputInserted |= inserted;
+            if (inserted && ProjectedSceneV1.IsSupportedSchemaVersion(outputs[index].ProductSchemaVersion) &&
+                await RecordCenteredAvailabilityChangeAsync(transaction, outputs[index].OutputIdentitySha256, "Available", null,
+                    cancellationToken).ConfigureAwait(false) is { } restored)
+                (restoredAvailability ??= []).Add(restored);
             outputPublication[index] = execution is null ||
                 execution.AllowAutomaticPublication &&
                 (execution.ExecutionClass != ProcessingGraphExecutionClass.Live ||
@@ -719,18 +817,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 await InsertInputAsync(connection, transaction, captureId, node.Id, input, cancellationToken).ConfigureAwait(false);
             }
         }
-        var centeredProductPublished = false;
+        List<long>? centeredRevisions = null;
         if (execution is not null)
         {
-            if (execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true } &&
-                centeredProducts is not null)
-            {
-                foreach (var product in centeredProducts)
-                {
-                    centeredProductPublished |= await PublishCenteredProductAsync(
-                        connection, transaction, execution.ExecutionId, product, cancellationToken).ConfigureAwait(false);
-                }
-            }
+            centeredRevisions = await PublishCenteredProductsAsync(connection, transaction, execution,
+                centeredProducts, cancellationToken).ConfigureAwait(false);
 
             await CompleteExecutionNodeCoreAsync(
                 connection,
@@ -749,11 +840,19 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 cancellationToken).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        if (centeredProductPublished) _centeredProductChanges?.NotifyCommitted();
         if (outputs.Count != 0)
             NotifyAstrometryOutputsCommitted(captureId,
                 outputs.Any(static output => output.ProductSchemaVersion == MeasuredAstrometrySolutionV1.CurrentSchemaVersion),
                 outputInserted || execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true });
+        if (restoredAvailability is not null)
+            foreach (var change in restoredAvailability)
+                await ObserveCenteredAvailabilityChangeAsync(connection, change).ConfigureAwait(false);
+        if (centeredRevisions is { Count: > 0 })
+            await ObserveCommittedCenteredProductsAsync(connection, centeredRevisions).ConfigureAwait(false);
+        else if (outputs.Count == 0)
+        {
+            NotifyCenteredOutputlessMeasurement(execution, node, status);
+        }
     }
 
     /// <summary>
@@ -957,7 +1056,14 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         ArgumentOutOfRangeException.ThrowIfEqual(artifactId, Guid.Empty);
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        return await ReadOutputByArtifactIdAsync(connection, null, artifactId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<DurableProcessingOutput?> ReadOutputByArtifactIdAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, Guid artifactId, CancellationToken cancellationToken)
+    {
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             SELECT output_identity_sha256, artifact_id, payload_relative_path, sidecar_relative_path,
                    descriptor_json, capture_id, agent_id, node_id, role, variant, recipe_identity_sha256,
@@ -1259,7 +1365,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
+        using var transaction = connection.BeginTransaction(deferred: false);
+#pragma warning restore CA1849
+        var change = await RecordCenteredAvailabilityChangeAsync(transaction, outputIdentitySha256, state, reason, cancellationToken)
+            .ConfigureAwait(false);
         using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText = """
             WITH prior AS MATERIALIZED (
                 SELECT output_identity_sha256, availability_state
@@ -1284,7 +1396,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         var affected = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
         if (affected is null)
             throw new InvalidDataException("Processing output availability target is missing.");
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (affected is string captureId) MarkAstrometryCaptureChanged(Guid.ParseExact(captureId, "N"));
+        await ObserveCenteredAvailabilityChangeAsync(connection, change).ConfigureAwait(false);
     }
 
     internal async ValueTask<bool> RestoreMissingOutputAvailableAsync(
@@ -1320,6 +1434,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return false;
         }
+        var change = await RecordCenteredAvailabilityChangeAsync(transaction, outputIdentitySha256, "Available", null, cancellationToken)
+            .ConfigureAwait(false);
         using (var output = connection.CreateCommand())
         {
             output.Transaction = transaction;
@@ -1352,6 +1468,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (astrometry) MarkAstrometryCaptureChanged(Guid.ParseExact(captureId, "N"));
+        await ObserveCenteredAvailabilityChangeAsync(connection, change).ConfigureAwait(false);
         return completed;
     }
 
@@ -1399,6 +1516,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             return new(false);
         }
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        var availabilityChange = await RecordCenteredAvailabilityChangeAsync(transaction, outputIdentitySha256, state, reason,
+            cancellationToken).ConfigureAwait(false);
         var unchanged = string.Equals(currentState, state, StringComparison.Ordinal) &&
             string.Equals(currentReason, reason, StringComparison.Ordinal);
         if (!unchanged)
@@ -1475,6 +1594,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         if ((!unchanged && productSchema == MeasuredAstrometrySolutionV1.CurrentSchemaVersion) ||
             (currentState == "Quarantined" && (state != "Quarantined" || deterministic)))
             MarkAstrometryCaptureChanged(Guid.ParseExact(captureId, "N"));
+        await ObserveCenteredAvailabilityChangeAsync(connection, availabilityChange).ConfigureAwait(false);
         return new(deterministic);
     }
 
@@ -1657,9 +1777,12 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
 #pragma warning disable CA1849
         using var transaction = connection.BeginTransaction(deferred: false);
 #pragma warning restore CA1849
+        long? availabilityChange = null;
         Guid? changedAstrometryCapture = null;
         if (operation.OutputIdentitySha256 is { } output)
         {
+            availabilityChange = await RecordCenteredAvailabilityChangeAsync(transaction, output,
+                operation.Kind == "delete" ? "Expired" : "Quarantined", operation.Reason, cancellationToken).ConfigureAwait(false);
             string? owningCapture = null;
             string? owningNode = null;
             {
@@ -1735,6 +1858,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         if (changedAstrometryCapture is { } captureId) MarkAstrometryCaptureChanged(captureId);
+        await ObserveCenteredAvailabilityChangeAsync(connection, availabilityChange).ConfigureAwait(false);
     }
 
     internal async ValueTask DeleteLifecycleOperationAsync(string operationId, CancellationToken cancellationToken)
@@ -2507,6 +2631,33 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 WHERE hold.expires_unix_ms > $centered_now
                 UNION
                 SELECT output.artifact_id
+                FROM centered_exposure_holds hold
+                JOIN centered_exposure_products product ON product.capture_id = hold.capture_id
+                JOIN processing_outputs output ON output.output_identity_sha256 = product.output_identity
+                WHERE hold.expires_unix_ms > $centered_now AND hold.output_identity GLOB 'raw:*'
+                UNION
+                SELECT lower(replace(json_extract(revision.manifest, '$.baseProduct.artifactId'), '-', ''))
+                FROM processing_centered_view_intervals live
+                JOIN processing_centered_view_revisions revision ON revision.base_id = live.base_id
+                    AND revision.revision_id = live.revision_id
+                WHERE live.ended_order IS NULL
+                UNION
+                SELECT lower(replace(json_extract(layer.value, '$.sourceProduct.artifactId'), '-', ''))
+                FROM processing_centered_view_intervals live
+                JOIN processing_centered_view_revisions revision ON revision.base_id = live.base_id
+                    AND revision.revision_id = live.revision_id
+                JOIN json_each(revision.manifest, '$.layers') layer
+                WHERE live.ended_order IS NULL
+                UNION
+                SELECT lower(replace(artifact.value, '-', ''))
+                FROM processing_centered_windows window
+                LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
+                JOIN json_each(CAST(window.publication_json AS TEXT), '$.registrationArtifactIds') artifact
+                WHERE window.terminal = 1 AND window.publication_json IS NOT NULL
+                    AND window.registration_deadline_utc_ticks > $centered_ticks
+                    AND (work.window_sha256 IS NULL OR work.retry_utc IS NOT NULL AND work.live_base_id IS NULL)
+                UNION
+                SELECT output.artifact_id
                 FROM processing_execution_output_input_pins pin
                 JOIN processing_outputs output ON output.output_identity_sha256 = pin.output_identity_sha256
                 WHERE pin.released_flag = 0
@@ -2528,6 +2679,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             """;
         command.Parameters.AddWithValue("$maximum_outputs", ProcessingOutputRetentionCount);
         command.Parameters.AddWithValue("$centered_now", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        command.Parameters.AddWithValue("$centered_ticks", _timeProvider.GetUtcNow().UtcTicks);
         command.Parameters.AddWithValue("$maximum_holds_plus_one", ProcessingRetentionHoldSafetyCount + 1);
         var holds = new List<ProcessingRetentionHold>();
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -3115,7 +3267,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 : await ReadProcessingVersionAsync(connection, cancellationToken).ConfigureAwait(false);
             if (processingVersion == CurrentSchemaVersion)
             {
-                await ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+                await ValidateSchemaAsync(connection, cancellationToken, allowEarlierCenteredSchema: true).ConfigureAwait(false);
             }
             return new(rawVersion, processingObjectCount, processingVersion);
         }
@@ -3128,7 +3280,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private static async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken,
-        SqliteTransaction? transaction = null)
+        SqliteTransaction? transaction = null,
+        bool allowEarlierCenteredSchema = false)
     {
         var rawVersion = await ExecuteScalarLongAsync(
             connection, "PRAGMA user_version;", cancellationToken, transaction).ConfigureAwait(false);
@@ -3159,22 +3312,37 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             throw new InvalidDataException("Capture processing SQLite schema marker is invalid.");
         }
         var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
-        if (CanonicalSchemaDefinitions.Value.Any(expected =>
-                !actual.TryGetValue(expected.Key, out var definition) ||
-                !string.Equals(definition, expected.Value, StringComparison.Ordinal)) ||
-            actual.Keys.Any(name => !CanonicalSchemaDefinitions.Value.ContainsKey(name)))
+        if (allowEarlierCenteredSchema && IsEarlierCenteredSchema(actual))
+            return;
+        if (!MatchesSchemaDefinitions(actual, CanonicalSchemaDefinitions.Value))
         {
-            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 10 definition.");
+            throw new InvalidDataException($"Capture processing SQLite schema is not the canonical schema {CurrentSchemaVersion} definition.");
         }
     }
 
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only the internal constant schema statement is executed.")]
-    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions()
+    internal static async ValueTask<bool> HasCanonicalAstrometryJournalSchemaAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
+        return MatchesSchemaDefinitions(actual, LegacyAstrometrySchema10Definitions.Value) &&
+            await ExecuteScalarLongAsync(connection,
+            "SELECT version FROM capture_processing_schema WHERE schema_key = 1;", cancellationToken, transaction)
+            .ConfigureAwait(false) == 10;
+    }
+
+    private static bool MatchesSchemaDefinitions(Dictionary<string, string> actual, Dictionary<string, string> expected)
+        => actual.Count == expected.Count && expected.All(item =>
+            actual.TryGetValue(item.Key, out var definition) && definition == item.Value);
+
+    private static Dictionary<string, string> CreateCanonicalSchemaDefinitions() => CreateSchemaDefinitions(SchemaSql);
+
+    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only an internal constant schema statement is executed.")]
+    private static Dictionary<string, string> CreateSchemaDefinitions(string schema)
     {
         using var connection = new SqliteConnection("Data Source=:memory:");
         connection.Open();
         using var command = connection.CreateCommand();
-        command.CommandText = SchemaSql;
+        command.CommandText = schema;
         command.ExecuteNonQuery();
         return ReadSchemaDefinitions(connection);
     }
@@ -3202,41 +3370,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>Schema 9 has the same durable rows as schema 10 and lacks the retained-astrometry index.</summary>
-    private static string CreateLegacySchema9Sql()
-    {
-        var statements = SchemaSql.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(static statement => !statement.StartsWith(AstrometryLookupIndexPrefix, StringComparison.Ordinal))
-            .Select(static statement => statement.StartsWith("CREATE TABLE capture_processing_schema(", StringComparison.Ordinal) ||
-                    statement.StartsWith("INSERT INTO capture_processing_schema(", StringComparison.Ordinal)
-                ? statement.Replace("version = 10", "version = 9", StringComparison.Ordinal)
-                    .Replace("VALUES (1, 10)", "VALUES (1, 9)", StringComparison.Ordinal)
-                : statement);
-        return string.Join(";\n", statements) + ";";
-    }
-
-    [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Only internal schema statements are executed.")]
-    private static Dictionary<string, string> CreateCanonicalSchema9Definitions()
-    {
-        using var connection = new SqliteConnection("Data Source=:memory:");
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = LegacySchema9Sql;
-        command.ExecuteNonQuery();
-        return ReadSchemaDefinitions(connection);
-    }
-
-    private static async ValueTask ValidateSchema9Async(SqliteConnection connection,
-        SqliteTransaction transaction, CancellationToken cancellationToken)
-    {
-        var actual = await ReadSchemaDefinitionsAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
-        if (CanonicalSchema9Definitions.Value.Any(expected =>
-                !actual.TryGetValue(expected.Key, out var definition) || definition != expected.Value) ||
-            actual.Keys.Any(name => !CanonicalSchema9Definitions.Value.ContainsKey(name)))
-            throw new InvalidDataException("Capture processing SQLite schema is not the canonical schema 9 definition.");
-    }
-
     /// <summary>
-    /// Schema 8 is schema 9 without the independent manifest ledger table.
+    /// Schema 8 precedes the independent manifest ledger table introduced in schema 9.
     /// Derive it from the canonical definition so unchanged objects cannot drift.
     /// </summary>
     private static string CreateLegacySchema8Sql()
@@ -3832,9 +3967,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private const string SchemaSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
-            version INTEGER NOT NULL CHECK(version = 10)
+            version INTEGER NOT NULL CHECK(version = 12)
         ) STRICT;
-        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 10);
+        INSERT INTO capture_processing_schema(schema_key, version) VALUES (1, 12);
         CREATE TABLE processing_graph_revisions(
             revision_id TEXT PRIMARY KEY CHECK(length(revision_id) = 64),
             graph_name TEXT NOT NULL CHECK(length(graph_name) BETWEEN 1 AND 128),
@@ -4168,9 +4303,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ON processing_outputs(recipe_identity_sha256, capture_id);
         CREATE INDEX ix_processing_outputs_product
             ON processing_outputs(capture_id, product_schema_version, output_identity_sha256);
-        CREATE INDEX ix_processing_outputs_astrometry_lookup
-            ON processing_outputs(role, product_schema_version, capture_id, artifact_id, content_identity_sha256, availability_state)
-            WHERE role = 'Metadata' AND product_schema_version = 'measured-astrometry-solution-v1';
+        """ + "\n" + AstrometryLookupIndexSql + "\n" + """
         CREATE INDEX ix_processing_outputs_retention_available
             ON processing_outputs(committed_unix_ms, output_identity_sha256) WHERE availability_state = 'Available';
         CREATE INDEX ix_processing_outputs_retention_unavailable
@@ -4207,6 +4340,6 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         CREATE UNIQUE INDEX ix_processing_graph_delivery_facts_settlement
             ON processing_graph_delivery_facts(proposal_id)
             WHERE fact_kind IN ('Accepted', 'Rejected', 'Expired');
-        """;
+        """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql;
 
 }

@@ -233,7 +233,7 @@ internal class ProjectedSceneCaptureProcessingStep(
             return false;
         }
         var frozen = candidates[0];
-        if ((IsExposurePrediction || context.SceneProvenance?.RequiresProjectedScene == true) &&
+        if ((IsExposurePrediction || IsAstrometryPrediction || context.SceneProvenance?.RequiresProjectedScene == true) &&
             !string.Equals(frozen.Variant, OutputVariant, StringComparison.Ordinal))
         {
             failureReason = ProcessingReasonCodes.InvalidProjectedScene;

@@ -47,6 +47,7 @@ public sealed class RawIngressInstallerSchemaContractTests
             using var connection = new SqliteConnection($"Data Source={path}");
             await connection.OpenAsync().ConfigureAwait(false);
             Assert.AreEqual(RawIngressV13Schema.V17Fingerprint, RawIngressV13Schema.ComputeFingerprint(connection));
+            Assert.AreEqual(!wrongProcessingIndex, RawIngressV13Schema.IsCanonicalV17(connection));
             using var version = connection.CreateCommand();
             version.CommandText = "PRAGMA user_version;";
             Assert.AreEqual(17L, (long)(await version.ExecuteScalarAsync().ConfigureAwait(false))!);
@@ -55,7 +56,7 @@ public sealed class RawIngressInstallerSchemaContractTests
             {
                 var failure = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
                     await restartedProcessing.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
-                StringAssert.Contains(failure.Message, "not the canonical schema 10 definition", StringComparison.Ordinal);
+                StringAssert.Contains(failure.Message, "not the canonical schema 12 definition", StringComparison.Ordinal);
             }
             else
             {

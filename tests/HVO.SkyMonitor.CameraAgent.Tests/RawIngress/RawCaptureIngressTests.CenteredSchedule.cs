@@ -353,7 +353,7 @@ public sealed partial class RawCaptureIngressTests
                     .ConfigureAwait(false);
                 uncertain = reservation.Pending.Key;
                 await setup.Ingress.DispatchCenteredAsync(uncertain, CenteredTestSettings, null, "fixture",
-                    token, transition).ConfigureAwait(false);
+                    token, owner: transition).ConfigureAwait(false);
             }
 
             for (var restart = 0; restart < 2; restart++)
