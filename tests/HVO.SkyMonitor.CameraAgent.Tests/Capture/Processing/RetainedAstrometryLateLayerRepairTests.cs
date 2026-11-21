@@ -36,6 +36,9 @@ public sealed partial class DurableCaptureProcessingTests
     [DataRow("renewed-after-history", false)]
     [DataRow("superseding-unavailable", false)]
     [DataRow("superseding-repair", false)]
+    [DataRow("repeated-quarantine", false)]
+    [DataRow("repeated-repair", false)]
+    [DataRow("repeated-superseded", false)]
     public async Task CurrentSkyRejectsLateRetainedLayersAndShowsExactRevalidatedFit(string delivery, bool quarantineAssociations)
     {
         var root = CreateTestRoot();
@@ -49,7 +52,10 @@ public sealed partial class DurableCaptureProcessingTests
             var renewedBeforeHistory = delivery == "renewed-before-history";
             var renewedAfterHistory = delivery == "renewed-after-history";
             var renewedSelection = renewedBeforeHistory || renewedAfterHistory;
-            var refreshLayer = delivery == "refresh-layer" || pointWithdrawsHeadline || renewedSelection;
+            var repeatedObservation = delivery is "repeated-quarantine" or "repeated-repair" or "repeated-superseded";
+            var repeatedRepair = delivery == "repeated-repair";
+            var repeatedSuperseded = delivery == "repeated-superseded";
+            var refreshLayer = delivery == "refresh-layer" || pointWithdrawsHeadline || renewedSelection || repeatedObservation;
             var firstStandalone = delivery == "first-standalone";
             var prefetch = delivery == "prefetch" || incomingPoint;
             var supersedingRepair = delivery == "superseding-repair";
@@ -121,6 +127,14 @@ public sealed partial class DurableCaptureProcessingTests
             var fallbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var negativeHeld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var releaseNegative = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var heldFallbackPoint = new DeferredRetainedRead<CameraAgentAstrometryPublicationState>();
+            var heldSelectionPoint = new DeferredRetainedRead<CameraAgentAstrometryPublicationState>();
+            var releaseRepairedLayers = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            OperatorUiResult<CameraAgentAstrometryPublicationState>? fallbackPoint = null;
+            OperatorUiResult<CameraAgentAstrometryPublicationState>? selectionPoint = null;
+            var armFallbackPoint = 0;
+            var armSelectionPoint = 0;
+            var armRepairedLayers = 0;
             var latestRequests = 0;
             var holdNegative = renewedBeforeHistory || superseding ? 1 : 0;
             var offerStaleReplacement = renewedBeforeHistory ? 1 : 0;
@@ -130,10 +144,12 @@ public sealed partial class DurableCaptureProcessingTests
             context.JSInterop.SetupModule("./Components/Pages/CurrentSkyPage.razor.js")
                 .Setup<string>("bindLayerToggles", _ => true).SetResult("valid");
             var ui = CurrentSkyPageTests.Configure(context);
-            var clock = incomingPoint || renewedSelection || superseding ? new CurrentSkyPageTests.ManualTimeProvider(DateTimeOffset.UtcNow) : null;
+            var clock = incomingPoint || renewedSelection || superseding || repeatedObservation ? new CurrentSkyPageTests.ManualTimeProvider(DateTimeOffset.UtcNow) : null;
             if (clock is not null) context.Services.AddSingleton<TimeProvider>(clock);
             var rejectedPublication = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var selectedIdentity = new CameraAgentAstrometryAssessmentIdentity(capture, originalSummary.ArtifactId, originalSummary.SolutionIdentitySha256);
+            var olderIdentity = new CameraAgentAstrometryAssessmentIdentity(
+                olderSummary.CaptureId, olderSummary.ArtifactId, olderSummary.SolutionIdentitySha256);
             var available = await selectedService.ReadAstrometryPublicationStateAsync(selectedIdentity, token).ConfigureAwait(false);
             Assert.IsTrue(available.IsSuccess);
             Assert.AreEqual(CameraAgentAstrometryPublicationState.Available, available.Value);
@@ -143,6 +159,22 @@ public sealed partial class DurableCaptureProcessingTests
             ui.AstrometryPublicationHandler = async (identity, cancellation) =>
             {
                 var observation = await selectedService.ReadAstrometryPublicationStateAsync(identity, cancellation).ConfigureAwait(false);
+                if (identity == olderIdentity && Interlocked.Exchange(ref armFallbackPoint, 0) == 1)
+                {
+                    Assert.IsTrue(observation.IsSuccess);
+                    Assert.AreEqual(CameraAgentAstrometryPublicationState.Available, observation.Value);
+                    fallbackPoint = observation;
+                    return await heldFallbackPoint.Read().ConfigureAwait(false);
+                }
+                if (identity == selectedIdentity && Interlocked.Exchange(ref armSelectionPoint, 0) == 1)
+                {
+                    Assert.IsTrue(observation.IsSuccess);
+                    Assert.AreEqual(repeatedRepair ? CameraAgentAstrometryPublicationState.Available
+                        : CameraAgentAstrometryPublicationState.Invalidated, observation.Value);
+                    Console.WriteLine($"delivery={delivery} history selected point materialized={observation.Value} identity={identity}");
+                    selectionPoint = observation;
+                    if (repeatedSuperseded) return await heldSelectionPoint.Read().ConfigureAwait(false);
+                }
                 if (identity == selectedIdentity && Interlocked.Exchange(ref armPositive, 0) == 1)
                 {
                     Assert.IsTrue(observation.IsSuccess);
@@ -195,14 +227,16 @@ public sealed partial class DurableCaptureProcessingTests
                 return Volatile.Read(ref allowFreshLayers) != 0 ? service.GetLayeredPresentationAsync(id, cancellation)
                     : ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.NotFound, "Pending layers"));
             };
-            ui.CurrentPresentationHandler = (id, cancellation) =>
+            ui.CurrentPresentationHandler = async (id, cancellation) =>
             {
                 if (incomingPoint && id == capture && Volatile.Read(ref allowFreshLayers) == 0)
-                    return ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
-                        OperatorUiResultKind.NotFound, "Replacement layers are pending."));
+                    return OperatorUiResult<CameraAgentLayeredPresentation>.Failure(
+                        OperatorUiResultKind.NotFound, "Replacement layers are pending.");
                 if (id == capture && Interlocked.Exchange(ref offerStaleReplacement, 0) == 1)
-                    return ValueTask.FromResult(originalLayerRead);
-                return service.GetCurrentLayeredPresentationAsync(id, cancellation);
+                    return originalLayerRead;
+                if (id == capture && Interlocked.Exchange(ref armRepairedLayers, 0) == 1)
+                    await releaseRepairedLayers.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                return await service.GetCurrentLayeredPresentationAsync(id, cancellation).ConfigureAwait(false);
             };
             ui.LatestAstrometrySelectionHandler = async (cancellation, previous, selected) =>
             {
@@ -210,6 +244,11 @@ public sealed partial class DurableCaptureProcessingTests
                     await standaloneLoaded.Task.WaitAsync(cancellation).ConfigureAwait(false);
                 var request = Interlocked.Increment(ref latestRequests);
                 if (incomingPointFirst && request == 1) return initialOlderHistory!;
+                if (repeatedSuperseded && request == 3)
+                {
+                    fallbackStarted.TrySetResult();
+                    await releaseFallback.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                }
                 if (incomingPoint && request == (incomingPointFirst ? 2 : 1))
                 {
                     var firstResult = await service.GetLatestAcceptedAstrometryAsync(cancellation, previous, selected).ConfigureAwait(false);
@@ -246,14 +285,15 @@ public sealed partial class DurableCaptureProcessingTests
                     latestAwaitingQuarantine.TrySetResult();
                     await rawQuarantined.Task.WaitAsync(cancellation).ConfigureAwait(false);
                     if (pointWithdrawsHeadline) await releaseFallback.Task.WaitAsync(cancellation).ConfigureAwait(false);
+                    if (repeatedObservation) await releaseInitialHistory.Task.WaitAsync(cancellation).ConfigureAwait(false);
                 }
                 var result = await service.GetLatestAcceptedAstrometryAsync(cancellation, previous, selected).ConfigureAwait(false);
-                if (overlapsQuarantine && (selectedDuringLatest || positiveAfterLatest || renewedSelection))
+                if (overlapsQuarantine && (selectedDuringLatest || positiveAfterLatest || renewedSelection || repeatedObservation))
                 {
                     Assert.IsTrue(result.IsSuccess);
                     Assert.AreEqual(olderSummary, result.Value?.Summary);
-                    Assert.AreEqual(renewedSelection, result.Value!.PreviousSummaryInvalidated);
-                    Assert.AreEqual(renewedSelection, result.Value.SelectedAssessmentInvalidated);
+                    Assert.AreEqual(renewedSelection || repeatedObservation, result.Value!.PreviousSummaryInvalidated);
+                    Assert.AreEqual(renewedSelection || repeatedObservation, result.Value.SelectedAssessmentInvalidated);
                     Console.WriteLine($"delivery={delivery} history={request} returned={result.Value.Summary!.ArtifactId} previous-invalid={result.Value.PreviousSummaryInvalidated} selected-invalid={result.Value.SelectedAssessmentInvalidated}");
                 }
                 return result;
@@ -361,15 +401,16 @@ public sealed partial class DurableCaptureProcessingTests
                 }
                 else
                 {
-                    await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, [.. payload, 0], token).ConfigureAwait(false);
-                    var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
-                    var reconciled = await new RawIngressReconciler(root, journal)
-                        .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), token).ConfigureAwait(false);
-                    Assert.AreEqual(1, reconciled.Quarantined);
+                    await QuarantineRawAsync().ConfigureAwait(false);
                 }
             }
             finally { rawQuarantined.TrySetResult(); }
             if (refreshLayer) await refresh!.ConfigureAwait(false);
+            if (repeatedObservation)
+            {
+                await VerifyRepeatedObservationAsync().ConfigureAwait(false);
+                return;
+            }
             if (incomingPoint)
             {
                 try
@@ -526,6 +567,111 @@ public sealed partial class DurableCaptureProcessingTests
             await page.Find("form.sky-pixel-calculator").SubmitAsync().ConfigureAwait(false);
             StringAssert.Contains(page.Find(".astrometry-calculator-result").TextContent,
                 "source pixels.", StringComparison.Ordinal);
+
+            async Task VerifyRepeatedObservationAsync()
+            {
+                await Task.Run(() => heldLayer.Complete(originalLayerRead), token).ConfigureAwait(false);
+                await rejectedPublication.Task.WaitAsync(timeout).ConfigureAwait(false);
+                page.WaitForAssertion(() =>
+                {
+                    Assert.IsNull(page.Find(".latest-measured-solution").QuerySelector("time"));
+                    AssertCalculators(enabled: false);
+                }, timeout);
+
+                Volatile.Write(ref armFallbackPoint, 1);
+                Volatile.Write(ref armRepairedLayers, 1);
+                releaseInitialHistory.TrySetResult();
+                await heldFallbackPoint.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+                await RepairRawAsync().ConfigureAwait(false);
+                releaseRepairedLayers.TrySetResult();
+
+                page.WaitForAssertion(() =>
+                {
+                    AssertSelected(originalSummary);
+                    foreach (var id in layerIds) Assert.HasCount(1, page.FindAll($"g[id='{id}']"));
+                }, timeout);
+                await CalculatePixelToSkyAsync().ConfigureAwait(false);
+                Assert.HasCount(1, page.FindAll(".astrometry-calculator-result"));
+                if (!repeatedRepair) await QuarantineRawAsync().ConfigureAwait(false);
+                Volatile.Write(ref armSelectionPoint, 1);
+                await Task.Run(() => heldFallbackPoint.Complete(fallbackPoint!), token).ConfigureAwait(false);
+
+                if (repeatedSuperseded)
+                {
+                    await heldSelectionPoint.Awaiting.Task.WaitAsync(timeout).ConfigureAwait(false);
+                    var later = await CreateAstrometryDurabilityFixtureAsync(root, hostCompatible: true,
+                        captureSequence: 121, reference: await MeasuredAstrometryFixture.CreateAtAsync(40).ConfigureAwait(false),
+                        prior: (61, 1)).ConfigureAwait(false); // Quarantined 61 is no longer inspected by recovery.
+                    var latest = await ProduceLatestReadFixtureAsync(later, store, persistence, telemetry, gate).ConfigureAwait(false);
+                    var evidence = await selectedReader.GetAsync(latest.Capture.CaptureId, token).ConfigureAwait(false);
+                    var replacement = CameraAgentLatestAstrometry.FromVerified(evidence);
+                    Assert.IsNotNull(replacement);
+                    var replacementImage = CurrentSkyPageTests.AstrometryImage(evidence);
+                    var replacementCapture = replacementImage.DisplayCapture! with { CaptureSequence = latest.CaptureSequence };
+                    shown = replacementImage with { DisplayCapture = replacementCapture, LatestCapture = replacementCapture };
+                    await page.InvokeAsync(() => page.Find("button.refresh-link").ClickAsync()).ConfigureAwait(false);
+                    await page.InvokeAsync(() => page.Find("button[title='Show Raw image']").ClickAsync()).ConfigureAwait(false);
+                    page.WaitForAssertion(() => AssertSelected(replacement), timeout);
+                    await CalculatePixelToSkyAsync(replacement).ConfigureAwait(false);
+
+                    await Task.Run(() => heldSelectionPoint.Complete(selectionPoint!), token).ConfigureAwait(false);
+                    await fallbackStarted.Task.WaitAsync(timeout).ConfigureAwait(false);
+                    await page.InvokeAsync(() =>
+                    {
+                        AssertHeadline(olderSummary, "For a different capture");
+                        AssertSelected(replacement);
+                        Assert.HasCount(1, page.FindAll(".astrometry-calculator-result"));
+                    }).ConfigureAwait(false);
+                    releaseFallback.TrySetResult();
+                    page.WaitForAssertion(() => AssertHeadline(replacement, "For the selected capture"), timeout);
+                    return;
+                }
+
+                page.WaitForAssertion(() => AssertHeadline(olderSummary, "For a different capture"), timeout);
+                Assert.IsNotNull(selectionPoint, "The completed history must have checked the republished fit.");
+                await page.InvokeAsync(() =>
+                {
+                    var cached = page.FindAll(".astrometry-calculator-result").Count;
+                    var groups = layerIds.Sum(id => page.FindAll($"g[id='{id}']").Count);
+                    var enabled = !page.Find(".pixel-sky-calculator button").HasAttribute("disabled");
+                    Console.WriteLine($"delivery={delivery} history finished; selected point={selectionPoint.Value}; calculator={enabled}; groups={groups}; cached={cached}");
+                }).ConfigureAwait(false);
+
+                if (repeatedRepair)
+                {
+                    AssertSelected(originalSummary);
+                    Assert.HasCount(1, page.FindAll(".astrometry-calculator-result"));
+                    foreach (var id in layerIds) Assert.HasCount(1, page.FindAll($"g[id='{id}']"));
+                    await CalculatePixelToSkyAsync().ConfigureAwait(false);
+                    return;
+                }
+
+                var cachedResult = page.FindAll(".astrometry-calculator-result").SingleOrDefault()?.TextContent;
+                await page.InvokeAsync(() => page.Find(".pixel-sky-calculator input").ChangeAsync("281")).ConfigureAwait(false);
+                await page.InvokeAsync(() => page.Find("form.pixel-sky-calculator").SubmitAsync()).ConfigureAwait(false);
+                var newResult = page.FindAll(".astrometry-calculator-result").SingleOrDefault()?.TextContent;
+                Console.WriteLine($"delivery={delivery} cached={cachedResult is not null}; new-result={newResult is not null && newResult != cachedResult}");
+                Assert.IsNull(cachedResult, "A second exact quarantine must remove the cached calculation.");
+                Assert.IsNull(newResult, "A new calculation must not use the twice-quarantined fit.");
+                AssertWithdrawn();
+            }
+
+            void AssertSelected(CameraAgentLatestAstrometry summary)
+            {
+                AssertCalculators(enabled: true);
+                var provenance = page.Find(".astrometry-provenance").TextContent;
+                StringAssert.Contains(provenance, summary.CaptureId.ToString(), StringComparison.Ordinal);
+                StringAssert.Contains(provenance, summary.SolutionIdentitySha256, StringComparison.Ordinal);
+            }
+
+            async Task QuarantineRawAsync()
+            {
+                await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, [.. payload, 0], token).ConfigureAwait(false);
+                var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+                var reconciled = await new RawIngressReconciler(root, journal)
+                    .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), token).ConfigureAwait(false);
+                Assert.AreEqual(1, reconciled.Quarantined);
+            }
 
             async Task RepairRawAsync()
             {

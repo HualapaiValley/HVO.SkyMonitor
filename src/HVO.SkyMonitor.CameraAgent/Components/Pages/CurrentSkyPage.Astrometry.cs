@@ -125,8 +125,9 @@ public sealed partial class CurrentSkyPage
                 !rejectedSummary && summaryState == CameraAgentAstrometryPublicationState.Available;
             var reloadSelected = false;
             var currentInvalid = selectedState == CameraAgentAstrometryPublicationState.Invalidated ? selected : null;
-            if (!SameIdentity(currentInvalid, previousInvalid) && !SameIdentity(currentInvalid, selectedInvalid))
-                ApplyInvalidation(currentInvalid);
+            // This observation belongs to the selection revision checked above. A repair can
+            // republish the same identity after the earlier history flags were applied.
+            ApplyInvalidation(currentInvalid);
             if (summaryState == CameraAgentAstrometryPublicationState.Invalidated && !SameIdentity(summary, previousInvalid) &&
                 !SameIdentity(summary, selectedInvalid) && !SameIdentity(summary, currentInvalid))
                 ApplyInvalidation(summary);

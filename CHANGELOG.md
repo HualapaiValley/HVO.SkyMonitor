@@ -24,6 +24,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Current Sky clears measured overlays and calculator results when a repaired astrometric fit is quarantined again, while retaining the verified historical result. #1901
+
 - Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901
 
 - Current Sky briefly keeps the previous layered image and its tools while it checks the incoming capture’s layers against its rendered display base. #1901
