@@ -23,14 +23,18 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
     [DataRow("Storage", "\"retentionDays\":\"30\"", "Use a JSON number without quotes")]
     [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":\"7\"", "Use a JSON number without quotes")]
     [DataRow("RollingCombination", "\"recipe\":\"mixed-gain-normalized-mean\",\"windowSize\":5,\"WINDOWSIZE\":7", "Remove duplicate members")]
-    public async Task RawNodeOptionsPreflightRejectsAmbiguousTokensBeforeCompileOrSave(string alias, string members, string guidance)
+    [DataRow("Calibration", "\"strategy\":\"None\",\"STRATEGY\":\"SyntheticReferences\"",
+        "processing.options.duplicate-member steps[0].options.STRATEGY: Member 'STRATEGY' appears more than once, ignoring case. Remove duplicate members",
+        true)]
+    public async Task RawNodeOptionsPreflightRejectsAmbiguousTokensBeforeCompileOrSave(string alias, string members, string guidance,
+        bool centered = false)
     {
         var raw = JsonSerializer.Deserialize<JsonElement>("{" + members + ",\"future\":{\"keep\":1e+02}}");
         var before = raw.GetRawText();
         var pipeline = new CapturePipelineConfig([new(alias, "preflight", Options: raw)]);
         var operations = new Mock<IProcessingGraphOperations>(MockBehavior.Strict);
         var factory = new Mock<ICaptureProcessingPipelineFactory>(MockBehavior.Strict);
-        var service = CreateService(operations.Object, authorized: true, factory.Object);
+        var service = CreateService(operations.Object, authorized: true, factory.Object, centered);
         var preview = await service.PreviewAsync(pipeline, CancellationToken.None).ConfigureAwait(false);
         var create = await service.CreateRevisionAsync("preflight", "1", pipeline, "create", null, CancellationToken.None).ConfigureAwait(false);
         foreach (var (kind, message) in new[] { (preview.Kind, preview.Message), (create.Kind, create.Message) })
@@ -467,7 +471,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         factory.VerifyNoOtherCalls();
     }
 
-    private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized, ICaptureProcessingPipelineFactory? factory = null)
+    private static CameraAgentProcessingGraphUiService CreateService(IProcessingGraphOperations operations, bool authorized,
+        ICaptureProcessingPipelineFactory? factory = null, bool centered = false)
     {
         var user = new ClaimsPrincipal(new ClaimsIdentity(
         [
@@ -482,7 +487,8 @@ public sealed class CameraAgentProcessingGraphUiServiceTests
         accessor.SetConfiguration(new CameraModuleConfig(
             new ObservatoryLocation(0, 0, 0, "UTC"), profile.Module, profile.Rig, CapturePipelineConfig.Empty, AgentId: "test-agent")
         {
-            Schedule = profile.Schedule
+            Schedule = profile.Schedule,
+            CenteredExposure = centered ? new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) : null
         });
         return new CameraAgentProcessingGraphUiService(
             new StubAuthenticationStateProvider(user),

@@ -349,13 +349,14 @@ internal sealed class CameraAgentProcessingGraphUiService(
     {
         try
         {
-            var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
-            var candidate = configuration with { Pipeline = pipeline };
-            if (authoredDraft) candidate = IProcessingGraphOperations.PrepareAuthoredDraft(candidate);
-            if (ValidateOptions(candidate.Pipeline) is { } optionsFailure)
+            // Inspect the raw options so duplicate members retain their exact spelling and path.
+            if (ValidateOptions(pipeline) is { } optionsFailure)
             {
                 return (null, optionsFailure);
             }
+            var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var candidate = configuration with { Pipeline = pipeline };
+            if (authoredDraft) candidate = IProcessingGraphOperations.PrepareAuthoredDraft(candidate);
             CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, configuration.Pipeline);
             return (pipelineFactory.PreviewPlan(candidate), null);
         }
@@ -470,10 +471,10 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             if (draft is not null)
             {
-                var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
-                draft = IProcessingGraphOperations.PrepareAuthoredDraft(configuration with { Pipeline = draft }).Pipeline;
                 if (ValidateOptions(draft) is { } optionsFailure)
                     return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, optionsFailure);
+                var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
+                draft = IProcessingGraphOperations.PrepareAuthoredDraft(configuration with { Pipeline = draft }).Pipeline;
             }
             return OperatorUiResult<T>.Success(await mutation(actor, draft, cancellationToken).ConfigureAwait(false));
         }
