@@ -155,7 +155,7 @@ internal sealed class ExposureAstrometryCaptureProcessingStep(CaptureProcessingS
     CaptureProcessingPersistence persistence, CaptureExposureMeasurementReader reader)
     : MeasuredAstrometryCaptureProcessingStep(metadata, options, adapter, gate, persistence)
 {
-    internal const string CenteredAlias = "ExposureMeasuredAstrometry";
+    internal const string CenteredAlias = CaptureAnalysisOptionDescriptors.CenteredAstrometryAlias;
     protected override string AssociationRecipe => ExposureAssociationProducts.RecipeName;
 
     protected override long CaptureOrdinal(CaptureProcessingContext context, ReconstructionDescriptor descriptor) =>

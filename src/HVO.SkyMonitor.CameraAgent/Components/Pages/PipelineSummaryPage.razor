@@ -3,6 +3,7 @@
 @using HVO.SkyMonitor.CameraAgent.Authorization
 @using HVO.SkyMonitor.CameraAgent.Components.Operations
 @using HVO.SkyMonitor.CameraAgent.Services
+@using HVO.SkyMonitor.Processing
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize(Policy = CameraAgentAuthorizationPolicyNames.OperationsReadV1)]
 @rendermode InteractiveServer
@@ -231,7 +232,7 @@ else
                         <div><dt>Recipe</dt><dd>@recipe</dd></div>
                     }
                 </dl>
-                @if (!IsExposureMeasurement(selected))
+                @if (!ExposureMeasurementProducts.IsSystemManagedStepAlias(selected.Alias))
                 {
                     <div class="pipeline-inspector-actions">
                         @if (toggleReason is null)

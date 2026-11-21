@@ -3,6 +3,8 @@ namespace HVO.SkyMonitor.Processing;
 /// <summary>Existing capture analysis controls, without replacing retained scientific inputs.</summary>
 public static class CaptureAnalysisOptionDescriptors
 {
+    public const string CenteredAstrometryAlias = "ExposureMeasuredAstrometry";
+
     public static ProcessingNodeOptionsDescriptor StellarAssociations { get; } = new(
         "measured-stellar-association-options-v1", "MeasuredStellarAssociations", "measured-stellar-associations-v1",
         "Measured stellar associations",
@@ -23,4 +25,16 @@ public static class CaptureAnalysisOptionDescriptors
             ProcessingOptionDescriptor.WholeNumber("captureStride", "captureStride", "Capture stride",
                 "Assess one admitted capture in this many. The existing minimum of 60 bounds live work; replay retains its original assessment.", 60, 60, 1_000_000, "captures")
         ]);
+
+    public static ProcessingNodeOptionsDescriptor CenteredStellarAssociations { get; } = new(
+        "exposure-stellar-association-options-v1", ExposureAssociationProducts.StepAlias, ExposureAssociationProducts.ImplementationVersion,
+        "Exposure stellar associations",
+        "Associate retained exposure centroids with the capture's independent catalog prediction. Association thresholds and label policy are preserved.",
+        StellarAssociations.Options);
+
+    public static ProcessingNodeOptionsDescriptor CenteredAstrometry { get; } = new(
+        "exposure-measured-astrometry-options-v1", CenteredAstrometryAlias, MeasuredAstrometryRecipe.AlgorithmVersion,
+        "Exposure measured astrometry",
+        "Configure sampled assessments of retained exposure centroids. The retained catalog, clock and solver settings are preserved.",
+        Astrometry.Options);
 }

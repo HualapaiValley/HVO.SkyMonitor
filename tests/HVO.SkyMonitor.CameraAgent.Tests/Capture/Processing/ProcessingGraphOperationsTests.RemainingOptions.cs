@@ -17,6 +17,8 @@ public sealed partial class ProcessingGraphOperationsTests
     [TestMethod]
     [DataRow("MeasuredStellarAssociations")]
     [DataRow("MeasuredAstrometry")]
+    [DataRow(ExposureAssociationProducts.StepAlias)]
+    [DataRow(ExposureAstrometryCaptureProcessingStep.CenteredAlias)]
     [DataRow("CaptureSatelliteTracks")]
     [DataRow("CaptureSatelliteLayer")]
     [DataRow("Storage")]
@@ -24,8 +26,8 @@ public sealed partial class ProcessingGraphOperationsTests
     {
         object runtime = alias switch
         {
-            "MeasuredStellarAssociations" => new MeasuredStellarAssociationProcessingStepOptions(),
-            "MeasuredAstrometry" => new MeasuredAstrometryCaptureOptions(),
+            "MeasuredStellarAssociations" or ExposureAssociationProducts.StepAlias => new MeasuredStellarAssociationProcessingStepOptions(),
+            "MeasuredAstrometry" or ExposureAstrometryCaptureProcessingStep.CenteredAlias => new MeasuredAstrometryCaptureOptions(),
             "CaptureSatelliteTracks" => new CaptureSatelliteTracksOptions(),
             "CaptureSatelliteLayer" => new CaptureSatelliteLayerOptions(),
             _ => new FileStorageCaptureProcessingStepOptions()
@@ -42,14 +44,27 @@ public sealed partial class ProcessingGraphOperationsTests
     }
 
     [TestMethod]
-    public void EveryRegisteredNodeHasAnOptionsPanel()
+    public void RegisteredNodesHaveOptionsPanelsOrAreSystemManaged()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-node-inventory");
         try
         {
             using var provider = CreateRemainingOptionsProvider(root);
+            var managedAliases = new List<string>();
             foreach (var registration in provider.GetServices<CaptureProcessingStepRegistration>())
-                Assert.IsNotNull(ProcessingNodeOptionsForm.DescriptorFor(registration.Alias), registration.Alias);
+            {
+                var descriptor = ProcessingNodeOptionsForm.DescriptorFor(registration.Alias);
+                if (ExposureMeasurementProducts.IsSystemManagedStepAlias(registration.Alias))
+                {
+                    Assert.IsNull(descriptor, registration.Alias);
+                    managedAliases.Add(registration.Alias);
+                }
+                else
+                {
+                    Assert.IsNotNull(descriptor, registration.Alias);
+                }
+            }
+            CollectionAssert.AreEquivalent(new[] { ExposureMeasurementProducts.StepAlias, ExposureCatalogPredictionProducts.StepAlias }, managedAliases);
         }
         finally { Directory.Delete(root, recursive: true); }
     }

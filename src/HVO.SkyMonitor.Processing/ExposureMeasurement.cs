@@ -108,6 +108,11 @@ public sealed record ExposureMeasurementV1(
 public static class ExposureMeasurementProducts
 {
     public const string StepAlias = "ExposureMeasurement";
+
+    /// <summary>These steps and their reserved identifiers are supplied by the centered capture profile.</summary>
+    public static bool IsSystemManagedStepAlias(string alias)
+        => string.Equals(alias, StepAlias, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(alias, ExposureCatalogPredictionProducts.StepAlias, StringComparison.OrdinalIgnoreCase);
     public const string SchemaVersion = "exposure-measurement-v1";
     public const string Variant = SchemaVersion;
     public const string MediaType = "application/vnd.hvo.exposure-measurement+json";

@@ -20,7 +20,7 @@ namespace HVO.SkyMonitor.CameraAgent.Services;
 /// </summary>
 internal interface ICameraAgentProcessingGraphUiService
 {
-    /// <summary>Registered processing step aliases this CameraAgent can execute; the only node types a draft may use.</summary>
+    /// <summary>Registered aliases the operator can add to a draft.</summary>
     IReadOnlyList<string> StepAliases { get; }
 
     ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(
@@ -250,7 +250,8 @@ internal sealed class CameraAgentProcessingGraphUiService(
     ILogger<CameraAgentProcessingGraphUiService> logger,
     IExposureMeasurementRunReader? exposureMeasurementReader = null) : ICameraAgentProcessingGraphUiService
 {
-    public IReadOnlyList<string> StepAliases => pipelineFactory.StableStepAliases;
+    public IReadOnlyList<string> StepAliases => pipelineFactory.StableStepAliases
+        .Where(static alias => !ExposureMeasurementProducts.IsSystemManagedStepAlias(alias)).ToArray();
 
     public ValueTask<OperatorUiResult<CameraAgentProcessingExecutionsView>> GetExecutionsAsync(
         int maximumPerClass,
