@@ -425,6 +425,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
 
         var profile = await ReadCurrentProfileAsync(null, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("A camera profile must be initialized before configuring astrometry.");
+        EnsureReferenceAstrometryPresetMode(profile);
         if (referenceMagnitude is null && !string.Equals(profile.ModuleType, "VirtualSky", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("An explicit reference magnitude is required for this camera.", nameof(referenceMagnitude));
         EnsureReferenceAstrometryReadout(profile.Rig);
@@ -440,6 +441,7 @@ internal sealed class ProcessingGraphOperationsCoordinator :
             snapshot, idempotencyKey, actor, reason, requestSha256, candidate =>
             {
                 var current = _currentCaptureProfile?.Invoke() ?? profile;
+                EnsureReferenceAstrometryPresetMode(current);
                 CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, current.Pipeline);
                 if (current.Rig != profile.Rig)
                     EnsureReferenceAstrometryReadout(current.Rig);
@@ -920,6 +922,12 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         if (referenceAstrometryPreset)
             await ReferenceAstrometryPreset.VerifySelectionAsync(
                 revision.Pipeline, _astrometricCatalog?.Invoke(), cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void EnsureReferenceAstrometryPresetMode(CameraModuleConfig profile)
+    {
+        if (profile.CenteredExposure is not null)
+            throw new ReferenceAstrometryPresetModeConflictException();
     }
 
     private static void EnsureReferenceAstrometryReadout(CameraRigConfig rig)

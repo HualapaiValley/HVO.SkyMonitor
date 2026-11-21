@@ -30,6 +30,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
 
+- CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
+
 - Current Sky clears measured overlays and calculator results when a repaired astrometric fit is quarantined again, while retaining the verified historical result. #1901
 
 - Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901

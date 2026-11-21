@@ -375,6 +375,10 @@ internal static class CameraAgentProcessingGraphOperationsEndpoints
         {
             return Problem(StatusCodes.Status409Conflict, ProcessingGraphRevisionSupersededException.SafeMessage);
         }
+        catch (ReferenceAstrometryPresetModeConflictException)
+        {
+            return Problem(StatusCodes.Status409Conflict, ReferenceAstrometryPresetModeConflictException.SafeMessage);
+        }
         catch (ReferenceAstrometryCatalogConflictException)
         {
             return Problem(StatusCodes.Status409Conflict, ReferenceAstrometryCatalogConflictException.SafeMessage);
