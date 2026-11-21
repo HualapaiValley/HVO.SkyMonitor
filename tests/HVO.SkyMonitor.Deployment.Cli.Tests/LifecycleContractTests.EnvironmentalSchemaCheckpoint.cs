@@ -87,7 +87,8 @@ public sealed partial class LifecycleContractTests
         };
         using var fixture = await LifecycleFixture.CreateAsync(InstanceLifecycleCondition.Installed, installedImage: image =>
             CameraAgentImageLabels.Identity(image.Source, image.ImmutableReference, image.ImageId, image.Architecture, null,
-                JsonSerializer.SerializeToElement(installed)));
+                JsonSerializer.SerializeToElement(installed)) with
+            { SourceRevision = image.SourceRevision });
         foreach (var label in candidate) fixture.Runner.CandidateLabels[label.Key] = label.Value;
         fixture.Runner.ConfigureRuntime(fixture.Paths, fixture.Manifest.Image.ImmutableReference, fixture.Manifest.Image.ImageId,
             CandidateReference, CandidateImageId, fixture.Uid, fixture.Gid);
