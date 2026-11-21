@@ -640,8 +640,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 .ConfigureAwait(false);
             outputPublication[index] = execution is null ||
                 execution.AllowAutomaticPublication &&
-                (centeredProducts is null ||
-                 centeredProducts.Any(product => product.OutputIdentity == outputs[index].OutputIdentitySha256)) ||
+                (execution.ExecutionClass != ProcessingGraphExecutionClass.Live ||
+                 centeredProducts?.Any(product => product.OutputIdentity == outputs[index].OutputIdentitySha256) == true) ||
                 !inserted && await IsOutputPublishedAsync(
                     connection, transaction, outputs[index].OutputIdentitySha256, cancellationToken)
                     .ConfigureAwait(false);
