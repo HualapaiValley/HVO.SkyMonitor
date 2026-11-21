@@ -330,6 +330,16 @@ internal sealed record ProcessingFrozenRawInput(
 
 public interface IProcessingGraphOperations
 {
+    /// <summary>Freezes the local policy for a new draft before preview or persistence.</summary>
+    static CameraModuleConfig PrepareAuthoredDraft(CameraModuleConfig configuration)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        return configuration.CenteredExposure is null ? configuration : configuration with
+        {
+            Pipeline = ExposureMeasurementGraphPlan.FreezeSyntheticReferenceCodeDomain(configuration.Pipeline)
+        };
+    }
+
     /// <summary>Expands the registered stages of a fresh effective configured profile for preview.</summary>
     /// <remarks>Saved and replayed graphs already carry their exact plan and do not enter this path.</remarks>
     CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration) => configuration;

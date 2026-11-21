@@ -32,7 +32,11 @@ public sealed partial class VirtualSkyCameraModuleTests
         DisplayName = "ExposureMeasurement_RejectsFitAndReplaysItsOriginalAssessmentAfterRestart")]
     [DataRow(CameraPixelFormat.BayerRggb16, "None", true, 1, false, true)]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", DisplayName = "ExposureMeasurement_ReferenceCalibratedMonoReplaysMeasuredStar")]
-    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank")]
+    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank",
+        DisplayName = "ExposureMeasurement_ReferenceCalibratedMonoReplaysAssessedEmpty")]
+    [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", true, 1, false, false, "blank", false,
+        FrameStoredCodeTransform.RightAlignedV1, 0, "historical-reference",
+        DisplayName = "ExposureMeasurement_HistoricalSyntheticReferenceReplaysWithoutStoredOption")]
     [DataRow(CameraPixelFormat.Mono16, "SyntheticReferences", false, 10)]
     [DataRow(CameraPixelFormat.Mono16, "None", false)]
     [DataRow(CameraPixelFormat.Mono16, "CalibrationLibrary")]
@@ -133,6 +137,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             ExposureProductLookup? originalPublication = null;
             ExposureMeasurementV1? originalMeasurement = null;
             MonoReferenceReplayWitness? referenceReplay = null;
+            string? historicalReferenceId = null;
             using var cancellation = new CancellationTokenSource();
             var interruption = interrupt ? new MeasurementCommitInterruption(cancellation) : null;
             var publication = publicationFailures > 0 ? new MeasurementPublicationIo(publicationFailures) : null;
@@ -166,6 +171,23 @@ public sealed partial class VirtualSkyCameraModuleTests
                         await operations.CreateRevisionAsync("measurement-bypass", "no-step-four",
                             active.Pipeline, "no-step-four", "measurement-test", null, CancellationToken.None)
                             .ConfigureAwait(false)).ConfigureAwait(false);
+                }
+
+                if (archiveFault == "historical-reference")
+                {
+                    var authoredOptions = file.Pipeline.Steps.Single(step => step.Id == "linear").Options;
+                    var currentPipeline = await operations.ReadRevisionPipelineAsync(configured.Value!.ConfiguredBasicRevisionId,
+                        CancellationToken.None).ConfigureAwait(false);
+                    Assert.IsNotNull(currentPipeline);
+                    var historicalPipeline = currentPipeline with
+                    {
+                        Steps = currentPipeline.Steps.Select(step => step.Id == "linear" ? step with { Options = authoredOptions } : step).ToArray()
+                    };
+                    historicalReferenceId = await StoragePolicyRawIngressIntegrationTests.SeedLegacyRevisionAsync(provider, active,
+                        historicalPipeline, "historical-reference-replay").ConfigureAwait(false);
+                    var historicalRegistry = await operations.GetRegistryAsync(CancellationToken.None).ConfigureAwait(false);
+                    await operations.ActivateRevisionAsync(historicalReferenceId, historicalRegistry.StateVersion,
+                        "use-historical-reference-revision", "measurement-test", null, CancellationToken.None).ConfigureAwait(false);
                 }
 
                 var catalog = new InMemoryCelestialCatalog(signal == "star" ? [
@@ -300,6 +322,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsNotNull(execution);
                 originalExecution = execution.Execution;
                 Assert.AreEqual(receipt.Manifest.CaptureGraphRevisionId, originalExecution.GraphRevisionId);
+                if (historicalReferenceId is not null)
+                    Assert.AreEqual(historicalReferenceId, originalExecution.GraphRevisionId);
                 if (!fit)
                     Assert.IsFalse(execution.Nodes.Any(item => item.NodeId == "fit"));
                 var recordedMeasurement = execution.Nodes.Single(item => item.NodeId == ExposureMeasurementProducts.StepAlias);
@@ -584,6 +608,14 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.AreEqual(LinearExposureDisposition.QualifiedNormalizationOnly, restored.Measurement.Input.Step3Disposition);
             if (referenceReplay is not null)
                 await AssertMonoReferenceReplayAsync(reopened, switched, referenceReplay, originalMeasurement, root).ConfigureAwait(false);
+            if (historicalReferenceId is not null)
+            {
+                var historical = await reopenedOperations.ReadRevisionPipelineAsync(historicalReferenceId, CancellationToken.None)
+                    .ConfigureAwait(false);
+                Assert.IsNotNull(historical);
+                var options = historical.Steps.Single(step => step.Id == "linear").Options!.Value;
+                Assert.IsFalse(options.TryGetProperty("useStoredLightCodes", out _));
+            }
             if (fit && publicationFailures == 0 && !noPredictionCatalog)
                 await AssertRejectedAssessmentReplayAsync(reopened, originalExecution, originalMeasurement).ConfigureAwait(false);
         }

@@ -76,11 +76,11 @@ internal sealed class ProcessingGraphOperationsCoordinator :
     public CameraModuleConfig ExpandConfiguredProfile(CameraModuleConfig configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        if (configuration.CenteredExposure is null || _centeredExtensions.Length == 0) return configuration;
+        if (configuration.CenteredExposure is null) return configuration;
 
         var pipeline = configuration.Pipeline;
         foreach (var extension in _centeredExtensions) pipeline = extension.Configure(pipeline);
-        return configuration with { Pipeline = pipeline };
+        return IProcessingGraphOperations.PrepareAuthoredDraft(configuration with { Pipeline = pipeline });
     }
 
     internal ValueTask<ProcessingGraphRegistryState> EnsureConfiguredBasicAsync(
@@ -338,8 +338,8 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ValidateRevisionName(revision, nameof(revision));
         EnsureExplicitPipeline(pipeline);
         var profile = await ReadCurrentProfileAsync(baseConfiguration, cancellationToken).ConfigureAwait(false) ?? baseConfiguration;
-        var snapshot = CreateRevisionSnapshot(
-            profile with { Pipeline = pipeline }, name, revision, _timeProvider.GetUtcNow());
+        var authored = IProcessingGraphOperations.PrepareAuthoredDraft(profile with { Pipeline = pipeline });
+        var snapshot = CreateRevisionSnapshot(authored, name, revision, _timeProvider.GetUtcNow());
         EnsureMeasurementProfile(snapshot.Pipeline, profile);
         return await _store.InsertNamedRevisionAsync(snapshot, idempotencyKey, actor, reason, cancellationToken,
             candidate => CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline,
@@ -765,8 +765,6 @@ internal sealed class ProcessingGraphOperationsCoordinator :
         ProcessingGraphDefinition? sourceDefinition = null,
         bool retainedCapture = false)
     {
-        if (!retainedCapture && sourceDefinition is null && configuration.CenteredExposure is not null)
-            configuration = configuration with { Pipeline = ExposureMeasurementGraphPlan.FreezeSyntheticReferenceCodeDomain(configuration.Pipeline) };
         using var graph = new DisposableProcessingGraph(sourceDefinition is null
             ? retainedCapture ? _pipelineFactory.CreateRetainedGraph(configuration) : _pipelineFactory.CreateGraph(configuration)
             : _pipelineFactory.CreateGraph(configuration, sourceDefinition.Name, sourceDefinition.Revision));

@@ -75,6 +75,9 @@ public static class ReferenceCalibrationProfileJson
     }
 }
 
+/// <summary>Reference calibration uses the admitted layout to qualify stored-code correction.</summary>
+/// <param name="UseStoredLightCodes">Request stored-code correction for full-range identity-encoded light.
+/// Encoded layouts and historical defaults use the existing normalized light path.</param>
 public sealed record ReferenceCalibrationOptions(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool UseStoredLightCodes = false);
 
@@ -117,15 +120,11 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
         }
 
         var options = ProcessingRecipeSupport.ParseOptions<ReferenceCalibrationOptions>(request.Options);
-        if (options.UseStoredLightCodes && NormalizeCompleteLayout(lightLayout) is not
+        var useStoredLightCodes = options.UseStoredLightCodes && NormalizeCompleteLayout(lightLayout) is
             {
                 SampleDepthBits: 16, ContainerDepthBits: 16, StoredCodeTransform: FrameStoredCodeTransform.IdentityV1,
                 LevelCodeSpace: FrameLevelCodeSpace.StoredContainer, WhiteLevel: ushort.MaxValue
-            })
-        {
-            return ValueTask.FromResult(ProcessingOutcome.TerminalFailure(
-                ProcessingReasonCodes.CalibrationReferenceLayoutMismatch, nameof(light.Layout)));
-        }
+            };
 
         var profileInput = request.AuxiliaryInputs?.SingleOrDefault(input =>
             string.Equals(input.Name, ProfileInput, StringComparison.OrdinalIgnoreCase));
@@ -199,7 +198,7 @@ internal sealed class ReferenceCalibrationRecipe : IProcessingRecipe
         try
         {
             // Synthetic masters carry the same bias pedestal as the stored light. The bias master removes it.
-            var inputLayout = options.UseStoredLightCodes ? lightLayout with { BlackLevel = 0 } : lightLayout;
+            var inputLayout = useStoredLightCodes ? lightLayout with { BlackLevel = 0 } : lightLayout;
             var normalizedLight = CalibrationMasterBuilder.Normalize(
                 new CalibrationSourceFrame(inputLayout, light.Payload), cancellationToken);
             correction = Linear16ReferenceCalibration.Correct(

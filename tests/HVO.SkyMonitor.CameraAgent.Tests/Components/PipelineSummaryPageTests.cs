@@ -14,6 +14,7 @@ using HVO.SkyMonitor.CameraAgent.Services;
 using HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Tests.Endpoints;
 using HVO.SkyMonitor.Processing;
+using HVO.SkyMonitor.Imaging;
 using HVO.SkyMonitor.Common.Security;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
@@ -55,12 +56,17 @@ public sealed class PipelineSummaryPageTests
                 ? ProcessingGraphOperationsTests.RemainingOptionsPipeline(root).Steps.Where(static step =>
                     step.Type is "ProjectedScene" or "MeasuredStellarAssociations" or "MeasuredAstrometry")
                 : [];
+            JsonElement? synthetic = centered ? JsonSerializer.SerializeToElement(new
+            {
+                strategy = "SyntheticReferences",
+                syntheticCalibration = new SyntheticCalibrationModelV1()
+            }) : null;
             var active = await StoragePolicyRawIngressIntegrationTests.InitializeAsync(provider, profile with
             {
                 CenteredExposure = centered ? new("fixture-camera", CenteredExposureProfile.CurrentExecutionVersion) : null,
                 Pipeline = profile.Pipeline with
                 {
-                    Steps = [new("Calibration", "linear", DependsOn: [RawInput], Required: false), .. analysis, .. profile.Pipeline.Steps]
+                    Steps = [new("Calibration", "linear", Options: synthetic, DependsOn: [RawInput], Required: false), .. analysis, .. profile.Pipeline.Steps]
                 }
             }).ConfigureAwait(false);
             var runtime = provider.GetRequiredService<CaptureScheduleRuntimeCoordinator>();
@@ -165,6 +171,7 @@ public sealed class PipelineSummaryPageTests
             await AssertCenteredEditorAsync(ui, graphUi, active, factory, registry.ConfiguredBasicRevisionId, admitted, graphLog).ConfigureAwait(false);
             await AssertCenteredScheduleAsync(ui).ConfigureAwait(false);
             await AssertGeneratedOptionsAreProtectedAsync(provider, active, admitted, graphUi).ConfigureAwait(false);
+            await AssertCalibrationDraftOriginsAsync(provider, active, factory, graphUi, admitted, synthetic!.Value, registry).ConfigureAwait(false);
 
             var toggle = await ui.TogglePipelineAsync(CameraAgentScheduleUiService.SerializeProfile(basis.Profile), basis.RevisionId,
                 ExposureMeasurementProducts.StepAlias, false, CancellationToken.None).ConfigureAwait(false);
@@ -210,6 +217,81 @@ public sealed class PipelineSummaryPageTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    private static async Task AssertCalibrationDraftOriginsAsync(ServiceProvider provider, CameraModuleConfig active,
+        ICaptureProcessingPipelineFactory factory, CameraAgentProcessingGraphUiService graphUi, CapturePipelineConfig admitted,
+        JsonElement synthetic, ProcessingGraphRegistryState registry)
+    {
+        var token = CancellationToken.None;
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var configured = await store.ReadRevisionAsync(registry.ConfiguredBasicRevisionId, token).ConfigureAwait(false);
+        Assert.AreEqual(CaptureContractJson.ComputeCanonicalJsonSha256(configured.Pipeline)[..16], configured.State.Revision);
+        Assert.IsTrue(CalibrationOptions(configured.Pipeline).GetProperty("useStoredLightCodes").GetBoolean());
+
+        var historicalDraft = Draft(synthetic);
+        var historicalId = await StoragePolicyRawIngressIntegrationTests.SeedLegacyRevisionAsync(provider, active,
+            historicalDraft, "historical-reference-options").ConfigureAwait(false);
+        var historical = await store.ReadRevisionAsync(historicalId, token).ConfigureAwait(false);
+        Assert.IsFalse(CalibrationOptions(historical.Pipeline).TryGetProperty("useStoredLightCodes", out _));
+        var historicalPreview = factory.PreviewPlan(active with { Pipeline = historical.Pipeline });
+
+        foreach (var strategy in new[] { "SyntheticReferences", "None", "CalibrationLibrary" })
+        {
+            var usesSynthetic = strategy == "SyntheticReferences";
+            var draft = usesSynthetic ? historicalDraft : Draft(JsonSerializer.SerializeToElement(new { strategy, useStoredLightCodes = true }));
+            var preview = await graphUi.PreviewAsync(draft, token).ConfigureAwait(false);
+            Assert.IsTrue(preview.IsSuccess, $"{strategy}: {preview.Message}");
+            Assert.IsNotNull(preview.Value);
+            var saved = await graphUi.CreateRevisionAsync("reference-option-origin", strategy, draft, "reference-" + strategy, null, token)
+                .ConfigureAwait(false);
+            Assert.IsTrue(saved.IsSuccess, $"{strategy}: {saved.Message}");
+            Assert.IsNotNull(saved.Value);
+            var reopened = await graphUi.GetRevisionDetailAsync(saved.Value.RevisionId, token).ConfigureAwait(false);
+            Assert.IsTrue(reopened.IsSuccess, reopened.Message);
+            Assert.IsNotNull(reopened.Value?.Plan, reopened.Value?.PlanFailure);
+            Assert.AreEqual(preview.Value.DesiredSha256, reopened.Value.Plan.DesiredSha256, strategy);
+            Assert.AreEqual(preview.Value.EffectiveSha256, reopened.Value.Plan.EffectiveSha256, strategy);
+            var frozenOptions = CalibrationOptions(reopened.Value.Pipeline);
+            Assert.AreEqual(usesSynthetic, frozenOptions.TryGetProperty("useStoredLightCodes", out var option), strategy);
+            if (usesSynthetic)
+            {
+                Assert.IsTrue(option.GetBoolean());
+                Assert.AreNotEqual(historicalPreview.EffectiveSha256, preview.Value.EffectiveSha256);
+            }
+
+            var expected = IProcessingGraphOperations.PrepareAuthoredDraft(active with { Pipeline = draft });
+            var graph = factory.CreateGraph(expected);
+            try
+            {
+                var snapshot = await store.ReadRevisionAsync(saved.Value.RevisionId, token).ConfigureAwait(false);
+                Assert.IsTrue(snapshot.IsCompiledBy(graph), strategy);
+                Assert.IsNotNull(graph.SharedPlan);
+                Assert.AreEqual(graph.SharedPlan.DefinitionIdentitySha256, saved.Value.DefinitionIdentitySha256);
+                Assert.AreEqual(graph.SharedPlan.PlanIdentitySha256, saved.Value.SharedPlanIdentitySha256);
+                CollectionAssert.AreEqual(System.Text.Encoding.UTF8.GetBytes(graph.SharedPlan.CanonicalDefinition.GetRawText()), snapshot.DefinitionJson);
+            }
+            finally
+            {
+                graph.DisposeSteps();
+            }
+        }
+
+        var stillHistorical = await graphUi.GetRevisionDetailAsync(historicalId, token).ConfigureAwait(false);
+        Assert.IsTrue(stillHistorical.IsSuccess, stillHistorical.Message);
+        Assert.IsNotNull(stillHistorical.Value?.Plan, stillHistorical.Value?.PlanFailure);
+        Assert.AreEqual(historical.State.DefinitionIdentitySha256, stillHistorical.Value.State.DefinitionIdentitySha256);
+        Assert.AreEqual(historical.State.LocalPlanIdentitySha256, stillHistorical.Value.State.LocalPlanIdentitySha256);
+        Assert.AreEqual(historicalPreview.EffectiveSha256, stillHistorical.Value.Plan.EffectiveSha256);
+        Assert.IsFalse(CalibrationOptions(stillHistorical.Value.Pipeline).TryGetProperty("useStoredLightCodes", out _));
+
+        CapturePipelineConfig Draft(JsonElement options) => admitted with
+        {
+            Steps = admitted.Steps.Select(step => step.Id == "linear" ? step with { Options = options } : step).ToArray()
+        };
+
+        static JsonElement CalibrationOptions(CapturePipelineConfig pipeline)
+            => pipeline.Steps.Single(step => step.Id == "linear").Options!.Value;
     }
 
     private static async Task AssertGeneratedOptionsAreProtectedAsync(ServiceProvider provider, CameraModuleConfig active,

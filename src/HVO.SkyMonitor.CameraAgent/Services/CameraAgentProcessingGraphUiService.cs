@@ -319,7 +319,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
             {
                 return null;
             }
-            var (plan, failure) = await CompileAsync(pipeline, token).ConfigureAwait(false);
+            var (plan, failure) = await CompileAsync(pipeline, authoredDraft: false, token).ConfigureAwait(false);
             return new CameraAgentProcessingGraphRevisionDetail(state, pipeline, plan, failure);
         }, "The graph revision could not be read.", cancellationToken, "The graph revision was not found.");
 
@@ -332,7 +332,7 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return Denied<CaptureProcessingPlanPreview>();
         }
-        var (plan, failure) = await CompileAsync(pipeline, cancellationToken).ConfigureAwait(false);
+        var (plan, failure) = await CompileAsync(pipeline, authoredDraft: true, cancellationToken).ConfigureAwait(false);
         return plan is null
             ? OperatorUiResult<CaptureProcessingPlanPreview>.Failure(OperatorUiResultKind.Invalid, failure ?? "The graph definition is invalid.")
             : OperatorUiResult<CaptureProcessingPlanPreview>.Success(plan);
@@ -344,18 +344,20 @@ internal sealed class CameraAgentProcessingGraphUiService(
         Justification = "Compilation failures are mapped to a sanitized message for the operator.")]
     private async ValueTask<(CaptureProcessingPlanPreview? Plan, string? Failure)> CompileAsync(
         CapturePipelineConfig pipeline,
+        bool authoredDraft,
         CancellationToken cancellationToken)
     {
         try
         {
-            if (ValidateOptions(pipeline) is { } optionsFailure)
+            var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
+            var candidate = configuration with { Pipeline = pipeline };
+            if (authoredDraft) candidate = IProcessingGraphOperations.PrepareAuthoredDraft(candidate);
+            if (ValidateOptions(candidate.Pipeline) is { } optionsFailure)
             {
                 return (null, optionsFailure);
             }
-            var configuration = scheduleRuntime?.Snapshot?.Configuration
-                ?? await configurationAccessor.WaitForConfigurationAsync(cancellationToken).ConfigureAwait(false);
-            CaptureStoragePolicy.EnsureMatchesProfile(pipeline, configuration.Pipeline);
-            return (pipelineFactory.PreviewPlan(configuration with { Pipeline = pipeline }), null);
+            CaptureStoragePolicy.EnsureMatchesProfile(candidate.Pipeline, configuration.Pipeline);
+            return (pipelineFactory.PreviewPlan(candidate), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -388,7 +390,12 @@ internal sealed class CameraAgentProcessingGraphUiService(
 
     public ValueTask<OperatorUiResult<ProcessingGraphRevisionState>> CreateRevisionAsync(
         string name, string revision, CapturePipelineConfig pipeline, string idempotencyKey, string? reason, CancellationToken cancellationToken)
-        => MutateAsync((actor, token) => operations.CreateRevisionAsync(name, revision, pipeline, idempotencyKey, actor, reason, token), cancellationToken, pipeline);
+        => MutateAsync((actor, draft, token) => operations.CreateRevisionAsync(name, revision, draft!, idempotencyKey, actor, reason, token),
+            pipeline, cancellationToken);
+
+    private ValueTask<CameraModuleConfig> ReadConfigurationAsync(CancellationToken token)
+        => scheduleRuntime?.Snapshot?.Configuration is { } configuration
+            ? ValueTask.FromResult(configuration) : configurationAccessor.WaitForConfigurationAsync(token);
 
     private static string? ValidateOptions(CapturePipelineConfig pipeline)
     {
@@ -440,12 +447,17 @@ internal sealed class CameraAgentProcessingGraphUiService(
         }
     }
 
+    private ValueTask<OperatorUiResult<T>> MutateAsync<T>(
+        Func<string, CancellationToken, ValueTask<T>> mutation, CancellationToken cancellationToken)
+        where T : class
+        => MutateAsync((actor, _, token) => mutation(actor, token), null, cancellationToken);
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The operator service logs internal failures and returns fixed sanitized states.")]
     private async ValueTask<OperatorUiResult<T>> MutateAsync<T>(
-        Func<string, CancellationToken, ValueTask<T>> mutation,
-        CancellationToken cancellationToken,
-        CapturePipelineConfig? pipeline = null)
+        Func<string, CapturePipelineConfig?, CancellationToken, ValueTask<T>> mutation,
+        CapturePipelineConfig? draft,
+        CancellationToken cancellationToken)
         where T : class
     {
         var principal = await GetAuthorizedPrincipalAsync(CameraAgentAuthorizationPolicyNames.OperationsMutateV1).ConfigureAwait(false);
@@ -454,13 +466,16 @@ internal sealed class CameraAgentProcessingGraphUiService(
         {
             return Denied<T>();
         }
-        if (pipeline is not null && ValidateOptions(pipeline) is { } optionsFailure)
-        {
-            return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, optionsFailure);
-        }
         try
         {
-            return OperatorUiResult<T>.Success(await mutation(actor, cancellationToken).ConfigureAwait(false));
+            if (draft is not null)
+            {
+                var configuration = await ReadConfigurationAsync(cancellationToken).ConfigureAwait(false);
+                draft = IProcessingGraphOperations.PrepareAuthoredDraft(configuration with { Pipeline = draft }).Pipeline;
+                if (ValidateOptions(draft) is { } optionsFailure)
+                    return OperatorUiResult<T>.Failure(OperatorUiResultKind.Invalid, optionsFailure);
+            }
+            return OperatorUiResult<T>.Success(await mutation(actor, draft, cancellationToken).ConfigureAwait(false));
         }
         catch (ProcessingGraphRevisionSupersededException)
         {

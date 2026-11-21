@@ -101,7 +101,7 @@ public sealed class ReferenceCalibrationRecipeTests
     }
 
     [TestMethod]
-    public async Task ExecuteAsync_SubtractsStoredLightPedestalOnlyThroughTheBiasMaster()
+    public async Task ExecuteAsync_UsesStoredLightCodesOnlyForCompatibleAdmittedLayout()
     {
         var fixture = CreateFixture();
         var storedLight = fixture.Light with { Layout = fixture.Light.Layout! with { BlackLevel = 100 } };
@@ -111,10 +111,8 @@ public sealed class ReferenceCalibrationRecipeTests
         };
         var executor = new ProcessingRecipeExecutor();
         var legacy = await executor.ExecuteAsync(request);
-        var corrected = await executor.ExecuteAsync(request with
-        {
-            Options = JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions(UseStoredLightCodes: true))
-        });
+        var storedCodes = JsonSerializer.SerializeToElement(new ReferenceCalibrationOptions(UseStoredLightCodes: true));
+        var corrected = await executor.ExecuteAsync(request with { Options = storedCodes });
 
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, legacy.Status, legacy.ReasonCode);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, corrected.Status, corrected.ReasonCode);
@@ -123,6 +121,29 @@ public sealed class ReferenceCalibrationRecipeTests
         CollectionAssert.AreEqual(Bytes([300, 401, 300, 401]), original.Payload.ToArray());
         CollectionAssert.AreEqual(Bytes([500, 500, 500, 500]), fixedProduct.Payload.ToArray());
         Assert.AreNotEqual(original.OutputIdentitySha256, fixedProduct.OutputIdentitySha256);
+
+        var encodedLight = fixture.Light with
+        {
+            Layout = fixture.Light.Layout! with
+            {
+                SampleDepthBits = 12,
+                WhiteLevel = 44810,
+                StoredCodeTransform = FrameStoredCodeTransform.FullRangeScaledV1,
+                LevelCodeSpace = FrameLevelCodeSpace.StoredContainer
+            },
+            Payload = Bytes([44794, 44810, 44826, 0])
+        };
+        var encodedRequest = request with
+        {
+            Inputs = request.Inputs.Select(input => input.ArtifactId == encodedLight.ArtifactId ? encodedLight : input).ToArray()
+        };
+        var previousEncoded = await executor.ExecuteAsync(encodedRequest);
+        var correctedEncoded = await executor.ExecuteAsync(encodedRequest with { Options = storedCodes });
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, previousEncoded.Status, previousEncoded.ReasonCode);
+        Assert.AreEqual(ProcessingOutcomeStatus.Produced, correctedEncoded.Status, correctedEncoded.ReasonCode);
+        var encodedBytes = previousEncoded.Products.Single().Payload.ToArray();
+        CollectionAssert.AreEqual(Bytes([65535, 65415, 65535, 0]), encodedBytes);
+        CollectionAssert.AreEqual(encodedBytes, correctedEncoded.Products.Single().Payload.ToArray());
     }
 
     [TestMethod]
