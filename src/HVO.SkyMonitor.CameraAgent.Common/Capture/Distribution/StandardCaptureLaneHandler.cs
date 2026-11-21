@@ -96,6 +96,11 @@ internal sealed class StandardCaptureLaneHandler(
                 {
                     _graph?.DisposeSteps();
                     _graph = _pipelineFactory.CreateRetainedGraph(item.Config);
+                    foreach (var node in _graph.Nodes)
+                    {
+                        if (node.Step is MeasuredAstrometryCaptureProcessingStep { HasCrossedSceneDependencies: true })
+                            _logger.CaptureAstrometryCrossedSceneDependencies(node.Id, item.Execution?.GraphRevisionId);
+                    }
                     _pipelineKey = pipelineKey;
                 }
                 graph = _graph;

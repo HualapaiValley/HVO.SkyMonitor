@@ -15,6 +15,7 @@ public sealed class CameraAgentSettingsServiceTests
 {
     private const string MaximumObjects = "skyMap.maximumObjects";
     private const string MinimumRefresh = "currentSky.minimumRefreshSeconds";
+    private const string RendererCap = "virtualSky.rendererCandidateCap";
 
     [TestMethod]
     public async Task Get_ListsEveryGroupInCatalogueOrderWithItsValuesAndSourcesAsync()
@@ -171,6 +172,45 @@ public sealed class CameraAgentSettingsServiceTests
         Assert.AreEqual(CameraAgentSettingSource.SettingsFile, limit.Source);
         StringAssert.StartsWith(limit.Problem, "The settings file value is not a whole number from 1 to 5,000",
             StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    public async Task VirtualSkyRendererCap_VersionedWritesPreserveOtherOwnerSettingsAsync()
+    {
+        using var harness = await CameraAgentSettingsHarness.CreateAsync().ConfigureAwait(false);
+        await File.WriteAllTextAsync(harness.SettingsPath,
+            """{ "CameraAgent": { "VirtualSky": { "FutureSetting": { "enabled": true } } } }""").ConfigureAwait(false);
+        var original = await harness.GroupAsync("virtualSky").ConfigureAwait(false);
+        Assert.IsFalse(original.Settings.Single().IsSet);
+        var skyMap = await harness.GroupAsync("skyMap").ConfigureAwait(false);
+        var unrelated = await harness.WriteAsync("skyMap", skyMap.Version,
+            new Dictionary<string, object?> { [MaximumObjects] = 250 }).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, unrelated.Outcome);
+
+        var change = new Dictionary<string, object?> { [RendererCap] = 2000 };
+        var stale = await harness.WriteAsync("virtualSky", original.Version, change).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Conflict, stale.Outcome);
+        Assert.IsNull(harness.SceneObjectBound.ConfiguredRendererCandidateCap);
+        Assert.AreEqual(250, harness.SceneObjectBound.VirtualSkyOverride);
+        var invalid = await harness.WriteAsync("virtualSky", stale.Group!.Version,
+            new Dictionary<string, object?> { [RendererCap] = 100_001 }).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Invalid, invalid.Outcome);
+
+        var saved = await harness.WriteAsync("virtualSky", stale.Group.Version, change).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, saved.Outcome, saved.Message);
+        Assert.AreEqual(2000, saved.Group!.Settings.Single().Value!.Value.GetInt32());
+        Assert.AreEqual(2000, harness.SceneObjectBound.VirtualSkyOverride);
+        Assert.AreEqual(250, harness.SceneObjectBound.Current);
+        using var file = JsonDocument.Parse(harness.ReadSettingsFile());
+        var camera = file.RootElement.GetProperty("CameraAgent");
+        Assert.AreEqual(250, camera.GetProperty("SkyMap").GetProperty("MaximumObjects").GetInt32());
+        Assert.IsTrue(camera.GetProperty("VirtualSky").GetProperty("FutureSetting").GetProperty("enabled").GetBoolean());
+
+        var cleared = await harness.WriteAsync("virtualSky", saved.Group.Version,
+            new Dictionary<string, object?> { [RendererCap] = null }).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentSettingsWriteOutcome.Applied, cleared.Outcome);
+        Assert.IsFalse(cleared.Group!.Settings.Single().IsSet);
+        Assert.AreEqual(250, harness.SceneObjectBound.VirtualSkyOverride);
     }
 
     [TestMethod]

@@ -10,6 +10,60 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     private const string LedgerPrimary = "{\"nodes\":[{\"nodeId\":\"migrated-attempt\"}],\"opaque\":{\"escape\":\"\\u0061\", \"number\":1.00},\"normalizationPlans\":[]}";
 
     [TestMethod]
+    public async Task InterruptedSchema9AstrometryIndexMigrationPreservesHistoryAndRetries()
+    {
+        using var fixture = await SchemaFixture.CreateAsync().ConfigureAwait(false);
+        await SeedNodeAttemptAsync(fixture, SqliteCaptureProcessingStore.LegacySchema9SqlForTests).ConfigureAwait(false);
+        using (var previous = await fixture.OpenAsync().ConfigureAwait(false))
+        using (var output = previous.CreateCommand())
+        {
+            output.CommandText = """
+                INSERT INTO processing_outputs(output_identity_sha256,capture_id,agent_id,node_id,artifact_id,role,variant,
+                    payload_relative_path,sidecar_relative_path,descriptor_json,recipe_identity_sha256,algorithms_json,
+                    compatibility_json,total_integration_ticks,capture_sequence,committed_unix_ms,product_kind,
+                    product_schema_version,content_identity_sha256)
+                VALUES (printf('%064x',1),printf('%032x',2),'agent','astrometry',printf('%032x',3),'Metadata','astrometry',
+                    'unused','unused',X'7B7D',printf('%064x',4),X'5B5D',X'7B7D',0,1,0,'Metadata',
+                    'measured-astrometry-solution-v1',printf('%064x',5));
+                """;
+            Assert.AreEqual(1, await output.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
+        using (var interrupted = new SqliteCaptureProcessingStore(fixture.Options,
+            faultInjector: new ThrowOnceFaultInjector(CaptureProcessingFaultPoint.BeforeSchemaCommit)))
+        {
+            await Assert.ThrowsExactlyAsync<InjectedProcessingSchemaException>(async () =>
+                await interrupted.InitializeAsync(CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+        const string indexCountSql = """
+            SELECT COUNT(*) FROM pragma_index_list('processing_outputs')
+            WHERE name = 'ix_processing_outputs_astrometry_lookup' AND partial = 1;
+            """;
+        using (var original = await fixture.OpenAsync().ConfigureAwait(false))
+        {
+            Assert.AreEqual(9L, await ScalarAsync(original, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+            Assert.AreEqual(0L, await ScalarAsync(original, indexCountSql).ConfigureAwait(false));
+            Assert.AreEqual(1L, await ScalarAsync(original, "SELECT COUNT(*) FROM processing_outputs;").ConfigureAwait(false));
+        }
+        using (var migrated = new SqliteCaptureProcessingStore(fixture.Options))
+        {
+            await migrated.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        using var restarted = new SqliteCaptureProcessingStore(fixture.Options);
+        await restarted.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
+        using var verify = await fixture.OpenAsync().ConfigureAwait(false);
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion,
+            await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(verify, indexCountSql).ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(verify, """
+            SELECT COUNT(*) FROM processing_outputs INDEXED BY ix_processing_outputs_astrometry_lookup
+            WHERE role = 'Metadata' AND product_schema_version = 'measured-astrometry-solution-v1';
+            """).ConfigureAwait(false));
+        Assert.AreEqual(1L, await ScalarAsync(verify,
+            "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND duration_ticks=1234;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
     [DataRow("Inputs", "\\uD800")]
     [DataRow("Inputs", "\\uDC00")]
     [DataRow("Outputs", "\\uD800")]
@@ -53,7 +107,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             Assert.IsNull(await store.ReadNormalizationPlanAsync(Guid.ParseExact(new string('1', 32), "N"), "migrated-attempt", CancellationToken.None).ConfigureAwait(false));
         }
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
         Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
         Assert.AreEqual(variant == "corruptInputs" ? "Corrupt" : variant == "oversizedInputs" ? "ExceedsBounds" : "Recorded",
@@ -90,7 +144,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var retried = new SqliteCaptureProcessingStore(fixture.Options);
         await retried.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
         Assert.AreEqual(4L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_execution_manifest_counts;").ConfigureAwait(false));
     }
 
@@ -138,7 +192,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     private static async Task AssertMigratedSurrogateLedgersAsync(SchemaFixture fixture, string corruptKind)
     {
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(verify, "SELECT version FROM capture_processing_schema;").ConfigureAwait(false));
         Assert.AreEqual(16L, await ScalarAsync(verify, "PRAGMA user_version;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, "SELECT COUNT(*) FROM processing_node_attempts WHERE node_id='migrated-attempt' AND outcome='Produced' AND duration_ticks=1234;").ConfigureAwait(false));
         using (var plan = verify.CreateCommand())

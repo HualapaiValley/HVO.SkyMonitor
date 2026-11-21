@@ -513,6 +513,7 @@ public sealed partial class CameraAgentArtifactServiceTests
 
     private sealed class NoStructuredLayers : ICameraAgentStructuredLayerAvailability
     {
-        public ValueTask<bool> IsAvailableAsync(Guid captureId, CancellationToken cancellationToken) => ValueTask.FromResult(false);
+        public ValueTask<CameraAgentLayeredPresentationResult> ReadAsync(Guid captureId, CancellationToken cancellationToken)
+            => ValueTask.FromResult(new CameraAgentLayeredPresentationResult(CameraAgentLayeredPresentationStatus.NotRetained));
     }
 }

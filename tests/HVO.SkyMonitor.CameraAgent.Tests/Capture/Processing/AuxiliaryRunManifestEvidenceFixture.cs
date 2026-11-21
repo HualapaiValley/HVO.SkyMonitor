@@ -25,7 +25,8 @@ internal sealed class AuxiliaryRunManifestEvidenceFixture : IAsyncDisposable
     internal Guid ReferenceArtifactId { get; }
     internal string ReferenceIdentity { get; }
 
-    internal static async Task<AuxiliaryRunManifestEvidenceFixture> CreateAsync(string root, Guid consumerArtifactId)
+    internal static async Task<AuxiliaryRunManifestEvidenceFixture> CreateAsync(
+        string root, Guid consumerArtifactId, Guid? referenceArtifactId = null)
     {
         var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")};Pooling=False");
         try
@@ -39,19 +40,29 @@ internal sealed class AuxiliaryRunManifestEvidenceFixture : IAsyncDisposable
             byte[] descriptor;
             using (var reader = await read.ExecuteReaderAsync().ConfigureAwait(false))
             {
-                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false));
+                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false), $"Consumer artifact {consumerArtifactId:D} was not retained.");
                 identity = reader.GetString(0);
                 capture = reader.GetString(1);
                 descriptor = (byte[])reader[2];
             }
-            read.CommandText = "SELECT artifact_id, output_identity_sha256, descriptor_json FROM processing_outputs WHERE capture_id<>$capture ORDER BY capture_id, artifact_id LIMIT 1;";
             read.Parameters.AddWithValue("$capture", capture);
+            if (referenceArtifactId is { } requestedReference)
+            {
+                read.CommandText = "SELECT artifact_id, output_identity_sha256, descriptor_json FROM processing_outputs WHERE artifact_id=$reference AND capture_id<>$capture;";
+                read.Parameters.AddWithValue("$reference", requestedReference.ToString("N"));
+            }
+            else
+            {
+                read.CommandText = "SELECT artifact_id, output_identity_sha256, descriptor_json FROM processing_outputs WHERE capture_id<>$capture ORDER BY capture_id, artifact_id LIMIT 1;";
+            }
             Guid reference;
             string referenceIdentity;
             byte[] referenceDescriptor;
             using (var reader = await read.ExecuteReaderAsync().ConfigureAwait(false))
             {
-                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false), "The harness must publish two different captures before binding an auxiliary source.");
+                Assert.IsTrue(await reader.ReadAsync().ConfigureAwait(false), referenceArtifactId is { } requiredReference
+                    ? $"Reference artifact {requiredReference:D} must be retained for a different capture than {consumerArtifactId:D}."
+                    : "The harness must publish two different captures before binding an auxiliary source.");
                 reference = Guid.ParseExact(reader.GetString(0), "N");
                 referenceIdentity = reader.GetString(1);
                 referenceDescriptor = (byte[])reader[2];

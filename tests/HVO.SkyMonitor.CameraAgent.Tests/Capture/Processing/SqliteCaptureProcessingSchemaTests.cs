@@ -54,13 +54,13 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
 
         using var connection = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
             connection,
             "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(
             connection,
             "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'retained-wal';").ConfigureAwait(false));
-        Assert.AreEqual(47L, await ScalarAsync(connection, """
+        Assert.AreEqual(48L, await ScalarAsync(connection, """
             SELECT COUNT(*) FROM sqlite_schema
             WHERE name = 'capture_processing_schema'
                OR name LIKE 'processing_%'
@@ -87,7 +87,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     [TestMethod]
     [DataRow(0)]
     [DataRow(4)]
-    [DataRow(10)]
+    [DataRow(11)]
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "Schema versions are fixed integer test data rows.")]
     public async Task UnsupportedPopulatedSchemaIsRejectedWithoutMutation(int version)
     {
@@ -163,7 +163,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(
             verify, "SELECT COUNT(*) FROM processing_nodes WHERE node_id = 'migrated-node';").ConfigureAwait(false));
@@ -218,7 +218,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         using var read = verify.CreateCommand();
         read.CommandText = """
@@ -237,7 +237,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     }
 
     /// <summary>
-    /// Schema 7 already carries execution history, so the migration to schema 9 has to preserve every recorded
+    /// Schema 7 already carries execution history, so the migration to the current schema has to preserve every recorded
     /// attempt and give each one a route it never wrote. The route the historical row takes must be
     /// <c>Unknown</c>: the attempt completed before the store recorded routes, so nothing observed whether it ran
     /// in process or dispatched to the local replay runner, and claiming either would report a value the
@@ -258,7 +258,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, """
             SELECT COUNT(*) FROM processing_node_attempts
@@ -273,7 +273,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     }
 
     /// <summary>
-    /// A schema 6 database reaches schema 9 through a single migration step, so that step owes the attempt-table
+    /// A schema 6 database reaches the current schema in a single migration step, which also needs the attempt-table
     /// rebuild schema 7 introduces in addition to its own graph delivery tables. Without it the version marker
     /// advances while the execution route column stays absent, which the schema validation inside the same
     /// transaction then rejects, so this asserts the column and the preserved row rather than only the marker.
@@ -293,7 +293,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
 
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(verify, """
             SELECT COUNT(*) FROM processing_node_attempts
@@ -364,8 +364,9 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             command.CommandText = $"""
                 DROP TABLE capture_processing_schema;
                 {malformedDefinition};
-                INSERT INTO capture_processing_schema(schema_key, version) VALUES(1, 9);
+                INSERT INTO capture_processing_schema(schema_key, version) VALUES(1, $version);
                 """;
+            command.Parameters.AddWithValue("$version", SqliteCaptureProcessingStore.CurrentSchemaVersion);
             await command.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
 
@@ -466,7 +467,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var retried = new SqliteCaptureProcessingStore(fixture.Options);
         await retried.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         using var verify = await fixture.OpenAsync().ConfigureAwait(false);
-        Assert.AreEqual(9L, await ScalarAsync(
+        Assert.AreEqual((long)SqliteCaptureProcessingStore.CurrentSchemaVersion, await ScalarAsync(
             verify, "SELECT version FROM capture_processing_schema WHERE schema_key = 1;").ConfigureAwait(false));
     }
 

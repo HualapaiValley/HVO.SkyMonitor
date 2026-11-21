@@ -96,6 +96,9 @@ public sealed class CameraAgentHostOptions : IValidatableObject
     public SkyMapOptions SkyMap { get; init; } = new();
 
     [Required]
+    public VirtualSkyRendererOptions VirtualSky { get; init; } = new();
+
+    [Required]
     public SiteMapOptions SiteMap { get; init; } = new();
 
     [Range(1, 1440)]
@@ -345,6 +348,13 @@ public sealed class CameraAgentHostOptions : IValidatableObject
             yield return result;
         }
 
+        var rendererResults = new List<ValidationResult>();
+        Validator.TryValidateObject(VirtualSky, new ValidationContext(VirtualSky), rendererResults, validateAllProperties: true);
+        foreach (var result in rendererResults)
+        {
+            yield return result;
+        }
+
         var siteMapResults = new List<ValidationResult>();
         Validator.TryValidateObject(
             SiteMap,
@@ -384,6 +394,16 @@ public sealed class SkyMapOptions
     /// </summary>
     [Range(1, CameraAgentSkyMapProjection.MaximumConfigurableObjects)]
     public int MaximumObjects { get; init; } = CameraAgentSkyMapProjection.DefaultMaximumObjects;
+}
+
+/// <summary>Host overrides for ordinary VirtualSky capture.</summary>
+public sealed class VirtualSkyRendererOptions
+{
+    public const string CandidateCapKey = "CameraAgent:VirtualSky:RendererCandidateCap";
+    public const int MaximumCandidateCap = 100_000;
+
+    [Range(1, MaximumCandidateCap)]
+    public int? RendererCandidateCap { get; init; }
 }
 
 /// <summary>

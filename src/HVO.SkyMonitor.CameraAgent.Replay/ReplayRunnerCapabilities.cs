@@ -68,7 +68,8 @@ public sealed record ReplayRunnerCapabilities(
         BuiltInProcessingRecipes.CloudAssessment,
         BuiltInProcessingRecipes.WeatherCloudOverlay,
         BuiltInProcessingRecipes.ReferenceCalibration,
-        BuiltInProcessingRecipes.ProjectedScene
+        BuiltInProcessingRecipes.ProjectedScene,
+        BuiltInProcessingRecipes.AstrometryPrediction
     ];
 
     public static ReplayRunnerCapabilities Create(

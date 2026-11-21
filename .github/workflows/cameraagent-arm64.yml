@@ -71,9 +71,10 @@ jobs:
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-      - name: Run hosted OpenNGC catalog, installer, and lifecycle contracts
+      - name: Run hosted OpenNGC restore, catalog, installer, and lifecycle contracts
         id: openngc-contracts
         timeout-minutes: 5
+        shell: bash
         env:
           HVO_PRODUCTION_CATALOG_BUNDLE: ${{ runner.temp }}/hyg-v42-contracts/build/hyg-v4.2-p3-s2-r1.bundle
           HVO_OPENNGC_CATALOG_BUNDLE: ${{ runner.temp }}/hyg-v42-contracts/openngc/openngc-v20260501-p6-s5-r1.bundle
@@ -81,6 +82,11 @@ jobs:
           evidence="$RUNNER_TEMP/openngc-contract-evidence"
           mkdir -p "$evidence"
           cp "$RUNNER_TEMP/hyg-v42-contracts/"{openngc-fixture.json,openngc.sha256} "$evidence/"
+          python3 -m pip install --require-hashes --only-binary=:all: --no-deps \
+            --target "$RUNNER_TEMP/hvo-pyyaml" -r scripts/ci/pyyaml-requirements.txt
+          PYTHONPATH="$RUNNER_TEMP/hvo-pyyaml" ./scripts/test:cameraagent-arm64-restore \
+            --pinned-bundles "$HVO_PRODUCTION_CATALOG_BUNDLE" "$HVO_OPENNGC_CATALOG_BUNDLE" \
+            2>&1 | tee "$evidence/arm64-restore-replay.log"
           ./scripts/test:openngc-contracts "$evidence"
       - name: Upload hosted OpenNGC contract evidence
         if: ${{ !cancelled() && (steps.openngc-contracts.outcome == 'success' || steps.openngc-contracts.outcome == 'failure') }}
@@ -148,7 +154,18 @@ jobs:
           jq -e --arg head "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" \
             '.headSha == $head and .runId == $run' "$catalog_root/openngc-fixture.json" >/dev/null ||
             { printf 'OpenNGC bundle provenance does not match the workflow run and commit.\n' >&2; exit 1; }
+          database="$openngc_bundle/openngc.sqlite"
+          [[ -f "$database" && ! -L "$database" ]] ||
+            { printf 'Restored OpenNGC database must be a regular file: %s\n' "$database" >&2; exit 1; }
           (cd "$catalog_root" && sha256sum --check --strict openngc.sha256)
+          # The transfer ledger travels with the artifact. Check the bytes against the reviewed checkout.
+          digest="$(sha256sum < "$database")"
+          length="$(stat -c %s -- "$database")"
+          jq -e --arg hash "${digest%% *}" --argjson bytes "$length" '
+            [.specifications[] | select(.catalogId == "openngc-production")] |
+            length == 1 and (.[0].database | .sha256 == $hash and .length == $bytes)
+          ' src/HVO.SkyMonitor.Catalog.Sqlite/ApprovedCatalogSpecifications.json >/dev/null ||
+            { printf 'Restored OpenNGC database does not match the approved SHA-256 and length.\n' >&2; exit 1; }
           cp "$catalog_root/"{openngc-fixture.json,openngc.sha256} \
             "$RUNNER_TEMP/arm64-workflow-start-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/"
           {

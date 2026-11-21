@@ -512,14 +512,19 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `rawIngress` | `raw/journal/raw-ingress.db` | `PRAGMA user_version` | Writes 16, reads 13 to 16. `io.hvo.skymonitor.raw-ingress-schema` 16 and `raw-ingress-migration` `canonical-v13-v14-v15-to-v16` also declare it |
 | `artifactOutbox` | `outbox/artifact-outbox.db` in each storage root (`raw`, `archive`, and every FileStorage root) | The `artifact_outbox_schema.version` column | Writes 2, reads 2 to 2 |
 | `fleetStatus` | `raw/.fleet/fleet-status.db` | The `fleet_status_metadata.schema_version` column | Writes 1, reads 1 to 1 |
-| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4 |
+| `environmentalOutbox` | `raw/.environment/environmental-observation-outbox.db` | `PRAGMA user_version` | Writes 5, reads 3 to 5. Combined reader boundary `e7b9af4b98d1521c3939ef5925608a3663c63302` selects a paired checkpoint before upgrade from schema 3 or 4, from either single-reader image for #1901 or #1938, or from the earlier private joined reader. Rollback restores the previous image's paired state |
 | `executionEvidenceOutbox` | `raw/evidence/execution-evidence-outbox.db` | The `execution_evidence_schema.version` column | Writes 1, reads 1 to 1 |
 | `timeLapses` | `raw/.time-lapses/time-lapses.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1 |
 | `nightlyProducts` | `raw/.nightly-products/nightly-products.db` | `PRAGMA user_version` | Writes 3, reads 2 to 3 |
-| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4; the distinct combined-reader boundary `bc5ca7489c4090c299c416309519ab72da4a8cdb` requires a paired checkpoint even from development/v1 `38320d3a` (processing schema 9, automation schema 3). Rollback restores schema 3 for that previous reader |
+| `localAutomations` | `raw/.automation/local-automations.db` | `PRAGMA user_version` | Writes 4, reads 3 to 4. The current image boundary also preserves the paired checkpoint first required by `bc5ca7489c4090c299c416309519ab72da4a8cdb` for adoption from development/v1 `38320d3a` (processing schema 9, automation schema 3). Rollback restores schema 3 for that previous reader |
 | `orbitalElements` | `raw/.orbital-elements/orbital-elements.db`, with its content files beside it | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): the provider floor and halt must never be rewound |
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 | `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
+
+The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
+The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5
+journal without the settlement column is refused unchanged. Retain or archive that rehearsal state and restore
+the verified paired v4 checkpoint before adopting the released reader.
 
 - The state snapshot of #1340 copies every store here except `orbitalElements`, `spaceWeather` and
   `calibrationFamilies`. The calibration-family store (#1475) holds approved calibration families and which one is

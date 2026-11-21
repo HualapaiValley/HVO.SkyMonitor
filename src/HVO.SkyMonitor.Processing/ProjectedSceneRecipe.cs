@@ -4,13 +4,13 @@ using HVO.SkyMonitor.Astronomy;
 
 namespace HVO.SkyMonitor.Processing;
 
-internal sealed class ProjectedSceneRecipe : IProcessingRecipe
+internal sealed class ProjectedSceneRecipe(bool astrometryPrediction = false) : IProcessingRecipe
 {
     internal const string AuxiliaryInputName = "scene";
     internal const string MediaType = "application/vnd.hvo.projected-scene+json";
 
     public ProcessingRecipeDefinition Definition { get; } = new(
-        BuiltInProcessingRecipes.ProjectedScene,
+        astrometryPrediction ? BuiltInProcessingRecipes.AstrometryPrediction : BuiltInProcessingRecipes.ProjectedScene,
         "1.0.0",
         "canonical-projected-scene-v1",
         ProcessingOperationKind.Analyzer);
@@ -62,6 +62,7 @@ internal sealed class ProjectedSceneRecipe : IProcessingRecipe
         var auxiliary = scenes[0];
         var parsed = ProjectedSceneJson.Parse(auxiliary.Payload);
         if (!parsed.IsValid || parsed.Scene is not { } scene ||
+            astrometryPrediction && scene.Kind != ProjectedSceneKind.Predicted ||
             !string.Equals(scene.SchemaVersion, auxiliary.SchemaVersion, StringComparison.Ordinal) ||
             !string.Equals(scene.SceneIdentitySha256, auxiliary.IdentitySha256, StringComparison.OrdinalIgnoreCase))
         {

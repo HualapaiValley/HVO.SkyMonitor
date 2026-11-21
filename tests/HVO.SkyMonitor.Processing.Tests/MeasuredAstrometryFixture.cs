@@ -21,15 +21,16 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
 
     internal static Task<MeasuredAstrometryFixture> CreateAsync() => CreateAtAsync(0);
 
-    internal static async Task<MeasuredAstrometryFixture> CreateAtAsync(int offsetSeconds, double exposureSeconds = 1)
+    internal static async Task<MeasuredAstrometryFixture> CreateAtAsync(int offsetSeconds, double exposureSeconds = 1,
+        ProjectionContext? projectionOverride = null)
     {
         var random = new Random(934817);
-        var stars = Enumerable.Range(0, 560).Select(i => new CelestialCatalogObject($"SYN{i:0000}", $"Artificial {i}",
+        var stars = Enumerable.Range(0, projectionOverride is null ? 560 : 900).Select(i => new CelestialCatalogObject($"SYN{i:0000}", $"Artificial {i}",
             random.NextDouble() * 24, Math.Asin(2 * random.NextDouble() - 1) * 180 / Math.PI, 1.8 + 3.4 * random.NextDouble())).ToArray();
         var metadata = new CatalogMetadata("generated-reference", "1", new Uri("https://example.test/reference"), Hash("seed934817"), "test-generated", "1");
         var package = new AstrometricCatalogProvenance("generated-reference", "1", "fixture", "unspecified");
         var catalog = new AstrometricCatalogData(metadata, stars, true, 7, provenance: package);
-        var projection = new ProjectionContext(ProjectionModel.EquidistantFisheye, 256, 256, 144, 144, 512, 512,
+        var projection = projectionOverride ?? new ProjectionContext(ProjectionModel.EquidistantFisheye, 256, 256, 144, 144, 512, 512,
             ProjectionAperture.Circular, 232, 72, 243, 17);
         var start = DateTimeOffset.Parse("2026-08-25T00:00:00Z", CultureInfo.InvariantCulture).AddSeconds(offsetSeconds);
         var captureId = offsetSeconds == 0 ? MeasuredStellarAssociationFixtures.CaptureId : new Guid(Convert.FromHexString(Hash("capture" + offsetSeconds.ToString(CultureInfo.InvariantCulture))).AsSpan(0, 16));
@@ -39,18 +40,18 @@ internal sealed record MeasuredAstrometryFixture(ProcessingArtifact Raw, Project
         var visible = await new VisibleSceneBuilder(new InMemoryCelestialCatalog(stars)).BuildAsync(new VisibleSceneRequest(
             start.AddSeconds(exposureSeconds / 2), observer, projection, new CatalogQuery(7, 2500), metadata, projectionVersion: "equidistant-reference-v1")).ConfigureAwait(false);
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, visible,
-            ProjectedSceneImageTransformV1.Identity(512, 512), new(captureId, artifactId, descriptorIdentity), "calibration-v1", visible.Request.ProjectionVersion);
-        var pixels = MeasuredStellarAssociationFixtures.Field(512, 512);
+            ProjectedSceneImageTransformV1.Identity(projection.WidthPixels, projection.HeightPixels), new(captureId, artifactId, descriptorIdentity), "calibration-v1", visible.Request.ProjectionVersion);
+        var pixels = MeasuredStellarAssociationFixtures.Field(projection.WidthPixels, projection.HeightPixels);
         // Actual pixel samples, not injected solver detections. Small independent centroid error is caused by a
         // 0.04-degree roll offset from the input calibration. No renderer/truth object crosses the recipe boundary.
         var shifted = ProjectorFactory.Create(projection with { RollDegrees = 17.04 });
         foreach (var item in visible.Objects.Where(o => o.Kind == CelestialObjectKind.Star))
         {
             if (shifted.Project(item.GeometricHorizontal) is not { } point) continue;
-            MeasuredStellarAssociationFixtures.AddGaussian(pixels, point, 1.15, 5000 * Math.Pow(10, -.4 * (item.Magnitude - 2)), 512);
+            MeasuredStellarAssociationFixtures.AddGaussian(pixels, point, 1.15, 5000 * Math.Pow(10, -.4 * (item.Magnitude - 2)), projection.WidthPixels);
         }
         MeasuredStellarAssociationFixtures.AddNoise(pixels, 1205, 4);
-        var raw = MeasuredStellarAssociationFixtures.RawArtifact(pixels, width: 512, height: 512) with
+        var raw = MeasuredStellarAssociationFixtures.RawArtifact(pixels, width: projection.WidthPixels, height: projection.HeightPixels) with
         {
             CaptureId = captureId,
             ArtifactId = artifactId,

@@ -87,7 +87,9 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         bool useTransientEvidence = false,
         string ownerPassword = OwnerPassword,
         string? scratchRoot = null,
-        bool preserveRoot = false)
+        bool preserveRoot = false,
+        string? productionCatalogRoot = null,
+        IReadOnlyDictionary<string, string?>? settingsOverrides = null)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -180,6 +182,16 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             ["Logging:LogLevel:Default"] = "Warning",
             ["Serilog:MinimumLevel:Default"] = "Warning"
         };
+
+        if (settingsOverrides is not null)
+            foreach (var setting in settingsOverrides) overrides[setting.Key] = setting.Value;
+
+        if (productionCatalogRoot is not null)
+        {
+            overrides["Catalog:Root"] = productionCatalogRoot;
+            overrides["Catalog:RequiredCatalogId"] = "hyg-v42-production";
+            overrides["Catalog:RequiredPackageKind"] = "Production";
+        }
 
         if (useEnvironmentalAcquisition)
         {

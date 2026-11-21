@@ -112,9 +112,10 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             {
                 return initialized;
             }
-            var durable = await _store.InitializeRuntimeAsync(configuration, cancellationToken).ConfigureAwait(false);
+            var durable = await _store.InitializeRuntimeAsync(configuration,
+                candidate => ValidateConfiguration(candidate), cancellationToken).ConfigureAwait(false);
             var activeConfiguration = durable.ActiveRevision.Profile.ApplyTo(configuration);
-            ValidateConfiguration(activeConfiguration);
+            ValidateConfiguration(activeConfiguration, activeProfile: true);
             var snapshot = await CreateSnapshotAsync(
                 durable.ActiveRevision,
                 durable.PendingRevision?.RevisionId,
@@ -695,13 +696,13 @@ public sealed class CaptureScheduleRuntimeCoordinator(
             revision, pendingRevisionId, configuration, preview, location);
     }
 
-    private void ValidateConfiguration(CameraModuleConfig configuration)
+    private void ValidateConfiguration(CameraModuleConfig configuration, bool activeProfile = false)
     {
         try
         {
             FileCameraAgentConfigurationLoader.ValidateConfig(configuration);
             _moduleConfigurationValidator?.Validate(configuration);
-            var graph = _pipelineFactory.CreateGraph(configuration);
+            var graph = activeProfile ? _pipelineFactory.CreateActiveProfileGraph(configuration) : _pipelineFactory.CreateGraph(configuration);
             graph.DisposeSteps();
         }
         catch (CaptureProfileCompatibilityException)

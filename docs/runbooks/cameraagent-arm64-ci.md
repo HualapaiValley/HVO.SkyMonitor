@@ -203,17 +203,25 @@ update interval. Subscribe to `actions/runner` security and release notices.
 
 The hosted x64 catalog job builds the approved HYG 4.2 and standalone OpenNGC
 bundles on `ubuntu-24.04` using the pinned public inputs and repository recipes.
-It runs the approved OpenNGC catalog reader case and the eleven bundle-dependent
-installer and lifecycle cases in Release with Docker disabled. Every expected
-case and data row must report Passed in the retained TRX files. The hosted
-evidence artifact includes the producer architecture, commit, run and attempt,
-package identity, source URL, build duration and file SHA-256 checksums.
+Before archiving the catalog for the native job, the hosted contract phase
+replays the native restore with disposable synthetic fixtures and copies of the
+approved bundles. It verifies same-run retry and refusal of changed database
+bytes even with a regenerated transfer ledger. It then runs the approved
+OpenNGC catalog reader case and the eleven bundle-dependent installer and
+lifecycle cases in Release with Docker disabled. Every expected case and data
+row must report Passed in the retained TRX files. The
+`hosted-openngc-contracts-<run-id>-<attempt>` artifact retains all 12 results,
+the restore replay log, producer architecture, commit, run and attempt,
+package identity, source URL, build duration, and file SHA-256 checksums.
 
-The native job downloads the catalog artifact from the same workflow run,
-verifies the commit and OpenNGC file checksums, and exports both paths for the
-native tests. A native-only retry can use the original hosted artifact while it
-is retained. The OpenNGC bundle is a test input. The runtime smoke continues to
-install and verify the canonical HYG 4.2 catalog.
+The native job downloads the catalog artifact from the same workflow run and
+checks its run ID and commit. The bundled SHA-256 ledger checks transfer
+integrity. Before exporting both paths for the native tests, the job verifies
+the restored OpenNGC database's SHA-256 and byte length against the approved
+catalog specification in the checkout. A native-only retry can reuse a
+retained artifact from an earlier attempt of the same run at the same commit.
+The OpenNGC bundle is a test input. The runtime smoke installs and verifies the
+canonical HYG 4.2 catalog.
 
 The native job then:
 
@@ -247,6 +255,11 @@ The publish-process smoke in step 3 intentionally does not wait for
 `RawIngressCommitted` (event ID `2042`), which is a Debug-level signal. The
 container smoke in step 6 owns the durable-capture assertion and the artifact
 checks that follow it.
+
+To replay the restore step locally with disposable fixtures, run
+`./scripts/test:cameraagent-arm64-restore` with PyYAML installed. Pass
+`--pinned-bundles HYG_BUNDLE OPENNGC_BUNDLE` to also exercise the approved
+bundles and verify refusal of a changed copy with a regenerated ledger.
 
 Trigger a trusted default-branch run manually with:
 

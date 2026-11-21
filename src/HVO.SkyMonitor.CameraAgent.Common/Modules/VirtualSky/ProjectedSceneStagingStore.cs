@@ -66,6 +66,16 @@ internal sealed record StagedProjectedSceneDocument(
 public interface IProjectedSceneStagingStore
 {
     ValueTask StageAsync(string stageKey, string sceneId, VisibleScene scene, CancellationToken cancellationToken);
+
+    /// <summary>Stages VirtualSky geometry and returns the scene within the publication budget.</summary>
+    async ValueTask<VisibleScene> StageVirtualSceneAsync(
+        string stageKey, string sceneId, VisibleScene scene, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        var bounded = scene.WithObjectLimit(ProjectedSceneJson.MaximumObjectCount);
+        await StageAsync(stageKey, sceneId, bounded, cancellationToken).ConfigureAwait(false);
+        return bounded;
+    }
     ValueTask StageAsync(
         string stageKey,
         string sceneId,
@@ -148,25 +158,29 @@ internal sealed class ProjectedSceneStagingStore :
         VisibleScene scene,
         CancellationToken cancellationToken)
     {
-        ValidateKey(stageKey, nameof(stageKey));
-        ValidateKey(sceneId);
-        ArgumentNullException.ThrowIfNull(scene);
-        await StageCoreDocumentAsync(stageKey, sceneId, scene, facts: null, cancellationToken).ConfigureAwait(false);
+        await StageCoreDocumentAsync(stageKey, sceneId, scene, facts: null, limitObjects: false, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    public ValueTask StageAsync(
+    public ValueTask<VisibleScene> StageVirtualSceneAsync(
+        string stageKey, string sceneId, VisibleScene scene, CancellationToken cancellationToken)
+        => StageCoreDocumentAsync(stageKey, sceneId, scene, facts: null, limitObjects: true, cancellationToken);
+
+    public async ValueTask StageAsync(
         string stageKey,
         string sceneId,
         VisibleScene scene,
         CaptureProjectedSceneStageFacts facts,
         CancellationToken cancellationToken)
-        => StageCoreDocumentAsync(stageKey, sceneId, scene, facts ?? throw new ArgumentNullException(nameof(facts)), cancellationToken);
+        => await StageCoreDocumentAsync(stageKey, sceneId, scene, facts ?? throw new ArgumentNullException(nameof(facts)),
+            limitObjects: false, cancellationToken).ConfigureAwait(false);
 
-    private async ValueTask StageCoreDocumentAsync(
+    private async ValueTask<VisibleScene> StageCoreDocumentAsync(
         string stageKey,
         string sceneId,
         VisibleScene scene,
         CaptureProjectedSceneStageFacts? facts,
+        bool limitObjects,
         CancellationToken cancellationToken)
     {
         ValidateKey(stageKey, nameof(stageKey));
@@ -179,22 +193,37 @@ internal sealed class ProjectedSceneStagingStore :
             ArgumentNullException.ThrowIfNull(facts.Layout);
             if (!Enum.IsDefined(facts.IntendedKind)) throw new ArgumentOutOfRangeException(nameof(facts));
         }
-        var projected = ProjectedSceneJson.Create(
-            facts?.IntendedKind ?? ProjectedSceneKind.VirtualRenderAuthoritative,
-            scene,
-            ProjectedSceneImageTransformV1.Identity(scene.Request.Projection.WidthPixels, scene.Request.Projection.HeightPixels),
-            ValidationSource,
-            scene.Request.ProjectionVersion,
-            scene.Request.ProjectionVersion);
-        var document = new StagedProjectedSceneDocument(
-            StagedProjectedSceneDocument.CurrentSchemaVersion, string.Empty, stageKey, sceneId, projected.EffectiveUtc,
-            projected.Observer, projected.Catalog, projected.Selection, projected.Projection, projected.ImageTransform,
-            projected.HorizonPolicy, projected.Refraction, projected.AstronomyAlgorithmVersion,
-            projected.ConstellationTopology, projected.EphemerisModelVersion, projected.Objects, projected.Segments,
-            facts?.RigProfileSha256, facts?.Layout, facts?.IntendedKind, facts?.StageSceneIdentitySha256,
-            projected.ResolvedFootprints, projected.DeepSky);
-        document = document with { StageIdentitySha256 = ComputeIdentity(document) };
-        var bytes = Serialize(document);
+        if (limitObjects) scene = scene.WithObjectLimit(ProjectedSceneJson.MaximumObjectCount);
+        byte[] bytes;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var (projected, projectedBytes) = ProjectedSceneJson.CreateWithPayloadSize(
+                facts?.IntendedKind ?? ProjectedSceneKind.VirtualRenderAuthoritative,
+                scene,
+                ProjectedSceneImageTransformV1.Identity(scene.Request.Projection.WidthPixels, scene.Request.Projection.HeightPixels),
+                ValidationSource,
+                scene.Request.ProjectionVersion,
+                scene.Request.ProjectionVersion);
+            var document = new StagedProjectedSceneDocument(
+                StagedProjectedSceneDocument.CurrentSchemaVersion, string.Empty, stageKey, sceneId, projected.EffectiveUtc,
+                projected.Observer, projected.Catalog, projected.Selection, projected.Projection, projected.ImageTransform,
+                projected.HorizonPolicy, projected.Refraction, projected.AstronomyAlgorithmVersion,
+                projected.ConstellationTopology, projected.EphemerisModelVersion, projected.Objects, projected.Segments,
+                facts?.RigProfileSha256, facts?.Layout, facts?.IntendedKind, facts?.StageSceneIdentitySha256,
+                projected.ResolvedFootprints, projected.DeepSky);
+            document = document with { StageIdentitySha256 = ComputeIdentity(document) };
+            bytes = Serialize(document);
+            var size = limitObjects ? Math.Max(bytes.Length, projectedBytes) : bytes.Length;
+            if (size <= ProjectedSceneJson.MaximumPayloadBytes) break;
+            if (!limitObjects || scene.Objects.Count == 0)
+                throw new ArgumentException("Projected-scene stage exceeds 4 MiB.", nameof(scene));
+
+            // Both scene envelopes use fixed-width source IDs. Keep the same query, geometry, and provenance
+            // while reducing the annotation list. Leave room for the envelope and non-stellar data.
+            var nextLimit = (int)((long)scene.Objects.Count * ProjectedSceneJson.MaximumPayloadBytes * 9 / (size * 10L));
+            scene = scene.WithObjectLimit(nextLimit);
+        }
 
         var registered = await _lifecycle.RegisterPendingAsync(stageKey, cancellationToken).ConfigureAwait(false);
 
@@ -207,6 +236,7 @@ internal sealed class ProjectedSceneStagingStore :
             if (registered) await _lifecycle.ResolvePendingAsync(stageKey).ConfigureAwait(false);
             throw;
         }
+        return scene;
     }
 
     private async ValueTask StageCoreAsync(string stageKey, byte[] bytes, CancellationToken cancellationToken)
@@ -626,13 +656,8 @@ internal sealed class ProjectedSceneStagingStore :
         }
     }
 
-    private static byte[] Serialize(StagedProjectedSceneDocument document)
-    {
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(
-            CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(document, SerializerOptions)));
-        if (bytes.Length > ProjectedSceneJson.MaximumPayloadBytes) throw new ArgumentException("Projected-scene stage exceeds 4 MiB.", nameof(document));
-        return bytes;
-    }
+    private static byte[] Serialize(StagedProjectedSceneDocument document) => JsonSerializer.SerializeToUtf8Bytes(
+        CaptureContractJson.Canonicalize(JsonSerializer.SerializeToElement(document, SerializerOptions)));
 
     private static string ComputeIdentity(StagedProjectedSceneDocument document) =>
         CaptureContractJson.ComputeCanonicalJsonSha256(JsonSerializer.SerializeToElement(

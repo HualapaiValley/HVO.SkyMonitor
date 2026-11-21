@@ -32,7 +32,8 @@ public static class CoordinateTransforms
         var hourAngle = DegreesToRadians(AstronomyTime.LocalMeanSiderealDegrees(utc, longitudeDegrees) - equatorial.RightAscensionHours * 15d);
         var latitude = DegreesToRadians(latitudeDegrees);
         var declination = DegreesToRadians(equatorial.DeclinationDegrees);
-        var altitude = Math.Asin(Math.Sin(latitude) * Math.Sin(declination) + Math.Cos(latitude) * Math.Cos(declination) * Math.Cos(hourAngle));
+        var sinAltitude = Math.Sin(latitude) * Math.Sin(declination) + Math.Cos(latitude) * Math.Cos(declination) * Math.Cos(hourAngle);
+        var altitude = Math.Asin(Math.Clamp(sinAltitude, -1d, 1d));
         var azimuth = Math.Atan2(
             Math.Sin(hourAngle),
             Math.Cos(hourAngle) * Math.Sin(latitude) - Math.Tan(declination) * Math.Cos(latitude));

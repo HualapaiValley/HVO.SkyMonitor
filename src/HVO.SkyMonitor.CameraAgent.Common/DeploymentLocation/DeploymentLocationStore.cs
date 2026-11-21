@@ -118,6 +118,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
     };
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly SemaphoreSlim _scrubGate = new(1, 1);
+    private readonly TaskCompletionSource _initialActive = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _recentReady = true;
     private bool _needsReconciliation;
     private readonly CameraAgentHostOptions _options = options.Value;
@@ -135,6 +136,9 @@ public sealed partial class ProtectedDeploymentLocationStore(
     private DeploymentLocationSeed? _configurationSeed;
 
     public DeploymentLocationSnapshot? Active => Volatile.Read(ref _history)?.Snapshots[^1];
+
+    internal Task WaitForInitialActiveAsync(CancellationToken cancellationToken)
+        => _initialActive.Task.WaitAsync(cancellationToken);
 
     public bool RequiresRetainedIntegrityScrub => _needsReconciliation || (Volatile.Read(ref _integrity)?.RequiresScrub ?? true);
     public bool RecentRetainedEvidenceReady => _recentReady;
@@ -402,6 +406,7 @@ public sealed partial class ProtectedDeploymentLocationStore(
             Volatile.Write(ref _configurationSeed, configurationSeed);
             Volatile.Write(ref _manual, manual);
             Volatile.Write(ref _history, snapshot.History);
+            _initialActive.TrySetResult();
             cancellationToken.ThrowIfCancellationRequested();
             try { integrityScrub?.Publish(); }
             catch (Exception exception) when (exception is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException or Microsoft.Data.Sqlite.SqliteException or JsonException or FormatException)

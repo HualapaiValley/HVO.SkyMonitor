@@ -55,7 +55,10 @@ An exceptional focused review is supplemental for a CI-discovered code defect, a
 
 ## Reviewer Identity
 
-**Historical:** This identity and publication mechanism are retired. Kepler publishes reviews without head-mutating review commits.
+**Historical:** The `hvo-agentcontrol[bot]` reviewer role and its review
+publication route are retired. The AgentControl App remains in use for
+[nightly promotion to `main`](../development-v1.md#promotion-to-main).
+Kepler publishes reviews without head-mutating review commits.
 
 The independent reviewer posts as `hvo-agentcontrol[bot]`, the HualapaiValley-owned
 GitHub App, so that review records are attributable to an identity distinct from
