@@ -16,6 +16,7 @@ internal sealed record RecoveredCenteredAdmission(
 internal sealed partial class RawCaptureIngress : ICenteredExposureRuntimeReader
 {
     internal CenteredRecentExposureIndex RecentCenteredExposures { get; } = new();
+    internal bool CenteredPublicationReady => Volatile.Read(ref _initialized);
 
     internal Task<CenteredOwnerTransition?> FenceCenteredOwnerAsync(
         string agentId, string? cameraId, string? profileIdentity, CancellationToken cancellationToken)

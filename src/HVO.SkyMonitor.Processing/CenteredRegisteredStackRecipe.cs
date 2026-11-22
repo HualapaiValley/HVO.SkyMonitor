@@ -36,6 +36,16 @@ public sealed class CenteredRegisteredStackRecipe(ICenteredStackInputReader read
     public static ProcessingRecipeIdentity FixedIdentity { get; } =
         ProcessingIdentity.CreateRecipeIdentity(RecipeDefinition, NormalizeFixedOptions(default));
 
+    /// <summary>Identifies the registered result for this frozen plan without reopening pixels or running registration.</summary>
+    public static ProcessingRecipeIdentity ExecutionIdentity(CenteredStackPlanV1 plan, string linearVariant)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentException.ThrowIfNullOrWhiteSpace(linearVariant);
+        return ProcessingIdentity.CreateRecipeIdentity(RecipeDefinition, ProcessingIdentity.BindExecutionInputs(
+            NormalizeFixedOptions(default), ProcessingInputSelector.Calibrated(linearVariant),
+            annotation: null, [plan.ToAuxiliaryInput()]));
+    }
+
     public static ProcessingExecutionRequest CreateRequest(CenteredStackPlanV1 plan,
         string linearVariant, string outputVariant, IReadOnlyList<ProcessingArtifact> artifacts)
     {
