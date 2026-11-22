@@ -26,16 +26,17 @@ revision. *Spool* is the local durable staging area for admitted and produced by
 | --- | --- | --- |
 | D1 | The Silo layout ships only as a clean install with a new state contract, a new state directory and an empty Silo bucket. Existing filesystem installs keep their roots and release. Nothing converts in place. | [2](#2-clean-start-and-release-boundary) |
 | D2 | Logical IDs stay application-issued and never derive from Silo version IDs. Exact versions are verified locators bound to a logical revision and its SHA-256. A verified restore or import may remap them; it never re-identifies. | [4.2](#42-logical-identities-and-exact-versions) |
-| D3 | Exposure admission keeps its local durability boundary. Silo reachability is not on the admission path. Products and views become visible only at a separate group publication boundary. | [5](#5-admission-staging-and-publication-boundaries) |
-| D4 | Committed publication, live issue, copy, remap, pin, policy and expiry records live in a generation-ordered journal inside the instance's own bucket. That journal is authoritative for rebuilding the SQLite catalog. | [4.5](#45-durable-metadata-journal) |
+| D3 | Exposure admission keeps its local durability boundary, and Silo reachability is not on the admission path. A group becomes visible only after its payloads, manifest and journal record are durable under the qualified persistence condition and verified by exact-byte reads. | [5](#5-admission-staging-and-publication-boundaries) |
+| D4 | Committed publication, live issue, copy, custody, remap, pin, policy and expiry records live in a generation-ordered journal inside the instance's own bucket. It is authoritative for rebuilding the SQLite catalog, and compaction removes segments only behind a verified, backed-up anchor. | [4.5](#45-durable-metadata-journal) |
 | D5 | Each published revision has a reopen set, which is needed to display it at its original revision, and a compute set, which is needed to recompute it. Policy may expire compute inputs without breaking reopen. | [6](#6-dependency-closure-availability-and-reopen) |
-| D6 | Holds name logical identities. They resolve to exact versions only at deletion time, carry across writer generations and recovery, and are serialized with expiry. | [7](#7-holds-writer-generations-retention-and-recovery) |
-| D7 | Expiry is complete only when space is physically recovered. Exact-version delete success is not reclamation. | [7.4](#74-physical-reclamation) |
+| D6 | Holds name logical identities and point only from consumers to inputs, so they cannot cycle. They resolve to exact versions at deletion time and carry across writer generations and recovery. Evicting a local copy because a colder copy survives requires qualified protection of that exact survivor; otherwise the last-copy policy applies. | [7](#7-holds-writer-generations-retention-and-recovery) |
+| D7 | Physical proof of a version reads its exact bytes and computes length and SHA-256 independently. Expiry is complete only when space is physically recovered. Delete success and metadata HEAD prove neither. | [6.2](#62-availability-states), [7.4](#74-physical-reclamation) |
 | D8 | First boot has no central dependency. Capture admission is persisted as paused before the first start, and the camera device reaches the candidate only after the former owner releases it. | [8.1](#81-clean-target-and-first-boot) |
-| D9 | Legacy `cameraagent reinstall` resumes capture automatically. An early abort therefore invokes it only after proving the candidate stopped, fenced and holding zero accepted admissions, holding positive authority to restore active capture, and proving that no newer operator pause, unknown pause state or conflicting device owner would be overridden. Otherwise admission and the device stay fenced. | [8.3](#83-early-abort-ordering) |
-| D10 | Newer operator pauses beat installer resumes. A pressure pause is a separate fence. Non-rewindable provider floors and halts are never reset by a clean install. | [8.4](#84-pause-precedence), [8.5](#85-request-floors-and-identity-floors) |
+| D9 | Legacy `cameraagent reinstall` cannot hold control authority or camera exclusivity across its own restart and automatic resume. An early abort therefore stops and fences the candidate, proves zero admissions, and leaves the former instance and the camera fenced until an authority-preserving restore route exists. | [8.3](#83-early-abort-ordering) |
+| D10 | A resume is accepted only when its own pause is still the latest accepted command, so newer operator pauses win, including no-op pauses. A pressure pause is a separate fence. Provider acquisition stays off on the candidate through the abort window, and non-rewindable provider floors and halts are never reset. | [8.4](#84-pause-precedence), [8.5](#85-request-floors-and-identity-floors) |
 | D11 | Settled by Roy: the first Silo release uses the centered profile. Its launch is held until accepted #1922 and #1923 contracts and the relevant #1928 qualification are reachable at the exact integration source #1968 consumes and #1974 verifies. #1965, #1966 and #1967 proceed now. | [9](#9-branch-and-release-strategy) |
 | D12 | Budgets in this contract are proposed targets. They are kept separate from measured values and attributed to their sources. | [10](#10-budgets) |
+| D13 | Recovery reports admission, publication and per-role cutoffs separately from the evidence that survived. It carries every issued-identity floor and keeps admission fenced while any floor is unproven. | [5.4](#54-loss-guarantees-and-recovery-cutoffs) |
 
 ## 2. Clean start and release boundary
 
@@ -55,6 +56,21 @@ revision. *Spool* is the local durable staging area for admitted and produced by
   volume is supported after [#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966) qualifies it. In-place
   upgrade from a filesystem release, downgrade, legacy readers and live migration are excluded. A later release must
   qualify its own upgrade path on the new format before offering that operation.
+- **Supported topology.** Each instance runs one CameraAgent container and one stock Silo container on the same Linux
+  host and Docker daemon, on amd64 or ARM64 (the POC's Raspberry Pi 5 class). Each has its own instance-owned root on
+  local ext4 NVMe: the CameraAgent state root holds SQLite, the spool and the cache, and the Silo data root holds the
+  bucket. The Silo S3 listener is reachable only on the instance's private container network and publishes no host port
+  except an authorized maintenance route; its console is off. The optional archive is a second stock Silo on another
+  host, reached over authenticated TLS on a private link. One CameraAgent writer owns each bucket. Remote, shared and
+  non-ext4 filesystems are unsupported. #1966 implements and verifies this topology.
+- **Release record and artifact supplier.** The clean-install release's `release.json` and `SHA256SUMS` name the
+  qualified artifacts ([install contract §4](../hvo-install-contract.md#4-release-assets)). They pin the stock Silo
+  image per platform by digest beside the CameraAgent image. Online installs pull by digest. Offline installs use the
+  release's `image-archive` assets for both images and both architectures. The accountable supplier is the HVO release
+  owner who cuts the release ([install contract §3](../hvo-install-contract.md#3-cutting-a-release)). #1966 verifies
+  the digests and the Silo license and redistribution obligations, and #1974 qualifies the exact record. If #1966 finds
+  that the Silo image cannot be redistributed, the record still pins the upstream digest and names the upstream
+  registry as the online supplier; offline sites then stage that exact archive and verify it by digest.
 - **Optional import.** A site may import selected history once through
   [#1977](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1977) ([8.6](#86-optional-historical-import-1977)).
   Fresh install, qualification and rollout complete with an empty history.
@@ -117,6 +133,9 @@ and #1923 contracts differ at the integration source, they supersede these rows 
 | F8 | Reinstall recreates, verifies, pauses, commits and then resumes with no expected version (`DCLI/CameraAgentLifecycleManager.cs:1522-1548`; `DCLI/CameraAgentLifecycleClient.cs:101-111`). With no active installer receipt the server allows the resume with no owned pause (`CAC/Deployment/CameraAgentControlStore.cs:117-118`; `CAC/Capture/CaptureAdmissionCoordinator.cs:426-433`). The read-only plan does not list the resume (`DCLI/CameraAgentLifecycleManager.Plan.cs:110-116`). | Reinstall lifts any persisted pause. The early-abort proof must precede it ([8.3](#83-early-abort-ordering)). |
 | F9 | Retention deletions wait while a capture pause holds maintenance (`CAC/Background/RetentionBackgroundService.cs:98-104`). Capacity exhaustion makes raw ingress unhealthy rather than paused (`CAC/RawIngress/RawCaptureIngress.cs:1182-1203`). | A distinct pressure pause is needed, and reclamation must be allowed under it ([8.4](#84-pause-precedence)). |
 | F10 | Orbital and space-weather stores hold non-rewindable floors and halts (`CAC/Orbital/OrbitalElementsRefreshJob.cs:17`; `CAC/SpaceWeather/Fetch/SwpcRetryAfter.cs`; install contract). Provider acquisition defaults to disabled (`CA/appsettings.json:94-98`). | The clean candidate must not reset them ([8.5](#85-request-floors-and-identity-floors)). |
+| F11 | The capture-sequence allocator increments a per-agent counter in its own transaction before payload publication (`CAC/RawIngress/SqliteRawCaptureJournal.cs:426-481`). A retry of the same capture reuses its assignment (`:437`). The counter lies outside any journal generation. | Recovery must carry identity floors and fence admission while they are unproven ([5.4](#54-loss-guarantees-and-recovery-cutoffs)). |
+| F12 | A pause that finds admission already paused commits a completed command with `changed = 0` and an unchanged version (`CAC/Capture/CaptureAdmissionCoordinator.cs:821-830`). Only the owned-pause check reads the latest command, inside the resume transaction (`:815-818`, `:896-911`). | Resume authority needs that latest-command check, not the version alone ([8.4](#84-pause-precedence)). |
+| F13 | Silo's HEAD returns checksums from stored object metadata without reading the bytes ([Silo 20261112 `object-handlers.go`](https://github.com/pgsty/silo/blob/RELEASE.2026-11-12T00-00-00Z/cmd/object-handlers.go#L1111-L1115)). | Physical proof needs an exact-version GET ([6.2](#62-availability-states)). |
 
 ## 4. New-layout data model
 
@@ -166,7 +185,7 @@ with the ownership marker. Prefixes:
 | Prefix | Content | Write rule |
 | --- | --- | --- |
 | `meta/instance.v1.json` | Instance binding, format identities, creation time | Create-only (`If-None-Match: *`) |
-| `meta/fence.json` | Current writer generation | Conditional replace (`If-Match` on the prior ETag) |
+| `meta/fence.json` | Current writer generation and its credential identity | Created once at install with `If-None-Match: *` as generation 1; later advanced only by conditional replace (`If-Match` on the prior ETag) during takeover ([7.2](#72-writer-generations-and-fences)) |
 | `p/full/<aa>/<sha256>` | Full-fidelity payload bytes | Create-only with a supplied SHA-256 checksum; `<aa>` is the first two hex digits |
 | `p/display/<aa>/<sha256>` | Display payload bytes | Same |
 | `p/meta/<aa>/<sha256>` | Metadata product bytes | Same |
@@ -206,25 +225,38 @@ The journal is the instance-owned record that survives SQLite loss (#1964 design
 
 | Record | Meaning |
 | --- | --- |
-| `generation-open` | Starts generation `g`. It names the prior verified cutoff it was rebuilt from and the reason (install, restore, replacement). |
-| `publish` | Group revision visible: manifest locator and digest, member digests |
+| `generation-open` | Starts generation `g` after takeover ([7.2](#72-writer-generations-and-fences)). It names the trusted anchor and cutoff it was rebuilt from, the highest prior generation and its evidence, the identity floors and the reason (install, restore, replacement). |
+| `publish` | Group revision visible: manifest locator and digest, member digests, and for a capture its agent ID and capture sequence |
 | `live-issue` | Centered stream and camera live interval start, ending the prior interval (`change_order` and UTC) |
-| `copy` | Verified copy of a manifest or payload version in a store (local, archive), with verification time and method |
+| `copy` | Verified copy of a manifest or payload version in a store (local, archive), with custody, verification time and method |
+| `reserve-survivor`, `release-survivor` | Qualified protection of an exact colder version for a local eviction ([7.3](#73-expiry-protocol)) |
 | `remap` | Old locator to new locator after byte verification |
 | `pin` and `policy` | Operator pins and retention policy changes, so they survive SQLite loss |
-| `expiry-intent` | Locators to delete, policy reason, last-copy flag, and the hold-evaluation cutoff |
+| `expiry-intent` | Locators to delete, per-copy custody, policy reason, last-copy flag and the hold-evaluation cutoff |
 | `expiry-disposition` | Observed outcome per locator (`deleted`, `already-absent`, `refused`) |
 | `availability` | `policy-expired`, `missing`, `quarantined` or `restored`, with evidence |
-| `checkpoint` | Compacted state covering `≤ (g, seq)`, written to `c/` |
+| `checkpoint`, `anchor` | Compacted state covering `≤ (g, seq)` in `c/`, and the record that makes it a trusted anchor |
 
+- **Durable commit.** A segment is committed only when its exact bytes are durable under the qualified persistence
+  condition ([5.2](#52-staged-bytes-and-the-persistence-condition)) and read back by exact-version GET with matching
+  length and SHA-256. Until then its bytes stay in the spool.
+- **Exact-byte replay.** A segment's bytes are fixed and written to the spool before its first PUT. A retry after an
+  uncertain write re-sends those bytes. A create-only conflict is resolved by reading the existing version and
+  comparing SHA-256: equal means the earlier write succeeded; different is a conflict that stops the writer. A
+  sequence is never reused for different bytes. Manifests follow the same rule.
 - **Ordering.** Records are totally ordered by `(g, seq)`. Sequences are gapless within a generation, and each segment
-  names the SHA-256 of its predecessor. Retries reuse their sequence and are idempotent by record identity.
-- **Verified complete cutoff.** This is the highest `(g, seq)` whose segments are all present, chain-valid, and whose
-  `publish` manifests verify. A rebuild restores the index to that cutoff and reports later or unknown intervals as
-  gaps.
-- **Retention.** A segment is removed only after a verified checkpoint covering it is itself in backup and, when
-  configured, archive coverage. `availability` and `expiry` records are kept as long as the group's display revision
-  is retained.
+  names the SHA-256 of its predecessor.
+- **Trusted anchors.** A checkpoint names the SHA-256 of the last segment it covers and carries forward every retained
+  identity floor, pointer, copy, custody, remap, pin, policy, availability and expiry fact. It becomes a trusted
+  anchor only after three things hold: its bytes are durable and verified by exact-version GET; an `anchor` record
+  naming its exact version and SHA-256 is committed; and the checkpoint and that record are inside a sealed backup
+  and, when the archive is enabled, inside a verified archive receipt. Replay starts at the newest trusted anchor
+  whose bytes verify, and falls back to the previous one otherwise.
+- **Retention.** Segments behind the newest trusted anchor may be removed, except those since the previous trusted
+  anchor, which stay so that a damaged newest checkpoint can fall back.
+- **Verified complete cutoff.** This is the highest `(g, seq)` reachable from a trusted anchor whose segments are all
+  present and chain-valid and whose `publish` manifests verify. A rebuild restores the index to that cutoff and
+  reports later or unknown intervals as gaps.
 - **Coverage.** The sealed backup ([#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972)) includes
   `meta/`, `m/`, `j/` and `c/` in full. Archive replication
   ([#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969)) includes them and the selected `p/` classes.
@@ -242,7 +274,7 @@ database split.
 | Groups, members, dependencies, manifests, copies, remaps, availability, expiry dispositions, live-issue history, pins, policy | Yes, to the verified cutoff | — |
 | Journal cursor and generation | Recomputed | — |
 | Spool and staged work, pending lanes, processing executions and pins, schedules, rig and calibration library state, restore and replay leases | No | Yes |
-| Admission journal, sequences, control versions | No | Yes (identity floors, [8.5](#85-request-floors-and-identity-floors)) |
+| Admission journal, sequences, control versions | No; floors are also evidenced by journal records ([5.4](#54-loss-guarantees-and-recovery-cutoffs)) | Yes |
 
 ### 4.7 Format identities
 
@@ -258,52 +290,102 @@ sidecar (`CAC/RawIngress/RawCaptureIngress.cs:496-705`). In the new layout those
 depends on local NVMe, the spool bound and the pause fences. It does not depend on Silo, archive or LogicHost
 reachability.
 
-### 5.2 Staged bytes and exact versions
+### 5.2 Staged bytes and the persistence condition
 
-A spool entry moves to Silo by create-only PUT with a supplied checksum, followed by verification of the returned
-version ID, length and SHA-256. The staged bytes are released only when all three of these hold:
+Payloads, manifests and journal segments follow one rule. Each object's exact bytes are fsynced into the spool before
+its first PUT. It is then created once with a supplied checksum and read back by exact-version GET with independently
+computed length and SHA-256. #1968 may replace the readback only with an independently qualified equivalent. The spool
+copy is released only when all three of these hold:
 
 1. The exact version is verified.
 2. The **qualified persistence condition** holds. Either the Silo profile #1966 qualifies (with the measured cost of
    its disk-sync setting, including `MINIO_FS_OSYNC`) guarantees the version through power loss, or a verified second
    copy exists.
-3. The group that references it is published, or reconciliation has declared the staged work abandoned and handed it
-   to retention.
+3. For a payload, the group that references it is published, or reconciliation has declared the staged work abandoned
+   and handed it to retention. For a manifest or segment, its group is visible and condition 2 holds for it.
 
 Until then the bytes count against the spool bound.
 
 ### 5.3 Group publication
 
-The steps are: P1 verify payload versions; P2 create the manifest, then read it back and check its digest; P3 append
-the `publish` journal record; P4 mark the group visible in SQLite with its journal sequence. Readers only ever see
-groups at P4, and P4 requires P3. A stack or view revision publishes all evidence and image planes in one group, so
-readers never observe a partial stack (#1968 acceptance 4).
+| Step | Action | Durable before the next step |
+| --- | --- | --- |
+| P1 | Create and verify every payload version | Spool copies fsynced; versions verified by GET |
+| P2 | Create the manifest from its spooled exact bytes and verify it by GET | Manifest bytes in the spool |
+| P3 | Append the `publish` segment from its spooled exact bytes and verify it by GET | Segment bytes in the spool |
+| P4 | Mark the group visible in SQLite with its journal sequence | Every P1–P3 object either meets the persistence condition or is still held in the spool for exact replay |
+
+Readers only ever see groups at P4, and P4 requires P1–P3. A stack or view revision publishes all evidence and image
+planes in one group, so readers never observe a partial stack (#1968 acceptance 4). Before serving reads after any
+restart, startup replays every unreleased spool object by exact bytes.
 
 | Interruption | Restart outcome |
 | --- | --- |
 | Before P2 | Staged work resumes. Uploaded but unreferenced versions stay protected while staged work names them; abandoned ones go to retention as orphan candidates. |
 | After P2, before P3 | The manifest is not visible. If staged work still intends that revision, P3 is appended; otherwise the manifest is an orphan candidate. |
 | After P3, before P4 | Journal replay after the cursor completes P4. |
-| Same revision, different digest | Conflict; refused; nothing replaced. |
+| Uncertain PUT result at any step | Exact-byte retry; a create-only conflict compares SHA-256 and succeeds only on equal bytes. |
+| Power cut after P4, with Silo losing an unsynced manifest or segment | Startup replays the exact spooled bytes before serving, so the revision stays visible with the same manifest digest. |
+| Same revision or sequence, different digest | Conflict; refused; nothing replaced. |
 
-Startup work is bounded by staged-work rows plus journal records after the catalog cursor, independent of history
-size (F5).
+Startup work is bounded by unreleased spool objects plus journal records after the catalog cursor, independent of
+history size (F5).
 
-### 5.4 Loss guarantees
+### 5.4 Loss guarantees and recovery cutoffs
 
 | Event | Acknowledged admissions | Published revisions |
 | --- | --- | --- |
 | Process crash or kill | None lost | None lost; in-flight groups roll forward or stay invisible |
-| Host power loss | None lost if NVMe and ext4 honor flush, which #1968 and #1974 must prove by abrupt power loss. Spool copies cover unqualified Silo persistence. | Survive when persistence-qualified; otherwise republished from the spool |
+| Host power loss | None lost if NVMe and ext4 honor flush, which #1968 and #1974 must prove by abrupt power loss. | None lost; unreleased spool objects replay by exact bytes |
 | Silo service down | None lost; admission continues to the spool bound, then a pressure pause | Local reads report temporarily unavailable |
 | Archive outage | None lost | Local unaffected; archive receipts pending |
 | SQLite catalog loss, Silo intact | None lost when non-rebuildable state survives; otherwise it comes from the instance backup. Unpublished spool sidecars carry identity for recovery (#1972). | Rebuilt to the verified cutoff |
-| **Total primary loss**, archive enabled | Admissions after the archive's verified receipt cutoff are lost | Recoverable to that cutoff |
-| **Total primary loss**, local only | Admissions after the last sealed backup are lost | Recoverable to the backup cutoff |
+| **Total primary loss** | Reported by the cutoffs below | Reported by the cutoffs below |
 
-The process and power-loss rows are guarantees this contract requires the implementation to prove. The total-loss rows
-are bounded losses, measured as recovery point objective (RPO) in [10](#10-budgets) and reported as a verified cutoff
-plus gap.
+The process and power-loss rows are guarantees this contract requires the implementation to prove. After total
+primary loss, recovery reports three cutoffs, each from evidence that survived:
+
+- **Admission cutoff:** the newest admission proven by the sealed State backup's admission ledger or by a verified
+  archived capture manifest.
+- **Publication cutoff:** the verified complete journal cutoff ([4.5](#45-durable-metadata-journal)) in the surviving
+  archive or backup.
+- **Per-role recoverability:** for each retention class and role, the newest group whose member versions verify by
+  GET in a surviving copy.
+
+These cutoffs can differ in either direction. An archive newer than the backup proves publications whose admission
+rows, pending work, pins and settings the backup lacks. Those groups recover from the archive as published history, and
+their capture sequences raise the identity floors. A backup newer than the archive proves admissions and application
+state whose payloads were never archived. Those captures are reported as admitted with `missing` payloads (lost with
+the primary), never as policy-expired. Pending work, holds and settings come only from the backup and carry the
+backup's time. Admissions newer than both sources are lost, and the gap is reported. RPO budgets are in
+[10](#10-budgets).
+
+**Identity floors.** The per-agent capture sequence is allocated outside any journal generation (F11), so the new
+layout carries identity floors explicitly. That covers the capture sequence, the capture-control version, each
+high-water counter that `DCLI/CameraAgentStateCounters.cs:8-19` lists for the filesystem layout, and the writer
+generation.
+
+- Every issued-identity counter allocates only inside a range reserved for the current writer generation `g`:
+  `[g × R, (g + 1) × R)`. R is far above any feasible per-generation count (for example 2^40, which is about 700,000
+  years of 20 s captures).
+- Floors and the generation are recorded in `generation-open` records and checkpoints, and are covered by the backup
+  and archive.
+- Recovery opens generation `g' = h + 1`, where `h` is the highest generation evidenced by any surviving source: the
+  fence object, the backup, or an archived or backed-up journal. Each counter starts at the larger of `g' × R` and any
+  higher value that evidence shows.
+- A generation issues no identity until its `generation-open` record is held outside the primary: in a verified
+  archive receipt, a sealed backup, or the operator's off-host recovery record. This is a one-time step for each
+  generation.
+
+Every identity the lost primary issued therefore lies in a range at or below `h`. New identities are at least
+`g' × R` and cannot repeat one, even when the primary issued identities after the last surviving evidence. Apart from
+that one-time step, admission never waits on archive or backup reachability. Capture and artifact IDs cannot repeat
+either, because they derive from the agent identity and exposure times
+(`CAC/RawIngress/RawCaptureDescriptorFactory.cs:18-36`).
+
+Admission stays fenced while `h` cannot be proven, or while any counter can be neither partitioned nor proven, until
+Roy approves an alternative such as a distinct identity namespace (#1972). Consumers of per-agent sequences treat a
+generation boundary as a reported gap (#1972).
 
 ### 5.5 Staging bound and pressure pause
 
@@ -317,14 +399,21 @@ measured headroom recovery and clears only that pause ([8.4](#84-pause-precedenc
 
 - **Reopen set R.** This is what is needed to display a published revision exactly as published: its manifest and its
   display and evidence members. For a centered view revision that is the base's `Preview`, `Science` where displayed,
-  `ClosedWindow`, each layer's `Evidence`, and the drawables (`CAC/Gallery/CenteredViewPublication.cs:70-81`, `:107`).
-- **Compute set C.** This is what is needed to recompute or reprocess it: the raw and linear inputs, `Contributors`,
-  registration artifacts, calibration and normalization-plan masters, and recipe inputs (`processing_output_sources`).
+  `ClosedWindow`, the `Evidence` of every layer whose readiness is `Ready` or `Partial`, and the drawables
+  (`CAC/Gallery/CenteredViewPublication.cs:21`, `:70-81`, `:107`).
+- **Intentionally unavailable evidence.** Layers that are `AssessedEmpty`, `Incompatible` or `NotConfigured` carry no
+  evidence. The revision manifest records them with their reason, and they never make a revision unreopenable. A
+  `Waiting` layer has no evidence in that revision; later evidence arrives only as a later revision.
+- **Compute set C.** This is what is needed to recompute or reprocess a revision: the raw and linear inputs,
+  `Contributors`, registration artifacts, calibration and normalization-plan masters, and recipe inputs
+  (`processing_output_sources`). Late archive enrichment creates a new revision and never changes an earlier
+  revision's R or C.
 - **Closure.** Closures are computed over manifest `dependencies` with the existing safety bounds: depth below 512 and
   cycles refused (`CAC/Capture/Processing/SqliteCaptureProcessingStore.cs:2580` onward). They are exact by
   `(artifactId, revision, sha256)` and deduplicated by exact version.
-- **Rules.** A revision is reopenable when every member of R is available. Policy may expire members of C without
-  breaking reopen. A reprocess request then names the exact missing inputs (#1971 acceptance 4).
+- **Rules.** A published ID alone does not prove reopenability. A revision is reopenable when its manifest version
+  verifies and every required member of R is available. Policy may expire members of C without breaking reopen; a
+  reprocess request then names the exact missing inputs (#1971 acceptance 4).
 
 ### 6.2 Availability states
 
@@ -340,19 +429,28 @@ Availability is tracked per artifact revision and per copy:
 | `missing` | Expected version absent or wrong digest with no expiry record | Physical verification failure |
 | `quarantined` | Retained but refused for use | `availability` record |
 
-Physical verification reads the exact version, by HEAD with version ID and checksum or by GET with SHA-256. A
-metadata-only check is insufficient: the #1059
+Physical verification, including proof of a surviving copy, reads the exact version by GET with its version ID and
+computes length and SHA-256 over the returned bytes. HEAD may locate a version or prove absence (`NoSuchVersion`), but
+it returns stored metadata (F13) and never proves bytes. A metadata-only check is insufficient: the #1059
 [negative control](../validation/artifact-history-1059-fault-evidence.md#explicitly-unqualified-acceptance) passed with
-a referenced payload deleted.
+a referenced payload deleted. The fault matrix exercises both a deleted version and damaged bytes with intact metadata
+and a valid catalog.
 
 ### 6.3 Issued-live and archive-only revisions
 
 This section maps the revision behavior observed at `87b238c`. The accepted #1922 and #1923 contracts reachable at
 the integration source govern where they differ ([9](#9-branch-and-release-strategy)).
 
-- Every revision is published, and therefore reopenable, by `(baseId, revisionId)`. `RegisterBaseAsync` revisions are
-  published but not live. `PublishLayerAsync` issues live only for the current base. Late layer revisions on an older
-  base are **archive-only**.
+- Every revision is published by `(baseId, revisionId)`. `RegisterBaseAsync` revisions are published but not live.
+  `PublishLayerAsync` issues live only for the current base. Late layer revisions on an older base are
+  **archive-only**.
+- **Pointers.** Each base keeps three independent pointers: the first committed revision, the latest enrichment and the
+  last live-issued revision. The default reopen target is the last live-issued revision, or the first when none was
+  issued (`CAC/Gallery/CenteredViewPublication.cs:138-141`). Rebuild reconstructs all three from `publish` change
+  order and `live-issue` records, and checkpoints carry them forward.
+- **Exact links.** An explicit link names the reference capture, base and revision. Reopen checks that the base belongs
+  to that stream and reference capture, as the archive read does (`CAC/Gallery/CenteredViewPublication.cs:160`), and
+  refuses a mismatch.
 - Live issue is a `live-issue` journal record mirroring `processing_centered_view_intervals`. Current Sky is the open
   interval. An archive-only revision never becomes Current Sky retroactively.
 - The open live interval and every saved selection (`processing_centered_view_selections`) hold their revision's
@@ -376,45 +474,78 @@ the integration source govern where they differ ([9](#9-branch-and-release-strat
 A hold is `(holdId, holderKind, holderRef, target artifactId [revision | any], scope reopen|compute|bytes, expiresUtc?,
 createdGeneration)`. It resolves to exact versions only when a deletion is evaluated.
 
-| Source today | New hold |
+| Source today | New hold and release condition |
 | --- | --- |
-| Raw-ingress holds for committed captures with pending lane work (`CAC/RawIngress/SqliteRawCaptureJournal.cs:827`) | Compute hold on the raw artifact until its lanes complete |
+| Raw-ingress holds for committed captures with pending lane work (`CAC/RawIngress/SqliteRawCaptureJournal.cs:827`) | Compute hold on the raw artifact; released when its lanes complete |
+| Transient candidate sources: raw stays held while a candidate's source hold is unreleased or its capture work is pending, even after lane completion (`CAC/RawIngress/SqliteRawCaptureJournal.cs:928-931`) | Compute hold from the candidate on each exact source raw; released when the candidate releases its source hold |
 | Processing store holds (`CAC/Capture/Processing/SqliteCaptureProcessingStore.cs:2580`): recent available outputs window, pending standard-lane captures, latest 100 raw, unexpired `centered_exposure_holds` and products, live view revisions and layers, terminal window registration artifacts, unreleased execution input pins, transitive sources | Display hold for the recent window; compute holds for pending lanes, the recent buffer (with expiry), registration and execution pins; reopen hold for live view revisions |
 | Clear references (`CAC/Capture/Processing/CameraAgentClearReferenceLoader.cs:10`) | Configuration pin |
 | Calibration library, active family masters, frozen normalization-plan masters (`CAC/Capture/Processing/ProcessingRetentionContracts.cs:37-80`) | Compute holds |
-| Time-lapse queued inputs (`CAC/TimeLapses/SqliteTimeLapseStore.cs:22`) | Compute hold until the job settles |
-| Satellite work (`CAC/Capture/Processing/CaptureSatelliteWorkStore.cs`) | Compute hold |
+| Daily time-lapse assembly opens exact hourly videos (`CAC/TimeLapses/TimeLapseGenerator.cs:135`, `:140`) | Compute hold from the queued or working daily job on each exact hourly revision; released when the daily video publishes or the job is cancelled. The daily manifest lists them as compute dependencies, not reopen members. |
+| Nightly assembly reads prior nightly products (`CAC/NightlyProducts/NightlyProductGenerator.cs:579`, `:583`) | Compute hold from the pending nightly job on each exact prior product; released at publication |
+| Satellite work: raw stays held while prediction support or archive copies exist, and support stays held while another node or archive needs it (`CAC/Capture/Processing/CaptureSatelliteWorkStore.cs:125-155`); work references an orbital snapshot (`:112`) | Support products hold their raw; consumers hold the support; the orbital snapshot reference stays a State hold released with the work |
+| Retained projected scenes stay while any consumer payload or archive copy exists, or when history is unknown (`CAC/Capture/Processing/ProjectedSceneRetentionGuard.cs:52`, `:73`, `:89`) | Each consumer manifest names the exact scene revision as a compute dependency; the scene is released when no retained consumer references it; unknown history keeps it held |
 | Saved view selections | Reopen pin |
 | Upload outbox holds (`CAC/Background/RetentionBackgroundService.cs:353`) | None in the standalone profile |
 | New: restore and replay leases (#1971), operator pins (#1970) | Lease hold with expiry, revalidated per batch; journaled pin |
 
-Holds stored in SQLite are State and covered by the backup. Pins and policy are also journaled.
+- **No cycles.** Holds point only from a consumer to its inputs, so the hold graph is acyclic. A scene is independent
+  support and is never treated as a satellite consumer, which would form scene → raw → satellite → scene
+  (`CAC/Capture/Processing/CaptureSatelliteWorkStore.cs:147`). Expiry evaluates consumers before inputs.
+- **Interruption.** A job's holds live with its durable job state, so interruption and restart keep them.
+- **Expiry.** An input already policy-expired before a job planned is reported as a gap in that job's output. It is
+  never re-held.
+- **Backup.** Holds stored in SQLite are State and covered by the backup. Pins and policy are also journaled.
 
 ### 7.2 Writer generations and fences
 
-- Before any admission, publication or expiry, a primary writes `generation-open` and advances `meta/fence.json` to
-  its generation by conditional replace.
-- Before each expiry batch and each publish append, the writer re-reads the fence and stops if a newer generation
-  exists. The batch size bounds the remaining window.
-- Installer fencing stops a superseded container first. The fence is defense in depth, so that only one primary acts
-  on restored storage (#1972 acceptance 2).
-- Recovery onto empty storage, or onto a replacement host or daemon, advances the generation. Sequences and versions
-  issued by an earlier generation are never reissued.
+- **Bootstrap.** Clean install creates `meta/instance.v1.json` and `meta/fence.json` (generation 1) with
+  `If-None-Match: *`. An existing object refuses the install, because the bucket is then not empty or not this
+  instance's.
+- **Mutation-enforced exclusion.** Each generation writes with its own Silo credential, named in the fence. Disabling a
+  credential makes Silo reject every later request signed with it. Re-reading the fence before a batch is only an early
+  stop; it cannot exclude a mutation already in flight.
+- **Takeover.** Recovery, replacement and any new primary follow these steps in order:
+  1. Stop the superseded writer (installer fence; container removed).
+  2. Disable its credential, including its replication credential at the archive.
+  3. Wait the bounded maximum duration of an in-flight request (client request timeout plus clock allowance), so any
+     mutation Silo already accepted has finished.
+  4. Reconcile: read the journal tail and, for every open `expiry-intent`, survivor reservation and staged publication,
+     read the exact versions and record actual dispositions.
+  5. Advance the fence by conditional replace and commit `generation-open`.
+  6. Only then admit, publish or expire.
+- **Qualification.** #1966 qualifies credential disable on the pinned Silo release. Until it is qualified, takeover on
+  retained storage also requires the superseded writer's process to be proven gone for the step 3 duration.
+- **Identities.** Recovery onto empty storage, or onto a replacement host or daemon, advances the generation. Identity
+  floors follow [5.4](#54-loss-guarantees-and-recovery-cutoffs).
 
 ### 7.3 Expiry protocol
 
 1. Dry run: deterministic candidates and reasons from per-role policy and pressure (#1970).
 2. Resolve holds and every retained reference to each candidate exact version. Shared content-addressed versions are
    deleted only when no retained revision references them.
-3. Append `expiry-intent`. A last copy requires the explicit last-copy policy. Eviction of a local copy requires a
-   verified colder copy that survives the deletion.
-4. Delete exact versions by version ID.
-5. Verify absence by HEAD with the version ID, then append `expiry-disposition` and `availability policy-expired`.
-6. Add the bytes to reclaim-pending accounting until physical recovery ([7.4](#74-physical-reclamation)).
+3. When a local eviction relies on a colder copy, reserve that exact survivor with **qualified protection**. That
+   means an archive-side per-version hold or retention-until set by the archive custody credential, or an archive
+   retention rule proven to keep that version past the protection window. Verify the survivor by exact-version GET and
+   SHA-256, then commit `reserve-survivor` with the protection evidence. A receipt alone never reserves a survivor.
+   Without qualified protection the local copy counts as a last copy and needs the explicit last-copy policy.
+4. Append `expiry-intent` with each copy's custody.
+5. Delete the local exact versions by version ID.
+6. Prove absence (`NoSuchVersion`), re-verify the reserved survivor by GET, then append per-copy `expiry-disposition`
+   and `availability policy-expired` records. Release the reservation, or leave the version to the archive's own
+   retention.
+7. Add the bytes to reclaim-pending accounting until physical recovery ([7.4](#74-physical-reclamation)).
 
-A crash between steps re-checks version presence and completes idempotently. A repeated delete is `already-absent`.
-New expiry decisions wait under operator and installer pauses, as today. Under a pressure pause, expiry and reclamation
-continue, because that is how the pause clears.
+- **Restart.** Reservations and intents are journaled, so a restart resumes them. If the survivor vanished before step
+  5, the delete is abandoned. A survivor missing after step 5 cannot occur under qualified protection; if it is
+  observed, it is reported as `missing` and escalated.
+- **Archive credentials.** The source's replication credential at the archive must lack object and version delete,
+  lifecycle, retention and hold changes. #1969 proves this with a refused delete, and the race test runs the
+  archive's own sweep between reservation and local delete.
+- **Idempotence.** A crash between steps re-checks version presence and completes idempotently. A repeated delete is
+  `already-absent`.
+- **Pauses.** New expiry decisions wait under operator and installer pauses, as today. Under a pressure pause, expiry
+  and reclamation continue, because that is how the pause clears.
 
 ### 7.4 Physical reclamation
 
@@ -434,17 +565,26 @@ Contract:
 
 - Reclamation is measured as allocated or available bytes on the Silo data filesystem (statfs) plus Silo trash size.
   It is never inferred from delete success.
+- The denominator is the unique eligible allocated bytes: the on-disk allocation, after compression and sharing, of
+  exact versions no retained revision still references. Logical size is reported beside it, never instead.
 - Reclaim-pending bytes count as used. They are bounded ([10.3](#103-proposed-budget-targets)).
 - If sweeps make no physical progress, further expiry stops and the pressure pause holds admission.
 - Restart is a valid reclamation trigger. It is never the routine mechanism.
 
 ### 7.5 Recovery
 
-Recovery restores the State backup (with its own identity floors), rebuilds the catalog from `c/` and `j/` to the
-verified cutoff, verifies or remaps exact versions, advances the generation, keeps admission paused and holds
-replication and expiry. It reports the verified cutoff and gaps. Expiry stays held after recovery until the operator
-confirms, because holds created after the backup cutoff are unknown. The canary keeps expiry held from the start (#1970,
-#1975).
+Recovery takes these steps:
+
+1. Restore the State backup.
+2. Rebuild the catalog from the newest trusted anchor and the journal to the verified cutoff.
+3. Verify or remap exact versions by GET.
+4. Prove the identity floors ([5.4](#54-loss-guarantees-and-recovery-cutoffs)).
+5. Take over through [7.2](#72-writer-generations-and-fences).
+6. Report the admission, publication and per-role cutoffs and gaps.
+
+Admission, replication and expiry stay held throughout. Admission stays fenced while any floor is unproven. Expiry
+stays held until the operator confirms, because holds created after the backup cutoff are unknown. The canary keeps
+expiry held from the start (#1970, #1975).
 
 ## 8. Installation and cutover
 
@@ -457,59 +597,90 @@ confirms, because holds created after the backup cutoff are unknown. The canary 
   traffic (#1975).
 - **Persisted paused admission.** The first boot must start paused. Before the container first starts, the installer
   must seed an installer-owned pause with a known command identity and version, so a version-0 `Running` state never
-  exists. It must not rely on the provisioning gate, which the installer does not set today (F6). The pause must survive
-  startup, owner bootstrap and restart until an authorized resume names its expected version.
+  exists. It must not rely on the provisioning gate, which the installer does not set today (F6). The pause must
+  survive startup, owner bootstrap and restart.
+- **Atomic first resume.** The first resume is accepted only if the seeded pause is still the latest accepted command,
+  with `changed = 1`, at the expected version, checked inside the resume's write transaction. This is the existing
+  owned-pause check (F12). A later operator pause, including a no-op that leaves the version unchanged, refuses the
+  resume. #1966 tests that interleaving.
 - **Device allocation.** Because the module initializes while paused (F7), the real camera is mapped to the candidate
-  only after the former owner's container is removed and no process holds the device. #1966 documents that boundary.
+  only after the former owner's container is removed and no process holds the device. That mapping is then the only
+  one until the handoff ends. #1966 documents the boundary.
 
 ### 8.2 Capture handoff
 
 1. Persist the former instance's pause and record it as the **handoff pause**: command identity, actor, version and
    UTC time, read back from `capture_control_commands` (`CAC/RawIngress/SqliteRawCaptureJournal.cs:2596`). Then run
-   the data-preserving `hvo-sky-install cameraagent uninstall` (`DCLI/CameraAgentLifecycleManager.cs:1403`, which
-   pauses and drains at `:1440`), or the site equivalent, and record its lifecycle operation ID.
+   the data-preserving `hvo-sky-install cameraagent uninstall`, or the site equivalent, and record its lifecycle
+   operation ID. Uninstall pauses and drains (`DCLI/CameraAgentLifecycleManager.cs:1403`, `:1440`).
 2. Confirm the camera is released and the former container is inactive after a restart.
 3. Start the candidate paused. Verify authenticated readiness, camera and rig, catalog, endpoint, storage binding and
    absence of central traffic.
-4. Resume once with the expected version. Exactly one capture owner remains.
+4. Resume once through the atomic first resume ([8.1](#81-clean-target-and-first-boot)). Exactly one capture owner
+   remains.
 
 ### 8.3 Early-abort ordering
 
+The legacy reinstall route at `87b238c` cannot hold control authority or camera exclusivity across its own restart and
+automatic resume:
+
+- It starts the former container and exposes its controls before resuming
+  (`DCLI/CameraAgentLifecycleManager.cs:1522-1527`, `:1548`).
+- Its resume carries no expected version and no owned-pause check (F8). A newer operator pause accepted in that window,
+  including a no-op that leaves the version unchanged (F12), would be overwritten.
+- An interrupted reinstall later resumes through `--resume` with the same unconditioned resume
+  (`DCLI/CameraAgentLifecycleManager.cs:1486`, `:1504`).
+- The camera is mapped to the former container from its start, so a device check made before the call cannot hold
+  exclusivity across it.
+
+A one-time check of the stopped former instance therefore cannot authorize its later resume. The abort procedure never
+invokes legacy reinstall.
+
 | Step | Action | Pass condition |
 | --- | --- | --- |
-| E1 | Stop the candidate container with no restart policy | Container exited; no candidate process holds the camera; admission persisted `Paused`, or the container is absent |
-| E2 | Read the stopped candidate's durable admission ledger read-only, including its WAL: copy the database with its `-wal` and `-shm` files and open the copy | `raw_captures` has 0 rows; no reserved `raw_capture_sequences`; spool empty; no `publish` record in its journal. Record the query results, the ledger file SHA-256 and the UTC time. |
-| E3 | Prove that restoring active capture on the former instance overrides nothing. Read its control ledger (`capture_control_state`, `capture_control_commands`) read-only the same way, check the camera device, and record the authorization. | All of these hold: (a) the accountable operator or site has recorded positive authority to restore the former instance as the active capture owner, with who, when and why; (b) the former instance is `Paused` at the handoff pause's version, and the only accepted command after the handoff pause is the uninstall operation's own lifecycle pause, so there is no newer operator pause and no unknown or unreadable state; (c) no process or other instance holds or maps the camera, and the candidate's device mapping is removed. Record each result and the UTC time. |
-| E4 | Only after E1–E3 pass, run `hvo-sky-install cameraagent reinstall` for the former instance | This call **resumes capture automatically** (F8). Its plan output does not show the resume. |
-| E5 | Verify the outcome | Former instance `Running` with one owner; candidate stopped, its data preserved for closeout |
+| E1 | Stop the candidate with no restart policy and remove its camera mapping | Container exited; no candidate process holds the camera; admission persisted `Paused`, or the container is absent |
+| E2 | Read the stopped candidate's admission ledger and provider stores read-only, including WAL: copy each database with its `-wal` and `-shm` files and open the copy | `raw_captures` has 0 rows; no reserved `raw_capture_sequences`; spool empty; no `publish` record in its journal; `orbital_attempts` and `swpc_attempts` empty or reconciled ([8.5](#85-request-floors-and-identity-floors)). Record the results, each file's SHA-256 and the UTC time. |
+| E3 | Fence | Candidate stopped and paused; former instance left uninstalled; camera unmapped from both. Record the fence and escalate. |
+| E4 | Restore the former owner only through an authority-preserving route, with positive authority recorded | See below |
+| E5 | Verify | Former instance `Running` with one owner; candidate stopped, its data preserved for closeout |
 
-- **E2 failure.** If E2 finds an admission, or cannot prove zero, do not run E4. The candidate owns new data. Recover
-  forward with new-layout recovery (#1972) and escalate.
-- **E3 failure.** Without authority, with a newer operator pause, with an unknown or unreadable control state, or with
-  another device owner, do not run E4. Keep admission and the device fenced: the candidate stays stopped and paused,
-  the former instance stays uninstalled, and the camera stays unmapped from both. Record the refusal and escalate the
-  decision to the operator ([14](#14-remaining-decisions)).
+An **authority-preserving route** must meet all of these:
+
+1. The former instance starts with admission held by a pause the restore operation owns.
+2. Its resume is accepted only atomically, when that pause is still the latest accepted command at its version (F12).
+3. The camera stays allocated to the restore operation from E1 through that resume, including across interruption and
+   any resumed operation.
+4. Provider facts are reconciled first ([8.5](#85-request-floors-and-identity-floors)).
+5. The accountable operator or site has recorded positive authority to restore the former instance as the active
+   capture owner: who, when and why.
+
+No such route exists for the filesystem release at `87b238c`. Providing one is a remaining decision
+([14](#14-remaining-decisions)). Until then an early abort ends at E3.
+
+- **E2 failure.** If E2 finds an admission, or cannot prove zero, the candidate owns new data. Recover forward with
+  new-layout recovery (#1972) and escalate.
 - **Acceptance test (#1975 rehearsal and any automation).** Assert:
-  1. The E2 and E3 records precede the reinstall operation's begin record.
-  2. Reinstall is never invoked when E2 fails or counts at least one admission.
-  3. Reinstall is never invoked when E3 lacks authority, finds a command newer than the handoff pause other than the
-     uninstall's own pause, cannot read the former control state, or finds another device owner. Both instances stay
-     fenced. The #1975 rehearsal exercises at least the newer-operator-pause case.
-  4. After an authorized reinstall, the former instance's admission is `Running` with one owner.
-  5. Faulting the candidate right after its first durable admission makes E2 fail and routes to forward recovery.
+  1. The abort procedure never invokes legacy reinstall, and E3 leaves admission and the camera fenced.
+  2. E2 fails on any admission and routes to forward recovery, including a fault right after the first durable
+     admission.
+  3. With an authority-preserving route, an operator pause accepted between the former start and its resume refuses
+     the resume, including a no-op pause with an unchanged version.
+  4. With such a route, an interruption between the former start and its resume leaves admission paused and the camera
+     with the restore operation.
+  5. A candidate provider attempt during the window keeps the former provider acquisition fenced until reconciled.
 
 ### 8.4 Pause precedence
 
 - There are three pause owners: installer (a lifecycle operation), operator (a UI or API actor) and pressure (storage).
   Clearing one never clears another.
-- An installer resume names its own pause's expected version and fails when a later accepted command, such as a newer
-  operator pause, superseded it. Today that protection exists only through the control-plane receipt path
-  (`CAC/Capture/CaptureAdmissionCoordinator.cs:426-433`, `:815-818`). The lifecycle resume used by reinstall and
-  upgrade sends no expected version (F8). The Silo first-boot resume (#1966) must use the expected-version form.
-- Legacy reinstall lifts any persisted pause (F8). In an early abort, E3 therefore admits it only with positive
-  authority and only when the former instance's pause is exactly the recorded handoff pause. Otherwise both instances
-  stay fenced. Restoring the former instance *paused* is not supported by reinstall at `87b238c`; see
-  [14](#14-remaining-decisions).
+- A resume is accepted only when its own pause is still the latest accepted command, with `changed = 1` at the
+  expected version, checked inside the resume's write transaction. Today that check runs only through the control-plane
+  receipt path (`CAC/Capture/CaptureAdmissionCoordinator.cs:426-433`, `:815-818`, `:896-911`).
+- The version alone is insufficient, because a no-op pause leaves it unchanged (F12). The lifecycle resume used by
+  reinstall and upgrade sends neither (F8), and the expected-version recovery resume
+  (`DCLI/CameraAgentLifecycleClient.cs:128-134`) also lacks the latest-command check.
+- The Silo first-boot resume ([8.1](#81-clean-target-and-first-boot)) and any authority-preserving restore route
+  ([8.3](#83-early-abort-ordering)) must use the latest-command form.
 - The pressure pause follows [5.5](#55-staging-bound-and-pressure-pause) and [7.3](#73-expiry-protocol).
 
 ### 8.5 Request floors and identity floors
@@ -523,11 +694,19 @@ confirms, because holds created after the backup cutoff are unknown. The canary 
   2. The operator records that the provider was disabled on the former instance, or that its floor has elapsed and no
      halt is active.
 
-  On early abort, the former stores are intact and reinstall does not rewind them.
+  On early abort, the former stores are intact.
+- **Abort-window fence.** Provider acquisition stays disabled on the candidate from its first start until the handoff
+  is final, when the former instance is retired as owner after the observation window. E2 proves that the
+  candidate's `orbital_attempts` and `swpc_attempts` are empty
+  (`CAC/Orbital/SqliteOrbitalElementsStore.Schema.cs:109`; `CAC/SpaceWeather/Storage/SqliteSwpcStore.Schema.cs:20`).
+  A zero-admission proof alone is not enough, because a provider fact can predate any exposure. If an attempt exists,
+  one of two things must happen before the former owner can request from that provider:
+  1. Its newest floor, Retry-After deadline and halt are reconciled into the former stores.
+  2. The former instance's acquisition for that provider stays disabled until those deadlines pass and halts clear.
 - **Identity floors.** The installer gives the candidate a new application identity, which is its `AgentId`
   (`DCLI/CameraConfiguration.cs:88`). Capture IDs and sequences therefore start a new namespace that cannot collide
-  with the former instance's. Within the new instance, counters and control versions follow
-  `DCLI/CameraAgentStateCounters.cs:8-19` and are carried through new-layout backup and recovery (#1972).
+  with the former instance's. Within the new instance, every issued-identity counter follows the
+  generation-partitioned ranges in [5.4](#54-loss-guarantees-and-recovery-cutoffs) through backup and recovery (#1972).
 
 ### 8.6 Optional historical import (#1977)
 
@@ -613,17 +792,21 @@ timing semantics come from those accepted contracts, not from this document.
 | Budget | Proposed target | Derivation |
 | --- | --- | --- |
 | Cadence | 20 s sustained for the #1974 week; zero missed admissions attributable to storage | Local PUT exceeds W6 ingest about 103 times |
-| Publication latency (admission commit to group visible) | p95 ≤ 5 s, p99 ≤ 10 s at W6 size on the Pi | W6 at the serial committed rate is 0.65 s; the targets are at most 25 % and 50 % of the interval |
+| Storage publication (group ready to visible) | p95 ≤ 5 s, p99 ≤ 10 s at W6 size on the Pi. The clock starts when every member of the group is produced and spooled. | W6 at the serial committed rate is 0.65 s; the targets are at most 25 % and 50 % of the interval |
+| End-to-end single, stack and late-layer timing | Measured and reported separately, from the admission of the last exposure each needs. A stack waits for later contributors: a stack centered on exposure 103 needs 105, about 40 s later at 20 s cadence. Targets come from the accepted #1922, #1923 and #1928 contracts; storage adds at most the publication budget. | #1921 windows; launch hold (9) |
 | Spool | Steady backlog ≤ 2 captures (p99). Bound ≥ 2 h at cadence (2.54 GB POC, 9.08 GB W6 raw). After an outage of D, drain within max(60 s, 0.1 D). | Cadence × size; ingest headroom at least 100× |
 | Switchover pause (former owner's last admission to candidate's first) | Automated steps ≤ 5 min: drain ≤ 2 min, candidate ready (paused) ≤ 2 min, resume ≤ 15 s. Attended total recorded, ≤ 30 min for the canary. | Installer budgets; Silo replacement about 2.6 s |
 | RPO, archive enabled | Verified receipt lag p99 ≤ 5 min on a nominal link | Replication exceeds W6 ingest about 83 times; catch-up 2.14 s |
 | RPO, local only | Sealed backup interval ≤ 24 h, as configured by the operator | Bounded loss accepted by local-only sites |
-| RTO, empty storage to capture resumed | ≤ 30 min for one week of history, independent of payload volume | 30,240 manifests × 0.89 ms ≈ 27 s; payloads restore lazily |
-| Full payload restore | ≥ 70 % of same-route TCP (≥ 655 Mb/s): one POC day in about 297 s, one W6 raw day in about 1,062 s | Measured 820.9 Mb/s |
+| RTO, catalog loss with Silo intact | ≤ 30 min to capture resumed, independent of payload volume | Rebuild from anchors and the journal; 30,240 manifests × 0.89 ms ≈ 27 s |
+| RTO, primary loss with archive | ≤ 30 min to capture resumed, independent of payload volume, once identity floors are proven | State backup plus rebuild from the archive; history reads use archive locators. Repopulating local history is a separate full transfer. |
+| RTO, primary loss local only | Capture resumes once State, the journal and the floors are restored; history becomes readable as its payloads restore. The full transfer stays in scope and is measured. | Payloads restore only from the sealed backup |
+| RTO, Silo container replacement on a retained volume | ≤ 10 s Silo outage; admission continues into the spool | Observed 2.35 s amd64 and 2.61 s Pi |
+| Full payload transfer | ≥ 70 % of same-route TCP (≥ 655 Mb/s): one POC day ≤ 373 s, one W6 raw day ≤ 1,331 s. At the observed 820.9 Mb/s these take 297 s and 1,062 s. | Floor from the 936.38 Mb/s TCP baseline |
 | Concurrent restore and LAN | Hour, day and week restores at ≥ 655 Mb/s while capturing, with publication latency in budget and zero missed admissions | Measured GET 96.6 % and restore 87.7 % of TCP, without concurrent capture |
-| Physical reclamation | ≥ 95 % of expired logical bytes reclaimed within 10 min | Twice the observed ~5 min trash period |
+| Physical reclamation | ≥ 95 % of unique eligible allocated bytes reclaimed within 10 min | Twice the observed ~5 min trash period ([7.4](#74-physical-reclamation)) |
 | Reclaim-pending bound | ≤ min(5 % of the Silo filesystem, 1 h of capture) | Bounds unreclaimed trash at cadence |
-| Startup readiness | ≤ 60 s at any history size | Bounded by staged work plus the journal after the cursor (F5) |
+| Startup readiness | ≤ 60 s at any history size | Bounded by unreleased spool objects plus the journal after the cursor (F5) |
 | Peak disk | Headroom reserve covering the spool bound, the reclaim-pending bound, catalog and journal growth for 24 h, the restore cache limit, and a capture reserve | Explicit sum checked by #1974 |
 
 ## 11. Verification design
@@ -633,7 +816,7 @@ timing semantics come from those accepted contracts, not from this document.
 Run on amd64 and ARM64, each in local-only and archive-enabled profiles, with the centered profile at an integration
 source that meets the launch hold ([9](#9-branch-and-release-strategy)):
 
-- Fresh-root and binding refusal.
+- Fresh-root and binding refusal; create-only fence bootstrap, refused on a non-empty or foreign bucket.
 - Paused first boot through restart and owner bootstrap.
 - Authorized resume.
 - First exposure settled and published as single and stack view revisions, including a late layer revision.
@@ -647,21 +830,32 @@ source that meets the launch hold ([9](#9-branch-and-release-strategy)):
 
 | Fault | Expected | Owner |
 | --- | --- | --- |
-| Kill before identity reservation; after payload, before journal commit | No identity consumed; one capture after reconciliation | Existing; #1968 |
-| Kill after admission, before PUT; after PUT, before verify | Spool retained; one exact version; no duplicate | #1968 |
-| Kill at each publication step P1–P4 | Visibility only after P3; table in [5.3](#53-group-publication) | #1967, #1968 |
+| Kill before identity reservation | No identity consumed; no capture | Existing; #1968 |
+| Kill after the reservation commits (`CAC/RawIngress/SqliteRawCaptureJournal.cs:426-481`), before the payload | Sequence consumed and never reissued; no capture after restart. An in-process retry of the same capture reuses its assignment (`:437`). | #1968 |
+| Kill after the payload, before the sidecar | Reconciliation quarantines the payload-only file (`CAC/RawIngress/RawIngressReconciler.cs:264`); sequence consumed; no capture | #1968 |
+| Kill after a complete pair, before the journal commit | Reconciliation verifies the pair against its descriptor and recovers one committed capture (`CAC/RawIngress/RawIngressReconciler.cs:191`, `:236`). A mismatched pair is quarantined (`:193`). | #1968 |
+| Kill after the journal commit | Admission survives; spool transfer resumes; one exact version per payload | #1968 |
+| Uncertain PUT of a payload, manifest or segment | Exact-byte retry; equal digest is success; a different digest is a conflict that stops the writer | #1967, #1968 |
+| Kill at each publication step P1–P4 | Visibility only after durable P1–P3 ([5.3](#53-group-publication)) | #1967, #1968 |
 | Fault between staging stack planes and group commit | Readers see only settled stacks | #1968 |
-| Abrupt host power loss after acknowledged admission | Admission survives | #1968, #1974 |
+| Abrupt host power loss after acknowledged **admission** | Admission survives | #1968, #1974 |
+| Abrupt host power loss after acknowledged **publication**, with Silo losing unsynced objects | Startup replays the exact spooled bytes before serving; the revision stays visible with the same manifest digest | #1974 |
 | Silo down during capture | Spool grows, then pressure pause; drains on recovery | #1968, #1970 |
-| Wrong digest or missing version with a valid catalog (#1059 negative control on the new layout) | Detected as `missing` by physical verification | #1967, #1968 |
+| Deleted version with a valid catalog and metadata (#1059 negative control on the new layout) | `missing`, found by exact-version GET | #1967, #1968 |
+| Damaged payload bytes with intact metadata and stored checksum | `missing`, found by independently computed SHA-256 or a Silo read error; HEAD alone passes and is not accepted as proof | #1967, #1968 |
 | Expiry interrupted after intent or after delete | Idempotent completion; `policy-expired` | #1970 |
-| Stale generation attempts expiry or publication after recovery | Refused by the fence | #1972 |
-| SQLite catalog deleted | Rebuild to cutoff with stable IDs, previews, original view revisions, and expired versus missing | #1967 |
-| Early abort with zero admissions, authority and only the handoff pause | Reinstall after E1–E3; former instance `Running` with one owner | #1975 |
-| Early abort after a durable admission | Reinstall refused; forward recovery | #1975 |
-| Early abort without authority, with a newer operator pause, unknown control state or another device owner | Reinstall refused; admission and device stay fenced | #1975 |
+| Archive sweep between survivor reservation and local delete | Reserved survivor stays readable by GET; without qualified protection the delete needs the last-copy policy | #1969, #1970 |
+| Replication credential attempts a target delete | Refused | #1969 |
+| Takeover between the old writer's fence check and its delete | The delete is refused by the disabled credential, or an already accepted delete is observed and dispositioned before the new generation acts | #1972 |
+| Backup newer than archive; archive newer than backup | Cutoffs reported independently; the new generation's identity range lies above every evidenced generation; admission fenced while the prior generation is unproven; no identity reissued | #1972 |
+| SQLite catalog deleted | Rebuild to the cutoff with stable IDs, first, latest and last-live pointers, previews, original view revisions, and expired versus missing | #1967 |
+| Damaged newest checkpoint | Replay falls back to the previous trusted anchor | #1967 |
+| Early abort with zero admissions | Legacy reinstall not invoked; candidate, former instance and camera stay fenced | #1975 |
+| Early abort after a durable admission | Forward recovery | #1975 |
+| Operator pause, including a same-version no-op, between the former start and its resume on an authority-preserving route | Resume refused | Route owner, #1975 |
+| Operator no-op pause before the Silo first resume | First resume refused | #1966 |
+| Candidate provider attempt during the abort window | Former provider acquisition stays fenced until reconciled | #1975 |
 | Wrong endpoint or bucket | Refused before mutation | #1966 |
-| Newer operator pause than the installer pause | Installer resume refused | #1966 |
 | Trash cleanup stalled | Reclaim-pending bound reached; pressure pause; no assumed space | #1970 |
 
 ### 11.3 Focused acceptance
@@ -671,18 +865,20 @@ test operates on live storage or alters published evidence.
 
 ## 12. Downstream contract slices
 
-| Issue | Implements | Can start |
+The gates copy the GitHub dependencies of each issue.
+
+| Issue | Implements | Gate |
 | --- | --- | --- |
-| [#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966) runtime | Pinned stock Silo, bucket, marker, fence prefix, versioning, sync setting and cost for 5.2, private listeners, credentials, binding preflight, paused first boot with expected-version resume, device allocation (2, 4.3, 5.2, 8.1, 8.4) | Now; independent of #1967 |
-| [#1967](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1967) catalog | Identities, manifests, journal, catalog, format identities, crash table, availability, rebuild (4.2–4.7, 5.3, 6.2) | Now; any S3 fixture; independent of #1966 |
-| [#1968](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1968) store | Every 3.2 disposition, spool, bounded startup, persistence-qualified release, power-loss proof (3, 5). Records the delta between the accepted centered contracts at its integration source and 3.2 and 6.3. | After #1966 and #1967; release integration needs the launch hold (9) |
-| [#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969) replica | Copy records, archive confirmation, coverage of `m/`, `j/`, `c/` (4.5, 6.4) | After #1968 |
-| [#1970](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1970) retention | Holds, expiry protocol, reclamation, pressure pause (5.5, 7.1–7.4) | After #1968 |
-| [#1971](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1971) restore | Reopen and compute closure, leases, cache (6) | After #1968 |
-| [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972) recovery | Generations, fence, cutoff, remap, floors, held expiry (4.5, 7.2, 7.5, 8.5) | After #1968 |
-| [#1973](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1973) operations | States, pauses, alarms against budgets (5.5, 6.2, 10) | After #1968 |
-| [#1974](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1974) qualification | Budgets and matrices (10, 11) with the centered profile at the exact integration source. Records the #1922 and #1923 merge SHAs, the relevant #1928 cases, the integration SHA and artifact digests. | After the storage path and the launch hold (9) |
-| [#1975](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1975) canary | Handoff, early abort, pauses, floors (8.2–8.5) | After #1974 |
+| [#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966) runtime | Topology, release record and artifact verification (2); pinned stock Silo, bucket, marker, fence bootstrap and per-generation credentials (4.3, 7.2); sync setting and cost (5.2); private listeners and credentials; binding preflight; paused first boot with an atomic first resume; device allocation (8.1, 8.4) | After #1965; independent of #1967 |
+| [#1967](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1967) catalog | Identities, manifests, journal, exact-byte replay, trusted anchors, catalog, format identities, crash table, availability, pointers, rebuild (4.2–4.7, 5.3, 6.1–6.3) | After #1965; any S3 fixture; independent of #1966 |
+| [#1968](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1968) store | Every 3.2 disposition, spool and persistence condition, bounded startup, power-loss proof (3, 5). Records the delta between the accepted centered contracts at its integration source and 3.2 and 6.3. | After #1966 and #1967; release integration also needs the launch hold (9) |
+| [#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969) replica | Copy and custody records, archive confirmation, coverage of `m/`, `j/`, `c/`, replication credential restriction, qualified survivor protection (4.5, 6.4, 7.3) | After #1968 |
+| [#1970](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1970) retention | Holds, expiry protocol, survivor reservation, reclamation, pressure pause (5.5, 7.1, 7.3, 7.4) | After #1969 |
+| [#1971](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1971) restore | Reopen and compute closure, leases, cache (6) | After #1969 |
+| [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972) recovery | Cutoffs, generation-partitioned identity ranges and floors, takeover, remap, held expiry (4.5, 5.4, 7.2, 7.5, 8.5) | After #1970 |
+| [#1973](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1973) operations | States, pauses, alarms against budgets (5.5, 6.2, 10) | After #1970 and #1971 |
+| [#1974](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1974) qualification | Budgets and matrices (10, 11) on the centered profile at the exact integration source. Retains concurrent replica catch-up during capture and restore, the stock compression on and off comparison, resource ceilings (CPU, memory, temperature, NVMe), recovery measurements (RPO, RTO, temporary bytes), and the #1922 and #1923 merge SHAs, relevant #1928 cases, integration SHA and artifact digests. | After #1972 and #1973; qualification also needs the launch hold (9) |
+| [#1975](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1975) canary | Handoff, early abort and fence, pauses, floors (8.2–8.5) | After #1974 |
 | [#1976](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1976) closeout | Former-data disposition (2) | After #1975 |
 | [#1977](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1977) import (optional) | 8.6 | After #1968, only if selected |
 | [#1922](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1922), [#1923](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1923), [#1928](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1928) (outside this epic) | Launch-hold inputs only (9) | Owned by epic #1918, with draft #1963 and #1923 parked; not restarted or adopted by #1964 work |
@@ -722,7 +918,10 @@ Settled: the first Silo release uses the centered profile, and its launch is hel
 
 | Decision | Recommendation | Decides |
 | --- | --- | --- |
-| Restoring the former instance paused on early abort, which reinstall cannot do today (8.3, 8.4) | Accept that an authorized abort restores the former owner as the active writer, and that a failed E3 keeps both instances fenced. Otherwise file an installer change to honor a persisted pause. | Roy, before #1975 |
+| Authority-preserving restore route for the former owner (8.3) | Provide a route meeting the 8.3 conditions before the canary, as an installer change outside #1965. Until then an early abort leaves the candidate, the former instance and the camera fenced. | Roy, before #1975 |
+| Survivor protection mechanism (7.3) | Qualify per-version archive holds on the pinned release; otherwise apply the last-copy policy to every local eviction | #1969 evidence |
+| Credential disable for mutation-enforced fencing (7.2) | Qualify on the pinned release; until then require proof that the superseded process is gone | #1966 evidence |
+| Per-generation identity range size and any counter that cannot be partitioned (5.4) | Use a range far above any feasible per-generation count; fence any counter that can be neither partitioned nor proven | #1972 |
 | Provider floors: capsule import or hold until elapsed (8.5) | Keep providers disabled on the candidate until the operator records that floors elapsed and no halt is active. Import a capsule only if a site needs provider data immediately. | Roy, #1966 or #1975 |
 | Spool release versus the Silo sync setting (5.2) | Keep the spool copy until #1966 measures the `MINIO_FS_OSYNC` cost; then choose per profile | #1966 evidence |
 | Proposed budget targets (10.3) | Accept as the qualification bar or revise | Roy, before #1974 |
