@@ -109,17 +109,17 @@ internal sealed partial class SiloCatalogIndex
     /// After a rebuild applies the journal, decide each pending publication's footing (#1965 5.3, 7.5). Settled history
     /// is rebuilt from its verified manifest, its member bytes read lazily. A publication is settled only on positive
     /// proof that it reached P4: the writer's own records, or the trusted anchor the rebuild started from, which records
-    /// each covered publication that was visible when it was written. The writer's list of revisions awaiting their first
+    /// each covered publication proven to have reached P4 when it was written. The writer's list of revisions awaiting their first
     /// P4 overrides both. Any other publication, including one with no proof either way, is verified exactly as a first
     /// P4 would be: its manifest, required members and required reopen dependencies by exact read, and it becomes visible
     /// only on that proof. Absence of proof is not evidence of settlement. A read that cannot complete becomes a reported
     /// state, never a stalled rebuild.
     /// </summary>
     internal async ValueTask MarkHistoryAsync(
-        SiloWriterEvidence? writer, IReadOnlyList<SiloCheckpointVisible>? anchoredVisible, CancellationToken cancellationToken)
+        SiloWriterEvidence? writer, IReadOnlyList<SiloCheckpointPublication>? anchoredP4, CancellationToken cancellationToken)
     {
         var awaitingFirstP4 = writer?.AwaitingFirstP4 ?? SiloWriterEvidence.Empty.AwaitingFirstP4;
-        var anchored = (anchoredVisible ?? []).Select(static visible => (visible.GroupId, visible.RevisionId)).ToHashSet();
+        var anchored = (anchoredP4 ?? []).Select(static publication => (publication.GroupId, publication.RevisionId)).ToHashSet();
         await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -423,9 +423,14 @@ internal sealed partial class SiloCatalogIndex
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// P4: the revision becomes visible, and from now on it is settled history (<c>requires_members = 0</c>). A later
+    /// outage may close it again, but a retry verifies only its manifest and the proof that it reached P4 is kept, for
+    /// checkpoints too. Only the writer's own first P4 (<see cref="ConfirmP4Async"/>) puts it back under first-P4 rules.
+    /// </summary>
     private static async ValueTask SetVisibleAsync(SqliteConnection connection, string groupId, string revisionId, CancellationToken cancellationToken) =>
         await ExecuteAsync(connection, null, """
-            UPDATE publications SET state = 'visible', outcome = NULL, outcome_detail = NULL
+            UPDATE publications SET state = 'visible', outcome = NULL, outcome_detail = NULL, requires_members = 0
             WHERE group_id = $group AND revision_id = $revision AND manifest_status = 'verified';
             """, cancellationToken, ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false);
 

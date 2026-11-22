@@ -23,7 +23,9 @@ unsupported object aborts before it replaces the catalog. The tests check each o
 | Publication state database | `hvo.cameraagent.silo.publication-state/1`, `application_id` `0x48535053`, `user_version` 1 | State `publication-state.db` |
 | Centered view documents inside a view manifest | `cameraagent-centered-view-base-v1`, `cameraagent-centered-view-revision-v1` | Embedded verbatim |
 
-`tests/fixtures/silo-catalog-v1/` pins the v1 JSON formats byte for byte. A change to them is a new format version.
+`tests/fixtures/silo-catalog-v1/` pins the v1 JSON formats byte for byte. Once a format is released, any change to its
+bytes is a new format version. The v1 formats have not been released yet. Until their first release they are reviewed
+in place under their v1 identities, and their pins move with them.
 
 A database is judged before anything writes to it:
 
@@ -174,8 +176,11 @@ not persistence-qualified is never named by a committed record.
   SHA-256 and of each first P4 it completed. The authority-unknown interval clears only when the committed head is
   read again with its SHA-256. A rebuild treats a publication as settled history only on positive proof that it
   reached P4: the writer's records, or the trusted anchor the rebuild starts from, which names each covered
-  publication that was visible when its checkpoint was written. Settled history is rebuilt from its verified manifest,
-  and its member bytes wait for the lazy phase, so a member read that times out never hides it. A revision the writer
+  publication proven to have reached P4 when its checkpoint was written. Settled history is rebuilt from its verified
+  manifest, and its member bytes wait for the lazy phase, so a member read that times out never hides it. Reaching P4
+  settles a revision for good. A later outage, such as a manifest read that times out, can close it again, but a
+  retry then verifies only its manifest, and the proof that it reached P4 is kept, for checkpoints too. Only the
+  writer's own first P4 puts a revision back under first-P4 rules. A revision the writer
   lists as awaiting its first P4 is never settled. Every other publication, including one without proof either way,
   is verified as its first P4 would be, and becomes visible only on that proof. A read that cannot complete becomes
   the publication's reported state, so the rebuild never stalls on it.
@@ -184,9 +189,13 @@ not persistence-qualified is never named by a committed record.
   segment that carries it. A witness of another opening of the same generation and prefix, differing in any field,
   proves nothing. Without that proof the prefix ends at the boundary.
 - **Trusted anchors.** `SiloCheckpointWriter` writes a checkpoint of every applied record at the cursor. It also names,
-  in journal order, each covered publication that had reached P4 then, because no journal record carries P4. A
-  checkpoint without that list, or naming a publication it does not cover or one twice, is refused. It refuses any
-  checkpoint larger than the readers' bound, so it never produces one a rebuild cannot read. Selection starts from the
+  in journal order, each covered publication proven to have reached P4, including one a later outage has closed again,
+  because no journal record carries P4. A checkpoint without that list, or naming a revision it does not cover, a
+  revision twice or revisions out of order, is refused. The checkpoint key is create-only, and proof of P4 can grow
+  while the cursor stays put. So a retry at an unchanged cursor, after an earlier checkpoint landed but before its
+  anchor was recorded, anchors the checkpoint that landed when it holds exactly the same records. Its shorter P4 list
+  only settles less. Any other object at the key is still a conflict. It refuses any checkpoint larger than the
+  readers' bound, so it never produces one a rebuild cannot read. Selection starts from the
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
   length, which a newer version at the same key cannot hide. A replica is read only through the exact version a verified

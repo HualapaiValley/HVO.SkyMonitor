@@ -252,9 +252,9 @@ public sealed class SiloAuthorityPathTests
     }
 
     [TestMethod]
-    [DataRow(true, DisplayName = "total loss: history the trusted anchor records as visible stays visible while a member read times out")]
-    [DataRow(false, DisplayName = "total loss: a P3 the trusted anchor records as never visible stays fenced while a member read times out")]
-    public async Task ATrustedAnchorKeepsTheHistoryItRecordsAsVisibleBrowsableAfterTotalLoss(bool reachedP4)
+    [DataRow(true, DisplayName = "total loss: history the trusted anchor records as reaching P4 stays visible while a member read times out")]
+    [DataRow(false, DisplayName = "total loss: a P3 the trusted anchor does not record as reaching P4 stays fenced while a member read times out")]
+    public async Task ATrustedAnchorKeepsTheHistoryItRecordsAsReachingP4BrowsableAfterTotalLoss(bool reachedP4)
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         var draft = SiloDrafts.Capture(silo.Payloads, 1);
@@ -312,6 +312,113 @@ public sealed class SiloAuthorityPathTests
             publication.Outcome.Should().Be(SiloDisposition.TemporarilyUnavailable);
             (await BrowseAsync().ConfigureAwait(false)).Select(static item => item.GroupId).Should().NotContain(draft.GroupId);
         }
+    }
+
+    [TestMethod]
+    [DataRow(true, DisplayName = "total loss: a P4 the writer proved stays in the checkpoint through a manifest outage and keeps the revision visible")]
+    [DataRow(false, DisplayName = "total loss: a P3 awaiting its first P4 through the same manifest outage stays fenced")]
+    public async Task AManifestOutageNeverErasesProofOfP4FromTheCheckpoint(bool reachedP4)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1);
+        var raw = new SiloRoleKey(SiloIdentityKind.Member, SiloDrafts.Raw(1), "1");
+        if (reachedP4)
+        {
+            await silo.PublishAsync(draft).ConfigureAwait(false);
+        }
+        else
+        {
+            await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false);
+            silo.Faults.Armed = SiloFaultPoint.AfterSegmentCommitted;
+            var crash = () => silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).AsTask();
+            await crash.Should().ThrowAsync<InvalidOperationException>().WithMessage("simulated crash*").ConfigureAwait(false);
+        }
+        var manifestKey = silo.ManifestLocator(draft.GroupId).Key;
+        var rawKey = silo.MemberLocator(draft.GroupId, raw.Id).Key;
+        // The catalog is rebuilt with the writer's surviving State while the manifest read times out.
+        silo.Local.ReadUnavailable = key => key == manifestKey;
+        await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
+        var during = (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
+        during.State.Should().Be("closed");
+        during.Outcome.Should().Be(SiloDisposition.TemporarilyUnavailable);
+        var anchor = await new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock)
+            .WriteAsync(CancellationToken.None).ConfigureAwait(false);
+        await silo.AppendAsync(anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) }).ConfigureAwait(false);
+        silo.Authority.TrustAnchors = true;
+        // Total loss: no writer State survives. The manifest reads again; the raw read now times out.
+        silo.Local.ReadUnavailable = key => key == rawKey;
+
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local)).ConfigureAwait(false);
+
+        rebuilt.StartKind.Should().Be("anchor");
+        var publication = (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
+        var browse = await silo.Index.QueryVisibleAsync(SiloHarness.Start.AddDays(-1), SiloHarness.Start.AddDays(2), null, 10,
+            CancellationToken.None).ConfigureAwait(false);
+        if (reachedP4)
+        {
+            publication.State.Should().Be("visible", "proof of P4 does not depend on the revision being visible when the checkpoint was written");
+            browse.Select(static item => item.GroupId).Should().Contain(draft.GroupId);
+            (await silo.Index.ReadRoleAsync(raw, CancellationToken.None).ConfigureAwait(false))!.Disposition.Should().Be(SiloDisposition.Unverified);
+        }
+        else
+        {
+            publication.State.Should().Be("closed", "nothing proves this revision ever reached P4");
+            publication.Outcome.Should().Be(SiloDisposition.TemporarilyUnavailable);
+            browse.Select(static item => item.GroupId).Should().NotContain(draft.GroupId);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("this cursor's records", DisplayName = "a checkpoint retry at an unchanged cursor anchors the checkpoint that landed, with its earlier P4 proof")]
+    [DataRow("other records", DisplayName = "a key holding a checkpoint of other records at this cursor is still a conflict")]
+    public async Task ACheckpointRetryAtAnUnchangedCursorAnchorsTheCheckpointThatLanded(string landed)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1);
+        string RawKey() => silo.MemberLocator(draft.GroupId, SiloDrafts.Raw(1)).Key;
+        await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false);
+        silo.Faults.Armed = SiloFaultPoint.AfterSegmentCommitted;
+        var crash = () => silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).AsTask();
+        await crash.Should().ThrowAsync<InvalidOperationException>().WithMessage("simulated crash*").ConfigureAwait(false);
+        silo.Local.ReadUnavailable = key => key == RawKey();
+        await silo.CatchUpAsync().ConfigureAwait(false);
+        SiloCheckpointWriter Writer() => new(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock);
+        var key = SiloObjectNamespace.CheckpointKey(new(1, 2));
+        SiloAnchorRecord? first = null;
+        if (landed == "this cursor's records")
+        {
+            // Written while the revision is closed on a raw timeout; the process stops before its anchor is recorded.
+            first = await Writer().WriteAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+            var (covers, coversSha, entries, _) = await silo.Index.ExportRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+            var node = JsonNode.Parse(SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, silo.Binding.InstanceId,
+                silo.Binding.BindingId, covers, coversSha, entries, [])))!;
+            node["entries"]![0]!["record"]!["identityFloors"]!["capture-sequence"] = 7;
+            silo.Local.Plant(key, Encoding.UTF8.GetBytes(node.ToJsonString()));
+        }
+        silo.Local.ReadUnavailable = null;
+        await silo.Catalog.RetryClosedAsync(CancellationToken.None).ConfigureAwait(false);
+        (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+            .Should().Be("visible", "the retry brings the revision to P4 at the same journal cursor");
+
+        var retry = () => Writer().WriteAsync(CancellationToken.None).AsTask();
+
+        if (first is null)
+        {
+            (await retry.Should().ThrowAsync<SiloConflictException>().ConfigureAwait(false)).Which.Code.Should().Be("silo.create-only-conflict");
+            return;
+        }
+        var anchor = await retry().ConfigureAwait(false);
+        anchor.Should().Be(first, "the checkpoint that landed is this cursor's checkpoint; it is anchored, never replaced");
+        silo.Local.VersionsOf(key).Should().ContainSingle();
+        await silo.AppendAsync(anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) }).ConfigureAwait(false);
+        silo.Authority.TrustAnchors = true;
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local)).ConfigureAwait(false);
+        rebuilt.StartKind.Should().Be("anchor");
+        (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+            .Should().Be("visible", "without P4 proof in the landed checkpoint it is verified as a first P4 would be, and its bytes read");
     }
 
     // ----- Fresh, same-intent proof for a copy eviction -----------------------------------------------------------

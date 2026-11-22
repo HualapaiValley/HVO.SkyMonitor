@@ -358,28 +358,26 @@ internal static class SiloJson
             }
             previous = key;
         }
-        // Each visible publication names a covered publish record, once, in journal order.
-        ArgumentNullException.ThrowIfNull(checkpoint.Visible);
-        var published = new List<(string GroupId, string RevisionId)>();
+        // Each P4 publication names a covered revision, once, in the order its first publish record was committed.
+        ArgumentNullException.ThrowIfNull(checkpoint.ReachedP4);
+        var first = new Dictionary<(string GroupId, string RevisionId), int>();
         foreach (var entry in checkpoint.Entries)
         {
             if (entry.Record.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
                 type.GetString() == SiloRecordTypes.Publish)
             {
-                published.Add((entry.Record.GetProperty("groupId").GetString()!, entry.Record.GetProperty("revisionId").GetString()!));
+                first.TryAdd((entry.Record.GetProperty("groupId").GetString()!, entry.Record.GetProperty("revisionId").GetString()!), first.Count);
             }
         }
-        var next = 0;
-        foreach (var visible in checkpoint.Visible)
+        var named = -1;
+        foreach (var publication in checkpoint.ReachedP4)
         {
-            ArgumentNullException.ThrowIfNull(visible);
-            var found = published.FindIndex(next, pair => pair == (visible.GroupId, visible.RevisionId));
-            if (found < 0)
+            ArgumentNullException.ThrowIfNull(publication);
+            if (!first.TryGetValue((publication.GroupId, publication.RevisionId), out var at) || at <= named)
             {
-                throw new ArgumentException("A checkpoint's visible publications name covered publish records once, in journal order.",
-                    nameof(checkpoint));
+                throw new ArgumentException("A checkpoint's P4 publications name covered revisions once, in journal order.", nameof(checkpoint));
             }
-            next = found + 1;
+            named = at;
         }
     }
 

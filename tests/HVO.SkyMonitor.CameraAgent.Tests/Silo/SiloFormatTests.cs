@@ -128,7 +128,7 @@ public sealed class SiloFormatTests
             .Should().BeEquivalentTo(SiloRecordTypes.All.Except([SiloRecordTypes.GenerationOpen]));
         var checkpoint = SiloJson.ReadCheckpoint(golden["journal-checkpoint.json"], "checkpoint");
         checkpoint.Entries.Should().HaveCount(13);
-        checkpoint.Visible.Should().Equal(new SiloCheckpointVisible("capture-0103", "r1"));
+        checkpoint.ReachedP4.Should().Equal(new SiloCheckpointPublication("capture-0103", "r1"));
         Encoding.UTF8.GetString(golden["group-manifest.json"]).Should().StartWith("{\"format\":\"hvo.cameraagent.silo.group-manifest/1\"");
     }
 
@@ -150,32 +150,48 @@ public sealed class SiloFormatTests
     }
 
     [TestMethod]
-    [DataRow("uncovered", DisplayName = "a checkpoint naming a visible publication it does not cover is refused")]
-    [DataRow("repeated", DisplayName = "a checkpoint naming one visible publication twice is refused")]
-    [DataRow("absent", DisplayName = "a checkpoint without its visible publications is refused")]
-    public void ACheckpointsVisiblePublicationsNameItsOwnPublishRecordsOnce(string change)
+    [DataRow("uncovered", DisplayName = "a checkpoint naming a P4 publication it does not cover is refused")]
+    [DataRow("repeated", DisplayName = "a checkpoint naming one P4 publication twice is refused, even when two publish records name it")]
+    [DataRow("out of order", DisplayName = "a checkpoint naming P4 publications out of journal order is refused")]
+    [DataRow("absent", DisplayName = "a checkpoint without its P4 publications is refused")]
+    public void ACheckpointsP4PublicationsNameItsOwnRevisionsOnceInJournalOrder(string change)
     {
         var golden = GoldenObjects().Single(static item => item.Name == "journal-checkpoint.json").Bytes;
         var node = JsonNode.Parse(golden)!;
         switch (change)
         {
             case "uncovered":
-                node["visible"]!.AsArray().Add(new JsonObject { ["groupId"] = "capture-9999", ["revisionId"] = "r1" });
+                node["reachedP4"]!.AsArray().Add(new JsonObject { ["groupId"] = "capture-9999", ["revisionId"] = "r1" });
                 break;
             case "repeated":
-                node["visible"]!.AsArray().Add(new JsonObject { ["groupId"] = "capture-0103", ["revisionId"] = "r1" });
+                AppendPublish(node, "capture-0103");
+                node["reachedP4"]!.AsArray().Add(new JsonObject { ["groupId"] = "capture-0103", ["revisionId"] = "r1" });
+                break;
+            case "out of order":
+                AppendPublish(node, "capture-0104");
+                node["reachedP4"]!.AsArray().Insert(0, new JsonObject { ["groupId"] = "capture-0104", ["revisionId"] = "r1" });
                 break;
             default:
-                node.AsObject().Remove("visible");
+                node.AsObject().Remove("reachedP4");
                 break;
         }
 
         var read = () => SiloJson.ReadCheckpoint(Encoding.UTF8.GetBytes(node.ToJsonString()), "checkpoint");
 
+        static void AppendPublish(JsonNode checkpoint, string groupId)
+        {
+            // A later covered publish record, copied from the golden one, for the given group.
+            var entries = checkpoint["entries"]!.AsArray();
+            var publish = entries.First(static entry => (string?)entry!["record"]!["type"] == "publish")!.DeepClone();
+            publish["record"]!["groupId"] = groupId;
+            publish["index"] = entries.Where(static entry => (long)entry!["sequence"]! == 2).Max(static entry => (int)entry!["index"]!) + 1;
+            entries.Add(publish);
+        }
+
         var refusal = read.Should().Throw<SiloInvalidObjectException>().Which;
         if (change != "absent")
         {
-            refusal.Message.Should().Contain("visible publications name covered publish records once");
+            refusal.Message.Should().Contain("P4 publications name covered revisions once");
         }
     }
 

@@ -129,9 +129,10 @@ internal sealed record SiloJournalSegment(
 /// <summary>
 /// A checkpoint covering every record at or before <see cref="Covers"/>. It carries each record exactly as committed,
 /// so it carries forward every retained floor, pointer, copy, custody, remap, pin, policy, availability and expiry
-/// fact. <see cref="Visible"/> names, in journal order, each covered publication that had reached P4 when the checkpoint
-/// was written: the catalog's own proof that it was published history, which no journal record carries. It
-/// authenticates nothing until an anchor record and seal evidence make it a trusted anchor.
+/// fact. <see cref="ReachedP4"/> names, in journal order, each covered publication the catalog had proven to reach P4
+/// when the checkpoint was written, whether it was visible then or closed by a later outage: the proof that it is
+/// published history, which no journal record carries. It authenticates nothing until an anchor record and seal
+/// evidence make it a trusted anchor.
 /// </summary>
 internal sealed record SiloJournalCheckpoint(
     string Format,
@@ -140,10 +141,10 @@ internal sealed record SiloJournalCheckpoint(
     SiloJournalPosition Covers,
     string CoversSha256,
     IReadOnlyList<SiloCheckpointEntry> Entries,
-    IReadOnlyList<SiloCheckpointVisible> Visible);
+    IReadOnlyList<SiloCheckpointPublication> ReachedP4);
 
-/// <summary>One covered publication that had reached P4 when its checkpoint was written.</summary>
-internal sealed record SiloCheckpointVisible(string GroupId, string RevisionId);
+/// <summary>One covered publication proven to have reached P4 when its checkpoint was written.</summary>
+internal sealed record SiloCheckpointPublication(string GroupId, string RevisionId);
 
 internal sealed record SiloCheckpointEntry(long Generation, long Sequence, int Index, JsonElement Record);
 

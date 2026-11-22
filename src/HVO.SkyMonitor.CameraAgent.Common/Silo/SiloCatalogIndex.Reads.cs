@@ -295,7 +295,7 @@ internal sealed partial class SiloCatalogIndex
 
     /// <summary>Every applied record at or before the cursor, exactly as committed, for a checkpoint.</summary>
     internal async ValueTask<(SiloJournalPosition Covers, string CoversSha256, IReadOnlyList<SiloCheckpointEntry> Entries,
-        IReadOnlyList<SiloCheckpointVisible> Visible)> ExportRecordsAsync(CancellationToken cancellationToken)
+        IReadOnlyList<SiloCheckpointPublication> ReachedP4)> ExportRecordsAsync(CancellationToken cancellationToken)
     {
         await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -319,19 +319,19 @@ internal sealed partial class SiloCatalogIndex
                     entries.Add(new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt32(2), document.RootElement.Clone()));
                 }
             }
-            // A visible publication reached P4: it was verified as a first P4, or rebuilt as history that was proven so.
-            var visible = new List<SiloCheckpointVisible>();
+            // Settled history is every publication proven to have reached P4, whatever an outage has closed since.
+            var reachedP4 = new List<SiloCheckpointPublication>();
             using (var command = CreateCommand(connection, null, """
-                SELECT group_id, revision_id FROM publications WHERE state = 'visible' ORDER BY generation, sequence, record_index;
+                SELECT group_id, revision_id FROM publications WHERE requires_members = 0 ORDER BY generation, sequence, record_index;
                 """))
             using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    visible.Add(new(reader.GetString(0), reader.GetString(1)));
+                    reachedP4.Add(new(reader.GetString(0), reader.GetString(1)));
                 }
             }
-            return (covers, sha!, entries, visible);
+            return (covers, sha!, entries, reachedP4);
         }
         finally
         {

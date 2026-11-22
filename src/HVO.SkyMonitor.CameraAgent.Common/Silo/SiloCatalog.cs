@@ -622,7 +622,7 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
                     ? await walker.ReadUnprovenPublicationsAsync(end.Last, cancellationToken).ConfigureAwait(false)
                     : SiloUnprovenScan.Healed;
                 await index.RecordAuthorityEndAsync(startKind, anchor, reason, unknown, unproven, cancellationToken).ConfigureAwait(false);
-                await index.MarkHistoryAsync(writer, start?.Visible, cancellationToken).ConfigureAwait(false);
+                await index.MarkHistoryAsync(writer, start?.ReachedP4, cancellationToken).ConfigureAwait(false);
                 await index.EvaluatePublicationsAsync(stores, null, retryClosed: false, cancellationToken).ConfigureAwait(false);
                 await index.SealForReplacementAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -792,12 +792,16 @@ internal sealed class SiloCheckpointWriter(
     SiloCatalogIndex index, SiloObjectSpool spool, ISiloObjectStore local, SiloStorageBinding binding, TimeProvider clock,
     long maximumBytes = SiloJson.MaximumMetadataObjectBytes)
 {
-    /// <summary>Returns the anchor record that names the verified checkpoint's exact version, ready for seal evidence.</summary>
+    /// <summary>
+    /// Returns the anchor record that names the verified checkpoint's exact version, ready for seal evidence. A retry at
+    /// an unchanged cursor, after an earlier checkpoint landed but before its anchor was recorded, anchors the one that
+    /// landed: the key is create-only, and only the P4 list may have grown since (#1965 4.5).
+    /// </summary>
     public async ValueTask<SiloAnchorRecord> WriteAsync(CancellationToken cancellationToken)
     {
-        var (covers, coversSha, entries, visible) = await index.ExportRecordsAsync(cancellationToken).ConfigureAwait(false);
+        var (covers, coversSha, entries, reachedP4) = await index.ExportRecordsAsync(cancellationToken).ConfigureAwait(false);
         var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, binding.InstanceId, binding.BindingId, covers, coversSha, entries,
-            visible);
+            reachedP4);
         var bytes = SiloJson.Serialize(checkpoint);
         if (bytes.Length > maximumBytes)
         {
@@ -806,10 +810,51 @@ internal sealed class SiloCheckpointWriter(
         var sha = SiloHash.Sha256(bytes);
         var name = await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         var key = SiloObjectNamespace.CheckpointKey(covers);
-        var created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
-            SiloFormats.JournalCheckpoint, binding.BindingId, clock, null, cancellationToken).ConfigureAwait(false);
+        SiloCreated created;
+        try
+        {
+            created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
+                SiloFormats.JournalCheckpoint, binding.BindingId, clock, null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SiloConflictException conflict) when (conflict.Code == "silo.create-only-conflict")
+        {
+            if (await ReadLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false) is not { } landed)
+            {
+                throw;
+            }
+            spool.Delete(name);
+            return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, landed.VersionId), landed.Length, landed.Sha256, covers,
+                coversSha);
+        }
         spool.Delete(name);
         return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, created.VersionId), bytes.Length, sha, covers, coversSha);
+    }
+
+    /// <summary>
+    /// The checkpoint already at this cursor's key, when it is this binding's checkpoint of exactly these records. Its P4
+    /// list may predate proof gained since at the same cursor; every list was proven when written, so it only settles
+    /// less. Anything else at the key stays a conflict.
+    /// </summary>
+    private async ValueTask<(string VersionId, long Length, string Sha256)?> ReadLandedAsync(
+        string key, SiloJournalCheckpoint wanted, CancellationToken cancellationToken)
+    {
+        (string VersionId, byte[] Bytes)? current;
+        SiloJournalCheckpoint landed;
+        try
+        {
+            current = await SiloVerifier.ReadCurrentAsync(local, key, cancellationToken).ConfigureAwait(false);
+            if (current is not { } found || found.Bytes.Length > maximumBytes)
+            {
+                return null;
+            }
+            landed = SiloJson.ReadCheckpoint(found.Bytes, "journal checkpoint " + wanted.Covers);
+        }
+        catch (SiloDataException)
+        {
+            return null;
+        }
+        var same = SiloJson.Serialize(landed with { ReachedP4 = [] }).AsSpan().SequenceEqual(SiloJson.Serialize(wanted with { ReachedP4 = [] }));
+        return same ? (current.Value.VersionId, current.Value.Bytes.Length, SiloHash.Sha256(current.Value.Bytes)) : null;
     }
 }
 
