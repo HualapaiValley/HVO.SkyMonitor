@@ -210,7 +210,12 @@ internal sealed partial class SiloCatalogIndex
                 cancellationToken).ConfigureAwait(false);
             return;
         }
-        if (IdentityMismatch(manifest, kind, groupId, revisionId, previous, recorded) is { } mismatch)
+        var namedKey = await ScalarStringAsync(connection, null, """
+            SELECT key FROM locators WHERE kind = $kind AND id = $group AND revision = $revision AND source = 'named'
+            ORDER BY generation, sequence, record_index LIMIT 1;
+            """, cancellationToken, ("$kind", KindName(SiloIdentityKind.Manifest)), ("$group", groupId), ("$revision", revisionId))
+            .ConfigureAwait(false);
+        if (IdentityMismatch(manifest, kind, groupId, revisionId, previous, manifestSha, namedKey, recorded) is { } mismatch)
         {
             await CloseAsync(connection, groupId, revisionId, SiloDisposition.Conflict, SiloDisposition.Conflict, mismatch,
                 cancellationToken).ConfigureAwait(false);
@@ -266,11 +271,13 @@ internal sealed partial class SiloCatalogIndex
     }
 
     /// <summary>
-    /// Check 2 (#1965 5.3): the manifest's instance, binding, group and revision, and its members with their bytes,
-    /// facts and locators, match the publish record that committed it.
+    /// Check 2 (#1965 4.3, 5.3): the manifest's instance, binding, group and revision, and its members with their bytes,
+    /// facts and locators, match the publish record that committed it, and the record names it at the immutable key its
+    /// own UTC anchor, logical revision and exact digest fix.
     /// </summary>
     private string? IdentityMismatch(
-        SiloGroupManifest manifest, string kind, string groupId, string revisionId, string? previous, IReadOnlyList<RecordedMember> recorded)
+        SiloGroupManifest manifest, string kind, string groupId, string revisionId, string? previous, string manifestSha, string? namedKey,
+        IReadOnlyList<RecordedMember> recorded)
     {
         if (!string.Equals(manifest.InstanceId, Binding.InstanceId, StringComparison.Ordinal) ||
             !string.Equals(manifest.StorageBindingId, Binding.BindingId, StringComparison.Ordinal))
@@ -283,6 +290,11 @@ internal sealed partial class SiloCatalogIndex
             !string.Equals(manifest.PreviousRevisionId, previous, StringComparison.Ordinal))
         {
             return "the manifest names another group revision than its publish record";
+        }
+        if (namedKey is not null &&
+            !string.Equals(namedKey, SiloObjectNamespace.ManifestKey(manifest.FromUtc, groupId, revisionId, manifestSha), StringComparison.Ordinal))
+        {
+            return "the publish record names the manifest outside the key its anchor, revision and digest fix";
         }
         var expected = recorded.Select(static member => (member.ArtifactId, member.ArtifactRevision, member.Sha256, member.Length,
             member.FactsSha256, member.Required, member.Locator)).ToHashSet();

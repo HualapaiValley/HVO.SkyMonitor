@@ -72,29 +72,6 @@ public sealed class SiloCommitEvidenceTests
     }
 
     [TestMethod]
-    public async Task APayloadLostAfterItsManifestWasWrittenBlocksTheCommitInsteadOfNamingADeadVersion()
-    {
-        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
-        var draft = SiloDrafts.Capture(silo.Payloads, 3);
-        await CrashAsync(silo, draft, SiloFaultPoint.AfterManifestQualified).ConfigureAwait(false);
-        var group = (await silo.State.ReadGroupAsync(draft.GroupId, "r1", CancellationToken.None).ConfigureAwait(false))!;
-        silo.Local.Delete(SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, group.Members[0].Draft.Sha256), group.Members[0].VersionId!);
-        var manifestKey = silo.Local.Keys("m/").Single();
-        var oldManifest = silo.Local.Current(manifestKey)!;
-
-        await silo.RestartAsync().ConfigureAwait(false);
-        var outcome = (await silo.Publisher.ResumeAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
-
-        outcome.State.Should().Be(SiloStagedState.PayloadsQualified);
-        outcome.BlockedCode.Should().Be("silo.manifest-supersession-blocked");
-        silo.JournalRecords().OfType<SiloPublishRecord>().Should().BeEmpty("a commit never names a version that is gone");
-        silo.Local.VersionsOf(manifestKey).Should().ContainSingle().Which.Should().Be(oldManifest, "an existing version is never replaced");
-        (await silo.State.ListOrphansAsync(CancellationToken.None).ConfigureAwait(false))
-            .Should().Contain(orphan => orphan.Locator.Key == manifestKey && orphan.Locator.VersionId == oldManifest);
-        silo.Payloads.Released.Should().BeEmpty("its bytes stay staged for recovery");
-    }
-
-    [TestMethod]
     public async Task ReopenDuringP3RecoveryNeverPromotesTheRevisionOrLetsItsSpoolGo()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);

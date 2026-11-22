@@ -200,7 +200,7 @@ with the ownership marker. Prefixes:
 | `p/full/<aa>/<sha256>` | Full-fidelity payload bytes | Create-only with a supplied SHA-256 checksum; `<aa>` is the first two hex digits |
 | `p/display/<aa>/<sha256>` | Display payload bytes | Same |
 | `p/meta/<aa>/<sha256>` | Metadata product bytes | Same |
-| `m/<yyyy>/<mm>/<dd>/<groupId>/<revisionId>.json` | Group manifest per revision, partitioned by the group's UTC anchor | Create-only, read back and digest-checked |
+| `m/<yyyy>/<mm>/<dd>/<groupId>/<revisionId>/<sha256>.json` | Group manifest of one logical revision, partitioned by the group's UTC anchor; each exact manifest sits under its own SHA-256 | Create-only, read back and digest-checked. The one `publish` record names exactly one of these. A manifest superseded before P3 by a changed payload locator ([5.3](#53-group-publication)) keeps its own key, is never overwritten or deleted by publication, and goes to retention as an orphan candidate. |
 | `j/g<g:D6>/<seq:D12>.json` | Journal segment | Create-only, gapless per generation |
 | `c/g<g:D6>/<seq:D12>.json` | Journal checkpoint covering `≤ seq` | Create-only |
 

@@ -16,7 +16,7 @@ unsupported object aborts before it replaces the catalog. The tests check each o
 
 | Object | Identity | Where |
 | --- | --- | --- |
-| Group manifest | `hvo.cameraagent.silo.group-manifest/1` | Silo `m/<yyyy>/<mm>/<dd>/<groupId>/<revisionId>.json` |
+| Group manifest | `hvo.cameraagent.silo.group-manifest/1` | Silo `m/<yyyy>/<mm>/<dd>/<groupId>/<revisionId>/<sha256>.json` |
 | Journal segment | `hvo.cameraagent.silo.journal-segment/1` | Silo `j/g<g:D6>/<seq:D12>.json` |
 | Journal checkpoint | `hvo.cameraagent.silo.journal-checkpoint/1` | Silo `c/g<g:D6>/<seq:D12>.json` |
 | Catalog index database | `hvo.cameraagent.silo.catalog-index/1`, SQLite `application_id` `0x48534349`, `user_version` 1 | State `catalog-index.db` |
@@ -53,8 +53,10 @@ store's own document serialization and stream identity, and recomputes the revis
 
 ## Object namespace and headers
 
-Payloads are content-addressed under `p/full`, `p/display` and `p/meta` (4.3). Every object is created once, with
-`If-None-Match: *` and a supplied SHA-256 checksum. Each carries the stable headers `hvo-sha256` and `hvo-binding`,
+Payloads are content-addressed under `p/full`, `p/display` and `p/meta` (4.3). Each exact manifest has its own key
+beneath its logical revision, fixed by the manifest's SHA-256. A retry of the same bytes therefore always targets the
+same key, and a manifest rebuilt with other bytes never contends for the key of the one it supersedes. Every object is
+created once, with `If-None-Match: *` and a supplied SHA-256 checksum. Each carries the stable headers `hvo-sha256` and `hvo-binding`,
 and metadata objects also carry `hvo-format`. These headers identify an object and help diagnose it. They never prove
 its bytes (F13). Physical proof is always an exact-version GET with an independently computed length and SHA-256.
 
@@ -84,14 +86,20 @@ Publication moves through these states, recorded in `publication-state.db` (5.3)
    attempt is recorded before the PUT.
 3. `manifest-qualified` (P2): every named payload version is read back again first, and a lost one is recreated from
    its spooled bytes. The manifest then names only verified versions. Its exact bytes are spooled before the first PUT.
-4. `recorded` (P3): every named version, manifest included, is read back once more. A lost manifest is recreated from
-   its exact spooled bytes. A lost payload supersedes the manifest:
-   - the manifest is rebuilt and its old version handed to retention as an orphan candidate;
-   - while that old version still holds the create-only key, publication blocks with
-     `silo.manifest-supersession-blocked`. Nothing is committed or replaced, and the spool is kept.
+4. `recorded` (P3): an uncertain commit of this revision is reconciled first, by replaying its exact spooled segment,
+   so a revision is never committed twice and nothing it names changes afterwards. Then every named version, manifest
+   included, is read back once more. A lost manifest is recreated from its exact spooled bytes under the same digest
+   key. A lost payload is recreated from its spooled bytes, and one transaction re-names the member and supersedes the
+   manifest built from the old locator:
+   - the superseded manifest's exact never-committed locator is handed to retention as an orphan candidate. An
+     uncertain write of it is resolved through its digest key, which no committed record can name; if nothing is
+     there yet, the key itself is handed over;
+   - the group returns to P2, which writes a new manifest from the current locators under its own digest key.
 
-   The `publish` segment commits under the operation key `publish:<group>:<revision>`. In the same transaction the
-   group moves to `recorded` at that position.
+   The logical revision never changes, the superseded version is never overwritten or deleted, and nothing waits for
+   retention. The `publish` segment commits under the operation key `publish:<group>:<revision>`. In the same
+   transaction the group moves to `recorded` at that position. P3 recovery checks that the committed manifest locator
+   is the key its UTC anchor, revision and digest fix.
 5. `visible` (P4): the writer's own first P4 runs P3 recovery for that revision within the same operation. Only when
    it verifies does the group become visible and release its spooled bytes. An interrupted release is finished on resume.
 
@@ -193,7 +201,8 @@ rest. A deleted or damaged version behind a valid catalog is found (#1059 negati
   Compaction of settled records is a later measured decision (#1974).
 - A rebuild reads the journal from one source. Merging journals from the backup and the archive after total loss
   belongs to #1972.
-- A payload lost before P3, while its superseded manifest still holds the create-only key, blocks that group until
-  retention removes the orphaned manifest version (#1970). A manifest supersession key would need a §4.3 revision.
 - Deleting journal segments, issuing deletes and accounting for reclamation belong to #1970. This code only records
-  and applies their outcomes.
+  and applies their outcomes, and hands superseded and abandoned versions to retention as orphan candidates.
+- A payload lost after its P3 was written, even while that P3 was still uncertain, is never substituted. The revision
+  stays closed with its P3 recovery outcome and keeps its spool until an eligible copy or qualified remap restores the
+  member (#1969, #1971).

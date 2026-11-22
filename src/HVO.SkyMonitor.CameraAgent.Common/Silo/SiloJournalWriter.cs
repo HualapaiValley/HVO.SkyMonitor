@@ -9,6 +9,7 @@ internal enum SiloFaultPoint
     AfterManifestSpooled,
     AfterManifestPut,
     AfterManifestQualified,
+    AfterPayloadReplaced,
     AfterSegmentSpooled,
     AfterSegmentPut,
     AfterSegmentCommitted,

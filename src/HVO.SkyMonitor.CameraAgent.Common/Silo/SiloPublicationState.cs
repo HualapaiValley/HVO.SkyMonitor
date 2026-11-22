@@ -89,7 +89,7 @@ internal sealed record SiloStagedGroup(
     SiloJournalPosition? JournalPosition,
     string? BlockedCode,
     string? BlockedDetail,
-    string? SupersededManifestVersionId);
+    bool ManifestPutStarted);
 
 /// <summary>A version that staged work created and no committed record names. An empty version is an unknown one.</summary>
 internal sealed record SiloOrphanCandidate(SiloExactLocator Locator, string Sha256, long Length, string Reason, string? GroupId, string? RevisionId);
@@ -172,7 +172,6 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             manifest_version_id TEXT,
             manifest_verified_unix_ms INTEGER,
             manifest_put_started_unix_ms INTEGER,
-            superseded_manifest_version_id TEXT,
             journal_generation INTEGER,
             journal_sequence INTEGER,
             blocked_code TEXT,
@@ -487,7 +486,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         SiloStagedGroup? group;
         using (var command = CreateCommand(connection, null, """
             SELECT draft_json, draft_sha256, state, manifest_sha256, manifest_length, manifest_version_id, manifest_verified_unix_ms,
-                journal_generation, journal_sequence, blocked_code, blocked_detail, superseded_manifest_version_id
+                journal_generation, journal_sequence, blocked_code, blocked_detail, manifest_put_started_unix_ms IS NOT NULL
             FROM staged_groups WHERE group_id = $group AND revision_id = $revision;
             """, ("$group", groupId), ("$revision", revisionId)))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -502,7 +501,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
                 NullableLong(reader, 4), NullableString(reader, 5),
                 NullableLong(reader, 6) is { } verified ? DateTimeOffset.FromUnixTimeMilliseconds(verified) : null,
                 NullableLong(reader, 7) is { } generation ? new SiloJournalPosition(generation, reader.GetInt64(8)) : null,
-                NullableString(reader, 9), NullableString(reader, 10), NullableString(reader, 11));
+                NullableString(reader, 9), NullableString(reader, 10), reader.GetInt64(11) == 1);
         }
         var members = new List<SiloStagedMember>();
         using (var command = CreateCommand(connection, null, """
@@ -566,7 +565,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             if (group.ManifestVersionId is { } manifest)
             {
                 result.Add(new(binding.StoreId, binding.Bucket,
-                    SiloObjectNamespace.ManifestKey(group.Draft.FromUtc, groupId, revisionId), manifest));
+                    SiloObjectNamespace.ManifestKey(group.Draft.FromUtc, groupId, revisionId, group.ManifestSha256!), manifest));
             }
         }
         return result;
@@ -591,21 +590,103 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             """, cancellationToken, ("$now", Now()), ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false);
     }
 
-    /// <summary>Name (or, before the commit, re-name) a member's qualified exact version and its verification time.</summary>
+    /// <summary>
+    /// Name a member's first qualified exact version, or record a fresh verification of the version it already names.
+    /// A different version replaces the locator only through <see cref="ReplaceMemberLocatorAsync"/>.
+    /// </summary>
     public async ValueTask SetMemberLocatorAsync(
         string groupId, string revisionId, int ordinal, string versionId, DateTimeOffset verifiedUtc, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var updated = await ExecuteAsync(connection, null, $"""
             UPDATE staged_members SET version_id = $version, verified_unix_ms = $verified
-            WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal
+            WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal AND (version_id IS NULL OR version_id = $version)
                 AND (SELECT state FROM staged_groups g WHERE g.group_id = $group AND g.revision_id = $revision) IN {Unfinished};
             """, cancellationToken, ("$version", versionId), ("$verified", verifiedUtc.ToUnixTimeMilliseconds()),
             ("$group", groupId), ("$revision", revisionId), ("$ordinal", ordinal)).ConfigureAwait(false);
         if (updated != 1)
         {
-            throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is no longer before its commit.");
+            throw new InvalidOperationException(
+                $"Member {ordinal} of {groupId}/{revisionId} is no longer before its commit, or already names another version.");
         }
+    }
+
+    /// <summary>
+    /// Replace a member's lost qualified version with the new one recreated from its spooled bytes (#1965 5.3, P1 and P2
+    /// recovery). One transaction re-names the member and, when a manifest was already built from the old locator,
+    /// supersedes it: that manifest's never-committed exact locator under its own digest key, or the key itself when its
+    /// write was uncertain and no version was resolved, is handed to retention as an orphan candidate, and the group returns
+    /// to <c>payloads-qualified</c>, so P2 writes a new manifest under its own digest key. The superseded version is never
+    /// overwritten or deleted here. An uncertain commit of this revision is reconciled first, so this never runs beside a
+    /// pending P3.
+    /// </summary>
+    /// <returns>The orphan candidate recorded for the superseded manifest, or <see langword="null"/> when none was built.</returns>
+    public async ValueTask<SiloOrphanCandidate?> ReplaceMemberLocatorAsync(
+        string groupId, string revisionId, int ordinal, string expectedVersionId, string versionId, DateTimeOffset verifiedUtc,
+        string? resolvedManifestVersionId, CancellationToken cancellationToken)
+    {
+        if (string.Equals(expectedVersionId, versionId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A replacement names a different version.", nameof(versionId));
+        }
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        if (await ScalarLongAsync(connection, transaction, """
+                SELECT COUNT(*) FROM journal_pending WHERE purpose_group_id = $group AND purpose_revision_id = $revision;
+                """, cancellationToken, ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false) != 0)
+        {
+            throw new InvalidOperationException(
+                $"An uncertain commit of {groupId}/{revisionId} is reconciled with its exact bytes before any locator changes.");
+        }
+        string draftJson;
+        string? sha, version;
+        long length;
+        bool putStarted;
+        using (var command = CreateCommand(connection, transaction, $"""
+            SELECT draft_json, manifest_sha256, manifest_length, manifest_version_id, manifest_put_started_unix_ms FROM staged_groups
+            WHERE group_id = $group AND revision_id = $revision AND state IN {Unfinished};
+            """, ("$group", groupId), ("$revision", revisionId)))
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is no longer before its commit.");
+            }
+            (draftJson, sha, length, version) = (reader.GetString(0), NullableString(reader, 1), NullableLong(reader, 2) ?? 0,
+                NullableString(reader, 3));
+            putStarted = !await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false);
+        }
+        var replaced = await ExecuteAsync(connection, transaction, """
+            UPDATE staged_members SET version_id = $version, verified_unix_ms = $verified
+            WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal AND version_id = $expected;
+            """, cancellationToken, ("$version", versionId), ("$verified", verifiedUtc.ToUnixTimeMilliseconds()), ("$group", groupId),
+            ("$revision", revisionId), ("$ordinal", ordinal), ("$expected", expectedVersionId)).ConfigureAwait(false);
+        if (replaced != 1)
+        {
+            throw new InvalidOperationException($"Member {ordinal} of {groupId}/{revisionId} no longer names {expectedVersionId}.");
+        }
+        SiloOrphanCandidate? orphan = null;
+        if (sha is not null)
+        {
+            var draft = System.Text.Json.JsonSerializer.Deserialize<SiloGroupDraft>(draftJson, SiloJson.Options)!;
+            var exact = version ?? resolvedManifestVersionId;
+            if (exact is not null || putStarted)
+            {
+                orphan = new(new(binding.StoreId, binding.Bucket, SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId, sha),
+                        exact ?? UnknownVersion), sha, length,
+                    exact is null ? "uncertain-write: superseded before the commit" : "superseded before the commit by a replaced payload version",
+                    groupId, revisionId);
+                await InsertOrphanAsync(connection, transaction, orphan, Now(), cancellationToken).ConfigureAwait(false);
+            }
+            await ExecuteAsync(connection, transaction, """
+                UPDATE staged_groups SET state = CASE WHEN state = 'manifest-qualified' THEN 'payloads-qualified' ELSE state END,
+                    manifest_sha256 = NULL, manifest_length = NULL, manifest_version_id = NULL, manifest_verified_unix_ms = NULL,
+                    manifest_put_started_unix_ms = NULL, updated_unix_ms = $now
+                WHERE group_id = $group AND revision_id = $revision;
+                """, cancellationToken, ("$now", Now()), ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return orphan;
     }
 
     public async ValueTask MoveAsync(string groupId, string revisionId, SiloStagedState from, SiloStagedState to, CancellationToken cancellationToken)
@@ -648,47 +729,6 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         {
             throw new InvalidOperationException($"Group revision {groupId}/{revisionId} had no spooled manifest to qualify.");
         }
-    }
-
-    /// <summary>
-    /// A payload locator changed before the commit, so the manifest that named the old one must be rebuilt. Its version,
-    /// if one was qualified, is handed to retention as an orphan candidate and remembered as superseded.
-    /// </summary>
-    public async ValueTask InvalidateManifestAsync(string groupId, string revisionId, string reason, CancellationToken cancellationToken)
-    {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
-        string draftJson;
-        string? sha, version;
-        long length;
-        using (var command = CreateCommand(connection, transaction, $"""
-            SELECT draft_json, manifest_sha256, manifest_length, manifest_version_id FROM staged_groups
-            WHERE group_id = $group AND revision_id = $revision AND state IN {Unfinished};
-            """, ("$group", groupId), ("$revision", revisionId)))
-        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-            {
-                throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is no longer before its commit.");
-            }
-            (draftJson, sha, length, version) = (reader.GetString(0), NullableString(reader, 1), NullableLong(reader, 2) ?? 0,
-                NullableString(reader, 3));
-        }
-        if (version is not null && sha is not null)
-        {
-            var draft = System.Text.Json.JsonSerializer.Deserialize<SiloGroupDraft>(draftJson, SiloJson.Options)!;
-            await InsertOrphanAsync(connection, transaction, new(new(binding.StoreId, binding.Bucket,
-                SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId), version), sha, length, reason, groupId, revisionId),
-                Now(), cancellationToken).ConfigureAwait(false);
-        }
-        await ExecuteAsync(connection, transaction, """
-            UPDATE staged_groups SET state = CASE WHEN state = 'manifest-qualified' THEN 'payloads-qualified' ELSE state END,
-                manifest_sha256 = NULL, manifest_length = NULL, manifest_version_id = NULL, manifest_verified_unix_ms = NULL,
-                superseded_manifest_version_id = COALESCE($version, superseded_manifest_version_id), updated_unix_ms = $now
-            WHERE group_id = $group AND revision_id = $revision;
-            """, cancellationToken, ("$version", version), ("$now", Now()), ("$group", groupId), ("$revision", revisionId))
-            .ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Record why the writer stopped for this group. The group stays staged and hidden; nothing is replaced.</summary>
@@ -760,7 +800,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         if (manifestVersion is not null || manifestPutStarted && manifestSha is not null)
         {
             await InsertOrphanAsync(connection, transaction, new(new(binding.StoreId, binding.Bucket,
-                    SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId), manifestVersion ?? UnknownVersion),
+                    SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId, manifestSha!), manifestVersion ?? UnknownVersion),
                 manifestSha!, manifestLength, manifestVersion is null ? "uncertain-write: " + reason : reason, groupId, revisionId),
                 now, cancellationToken).ConfigureAwait(false);
         }

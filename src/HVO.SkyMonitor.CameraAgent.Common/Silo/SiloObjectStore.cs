@@ -23,13 +23,27 @@ internal static class SiloObjectNamespace
         return string.Concat(prefix, sha256.AsSpan(0, 2), "/", sha256);
     }
 
-    /// <summary>A group revision's manifest, partitioned by the group's UTC anchor.</summary>
-    public static string ManifestKey(DateTimeOffset anchorUtc, string groupId, string revisionId)
+    /// <summary>
+    /// The namespace of one logical group revision's manifests, partitioned by the group's UTC anchor (#1965 4.3). Each
+    /// physical manifest lies directly beneath it under its own exact digest.
+    /// </summary>
+    public static string ManifestRevisionPrefix(DateTimeOffset anchorUtc, string groupId, string revisionId)
     {
         SiloText.RequireToken(groupId, nameof(groupId), 128);
         SiloText.RequireToken(revisionId, nameof(revisionId), 128);
         var utc = anchorUtc.UtcDateTime;
-        return string.Create(CultureInfo.InvariantCulture, $"m/{utc:yyyy}/{utc:MM}/{utc:dd}/{groupId}/{revisionId}.json");
+        return string.Create(CultureInfo.InvariantCulture, $"m/{utc:yyyy}/{utc:MM}/{utc:dd}/{groupId}/{revisionId}/");
+    }
+
+    /// <summary>
+    /// The immutable physical key of one exact manifest of a logical group revision. The key is fixed by the manifest's
+    /// own SHA-256, so a manifest rebuilt before P3 with different bytes never contends for the key of one it supersedes,
+    /// and a retry of the same bytes always targets the same key.
+    /// </summary>
+    public static string ManifestKey(DateTimeOffset anchorUtc, string groupId, string revisionId, string manifestSha256)
+    {
+        SiloHash.Require(manifestSha256, nameof(manifestSha256));
+        return string.Concat(ManifestRevisionPrefix(anchorUtc, groupId, revisionId), manifestSha256, ".json");
     }
 
     public static string SegmentKey(SiloJournalPosition position) =>

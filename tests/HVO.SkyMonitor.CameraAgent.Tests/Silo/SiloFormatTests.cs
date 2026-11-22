@@ -55,7 +55,7 @@ public sealed class SiloFormatTests
         var archive = new SiloExactLocator("archive-silo", "archive-bucket", locator.Key, "a-0001");
         var identity = new SiloObjectIdentity(SiloIdentityKind.Member, "raw-0103", "1", Sha, 7);
         var qualification = new SiloQualification(At, SiloFormats.ExactGetSha256, true);
-        var manifest = new SiloExactLocator("local-silo", "instance-bucket", "m/2026/11/22/capture-0103/r1.json", "v-0002");
+        var manifest = new SiloExactLocator("local-silo", "instance-bucket", SiloObjectNamespace.ManifestKey(At, "capture-0103", "r1", Sha), "v-0002");
         return new(SiloFormats.JournalSegment, Binding.InstanceId, Binding.BindingId, 1, 2, At,
             [
                 new SiloPublishRecord("capture", "capture-0103", "r1", new(manifest, 512, Sha, qualification),
@@ -174,7 +174,7 @@ public sealed class SiloFormatTests
         var node = JsonNode.Parse(SiloJson.Serialize(GoldenManifest() with { GroupId = "capture-0777", RevisionId = "r1" }))!;
         node["format"] = "hvo.cameraagent.silo.group-manifest/2";
         var bytes = Encoding.UTF8.GetBytes(node.ToJsonString());
-        var key = SiloObjectNamespace.ManifestKey(At, "capture-0777", "r1");
+        var key = SiloObjectNamespace.ManifestKey(At, "capture-0777", "r1", SiloHash.Sha256(bytes));
         var version = silo.Local.Plant(key, bytes);
         await silo.Journal.AppendAsync([new SiloPublishRecord(SiloJson.CenteredViewGroupKind, "capture-0777", "r1",
             new(silo.Local.Locator(key, version), bytes.Length, SiloHash.Sha256(bytes), new(At, SiloFormats.ExactGetSha256, true)), [])],
