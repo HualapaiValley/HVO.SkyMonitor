@@ -1,9 +1,12 @@
+using HVO.SkyMonitor.CameraAgent.Common.Capture;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Configuration;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.IntegrationTests.Infrastructure;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
 namespace HVO.SkyMonitor.CameraAgent.IntegrationTests;
@@ -39,12 +42,21 @@ public sealed partial class RunManifestEndpointTests
         return consumer;
     }
 
-    private static Task InitializeRetainedCaptureFixtureAsync(CameraAgentIntegrationFixture fixture)
-        => fixture.InitializeAsync(static services =>
+    private static Task InitializeRetainedCaptureFixtureAsync(CameraAgentIntegrationFixture fixture, bool nondurableCapture = false)
+        => fixture.InitializeAsync(services =>
         {
             // Keep real acquisition running and complete only the two standard lane claims the test owns.
             services.Remove(services.Single(static descriptor => descriptor.ServiceType == typeof(IHostedService)
                 && descriptor.ImplementationType == typeof(AfterApplicationStartedService<CaptureDistributionService>)));
+            // Nothing consumes the shipped ephemeral queue now. The probe forwards every capture to it unchanged.
+            services.AddSingleton(static provider => new CaptureQueueProbe(provider.GetRequiredService<CaptureDistributionService>()));
+            services.Replace(ServiceDescriptor.Singleton<ICaptureDistributor>(static provider => provider.GetRequiredService<CaptureQueueProbe>()));
+            if (!nondurableCapture) return;
+            var capture = services.Single(static descriptor => descriptor.ServiceType == typeof(IHostedService)
+                && descriptor.ImplementationType == typeof(CameraCaptureService));
+            services[services.IndexOf(capture)] = ServiceDescriptor.Singleton<IHostedService>(static provider =>
+                ActivatorUtilities.CreateInstance<CameraCaptureService>(provider,
+                    new NondurableCaptureIngress(provider.GetRequiredService<IRawCaptureIngress>())));
         });
 
     private static async Task<(RetainedManifestCapture Reference, RetainedManifestCapture Consumer)>
@@ -54,6 +66,7 @@ public sealed partial class RunManifestEndpointTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var token = deadline.Token;
         var operations = services.GetRequiredService<IProcessingGraphOperations>();
+        var queue = services.GetRequiredService<CaptureQueueProbe>();
         var stage = "waiting for capture configuration";
         try
         {
@@ -81,8 +94,18 @@ public sealed partial class RunManifestEndpointTests
                     break;
                 }
 
+                ThrowIfDurablePathLost(queue.Snapshot(), stage);
                 await Task.Delay(50, token).ConfigureAwait(false);
             }
+
+            // Ten pending durable executions are ordinary work, not a lost durable path.
+            var pending = queue.Snapshot();
+            Assert.IsFalse(pending.DurablePathLost, pending.ToString());
+            Assert.IsGreaterThanOrEqualTo(2, pending.DurableCaptures, pending.ToString());
+            Assert.AreEqual(
+                $"The durable capture path is intact: {pending.DurableCaptures} captures were committed durably, " +
+                "0 nondurable captures are queued and no capture writer is blocked.",
+                pending.ToString());
 
             stage = "reading the retained preview evidence by execution ID";
             var retainedConsumer = await ReadRetainedCaptureAsync(operations, consumer, token).ConfigureAwait(false);
@@ -99,6 +122,7 @@ public sealed partial class RunManifestEndpointTests
                 CaptureLaneLease? lease;
                 while ((lease = await store.ClaimAsync(lane, "retained-manifest-test", configuration, token).ConfigureAwait(false)) is null)
                 {
+                    ThrowIfDurablePathLost(queue.Snapshot(), stage);
                     await Task.Delay(50, token).ConfigureAwait(false);
                 }
 
@@ -122,8 +146,16 @@ public sealed partial class RunManifestEndpointTests
         }
         catch (OperationCanceledException exception) when (deadline.IsCancellationRequested)
         {
-            throw new TimeoutException($"The retained manifest fixture timed out while {stage}.", exception);
+            var path = queue.Snapshot();
+            ThrowIfDurablePathLost(path, stage, exception);
+            throw new TimeoutException($"The retained manifest fixture timed out while {stage}. {path}", exception);
         }
+    }
+
+    private static void ThrowIfDurablePathLost(CaptureQueueSnapshot path, string stage, Exception? innerException = null)
+    {
+        if (path.DurablePathLost)
+            throw new InvalidOperationException($"The retained manifest fixture lost its durable capture path while {stage}. {path}", innerException);
     }
 
     private static async Task<RetainedManifestCapture> ReadRetainedCaptureAsync(
