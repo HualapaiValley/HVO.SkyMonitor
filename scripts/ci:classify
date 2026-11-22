@@ -158,25 +158,50 @@ is_fast_doc_path() {
 # Query committed project files directly; an unavailable tree or failed search is
 # uncertainty, not evidence that the document has no consumers.
 fast_doc_link_state() {
-  local matches status line
-  # Any unapproved document reference or dynamic input in MSBuild is uncertain.
-  # The two existing document inputs below are under excluded directories.
+  local matches status line attr_re value file remaining
+  # References to excluded contracts/validation are known and cannot select
+  # this path; unknown document references and dynamic includes fail closed.
   if matches="$(git grep -i -E 'docs[/\\]|\.(md|markdown|txt)([^[:alnum:]]|$)|Include[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']*\$\(' "$head_sha" -- ':(glob)**/*.csproj' ':(glob)**/*.props' ':(glob)**/*.targets')"; then
     while IFS= read -r line; do
       case "$line" in
         *'$(MSBuildThisFileDirectory)TestSettings/ConnectionPoolClearContract.cs'*) continue ;;
+        *THIRD-PARTY-NOTICES.md* | *Fonts/DejaVu-LICENSE.txt*)
+          case "$line" in *docs/* | *docs\\* | *'*'* | *'$('* ) return 0 ;; esac
+          continue ;;
         *docs/contracts/* | *docs/validation/* | *docs\\validation\\*)
           case "$line" in *docs/contracts/*'..'* | *docs/validation/*'..'* | *docs\\validation\\*'..'* | *'*'* | *'$('* ) return 0 ;; esac
           continue ;;
         *) return 0 ;;
       esac
     done <<< "$matches"
-    return 1
   else
     status=$?
-    [[ "$status" -eq 1 ]] && return 1
-    return 2
+    [[ "$status" -eq 1 ]] || return 2
   fi
+  # A wildcard without the word docs can nevertheless include it. Only the
+  # established fixture and source-local globs are proven confined here.
+  if matches="$(git grep -i -E '(Include|Update|Remove)[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']*\*' "$head_sha" -- ':(glob)**/*.csproj' ':(glob)**/*.props' ':(glob)**/*.targets')"; then
+    attr_re="(Include|Update|Remove)[[:space:]]*=[[:space:]]*[\"']([^\"']*\*[^\"']*)[\"']"
+    while IFS= read -r line; do
+      [[ "$line" =~ $attr_re ]] || return 0
+      value="${BASH_REMATCH[2]//\\//}"
+      remaining="${line#*"${BASH_REMATCH[0]}"}"
+      [[ ! "$remaining" =~ $attr_re ]] || return 0
+      file="${line#*:}"; file="${file%%:*}"
+      case "$value" in *'$('* | *';'* | *'/../'* | *'/..' ) return 0 ;; esac
+      case "$file:$value" in
+        tests/*/*.csproj:../fixtures/* | tests/*/*.csproj:Fixtures/* | \
+        src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj:SplitHost/*.jq | \
+        src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj:Components/Account/*.cs | \
+        src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj:OrbitalPlanning/TimeData/*) continue ;;
+        *) return 0 ;;
+      esac
+    done <<< "$matches"
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] || return 2
+  fi
+  return 1
 }
 
 is_deployment_path() {

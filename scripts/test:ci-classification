@@ -272,7 +272,7 @@ printf 'text\n' > "$fast_root/docs/executable.md"; chmod 755 "$fast_root/docs/ex
 git -C "$fast_root" add docs/executable.md && git -C "$fast_root" commit -qm executable
 fast_reason 'non-regular or missing path in exact diff' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # Link forms may appear in project files or imported targets, on the base tree.
-for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
+for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="../../**/*" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/docs/runbooks"
   printf 'text\n' > "$fast_root/docs/runbooks/example.md"
