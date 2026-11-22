@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.NightlyProducts;
 using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -15,7 +16,8 @@ namespace HVO.SkyMonitor.CameraAgent.AcceptanceTests;
 /// <summary>
 /// Induces each failure #1916 must distinguish on the real Calendar-to-day path, with the same synthetic product,
 /// sign-in and assertions as the 1440 × 900 partial acceptance row, and verifies the retained evidence names it
-/// without any credential, cookie, antiforgery token, circuit token or free-text browser message.
+/// without any credential, cookie, antiforgery token, circuit token or free-text browser message. The cases share one
+/// host and published product; each signs in through its own browser context and sets its own nightly fault.
 /// </summary>
 [TestClass]
 [TestCategory("Integration")]
@@ -30,8 +32,62 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     private const string ScriptErrorSentinel = "PAGE_ERROR_SENTINEL_1916";
     private const string ConsoleSentinel = "CONSOLE_SENTINEL_1916";
     private static readonly string[] ExpectedPageErrorSignals = ["dom:nightly-products-unavailable", "script-error:TypeError"];
+    private static readonly InducedNightlyDay NightlyDay = new();
+    private static IPlaywright? playwright;
+    private static IBrowser? browser;
+    private static CameraAgentKestrelFixture? host;
+    private static ServerLogEvidence? serverLog;
+    private static string previewPath = null!;
 
     public TestContext TestContext { get; set; } = null!;
+
+    [ClassInitialize]
+    public static async Task InitializeAsync(TestContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        try
+        {
+            playwright = await Playwright.CreateAsync();
+            // Browser absence is a failure here, as in the acceptance rows this evidence serves.
+            browser = await playwright.Chromium.LaunchAsync(new() { Headless = true });
+            serverLog = new ServerLogEvidence();
+            // Each test host's reload-on-change configuration watchers outlive it, holding inotify instances until the
+            // process exits, and this assembly's Integration selection runs close to the 128-instance per-user limit.
+            // One shared host that never reloads its settings keeps these cases within that budget. Its settings file
+            // and every other path stay in the fixture's own generated root.
+            host = await DailySummaryCalendarScenario.CreateHostAsync(serverLog, services =>
+            {
+                services.AddScoped<CameraAgentNightlyProductUiService>();
+                services.Replace(ServiceDescriptor.Scoped<ICameraAgentNightlyProductUiService>(provider =>
+                    NightlyDay.Wrap(provider.GetRequiredService<CameraAgentNightlyProductUiService>())));
+            }, reloadConfigurationOnChange: false);
+            // The opt-out changes only reloading: the host still reads the fixture's own operator settings file.
+            var settingsFile = host.Services.GetRequiredService<OperatorSettingsFile>().FilePath;
+            Assert.AreEqual(host.SettingsFilePath, settingsFile);
+            StringAssert.StartsWith(settingsFile, Path.GetFullPath(host.Root) + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+            var (product, _) = await DailySummaryCalendarScenario.PublishAsync(host, complete: false);
+            previewPath = NightlyProductLinks.Preview(product.ProductId);
+        }
+        catch
+        {
+            await CleanupAsync();
+            throw;
+        }
+    }
+
+    [ClassCleanup]
+    public static async Task CleanupAsync()
+    {
+        if (host is not null) await host.DisposeAsync();
+        if (browser is not null) await browser.DisposeAsync();
+        playwright?.Dispose();
+        host = null;
+        browser = null;
+        playwright = null;
+    }
+
+    [TestCleanup]
+    public void ClearNightlyFault() => NightlyDay.Clear();
 
     [TestMethod]
     public async Task SwallowedDayLinkClickIsRetainedAsLostNavigation()
@@ -87,7 +143,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     [TestMethod]
     public async Task NightlyFailureAndScriptErrorAreRetainedAsPageErrors()
     {
-        await using var run = await InducedRun.StartAsync(TestContext, InducedNightlyDay.Unavailable());
+        NightlyDay.FailWithUnavailable();
+        await using var run = await InducedRun.StartAsync(TestContext);
         await run.Page.EvaluateAsync($$"""
             () => {
                 console.error('{{ConsoleSentinel}} password=console-secret');
@@ -124,7 +181,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     [TestMethod]
     public async Task LateDayRenderIsRetainedAsTestSynchronization()
     {
-        await using var run = await InducedRun.StartAsync(TestContext, InducedNightlyDay.Delayed(TimeSpan.FromSeconds(4)));
+        NightlyDay.Delay(TimeSpan.FromSeconds(4));
+        await using var run = await InducedRun.StartAsync(TestContext);
 
         var report = await run.FailAsync(TimeSpan.FromSeconds(20), timeout: 1_000);
 
@@ -135,7 +193,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         await run.AssertRetainedEvidenceAsync(report);
     }
 
-    /// <summary>One induced Calendar run: host, published partial product, signed-in page and the secrets to exclude.</summary>
+    /// <summary>One induced Calendar run: its own browser context and signed-in page, and the secrets to exclude.</summary>
     private sealed class InducedRun : IAsyncDisposable
     {
         private readonly ConcurrentBag<string> circuitTokens = [];
@@ -154,31 +212,14 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         private string? Antiforgery { get; set; }
 
         [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
-            Justification = "Every created resource is transferred to the run, which disposes it in reverse order.")]
-        internal static async Task<InducedRun> StartAsync(
-            TestContext testContext, InducedNightlyDay? nightlyDay = null, bool dropCircuit = false)
+            Justification = "The browser context is transferred to the run, which disposes it.")]
+        internal static async Task<InducedRun> StartAsync(TestContext testContext, bool dropCircuit = false)
         {
-            var run = new InducedRun(testContext);
+            Assert.IsNotNull(browser, "the class host and browser were initialized");
+            Assert.IsNotNull(host);
+            var run = new InducedRun(testContext) { PreviewPath = previewPath };
             try
             {
-                var playwright = await Playwright.CreateAsync();
-                run.owned.Add(new SyncDisposable(playwright));
-                // Browser absence is a failure here, as in the acceptance rows this evidence serves.
-                var browser = await playwright.Chromium.LaunchAsync(new() { Headless = true });
-                run.owned.Add(browser);
-                var serverLog = new ServerLogEvidence();
-                var host = await DailySummaryCalendarScenario.CreateHostAsync(serverLog, services =>
-                {
-                    if (nightlyDay is not null)
-                    {
-                        services.AddScoped<CameraAgentNightlyProductUiService>();
-                        services.Replace(ServiceDescriptor.Scoped<ICameraAgentNightlyProductUiService>(provider =>
-                            nightlyDay.Wrap(provider.GetRequiredService<CameraAgentNightlyProductUiService>())));
-                    }
-                });
-                run.owned.Add(host);
-                var (product, _) = await DailySummaryCalendarScenario.PublishAsync(host, complete: false);
-                run.PreviewPath = NightlyProductLinks.Preview(product.ProductId);
                 var context = await browser.NewContextAsync(new()
                 {
                     BaseURL = host.BaseAddress.ToString(),
@@ -308,44 +349,43 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 await owned[index].DisposeAsync();
             }
         }
-
-        private sealed class SyncDisposable(IDisposable inner) : IAsyncDisposable
-        {
-            public ValueTask DisposeAsync()
-            {
-                inner.Dispose();
-                return ValueTask.CompletedTask;
-            }
-        }
     }
 }
 
-/// <summary>Induces a nightly day-read fault for the selected day while every other nightly read stays real.</summary>
+/// <summary>
+/// Induces a nightly day-read fault for the selected day while every other nightly read stays real. The fault is read
+/// at each call, so one host serves every case; the test class clears it after each case.
+/// </summary>
 internal sealed class InducedNightlyDay
 {
-    private readonly TimeSpan? delay;
+    private Fault current = Fault.None;
 
-    private InducedNightlyDay(TimeSpan? delay) => this.delay = delay;
+    internal void FailWithUnavailable() => Volatile.Write(ref current, new Fault(true, null));
 
-    internal static InducedNightlyDay Unavailable() => new(null);
+    internal void Delay(TimeSpan delay) => Volatile.Write(ref current, new Fault(false, delay));
 
-    internal static InducedNightlyDay Delayed(TimeSpan delay) => new(delay);
+    internal void Clear() => Volatile.Write(ref current, Fault.None);
 
-    internal ICameraAgentNightlyProductUiService Wrap(ICameraAgentNightlyProductUiService inner) => new Service(inner, delay);
+    internal ICameraAgentNightlyProductUiService Wrap(ICameraAgentNightlyProductUiService inner) => new Service(inner, this);
 
-    private sealed class Service(ICameraAgentNightlyProductUiService inner, TimeSpan? delay) : ICameraAgentNightlyProductUiService
+    private sealed record Fault(bool Unavailable, TimeSpan? Delay)
+    {
+        internal static readonly Fault None = new(false, null);
+    }
+
+    private sealed class Service(ICameraAgentNightlyProductUiService inner, InducedNightlyDay owner) : ICameraAgentNightlyProductUiService
     {
         public async ValueTask<OperatorUiResult<CameraAgentNightlyDayView>> GetDayAsync(DateOnly observingDate, CancellationToken cancellationToken)
         {
-            if (observingDate != DailySummaryCalendarScenario.SelectedDay)
-            {
-                return await inner.GetDayAsync(observingDate, cancellationToken).ConfigureAwait(false);
-            }
-            if (delay is not { } wait)
+            var fault = Volatile.Read(ref owner.current);
+            if (observingDate == DailySummaryCalendarScenario.SelectedDay && fault.Unavailable)
             {
                 return OperatorUiResult<CameraAgentNightlyDayView>.Failure(OperatorUiResultKind.Unavailable, "Induced nightly product failure.");
             }
-            await Task.Delay(wait, cancellationToken).ConfigureAwait(false);
+            if (observingDate == DailySummaryCalendarScenario.SelectedDay && fault.Delay is { } wait)
+            {
+                await Task.Delay(wait, cancellationToken).ConfigureAwait(false);
+            }
             return await inner.GetDayAsync(observingDate, cancellationToken).ConfigureAwait(false);
         }
 

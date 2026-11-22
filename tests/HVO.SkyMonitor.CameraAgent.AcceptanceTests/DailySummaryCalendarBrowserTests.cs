@@ -101,14 +101,14 @@ internal static class DailySummaryCalendarScenario
     }
 
     internal static Task<CameraAgentKestrelFixture> CreateHostAsync(
-        ServerLogEvidence serverLog, Action<IServiceCollection>? configureServices = null) =>
+        ServerLogEvidence serverLog, Action<IServiceCollection>? configureServices = null, bool reloadConfigurationOnChange = true) =>
         CameraAgentKestrelFixture.CreateAsync(services =>
         {
             services.Replace(ServiceDescriptor.Singleton<IObservingDayCalendarProvider>(
                 new FixedObservingDayCalendarProvider(NightlyProductFixture.Calendar)));
             services.AddSingleton<ILoggerProvider>(serverLog);
             configureServices?.Invoke(services);
-        }, scratchRoot: Path.GetTempPath());
+        }, scratchRoot: Path.GetTempPath(), reloadConfigurationOnChange: reloadConfigurationOnChange);
 
     internal static async Task<(NightlyProductSummary Product, DailySummaryV1 Facts)> PublishAsync(
         CameraAgentKestrelFixture host, bool complete)

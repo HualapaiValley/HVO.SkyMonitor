@@ -43,6 +43,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private readonly Dictionary<string, string?> _overrides;
     private readonly Action<IServiceCollection>? _configureServices;
     private bool _preserveRoot;
+    private bool _reloadConfigurationOnChange = true;
     private BrowserWebApplicationFactory? _factory;
     private HttpClient? _lifetimeClient;
     private int _restartPort;
@@ -89,7 +90,8 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
         string? scratchRoot = null,
         bool preserveRoot = false,
         string? productionCatalogRoot = null,
-        IReadOnlyDictionary<string, string?>? settingsOverrides = null)
+        IReadOnlyDictionary<string, string?>? settingsOverrides = null,
+        bool reloadConfigurationOnChange = true)
     {
         var temporaryRoot = useCalibrationLibrary && Directory.Exists("/dev/shm")
             ? "/dev/shm"
@@ -202,7 +204,11 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
             overrides[EnvironmentalSettingsKey] = environmentalSettingsPath;
         }
 
-        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices) { _preserveRoot = preserveRoot };
+        var fixture = new CameraAgentKestrelFixture(root, catalog, overrides, configureServices)
+        {
+            _preserveRoot = preserveRoot,
+            _reloadConfigurationOnChange = reloadConfigurationOnChange
+        };
         try
         {
             if (prepareRoot is not null) await prepareRoot(root).ConfigureAwait(false);
@@ -246,7 +252,7 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
 
     private async Task StartHostAsync()
     {
-        var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices);
+        var factory = new BrowserWebApplicationFactory(_root, _overrides, _configureServices, _reloadConfigurationOnChange);
         factory.UseKestrel(options =>
         {
             options.Listen(IPAddress.Loopback, _restartPort);
@@ -475,12 +481,21 @@ internal sealed class CameraAgentKestrelFixture : IAsyncDisposable
     private sealed class BrowserWebApplicationFactory(
         string root,
         IReadOnlyDictionary<string, string?> overrides,
-        Action<IServiceCollection>? configureServices) : WebApplicationFactory<Program>
+        Action<IServiceCollection>? configureServices,
+        bool reloadConfigurationOnChange) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
             builder.UseSetting(DeploymentLocalSettings.PathVariable, Path.Combine(root, DeploymentLocalSettings.FileName));
+            if (!reloadConfigurationOnChange)
+            {
+                // The default app configuration's reload-on-change watchers are not released when a test host is
+                // disposed; each keeps an inotify instance until the test process exits. A host that never reloads
+                // its settings opts out here. Host settings are read before Program builds its configuration, so
+                // this arrives as a host setting like the environment. Every path stays in the fixture root.
+                builder.UseSetting("hostBuilder:reloadConfigOnChange", "false");
+            }
             // Program captures local Identity settings before WebApplicationFactory app overrides are applied.
             foreach (var setting in overrides.Where(static setting =>
                          setting.Key.StartsWith("LocalIdentity:", StringComparison.Ordinal) ||
