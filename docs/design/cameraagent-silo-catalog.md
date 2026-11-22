@@ -41,15 +41,22 @@ An artifact revision is bound to its length, its SHA-256 and the digest of its p
 retention class, media type, content and output identity, producer and recipe (4.2). Changed facts under the same
 revision are a conflict at staging, in the publish record (`factsSha256`) and in the index.
 
-A centered view manifest carries its stream, reference capture and preview. Validation derives its exact reopen set
-from the view itself:
+A centered view manifest embeds its typed base and revision documents, and those documents are the view. Staging and
+every manifest readback derive the projection from them again: stream, reference capture, order, preview and layer
+bindings. They also derive the exact reopen set:
 
 - the preview is required;
+- a stack's closed window is required;
+- the science is required when it is displayed, which is the producer's fact;
 - each evidence binding is required when any layer using it is `Ready` or `Partial`;
 - `Ready`, `Partial` and `AssessedEmpty` layers must bind their evidence, observation time and order (F17).
 
-`SiloCenteredViews.Section(CenteredView, previousRevisionId)` builds the section from the typed view. It uses the
-store's own document serialization and stream identity, and recomputes the revision ID rather than trusting it.
+A manifest whose projection or reopen entries disagree with its embedded documents is refused. Nothing the view needs
+can therefore be dropped while its embedded revision ID stays the same.
+
+`SiloCenteredViews.Section(CenteredView, previousRevisionId)` builds the section from the typed view. It accepts only a
+view the store itself writes under that predecessor, uses the store's own document serialization and stream identity,
+and recomputes the base and revision IDs rather than trusting them.
 
 ## Object namespace and headers
 

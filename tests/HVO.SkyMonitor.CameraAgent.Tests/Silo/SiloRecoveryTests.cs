@@ -192,7 +192,8 @@ public sealed class SiloRecoveryTests
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 2)).ConfigureAwait(false);
         var capture1 = silo.PublishRecord(SiloDrafts.CaptureGroup(1));
         var raw1 = SiloHarness.Identity(capture1, SiloDrafts.Raw(1));
-        // The view's reopen set needs only its preview; the expired raw is a compute input.
+        // The view's typed reopen set is its own base's preview, closed window and displayed science, all published here as
+        // members; the expired raw is only a compute input, so the view still reopens.
         await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-b", "rev-1", null, 1, [SiloDrafts.Layer("clouds", "Waiting", null, 0)],
             [new(raw1.Id, raw1.Revision, raw1.Sha256, SiloDependencyKind.Compute, true)], publishPreview: true)).ConfigureAwait(false);
         var local = silo.MemberLocator(capture1.GroupId, raw1.Id);
