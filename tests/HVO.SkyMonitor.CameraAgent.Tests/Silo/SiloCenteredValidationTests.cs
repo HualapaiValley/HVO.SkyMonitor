@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Silo;
+using HVO.SkyMonitor.Processing;
 using HVO.SkyMonitor.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -13,15 +14,17 @@ namespace HVO.SkyMonitor.CameraAgent.Tests.Silo;
 
 /// <summary>
 /// The embedded typed view is the durable view revision (#1965 4.4, 6.1, 6.3). At staging and at every manifest readback
-/// its projection, preview and reopen entries must be exactly what its documents derive, so no Ready layer, preview or
-/// stack closed window can be dropped while the embedded revision ID stays the same.
+/// its outer group and revision IDs must be the store-issued base and revision IDs, its layers must be in the order the
+/// store writes, its projection and preview must be what its documents derive, and its reopen rows must be exactly their
+/// reopen set, each artifact revision once. No Ready layer, preview or stack closed window can be dropped, aliased or
+/// contradicted while the embedded revision ID stays the same.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
 public sealed class SiloCenteredValidationTests
 {
     [TestMethod]
-    public async Task AStoreWrittenStackRevisionPublishesRebuildsAndReopensExactlyAndNeedsItsClosedWindow()
+    public async Task AStoreWrittenStackRevisionPublishesRebuildsAndReopensExactlyByItsStoreIssuedIdsOnly()
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("silo-centered-store");
         try
@@ -39,38 +42,51 @@ public sealed class SiloCenteredValidationTests
             var views = new SqliteCenteredViews(store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
             var stack = SiloTypedViews.Stack("store-stack");
             var stars = SiloTypedViews.Evidence("store-stars");
-            var first = await views.RegisterBaseAsync(stack.Definition,
-                [new(new("clouds", CenteredViewLayerScope.Stack, null), 0, null, null, CenteredViewReadiness.Waiting, null, null)],
-                CancellationToken.None).ConfigureAwait(false);
+            CenteredViewLayer[] reversed = [Waiting("satellites"), Waiting("clouds")];
+            var first = await views.RegisterBaseAsync(stack.Definition, reversed, CancellationToken.None).ConfigureAwait(false);
             var second = (await views.PublishLayerAsync(first.Base.BaseId,
                 new(new("stars", CenteredViewLayerScope.Stack, null), 3, stars.Artifact, SiloTypedViews.Registered, CenteredViewReadiness.Ready, null,
                     SiloTypedViews.Drawable("stars", stars.Artifact)), CancellationToken.None).ConfigureAwait(false))!;
             first.Base.BaseId.Should().Be(SqliteCenteredViews.BaseIdentity(stack.Definition), "the Silo derivation is the store's own");
+            first.Revision.Layers.Select(static layer => layer.Key.Kind).Should().Equal(["clouds", "satellites"], "the store writes one layer order");
+            first.Revision.RevisionId.Should().Be(SiloTypedViews.View(stack.Definition, null, 1, reversed).Revision.RevisionId)
+                .And.NotBe(SqliteCenteredViews.RevisionIdentity(first.Base.BaseId, null, reversed), "the store never issues an unsorted identity");
             using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
             var (baseId, initial, enriched) = (first.Base.BaseId, first.Revision.RevisionId, second.Revision.RevisionId);
-            await silo.PublishAsync(SiloTypedViews.Draft(baseId, initial, null, first,
-                [.. stack.Products.Select(product => product.Member(silo.Payloads))], [], 1)).ConfigureAwait(false);
-            await silo.PublishAsync(SiloTypedViews.Draft(baseId, enriched, initial, second, [stars.Member(silo.Payloads)], [], 2))
-                .ConfigureAwait(false);
+            var initialDraft = SiloTypedViews.Draft(first, null, [.. stack.Products.Select(product => product.Member(silo.Payloads))], [], 1);
+            var enrichedDraft = SiloTypedViews.Draft(second, initial, [stars.Member(silo.Payloads)], [], 2);
+            (initialDraft.GroupId, initialDraft.RevisionId, enrichedDraft.RevisionId).Should().Be((baseId, initial, enriched));
+            foreach (var alias in new[] { enrichedDraft with { GroupId = "base-a" }, enrichedDraft with { RevisionId = "rev-2" } })
+            {
+                var stage = () => silo.Publisher.StageAsync(alias, CancellationToken.None).AsTask();
+                await stage.Should().ThrowAsync<ArgumentException>("a view is published only under its store-issued IDs").ConfigureAwait(false);
+            }
+            await silo.PublishAsync(initialDraft).ConfigureAwait(false);
+            await silo.PublishAsync(enrichedDraft).ConfigureAwait(false);
             var streamId = SqliteCenteredViews.StreamIdentity(stack.Definition.Stream);
             var reference = stack.Definition.Reference.Capture.CaptureId.ToString("D");
-            Task<SiloReopenResult> ReopenAsync() => silo.Catalog.ReopenViewAsync(streamId, reference, baseId, enriched, CancellationToken.None).AsTask();
+            Task<SiloReopenResult> ReopenAsync(string group, string revision) =>
+                silo.Catalog.ReopenViewAsync(streamId, reference, group, revision, CancellationToken.None).AsTask();
 
-            var intact = await ReopenAsync().ConfigureAwait(false);
+            var intact = await ReopenAsync(baseId, enriched).ConfigureAwait(false);
             intact.Reopenable.Should().BeTrue();
             intact.Items.Where(static item => item.Required && item.Role.Kind == SiloIdentityKind.Member).Select(static item => item.Role.Id)
                 .Should().BeEquivalentTo([.. stack.Products.Select(static product => product.ArtifactId), stars.ArtifactId],
                     "the preview, displayed science, closed window and Ready evidence are the exact reopen set");
+            foreach (var (group, revision) in new[] { ("base-a", enriched), (baseId, "rev-2") })
+            {
+                (await ReopenAsync(group, revision).ConfigureAwait(false)).Found.Should().BeFalse("an alias names no published view");
+            }
             var layers = await silo.Index.ReadLayersAsync(baseId, enriched, CancellationToken.None).ConfigureAwait(false);
             await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
             (await silo.Index.ReadPublicationAsync(baseId, enriched, CancellationToken.None).ConfigureAwait(false))!.State
                 .Should().Be("visible", "the store's own documents conform when the manifest is read back");
             (await silo.Index.ReadLayersAsync(baseId, enriched, CancellationToken.None).ConfigureAwait(false)).Should().Equal(layers);
-            (await ReopenAsync().ConfigureAwait(false)).Reopenable.Should().BeTrue();
+            (await ReopenAsync(baseId, enriched).ConfigureAwait(false)).Reopenable.Should().BeTrue();
 
             silo.Local.Delete(silo.MemberLocator(baseId, stack.ClosedWindow.ArtifactId, initial));
             await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None, includeAvailable: true).ConfigureAwait(false);
-            var blocked = await ReopenAsync().ConfigureAwait(false);
+            var blocked = await ReopenAsync(baseId, enriched).ConfigureAwait(false);
             blocked.Reopenable.Should().BeFalse();
             blocked.Blocking.Should().ContainSingle().Which.Role.Id.Should().Be(stack.ClosedWindow.ArtifactId, "a stack's closed window is mandatory");
         }
@@ -90,6 +106,12 @@ public sealed class SiloCenteredValidationTests
     [DataRow("closed-window-optional")]
     [DataRow("embedded-closed-window")]
     [DataRow("science-dependency")]
+    [DataRow("alias-group")]
+    [DataRow("alias-revision")]
+    [DataRow("unsorted-layers")]
+    [DataRow("member-dependency-alias")]
+    [DataRow("member-dependency-duplicate")]
+    [DataRow("extra-reopen-dependency")]
     public async Task AViewThatDisagreesWithItsTypedDocumentsIsRefusedAtStagingAndClosedOnReadback(string forgery)
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -97,16 +119,16 @@ public sealed class SiloCenteredValidationTests
         var stars = SiloTypedViews.Evidence("forged-stars");
         var anchor = SiloHarness.Start.AddMinutes(10);
         await silo.PublishAsync(new SiloGroupDraft("product", "products-forged", "r1", anchor, anchor, anchor.AddSeconds(1),
-            [.. stack.Products.Select(product => product.Member(silo.Payloads)), stars.Member(silo.Payloads)], [], new SiloManifestProvenance([]),
-            CameraId: "camera-1")).ConfigureAwait(false);
+            [stack.Science.Member(silo.Payloads), stack.ClosedWindow.Member(silo.Payloads), stars.Member(silo.Payloads)], [],
+            new SiloManifestProvenance([]), CameraId: "camera-1")).ConfigureAwait(false);
         var view = SiloTypedViews.View(stack.Definition, null, 1,
         [
-            new(new("clouds", CenteredViewLayerScope.Stack, null), 0, null, null, CenteredViewReadiness.Waiting, null, null),
+            Waiting("clouds"),
             new(new("stars", CenteredViewLayerScope.Stack, null), 3, stars.Artifact, SiloHarness.Start.AddMinutes(11), CenteredViewReadiness.Ready,
                 null, SiloTypedViews.Drawable("stars", stars.Artifact))
         ]);
-        var (baseId, revisionId) = (view.Base.BaseId, view.Revision.RevisionId);
-        var draft = Forge(SiloTypedViews.Draft(baseId, revisionId, null, view, [], [], 1), forgery, stack, stars);
+        // The preview is published in the view's own group; everything else it reopens from is a dependency.
+        var draft = Forge(SiloTypedViews.Draft(view, null, [stack.Preview.Member(silo.Payloads)], [], 1), forgery, view, stack, stars);
 
         if (forgery != "none")
         {
@@ -114,24 +136,51 @@ public sealed class SiloCenteredValidationTests
             await stage.Should().ThrowAsync<ArgumentException>("staging validates the manifest it will publish").ConfigureAwait(false);
         }
         // Readback: the same manifest, committed without staging, as a damaged writer or a forged object would leave it.
-        var bytes = SiloJson.Serialize(SiloPublisher.BuildManifest(draft, silo.Binding, 1, []));
-        var sha = SiloHash.Sha256(bytes);
-        var key = SiloObjectNamespace.ManifestKey(draft.FromUtc, baseId, revisionId, sha);
-        var version = silo.Local.Plant(key, bytes);
-        await silo.AppendAsync(new SiloPublishRecord(SiloJson.CenteredViewGroupKind, baseId, revisionId,
-            new(silo.Local.Locator(key, version), bytes.Length, sha, new(silo.Clock.GetUtcNow(), SiloFormats.ExactGetSha256, true)), []))
-            .ConfigureAwait(false);
+        await PlantAsync(silo, draft).ConfigureAwait(false);
 
-        await AssertReadbackAsync(silo, forgery, baseId, revisionId).ConfigureAwait(false);
+        await AssertReadbackAsync(silo, forgery, draft).ConfigureAwait(false);
         await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
-        await AssertReadbackAsync(silo, forgery, baseId, revisionId).ConfigureAwait(false);
+        await AssertReadbackAsync(silo, forgery, draft).ConfigureAwait(false);
     }
 
-    private static async Task AssertReadbackAsync(SiloHarness silo, string forgery, string baseId, string revisionId)
+    private static CenteredViewLayer Waiting(string kind) =>
+        new(new(kind, CenteredViewLayerScope.Stack, null), 0, null, null, CenteredViewReadiness.Waiting, null, null);
+
+    /// <summary>Commit a draft's payloads, manifest and publish record directly, bypassing staging.</summary>
+    private static async Task PlantAsync(SiloHarness silo, SiloGroupDraft draft)
     {
-        var publication = (await silo.Index.ReadPublicationAsync(baseId, revisionId, CancellationToken.None).ConfigureAwait(false))!;
+        var qualification = new SiloQualification(silo.Clock.GetUtcNow(), SiloFormats.ExactGetSha256, true);
+        var locators = new List<SiloExactLocator>();
+        var published = new List<SiloPublishedMember>();
+        foreach (var member in draft.Members)
+        {
+            var stream = await silo.Payloads.OpenAsync(member.SourceToken, CancellationToken.None).ConfigureAwait(false);
+            byte[] payload;
+            await using (stream.ConfigureAwait(false))
+            {
+                using var buffer = new MemoryStream();
+                await stream.CopyToAsync(buffer).ConfigureAwait(false);
+                payload = buffer.ToArray();
+            }
+            var key = SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256);
+            var locator = silo.Local.Locator(key, silo.Local.Plant(key, payload));
+            locators.Add(locator);
+            published.Add(new(member.ArtifactId, member.ArtifactRevision, member.Length, member.Sha256, member.Facts().Sha256(), member.Required,
+                locator, qualification));
+        }
+        var bytes = SiloJson.Serialize(SiloPublisher.BuildManifest(draft, silo.Binding, 1, locators));
+        var sha = SiloHash.Sha256(bytes);
+        var manifestKey = SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId, sha);
+        var version = silo.Local.Plant(manifestKey, bytes);
+        await silo.AppendAsync(new SiloPublishRecord(SiloJson.CenteredViewGroupKind, draft.GroupId, draft.RevisionId,
+            new(silo.Local.Locator(manifestKey, version), bytes.Length, sha, qualification), published, draft.PreviousRevisionId)).ConfigureAwait(false);
+    }
+
+    private static async Task AssertReadbackAsync(SiloHarness silo, string forgery, SiloGroupDraft draft)
+    {
+        var publication = (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
         var reopen = await silo.Catalog.ReopenViewAsync(SiloTypedViews.StreamId("forged"), SiloTypedViews.ReferenceCapture("forged").ToString("D"),
-            baseId, revisionId, CancellationToken.None).ConfigureAwait(false);
+            draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
         if (forgery == "none")
         {
             publication.State.Should().Be("visible", "the control manifest is committed the same way and conforms");
@@ -144,12 +193,15 @@ public sealed class SiloCenteredValidationTests
         reopen.Reopenable.Should().BeFalse();
     }
 
-    private static SiloGroupDraft Forge(SiloGroupDraft draft, string forgery, SiloStackView stack, SiloViewProduct stars)
+    private static SiloGroupDraft Forge(SiloGroupDraft draft, string forgery, CenteredView typed, SiloStackView stack, SiloViewProduct stars)
     {
         var view = draft.View!;
         IReadOnlyList<SiloManifestDependency> Without(SiloViewProduct product) =>
             [.. draft.Dependencies.Where(dependency => dependency.ArtifactId != product.ArtifactId)];
         var withoutStars = view.Layers.Where(static layer => layer.Kind != "stars").ToArray();
+        var other = SiloTypedViews.Evidence("forged-other");
+        SiloManifestDependency Reopen(SiloViewProduct product, byte[] bytes, bool required) =>
+            new(product.ArtifactId, product.Artifact.IdentitySha256, SiloHash.Sha256(bytes), SiloDependencyKind.Reopen, required);
         switch (forgery)
         {
             case "none":
@@ -176,13 +228,7 @@ public sealed class SiloCenteredValidationTests
                 // The presentation manifest is outside the revision ID, so it must be derived as well.
                 return draft with { View = view with { Revision = Edit(view.Revision, static node => node["manifest"]!["layers"]!.AsArray().Clear()) } };
             case "projected-preview":
-                var other = SiloTypedViews.Evidence("forged-other-preview");
-                return draft with
-                {
-                    View = view with { Preview = new(other.ArtifactId, other.Artifact.IdentitySha256, other.Artifact.PayloadSha256) },
-                    Dependencies = [.. Without(stack.Preview),
-                        new(other.ArtifactId, other.Artifact.IdentitySha256, SiloHash.Sha256(other.Bytes), SiloDependencyKind.Reopen, true)]
-                };
+                return draft with { View = view with { Preview = other.Binding } };
             case "closed-window-dependency":
                 return draft with { Dependencies = Without(stack.ClosedWindow) };
             case "closed-window-optional":
@@ -200,6 +246,39 @@ public sealed class SiloCenteredValidationTests
                 };
             case "science-dependency":
                 return draft with { Dependencies = Without(stack.Science) };
+            case "alias-group":
+                // Valid typed documents under an outer ID the store never issued for them.
+                return draft with { GroupId = "base-forged" };
+            case "alias-revision":
+                return draft with { RevisionId = "rev-1" };
+            case "unsorted-layers":
+                {
+                    // Valid Waiting layers in reverse order, hashed in that order, published under that matching ID. The store
+                    // only ever writes and hashes its normalized order, so it never issued this identity.
+                    CenteredViewLayer[] reversed = [Waiting("satellites"), Waiting("clouds")];
+                    var members = new HashSet<(string, string)> { (stack.Preview.ArtifactId, stack.Preview.Artifact.IdentitySha256) };
+                    var revision = typed.Revision with
+                    {
+                        RevisionId = SqliteCenteredViews.RevisionIdentity(typed.Base.BaseId, null, reversed),
+                        Layers = reversed,
+                        Manifest = LayeredPresentationJson.CreateManifest(stack.Definition.Preview.Product, sceneIdentitySha256: null, [])
+                    };
+                    return draft with
+                    {
+                        RevisionId = revision.RevisionId,
+                        View = view with { Revision = SqliteCenteredViews.SerializeDocument(revision), Layers = SiloCenteredViews.Bindings(reversed) },
+                        Dependencies = [.. SiloCenteredViews.ReopenDependencies(new CenteredView(typed.Base, revision), scienceDisplayed: true, members)]
+                    };
+                }
+            case "member-dependency-alias":
+                // The correct preview member, and a required reopen row for the same artifact revision with another digest.
+                return draft with { Dependencies = [.. draft.Dependencies, Reopen(stack.Preview, other.Bytes, true)] };
+            case "member-dependency-duplicate":
+                // The same preview row twice: reopen would read two proofs for one artifact revision.
+                return draft with { Dependencies = [.. draft.Dependencies, Reopen(stack.Preview, stack.Preview.Bytes, true)] };
+            case "extra-reopen-dependency":
+                // A reopen row the typed view does not imply.
+                return draft with { Dependencies = [.. draft.Dependencies, Reopen(other, other.Bytes, false)] };
             default:
                 throw new ArgumentOutOfRangeException(nameof(forgery));
         }

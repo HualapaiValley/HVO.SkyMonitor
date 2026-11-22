@@ -51,11 +51,13 @@ internal static class SiloCenteredViews
         Dependencies(Evidence(preview), science, scienceDisplayed, closedWindow, Bindings(layers), null);
 
     /// <summary>
-    /// Requires a view manifest to agree with its embedded typed documents, at staging and at every readback. The
-    /// projection must be exactly the section the documents derive under the manifest's predecessor, and each entry of
-    /// their exact reopen set must be a member or reopen dependency with its digest and requirement. A Ready layer, the
-    /// preview or a stack's closed window therefore cannot be dropped while the embedded revision ID stays the same.
-    /// Whether science is displayed is the producer's fact, so its entry may also be required.
+    /// Requires a view manifest to be the one canonical projection of its embedded typed documents, at staging and at every
+    /// readback. Its group and revision IDs must be the store-issued base and revision IDs, its projection the section the
+    /// documents derive under its predecessor, and the reopen rows it gives the reader (every member and every reopen
+    /// dependency) exactly their reopen proof: each artifact revision of the proof once, as a member or as a reopen
+    /// dependency, with its digest and requirement, and no reopen dependency outside it. A Ready layer, the preview or a
+    /// stack's closed window therefore cannot be dropped, aliased or contradicted while the embedded revision ID stays the
+    /// same. Whether science is displayed is the producer's fact, so its row may also be required.
     /// </summary>
     /// <exception cref="ArgumentException">The manifest disagrees with its documents, or they are not a view the store writes.</exception>
     public static void RequireConformance(SiloGroupManifest manifest, SiloManifestView section)
@@ -73,29 +75,51 @@ internal static class SiloCenteredViews
             throw new ArgumentException("The embedded view documents are not typed centered view documents.", nameof(section), exception);
         }
         var derived = Section(view, manifest.PreviousRevisionId);
+        if (!string.Equals(manifest.GroupId, view.Base.BaseId, StringComparison.Ordinal) ||
+            !string.Equals(manifest.RevisionId, view.Revision.RevisionId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("A view revision is published only under its store-issued base and revision IDs.", nameof(manifest));
+        }
         if (!string.Equals(derived.StreamId, section.StreamId, StringComparison.Ordinal) ||
             !string.Equals(derived.ReferenceCaptureId, section.ReferenceCaptureId, StringComparison.Ordinal) ||
             derived.RevisionOrder != section.RevisionOrder || derived.Preview != section.Preview || !derived.Layers.SequenceEqual(section.Layers))
         {
             throw new ArgumentException("The view projection is not the section its embedded documents derive.", nameof(section));
         }
+        // The rows reopen reads: every member and every reopen dependency, each artifact revision once.
+        var rows = new Dictionary<(string ArtifactId, string Revision), (string Sha256, bool Required, bool Member)>();
+        foreach (var (artifactId, revision, sha, required, member) in manifest.Members
+                     .Select(static member => (member.ArtifactId, member.ArtifactRevision, member.Sha256, member.Required, true))
+                     .Concat(manifest.Dependencies.Where(static dependency => dependency.Kind == SiloDependencyKind.Reopen)
+                         .Select(static dependency => (dependency.ArtifactId, dependency.ArtifactRevision, dependency.Sha256, dependency.Required, false))))
+        {
+            if (!rows.TryAdd((artifactId, revision), (sha, required, member)))
+            {
+                throw new ArgumentException($"Artifact revision {artifactId}/{revision} has more than one reopen row.", nameof(manifest));
+            }
+        }
         var definition = view.Base.Definition;
         var science = Evidence(definition.Science);
-        var closedWindow = definition.ClosedWindow is { } window ? Evidence(window) : null;
-        foreach (var ((artifactId, revision, sha), required) in ReopenSet(derived.Preview, derived.Layers, science, scienceDisplayed: false, closedWindow))
+        var proof = ReopenProof(derived.Preview, derived.Layers, science, scienceDisplayed: false,
+            definition.ClosedWindow is { } window ? Evidence(window) : null);
+        foreach (var ((artifactId, revision), (sha, required)) in proof)
         {
-            var member = manifest.Members.FirstOrDefault(member =>
-                member.ArtifactId == artifactId && member.ArtifactRevision == revision);
-            var dependency = manifest.Dependencies.FirstOrDefault(dependency => dependency.Kind == SiloDependencyKind.Reopen &&
-                dependency.ArtifactId == artifactId && dependency.ArtifactRevision == revision);
-            var (declaredSha, declaredRequired) = member is not null ? (member.Sha256, member.Required)
-                : dependency is not null ? (dependency.Sha256, dependency.Required)
-                : throw new ArgumentException($"View binding {artifactId}/{revision} is not in the manifest's reopen set.", nameof(manifest));
-            var displayedScience = declaredRequired && artifactId == science.ArtifactId && revision == science.IdentitySha256;
-            if (!string.Equals(declaredSha, sha, StringComparison.Ordinal) || declaredRequired != required && !displayedScience)
+            if (!rows.TryGetValue((artifactId, revision), out var row))
+            {
+                throw new ArgumentException($"View binding {artifactId}/{revision} is not in the manifest's reopen set.", nameof(manifest));
+            }
+            var displayedScience = row.Required && artifactId == science.ArtifactId && revision == science.IdentitySha256;
+            if (!string.Equals(row.Sha256, sha, StringComparison.Ordinal) || row.Required != required && !displayedScience)
             {
                 throw new ArgumentException(
                     $"View binding {artifactId}/{revision} must be a reopen entry with its digest and required={required}.", nameof(manifest));
+            }
+        }
+        foreach (var (key, row) in rows)
+        {
+            if (!row.Member && !proof.ContainsKey(key))
+            {
+                throw new ArgumentException($"Reopen dependency {key.ArtifactId}/{key.Revision} is not in the view's reopen set.", nameof(manifest));
             }
         }
     }
@@ -103,26 +127,39 @@ internal static class SiloCenteredViews
     private static List<SiloManifestDependency> Dependencies(
         SiloViewEvidence preview, CenteredViewArtifact science, bool scienceDisplayed, CenteredViewArtifact? closedWindow,
         IReadOnlyList<SiloViewLayerBinding> layers, IReadOnlySet<(string ArtifactId, string Revision)>? members) =>
-        ReopenSet(preview, layers, Evidence(science), scienceDisplayed, closedWindow is null ? null : Evidence(closedWindow))
-            .Where(pair => members is null || !members.Contains((pair.Key.ArtifactId, pair.Key.Revision)))
-            .Select(static pair => new SiloManifestDependency(pair.Key.ArtifactId, pair.Key.Revision, pair.Key.Sha256, SiloDependencyKind.Reopen,
-                pair.Value))
+        ReopenProof(preview, layers, Evidence(science), scienceDisplayed, closedWindow is null ? null : Evidence(closedWindow))
+            .Where(pair => members is null || !members.Contains(pair.Key))
+            .Select(static pair => new SiloManifestDependency(pair.Key.ArtifactId, pair.Key.Revision, pair.Value.Sha256, SiloDependencyKind.Reopen,
+                pair.Value.Required))
             .ToList();
 
     /// <summary>
-    /// The exact reopen set (#1965 6.1): the preview and the closed window, required; science, required where displayed;
-    /// and every evidence binding, required when any layer that uses it is Ready or Partial. Bindings on other layers are
-    /// kept but do not block reopen.
+    /// The exact reopen proof (#1965 6.1), one row per artifact revision: the preview and the closed window, required;
+    /// science, required where displayed; and every evidence binding, required when any layer that uses it is Ready or
+    /// Partial. Bindings on other layers are kept but do not block reopen. The producer's dependencies and the validator
+    /// both use this one derivation.
     /// </summary>
-    private static Dictionary<(string ArtifactId, string Revision, string Sha256), bool> ReopenSet(
+    /// <exception cref="ArgumentException">The view binds one artifact revision to two payload digests.</exception>
+    private static Dictionary<(string ArtifactId, string Revision), (string Sha256, bool Required)> ReopenProof(
         SiloViewEvidence preview, IReadOnlyList<SiloViewLayerBinding> layers, SiloViewEvidence science, bool scienceDisplayed,
         SiloViewEvidence? closedWindow)
     {
-        var result = new Dictionary<(string, string, string), bool>();
+        var result = new Dictionary<(string ArtifactId, string Revision), (string Sha256, bool Required)>();
         void Add(SiloViewEvidence evidence, bool needed)
         {
-            var key = (evidence.ArtifactId, evidence.IdentitySha256, LowerHex(evidence.PayloadSha256));
-            result[key] = result.TryGetValue(key, out var existing) ? existing || needed : needed;
+            var key = (evidence.ArtifactId, evidence.IdentitySha256);
+            var sha = LowerHex(evidence.PayloadSha256);
+            if (!result.TryGetValue(key, out var existing))
+            {
+                result[key] = (sha, needed);
+                return;
+            }
+            if (!string.Equals(existing.Sha256, sha, StringComparison.Ordinal))
+            {
+                throw new ArgumentException($"The view binds artifact revision {key.ArtifactId}/{key.IdentitySha256} to two payload digests.",
+                    nameof(layers));
+            }
+            result[key] = (sha, existing.Required || needed);
         }
         Add(preview, true);
         foreach (var layer in layers)

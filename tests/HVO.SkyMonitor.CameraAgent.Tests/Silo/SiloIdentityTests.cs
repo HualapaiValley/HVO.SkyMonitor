@@ -61,23 +61,30 @@ public sealed class SiloIdentityTests
     }
 
     [TestMethod]
-    public async Task AnExactViewLinkMustNameTheRevisionsStreamAndReferenceCapture()
+    public async Task AnExactViewLinkMustNameTheRevisionsStoreIssuedIdsStreamAndReferenceCapture()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
-        await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-l", "rev-1", null, 1, [SiloDrafts.Layer("clouds", "Waiting", null, 0)],
-            [], publishPreview: true)).ConfigureAwait(false);
+        var view = SiloDrafts.View(silo.Payloads, "base-l", null, 1, [SiloDrafts.Layer("clouds", "Waiting", null, 0)], [], publishPreview: true);
+        await silo.PublishAsync(view).ConfigureAwait(false);
         var stream = SiloTypedViews.StreamId("base-l");
+        var reference = SiloDrafts.ReferenceCapture("base-l");
 
-        (await silo.Catalog.ReopenViewAsync(stream, SiloDrafts.ReferenceCapture("base-l"), "base-l", "rev-1", CancellationToken.None)
+        (await silo.Catalog.ReopenViewAsync(stream, reference, view.GroupId, view.RevisionId, CancellationToken.None)
             .ConfigureAwait(false)).Reopenable.Should().BeTrue();
-        foreach (var (otherStream, reference) in new[]
+        foreach (var (otherStream, otherReference) in new[]
                  {
-                     (SiloTypedViews.StreamId("base-other"), SiloDrafts.ReferenceCapture("base-l")), (stream, SiloDrafts.ReferenceCapture("base-other"))
+                     (SiloTypedViews.StreamId("base-other"), reference), (stream, SiloDrafts.ReferenceCapture("base-other"))
                  })
         {
-            var link = await silo.Catalog.ReopenViewAsync(otherStream, reference, "base-l", "rev-1", CancellationToken.None).ConfigureAwait(false);
+            var link = await silo.Catalog.ReopenViewAsync(otherStream, otherReference, view.GroupId, view.RevisionId, CancellationToken.None)
+                .ConfigureAwait(false);
             link.Reopenable.Should().BeFalse();
             link.ClosedOutcome.Should().Be(SiloCatalogIndex.LinkMismatch);
+        }
+        foreach (var (group, revision) in new[] { ("base-l", "rev-1"), (view.GroupId, "rev-1"), ("base-l", view.RevisionId) })
+        {
+            (await silo.Catalog.ReopenViewAsync(stream, reference, group, revision, CancellationToken.None).ConfigureAwait(false))
+                .Found.Should().BeFalse("only the store-issued base and revision IDs name the view");
         }
     }
 }

@@ -28,10 +28,15 @@ internal sealed partial class SqliteCenteredViews
     internal static string BaseIdentity(CenteredViewBaseDefinition definition) =>
         Identity(new { Schema = CenteredViewBase.SchemaVersion, Definition = definition });
 
+    /// <summary>The validated layer list in the one order this store writes and hashes into a revision ID.</summary>
+    internal static IReadOnlyList<CenteredViewLayer> NormalizedLayers(CenteredViewBaseDefinition definition, IEnumerable<CenteredViewLayer> layers) =>
+        NormalizeLayers(definition, layers);
+
     /// <summary>
     /// Requires a typed view to be one this store writes: its definition and layers pass the store's own validation, its
-    /// base ID derives from its definition, its revision ID from that base, the predecessor and its layers, and its
-    /// presentation manifest, which the revision ID does not cover, from its preview and drawable layers.
+    /// layers are in the store's normalized order, its base ID derives from its definition, its revision ID from that base,
+    /// the predecessor and its layers, and its presentation manifest, which the revision ID does not cover, from its
+    /// preview and drawable layers.
     /// </summary>
     /// <exception cref="ArgumentException">Any part of the view does not derive from the rest.</exception>
     internal static void RequireWritten(CenteredView view, string? previousRevisionId)
@@ -50,7 +55,12 @@ internal sealed partial class SqliteCenteredViews
             throw new ArgumentException("A centered view list holds an empty entry.", nameof(view));
         }
         ValidateBase(definition);
-        _ = NormalizeLayers(definition, view.Revision.Layers);
+        // The store hashes and writes only its normalized order, so any other order is an identity it never issued.
+        if (!NormalizeLayers(definition, view.Revision.Layers).Select(static layer => layer.Key)
+                .SequenceEqual(view.Revision.Layers.Select(static layer => layer.Key)))
+        {
+            throw new ArgumentException("The layer bindings are not in the order the store writes and hashes them.", nameof(view));
+        }
         if (!string.Equals(view.Base.BaseId, BaseIdentity(definition), StringComparison.Ordinal) ||
             !string.Equals(view.Revision.BaseId, view.Base.BaseId, StringComparison.Ordinal) ||
             !string.Equals(view.Revision.RevisionId, RevisionId(view.Base.BaseId, previousRevisionId, view.Revision.Layers), StringComparison.Ordinal))
