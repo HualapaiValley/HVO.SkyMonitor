@@ -77,9 +77,11 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
 
     /// <summary>
     /// Consumes at most 4096 bytes within two seconds, including waiting for another read. EOF ends this scripted
-    /// round; expected transport failures mark the source unavailable and invalidate prior evidence. Caller cancellation propagates.
-    /// An internally timed-out round retains only completed valid sentences, subject to normal expiry.
+    /// round. Expected stream failures mark the source unavailable and invalidate prior evidence. If the caller also
+    /// requests cancellation, it propagates after invalidation. Caller cancellation and an internal deadline on their
+    /// own retain completed evidence, subject to normal expiry.
     /// </summary>
+    /// <exception cref="ObjectDisposedException">The reader has been disposed.</exception>
     public async Task ReadAsync(Stream source, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -98,7 +100,27 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
             for (var count = 0; count < MaximumBytesPerRead; count++)
             {
                 linked.Token.ThrowIfCancellationRequested();
-                if (await source.ReadAsync(buffer.AsMemory(), linked.Token).ConfigureAwait(false) == 0)
+                int bytesRead;
+                try
+                {
+                    bytesRead = await source.ReadAsync(buffer.AsMemory(), linked.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException or
+                    ObjectDisposedException || exception is OperationCanceledException &&
+                    !cancellationToken.IsCancellationRequested && !timeout.IsCancellationRequested)
+                {
+                    lock (_gate)
+                    {
+                        _unavailable = true;
+                        _utc = _lastSentence = _lastPps = null;
+                        _rmcTimestamp = _ggaTimestamp = _ppsTimestamp = null;
+                        _quality = _satellites = null;
+                        _validFix = false;
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    break;
+                }
+                if (bytesRead == 0)
                 {
                     break;
                 }
@@ -129,19 +151,6 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-        }
-        catch (Exception exception) when (exception is IOException or TimeoutException or UnauthorizedAccessException or
-            ObjectDisposedException || exception is OperationCanceledException && !cancellationToken.IsCancellationRequested)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (_gate)
-            {
-                _unavailable = true;
-                _utc = _lastSentence = _lastPps = null;
-                _rmcTimestamp = _ggaTimestamp = _ppsTimestamp = null;
-                _quality = _satellites = null;
-                _validFix = false;
-            }
         }
         finally
         {
