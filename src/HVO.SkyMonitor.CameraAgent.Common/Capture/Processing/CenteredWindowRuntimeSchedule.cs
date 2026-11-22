@@ -8,7 +8,7 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal readonly record struct CenteredDispatchSchedule(
     DateTimeOffset RequestedStartUtc, TimeSpan Interval, CaptureCadenceMode? Mode = null,
-    bool IntervalChanged = false, DateTimeOffset? OverrunFromUtc = null);
+    bool IntervalChanged = false, DateTimeOffset? OverrunFromUtc = null, TimeSpan PreviousAcquisitionDuration = default);
 
 internal static class CenteredWindowRuntimeSchedule
 {
@@ -16,7 +16,8 @@ internal static class CenteredWindowRuntimeSchedule
     private static readonly TimeSpan MinimumInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan ProcessingGrace = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan RegistrationGrace = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan ContinuousLookahead = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ContinuousHandoffAllowance = TimeSpan.FromSeconds(10);
+    internal const string NominalSlotMissed = "nominal-slot-missed";
     private static readonly JsonSerializerOptions SlotJson = new(JsonSerializerDefaults.Web);
 
     internal static async Task TrackDispatchedAsync(
@@ -44,8 +45,15 @@ internal static class CenteredWindowRuntimeSchedule
         TimeSpan integration, DateTimeOffset now, bool isolate, CancellationToken cancellationToken)
     {
         var continuous = dispatch.Mode == CaptureCadenceMode.Continuous;
+        var schedulerOwned = dispatch.Mode.HasValue;
         var interval = continuous || isolate ? MinimumInterval : dispatch.Interval > TimeSpan.Zero ? dispatch.Interval : integration;
         if (interval <= TimeSpan.Zero) interval = MinimumInterval;
+        // A minimum interval is a floor. Each sequential successor can spend
+        // this much time integrating and completing acquisition before the next.
+        var forecastTicks = schedulerOwned
+            ? Math.Max(interval.Ticks, Math.Max(integration.Ticks, dispatch.PreviousAcquisitionDuration.Ticks))
+            : interval.Ticks;
+        var forecastInterval = TimeSpan.FromTicks(forecastTicks);
         var requested = dispatch.RequestedStartUtc.ToUniversalTime();
         var tolerance = SlotTolerance(interval);
         var previous = await ReadPriorAsync(transaction, attempt.RunId, requested, interval, cancellationToken).ConfigureAwait(false);
@@ -86,7 +94,21 @@ internal static class CenteredWindowRuntimeSchedule
         var cadence = prior is not null && !isolate && !cadenceChanged && !broken ? prior.Cadence : attempt.AttemptId.ToString("N");
 
         var center = new CenteredWindowSlotTime(start, cadence, ExpectedIntegration: integration,
-            Tolerance: tolerance, Continuous: continuous);
+            Tolerance: tolerance, Continuous: continuous, PlannedSlot: schedulerOwned ? slot : null);
+        var skipped = ImmutableArray.CreateBuilder<CenteredWindowSlotTime>();
+        if (schedulerOwned && !broken && !isolate && missedStartUtc is { } firstMissed && prior is not null)
+        {
+            for (var ordinal = prior.Slot + 1; ordinal < slot; ordinal++)
+            {
+                skipped.Add(center with
+                {
+                    PlannedSlot = ordinal,
+                    ExpectedStartUtc = firstMissed.AddTicks(checked((ordinal - prior.Slot - 1) * interval.Ticks))
+                });
+            }
+        }
+        var priorDispatch = schedulerOwned && !isolate && prior is { Start: not null }
+            ? ReadDispatchCalendar(prior.DispatchCalendarJson, prior.Slot) : null;
         var priorTwo = new CenteredWindowSlotTime[CenteredWindowScheduler.CenterIndex];
         var oldest = previous.Count == 0 ? null : previous[^1];
         for (var offset = 1; offset <= priorTwo.Length; offset++)
@@ -97,16 +119,16 @@ internal static class CenteredWindowRuntimeSchedule
                 priorTwo[offset - 1] = center with
                 {
                     ExpectedStartUtc = start.AddTicks(-offset * interval.Ticks),
+                    PlannedSlot = null,
                     BoundaryReason = broken ? "cadence-discontinuity" : "calendar-predecessor-unavailable"
                 };
                 continue;
             }
-            if (missedStartUtc is { } missed && prior is not null && pastSlot > prior.Slot)
+            var pinnedMiss = skipped.FirstOrDefault(time => time.PlannedSlot == pastSlot) ??
+                priorDispatch?.Skipped.FirstOrDefault(time => time.PlannedSlot == pastSlot);
+            if (pinnedMiss is not null)
             {
-                priorTwo[offset - 1] = center with
-                {
-                    ExpectedStartUtc = missed.AddTicks(checked((pastSlot - prior.Slot - 1) * interval.Ticks))
-                };
+                priorTwo[offset - 1] = pinnedMiss;
                 continue;
             }
             var saved = previous.Find(item => item.Slot <= pastSlot);
@@ -125,8 +147,7 @@ internal static class CenteredWindowRuntimeSchedule
                         "cadence-discontinuity", prior.Integration, SlotTolerance(prior.Interval), prior.Continuous);
                     continue;
                 }
-                priorTwo[offset - 1] = new(point, saved.Cadence, ExpectedIntegration: saved.Integration,
-                    Tolerance: SlotTolerance(saved.Interval), Continuous: saved.Continuous);
+                priorTwo[offset - 1] = PriorTime(saved, point, schedulerOwned && saved.Slot == pastSlot ? pastSlot : null);
                 continue;
             }
             var pointBeforeRun = (saved is null && oldest is not null ? ProjectPastSlot(oldest, pastSlot) : null)
@@ -137,29 +158,38 @@ internal static class CenteredWindowRuntimeSchedule
         }
 
         var projected = ImmutableArray.Create(priorTwo[1], priorTwo[0], center,
-            center with { ExpectedStartUtc = start + interval },
-            center with { ExpectedStartUtc = start + interval + interval });
-        var schedule = CreateSchedule(attempt, start, interval, integration, continuous);
+            center with { ExpectedStartUtc = start + forecastInterval, PlannedSlot = null },
+            center with { ExpectedStartUtc = start + forecastInterval + forecastInterval, PlannedSlot = null });
+        var schedule = CreateSchedule(attempt, start, interval, integration, forecastInterval, continuous);
         if (isolate)
             schedule = schedule with { GenerationId = cadence };
         if (!broken && !isolate && steps > 1 && prior is { Start: { } priorScheduled })
         {
-            for (var skipped = 1L; skipped < steps; skipped++)
+            for (var offset = 1L; offset < steps; offset++)
             {
                 var missedInterval = missedStartUtc.HasValue ? interval : prior.Interval;
-                var missedStart = missedStartUtc is { } firstMissed
-                    ? firstMissed.AddTicks(checked(interval.Ticks * (skipped - 1)))
-                    : priorScheduled.AddTicks(checked(prior.Interval.Ticks * skipped));
-                var missed = CreateSchedule(attempt, missedStart, missedInterval, prior.Integration);
+                var missedOrdinal = prior.Slot + offset;
+                var missedTime = schedulerOwned ? skipped.First(time => time.PlannedSlot == missedOrdinal) : null;
+                var missedStart = missedTime?.ExpectedStartUtc ?? (missedStartUtc is { } firstMissedStart
+                    ? firstMissedStart.AddTicks(checked(interval.Ticks * (offset - 1)))
+                    : priorScheduled.AddTicks(checked(prior.Interval.Ticks * offset)));
+                var missed = CreateSchedule(attempt, missedStart, missedInterval, prior.Integration,
+                    schedulerOwned ? forecastInterval : missedInterval);
                 var missedTimes = Enumerable.Range(-CenteredWindowScheduler.CenterIndex, CenteredWindowScheduler.SlotCount)
-                    .Select(offset => new CenteredWindowSlotTime(missedStart.AddTicks(checked(missedInterval.Ticks * offset)),
+                    .Select(relative => skipped.FirstOrDefault(time => time.PlannedSlot == missedOrdinal + relative) ??
+                        (schedulerOwned && missedOrdinal + relative == slot ? center : null) ??
+                        (schedulerOwned ? priorDispatch?.Skipped.FirstOrDefault(time => time.PlannedSlot == missedOrdinal + relative) : null) ??
+                        (schedulerOwned ? ExactPriorTime(previous, missedOrdinal + relative) : null) ??
+                        new CenteredWindowSlotTime(missedStart.AddTicks(checked(missedInterval.Ticks * relative)),
                         missedStartUtc.HasValue ? cadence : prior.Cadence, ExpectedIntegration: prior.Integration,
                         Tolerance: SlotTolerance(missedInterval))).ToImmutableArray();
                 await SqliteCaptureProcessingStore.RecordCenteredMissedReferenceAsync(transaction, missed, missedTimes, now,
                     cancellationToken).ConfigureAwait(false);
             }
         }
-        var checkpoint = new CenteredWindowCheckpoint(schedule, projected, attempt);
+        var dispatchCalendar = schedulerOwned
+            ? new CenteredWindowDispatchCalendar(slot - skipped.Count, forecastInterval, tolerance, skipped.ToImmutable()) : null;
+        var checkpoint = new CenteredWindowCheckpoint(schedule, projected, attempt, DispatchCalendar: dispatchCalendar);
         var tracked = await SqliteCaptureProcessingStore.TrackCenteredWindowAsync(
             transaction, checkpoint, MaximumPendingWindows, cancellationToken).ConfigureAwait(false);
         if (!tracked)
@@ -188,9 +218,10 @@ internal static class CenteredWindowRuntimeSchedule
     }
 
     private static CenteredWindowSchedule CreateSchedule(ExposureAttemptKey attempt, DateTimeOffset start,
-        TimeSpan interval, TimeSpan integration, bool continuous = false)
+        TimeSpan interval, TimeSpan integration, TimeSpan forecastInterval, bool continuous = false)
     {
-        var lookahead = continuous ? ContinuousLookahead.Ticks : checked(2 * interval.Ticks);
+        // Two forecast cycles, the final integration and the existing processing allowance.
+        var lookahead = checked(2 * forecastInterval.Ticks + (continuous ? ContinuousHandoffAllowance.Ticks : 0));
         var deadline = start.AddTicks(checked(lookahead + Math.Max(integration.Ticks, 0) + ProcessingGrace.Ticks));
         return new(attempt.Camera, attempt.RunId, attempt.RunId.ToString("N"), start, SlotTolerance(interval), deadline,
             CenteredRegisteredStackRecipe.FixedIdentity.IdentitySha256, deadline + RegistrationGrace);
@@ -202,6 +233,33 @@ internal static class CenteredWindowRuntimeSchedule
     internal static CenteredWindowSlotTime? ReadProjectedPredecessor(string? json) =>
         json is not null && JsonSerializer.Deserialize<CenteredWindowSlotTime>(json, SlotJson) is
         { Tolerance: not null, BoundaryReason: null } time ? time : null;
+
+    internal static CenteredWindowDispatchCalendar? ReadDispatchCalendar(string? json, long dispatchedSlot)
+    {
+        if (json is null)
+            return null;
+        var calendar = JsonSerializer.Deserialize<CenteredWindowDispatchCalendar>(json, SlotJson);
+        if (calendar is not { Version: 1, FirstAffectedSlot: > 0 } || calendar.ForecastInterval <= TimeSpan.Zero ||
+            calendar.Tolerance < TimeSpan.Zero ||
+            calendar.Skipped.IsDefault || calendar.Skipped.Length > MaximumPendingWindows ||
+            dispatchedSlot - calendar.FirstAffectedSlot != calendar.Skipped.Length ||
+            calendar.Skipped.Where((time, index) => time is not
+            { Tolerance: not null, BoundaryReason: null, Continuous: false } ||
+                time.PlannedSlot != calendar.FirstAffectedSlot + index).Any())
+            throw new InvalidDataException("The centered dispatch has an invalid planned-slot record.");
+        return calendar;
+    }
+
+    private static CenteredWindowSlotTime? ExactPriorTime(List<PriorSlot> previous, long ordinal) =>
+        previous.Find(slot => slot.Slot == ordinal) is { Start: { } start } slot
+            ? PriorTime(slot, start, ordinal) : null;
+
+    private static CenteredWindowSlotTime PriorTime(PriorSlot slot, DateTimeOffset start, long? ordinal)
+    {
+        var tolerance = ordinal.HasValue ? ReadDispatchCalendar(slot.DispatchCalendarJson, slot.Slot)?.Tolerance : null;
+        return new(start, slot.Cadence, ExpectedIntegration: slot.Integration,
+            Tolerance: tolerance ?? SlotTolerance(slot.Interval), Continuous: slot.Continuous, PlannedSlot: ordinal);
+    }
 
     private static DateTimeOffset? ProjectPastSlot(PriorSlot saved, long slot)
     {
@@ -220,7 +278,8 @@ internal static class CenteredWindowRuntimeSchedule
             SELECT calendar.slot, calendar.start_ticks, calendar.interval_ticks, calendar.integration_ticks, calendar.cadence,
                 COALESCE(json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
                     '$.projectedTimes[2].continuous'), 0),
-                json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END, '$.projectedTimes[1]')
+                json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END, '$.projectedTimes[1]'),
+                json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END, '$.dispatchCalendar')
             FROM processing_centered_attempt_calendar calendar
             LEFT JOIN processing_centered_windows window ON window.window_sha256 = calendar.window_sha256
             WHERE calendar.run_id = $run ORDER BY calendar.slot DESC LIMIT 2;
@@ -236,11 +295,12 @@ internal static class CenteredWindowRuntimeSchedule
                 ? new DateTimeOffset(ticks, TimeSpan.Zero) : (DateTimeOffset?)null;
             result.Add(new(reader.GetInt64(0), start, TimeSpan.FromTicks(reader.GetInt64(2)),
                 TimeSpan.FromTicks(reader.GetInt64(3)), reader.GetString(4), reader.GetBoolean(5),
-                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6)));
+                await reader.IsDBNullAsync(6, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(6),
+                await reader.IsDBNullAsync(7, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(7)));
         }
         return result;
     }
 
     private sealed record PriorSlot(long Slot, DateTimeOffset? Start, TimeSpan Interval, TimeSpan Integration, string Cadence,
-        bool Continuous, string? ProjectedPredecessorJson);
+        bool Continuous, string? ProjectedPredecessorJson, string? DispatchCalendarJson);
 }

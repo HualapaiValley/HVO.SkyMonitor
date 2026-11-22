@@ -107,6 +107,7 @@ internal sealed class CameraModuleRunner
         var consecutiveFailures = 0;
         long? previousStartTimestamp = null;
         DateTimeOffset? previousStartUtc = null;
+        var previousAcquisitionDuration = TimeSpan.Zero;
         var recovering = false;
         TimeSpan? moduleDelayOverride = null;
         TimeSpan? previousDispatchedInterval = null;
@@ -222,6 +223,7 @@ internal sealed class CameraModuleRunner
 
             using var acceptedAdmission = admission;
             CenteredExposureReservation? reservation = null;
+            EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
             if (centered is not null)
             {
                 try
@@ -259,22 +261,43 @@ internal sealed class CameraModuleRunner
                         continue;
                     }
                     nextSetpoint = centeredSetpoint.Setpoint;
+                    if (_environmentalTriggers is not null)
+                    {
+                        environmentalAcquisition = await _environmentalTriggers.BeforeCaptureAsync(UtcNow(), cancellationToken)
+                            .ConfigureAwait(false);
+                    }
                     DateTimeOffset? overrunTarget = null;
                     var dispatchReadyUtc = UtcNow();
-                    if (cadenceMode == CaptureCadenceMode.MinimumStartInterval && previousStartUtc.HasValue &&
-                        dispatchReadyUtc - effectiveSchedule.RequestedStartUtc >
-                        CenteredWindowRuntimeSchedule.SlotTolerance(targetInterval))
+                    if (cadenceMode == CaptureCadenceMode.Continuous)
                     {
-                        overrunTarget = effectiveSchedule.RequestedStartUtc;
-                        effectiveSchedule = new(dispatchReadyUtc, CaptureStartReason.DeadlineOverrun);
+                        effectiveSchedule = effectiveSchedule with { RequestedStartUtc = dispatchReadyUtc };
+                    }
+                    else if (previousStartUtc is { } previousStart)
+                    {
+                        // The camera cannot miss a start while the preceding acquisition still owns it.
+                        var firstOpportunity = Max(effectiveSchedule.RequestedStartUtc, previousStart + previousAcquisitionDuration);
+                        if (dispatchReadyUtc - firstOpportunity > CenteredWindowRuntimeSchedule.SlotTolerance(targetInterval))
+                        {
+                            overrunTarget = firstOpportunity;
+                            effectiveSchedule = new(dispatchReadyUtc, CaptureStartReason.DeadlineOverrun);
+                        }
+                        else
+                        {
+                            effectiveSchedule = effectiveSchedule with { RequestedStartUtc = firstOpportunity };
+                        }
                     }
                     var dispatchSchedule = new CenteredDispatchSchedule(effectiveSchedule.RequestedStartUtc, targetInterval,
                         cadenceMode, previousDispatchedInterval is { } priorInterval && priorInterval != targetInterval,
-                        overrunTarget);
+                        overrunTarget, previousStartUtc.HasValue ? previousAcquisitionDuration : TimeSpan.Zero);
                     await centered.DispatchCenteredAsync(reservation.Pending.Key, nextSetpoint,
                         centeredSetpoint.Metering, centeredSetpoint.Reason, dispatchSchedule, cancellationToken)
                         .ConfigureAwait(false);
                     previousDispatchedInterval = targetInterval;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    admission.MarkNoPublicationRequired();
+                    break;
                 }
                 catch
                 {
@@ -309,7 +332,6 @@ internal sealed class CameraModuleRunner
                     BoundStartBeforeUtc = scheduleGrant?.Evidence.EffectiveEndUtc
                 };
             CaptureResult? result;
-            EnvironmentalCaptureAcquisition? environmentalAcquisition = null;
             var acquisitionStart = moduleCallStartedTimestamp;
             var acquisitionUtc = moduleCallStartedUtc;
             using var cycleActivity = CaptureControlTelemetry.ActivitySource.StartActivity("capture-cycle");
@@ -317,7 +339,7 @@ internal sealed class CameraModuleRunner
             cycleActivity?.SetTag("start.reason", effectiveSchedule.StartReason.ToString());
             try
             {
-                if (_environmentalTriggers is not null)
+                if (reservation is null && _environmentalTriggers is not null)
                 {
                     environmentalAcquisition = await _environmentalTriggers.BeforeCaptureAsync(moduleCallStartedUtc, cancellationToken)
                         .ConfigureAwait(false);
@@ -402,6 +424,7 @@ internal sealed class CameraModuleRunner
                 if (result.Frame?.Layout is null || result.AcquisitionTiming is null)
                     throw new InvalidOperationException("Centered capture requires actual layout and observed acquisition timing.");
                 var acquisitionElapsed = _timeProvider.GetElapsedTime(acquisitionStart);
+                previousAcquisitionDuration = acquisitionElapsed;
                 var centeredSubmission = new CaptureLoopSubmission(request, result, acquisitionUtc, targetInterval, acquisitionElapsed)
                 {
                     CenteredAcquisition = new(cadenceMode, targetInterval, acquisitionUtc, acquisitionElapsed,

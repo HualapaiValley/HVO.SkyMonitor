@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
@@ -11,7 +12,13 @@ internal sealed record CenteredWindowCheckpoint(
     CenteredWindowSchedule Schedule,
     ImmutableArray<CenteredWindowSlotTime> ProjectedTimes,
     ExposureAttemptKey? ReferenceAttempt = null,
-    ExposureKey? ReferenceCapture = null);
+    ExposureKey? ReferenceCapture = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    CenteredWindowDispatchCalendar? DispatchCalendar = null);
+
+// The owning attempt calendar row supplies the run, dispatched slot and commit observation.
+internal sealed record CenteredWindowDispatchCalendar(
+    long FirstAffectedSlot, TimeSpan ForecastInterval, TimeSpan Tolerance, ImmutableArray<CenteredWindowSlotTime> Skipped, int Version = 1);
 
 // Projection of one committed transition or break in the admitted run. A cadence
 // change replaces only the slots following the pinned effective predecessor.
@@ -33,7 +40,8 @@ internal sealed record CenteredWindowJournalSnapshot(
     string GenerationId,
     ExposureKey? AdmittedReference,
     ImmutableArray<CenteredWindowCalendarChange> Changes,
-    ImmutableArray<CenteredWindowSlotObservation> Observations);
+    ImmutableArray<CenteredWindowSlotObservation> Observations,
+    ImmutableArray<CenteredWindowSlotTime> ResolvedTimes = default);
 
 internal sealed record CenteredWindowRefusal(string Identity, CameraKey Camera, Guid RunId, DateTimeOffset DeadlineUtc, string Reason);
 

@@ -35,7 +35,8 @@ internal sealed record CenteredWindowSlotTime(
     string? BoundaryReason = null,
     TimeSpan ExpectedIntegration = default,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] TimeSpan? Tolerance = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Continuous = false);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Continuous = false,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? PlannedSlot = null);
 
 internal sealed record CenteredWindowInput(
     ExposureKey Key,
@@ -140,7 +141,8 @@ internal static class CenteredWindowScheduler
         if (snapshot.GenerationId != schedule.GenerationId)
             throw new InvalidDataException("The centered evidence belongs to another generation.");
 
-        var times = ResolveCalendar(checkpoint, snapshot.Changes, cutoff);
+        var times = snapshot.ResolvedTimes.IsDefault
+            ? ResolveCalendar(checkpoint, snapshot.Changes, cutoff) : snapshot.ResolvedTimes;
         var reference = checkpoint.ReferenceCapture ?? snapshot.AdmittedReference;
         if ((snapshot.AdmittedReference is not null && checkpoint.ReferenceAttempt is null && checkpoint.ReferenceCapture is null) ||
             (checkpoint.ReferenceCapture is not null && snapshot.AdmittedReference is not null &&
@@ -227,13 +229,15 @@ internal static class CenteredWindowScheduler
             var tolerance = time.Tolerance ?? schedule.SlotTolerance;
             if (time.ExpectedStartUtc.Offset != TimeSpan.Zero || string.IsNullOrWhiteSpace(time.CadenceRevision) ||
                 time.ExpectedIntegration < TimeSpan.Zero || tolerance < TimeSpan.Zero ||
+                (time.PlannedSlot is { } slot && (slot <= 0 ||
+                    (times[CenterIndex].PlannedSlot is { } center && slot - center != index - CenterIndex))) ||
                 (index > 0 && !Separated(times[index - 1], time, schedule.SlotTolerance)))
                 throw new InvalidDataException("Centered window slot times must be UTC, ordered, and unambiguous within the pinned tolerance.");
         }
 
         var expired = nowUtc >= schedule.DeadlineUtc;
         var cutoff = expired ? schedule.DeadlineUtc : nowUtc.ToUniversalTime();
-        var evidenceByStart = IndexEvidence(times, observations, cutoff);
+        var evidenceBySlot = IndexEvidence(times, observations, cutoff);
         var captures = new HashSet<Guid>();
         var rawArtifacts = new HashSet<Guid>();
         var linearArtifacts = new HashSet<Guid>();
@@ -241,7 +245,7 @@ internal static class CenteredWindowScheduler
         for (var index = 0; index < SlotCount; index++)
         {
             var time = times[index];
-            var observation = evidenceByStart.GetValueOrDefault(time.ExpectedStartUtc) ?? new(time);
+            var observation = evidenceBySlot.GetValueOrDefault(SlotKey(time)) ?? new(time);
             var slot = SettleSlot(observation with { Time = time }, index - CenterIndex, schedule, cutoff, expired);
             if (slot is null)
                 continue;
@@ -277,29 +281,33 @@ internal static class CenteredWindowScheduler
         // Continuous observations are bound to exact dispatched attempts. Adjacent
         // requests need chronological order, but they do not promise a time grid.
         return gap > TimeSpan.Zero && (previous.Continuous || next.Continuous ||
+            (previous.PlannedSlot.HasValue && next.PlannedSlot.HasValue) ||
             (gap > nextTolerance && gap - nextTolerance > (previous.Tolerance ?? legacyTolerance)));
     }
 
-    private static Dictionary<DateTimeOffset, CenteredWindowSlotObservation> IndexEvidence(
+    private static (long? Ordinal, DateTimeOffset LegacyStart) SlotKey(CenteredWindowSlotTime time) =>
+        (time.PlannedSlot, time.PlannedSlot.HasValue ? default : time.ExpectedStartUtc);
+
+    private static Dictionary<(long?, DateTimeOffset), CenteredWindowSlotObservation> IndexEvidence(
         ImmutableArray<CenteredWindowSlotTime> times,
         ImmutableArray<CenteredWindowSlotObservation> observations,
         DateTimeOffset cutoff)
     {
-        var starts = times.Where(static time => time.BoundaryReason is null)
-            .ToDictionary(static time => time.ExpectedStartUtc, static time => time.CadenceRevision);
-        var index = new Dictionary<DateTimeOffset, CenteredWindowSlotObservation>();
+        var slots = times.Where(static time => time.BoundaryReason is null).ToDictionary(SlotKey);
+        var index = new Dictionary<(long?, DateTimeOffset), CenteredWindowSlotObservation>();
         foreach (var observation in observations)
         {
-            var start = observation.Time.ExpectedStartUtc;
-            if (!starts.TryGetValue(start, out var cadence) ||
+            var key = SlotKey(observation.Time);
+            if (!slots.TryGetValue(key, out var pinned) ||
                 !(observation.Input is { } input && input.AdmittedUtc <= cutoff ||
                     observation.EmptySlotSettledUtc is { } settled && settled <= cutoff))
                 continue;
 
-            if (observation.Time.CadenceRevision != cadence)
+            if (observation.Time.CadenceRevision != pinned.CadenceRevision ||
+                observation.Time.ExpectedStartUtc != pinned.ExpectedStartUtc)
                 throw new InvalidDataException("The centered observation does not match the cadence effective at its slot.");
 
-            if (!index.TryAdd(start, observation) && index[start] != observation)
+            if (!index.TryAdd(key, observation) && index[key] != observation)
                 throw new InvalidDataException("Multiple durable observations occupy one centered slot.");
         }
         return index;

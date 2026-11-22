@@ -40,7 +40,138 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
         CancellationToken cancellationToken)
     {
         var reference = checkpoint.ReferenceAttempt ?? throw new InvalidDataException("The live window has no reserved attempt.");
-        var calendar = await ReadCalendarAsync(transaction, reference, cutoffUtc, cancellationToken).ConfigureAwait(false);
+        var committed = await ReadCalendarAsync(transaction, reference, cutoffUtc, cancellationToken).ConfigureAwait(false);
+        var calendar = committed.FindAll(fact => fact.Offset <= CenteredWindowScheduler.CenterIndex);
+        var skips = ReadCommittedSkips(committed);
+        var planned = checkpoint.DispatchCalendar is not null || skips.Count > 0 ||
+            calendar.Exists(fact => fact.DispatchCalendar is not null);
+        var changes = ImmutableArray<CenteredWindowCalendarChange>.Empty;
+        ImmutableArray<CenteredWindowSlotTime> times;
+        if (planned)
+            times = ResolvePlannedTimes(checkpoint, calendar, skips);
+        else
+            (times, changes) = ResolveLegacyTimes(checkpoint, calendar, cutoffUtc);
+
+        var observations = ImmutableArray.CreateBuilder<CenteredWindowSlotObservation>();
+        ExposureKey? admittedReference = null;
+        foreach (var fact in calendar)
+        {
+            var time = times[fact.Offset + CenteredWindowScheduler.CenterIndex];
+            if (time.ExpectedStartUtc != fact.Start || time.CadenceRevision != fact.Cadence)
+                throw new InvalidDataException("The live attempt differs from the window's projected cadence.");
+            if (fact is { CaptureId: { } capture, Manifest: { } manifest, Admitted: { } admitted })
+            {
+                var descriptor = manifest.Descriptor;
+                var raw = new CenteredRawEvidence(manifest, fact.ManifestHash!, fact.Run, IsCommitted: true);
+                var key = new ExposureKey(reference.Camera, reference.RunId, capture);
+                if (fact.Offset == 0)
+                    admittedReference = key;
+                var input = new CenteredWindowInput(key, descriptor.Capture.CaptureSequence, descriptor.Timing,
+                    descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
+                    descriptor.Artifact.ChecksumSha256, admitted);
+                var products = await SqliteCaptureProcessingStore.ReadCenteredWindowProductsAsync(
+                    transaction, checkpoint.Schedule, key, raw, admitted, cutoffUtc, cancellationToken).ConfigureAwait(false);
+                observations.Add(new(time, input, products, Attempt: fact.Attempt));
+            }
+            else if (fact.Expired is { } failed &&
+                (fact.ExpiryReason is "target-progress-unknown" or "schedule.start-window-closed" ||
+                    cutoffUtc >= checkpoint.Schedule.DeadlineUtc))
+            {
+                var uncertain = fact.ExpiryReason == "target-progress-unknown";
+                observations.Add(new(time, EmptySlotSettledUtc: failed, EmptySlotReason: fact.ExpiryReason,
+                    Attempt: fact.Attempt, EmptySlotKind: uncertain ? CenteredWindowEmptySlotKind.Uncertain : CenteredWindowEmptySlotKind.Failed));
+            }
+        }
+
+        if (planned)
+        {
+            foreach (var (offset, miss) in skips)
+                observations.Add(new(times[offset + CenteredWindowScheduler.CenterIndex],
+                    EmptySlotSettledUtc: miss.ObservedUtc, EmptySlotReason: CenteredWindowRuntimeSchedule.NominalSlotMissed));
+        }
+        else
+        {
+            var furthest = calendar.Count == 0 ? 0 : calendar[^1].Offset;
+            for (var offset = -2; offset < furthest; offset++)
+            {
+                var time = times[offset + CenteredWindowScheduler.CenterIndex];
+                if (time.BoundaryReason is null && !calendar.Exists(fact => fact.Offset == offset))
+                {
+                    var later = calendar.Find(fact => fact.Offset > offset)!;
+                    observations.Add(new(time, EmptySlotSettledUtc: later.Dispatched,
+                        EmptySlotReason: CenteredWindowRuntimeSchedule.NominalSlotMissed));
+                }
+            }
+        }
+
+        return new(checkpoint.Schedule.GenerationId, admittedReference, changes, observations.ToImmutable(),
+            ResolvedTimes: planned ? times : default);
+    }
+
+    private static Dictionary<int, CommittedSkip> ReadCommittedSkips(List<CalendarFact> calendar)
+    {
+        var skips = new Dictionary<int, CommittedSkip>();
+        foreach (var fact in calendar)
+        {
+            if (fact.DispatchCalendar is not { } dispatch)
+                continue;
+            foreach (var time in dispatch.Skipped)
+            {
+                var offset = time.PlannedSlot!.Value - fact.CenterSlot;
+                if (offset is < -CenteredWindowScheduler.CenterIndex or > CenteredWindowScheduler.CenterIndex)
+                    continue;
+                if (!skips.TryAdd((int)offset, new(time, fact.Dispatched)))
+                    throw new InvalidDataException("Multiple centered dispatches settled the same planned slot.");
+            }
+        }
+        return skips;
+    }
+
+    private static ImmutableArray<CenteredWindowSlotTime> ResolvePlannedTimes(
+        CenteredWindowCheckpoint checkpoint, List<CalendarFact> calendar, Dictionary<int, CommittedSkip> skips)
+    {
+        var times = checkpoint.ProjectedTimes.ToBuilder();
+        var forecastInterval = times[3].ExpectedStartUtc - times[2].ExpectedStartUtc;
+        for (var index = 0; index < times.Count; index++)
+        {
+            var offset = index - CenteredWindowScheduler.CenterIndex;
+            var actual = calendar.Find(fact => fact.Offset == offset);
+            if (actual is not null)
+            {
+                if (skips.ContainsKey(offset))
+                    throw new InvalidDataException("A centered dispatch occupies a committed missed slot.");
+                times[index] = new(actual.Start, actual.Cadence, ExpectedIntegration: actual.Integration,
+                    Tolerance: actual.DispatchCalendar?.Tolerance ?? CenteredWindowRuntimeSchedule.SlotTolerance(actual.Interval),
+                    Continuous: actual.Continuous,
+                    PlannedSlot: actual.Slot);
+                if (offset >= 0)
+                    forecastInterval = actual.DispatchCalendar?.ForecastInterval ?? actual.Interval;
+            }
+            else if (skips.TryGetValue(offset, out var miss))
+            {
+                times[index] = miss.Time;
+            }
+            else if (offset > 0)
+            {
+                var previous = calendar.Find(fact => fact.Offset == offset - 1);
+                var anchor = times[index - 1];
+                var boundary = anchor.BoundaryReason;
+                if (previous?.Expired is not null && calendar[^1].Offset < offset)
+                    boundary = previous.ExpiryReason;
+                times[index] = anchor with
+                {
+                    ExpectedStartUtc = anchor.ExpectedStartUtc + forecastInterval,
+                    PlannedSlot = null,
+                    BoundaryReason = boundary
+                };
+            }
+        }
+        return times.ToImmutable();
+    }
+
+    private static (ImmutableArray<CenteredWindowSlotTime> Times, ImmutableArray<CenteredWindowCalendarChange> Changes)
+        ResolveLegacyTimes(CenteredWindowCheckpoint checkpoint, List<CalendarFact> calendar, DateTimeOffset cutoffUtc)
+    {
         var changes = ImmutableArray.CreateBuilder<CenteredWindowCalendarChange>();
         var times = checkpoint.ProjectedTimes;
         for (var offset = 1; offset <= 2; offset++)
@@ -75,50 +206,10 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
             }
         }
 
-        var observations = ImmutableArray.CreateBuilder<CenteredWindowSlotObservation>();
-        ExposureKey? admittedReference = null;
-        foreach (var fact in calendar)
-        {
-            var time = times[fact.Offset + CenteredWindowScheduler.CenterIndex];
-            if (time.ExpectedStartUtc != fact.Start || time.CadenceRevision != fact.Cadence)
-                throw new InvalidDataException("The live attempt differs from the window's projected cadence.");
-            if (fact is { CaptureId: { } capture, Manifest: { } manifest, Admitted: { } admitted })
-            {
-                var descriptor = manifest.Descriptor;
-                var raw = new CenteredRawEvidence(manifest, fact.ManifestHash!, fact.Run, IsCommitted: true);
-                var key = new ExposureKey(reference.Camera, reference.RunId, capture);
-                if (fact.Offset == 0)
-                    admittedReference = key;
-                var input = new CenteredWindowInput(key, descriptor.Capture.CaptureSequence, descriptor.Timing,
-                    descriptor.Artifact.ArtifactId, CaptureContractJson.ComputeDescriptorSha256(descriptor),
-                    descriptor.Artifact.ChecksumSha256, admitted);
-                var products = await SqliteCaptureProcessingStore.ReadCenteredWindowProductsAsync(
-                    transaction, checkpoint.Schedule, key, raw, admitted, cutoffUtc, cancellationToken).ConfigureAwait(false);
-                observations.Add(new(time, input, products, Attempt: fact.Attempt));
-            }
-            else if (fact.Expired is { } failed &&
-                (fact.ExpiryReason is "target-progress-unknown" or "schedule.start-window-closed" ||
-                    cutoffUtc >= checkpoint.Schedule.DeadlineUtc))
-            {
-                var uncertain = fact.ExpiryReason == "target-progress-unknown";
-                observations.Add(new(time, EmptySlotSettledUtc: failed, EmptySlotReason: fact.ExpiryReason,
-                    Attempt: fact.Attempt, EmptySlotKind: uncertain ? CenteredWindowEmptySlotKind.Uncertain : CenteredWindowEmptySlotKind.Failed));
-            }
-        }
-
-        var furthest = calendar.Count == 0 ? 0 : calendar[^1].Offset;
-        for (var offset = -2; offset < furthest; offset++)
-        {
-            var time = times[offset + CenteredWindowScheduler.CenterIndex];
-            if (time.BoundaryReason is null && !calendar.Exists(fact => fact.Offset == offset))
-            {
-                var later = calendar.Find(fact => fact.Offset > offset)!;
-                observations.Add(new(time, EmptySlotSettledUtc: later.Dispatched, EmptySlotReason: "nominal-slot-missed"));
-            }
-        }
-
-        return new(checkpoint.Schedule.GenerationId, admittedReference, changes.ToImmutable(), observations.ToImmutable());
+        return (times, changes.ToImmutable());
     }
+
+    private sealed record CommittedSkip(CenteredWindowSlotTime Time, DateTimeOffset ObservedUtc);
 
     private static async Task<List<CalendarFact>> ReadCalendarAsync(
         SqliteTransaction transaction, ExposureAttemptKey reference, DateTimeOffset cutoffUtc,
@@ -127,13 +218,29 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
         using var command = transaction.Connection!.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            WITH slots AS (
-                SELECT t.*, center.slot AS center_slot, attempt.ordinal, raw.capture_id, raw.manifest_json, raw.manifest_sha256,
+            WITH center AS MATERIALIZED (
+                SELECT run_id, slot FROM processing_centered_attempt_calendar WHERE attempt_id = $attempt
+            ), relevant AS (
+                SELECT t.*, center.slot AS center_slot
+                FROM center
+                JOIN processing_centered_attempt_calendar t ON t.run_id = center.run_id
+                    AND t.slot BETWEEN center.slot - 2 AND center.slot + 2
+                UNION ALL
+                SELECT t.*, center.slot AS center_slot
+                FROM center
+                JOIN processing_centered_attempt_calendar t ON t.run_id = center.run_id AND t.slot = (
+                    SELECT successor.slot FROM processing_centered_attempt_calendar successor
+                    WHERE successor.run_id = center.run_id AND successor.slot > center.slot + 2
+                    ORDER BY successor.slot LIMIT 1)
+            ), slots AS MATERIALIZED (
+                SELECT t.*, attempt.ordinal, raw.capture_id, raw.manifest_json, raw.manifest_sha256,
                     run.snapshot_json, run.snapshot_sha256,
                     COALESCE(json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
                         '$.projectedTimes[2].continuous'), 0) AS continuous,
                     json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
                         '$.projectedTimes[1]') AS projected_predecessor,
+                    json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
+                        '$.dispatchCalendar') AS dispatch_calendar,
                     CASE WHEN raw.capture_id IS NOT NULL THEN (
                         SELECT MIN(clock.settled_ticks)
                         FROM centered_exposure_products product
@@ -146,26 +253,28 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
                           AND execution.execution_class = 'Live' AND execution.trigger_kind = 'capture'
                           AND execution.allow_automatic_publication = 1
                     ) END AS product_ticks
-                FROM processing_centered_attempt_calendar center
-                JOIN processing_centered_attempt_calendar t ON t.run_id = center.run_id
-                    AND t.slot BETWEEN center.slot - 2 AND center.slot + 2
+                FROM relevant t
                 JOIN centered_exposure_attempts attempt ON attempt.attempt_id = t.attempt_id
                 JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
                 LEFT JOIN processing_centered_windows window ON window.window_sha256 = t.window_sha256
                 LEFT JOIN raw_captures raw ON raw.capture_id = attempt.capture_id AND raw.state = 'committed'
                     AND raw.agent_id = run.agent_id
-                WHERE center.attempt_id = $attempt AND run.agent_id = $agent AND run.camera_id = $camera
+                WHERE run.agent_id = $agent AND run.camera_id = $camera
             ), observed AS (
                 SELECT *,
                     MIN(COALESCE(admitted_ticks, product_ticks), COALESCE(product_ticks, admitted_ticks)) AS raw_ticks
                 FROM slots
             )
-            SELECT slot - center_slot, start_ticks, interval_ticks, integration_ticks, cadence,
+            SELECT MIN(slot - center_slot, 3), start_ticks, interval_ticks, integration_ticks, cadence,
                 MIN(dispatched_ticks, COALESCE(raw_ticks, dispatched_ticks)), raw_ticks, expired_ticks, expired_reason,
-                attempt_id, ordinal, CASE WHEN raw_ticks <= $cutoff THEN capture_id END, manifest_json, manifest_sha256,
-                snapshot_json, snapshot_sha256, continuous, projected_predecessor
+                attempt_id, ordinal,
+                CASE WHEN slot <= center_slot + 2 AND raw_ticks <= $cutoff THEN capture_id END, manifest_json, manifest_sha256,
+                snapshot_json, snapshot_sha256, continuous, projected_predecessor, slot, center_slot, dispatch_calendar
             FROM observed
             WHERE MIN(dispatched_ticks, COALESCE(raw_ticks, dispatched_ticks)) <= $cutoff
+                AND (slot <= center_slot + 2 OR
+                    (json_array_length(dispatch_calendar, '$.skipped') > 0 AND
+                     json_extract(dispatch_calendar, '$.firstAffectedSlot') <= center_slot + 2))
             ORDER BY slot;
             """;
         command.Parameters.AddWithValue("$attempt", reference.AttemptId.ToString("N"));
@@ -210,21 +319,28 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
             if (expiry is not null && (await reader.IsDBNullAsync(8, cancellationToken).ConfigureAwait(false) ||
                 string.IsNullOrWhiteSpace(reader.GetString(8))))
                 throw new InvalidDataException("An expired centered attempt has no durable reason.");
-            facts.Add(new(reader.GetInt32(0), At(reader, 1), TimeSpan.FromTicks(reader.GetInt64(2)),
+            var ordinal = reader.GetInt64(18);
+            var dispatch = CenteredWindowRuntimeSchedule.ReadDispatchCalendar(
+                await reader.IsDBNullAsync(20, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(20), ordinal);
+            // The successor outside the window supplies skip evidence only.
+            if (reader.GetInt32(0) > CenteredWindowScheduler.CenterIndex && dispatch is null)
+                continue;
+            facts.Add(new(reader.GetInt32(0), ordinal, reader.GetInt64(19), At(reader, 1), TimeSpan.FromTicks(reader.GetInt64(2)),
                 TimeSpan.FromTicks(reader.GetInt64(3)), reader.GetString(4), At(reader, 5),
                 capture is null ? null : At(reader, 6), expiry, expiry is null ? null : reader.GetString(8),
                 attempt, capture, manifest, manifestHash, run, reader.GetBoolean(16),
-                await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(17)));
+                await reader.IsDBNullAsync(17, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(17), dispatch));
         }
         return facts;
     }
 
     private static DateTimeOffset At(SqliteDataReader reader, int column) => new(reader.GetInt64(column), TimeSpan.Zero);
 
-    private sealed record CalendarFact(int Offset, DateTimeOffset Start, TimeSpan Interval, TimeSpan Integration,
+    private sealed record CalendarFact(int Offset, long Slot, long CenterSlot, DateTimeOffset Start, TimeSpan Interval,
+        TimeSpan Integration,
         string Cadence, DateTimeOffset Dispatched, DateTimeOffset? Admitted, DateTimeOffset? Expired, string? ExpiryReason,
         ExposureAttemptKey Attempt, Guid? CaptureId, ArtifactManifestV2? Manifest, string? ManifestHash, CenteredRunSnapshot Run,
-        bool Continuous, string? ProjectedPredecessorJson);
+        bool Continuous, string? ProjectedPredecessorJson, CenteredWindowDispatchCalendar? DispatchCalendar);
 
     internal static async Task MarkAdmittedAsync(SqliteTransaction transaction, ExposureAttemptKey attempt,
         DateTimeOffset now, CancellationToken cancellationToken)
