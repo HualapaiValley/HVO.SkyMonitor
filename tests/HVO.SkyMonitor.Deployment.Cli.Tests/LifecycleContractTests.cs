@@ -3781,6 +3781,7 @@ public sealed partial class LifecycleContractTests
     private sealed class FakeOwnerClient(Guid expectedAgentId) : IOwnerBootstrapClient
     {
         public Action<InstallationVerificationExpectation>? InspectVerification { get; init; }
+        public Func<TimeSpan?, CancellationToken, Task>? WaitForHealth { get; init; }
         public bool RejectNextVerification { get; set; }
         public string CurrentOwnerBootstrapState { get; set; } = "owner-password-change-required";
         public Queue<string> VerificationStates { get; } = new();
@@ -3804,7 +3805,7 @@ public sealed partial class LifecycleContractTests
             {
                 throw new InstallerException("CameraAgent health did not become ready: processing-lane quarantine");
             }
-            return Task.CompletedTask;
+            return WaitForHealth?.Invoke(timeout, cancellationToken) ?? Task.CompletedTask;
         }
         public Task<string> ReadStateAsync(string ownerEmail, string password, CancellationToken cancellationToken)
             => Task.FromResult("owner-password-change-required");

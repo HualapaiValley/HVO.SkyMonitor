@@ -259,7 +259,8 @@ public sealed record LifecycleOperationState(
     bool DeepSkyTransition = false,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LifecycleStateSnapshot? LeavePausedOriginalSnapshot = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? LeavePausedOriginalRestorePlanId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? LeavePausedOriginalRestorePlanId = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? SignedRecoveryPauseCommandId = null);
 
 public sealed record LifecycleAdmissionObservation(
     string State, long Version, long CaptureSequence, DateTimeOffset ObservedUtc,

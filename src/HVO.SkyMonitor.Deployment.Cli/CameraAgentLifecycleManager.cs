@@ -518,7 +518,7 @@ internal sealed partial class CameraAgentLifecycleManager
             if (continuity.CaptureVersion < recorded.CaptureVersion || continuity.CaptureSequence < recorded.CaptureSequence ||
                 continuity.CaptureVersion == recorded.CaptureVersion && continuity.CaptureState != recorded.CaptureState)
                 throw new InstallerException("Restore-only current admission regressed from the terminal recovery evidence.");
-            return (Result(operation.Kind, RecoveryOutcome(boundary, continuity), operation.OperationId,
+            return (Result(operation.Kind, RecoveryOutcome(boundary, continuity.CaptureVersion), operation.OperationId,
                 paths, manifest, manifest.DockerDaemon, true, true), verifiedOwner);
         }
 
@@ -572,7 +572,7 @@ internal sealed partial class CameraAgentLifecycleManager
             PostMutationContinuity = postBoundary,
             RestoreResumeReceipt = receipt
         }, cancellationToken).ConfigureAwait(false);
-        return (Result(operation.Kind, RecoveryOutcome(boundary, continuity), operation.OperationId,
+        return (Result(operation.Kind, RecoveryOutcome(boundary, continuity.CaptureVersion), operation.OperationId,
             paths, manifest, manifest.DockerDaemon, true, true), verifiedOwner);
     }
 
@@ -580,8 +580,8 @@ internal sealed partial class CameraAgentLifecycleManager
     private static LifecycleStateSnapshot? UnrestoredSnapshot(LifecycleOperationState operation)
         => operation.StateSnapshotRestoredUtc is null ? operation.StateSnapshot : null;
 
-    private static string RecoveryOutcome(LifecycleContinuityBoundary before, LifecycleContinuity current)
-        => current.CaptureVersion == before.CaptureVersion + 1
+    private static string RecoveryOutcome(LifecycleContinuityBoundary before, long currentVersion)
+        => currentVersion == before.CaptureVersion + 1
             ? "restored-previous-healthy-admission-resumed"
             : "restored-previous-healthy-resume-superseded-current-admission-preserved";
 
@@ -706,6 +706,7 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var owner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
+        var automaticSignedRecovery = signedImage is not null && !request.LeavePaused;
         if (request.LeavePaused)
         {
             if (signedImage?.VerifiedRelease.ChecksumsSha256 != PublishedRc2ChecksumsSha256)
@@ -761,6 +762,36 @@ internal sealed partial class CameraAgentLifecycleManager
         var operationRoot = Path.Combine(paths.OperationsRoot, "lifecycle", operation.OperationId.ToString("D"));
         var previousManifestPath = Path.Combine(operationRoot, "previous-instance-manifest.json");
         var previousResultPath = Path.Combine(operationRoot, "previous-installation-result.json");
+        if (IsPendingSignedAutomaticRecovery(operation))
+        {
+            if (!automaticSignedRecovery)
+                throw InstallerException.Refused("The pending automatic recovery requires the exact ordinary signed upgrade request.");
+            VerifyAutomaticRecoveryRelease(operation, signedImage!);
+            var original = await ReadRecoverySnapshotAsync(
+                paths, operation, previousManifestPath, previousResultPath, cancellationToken).ConfigureAwait(false);
+            if (original.Manifest != manifest || original.Result != installationResult)
+                throw InstallerException.Refused("The pending automatic recovery requires the unchanged predecessor records.");
+            if (operation.StateSnapshot is { } checkpoint)
+            {
+                var verified = await VerifyAutomaticRecoveryCheckpointAsync(paths, manifest, operation, checkpoint, cancellationToken)
+                    .ConfigureAwait(false);
+                if (UnrestoredSnapshot(operation) is not null)
+                    throw InstallerException.Refused("The pending automatic recovery has no completed checkpoint restore.");
+                VerifyCompletedRestorePlan(checkpoint, verified, operation.StateRestorePlan);
+            }
+            await ValidateComposeAuthorityAsync(docker, compose, manifest, cancellationToken).ConfigureAwait(false);
+            await docker.VerifyRecoveryContainerAsync(compose, paths, manifest, cancellationToken).ConfigureAwait(false);
+            var ownerState = operation.ExpectedOwnerBootstrapState ?? installationResult.OwnerBootstrapState;
+            _ = await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installationResult, manifest.Image,
+                verificationToken, uid, gid, cancellationToken, ownerState, ownerState == "owner-password-change-required",
+                allowQuarantinedReadiness: request.AllowQuarantinedReadiness, readinessTimeout: ImageChangeReadinessTimeout)
+                .ConfigureAwait(false);
+            var restoredLifecycle = CreateLifecycleClient(installationResult.Url, lifecycleClientFactory);
+            operation = await SettleSignedAutomaticRecoveryAsync(paths, operation, restoredLifecycle, lifecycleControlToken,
+                cancellationToken).ConfigureAwait(false);
+            return Result(operation.Kind, RecoveryOutcome(operation.PreMutationContinuity!, operation.PostMutationContinuity!.CaptureVersion),
+                operation.OperationId, paths, manifest, manifest.DockerDaemon, true, true);
+        }
         if (operation.MutationStarted && operation.Phase != LifecycleOperationPhase.Committed && !request.LeavePaused)
         {
             (manifest, installationResult) = await ReadRecoverySnapshotAsync(
@@ -1093,10 +1124,16 @@ internal sealed partial class CameraAgentLifecycleManager
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
             if (operation.StateSnapshot is { } interrupted && operation.StateSnapshotRestoredUtc is null)
             {
-                // The interruption came after the snapshot, so the candidate may have changed the stores. Whatever
-                // runs is stopped before they are put back, and the original image starts only on restored state.
-                await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
-                    ["stop"], cancellationToken).ConfigureAwait(false);
+                if (automaticSignedRecovery)
+                {
+                    await ProveStoppedSignedRestoreAsync(paths, manifest, operation, interrupted, docker, compose,
+                        operationRoot, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
+                        ["stop"], cancellationToken).ConfigureAwait(false);
+                }
                 OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
                 operation = await RestoreStateSnapshotAsync(
                     paths, manifest, operation, interrupted, request.Json, error, cancellationToken).ConfigureAwait(false);
@@ -1161,10 +1198,15 @@ internal sealed partial class CameraAgentLifecycleManager
                     operation.OperationId, operation.PreMutationContinuity!, cancellationToken).ConfigureAwait(false);
                 EnsureUpgradeStorage(paths, request.ImageArchive, manifest.ReplayProfile, rollback: false, snapshotRequired: true);
             }
+            var drainedBoundary = ToBoundary(continuity);
             operation = await RecordAsync(paths, operation with
             {
                 Phase = LifecycleOperationPhase.Drained,
-                PreMutationContinuity = ToBoundary(continuity)
+                PreMutationContinuity = drainedBoundary,
+                SignedRecoveryPauseCommandId = automaticSignedRecovery
+                    ? await ReadAutomaticRecoveryPauseAsync(paths, operation.OperationId, drainedBoundary, cancellationToken)
+                        .ConfigureAwait(false)
+                    : operation.SignedRecoveryPauseCommandId
             }, cancellationToken)
                 .ConfigureAwait(false);
             EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
@@ -1195,7 +1237,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     Phase = LifecycleOperationPhase.StateSnapshotRecorded,
                     StateSnapshot = snapshot,
                     StateSnapshotRestoredUtc = null,
-                    StateRestorePlan = request.LeavePaused ? null : operation.StateRestorePlan
+                    StateRestorePlan = request.LeavePaused || automaticSignedRecovery ? null : operation.StateRestorePlan
                 }, cancellationToken).ConfigureAwait(false);
                 if (operation.RetainedStateSnapshot is { } retainedState)
                 {
@@ -1364,6 +1406,10 @@ internal sealed partial class CameraAgentLifecycleManager
                     SafeFileSystem.WriteTextAtomic(
                         Path.Combine(operationRoot, "candidate-diagnostics.txt"),
                         diagnostics.ToString());
+                    var signedCheckpoint = automaticSignedRecovery ? UnrestoredSnapshot(operation) : null;
+                    if (signedCheckpoint is not null)
+                        await ProveStoppedSignedRestoreAsync(paths, manifest, operation, signedCheckpoint, docker, compose,
+                            operationRoot, recovery.Token).ConfigureAwait(false);
                     if (mutationStarted)
                     {
                         SafeFileSystem.WriteTextAtomic(compose.ComposeFile, originalCompose);
@@ -1385,12 +1431,12 @@ internal sealed partial class CameraAgentLifecycleManager
                     }
                     // The snapshot this recovery restores is authenticated before any container is stopped, so a
                     // damaged snapshot leaves whatever runs in place rather than an instance with nothing running.
-                    if (operation.StateSnapshot is { } pending && operation.StateSnapshotRestoredUtc is null)
+                    if (signedCheckpoint is null && UnrestoredSnapshot(operation) is { } pending)
                     {
                         await CameraAgentStateSnapshot.VerifyAsync(paths, manifest.InstanceId, pending, recovery.Token).ConfigureAwait(false);
                     }
                     EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(recovery.Token).ConfigureAwait(false));
-                    if (failedPhase is LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified)
+                    if (signedCheckpoint is null && failedPhase is (LifecycleOperationPhase.Mutating or LifecycleOperationPhase.CandidateVerified))
                     {
                         await docker.ComposeAsync(compose.ComposeFile, compose.EnvironmentFile, compose.ProjectName,
                             ["stop"], recovery.Token).ConfigureAwait(false);
@@ -1400,6 +1446,7 @@ internal sealed partial class CameraAgentLifecycleManager
                     // was stopped above, so the stores are put back before the original image starts on them.
                     if (operation.StateSnapshot is { } taken && operation.StateSnapshotRestoredUtc is null)
                     {
+                        if (signedCheckpoint is not null) OwnerRecoverySocket.RemoveStoppedSocket(paths, uid, gid);
                         operation = await RestoreStateSnapshotAsync(
                             paths, manifest, operation, taken, request.Json, error, recovery.Token).ConfigureAwait(false);
                     }
@@ -1407,6 +1454,9 @@ internal sealed partial class CameraAgentLifecycleManager
                     // Restoring the checkpoint and starting the predecessor can spend most of the preparation budget.
                     // Allow full semantic startup, protected proof, Docker verification and admission settlement after it.
                     using var settlement = new CancellationTokenSource(ImageRecoverySettlementTimeout);
+                    if (automaticSignedRecovery)
+                        operation = await RecordAsync(paths, operation with { FailureCode = SignedAutomaticRecoveryPending },
+                            settlement.Token).ConfigureAwait(false);
                     var restoredOwnerState = await VerifyCandidateAsync(
                         owner, docker, compose, paths, manifest, installationResult, manifest.Image,
                         verificationToken, uid, gid, settlement.Token, expectedOwnerState, allowOwnerStateProgression,
@@ -1422,20 +1472,29 @@ internal sealed partial class CameraAgentLifecycleManager
                             operation with { ExpectedOwnerBootstrapState = expectedOwnerState },
                             settlement.Token).ConfigureAwait(false);
                     }
-                    await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, settlement.Token).ConfigureAwait(false);
-                    operation = operation with
+                    if (automaticSignedRecovery)
                     {
-                        Phase = LifecycleOperationPhase.Prepared,
-                        MutationStarted = false
-                    };
+                        operation = await SettleSignedAutomaticRecoveryAsync(paths, operation, lifecycle, lifecycleControlToken,
+                            settlement.Token).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await lifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, settlement.Token).ConfigureAwait(false);
+                        operation = operation with { Phase = LifecycleOperationPhase.Prepared, MutationStarted = false };
+                    }
                 }
                 catch (Exception recoveryException)
                 {
+                    if (IsPendingSignedAutomaticRecovery(operation))
+                        throw new InstallerException(
+                            $"Candidate failed. Automatic signed recovery remains pending after predecessor startup: {Redaction.SafeDiagnostic(recoveryException.Message)}",
+                            exception);
                     throw new InstallerException(
                         $"Candidate failed and exact rollback also failed: {Redaction.SafeDiagnostic(recoveryException.Message)}", exception);
                 }
             }
-            await FailAsync(paths, operation, exception, CancellationToken.None).ConfigureAwait(false);
+            if (!IsRestored(operation))
+                await FailAsync(paths, operation, exception, CancellationToken.None).ConfigureAwait(false);
             if (exception is OperationCanceledException) throw;
             throw new InstallerException("The image lifecycle operation failed; the retained journal and diagnostics identify the recovery boundary.", exception);
         }
@@ -2073,10 +2132,14 @@ internal sealed partial class CameraAgentLifecycleManager
         CancellationToken cancellationToken)
     {
         var existing = await ReadOperationAsync(paths.LifecycleStatePath, cancellationToken).ConfigureAwait(false);
+        if (existing?.FailureCode == SignedAutomaticRestoreHeld)
+            throw InstallerException.Refused("Automatic signed recovery is held. Preserve the retained stores and checkpoints.");
         if (existing?.SchemaVersion == LeavePausedJournalVersion && !request.LeavePaused)
             throw InstallerException.Refused("The retained upgrade requires the original --resume --leave-paused request.");
         if (request.LeavePaused)
         {
+            if (existing is not null && IsPendingSignedAutomaticRecovery(existing))
+                throw InstallerException.Refused("The retained automatic recovery requires the exact ordinary signed upgrade request.");
             if (existing is null || existing.Kind != LifecycleOperationKind.Upgrade || existing.InstanceId != manifest.InstanceId ||
                 existing.OperationId != request.RecoveryOperationId || existing.RequestSha256 != request.ComputeRequestSha256())
                 throw InstallerException.Refused("Leave-paused requires the exact retained upgrade operation and original request.");
@@ -2110,7 +2173,7 @@ internal sealed partial class CameraAgentLifecycleManager
         // pre-mutation refusal journalled by an earlier release or an interrupted, cancelled, or crashed
         // preparation: a fresh operation of any kind may supersede it, while --resume of the matching request still
         // continues it. Only an operation that started mutating demands --resume.
-        if (existing?.RestoreResumeCommandId is not null && !IsRestored(existing))
+        if (existing?.RestoreResumeCommandId is not null && !IsRestored(existing) && !IsPendingSignedAutomaticRecovery(existing))
             throw InstallerException.Refused("Restore-only recovery has started; resume it with --restore-only and the same --operation-id.");
         if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing) && !IsRestored(existing) &&
             !IsAbandonedBackup(existing) &&
@@ -2280,6 +2343,9 @@ internal sealed partial class CameraAgentLifecycleManager
             value.Phase == LifecycleOperationPhase.Completed && value.Status != InstallationStatus.Completed ||
             value.Status == InstallationStatus.Completed && value.MutationStarted ||
             value.SignedReleaseChecksumsSha256 is { } checksums && (value.Kind != LifecycleOperationKind.Upgrade || !IsSha256(checksums)) ||
+            value.SignedRecoveryPauseCommandId is { } pause &&
+            (pause == Guid.Empty || value.SignedReleaseChecksumsSha256 is null ||
+             value.PreMutationContinuity is not { CaptureState: "Paused" } || pause == value.RestoreResumeCommandId) ||
             value.RestoreResumeCommandId == Guid.Empty ||
             value.RestoreResumeCommandId is not null &&
             (value.Kind != LifecycleOperationKind.Upgrade || value.Phase is not (LifecycleOperationPhase.Restoring or LifecycleOperationPhase.Restored)) ||
