@@ -26,11 +26,11 @@ revision. *Spool* is the local durable staging area for admitted and produced by
 | --- | --- | --- |
 | D1 | The Silo layout ships only as a clean install with a new state contract, a new state directory and an empty Silo bucket. Existing filesystem installs keep their roots and release. Nothing converts in place. | [2](#2-clean-start-and-release-boundary) |
 | D2 | Logical IDs stay application-issued and never derive from Silo version IDs. Exact versions are verified locators bound to a logical revision and its SHA-256. A verified restore or import may remap them; it never re-identifies. | [4.2](#42-logical-identities-and-exact-versions) |
-| D3 | Exposure admission keeps its local durability boundary, and Silo reachability is not on the admission path. A group becomes visible only after every exact locator it publishes (payloads, manifest and journal record) is persistence-qualified and verified by exact-byte reads, so no visible record can name a version that a power cut loses. | [5](#5-admission-staging-and-publication-boundaries) |
+| D3 | Exposure admission keeps its local durability boundary, and Silo reachability is not on the admission path. A group becomes visible only after every exact locator its committed records name (required payloads, manifest and `publish` record) is itself persistence-qualified in its own store and verified by exact-byte reads. A copy elsewhere is custody of the bytes, never qualification of the named locator. | [5](#5-admission-staging-and-publication-boundaries) |
 | D4 | Committed publication, live issue, copy, custody, remap, pin, policy and expiry records live in a generation-ordered journal inside the instance's own bucket. It is authoritative for rebuilding the SQLite catalog, and compaction removes segments only behind a verified, backed-up anchor. | [4.5](#45-durable-metadata-journal) |
 | D5 | Each published revision has a reopen set, which is needed to display it at its original revision, and a compute set, which is needed to recompute it. Policy may expire compute inputs without breaking reopen. | [6](#6-dependency-closure-availability-and-reopen) |
-| D6 | Holds name logical identities and point only from consumers to inputs, so they cannot cycle. They resolve to exact versions at deletion time and carry across writer generations and recovery. Evicting a local copy because a colder copy survives requires qualified protection of that exact survivor through confirmed completion of every local delete; otherwise last-copy authorization applies. | [7](#7-holds-writer-generations-retention-and-recovery) |
-| D7 | Physical proof of a version reads its exact bytes and computes length and SHA-256 independently. Expiry is complete only when space is physically recovered. Delete success and metadata HEAD prove neither. | [6.2](#62-availability-states), [7.4](#74-physical-reclamation) |
+| D6 | Holds name logical identities and point only from consumers to inputs, so they cannot cycle. They resolve to exact versions at deletion time and carry across writer generations and recovery. Evicting a local copy because a colder copy survives requires a non-expiring hold on that exact survivor until each local delete is conclusively resolved; otherwise only role-scoped last-copy authorization permits the delete. | [7](#7-holds-writer-generations-retention-and-recovery) |
+| D7 | Physical proof of a version reads its exact bytes and computes length and SHA-256 independently. Expiry is complete only when space is physically recovered. Delete success and metadata HEAD prove neither. Expiry receipts are scoped to their exact copy, and a role is `policy-expired` only under role-scoped authorization. | [6.2](#62-availability-states), [7.4](#74-physical-reclamation) |
 | D8 | First boot has no central dependency. Capture admission is persisted as paused before the first start, and the camera device reaches the candidate only after the former owner releases it. | [8.1](#81-clean-target-and-first-boot) |
 | D9 | Legacy `cameraagent reinstall` cannot hold control authority or camera exclusivity across its own restart and automatic resume. An early abort therefore stops and fences the candidate, proves zero admissions, and leaves the former instance and the camera fenced until an authority-preserving restore route exists. | [8.3](#83-early-abort-ordering) |
 | D10 | A resume is accepted only when its own pause is still the latest accepted command, so newer operator pauses win, including no-op pauses. A pressure pause is a separate fence. Provider acquisition stays off on the candidate through the abort window, and non-rewindable provider floors and halts are never reset. | [8.4](#84-pause-precedence), [8.5](#85-request-floors-and-identity-floors) |
@@ -173,8 +173,9 @@ and #1923 contracts differ at the integration source, they supersede these rows 
   `storeId` names a qualified store identity (local Silo, archive, future cold tier), not an endpoint URL, so
   endpoint relocation preserves it.
 - **Remap.** A verified restore or import that assigns new version IDs records `remap(old → new)` only after the new
-  bytes verify by length and SHA-256. Logical IDs, revisions and digests never change. Manifests stay immutable; the
-  journal's remap and copy records supersede the locator a manifest recorded at publication.
+  bytes verify by length and SHA-256. Logical IDs, revisions and digests never change. Manifests stay immutable. A
+  committed remap names the new exact locator, which must itself be persistence-qualified before readers use it; until
+  then readers of that member stay closed. Publication never remaps ([5.3](#53-group-publication)).
 - **Instance binding.** `instanceId` comes from the installer manifest. `storageBindingId` hashes `instanceId`, the
   qualified local store identity and the bucket. It is written once to `meta/instance.v1.json` and checked by
   preflight and startup. A mismatch refuses before mutation.
@@ -232,13 +233,13 @@ The journal is the instance-owned record that survives SQLite loss (#1964 design
 | `generation-open` | Starts generation `g` after takeover ([7.2](#72-writer-generations-and-fences)). It names the trusted anchor and cutoff it was rebuilt from, the highest prior generation and its evidence, the identity floors and the reason (install, restore, replacement). |
 | `publish` | Group revision visible: manifest locator and digest, member digests, and for a capture its agent ID and capture sequence |
 | `live-issue` | Centered stream and camera live interval start, ending the prior interval (`change_order` and UTC) |
-| `copy` | Verified copy of a manifest or payload version in a store (local, archive), with custody, verification time and method |
-| `reserve-survivor`, `release-survivor` | Qualified protection of an exact colder version for a local eviction ([7.3](#73-expiry-protocol)) |
+| `copy` | Verified copy of a manifest or payload version in a store (local, archive), with custody, verification time and method. A copy is custody of bytes; it never qualifies another locator. |
+| `reserve-survivor`, `release-survivor` | Non-expiring legal hold on an exact colder version for a copy-scoped local eviction, held until each local delete is conclusively resolved ([7.3](#73-expiry-protocol)) |
 | `remap` | Old locator to new locator after byte verification |
 | `pin` and `policy` | Operator pins and retention policy changes, so they survive SQLite loss |
-| `expiry-intent` | Locators to delete, per-copy custody, policy reason, last-copy flag and the hold-evaluation cutoff |
-| `expiry-disposition` | Observed outcome per locator (`deleted`, `already-absent`, `refused`) |
-| `availability` | `policy-expired`, `missing`, `quarantined` or `restored`, with evidence |
+| `expiry-intent` | Exact copy locators to delete, scope (`copy` eviction, or `role` expiry with its authorization), per-copy custody, policy reason, last-copy flag and the hold-evaluation cutoff |
+| `expiry-disposition` | Observed outcome for one exact copy locator (`deleted`, `already-absent`, `refused`); it never states a role outcome |
+| `availability` | Copy-scoped (`evicted`, `missing`, `quarantined`, `restored`) or role-scoped (`policy-expired`, only with a role-scoped `expiry-intent`), with evidence |
 | `checkpoint`, `anchor` | Compacted state covering `≤ (g, seq)` in `c/`, and the record that makes it a trusted anchor |
 
 - **Durable commit.** A segment counts as committed only when its exact version is persistence-qualified
@@ -301,36 +302,55 @@ reachability.
 
 Payloads, manifests and journal segments follow one rule. Each object's exact bytes are fsynced into the spool before
 its first PUT. It is then created once with a supplied checksum and read back by exact-version GET with independently
-computed length and SHA-256. #1968 may replace the readback only with an independently qualified equivalent. The spool
-copy is released only when all three of these hold:
+computed length and SHA-256. #1968 may replace the readback only with an independently qualified equivalent.
 
-1. The exact version is verified.
-2. The **qualified persistence condition** holds. Either the Silo profile #1966 qualifies (with the measured cost of
-   its disk-sync setting, including `MINIO_FS_OSYNC`) guarantees the version through power loss, or a verified second
-   copy exists.
-3. For a payload, the group that references it is published, or reconciliation has declared the staged work abandoned
-   and handed it to retention. For a manifest or segment, its group is visible and condition 2 holds for it.
+A locator is **persistence-qualified** when both of these hold for that exact store, bucket, key and version:
 
-Until then the bytes count against the spool bound. A version is **persistence-qualified** once conditions 1 and 2
-hold for it.
+1. The exact version is verified by GET and SHA-256.
+2. The store runs the Silo profile that #1966 qualifies, including the measured cost of its disk-sync setting such as
+   `MINIO_FS_OSYNC`. That profile guarantees an acknowledged, verified version through power loss.
+
+Qualification belongs to the named locator. A verified copy in another store is custody evidence for the bytes, in
+`copy` records and recovery sources, but it never qualifies a different locator. A record that names another copy names
+that copy's own qualified locator, committed before the group is published.
+
+The spool copy is released only when its named locator is persistence-qualified and its group is visible, or when
+reconciliation has declared the staged work abandoned and handed it to retention. Until then the bytes count against
+the spool bound.
 
 ### 5.3 Group publication
 
 Silo assigns a new version ID to every versioned PUT (F14). Replaying exact bytes after a lost version therefore
-creates a different locator. A visible record must never name a version that a power cut can lose, so every locator a
-group publishes is persistence-qualified before the group becomes visible.
+creates a different locator. A committed record must never name a version that a power cut can lose, so every locator a
+committed record names is persistence-qualified ([5.2](#52-staged-bytes-and-the-persistence-condition)) before that
+record is written. P3 is the commit point.
 
-| State | Entered when | Readers | On restart |
+| State | Entered when | Browsable | After a crash |
 | --- | --- | --- | --- |
-| `staged` | Members produced; every payload's exact bytes fsynced in the spool | None | Resume at P1 |
-| `payloads-qualified` (P1) | Every payload version created, verified by GET and persistence-qualified | None | Re-verify by GET; re-PUT any lost version from the spool and use only the new verified locator |
-| `manifest-qualified` (P2) | Manifest, naming only qualified payload locators, created from its spooled bytes, verified and qualified | None | Same rule for the manifest |
-| `recorded` (P3) | `publish` segment, naming the qualified manifest locator, created from its spooled bytes, verified and qualified | None | Same rule for the segment |
-| `visible` (P4) | SQLite marks the group visible with its journal sequence | Reopen and browse | None needed: every locator it names is qualified |
-| `abandoned` | Reconciliation abandons staged work before P4 | None | Unreferenced versions go to retention as orphan candidates |
+| `staged` | Members produced; every payload's exact bytes fsynced in the spool | No | Resume at P1 |
+| `payloads-qualified` (P1) | Every required payload's named locator created, verified and qualified | No | Re-verify by GET; re-PUT any lost version from the spool, and name only the new qualified locator |
+| `manifest-qualified` (P2) | Manifest, naming only qualified payload locators, created from its spooled bytes; its own locator qualified | No | Same rule for the manifest; a changed payload locator means a new manifest |
+| `recorded` (P3, commit point) | `publish` segment, naming the qualified manifest locator, created from its spooled bytes; its own locator qualified | Not until P4 | Roll forward to P4 after the checks below |
+| `visible` (P4) | SQLite marks the group visible with its journal sequence | Yes | Nothing to replay |
+| `abandoned` | Reconciliation abandons staged work before P3 | No | Unreferenced versions go to retention as orphan candidates |
 
+- **Before P3.** Everything before a durable P3 is staged work. It is never browsable, and rebuild ignores it.
+- **Roll-forward from P3.** A crash after a durable P3 and before P4 rolls the same logical revision forward. Before
+  serving, startup checks every `publish` record after the catalog cursor:
+  1. **Authority.** The record's generation is the current generation or a witnessed earlier one, and the segment's
+     predecessor hash matches.
+  2. **Identity.** The manifest's instance, storage binding, group and revision match the record.
+  3. **Exact versions.** GET and SHA-256 of the manifest and of every required member, at the exact locators named.
+
+  Only when all three pass does the group reach P4. If any fails, readers stay closed for that group, and the failure
+  is reported for the named locator as `missing` or as a conflict. This work is bounded by the records after the
+  cursor.
+- **Rebuild.** After catalog loss, rebuild applies checks 1 and 2 to every committed `publish` record, verifies each
+  manifest by GET and SHA-256, and marks member roles `unverified` ([7.5](#75-recovery)). Reopening a revision first
+  GETs and hashes its required named versions ([6.1](#61-reopen-and-compute-sets)), and stays closed for any that
+  fail.
 - **Ordering.** A record is written only after every locator it names is qualified. A locator replaced before then is
-  simply never referenced, and no visible manifest or `publish` record is ever remapped.
+  never referenced, and publication never remaps a committed manifest or `publish` record.
 - **Uncertain writes.** An uncertain PUT is retried with the same spooled bytes. A create-only conflict compares
   SHA-256: equal bytes mean the earlier write succeeded, different bytes stop the writer, and nothing is replaced.
 - **Stacks.** A stack or view revision publishes all evidence and image planes in one group, so readers never observe a
@@ -338,15 +358,15 @@ group publishes is persistence-qualified before the group becomes visible.
 - **Startup bound.** Startup work is bounded by unreleased spool objects plus journal records after the catalog
   cursor, independent of history size (F5).
 - **Qualification.** #1966 must qualify a Silo profile whose acknowledged, verified versions survive power loss. A
-  profile that cannot meet the condition at P4 would leave local-only groups unpublishable. Using a closed-state remap
-  alternative instead needs a contract revision ([14](#14-remaining-decisions)).
+  profile that cannot meet the condition for the named locator would leave local-only groups unpublishable. Using a
+  closed-state remap alternative instead needs a contract revision ([14](#14-remaining-decisions)).
 
 ### 5.4 Loss guarantees and recovery cutoffs
 
 | Event | Acknowledged admissions | Published revisions |
 | --- | --- | --- |
-| Process crash or kill | None lost | None lost; unpublished groups resume from their state ([5.3](#53-group-publication)) |
-| Host power loss | None lost if NVMe and ext4 honor flush, which #1968 and #1974 must prove by abrupt power loss. | None lost: every visible locator is persistence-qualified |
+| Process crash or kill | None lost | None lost; staged groups resume, and a durable P3 rolls forward ([5.3](#53-group-publication)) |
+| Host power loss | None lost if NVMe and ext4 honor flush, which #1968 and #1974 must prove by abrupt power loss. | None lost: every locator a committed record names is persistence-qualified |
 | Silo service down | None lost; admission continues to the spool bound, then a pressure pause | Local reads report temporarily unavailable |
 | Archive outage | None lost | Local unaffected; archive receipts pending |
 | SQLite catalog loss, Silo intact | None lost when non-rebuildable state survives; otherwise it comes from the instance backup. Unpublished spool sidecars carry identity for recovery (#1972). | Rebuilt to the verified cutoff |
@@ -363,14 +383,20 @@ primary loss, recovery reports two cutoffs and a disposition for every expected 
 **Per-role dispositions.** The expected roles are the members of every group up to the publication cutoff and every
 admitted capture up to the admission cutoff. Each is evaluated against every surviving source: a retained local Silo,
 durable spool entries in the restored State, exact payload versions in the sealed backup, and verified archive copies.
+Expiry receipts are scoped to the exact copy they name ([4.5](#45-durable-metadata-journal)). A role's disposition comes
+from its independently checked copies and from any role-scoped authorization, never from one copy's eviction.
 
 | Disposition | Meaning |
 | --- | --- |
 | `recoverable` | Exact bytes verified by GET and SHA-256 in a named source; that source and the verification time are its evidence cutoff |
 | `unverified` | Not checked yet; the lazy phase has not reached it ([7.5](#75-recovery)) |
-| `temporarily-unavailable` | A source that may hold it is unreachable |
-| `policy-expired` | An `expiry-disposition` and `availability` record exist |
-| `missing` | Every source that may hold it is reachable and checked, none holds verifiable bytes, and no expiry record exists |
+| `temporarily-unavailable` | No copy is verified, and a source expected to hold it, such as a protected archive survivor, has not been checkable |
+| `policy-expired` | A role-scoped `expiry-intent` with its authorization exists, and every copy has a deletion disposition |
+| `missing` | Every source that may hold it is reachable and checked, none holds verifiable bytes, and no role-scoped authorization exists. Copy-scoped evictions do not count. |
+
+Suppose a deliberate local eviction relied on a protected archive survivor. The role stays available through the
+archive. If that archive copy is later verified absent without role-scoped authorization, the role is `missing`; while
+the archive cannot be checked, the role is `temporarily-unavailable`.
 
 The cutoffs can differ in either direction:
 
@@ -444,17 +470,19 @@ measured headroom recovery and clears only that pause ([8.4](#84-pause-precedenc
 - **Reopen set R.** This is what exact reopen needs: the manifest, the base's `Preview`, `Science` where displayed,
   `ClosedWindow`, and the layer members that the table below requires
   (`CAC/Gallery/CenteredViewPublication.cs:21`, `:70-81`, `:107`).
-- **Bindings versus bytes.** The validator binds `Ready`, `Partial` and `AssessedEmpty` layers to a committed evidence
-  product, and any layer may carry an evidence identity (F17). The manifest keeps every binding (evidence identity,
-  observation time and evidence order) whatever the availability of the bytes. Which bytes exact reopen needs depends
-  on the layer state:
+- **Bindings versus bytes.** The validator requires a committed evidence binding for `Ready`, `Partial` and
+  `AssessedEmpty` layers, and accepts a supplied evidence identity on a layer in any state (F17). The revision ID
+  hashes the complete layer list (`CAC/Gallery/SqliteCenteredViews.Writes.cs:355-356`), so every supplied binding
+  (evidence identity, observation time and evidence order) is part of canonical revision identity. The manifest and
+  every rebuild keep each binding exactly as supplied, in every layer state, whatever the availability of its bytes.
+  Which member bytes block exact reopen is a separate question that depends only on the layer state:
 
-| Layer state | Binding kept in the manifest | Bytes exact reopen requires | If those bytes are unavailable |
+| Layer state | Binding | Bytes whose absence blocks exact reopen | If those bytes are unavailable |
 | --- | --- | --- | --- |
-| `Ready`, `Partial` | Evidence identity, observation time and order (required); drawable | The evidence payload | Not exactly reopenable; the missing member is named |
-| `AssessedEmpty` | Evidence identity, observation time and order (required) | None; the empty result is shown from the binding | Reopens; evidence availability is reported separately |
-| `Incompatible` | Evidence identity when present | None | Reopens with the recorded reason |
-| `Waiting`, `NotConfigured` | None | None | Later evidence arrives only as a later revision |
+| `Ready`, `Partial` | Required and kept exactly, with the drawable | The evidence payload | Not exactly reopenable; the missing member is named |
+| `AssessedEmpty` | Required and kept exactly | None; the empty result is shown from the binding | Reopens; evidence availability is reported separately |
+| `Incompatible` | Kept exactly when supplied | None | Reopens with the recorded reason |
+| `Waiting`, `NotConfigured` | Kept exactly when supplied | None | Reopens; later evidence arrives only as a later revision |
 
 - **Compute set C.** This is what is needed to recompute or reprocess a revision: the raw and linear inputs,
   `Contributors`, registration artifacts, calibration and normalization-plan masters, and recipe inputs
@@ -469,7 +497,7 @@ measured headroom recovery and clears only that pause ([8.4](#84-pause-precedenc
 
 ### 6.2 Availability states
 
-Availability is tracked per artifact revision and per copy:
+Availability is tracked per copy and per role (artifact revision). A copy state never implies a role state:
 
 | State | Meaning | Evidence |
 | --- | --- | --- |
@@ -477,7 +505,8 @@ Availability is tracked per artifact revision and per copy:
 | `archived` | Verified version in an archive store | `copy` record with archive receipt |
 | `pending-archive` | Published locally; archive receipt not yet verified | Copy backlog |
 | `temporarily-unavailable` | Store or tier unreachable | Probe failure; never inferred to be missing |
-| `policy-expired` | Deleted under policy | `expiry-disposition` plus `availability` record |
+| `evicted` | This exact copy deliberately deleted under a copy-scoped expiry; the role may survive elsewhere | `expiry-disposition` for that copy |
+| `policy-expired` | The role deleted under role-scoped authorization | Role-scoped `expiry-intent`, an `expiry-disposition` for every copy, and a role `availability` record |
 | `missing` | Expected version absent or wrong digest with no expiry record | Physical verification failure |
 | `quarantined` | Retained but refused for use | `availability` record |
 | `unverified` | Recovered history not yet checked by GET ([7.5](#75-recovery)) | Recovery state |
@@ -590,29 +619,34 @@ createdGeneration)`. It resolves to exact versions only when a deletion is evalu
 1. Dry run: deterministic candidates and reasons from per-role policy and pressure (#1970).
 2. Resolve holds and every retained reference to each candidate exact version. Shared content-addressed versions are
    deleted only when no retained revision references them.
-3. When a local eviction relies on a colder copy, reserve that exact survivor with **qualified protection**. It must
-   stay valid through confirmed completion of every local delete issued for it. Qualified protection is either an
-   archive-side per-version legal hold, which has no expiry, or a retain-until renewed so that it never lapses while
-   any local delete is unconfirmed. Verify the survivor by exact-version GET and SHA-256, then commit
-   `reserve-survivor` with the protection evidence. A receipt alone never reserves a survivor. Without qualified
-   protection, the local copy counts as a last copy and needs explicit last-copy authorization.
-4. Append `expiry-intent` with each copy's custody.
-5. Before issuing or retrying each local delete, revalidate the protection from the archive's own protection state:
-   the hold is present, or the retain-until covers the bounded time to confirmed completion. Renew it when needed.
-   A GET that still succeeds proves nothing about protection, because an expired version can be swept at any time. If
-   protection cannot be revalidated or renewed, stop and require last-copy authorization.
-6. Delete the local exact versions by version ID.
-7. Confirm completion by proving absence (`NoSuchVersion`), including after an uncertain result or a restart. An
-   unconfirmed delete keeps the protection in place, and step 5 runs again before any retry.
-8. Re-verify the survivor by GET, then append per-copy `expiry-disposition` and `availability policy-expired`
-   records. Release the protection, or leave the version to the archive's own retention.
-9. Add the bytes to reclaim-pending accounting until physical recovery ([7.4](#74-physical-reclamation)).
+3. Choose the scope. A **copy-scoped** eviction removes one exact copy while the role survives in another copy. A
+   **role-scoped** expiry removes the role itself, including its last copy, and needs role-scoped authorization under
+   the explicit last-copy policy.
+4. For a copy-scoped local eviction, place a **non-expiring per-version legal hold** on the exact archive survivor
+   with the archive custody credential. Verify the survivor by exact-version GET and SHA-256, then commit
+   `reserve-survivor` with the hold evidence. This is the first-release rule.
+   - A finite retain-until is not protection, because worker failure or a missed renewal can let it lapse while an
+     accepted delete is still unresolved. A receipt alone is not protection either.
+   - If the hold cannot be established, fail closed and send no delete, unless role-scoped last-copy authorization
+     exists.
+5. Append `expiry-intent` with its scope and each copy's custody.
+6. Before issuing or retrying a local delete, confirm the hold in the archive's own protection state. A GET that still
+   succeeds proves nothing about protection.
+7. Delete the local exact version by version ID.
+8. Resolve the delete conclusively: either prove absence (`NoSuchVersion`), or prove the version present with
+   storage-side evidence that no delete is in flight, which is a verified Silo exit as in takeover
+   ([7.2](#72-writer-generations-and-fences)). Until then the hold stays. That includes while the worker is down,
+   across restarts, and while an accepted delete may still complete later (F15).
+9. Re-verify the survivor by GET, then append the copy-scoped `expiry-disposition` and `availability evicted` records
+   for the local copy. Release the hold, or leave the version to the archive's own retention.
+10. Add the bytes to reclaim-pending accounting until physical recovery ([7.4](#74-physical-reclamation)).
 
-- **Restart.** Reservations, intents and issued deletes are journaled, so a restart resumes them at step 5. A
-  reservation that expired during the restart must be renewed and the survivor re-verified before any retry;
-  otherwise last-copy authorization is required. If the survivor vanished before step 6, the delete is abandoned. A
-  survivor missing after step 6 cannot occur under qualified protection; if it is observed, it is reported as
-  `missing` and escalated.
+- **Role expiry.** A role-scoped expiry deletes every copy under its authorization. It appends a disposition per copy
+  and `availability policy-expired` for the role.
+- **Restart.** Reservations, intents and issued deletes are journaled, and a restart resumes at step 6 with the hold
+  still in place. If the survivor vanished before step 7, the delete is abandoned. The archive's sweep cannot remove a
+  held survivor. Any later loss of it is unexpected, and the role follows
+  [5.4](#54-loss-guarantees-and-recovery-cutoffs) (`missing` or `temporarily-unavailable`) and is escalated.
 - **Archive credentials.** The source's replication credential at the archive must lack object and version delete,
   lifecycle, retention and hold changes. #1969 proves this with a refused delete, and the race test runs the
   archive's own sweep between reservation and local delete.
@@ -929,21 +963,25 @@ source that meets the launch hold ([9](#9-branch-and-release-strategy)):
 | Kill after a complete pair, before the journal commit | Reconciliation verifies the pair against its descriptor and recovers one committed capture (`CAC/RawIngress/RawIngressReconciler.cs:191`, `:236`). A mismatched pair is quarantined (`:193`). | #1968 |
 | Kill after the journal commit | Admission survives; spool transfer resumes; one qualified exact version per payload | #1968 |
 | Uncertain PUT of a payload, manifest or segment | Exact-byte retry; equal digest is success; a different digest stops the writer | #1967, #1968 |
-| Kill or power cut in each publication state before `visible` | The group stays invisible. A lost unqualified version is re-PUT from the spool, and only its new verified locator is used; records are written over qualified locators only. | #1967, #1968 |
+| Interruption before a durable P3 | The group stays `staged` and unbrowsable, and rebuild ignores it. A lost unqualified version is re-PUT from the spool, and only its new qualified locator is named. | #1967, #1968 |
+| Crash after a durable P3, before P4 | Startup rolls the same logical revision forward to P4 only after the authority, identity and exact-version checks pass. If one fails, readers stay closed and the named locator is reported. | #1967, #1968 |
+| Named original locator lost while a verified colder replica survives | The replica does not qualify the original. Reopen stays closed for that named member, and the replica is reported only as custody of the bytes. | #1967, #1969 |
 | Fault between staging stack planes and group commit | Readers see only settled stacks | #1968 |
 | Abrupt host power loss after acknowledged **admission** | Admission survives | #1968, #1974 |
-| Abrupt host power loss after acknowledged **publication** | Reopen the same logical revision, and GET with SHA-256 every required member at the exact locators its manifest and `publish` record name. All verify without remap, because P4 required qualification. | #1974 |
+| Abrupt host power loss after acknowledged **publication** | Reopen the same logical revision, and GET with SHA-256 every required member at the exact versions its manifest and `publish` record name. All verify without remap, because each named locator was qualified before P3. | #1974 |
 | Catalog deleted before any trusted anchor exists | Ordered replay from the first segment of generation 1 rebuilds the same groups and pointers | #1967 |
 | Damaged newest checkpoint | Replay falls back to the previous trusted anchor | #1967 |
 | SQLite catalog deleted | Rebuild to the cutoff with stable IDs, first, latest and last-live pointers, layer bindings, previews, original view revisions, and expired versus missing | #1967 |
 | Reopen with `AssessedEmpty` evidence bytes unavailable; with `Ready` evidence bytes missing | Reopens and reports evidence availability; not exactly reopenable, with the missing member named | #1967, #1971 |
+| Valid `Waiting` or `NotConfigured` layer with a supplied evidence binding | Binding and the same revision ID preserved through publication and rebuild; reopen does not require its bytes | #1967, #1971 |
 | Silo down during capture | Spool grows, then pressure pause; drains on recovery | #1968, #1970 |
 | Deleted version with a valid catalog and metadata (#1059 negative control on the new layout) | `missing`, found by exact-version GET | #1967, #1968 |
 | Damaged payload bytes with intact metadata and stored checksum | `missing`, found by independently computed SHA-256 or a Silo read error; HEAD alone passes and is not accepted as proof | #1967, #1968 |
-| Expiry interrupted after intent or after delete | Idempotent completion; `policy-expired` | #1970 |
-| Archive sweep between survivor reservation and local delete | Reserved survivor stays readable by GET; without qualified protection the delete needs last-copy authorization | #1969, #1970 |
-| Restart after the survivor's retain-until expired, before a delete retry | Protection is renewed and the survivor re-verified before the retry, or last-copy authorization is required; a successful GET alone is not accepted | #1970 |
-| Local delete accepted but stalled while protection nears expiry | Protection is renewed, or held, until absence is confirmed | #1970 |
+| Expiry interrupted after intent or after delete | Idempotent completion; `evicted` for a copy-scoped eviction, `policy-expired` for a role-scoped expiry | #1970 |
+| Archive sweep between survivor reservation and local delete | The legal-held survivor stays readable by GET; without a legal hold no non-last-copy delete is sent | #1969, #1970 |
+| Accepted local delete completes later while the worker is down, or stays ambiguous across restart | The legal hold stays on the survivor throughout, until absence is proven or a verified Silo exit shows no delete in flight. The hold is confirmed before any retry. | #1970 |
+| Only expiring protection (retain-until) is available | Refused before a non-last-copy delete is sent | #1969, #1970 |
+| Local copy deliberately evicted while the archive survivor is protected; the archive copy is later verified absent without role-scoped authorization | The role stays available through the archive after the eviction. After the verified loss it is `missing`. While the archive cannot be checked it is `temporarily-unavailable`. | #1970, #1972 |
 | Replication credential attempts a target delete | Refused | #1969 |
 | Takeover with an accepted delete stalled beyond client exit and credential disable | The generation does not advance until the Silo process exit is verified; reconciliation records the delete's actual outcome | #1966, #1972 |
 | Silo exit or data-root exclusivity cannot be verified during takeover | Takeover stays fenced; no admission, publication or expiry | #1972 |
@@ -974,10 +1012,10 @@ The gates copy the GitHub dependencies of each issue.
 | Issue | Implements | Gate |
 | --- | --- | --- |
 | [#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966) runtime | Topology, release record and artifact verification (2); pinned stock Silo, bucket, marker, fence bootstrap and per-generation credentials (4.3, 7.2); sync setting and cost, and durable acknowledged versions for P4 (5.2, 5.3); Silo stop, exit verification and data-root exclusivity (7.2); private listeners and credentials; binding preflight; paused first boot with an atomic first resume; device allocation (8.1, 8.4) | After #1965; independent of #1967 |
-| [#1967](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1967) catalog | Identities, manifests, journal, exact-byte replay, trusted anchors and ordered replay from generation 1, publication states, catalog, format identities, availability, pointers and layer bindings, rebuild (4.2–4.7, 5.3, 6.1–6.3) | After #1965; any S3 fixture; independent of #1966 |
+| [#1967](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1967) catalog | Identities, manifests, journal, exact-byte replay, trusted anchors and ordered replay from generation 1, publication states and P3 roll-forward checks, catalog, format identities, copy- and role-scoped availability, pointers and layer bindings, rebuild (4.2–4.7, 5.2, 5.3, 6.1–6.3) | After #1965; any S3 fixture; independent of #1966 |
 | [#1968](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1968) store | Every 3.2 disposition, spool and persistence condition, bounded startup, power-loss proof (3, 5). Records the delta between the accepted centered contracts at its integration source and 3.2 and 6.3. | After #1966 and #1967; release integration also needs the launch hold (9) |
-| [#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969) replica | Copy and custody records, archive confirmation, coverage of `m/`, `j/`, `c/`, replication credential restriction, per-version legal hold qualification, archive generation witness (4.5, 5.4, 6.4, 7.3) | After #1968 |
-| [#1970](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1970) retention | Holds with terminal-state release and retry revalidation, the satellite archive edge, expiry protocol, survivor protection through confirmed completion, reclamation, pressure pause (5.5, 7.1, 7.3, 7.4) | After #1969 |
+| [#1969](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1969) replica | Copy and custody records, archive confirmation, coverage of `m/`, `j/`, `c/`, replication credential restriction, non-expiring per-version legal hold qualification, archive generation witness (4.5, 5.4, 6.4, 7.3) | After #1968 |
+| [#1970](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1970) retention | Holds with terminal-state release and retry revalidation, the satellite archive edge, copy- versus role-scoped expiry, a non-expiring survivor hold until each delete is conclusively resolved, reclamation, pressure pause (5.5, 7.1, 7.3, 7.4) | After #1969 |
 | [#1971](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1971) restore | Reopen by layer state and compute closure, leases, cache, and reporting of unverified roles during lazy recovery (5.4, 6, 7.5) | After #1969 |
 | [#1972](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1972) recovery | Cutoffs and per-role dispositions, generation witnesses and identity ranges, takeover sequence, recovery states, lazy verification, local-only RTO, held expiry (4.5, 5.4, 7.2, 7.5, 8.5, 10.3) | After #1970 |
 | [#1973](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1973) operations | States, pauses, alarms against budgets (5.5, 6.2, 10) | After #1970 and #1971 |
@@ -1023,7 +1061,7 @@ Settled: the first Silo release uses the centered profile, and its launch is hel
 | Decision | Recommendation | Decides |
 | --- | --- | --- |
 | Authority-preserving restore route for the former owner (8.3) | Provide a route meeting the 8.3 conditions before the canary, as an installer change outside #1965. Until then an early abort leaves the candidate, the former instance and the camera fenced. | Roy, before #1975 |
-| Survivor protection mechanism (7.3) | Qualify per-version archive legal holds on the pinned release; otherwise use a renewed retain-until or last-copy authorization | #1969 evidence |
+| Survivor protection mechanism (7.3) | Qualify non-expiring per-version legal holds on the pinned archive release; without them, every local eviction needs role-scoped last-copy authorization | #1969 evidence |
 | Storage drain for takeover (7.2) | Qualify Silo stop, exit verification and data-root exclusivity on the pinned release; until then takeover on retained storage stays fenced | #1966 evidence |
 | Durable acknowledged versions on the pinned Silo (5.3) | #1966 qualifies the disk-sync profile; if it cannot, publication needs a contract revision for a closed-state remap alternative | #1966 evidence, then Roy |
 | Generation witness for local-only sites without an off-primary target (5.4) | Configure the sealed-backup target as a witness before the first resume; otherwise any recovery stays fenced | Roy, #1972 |
