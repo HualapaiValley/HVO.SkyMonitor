@@ -87,7 +87,8 @@ public sealed class SiloJournalBoundaryTests
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
         var anchor = await new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock)
             .WriteAsync(CancellationToken.None).ConfigureAwait(false);
-        await silo.AppendAsync(anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) }).ConfigureAwait(false);
+        var sealed1 = anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) };
+        await silo.AppendAsync(sealed1).ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 2)).ConfigureAwait(false);
         foreach (var key in silo.Local.Keys(SiloObjectNamespace.JournalPrefix))
         {
@@ -102,13 +103,66 @@ public sealed class SiloJournalBoundaryTests
         var unreceipted = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, Writer: writer)).ConfigureAwait(false);
         unreceipted.StartKind.Should().Be("genesis", "without a receipt nothing proves which version at the replica's key is the anchor's");
 
-        silo.Authority.ReceiptedCheckpoints[(anchor.Checkpoint, silo.Archive.Descriptor.StoreId)] = receipted;
+        silo.Authority.ReceiptedCheckpoints[(SiloTestAuthority.Seal(sealed1), silo.Archive.Descriptor.StoreId)] = receipted;
         var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, Writer: writer)).ConfigureAwait(false);
 
         rebuilt.StartKind.Should().Be("anchor", "the receipted version still verifies although a newer one holds the key");
         rebuilt.Anchor.Should().Be(anchor.Covers);
         rebuilt.Authority.EndReason.Should().Be(SiloPrefixEnd.Tail);
         rebuilt.Authority.UnknownInterval.Should().BeFalse();
+    }
+
+    [TestMethod]
+    [DataRow("later-receipt", DisplayName = "the first anchor's receipted version is gone; a later anchor's receipt reads back")]
+    [DataRow("wrong-receipt", DisplayName = "the later anchor's receipt names other bytes; no anchor qualifies")]
+    public async Task EveryTrustedAnchorOfACheckpointIsTriedBeforeFallingBack(string later)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        var anchor = await new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock)
+            .WriteAsync(CancellationToken.None).ConfigureAwait(false);
+        // The same checkpoint is anchored twice, after two seals whose receipts name different replica versions.
+        var first = anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) };
+        var second = anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-2" }) };
+        await silo.AppendAsync(first).ConfigureAwait(false);
+        await silo.AppendAsync(second).ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 2)).ConfigureAwait(false);
+        // The replica holds only the journal after the checkpoint: replay from generation 1 is impossible there.
+        foreach (var key in silo.Local.Keys(SiloObjectNamespace.JournalPrefix))
+        {
+            SiloObjectNamespace.TryParseSegmentKey(key, out var position).Should().BeTrue();
+            if (position > anchor.Covers)
+            {
+                silo.Archive.Plant(key, silo.Local.Read(key, silo.Local.Current(key)!));
+            }
+        }
+        var bytes = silo.Local.Read(anchor.Checkpoint.Key, anchor.Checkpoint.VersionId);
+        var gone = silo.Archive.Locator(anchor.Checkpoint.Key, silo.Archive.Plant(anchor.Checkpoint.Key, bytes));
+        silo.Archive.Delete(gone);
+        var readable = silo.Archive.Locator(anchor.Checkpoint.Key,
+            silo.Archive.Plant(anchor.Checkpoint.Key, later == "later-receipt" ? bytes : "{\"format\":\"other bytes\"}"u8.ToArray()));
+        silo.Authority.ReceiptedCheckpoints[(SiloTestAuthority.Seal(first), silo.Archive.Descriptor.StoreId)] = gone;
+        silo.Authority.ReceiptedCheckpoints[(SiloTestAuthority.Seal(second), silo.Archive.Descriptor.StoreId)] = readable;
+        silo.Authority.TrustAnchors = true;
+
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, Writer: await silo.WriterEvidenceAsync().ConfigureAwait(false)))
+            .ConfigureAwait(false);
+
+        if (later == "later-receipt")
+        {
+            rebuilt.StartKind.Should().Be("anchor", "the second anchor of the same checkpoint qualifies when the first cannot");
+            rebuilt.Anchor.Should().Be(anchor.Covers);
+            rebuilt.Authority.EndReason.Should().Be(SiloPrefixEnd.Tail);
+            rebuilt.Authority.UnknownInterval.Should().BeFalse();
+            (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(1), "r1", CancellationToken.None).ConfigureAwait(false))!
+                .State.Should().Be("visible", "the checkpoint carries what the replica's journal no longer holds");
+        }
+        else
+        {
+            rebuilt.StartKind.Should().Be("genesis", "a receipt that names other bytes never qualifies its anchor");
+            rebuilt.Authority.PrefixEnd.Should().BeNull();
+            rebuilt.Authority.UnknownInterval.Should().BeTrue();
+        }
     }
 
     /// <summary>The same opening segment with one field of its opening record replaced by a JSON value.</summary>

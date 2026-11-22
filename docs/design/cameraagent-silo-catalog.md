@@ -93,14 +93,21 @@ Publication moves through these states, recorded in `publication-state.db` (5.3)
    each PUT the key is marked unresolved, and storing the version it produced resolves it.
 3. `manifest-qualified` (P2): every named payload version is read back again first, and a lost one is recreated from
    its spooled bytes. The manifest then names only verified versions. Its exact bytes are spooled before the first PUT.
-4. `recorded` (P3): a pending commit of this revision is reconciled first. A segment that may have been written,
-   because a write timed out after it could have landed, a crash left a write in flight, or any earlier attempt
-   landed, is replayed with its exact spooled bytes. The revision is committed once and nothing it names changes
-   afterwards. A segment that provably never reached the store, because it was never sent or the store definitely
-   refused every attempt, is withdrawn. The group is then requalified from its staged inputs before its first actual
-   commit, which takes the same uncommitted sequence. An absent key is never taken as proof that nothing was written.
-   Then every named version, manifest included, is read back again, never trusting a proof from P1 or P2. A lost manifest is recreated from its exact spooled bytes under the same digest
-   key. A lost payload is recreated from its spooled bytes, and one transaction re-names the member and supersedes the
+4. `recorded` (P3): a pending commit of this revision is reconciled first. Each create-only write reports one
+   result for its whole history, and that result only rises: `created` once an attempt was acknowledged, `possibly
+   applied` once an attempt found bytes at the key or ended in a way that could have landed, and `provably not
+   applied` only while every attempt was definitely refused. Reads are not writes. A GET that misses or a HEAD that
+   times out never lowers the result, so it can never clear an earlier possible application.
+   - A segment that may have been written is replayed with its exact spooled bytes. That covers a timeout after it
+     could have landed, a crash that left a write in flight, and any earlier attempt that landed or found bytes. The
+     replay finds the acknowledged write and commits it once, and nothing it names changes afterwards. If other bytes
+     hold that sequence, the writer stays fenced on its pending bytes.
+   - A segment that provably never reached the store, because it was never sent or the store definitely refused every
+     attempt, is withdrawn. The group is then requalified from its staged inputs before its first actual commit, which
+     takes the same uncommitted sequence. An absent key is never taken as proof that nothing was written.
+
+   Then every named version, manifest included, is read back again, never trusting a proof from P1 or P2. A lost
+   manifest is recreated from its exact spooled bytes under the same digest key. A lost payload is recreated from its spooled bytes, and one transaction re-names the member and supersedes the
    manifest built from the old locator:
    - the superseded manifest's exact never-committed locator is handed to retention as an orphan candidate. An
      uncertain write of it is resolved through its digest key, which no committed record can name; if nothing is
@@ -150,16 +157,20 @@ not persistence-qualified is never named by a committed record.
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
   length, which a newer version at the same key cannot hide. A replica is read only through the exact version a verified
-  receipt names there (`ISiloAnchorTrust.ReceiptedCopy`), never through whatever its key holds now. An unreadable,
-  oversized, absent, unreceipted or unproven candidate is skipped and an older one tried, then generation 1. `SiloJournalRetention.RemovableThrough` permits removing segments
-  only behind the previous trusted anchor.
+  receipt names there (`ISiloAnchorTrust.ReceiptedCopy`), never through whatever its key holds now. The same checkpoint
+  may be anchored more than once, each anchor with its own exact version or receipt. Every trusted anchor of it is
+  tried in chain order before selection falls back. A receipt that names other bytes, another key or another store
+  never qualifies its anchor. Only when no anchor of a checkpoint qualifies is an older one tried, then generation 1.
+  `SiloJournalRetention.RemovableThrough` permits removing segments only behind the previous trusted anchor.
 - **Reporting.** The catalog reports these separately (4.5, 5.4):
   - the authenticated prefix end and why it ended;
   - the complete-publication frontier;
   - whether an authority-unknown interval follows;
   - the publications named past the prefix, as authority-unproven. A complete scan replaces them. A scan that could
-    not read everything only adds to them, so a known gap keeps its names while the journal times out. Reading the
-    committed head again clears them.
+    not read everything only adds to them, so a known gap keeps its names while the journal times out. Only work
+    beyond the authenticated cursor is unproven. Applying a segment removes what it holds from the set in the same
+    transaction, so the prefix and the unproven set stay disjoint in every committed state. Reading the committed head
+    again clears them.
 
   The prefix end, the unproven names and every role disposition the authority-unknown interval implies are recorded in
   one transaction, so a crash leaves all of them or none.
@@ -173,10 +184,15 @@ installs the replacement and deletes the retired files.
 
 `SiloCatalogFiles.RecoverAsync` runs before the catalog is opened or rebuilt. It first proves, on copies, that every
 catalog it could keep, install or put back belongs to this instance and has a supported format and schema. That covers
-the live catalog, the replacement and the retired catalog, each with its own WAL. A foreign, newer or other-binding
-catalog is refused, and every file, including any scratch, is left unchanged. Only then does recovery finish or discard
-each intermediate state and remove inspection copies a crash left behind. Those copies are named
-`<file>.inspect-<id>` for the database they inspect, so only attributable scratch is ever removed.
+the live catalog, the replacement and the retired catalog, each with its own WAL. A replacement it would install, or a
+retired catalog it would put back, must also be a complete catalog. An empty or unversioned file there is unproven. A
+foreign, newer, other-binding or unproven catalog is refused, and every file, including the populated catalog's main
+file and WAL and any scratch, is left byte for byte unchanged.
+
+Only then does recovery finish or discard each intermediate state and remove inspection copies a crash left behind.
+It removes exactly the shape this code emits: `<file>.inspect-<32 hex>`, optionally followed by a SQLite sidecar
+suffix, where `<file>` is the catalog, its replacement or its retired copy. A name an operator gives under the same
+prefix, such as `catalog-index.db.backup.inspect-notes`, is never removed.
 
 ## Eligibility and dispositions
 
@@ -206,8 +222,10 @@ Role expiry needs all of these:
 - affirmative last-copy authority on a role-scoped intent;
 - that intent covering every authoritative copy, including copies found unexpectedly missing;
 - `deleted` or `already-absent` for each of them under that intent;
-- the same proof under that intent for every copy that became authoritative after it. A copy that arrived after the
-  intent blocks settlement even when a different operation has since removed it. A new intent must cover it.
+- the same proof under that intent for every copy that entered the authoritative set after it. A copy enters on its
+  first eligible record, on promotion by a later valid receipt, and on restoration after eviction. Each such copy
+  blocks settlement until it is proven absent under that intent, even when a different operation has since removed
+  it. A new intent must cover it.
 
 Copy-scoped eviction never makes a role `policy-expired`.
 

@@ -469,12 +469,12 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
 
     /// <summary>
     /// Choose the newest trusted anchor (#1965 4.5). A checkpoint's covered SHA-256 is the predecessor hash named by the
-    /// first segment after it; the authenticated chain from there must contain a trusted <c>anchor</c> record for that
-    /// checkpoint; and the anchor's exact version must read back with its length and SHA-256 within the reader's bound.
-    /// A candidate that is unreadable, oversized, absent or unproven is skipped and an older one is tried, then genesis.
+    /// first segment after it; the authenticated chain from there may hold several trusted <c>anchor</c> records for that
+    /// checkpoint, each naming an exact version (and, for a replica, a receipt) of its own. Every one is tried in chain
+    /// order until one's exact version reads back with its length and SHA-256 within the reader's bound; only then does
+    /// selection fall back to an older checkpoint, and finally to generation 1. A receipt that names other bytes, another
+    /// key or another store never qualifies its anchor.
     /// </summary>
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Only data and store failures of one candidate are isolated; refusals and binding conflicts propagate.")]
     private static async ValueTask<SiloJournalCheckpoint?> ChooseStartAsync(
         SiloJournalWalker walker, SiloStorageBinding binding, ISiloAnchorTrust trust, SiloJournalBound bound, long maximumBytes,
         CancellationToken cancellationToken)
@@ -495,68 +495,102 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
         {
             return null;
         }
-        var sameStore = string.Equals(source.Descriptor.StoreId, binding.StoreId, StringComparison.Ordinal) &&
-            string.Equals(source.Descriptor.Bucket, binding.Bucket, StringComparison.Ordinal);
         foreach (var (key, covers) in candidates.OrderByDescending(static candidate => candidate.Covers))
         {
+            string? coversSha;
             try
             {
-                var coversSha = await walker.SuccessorNamedShaAsync(covers, cancellationToken).ConfigureAwait(false);
-                if (coversSha is null)
-                {
-                    continue;
-                }
-                SiloAnchorRecord? anchor = null;
-                await walker.WalkAsync(covers, coversSha, segment =>
-                {
-                    anchor ??= segment.Records.Select(static record => record.Record).OfType<SiloAnchorRecord>().FirstOrDefault(candidate =>
-                        string.Equals(candidate.Checkpoint.Key, key, StringComparison.Ordinal) && candidate.Covers == covers &&
-                        string.Equals(candidate.CoversSha256, coversSha, StringComparison.Ordinal) &&
-                        trust.IsTrusted(candidate, segment.Position));
-                    return ValueTask.FromResult(anchor is null);
-                }, cancellationToken, bound).ConfigureAwait(false);
-                if (anchor is null || anchor.CheckpointLength > maximumBytes)
-                {
-                    continue;
-                }
-                // The primary reads the anchor's own exact version; a replica reads only the exact version a verified
-                // receipt names there. A newer version at the same key is never a substitute.
-                var locator = sameStore
-                    ? anchor.Checkpoint with { StoreId = source.Descriptor.StoreId, Bucket = source.Descriptor.Bucket }
-                    : trust.ReceiptedCopy(anchor, source.Descriptor) is { } receipted &&
-                      string.Equals(receipted.StoreId, source.Descriptor.StoreId, StringComparison.Ordinal) &&
-                      string.Equals(receipted.Bucket, source.Descriptor.Bucket, StringComparison.Ordinal) &&
-                      string.Equals(receipted.Key, key, StringComparison.Ordinal)
-                        ? receipted
-                        : null;
-                if (locator is null)
-                {
-                    continue;
-                }
-                var probe = await SiloVerifier.ProbeAsync(source, locator, anchor.CheckpointLength, anchor.CheckpointSha256, TimeProvider.System,
-                    captureBytes: true, cancellationToken).ConfigureAwait(false);
-                if (probe is not { Status: SiloProbeStatus.Verified, Bytes: { } bytes })
-                {
-                    continue;
-                }
-                var checkpoint = SiloJson.ReadCheckpoint(bytes, "journal checkpoint " + covers);
-                if (!string.Equals(checkpoint.InstanceId, binding.InstanceId, StringComparison.Ordinal) ||
-                    !string.Equals(checkpoint.StorageBindingId, binding.BindingId, StringComparison.Ordinal))
-                {
-                    throw new SiloConflictException("silo.binding-mismatch",
-                        $"Journal checkpoint {covers} belongs to another instance or storage binding; nothing was read from this bucket.");
-                }
-                if (checkpoint.Covers == covers && string.Equals(checkpoint.CoversSha256, coversSha, StringComparison.Ordinal))
-                {
-                    return checkpoint;
-                }
+                coversSha = await walker.SuccessorNamedShaAsync(covers, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception exception) when (exception is SiloInvalidObjectException or SiloStoreUnavailableException)
+            catch (SiloInvalidObjectException)
             {
-                // This candidate cannot be proven; an older anchor or genesis may still be.
+                continue;
+            }
+            catch (SiloStoreUnavailableException)
+            {
+                continue;
+            }
+            if (coversSha is null)
+            {
+                continue;
+            }
+            SiloJournalCheckpoint? qualified = null;
+            await walker.WalkAsync(covers, coversSha, async segment =>
+            {
+                foreach (var anchor in segment.Records.Select(static record => record.Record).OfType<SiloAnchorRecord>())
+                {
+                    if (string.Equals(anchor.Checkpoint.Key, key, StringComparison.Ordinal) && anchor.Covers == covers &&
+                        string.Equals(anchor.CoversSha256, coversSha, StringComparison.Ordinal) && trust.IsTrusted(anchor, segment.Position) &&
+                        await QualifyAsync(source, binding, trust, anchor, maximumBytes, cancellationToken).ConfigureAwait(false) is { } checkpoint)
+                    {
+                        qualified = checkpoint;
+                        return false;
+                    }
+                }
+                return true;
+            }, cancellationToken, bound).ConfigureAwait(false);
+            if (qualified is not null)
+            {
+                return qualified;
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// One anchor's checkpoint, if its exact version reads back: the anchor's own version in the primary, or the exact
+    /// version a verified receipt names in a replica. Anything else leaves this anchor unqualified.
+    /// </summary>
+    private static async ValueTask<SiloJournalCheckpoint?> QualifyAsync(
+        ISiloObjectStore source, SiloStorageBinding binding, ISiloAnchorTrust trust, SiloAnchorRecord anchor, long maximumBytes,
+        CancellationToken cancellationToken)
+    {
+        if (anchor.CheckpointLength > maximumBytes)
+        {
+            return null;
+        }
+        var sameStore = string.Equals(source.Descriptor.StoreId, binding.StoreId, StringComparison.Ordinal) &&
+            string.Equals(source.Descriptor.Bucket, binding.Bucket, StringComparison.Ordinal);
+        var locator = sameStore
+            ? anchor.Checkpoint with { StoreId = source.Descriptor.StoreId, Bucket = source.Descriptor.Bucket }
+            : trust.ReceiptedCopy(anchor, source.Descriptor) is { } receipted &&
+              string.Equals(receipted.StoreId, source.Descriptor.StoreId, StringComparison.Ordinal) &&
+              string.Equals(receipted.Bucket, source.Descriptor.Bucket, StringComparison.Ordinal) &&
+              string.Equals(receipted.Key, anchor.Checkpoint.Key, StringComparison.Ordinal)
+                ? receipted
+                : null;
+        if (locator is null)
+        {
+            return null;
+        }
+        SiloJournalCheckpoint checkpoint;
+        try
+        {
+            var probe = await SiloVerifier.ProbeAsync(source, locator, anchor.CheckpointLength, anchor.CheckpointSha256, TimeProvider.System,
+                captureBytes: true, cancellationToken).ConfigureAwait(false);
+            if (probe is not { Status: SiloProbeStatus.Verified, Bytes: { } bytes })
+            {
+                return null;
+            }
+            checkpoint = SiloJson.ReadCheckpoint(bytes, "journal checkpoint " + anchor.Covers);
+        }
+        catch (SiloInvalidObjectException)
+        {
+            return null;
+        }
+        catch (SiloStoreUnavailableException)
+        {
+            return null;
+        }
+        if (!string.Equals(checkpoint.InstanceId, binding.InstanceId, StringComparison.Ordinal) ||
+            !string.Equals(checkpoint.StorageBindingId, binding.BindingId, StringComparison.Ordinal))
+        {
+            throw new SiloConflictException("silo.binding-mismatch",
+                $"Journal checkpoint {anchor.Covers} belongs to another instance or storage binding; nothing was read from this bucket.");
+        }
+        return checkpoint.Covers == anchor.Covers && string.Equals(checkpoint.CoversSha256, anchor.CoversSha256, StringComparison.Ordinal)
+            ? checkpoint
+            : null;
     }
 }
 

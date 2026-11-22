@@ -26,23 +26,40 @@ internal static class SiloCatalogFiles
 
     public static string Retired(string target) => target + RetiredSuffix;
 
-    /// <summary>Validate, then recover. Nothing is moved, deleted or cleaned for a catalog that is not this instance's own.</summary>
+    /// <summary>
+    /// Validate, then recover. Nothing is moved, deleted or cleaned for a catalog that is not this instance's own: the live
+    /// catalog and anything recovery would delete must not be foreign, and a replacement it would install, or a retired
+    /// catalog it would put back, must be a complete, proven catalog with this binding. An empty or otherwise unproven one
+    /// is refused, and every file is left byte for byte unchanged.
+    /// </summary>
     public static async ValueTask RecoverAsync(
         string target, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(format);
         var directory = Path.GetDirectoryName(target)!;
         var scratch = InspectionScratch(target);
+        var replacement = Replacement(target);
         var retired = Retired(target);
-        if (!File.Exists(Building(target)) && !File.Exists(Replacement(target)) && !File.Exists(retired) &&
+        if (!File.Exists(Building(target)) && !File.Exists(replacement) && !File.Exists(retired) &&
             !Sidecars.Any(suffix => File.Exists(retired + suffix)) && scratch.Count == 0)
         {
             return;
         }
         await SiloSqlite.InspectAsync(target, format, metadata, directory, cancellationToken).ConfigureAwait(false);
-        await SiloSqlite.InspectAsync(Replacement(target), format, metadata, directory, cancellationToken).ConfigureAwait(false);
         // A retired catalog's WAL is beside it, or still beside the target name when its retirement was interrupted.
-        await SiloSqlite.InspectAsync(retired, format, metadata, directory, cancellationToken,
-            File.Exists(retired + "-wal") || File.Exists(target) ? retired + "-wal" : target + "-wal").ConfigureAwait(false);
+        var retiredWal = File.Exists(retired + "-wal") || File.Exists(target) ? retired + "-wal" : target + "-wal";
+        var retiredProven = await SiloSqlite.InspectAsync(retired, format, metadata, directory, cancellationToken, retiredWal).ConfigureAwait(false);
+        if (File.Exists(replacement))
+        {
+            if (!await SiloSqlite.InspectAsync(replacement, format, metadata, directory, cancellationToken).ConfigureAwait(false))
+            {
+                throw new SiloFormatRefusedException(format.Subject + " replacement", "an empty or unproven catalog", format.Format);
+            }
+        }
+        else if (!File.Exists(target) && File.Exists(retired) && !retiredProven)
+        {
+            throw new SiloFormatRefusedException(format.Subject + " retired copy", "an empty or unproven catalog", format.Format);
+        }
         foreach (var file in scratch)
         {
             DeleteIfPresent(file);
@@ -51,19 +68,60 @@ internal static class SiloCatalogFiles
     }
 
     /// <summary>
-    /// Inspection copies a crash left behind: named for one of this target's catalog files, and nothing else, so no
-    /// unrelated file is ever removed.
+    /// The inspection copies a crash left behind, and nothing else: exactly <c>&lt;file&gt;.inspect-&lt;32 hex&gt;</c>,
+    /// optionally with a SQLite sidecar suffix, for a file this code inspects (the catalog, its replacement or its retired
+    /// copy). A name an operator gave under the same prefix is never matched.
     /// </summary>
     public static IReadOnlyList<string> InspectionScratch(string target)
     {
         var directory = Path.GetDirectoryName(target)!;
-        var prefix = Path.GetFileName(target);
-        return Directory.Exists(directory)
-            ? Directory.EnumerateFiles(directory, prefix + "*" + InspectionInfix + "*")
-                .Where(path => Path.GetFileName(path) is { } name && name.StartsWith(prefix, StringComparison.Ordinal) &&
-                    name.IndexOf(InspectionInfix, prefix.Length, StringComparison.Ordinal) >= 0)
-                .ToArray()
-            : [];
+        if (!Directory.Exists(directory))
+        {
+            return [];
+        }
+        var result = new List<string>();
+        foreach (var inspected in new[] { target, Replacement(target), Retired(target) }.Select(Path.GetFileName))
+        {
+            var prefix = inspected + InspectionInfix;
+            foreach (var path in Directory.EnumerateFiles(directory, prefix + "*"))
+            {
+                if (IsEmittedScratch(Path.GetFileName(path).AsSpan(prefix.Length)))
+                {
+                    result.Add(path);
+                }
+            }
+        }
+        return result;
+    }
+
+    /// <summary>The emitted tail: a 32-character lowercase hex token, then nothing or one SQLite sidecar suffix.</summary>
+    private static bool IsEmittedScratch(ReadOnlySpan<char> tail)
+    {
+        const int TokenLength = 32;
+        if (tail.Length < TokenLength)
+        {
+            return false;
+        }
+        foreach (var character in tail[..TokenLength])
+        {
+            if (!char.IsAsciiDigit(character) && character is not (>= 'a' and <= 'f'))
+            {
+                return false;
+            }
+        }
+        var suffix = tail[TokenLength..];
+        if (suffix.IsEmpty)
+        {
+            return true;
+        }
+        foreach (var sidecar in Sidecars)
+        {
+            if (suffix.SequenceEqual(sidecar))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Remove the inspection scratch of a database already proven to be this instance's own.</summary>

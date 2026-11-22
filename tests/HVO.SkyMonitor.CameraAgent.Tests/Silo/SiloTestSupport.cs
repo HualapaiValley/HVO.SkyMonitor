@@ -43,6 +43,12 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     /// <summary>Runs after a PUT lands, before the writer reads it back: another actor acting on the bucket meanwhile.</summary>
     public Action<string>? AfterLanding { get; set; }
 
+    /// <summary>An exact-version GET of the key misses although the version exists, as a lagging read can.</summary>
+    public Func<string, bool>? MissOnRead { get; set; }
+
+    /// <summary>A HEAD for the key's current version times out: a read failure that says nothing about any write.</summary>
+    public Func<string, bool>? HeadUnavailable { get; set; }
+
     public int Puts { get; private set; }
 
     public async ValueTask<SiloPutResult> PutCreateOnlyAsync(SiloPutRequest request, CancellationToken cancellationToken)
@@ -98,6 +104,10 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
         {
             throw new SiloStoreUnavailableException(Descriptor.StoreId, "get " + key, writeMayHaveLanded: false);
         }
+        if (MissOnRead?.Invoke(key) == true)
+        {
+            return ValueTask.FromResult(new SiloOpenResult(SiloOpenStatus.NoSuchVersion, null));
+        }
         lock (_gate)
         {
             if (!_objects.TryGetValue(key, out var versions) || versions.Count == 0)
@@ -114,6 +124,10 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     public ValueTask<string?> LocateCurrentVersionAsync(string key, CancellationToken cancellationToken)
     {
         ThrowIfUnreachable("head");
+        if (HeadUnavailable?.Invoke(key) == true)
+        {
+            throw new SiloStoreUnavailableException(Descriptor.StoreId, "head " + key, writeMayHaveLanded: false);
+        }
         lock (_gate)
         {
             return ValueTask.FromResult(_objects.TryGetValue(key, out var versions) && versions.Count > 0 ? versions[^1].VersionId : null);
@@ -326,8 +340,13 @@ internal sealed class SiloTestAuthority : ISiloGenerationWitness, ISiloAnchorTru
 
     public HashSet<SiloJournalPosition> UntrustedCovers { get; } = [];
 
-    /// <summary>The exact version a verified receipt names for an anchored checkpoint in another store.</summary>
-    public Dictionary<(SiloExactLocator Checkpoint, string StoreId), SiloExactLocator> ReceiptedCheckpoints { get; } = [];
+    /// <summary>
+    /// The exact version a verified receipt names, in another store, for the checkpoint of one anchor record, keyed by
+    /// that record's seal evidence: two anchors of the same checkpoint may carry different receipts.
+    /// </summary>
+    public Dictionary<(string Seal, string StoreId), SiloExactLocator> ReceiptedCheckpoints { get; } = [];
+
+    public static string Seal(SiloAnchorRecord anchor) => anchor.SealEvidence?.GetRawText() ?? string.Empty;
 
     public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position, string openingSegmentSha256) =>
         WitnessedOpenings.Contains((open.Generation, openingSegmentSha256));
@@ -336,7 +355,7 @@ internal sealed class SiloTestAuthority : ISiloGenerationWitness, ISiloAnchorTru
         TrustAnchors && !UntrustedCovers.Contains(anchor.Covers);
 
     public SiloExactLocator? ReceiptedCopy(SiloAnchorRecord anchor, SiloStoreDescriptor store) =>
-        ReceiptedCheckpoints.TryGetValue((anchor.Checkpoint, store.StoreId), out var locator) ? locator : null;
+        ReceiptedCheckpoints.TryGetValue((Seal(anchor), store.StoreId), out var locator) ? locator : null;
 }
 
 internal sealed class SiloTestClock(DateTimeOffset start) : TimeProvider

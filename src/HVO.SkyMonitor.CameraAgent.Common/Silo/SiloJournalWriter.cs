@@ -37,10 +37,20 @@ internal sealed class SiloStoreNotQualifiedException(string storeId)
 internal sealed record SiloCreated(string VersionId, DateTimeOffset VerifiedUtc, bool Created);
 
 /// <summary>
+/// What a create-only write's whole history may have applied, as one monotone result (#1965 4.5, 5.3). It only rises
+/// across the operation: <see cref="Created"/> once an attempt was acknowledged as a creation,
+/// <see cref="PossiblyApplied"/> once an attempt found something at the key or ended in a way that could have landed,
+/// and <see cref="ProvablyNotApplied"/> only while every attempt was definitely refused. Reads (GET, HEAD) are not
+/// writes: a read that misses or fails never lowers it, so it can never clear an earlier possible application.
+/// </summary>
+internal enum SiloWriteApplication { ProvablyNotApplied, PossiblyApplied, Created }
+
+/// <summary>
 /// The one write rule for payloads, manifests, segments and checkpoints (#1965 5.2, 5.3): the exact bytes are already
 /// spooled; the key is created once with a supplied checksum; the version is read back by exact GET with an independent
 /// SHA-256. An uncertain write is retried with the same bytes. A create-only conflict compares SHA-256: equal means the
-/// earlier write succeeded, different stops the writer, and nothing is replaced.
+/// earlier write succeeded, different stops the writer, and nothing is replaced. A failure reports, as its only
+/// classification, whether the history may have applied anything.
 /// </summary>
 internal static class SiloCreateOnly
 {
@@ -63,51 +73,63 @@ internal static class SiloCreateOnly
         {
             metadata[SiloObjectHeaders.Format] = format;
         }
-        var landed = false;
-        for (var attempt = 0; attempt < MaximumAttempts; attempt++)
+        var history = SiloWriteApplication.ProvablyNotApplied;
+        try
         {
-            SiloPutResult result;
-            try
+            for (var attempt = 0; attempt < MaximumAttempts; attempt++)
             {
-                result = await store.PutCreateOnlyAsync(new(key, length, sha256, open, metadata), cancellationToken).ConfigureAwait(false);
-            }
-            catch (SiloStoreUnavailableException refused) when (landed && !refused.WriteMayHaveLanded)
-            {
-                // A later attempt that definitely did not apply proves nothing about an earlier one that did.
-                throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "a create-only write of " + key + " after an earlier one landed",
-                    writeMayHaveLanded: true, refused);
-            }
-            landed = true;
-            var version = result.Created
-                ? result.VersionId
-                : await store.LocateCurrentVersionAsync(key, cancellationToken).ConfigureAwait(false);
-            afterPut?.Invoke();
-            if (version is null)
-            {
-                continue;
-            }
-            var locator = new SiloExactLocator(store.Descriptor.StoreId, store.Descriptor.Bucket, key, version);
-            var probe = await SiloVerifier.ProbeAsync(store, locator, length, sha256, clock, captureBytes: false, cancellationToken)
-                .ConfigureAwait(false);
-            switch (probe.Status)
-            {
-                case SiloProbeStatus.Verified:
-                    return new(version, probe.ObservedUtc, result.Created);
-                case SiloProbeStatus.Absent:
-                    // The acknowledged version was lost before qualification. Replaying the same bytes names only the new one.
+                SiloPutResult result;
+                try
+                {
+                    result = await store.PutCreateOnlyAsync(new(key, length, sha256, open, metadata), cancellationToken).ConfigureAwait(false);
+                }
+                catch (SiloStoreUnavailableException uncertain) when (uncertain.WriteMayHaveLanded)
+                {
+                    history = Raise(history, SiloWriteApplication.PossiblyApplied);
+                    throw;
+                }
+                // A refusal that applied nothing propagates above without raising the history.
+                history = Raise(history, result.Created ? SiloWriteApplication.Created : SiloWriteApplication.PossiblyApplied);
+                var version = result.Created
+                    ? result.VersionId
+                    : await store.LocateCurrentVersionAsync(key, cancellationToken).ConfigureAwait(false);
+                afterPut?.Invoke();
+                if (version is null)
+                {
                     continue;
-                case SiloProbeStatus.Damaged when result.Created:
-                    throw new SiloConflictException("silo.readback-mismatch",
-                        $"The version just created at {locator} did not read back with its exact bytes ({probe.Detail}).");
-                case SiloProbeStatus.Damaged:
-                    throw new SiloConflictException("silo.create-only-conflict",
-                        $"Key {key} already holds different bytes at {version}; it is never replaced.");
-                default:
-                    throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "exact readback of " + key, writeMayHaveLanded: true);
+                }
+                var locator = new SiloExactLocator(store.Descriptor.StoreId, store.Descriptor.Bucket, key, version);
+                var probe = await SiloVerifier.ProbeAsync(store, locator, length, sha256, clock, captureBytes: false, cancellationToken)
+                    .ConfigureAwait(false);
+                switch (probe.Status)
+                {
+                    case SiloProbeStatus.Verified:
+                        return new(version, probe.ObservedUtc, result.Created);
+                    case SiloProbeStatus.Absent:
+                        // The read missed the version. Replaying the same bytes finds it again, or names only a new one.
+                        continue;
+                    case SiloProbeStatus.Damaged when result.Created:
+                        throw new SiloConflictException("silo.readback-mismatch",
+                            $"The version just created at {locator} did not read back with its exact bytes ({probe.Detail}).");
+                    case SiloProbeStatus.Damaged:
+                        throw new SiloConflictException("silo.create-only-conflict",
+                            $"Key {key} already holds different bytes at {version}; it is never replaced.");
+                    default:
+                        throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "exact readback of " + key, writeMayHaveLanded: true);
+                }
             }
+            throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "a stable create-only write of " + key, writeMayHaveLanded: true);
         }
-        throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "a stable create-only write of " + key, writeMayHaveLanded: true);
+        catch (SiloStoreUnavailableException unavailable) when (unavailable.WriteMayHaveLanded != (history != SiloWriteApplication.ProvablyNotApplied))
+        {
+            // One result for the whole operation: what its writes may have applied, never what its last read or refusal said.
+            throw new SiloStoreUnavailableException(store.Descriptor.StoreId, unavailable.Operation,
+                writeMayHaveLanded: history != SiloWriteApplication.ProvablyNotApplied, unavailable);
+        }
     }
+
+    private static SiloWriteApplication Raise(SiloWriteApplication history, SiloWriteApplication observed) =>
+        observed > history ? observed : history;
 
     public static Func<CancellationToken, ValueTask<Stream>> FromBytes(byte[] bytes) =>
         _ => ValueTask.FromResult<Stream>(new MemoryStream(bytes, writable: false));

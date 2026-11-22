@@ -46,6 +46,10 @@ internal sealed partial class SiloCatalogIndex
                     .ConfigureAwait(false);
             }
             await SetCursorAsync(connection, transaction, position, sha256, cancellationToken).ConfigureAwait(false);
+            // What the prefix now holds is no longer unproven: the two sets stay disjoint in every committed state.
+            await ExecuteAsync(connection, transaction,
+                "DELETE FROM unproven_publications WHERE (generation, sequence) <= ($g, $s);",
+                cancellationToken, ("$g", position.Generation), ("$s", position.Sequence)).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -111,7 +115,7 @@ internal sealed partial class SiloCatalogIndex
             SiloPolicyRecord policy => await ApplyPolicyAsync(connection, transaction, policy, at, cancellationToken).ConfigureAwait(false),
             SiloExpiryIntentRecord intent => await ApplyIntentAsync(connection, transaction, intent, at, cancellationToken).ConfigureAwait(false),
             SiloExpiryDispositionRecord disposition => await ApplyDispositionAsync(connection, transaction, disposition, at, cancellationToken).ConfigureAwait(false),
-            SiloAvailabilityRecord availability => await ApplyAvailabilityAsync(connection, transaction, availability, cancellationToken).ConfigureAwait(false),
+            SiloAvailabilityRecord availability => await ApplyAvailabilityAsync(connection, transaction, availability, at, cancellationToken).ConfigureAwait(false),
             SiloAnchorRecord anchor => await ApplyAnchorAsync(connection, transaction, anchor, at, cancellationToken).ConfigureAwait(false),
             _ => "unknown-record"
         };
@@ -182,13 +186,14 @@ internal sealed partial class SiloCatalogIndex
         CancellationToken cancellationToken) =>
         ExecuteAsync(connection, transaction, """
             INSERT INTO locators(kind, id, revision, store_id, bucket, key, version_id, source, generation, sequence, record_index,
-                store_class, retrieval, custody, eligible, ineligible_reason, copy_state)
+                store_class, retrieval, custody, eligible, ineligible_reason, copy_state, entered_generation, entered_sequence, entered_index)
             VALUES($kind, $id, $revision, $store, $bucket, $key, $version, $source, $g, $s, $i,
-                $class, $retrieval, $custody, $eligible, $reason, 'active')
+                $class, $retrieval, $custody, $eligible, $reason, 'active', $g, $s, $i)
             ON CONFLICT(kind, id, revision, store_id, bucket, key, version_id) DO UPDATE SET
                 source = excluded.source, generation = excluded.generation, sequence = excluded.sequence,
                 record_index = excluded.record_index, store_class = excluded.store_class, retrieval = excluded.retrieval,
-                custody = excluded.custody, eligible = 1, ineligible_reason = NULL
+                custody = excluded.custody, eligible = 1, ineligible_reason = NULL,
+                entered_generation = excluded.generation, entered_sequence = excluded.sequence, entered_index = excluded.record_index
             WHERE locators.eligible = 0 AND excluded.eligible = 1;
             """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
             ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key), ("$version", locator.VersionId),
@@ -504,13 +509,17 @@ internal sealed partial class SiloCatalogIndex
             .ConfigureAwait(false);
         if (absent)
         {
-            await SetCopyStateAsync(connection, transaction, disposition.Locator, null, "evicted", cancellationToken).ConfigureAwait(false);
+            await SetCopyStateAsync(connection, transaction, disposition.Locator, null, "evicted", at, cancellationToken).ConfigureAwait(false);
         }
         return null;
     }
 
+    /// <summary>
+    /// Set one exact copy's state for every role it serves, or one. A copy that returns from <c>evicted</c> to the
+    /// authoritative set records the position where it re-entered, so an intent opened before then must still settle it.
+    /// </summary>
     private async ValueTask SetCopyStateAsync(
-        SqliteConnection connection, SqliteTransaction transaction, SiloExactLocator locator, SiloRoleKey? role, string state,
+        SqliteConnection connection, SqliteTransaction transaction, SiloExactLocator locator, SiloRoleKey? role, string state, RecordAt at,
         CancellationToken cancellationToken)
     {
         var roles = new List<SiloRoleKey>();
@@ -531,10 +540,15 @@ internal sealed partial class SiloCatalogIndex
         foreach (var affected in roles)
         {
             await ExecuteAsync(connection, transaction, """
-                UPDATE locators SET copy_state = $state
+                UPDATE locators SET
+                    entered_generation = CASE WHEN copy_state = 'evicted' AND $state <> 'evicted' THEN $g ELSE entered_generation END,
+                    entered_sequence = CASE WHEN copy_state = 'evicted' AND $state <> 'evicted' THEN $s ELSE entered_sequence END,
+                    entered_index = CASE WHEN copy_state = 'evicted' AND $state <> 'evicted' THEN $i ELSE entered_index END,
+                    copy_state = $state
                 WHERE kind = $kind AND id = $id AND revision = $revision
                     AND store_id = $store AND bucket = $bucket AND key = $key AND version_id = $version;
-                """, cancellationToken, ("$state", state), ("$kind", KindName(affected.Kind)), ("$id", affected.Id),
+                """, cancellationToken, ("$state", state), ("$g", at.Generation), ("$s", at.Sequence), ("$i", at.Index),
+                ("$kind", KindName(affected.Kind)), ("$id", affected.Id),
                 ("$revision", affected.Revision), ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key),
                 ("$version", locator.VersionId)).ConfigureAwait(false);
             await RecomputeRoleAsync(connection, transaction, affected, unknown, cancellationToken).ConfigureAwait(false);
@@ -542,7 +556,8 @@ internal sealed partial class SiloCatalogIndex
     }
 
     private async ValueTask<string?> ApplyAvailabilityAsync(
-        SqliteConnection connection, SqliteTransaction transaction, SiloAvailabilityRecord availability, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction transaction, SiloAvailabilityRecord availability, RecordAt at,
+        CancellationToken cancellationToken)
     {
         var role = availability.Identity.Role;
         var bound = await ReadRoleIdentityAsync(connection, transaction, role, cancellationToken).ConfigureAwait(false);
@@ -583,7 +598,7 @@ internal sealed partial class SiloCatalogIndex
                 SiloAvailabilityState.Quarantined => "quarantined",
                 _ => "active"
             };
-            await SetCopyStateAsync(connection, transaction, locator, role, state, cancellationToken).ConfigureAwait(false);
+            await SetCopyStateAsync(connection, transaction, locator, role, state, at, cancellationToken).ConfigureAwait(false);
             if (availability.State == SiloAvailabilityState.Restored)
             {
                 await RequeueAsync(connection, transaction, role, cancellationToken).ConfigureAwait(false);
@@ -607,8 +622,8 @@ internal sealed partial class SiloCatalogIndex
     /// <summary>
     /// #1965 7.3 step 9: a role is policy-expired only under an authorized role-scoped intent that covered the complete
     /// authoritative copy set, with proven absence for every target under that same intent, and no copy outside it. A
-    /// copy that became authoritative after the intent must also be proven absent under that intent before it settles,
-    /// even when a different operation has since removed it: its arrival is reconciled, never skipped.
+    /// copy that entered the authoritative set after the intent, by arrival, promotion or restoration after eviction, must
+    /// also be proven absent under that intent before it settles, even when a different operation has since removed it.
     /// </summary>
     private static async ValueTask<string?> RoleExpirySettledAsync(
         SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, string? intentId, CancellationToken cancellationToken)
@@ -642,7 +657,7 @@ internal sealed partial class SiloCatalogIndex
         if (await ScalarLongAsync(connection, transaction, """
                 SELECT COUNT(*) FROM locators l
                 WHERE l.kind = $kind AND l.id = $id AND l.revision = $revision AND l.eligible = 1
-                    AND (l.generation, l.sequence, l.record_index) > ($g, $s, $i)
+                    AND (l.entered_generation, l.entered_sequence, l.entered_index) > ($g, $s, $i)
                     AND NOT EXISTS (SELECT 1 FROM expiry_targets t WHERE t.intent_id = $intent AND t.store_id = l.store_id
                         AND t.bucket = l.bucket AND t.key = l.key AND t.version_id = l.version_id
                         AND t.outcome IN ('deleted', 'already-absent'));

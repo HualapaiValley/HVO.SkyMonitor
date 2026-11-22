@@ -153,6 +153,9 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
             eligible INTEGER NOT NULL CHECK(eligible IN (0, 1)),
             ineligible_reason TEXT,
             copy_state TEXT NOT NULL CHECK(copy_state IN ('active', 'evicted', 'missing', 'quarantined')),
+            entered_generation INTEGER NOT NULL,
+            entered_sequence INTEGER NOT NULL,
+            entered_index INTEGER NOT NULL,
             probe_status TEXT CHECK(probe_status IS NULL OR probe_status IN ('verified', 'absent', 'damaged', 'unavailable')),
             probe_detail TEXT,
             probe_unix_ms INTEGER,
@@ -468,6 +471,11 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
                     """, cancellationToken, ("$g", position.Generation), ("$s", position.Sequence), ("$i", index),
                     ("$group", group), ("$revision", revision)).ConfigureAwait(false);
             }
+            // Only work beyond the authenticated cursor is unproven: whatever the prefix holds leaves the set here too.
+            await ExecuteAsync(connection, transaction, """
+                DELETE FROM unproven_publications
+                WHERE (generation, sequence) <= (SELECT generation, sequence FROM catalog_cursor WHERE cursor_key = 1);
+                """, cancellationToken).ConfigureAwait(false);
             if (wasUnknown != unknownInterval)
             {
                 var roles = new List<SiloRoleKey>();

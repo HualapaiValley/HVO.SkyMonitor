@@ -66,6 +66,61 @@ public sealed class SiloCatalogFileTests
         File.Move(snapshot + "-wal", target + "-wal");
     }
 
+    /// <summary>This instance's own populated catalog, left with committed pages still in its WAL.</summary>
+    [SuppressMessage("Reliability", "CA1849:Call async methods when in an async method", Justification = "Synchronous fixture setup.")]
+    private static void KeepCommittedWal(string target)
+    {
+        var snapshot = target + ".snapshot";
+        using (var connection = new SqliteConnection($"Data Source={target};Pooling=False"))
+        {
+            connection.Open();
+            Execute(connection, NoCheckpointSql);
+            Execute(connection, "UPDATE catalog_authority SET evaluated_unix_ms = evaluated_unix_ms + 1;");
+            File.Copy(target, snapshot, overwrite: true);
+            File.Copy(target + "-wal", snapshot + "-wal", overwrite: true);
+        }
+        DeleteTarget(target);
+        File.Move(snapshot, target);
+        File.Move(snapshot + "-wal", target + "-wal");
+    }
+
+    [TestMethod]
+    [DataRow("empty", DisplayName = "an empty replacement")]
+    [DataRow("unversioned", DisplayName = "an unversioned SQLite replacement with no schema")]
+    [SuppressMessage("Reliability", "CA1849:Call async methods when in an async method", Justification = "Synchronous fixture setup.")]
+    public async Task AnUnprovenReplacementNeverRetiresOrReplacesAPopulatedCatalog(string kind)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        silo.Close();
+        var target = Target(silo);
+        KeepCommittedWal(target);
+        var replacement = SiloCatalogFiles.Replacement(target);
+        if (kind == "empty")
+        {
+            File.WriteAllBytes(replacement, []);
+        }
+        else
+        {
+            using var connection = new SqliteConnection($"Data Source={replacement};Pooling=False");
+            connection.Open();
+            Execute(connection, "CREATE TABLE t(x); DROP TABLE t;");
+        }
+        var before = Fingerprint(target);
+        var replacementBefore = SiloHash.Sha256(File.ReadAllBytes(replacement));
+        File.Exists(target + "-wal").Should().BeTrue("the populated catalog still has committed pages in its WAL");
+
+        var reopen = () => silo.OpenAsync();
+        await reopen.Should().ThrowAsync<SiloFormatRefusedException>().ConfigureAwait(false);
+        Fingerprint(target).Should().Be(before, "reopen neither retires nor replaces the catalog, nor checkpoints its WAL");
+        var rebuild = () => SiloCatalog.RebuildAsync(silo.StateRoot, silo.Binding, new SiloStoreSet(silo.Local, silo.Archive), silo.Authority,
+            silo.Authority, silo.Clock, new(silo.Local), CancellationToken.None).AsTask();
+        await rebuild.Should().ThrowAsync<SiloFormatRefusedException>().ConfigureAwait(false);
+        Fingerprint(target).Should().Be(before, "rebuild neither retires nor replaces it either");
+        SiloHash.Sha256(File.ReadAllBytes(replacement)).Should().Be(replacementBefore, "the unproven file is left for diagnosis");
+        File.Exists(SiloCatalogFiles.Retired(target)).Should().BeFalse();
+    }
+
     [TestMethod]
     [DataRow("unversioned-foreign")]
     [DataRow("other-binding")]

@@ -118,6 +118,63 @@ public sealed class SiloCommitRetryTests
     }
 
     [TestMethod]
+    [DataRow("resolved", DisplayName = "the replay finds the acknowledged bytes and commits them once")]
+    [DataRow("fenced", DisplayName = "other bytes now hold the sequence, so the writer stays fenced")]
+    public async Task AFailedReadNeverClearsAWriteTheCommitMayAlreadyHaveApplied(string outcome)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 11);
+        await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false);
+        var segment = SiloObjectNamespace.SegmentKey(new(1, 2));
+        // The PUT is acknowledged, its exact read misses, the retry conflicts with what is there, and the HEAD that would
+        // name it times out. That HEAD is a read: it proves nothing about either write.
+        var (misses, heads) = (1, 1);
+        silo.Local.MissOnRead = key => key == segment && misses-- > 0;
+        silo.Local.HeadUnavailable = key => key == segment && heads-- > 0;
+        (await silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false)).BlockedCode
+            .Should().Be("silo.store-unavailable");
+        (silo.Local.MissOnRead, silo.Local.HeadUnavailable) = (null, null);
+        var pending = (await silo.State.ReadPendingAsync(CancellationToken.None).ConfigureAwait(false))!;
+        pending.MayHaveLanded.Should().BeTrue("an acknowledged creation stays a possible application whatever a later read says");
+        pending.ProvablyUnapplied.Should().BeFalse();
+        silo.StateRoot.Spool.Names().Should().Contain(SiloObjectSpool.NameOf(pending.Sha256), "its exact bytes are kept for the replay");
+        var group = await GroupAsync(silo, draft).ConfigureAwait(false);
+        var manifest = silo.Local.Locator(
+            SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId, group.ManifestSha256!), group.ManifestVersionId!);
+        var named = group.Members[0].VersionId!;
+        silo.Local.Delete(RawKey(draft), named);
+        if (outcome == "fenced")
+        {
+            silo.Local.Delete(segment, silo.Local.Current(segment)!);
+            silo.Local.Plant(segment, "{\"not\":\"this writer's segment\"}"u8.ToArray());
+        }
+
+        await silo.RestartAsync().ConfigureAwait(false);
+
+        if (outcome == "resolved")
+        {
+            var resumed = (await silo.Publisher.ResumeAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
+            var committed = SinglePublication(silo, draft);
+            committed.Manifest.Locator.Should().Be(manifest, "the commit is exactly the pending one, replayed");
+            committed.Members[0].Locator.VersionId.Should().Be(named, "nothing is requalified once the commit may exist");
+            silo.Local.VersionsOf(segment).Should().ContainSingle("the replay found the acknowledged write instead of writing again");
+            resumed.State.Should().Be(SiloStagedState.Recorded);
+            resumed.CatalogOutcome.Should().Be(SiloDisposition.Missing);
+            silo.Payloads.Released.Should().BeEmpty();
+        }
+        else
+        {
+            var resume = () => silo.Publisher.ResumeAsync(10, CancellationToken.None).AsTask();
+            (await resume.Should().ThrowAsync<SiloConflictException>().ConfigureAwait(false)).Which.Code.Should().Be("silo.create-only-conflict");
+            (await silo.State.ReadPendingAsync(CancellationToken.None).ConfigureAwait(false))!.Sha256
+                .Should().Be(pending.Sha256, "the writer stays fenced on its exact pending bytes");
+            (await silo.State.ReadWriterEvidenceAsync(CancellationToken.None).ConfigureAwait(false)).Head.Should().Be(new SiloJournalPosition(1, 1));
+            (await GroupAsync(silo, draft).ConfigureAwait(false)).ManifestSha256.Should().Be(group.ManifestSha256, "nothing was requalified");
+            (await silo.State.ListOrphansAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeEmpty();
+        }
+    }
+
+    [TestMethod]
     public async Task APayloadLostWhileItsManifestIsWrittenIsFoundAgainBeforeTheCommit()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);

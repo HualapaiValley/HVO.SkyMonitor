@@ -51,29 +51,41 @@ public sealed class SiloRecoveryBoundaryTests
     }
 
     [TestMethod]
-    public async Task InspectionScratchLeftByACrashIsRemovedAndUnrelatedFilesAreNot()
+    public async Task OnlyTheExactInspectionScratchThisCodeEmitsIsRemoved()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
         silo.Close();
-        var scratch = Path.Combine(silo.RootPath, SiloStateRoot.IndexDatabaseFileName + SiloCatalogFiles.InspectionInfix + "0123abcd");
-        var stateScratch = Path.Combine(silo.RootPath, SiloStateRoot.PublicationDatabaseFileName + SiloCatalogFiles.InspectionInfix + "4567ef");
-        var unrelated = Path.Combine(silo.RootPath, "operator-notes.inspect-0123abcd");
-        foreach (var path in new[] { scratch, scratch + "-wal", stateScratch, unrelated })
+        var token = new string('0', 24) + "0123abcd";
+        string Root(string name) => Path.Combine(silo.RootPath, name);
+        var index = SiloStateRoot.IndexDatabaseFileName;
+        var state = SiloStateRoot.PublicationDatabaseFileName;
+        // The shapes an interrupted inspection leaves: an inspected file's name, the infix, a 32-hex token, a sidecar.
+        string[] owned =
+        [
+            Root(index + SiloCatalogFiles.InspectionInfix + token), Root(index + SiloCatalogFiles.InspectionInfix + token + "-wal"),
+            Root(index + SiloCatalogFiles.ReplacementSuffix + SiloCatalogFiles.InspectionInfix + token),
+            Root(state + SiloCatalogFiles.InspectionInfix + token + "-shm")
+        ];
+        // Names an operator could create beside them, under the same prefixes.
+        string[] unrelated =
+        [
+            Root(index + ".backup.inspect-notes"), Root(index + ".backup" + SiloCatalogFiles.InspectionInfix + token),
+            Root(index + SiloCatalogFiles.InspectionInfix + "notes"), Root(index + SiloCatalogFiles.InspectionInfix + token + ".txt"),
+            Root(state + ".copy" + SiloCatalogFiles.InspectionInfix + token), Root("operator-notes.inspect-0123abcd")
+        ];
+        foreach (var path in owned.Concat(unrelated))
         {
             File.WriteAllBytes(path, [1, 2, 3]);
         }
 
         await silo.OpenAsync().ConfigureAwait(false);
 
-        File.Exists(scratch).Should().BeFalse();
-        File.Exists(scratch + "-wal").Should().BeFalse();
-        File.Exists(stateScratch).Should().BeFalse();
-        File.Exists(unrelated).Should().BeTrue("only scratch attributable to a catalog file is removed");
+        owned.Where(File.Exists).Should().BeEmpty("the scratch this code emits is removed once each database is proven its own");
+        unrelated.Where(path => !File.Exists(path)).Should().BeEmpty("no operator file under a shared prefix is ever removed");
         await silo.RebuildAsync().ConfigureAwait(false);
-        Directory.EnumerateFiles(silo.RootPath).Select(Path.GetFileName)
-            .Where(static name => name!.Contains(SiloCatalogFiles.InspectionInfix, StringComparison.Ordinal))
-            .Should().Equal(["operator-notes.inspect-0123abcd"], "a completed inspection leaves nothing");
+        Directory.EnumerateFiles(silo.RootPath).Where(path => Path.GetFileName(path).Contains(".inspect-", StringComparison.Ordinal))
+            .Should().BeEquivalentTo(unrelated, "a completed inspection leaves nothing of its own");
     }
 
     [TestMethod]
@@ -101,6 +113,36 @@ public sealed class SiloRecoveryBoundaryTests
     }
 
     [TestMethod]
+    public async Task ThePrefixAndItsUnprovenNamesStayDisjointWhenRecoveryReachesPartWayThroughAGap()
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        for (var number = 1; number <= 5; number++)
+        {
+            await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, number)).ConfigureAwait(false);
+        }
+        var third = SegmentKey(1, 3);
+        var bytes = silo.Local.Read(third, silo.Local.Current(third)!);
+        silo.Local.Delete(third, silo.Local.Current(third)!);
+        var gap = (await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false)).Authority;
+        gap.UnprovenPublications.Select(static publication => publication.GroupId)
+            .Should().Equal([SiloDrafts.CaptureGroup(3), SiloDrafts.CaptureGroup(4), SiloDrafts.CaptureGroup(5)]);
+
+        silo.Local.Plant(third, bytes);
+        silo.Local.ReadUnavailable = key => key == SegmentKey(1, 5);
+        await silo.CatchUpAsync().ConfigureAwait(false);
+
+        var authority = await silo.Index.ReadAuthorityAsync(CancellationToken.None).ConfigureAwait(false);
+        authority.PrefixEnd.Should().Be(new SiloJournalPosition(1, 4), "recovery reached through segment 4 while 5 timed out");
+        authority.UnknownInterval.Should().BeTrue();
+        authority.UnprovenPublications.Should().OnlyContain(publication => publication.Position > authority.PrefixEnd!.Value,
+            "nothing inside the authenticated prefix is also reported unproven");
+        authority.UnprovenPublications.Select(static publication => publication.GroupId)
+            .Should().Equal([SiloDrafts.CaptureGroup(4), SiloDrafts.CaptureGroup(5)], "known names beyond the prefix survive the timeout");
+        (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(3), "r1", CancellationToken.None).ConfigureAwait(false))
+            .Should().NotBeNull("the publication at segment 4 is now inside the prefix");
+    }
+
+    [TestMethod]
     public async Task AuthorityAndTheRoleDispositionsItImpliesChangeTogetherAcrossACrash()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -123,6 +165,67 @@ public sealed class SiloRecoveryBoundaryTests
         (await silo.Index.ReadAuthorityAsync(CancellationToken.None).ConfigureAwait(false)).UnknownInterval.Should().BeTrue();
         (await silo.Index.ReadRoleAsync(raw, CancellationToken.None).ConfigureAwait(false))!.Disposition
             .Should().Be(SiloDisposition.Unverified, "a later copy may exist in the unknown interval, whatever crashed after it opened");
+    }
+
+    [TestMethod]
+    [DataRow("restored", DisplayName = "an evicted copy is restored after the intent, then evicted by another")]
+    [DataRow("promoted", DisplayName = "an ineligible copy is promoted after the intent, then evicted by another")]
+    public async Task ACopyReenteringTheAuthoritySetAfterARoleIntentMustSettleUnderThatIntent(string entry)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var rawBytes = SiloDrafts.Bytes("raw-1", 3001);
+        var raw = new SiloObjectIdentity(SiloIdentityKind.Member, SiloDrafts.Raw(1), "1", SiloHash.Sha256(rawBytes), rawBytes.Length);
+        var rawKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, raw.Sha256);
+        var b = new SiloCopyRecord(raw, silo.Archive.Locator(rawKey, silo.Archive.Plant(rawKey, rawBytes)), SiloStoreClass.Archive,
+            SiloRetrieval.Online, "replica", silo.Clock.GetUtcNow(), SiloFormats.ExactGetSha256);
+        if (entry == "promoted")
+        {
+            await silo.AppendAsync(b).ConfigureAwait(false);
+        }
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        var local = silo.MemberLocator(SiloDrafts.CaptureGroup(1), raw.Id);
+        if (entry == "restored")
+        {
+            // B is already known, and evicted under its own intent before the role intent.
+            await silo.AppendAsync(b).ConfigureAwait(false);
+            await EvictAsync(silo, raw, b.Locator, "evict-b-before").ConfigureAwait(false);
+        }
+        await silo.AppendAsync(new SiloExpiryIntentRecord("expire-raw", SiloExpiryScope.Role, raw, "last-copy-policy:operator",
+            [new(local, "local", "allocation-raw", raw.Length)], "retention", LastCopy: true)).ConfigureAwait(false);
+        // B enters the authority set after the intent: restored after its eviction, or promoted by a valid receipt.
+        await silo.AppendAsync(entry == "restored"
+            ? new SiloAvailabilityRecord(SiloAvailabilityScope.Copy, raw, SiloAvailabilityState.Restored, silo.Clock.GetUtcNow(), "found again",
+                b.Locator)
+            : b).ConfigureAwait(false);
+        await EvictAsync(silo, raw, b.Locator, "evict-b-after").ConfigureAwait(false);
+        silo.Local.Delete(local);
+        await silo.AppendAsync(
+            new SiloExpiryDispositionRecord("expire-raw", local, SiloExpiryOutcome.Deleted, silo.Clock.GetUtcNow(), "NoSuchVersion"),
+            new SiloAvailabilityRecord(SiloAvailabilityScope.Role, raw, SiloAvailabilityState.PolicyExpired, silo.Clock.GetUtcNow(),
+                "claimed", IntentId: "expire-raw")).ConfigureAwait(false);
+        var role = new SiloRoleKey(SiloIdentityKind.Member, raw.Id, raw.Revision);
+
+        foreach (var pass in new[] { "replayed", "rebuilt" })
+        {
+            if (pass == "rebuilt")
+            {
+                await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
+                await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
+            }
+            var status = (await silo.Index.ReadRoleAsync(role, CancellationToken.None).ConfigureAwait(false))!;
+            status.Journaled.Should().BeNull($"{pass}: B re-entered the authority set under the intent and was never settled under it");
+            status.Disposition.Should().NotBe(SiloDisposition.PolicyExpired);
+        }
+    }
+
+    private static async Task EvictAsync(SiloHarness silo, SiloObjectIdentity role, SiloExactLocator copy, string intent)
+    {
+        await silo.AppendAsync(new SiloExpiryIntentRecord(intent, SiloExpiryScope.Copy, role, "operator eviction", [new(copy, "archive")],
+            "headroom", LastCopy: false)).ConfigureAwait(false);
+        await silo.AppendAsync(
+            new SiloExpiryDispositionRecord(intent, copy, SiloExpiryOutcome.Deleted, silo.Clock.GetUtcNow(), "NoSuchVersion"),
+            new SiloAvailabilityRecord(SiloAvailabilityScope.Copy, role, SiloAvailabilityState.Evicted, silo.Clock.GetUtcNow(), "proven absence",
+                copy, intent)).ConfigureAwait(false);
     }
 
     [TestMethod]
