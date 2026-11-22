@@ -255,9 +255,9 @@ public sealed class SiloAuthorityPathTests
 
     [TestMethod]
     [DataRow("stale after restoration", false, DisplayName = "an eviction resting on absence proven before the copy's restoration is refused")]
-    [DataRow("no intent named", false, DisplayName = "an eviction naming no intent is refused")]
+    [DataRow("no intent named", true, DisplayName = "an eviction naming no intent is refused even after its intent's fresh proof evicted the copy")]
     [DataRow("presence after stale absence", false, DisplayName = "after restoration, a same-intent presence outcome stands and a stale eviction is refused")]
-    [DataRow("other intent", false, DisplayName = "an eviction under an intent that proved nothing is refused")]
+    [DataRow("other intent", true, DisplayName = "an eviction under an intent that proved nothing is refused though another's fresh proof evicted the copy")]
     [DataRow("fresh same intent", true, DisplayName = "an eviction on fresh absence proven under the same intent stands")]
     public async Task ACopyEvictionNeedsFreshProofUnderItsOwnIntent(string after, bool evicted)
     {
@@ -285,6 +285,9 @@ public sealed class SiloAuthorityPathTests
                 await silo.AppendAsync(Evict("evict-x")).ConfigureAwait(false);
                 break;
             case "no intent named":
+                // X's fresh proof evicts the copy itself; an eviction record naming no intent is still refused.
+                await silo.AppendAsync(new SiloExpiryDispositionRecord("evict-x", copy.Locator, SiloExpiryOutcome.AlreadyAbsent, now, "NoSuchVersion"))
+                    .ConfigureAwait(false);
                 await silo.AppendAsync(Evict(null)).ConfigureAwait(false);
                 break;
             case "presence after stale absence":
@@ -293,8 +296,11 @@ public sealed class SiloAuthorityPathTests
                 await silo.AppendAsync(Evict("evict-x")).ConfigureAwait(false);
                 break;
             case "other intent":
+                // X's fresh proof evicts the copy itself; Y names the copy but proved nothing, so its eviction is refused.
                 await silo.AppendAsync(new SiloExpiryIntentRecord("evict-y", SiloExpiryScope.Copy, raw, "operator eviction",
                     [new(copy.Locator, "archive")], "headroom", LastCopy: false)).ConfigureAwait(false);
+                await silo.AppendAsync(new SiloExpiryDispositionRecord("evict-x", copy.Locator, SiloExpiryOutcome.AlreadyAbsent, now, "NoSuchVersion"))
+                    .ConfigureAwait(false);
                 await silo.AppendAsync(Evict("evict-y")).ConfigureAwait(false);
                 break;
             default:
@@ -320,7 +326,7 @@ public sealed class SiloAuthorityPathTests
             var refusal = after switch
             {
                 "no intent named" => "eviction-without-intent",
-                _ when evicted => null,
+                "fresh same intent" => null,
                 _ => "eviction-without-fresh-proven-absence",
             };
             foreach (var reason in new[] { "eviction-without-intent", "eviction-without-fresh-proven-absence" })
