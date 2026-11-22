@@ -593,6 +593,148 @@ public sealed class CalendarDayPreviewEvidenceTests
     }
 
     [TestMethod]
+    public async Task WriteThatCrossesTheCutoffIsNeverPublishedWhenTheTimerIsLate()
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        try
+        {
+            // The caller's timer never fires; only the operation's completion wakes it, after the real cutoff.
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root, async (path, content, _) =>
+                {
+                    clock.Advance(CrossedBy);
+                    await CalendarEvidenceStore.DurableWriteAsync(path, content, CancellationToken.None).ConfigureAwait(false);
+                }, attach: attached.Enqueue), CutoffBudget, clock).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
+            Assert.IsTrue(result.Expired);
+            Assert.IsEmpty(attached);
+            Assert.IsEmpty(Directory.Exists(root) ? Directory.GetFiles(root) : [], "a write that crossed the cutoff is never published");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task RenameThatCrossesTheCutoffIsUnconfirmedAndNeverAttached()
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{\"schema\":\"complete\"}"), static _ => "case.evidence.json", static value => value,
+                Store(root, publish: (temporary, path) =>
+                {
+                    File.Move(temporary, path);
+                    clock.Advance(CrossedBy);
+                }, attach: attached.Enqueue), CutoffBudget, clock).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.PublicationUnconfirmed, result.Outcome);
+            Assert.IsTrue(result.Expired);
+            Assert.IsEmpty(attached, "no attachment starts after the cutoff");
+            Assert.AreEqual("{\"schema\":\"complete\"}", await File.ReadAllTextAsync(Path.Combine(root, "case.evidence.json")).ConfigureAwait(false),
+                "the rename that started in time completed with the whole file");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task PublicationAndAttachmentBeforeTheCutoffSucceedWhenTheTimerIsLate()
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root, attach: attached.Enqueue), CutoffBudget, clock).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.Published, result.Outcome);
+            Assert.IsFalse(result.Expired);
+            CollectionAssert.AreEqual(new[] { result.Path }, attached.ToArray());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AttachmentInFlightAtTheCutoffStaysUnconfirmed()
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        using var started = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        try
+        {
+            var running = EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root, attach: path =>
+                {
+                    started.Set();
+                    release.Wait(TimeSpan.FromSeconds(30));
+                    attached.Enqueue(path);
+                }), CutoffBudget, clock);
+            Assert.IsTrue(started.Wait(TimeSpan.FromSeconds(30)));
+            clock.Advance(CrossedBy);
+            clock.FireTimers();
+
+            var result = await running.ConfigureAwait(false);
+            release.Set();
+            await Completion(result.Operation).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.AttachmentUnconfirmed, result.Outcome);
+            Assert.IsTrue(result.Expired);
+            CollectionAssert.AreEqual(new[] { result.Path }, attached.ToArray(), "the attachment that had started completed late");
+        }
+        finally
+        {
+            release.Set();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task StatusLineWaitsOnlyForTheRemainingBudget()
+    {
+        using var release = new ManualResetEventSlim();
+        var written = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        void Blocked(string line)
+        {
+            release.Wait(TimeSpan.FromSeconds(30));
+            written.Enqueue(line);
+        }
+        var clock = new ManualTimeProvider();
+
+        var nothingLeft = EvidenceRetention.WriteStatusWithinAsync(Blocked, "late", TimeSpan.Zero, clock);
+        var someLeft = EvidenceRetention.WriteStatusWithinAsync(Blocked, "in time", TimeSpan.FromMilliseconds(100), clock);
+
+        Assert.IsTrue(nothingLeft.IsCompletedSuccessfully, "with no budget left the caller does not wait for the line");
+        Assert.IsFalse(someLeft.IsCompleted, "otherwise it waits for the line up to the remaining budget");
+        clock.FireTimers();
+        await someLeft.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        release.Set();
+        await Task.Run(async () =>
+        {
+            while (written.Count < 2) await Task.Delay(10).ConfigureAwait(false);
+        }).WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        CollectionAssert.AreEquivalent(ExpectedStatusLines, written.ToArray(), "both lines are still written off the caller's path");
+    }
+
+    [TestMethod]
     public async Task FailingWriteLeavesNoFile()
     {
         var root = RetentionRoot();
@@ -635,6 +777,45 @@ public sealed class CalendarDayPreviewEvidenceTests
         await Task.Delay(Stall, CancellationToken.None).ConfigureAwait(false);
         await CalendarEvidenceStore.DurableWriteAsync(path, content, CancellationToken.None).ConfigureAwait(false);
     };
+
+    private static readonly string[] ExpectedStatusLines = ["late", "in time"];
+    private static readonly TimeSpan CutoffBudget = TimeSpan.FromMilliseconds(60);
+    private static readonly TimeSpan CrossedBy = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>A clock that moves only when told to, and whose timers fire only when released: a late timer continuation.</summary>
+    private sealed class ManualTimeProvider : TimeProvider
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(TimerCallback Callback, object? State)> timers = new();
+        private long now;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => Interlocked.Read(ref now);
+
+        internal void Advance(TimeSpan by) => Interlocked.Add(ref now, by.Ticks);
+
+        internal void FireTimers()
+        {
+            while (timers.TryDequeue(out var timer)) timer.Callback(timer.State);
+        }
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            timers.Enqueue((callback, state));
+            return new HeldTimer();
+        }
+
+        private sealed class HeldTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
 
     private static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan Stall = TimeSpan.FromSeconds(3);

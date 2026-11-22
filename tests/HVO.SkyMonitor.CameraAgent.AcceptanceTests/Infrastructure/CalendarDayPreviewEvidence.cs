@@ -589,6 +589,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     internal async Task<CalendarDayPreviewReport?> RetainAsync(Exception failure, TimeSpan settleWindow)
     {
         ArgumentNullException.ThrowIfNull(failure);
+        var started = TimeProvider.System.GetTimestamp();
         var reserve = TimeSpan.FromTicks(Math.Min(TimeSpan.FromSeconds(1).Ticks, budget.Ticks / 10));
         EvidenceRetentionResult<CalendarDayPreviewReport> result;
         try
@@ -612,7 +613,9 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         {
             line = result.Describe(rowLabel, budget);
         }
-        await WriteLineWithinAsync(line, reserve).ConfigureAwait(false);
+        // The line may wait only for what is left of the whole budget, not for a fixed reserve after a late decision.
+        await EvidenceRetention.WriteStatusWithinAsync(store.WriteLine, line, budget - TimeProvider.System.GetElapsedTime(started))
+            .ConfigureAwait(false);
         return result.Path is null ? null : LastReport;
     }
 
@@ -660,15 +663,6 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         CancellationToken.None,
         TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
         TaskScheduler.Default);
-
-    /// <summary>Writes one bounded status line on another thread and waits for it no longer than <paramref name="reserve"/>.</summary>
-    private async Task WriteLineWithinAsync(string line, TimeSpan reserve)
-    {
-        var bounded = line.Length > 4_000 ? line[..4_000] + "…" : line;
-        var write = Task.Run(() => store.WriteLine(bounded));
-        ObserveFaults(write);
-        await Task.WhenAny(write, Task.Delay(reserve)).ConfigureAwait(false);
-    }
 
     private async Task<CalendarDayPreviewReport> CaptureAsync(Exception failure, TimeSpan settleWindow, CancellationToken token)
     {
@@ -1575,39 +1569,72 @@ internal static class EvidenceRetention
         Func<T, string> fileName,
         Func<T, string> serialize,
         CalendarEvidenceStore store,
-        TimeSpan budget)
+        TimeSpan budget,
+        TimeProvider? time = null)
         where T : class
     {
         ArgumentNullException.ThrowIfNull(capture);
         ArgumentNullException.ThrowIfNull(fileName);
         ArgumentNullException.ThrowIfNull(serialize);
         ArgumentNullException.ThrowIfNull(store);
+        var clock = time ?? TimeProvider.System;
 #pragma warning disable CA2000 // The attempt is disposed by the continuation that runs when its operation ends.
-        var attempt = new Attempt();
+        var attempt = new Attempt(clock, budget);
 #pragma warning restore CA2000
         // Task.Run keeps every synchronous step, including any before the first await, off the caller's path.
         var operation = Task.Run(() => PublishAsync(capture, fileName, serialize, store, attempt));
         CalendarDayPreviewEvidence.ObserveFaults(operation);
         _ = operation.ContinueWith(static (_, state) => ((Attempt)state!).Dispose(), attempt,
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-        await Task.WhenAny(operation, Task.Delay(budget)).ConfigureAwait(false);
-        var expired = !operation.IsCompleted;
-        var state = expired ? attempt.Expire() : attempt.State;
-        if (expired)
+        // The timer only wakes the caller. Every decision is made against the cutoff captured at entry, so a late
+        // timer continuation cannot let work that finished after the cutoff count as in time.
+        await Task.WhenAny(operation, Task.Delay(budget, clock)).ConfigureAwait(false);
+        var completed = operation.IsCompleted;
+        var state = !completed || attempt.PastCutoff() ? attempt.Expire() : attempt.State;
+        if (!completed)
         {
             attempt.StopOffPath();
         }
         var value = attempt.Value as T;
+        var publishedInTime = attempt.InTime(attempt.PublishedAt);
         return state switch
         {
-            Attempt.Attached => new(EvidenceRetentionOutcome.Published, value, attempt.Path, null, null, expired, operation),
-            Attempt.AttachFailed => new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, attempt.AttachFailure, expired, operation),
-            Attempt.AttachRefused or Attempt.Published => new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, null, expired, operation),
-            Attempt.Attaching => new(EvidenceRetentionOutcome.AttachmentUnconfirmed, value, attempt.Path, null, null, true, operation),
-            Attempt.Committing when expired => new(EvidenceRetentionOutcome.PublicationUnconfirmed, null, null, attempt.Path, null, true, operation),
+            Attempt.Attached when publishedInTime && attempt.InTime(attempt.AttachEndedAt) =>
+                new(EvidenceRetentionOutcome.Published, value, attempt.Path, null, null, false, operation),
+            Attempt.Attached when publishedInTime =>
+                new(EvidenceRetentionOutcome.AttachmentUnconfirmed, value, attempt.Path, null, null, true, operation),
+            Attempt.AttachFailed when publishedInTime =>
+                new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, attempt.AttachFailure,
+                    !attempt.InTime(attempt.AttachEndedAt), operation),
+            Attempt.AttachRefused or Attempt.Published when publishedInTime =>
+                new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, null, true, operation),
+            Attempt.Attaching when publishedInTime =>
+                new(EvidenceRetentionOutcome.AttachmentUnconfirmed, value, attempt.Path, null, null, true, operation),
+            Attempt.Attached or Attempt.AttachFailed or Attempt.AttachRefused or Attempt.Published or Attempt.Attaching =>
+                new(EvidenceRetentionOutcome.PublicationUnconfirmed, null, null, attempt.Path, null, true, operation),
+            Attempt.Committing when !completed =>
+                new(EvidenceRetentionOutcome.PublicationUnconfirmed, null, null, attempt.Path, null, true, operation),
             _ => new(EvidenceRetentionOutcome.NotPublished, null, null, null,
-                operation.IsFaulted ? CalendarEvidenceVocabulary.TypeName(operation.Exception?.InnerException?.GetType()) : null, expired, operation)
+                operation.IsFaulted ? CalendarEvidenceVocabulary.TypeName(operation.Exception?.InnerException?.GetType()) : null,
+                !completed || attempt.CrossedCutoff, operation)
         };
+    }
+
+    /// <summary>
+    /// Writes one bounded status line on another thread and waits for it no longer than <paramref name="remaining"/>,
+    /// the time left of the caller's whole budget. With nothing left, the line is started and not waited for.
+    /// </summary>
+    internal static async Task WriteStatusWithinAsync(Action<string> writeLine, string line, TimeSpan remaining, TimeProvider? time = null)
+    {
+        ArgumentNullException.ThrowIfNull(writeLine);
+        ArgumentNullException.ThrowIfNull(line);
+        var bounded = line.Length > 4_000 ? line[..4_000] + "…" : line;
+        var write = Task.Run(() => writeLine(bounded));
+        CalendarDayPreviewEvidence.ObserveFaults(write);
+        if (remaining > TimeSpan.Zero)
+        {
+            await Task.WhenAny(write, Task.Delay(remaining, time ?? TimeProvider.System)).ConfigureAwait(false);
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
@@ -1678,7 +1705,7 @@ internal static class EvidenceRetention
     /// The gates shared by the operation and the caller. Exactly one of commit or abandonment wins, and exactly one of
     /// starting the attachment or refusing it at the deadline wins; an attachment already started is never refused.
     /// </summary>
-    private sealed class Attempt : IDisposable
+    private sealed class Attempt(TimeProvider clock, TimeSpan budget) : IDisposable
     {
         internal const int Running = 0;
         internal const int Committing = 1;
@@ -1690,12 +1717,31 @@ internal static class EvidenceRetention
         internal const int AttachRefused = 7;
 
         private readonly CancellationTokenSource stop = new();
+        private readonly long started = clock.GetTimestamp();
         private int state;
         private int expired;
+        private int crossedCutoff;
+        private long publishedAt = -1;
+        private long attachEndedAt = -1;
 
         internal CancellationToken Token => stop.Token;
 
         internal int State => Volatile.Read(ref state);
+
+        /// <summary>Elapsed ticks since entry when the rename completed, or -1.</summary>
+        internal long PublishedAt => Interlocked.Read(ref publishedAt);
+
+        /// <summary>Elapsed ticks since entry when the attachment returned or failed, or -1.</summary>
+        internal long AttachEndedAt => Interlocked.Read(ref attachEndedAt);
+
+        /// <summary>True when a gate refused because the cutoff had passed.</summary>
+        internal bool CrossedCutoff => Volatile.Read(ref crossedCutoff) == 1;
+
+        internal bool PastCutoff() => clock.GetElapsedTime(started) >= budget;
+
+        internal bool InTime(long elapsedTicks) => elapsedTicks >= 0 && elapsedTicks < budget.Ticks;
+
+        private long Elapsed() => clock.GetElapsedTime(started).Ticks;
 
         internal string? Path { get; private set; }
 
@@ -1703,19 +1749,35 @@ internal static class EvidenceRetention
 
         internal string? AttachFailure { get; private set; }
 
+        /// <summary>
+        /// Wins the commit gate only before the cutoff. The cutoff is read after the gate is won, so a rename can start
+        /// only while time remains; a gate won too late is given up before anything is renamed.
+        /// </summary>
         internal bool TryBeginCommit(string path)
         {
             Path = path;
-            return Interlocked.CompareExchange(ref state, Committing, Running) == Running;
+            if (Interlocked.CompareExchange(ref state, Committing, Running) != Running)
+            {
+                return false;
+            }
+            if (PastCutoff())
+            {
+                Volatile.Write(ref crossedCutoff, 1);
+                Volatile.Write(ref state, Abandoned);
+                return false;
+            }
+            return true;
         }
 
         /// <summary>Only the operation leaves <see cref="Committing"/>, so publication needs no compare-exchange.</summary>
         internal void Publish(object value)
         {
             Value = value;
+            Interlocked.Exchange(ref publishedAt, Elapsed());
             Volatile.Write(ref state, Published);
         }
 
+        /// <summary>Wins the attachment gate only before the cutoff and before the caller has marked the deadline.</summary>
         internal bool TryBeginAttach()
         {
             if (Volatile.Read(ref expired) == 1)
@@ -1723,14 +1785,29 @@ internal static class EvidenceRetention
                 Interlocked.CompareExchange(ref state, AttachRefused, Published);
                 return false;
             }
-            return Interlocked.CompareExchange(ref state, Attaching, Published) == Published;
+            if (Interlocked.CompareExchange(ref state, Attaching, Published) != Published)
+            {
+                return false;
+            }
+            if (PastCutoff())
+            {
+                Volatile.Write(ref crossedCutoff, 1);
+                Volatile.Write(ref state, AttachRefused);
+                return false;
+            }
+            return true;
         }
 
-        internal void MarkAttached() => Volatile.Write(ref state, Attached);
+        internal void MarkAttached()
+        {
+            Interlocked.Exchange(ref attachEndedAt, Elapsed());
+            Volatile.Write(ref state, Attached);
+        }
 
         internal void MarkAttachFailed(Type type)
         {
             AttachFailure = CalendarEvidenceVocabulary.TypeName(type);
+            Interlocked.Exchange(ref attachEndedAt, Elapsed());
             Volatile.Write(ref state, AttachFailed);
         }
 
