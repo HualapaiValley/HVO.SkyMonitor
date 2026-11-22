@@ -225,6 +225,9 @@ internal static class SiloInstallation
             silo.StoreId != SiloRuntimeProfile.StoreIdFor(instanceId) ||
             silo.StorageBindingId != SiloRuntimeProfile.StorageBindingIdFor(instanceId, silo.StoreId, silo.Bucket))
             throw InstallerException.Refused("The recorded Silo binding does not belong to this instance.");
+        // The bucket and binding CameraAgent is configured with must be the recorded ones, before Docker is asked anything:
+        // the probe below reaches the recorded bucket, so a stale or foreign setting would otherwise pass unseen.
+        EnsureConfiguredBinding(paths, silo);
         var (fileSystem, _, device) = SiloRuntimeProfile.MountOf(
             expectedRoot, await File.ReadAllTextAsync(HostProductRootPolicy.MountInfoPath, cancellationToken).ConfigureAwait(false));
         if (fileSystem != silo.DataRootFileSystem || device != silo.DataRootDevice)
@@ -241,7 +244,8 @@ internal static class SiloInstallation
         var verified = SiloRuntimeProfile.ParseScriptResult(
             await docker.RunInApplicationNetworkAsync(cameraAgent.Id, observed.ImageId!, platform.Platform, observed.User!, instanceId,
                 SiloRuntimeProfile.VerifyBindingScript(silo.Bucket, silo.MarkerVersionId,
-                    SiloRuntimeProfile.ExpectSettings(Path.Combine(paths.ConfigRoot, "secrets"))), cancellationToken)
+                    SiloRuntimeProfile.ExpectSettings(Path.Combine(paths.ConfigRoot, "secrets"), SiloRuntimeProfile.BindingSettings(silo))),
+                cancellationToken)
                 .ConfigureAwait(false),
             "verified",
             "binding verification");
@@ -406,14 +410,7 @@ internal static class SiloInstallation
         IReadOnlyList<InstallationWarning> warnings,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(manifest);
-        ArgumentNullException.ThrowIfNull(result);
-        if (!sameInputs)
-            throw InstallerException.Refused(
-                "This Silo-layout instance is installed, and an install re-run never changes or upgrades it in place. Nothing was changed. " +
-                $"Check it with: hvo-sky-install cameraagent silo-verify --instance-id {instanceId:D}");
-        if (manifest.Silo is not { } silo || manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
-            throw InstallerException.Refused("The retained instance is not an installed Silo-layout instance. Nothing was changed.");
+        var silo = AdmitReRun(instanceId, sameInputs, manifest, result);
         var verification = await VerifyAsync(docker, paths, instanceId, silo, manifest.Image, cancellationToken).ConfigureAwait(false);
         if (verification.Readiness == "not-ready")
             throw InstallerException.Refused(
@@ -429,6 +426,77 @@ internal static class SiloInstallation
         if (verification.Archive is { } archive)
             items.Add(new(DeploymentPlanAction.Unchanged, "silo-archive", silo.Archive!.Endpoint, archive.Reason));
         return result with { Warnings = warnings, Plan = DeploymentPlan.Of(items, "the Silo-layout instance verified") };
+    }
+
+    /// <summary>
+    /// The plan of a completed Silo-layout instance's install re-run (#1966 review): the run's refusals, and with the
+    /// inputs it was installed with, what the run verifies, all unchanged. It asks Docker nothing and starts no container;
+    /// the run verifies read-only, from CameraAgent's network.
+    /// </summary>
+    public static InstallationResult PlanReRun(
+        Guid instanceId,
+        bool sameInputs,
+        InstanceManifest manifest,
+        InstallationResult result,
+        IReadOnlyList<InstallationWarning> warnings)
+    {
+        var silo = AdmitReRun(instanceId, sameInputs, manifest, result);
+        var items = new List<DeploymentPlanItem>
+        {
+            new(DeploymentPlanAction.Unchanged, "cameraagent", ComposeDeployment.ContainerNameFor(instanceId),
+                "the run verifies it is running, healthy and on the recorded image"),
+            new(DeploymentPlanAction.Unchanged, "container", SiloRuntimeProfile.ContainerNameFor(instanceId),
+                $"the run verifies the pinned Silo {silo.ImageRelease} image and its runtime shape"),
+            new(DeploymentPlanAction.Unchanged, "network", SiloRuntimeProfile.NetworkNameFor(instanceId), "the run verifies it is internal"),
+            new(DeploymentPlanAction.Unchanged, "silo-store", silo.Bucket, "the run verifies the binding from CameraAgent's network"),
+            new(DeploymentPlanAction.Unchanged, "silo-data-root", silo.DataRoot, "the run verifies its filesystem and headroom")
+        };
+        if (silo.Archive is { } archive)
+            items.Add(new(DeploymentPlanAction.Unchanged, "silo-archive", archive.Endpoint, "the run verifies it read-only"));
+        return result with
+        {
+            Outcome = InstallationOutcome.Planned,
+            Warnings = warnings,
+            Plan = DeploymentPlan.Of(items, "the run verifies the Silo-layout instance")
+        };
+    }
+
+    /// <summary>
+    /// What a fresh or resumed Silo-layout install creates beside CameraAgent (#1966 review): the data root, the private
+    /// network, the stock Silo container, the bound store and the persisted first-boot pause.
+    /// </summary>
+    public static IEnumerable<DeploymentPlanItem> PlanItems(
+        InstallationPaths paths,
+        Guid instanceId,
+        SiloImagePin.PlatformImage platform,
+        string imageSource,
+        (string FileSystem, string Device) dataRoot,
+        bool resumed)
+    {
+        ArgumentNullException.ThrowIfNull(platform);
+        var made = resumed ? DeploymentPlanAction.Change : DeploymentPlanAction.Create;
+        var dataRootPath = SiloRuntimeProfile.DataRoot(paths);
+        yield return new(Directory.Exists(dataRootPath) ? DeploymentPlanAction.Unchanged : DeploymentPlanAction.Create, "folder", dataRootPath,
+            $"Silo data root on local {dataRoot.FileSystem} (device {dataRoot.Device})");
+        yield return new(made, "network", SiloRuntimeProfile.NetworkNameFor(instanceId), "internal: the Silo and CameraAgent containers only");
+        yield return new(made, "container", SiloRuntimeProfile.ContainerNameFor(instanceId),
+            $"stock Silo {SiloImagePin.Release} for {platform.Platform}, {imageSource}; no published port, console off");
+        yield return new(made, "silo-store", SiloRuntimeProfile.BucketFor(instanceId), "versioned bucket, writer credential and instance binding");
+        yield return new(made, "first-boot-pause", "capture admission",
+            "persisted as paused before CameraAgent first starts; cameraagent first-resume releases it");
+    }
+
+    private static SiloInstallationIdentity AdmitReRun(Guid instanceId, bool sameInputs, InstanceManifest manifest, InstallationResult result)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        ArgumentNullException.ThrowIfNull(result);
+        if (!sameInputs)
+            throw InstallerException.Refused(
+                "This Silo-layout instance is installed, and an install re-run never changes or upgrades it in place. Nothing was changed. " +
+                $"Check it with: hvo-sky-install cameraagent silo-verify --instance-id {instanceId:D}");
+        if (manifest.Silo is not { } silo || manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
+            throw InstallerException.Refused("The retained instance is not an installed Silo-layout instance. Nothing was changed.");
+        return silo;
     }
 
     /// <summary>
@@ -667,6 +735,33 @@ internal static class SiloInstallation
             !SiloRuntimeProfile.SecretKeyPattern().IsMatch(secret) || record.Count != 6)
             throw InstallerException.Refused("The retained Silo writer credential record is not this instance's. Nothing was changed in the store.");
         return (access, secret);
+    }
+
+    /// <summary>
+    /// Refuses unless each setting file that binds CameraAgent to its store is the instance's own regular file holding
+    /// exactly the value its manifest records (#1966 review). Nothing is changed.
+    /// </summary>
+    internal static void EnsureConfiguredBinding(InstallationPaths paths, SiloInstallationIdentity silo)
+    {
+        var secrets = Path.Combine(paths.ConfigRoot, "secrets");
+        foreach (var (name, expected) in SiloRuntimeProfile.BindingSettings(silo))
+        {
+            var path = Path.Combine(secrets, name);
+            string? configured;
+            try
+            {
+                SafeFileSystem.ValidateOwnerFile(path);
+                configured = File.ReadAllText(path);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InstallerException)
+            {
+                configured = null;
+            }
+            if (!string.Equals(configured, expected, StringComparison.Ordinal))
+                throw InstallerException.Refused(name == SiloRuntimeProfile.BucketSetting
+                    ? "The Silo bucket CameraAgent is configured with is not this instance's bucket. Nothing was changed."
+                    : $"CameraAgent's Silo setting {name} is not the one this instance records. Nothing was changed.");
+        }
     }
 
     private static (string Access, string Secret) ReadWriterCredential(InstallationPaths paths)

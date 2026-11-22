@@ -122,6 +122,27 @@ internal static class SiloCommands
         if (manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
             throw InstallerException.Refused("The selected Silo-layout instance is not installed.");
         paths = paths.WithCatalog(manifest.Catalog.CatalogId);
+        // The first resume opens admission, which a resumed install would then find no longer paused (#1966 review). It
+        // runs only on an installation durably completed, under the locks the installer holds while it runs, which it keeps
+        // until CameraAgent has recorded the resume. The read-only verification takes no lock.
+        using var productLock = request.Kind == SiloCommandKind.FirstResume
+            ? OperationLock.Acquire(Path.Combine(paths.OperationsRoot, "deployment.lock"), cancellationToken: cancellationToken)
+            : null;
+        using var instanceLock = request.Kind == SiloCommandKind.FirstResume
+            ? OperationLock.Acquire(Path.Combine(paths.InstanceRoot, ".deployment.lock"), cancellationToken: cancellationToken)
+            : null;
+        if (request.Kind == SiloCommandKind.FirstResume)
+        {
+            manifest = await CameraAgentLifecycleManager.ReadManifestAsync(paths.ManifestPath, cancellationToken, allowSiloLayout: true)
+                .ConfigureAwait(false);
+            if (manifest.Silo != silo || manifest.LifecycleCondition != InstanceLifecycleCondition.Installed)
+                throw InstallerException.Refused("The instance's records changed while the first resume waited for them. Nothing was changed.");
+            var installation = await CameraAgentInstaller.ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
+            if (installation is not { Status: InstallationStatus.Completed } || installation.InstanceId != instanceId)
+                throw InstallerException.Refused(
+                    "The first resume was refused and capture stays paused: this instance's installation has not completed. " +
+                    "Run the same install again to finish it, then resume.");
+        }
         var result = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken, allowSiloLayout: true)
             .ConfigureAwait(false);
         // The result names the endpoint the lifecycle token is sent to, so it must be this instance's own, correlated with

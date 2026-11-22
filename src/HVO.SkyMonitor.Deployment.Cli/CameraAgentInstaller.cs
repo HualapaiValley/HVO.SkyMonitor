@@ -124,6 +124,7 @@ internal sealed partial class CameraAgentInstaller
                 request, docker, hostEnvironment, hostCheckLimits, cancellationToken)
             .ConfigureAwait(false);
         SiloArchiveIdentity? siloArchive = null;
+        SiloImagePin.PlatformImage? siloPlatform = null;
         using var stagedSilo = new SiloImageSnapshotHolder();
         if (silo && retained is not { Completed: true })
         {
@@ -132,6 +133,7 @@ internal sealed partial class CameraAgentInstaller
             // a run that may not download already holds it; and an optional archive store answers as configured.
             var platform = SiloImagePin.ForArchitecture(preflightDaemon.Architecture)
                 ?? throw InstallerException.Refused($"The pinned Silo release has no image for the {preflightDaemon.Architecture} architecture.");
+            siloPlatform = platform;
             if (acquiredImage?.VerifiedRelease.Manifest is { } release)
                 SiloInstallation.AdmitRelease(release);
             if (request.SiloImageArchive is { } staged)
@@ -192,11 +194,13 @@ internal sealed partial class CameraAgentInstaller
         }
         if (silo && retained is { Completed: true, Manifest: { } completedManifest, Result: { } completedResult })
         {
-            return await SiloInstallation.ReRunAsync(
-                    docker, paths, instanceId,
-                    RequestIdentityMatches(retained.State.RequestSha256, identityRequest, instanceId, acquiredImage?.VerifiedRelease),
-                    completedManifest, completedResult, warnings, cancellationToken)
-                .ConfigureAwait(false);
+            var sameInputs = RequestIdentityMatches(retained.State.RequestSha256, identityRequest, instanceId, acquiredImage?.VerifiedRelease);
+            // A plan makes the run's refusals and reports what the run would verify; it starts no container (#1966 review).
+            return request.DryRun
+                ? SiloInstallation.PlanReRun(instanceId, sameInputs, completedManifest, completedResult, warnings)
+                : await SiloInstallation.ReRunAsync(docker, paths, instanceId, sameInputs, completedManifest, completedResult, warnings,
+                        cancellationToken)
+                    .ConfigureAwait(false);
         }
         if (retained is { Completed: true })
         {
@@ -215,21 +219,42 @@ internal sealed partial class CameraAgentInstaller
         }
         if (request.DryRun)
         {
-            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, retained?.Manifest, cancellationToken)
+            // A Silo-layout plan renders the Silo model in memory and names what the run would create beside CameraAgent; it
+            // reads the daemon's pinned image without loading or pulling anything (#1966 review).
+            (SiloComposeInputs Inputs, string ImageSource)? plannedSilo = null;
+            if (silo)
+            {
+                var present = await docker.ResolvePinnedSiloImageAsync(siloPlatform!, cancellationToken).ConfigureAwait(false);
+                var pause = SiloInstallation.GetOrCreateFirstBootPauseId(paths, allowCreation: false);
+                plannedSilo = (
+                    new SiloComposeInputs(present?.Reference ?? SiloImagePin.IndexDigest, siloPlatform!.Platform, SiloRuntimeProfile.DataRoot(paths),
+                        pause == Guid.Empty ? Guid.NewGuid() : pause),
+                    present is not null ? "already on this Docker daemon"
+                    : request.SiloImageArchive is not null ? "loaded from the staged --silo-image-archive"
+                    : "pulled by digest");
+            }
+            var plan = await PlanAsync(request, paths, instanceId, docker, acquiredImage, retained?.Manifest, cancellationToken, plannedSilo?.Inputs)
                 .ConfigureAwait(false);
             var plannedPaths = paths.WithCatalog(Path.GetFileName(plan.Catalog.InstallRoot));
             var plannedRecord = InstallRecordLocation.For(plannedPaths.ProductRoot, request.ProductionProductRoot);
+            var installed = InstalledPlan(
+                plannedPaths,
+                instanceId,
+                plan.Image.ImageId,
+                request.ContainerResources(),
+                FreshInstallFacts.Observe(plannedPaths),
+                await FreshRecordActionAsync(plannedRecord, instanceId, cancellationToken).ConfigureAwait(false),
+                plannedRecord);
             return plan with
             {
                 Warnings = warnings,
-                Plan = InstalledPlan(
-                    plannedPaths,
-                    instanceId,
-                    plan.Image.ImageId,
-                    request.ContainerResources(),
-                    FreshInstallFacts.Observe(plannedPaths),
-                    await FreshRecordActionAsync(plannedRecord, instanceId, cancellationToken).ConfigureAwait(false),
-                    plannedRecord)
+                Plan = plannedSilo is { } planned
+                    ? DeploymentPlan.Of([
+                        .. installed.Items,
+                        .. SiloInstallation.PlanItems(plannedPaths, instanceId, siloPlatform!, planned.ImageSource, siloDataRoot!.Value,
+                            resumed: retained is not null)
+                    ])
+                    : installed
             };
         }
 
@@ -768,7 +793,8 @@ internal sealed partial class CameraAgentInstaller
         DockerClient docker,
         AcquiredImage? release,
         InstanceManifest? retainedManifest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        SiloComposeInputs? silo = null)
     {
         var applicationIdentity = Guid.NewGuid();
         var catalog = CatalogInstaller.Inspect(request.CatalogBundle!, finalPaths.CatalogRoot);
@@ -795,7 +821,7 @@ internal sealed partial class CameraAgentInstaller
             "dry-run-installation-verification-token",
             "dry-run-lifecycle-control-token",
             passwordAuthorityEnabled: true,
-            request.ContainerResources(), deepSkyCatalog: deepSkyCatalog).Files;
+            request.ContainerResources(), deepSkyCatalog: deepSkyCatalog, silo: silo).Files;
         return new InstallationResult(
             DeploymentSchemaVersions.InstallationResult,
             InstallationOutcome.Planned,
@@ -1104,7 +1130,7 @@ internal sealed partial class CameraAgentInstaller
         return request with { ImageArchive = stagedPath };
     }
 
-    private static async Task<InstallationState?> ReadStateAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<InstallationState?> ReadStateAsync(string path, CancellationToken cancellationToken)
     {
         if (!File.Exists(path))
         {

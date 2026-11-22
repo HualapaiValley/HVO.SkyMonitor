@@ -108,6 +108,13 @@ internal static partial class SiloRuntimeProfile
         => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(
             $"hvo.cameraagent.silo.binding/1\n{instanceId:D}\n{storeId}\n{bucket}")));
 
+    public const string EndpointSetting = "CameraAgent__Silo__Endpoint";
+    public const string StateContractSetting = "CameraAgent__Silo__StateContract";
+    public const string BucketSetting = "CameraAgent__Silo__Bucket";
+    public const string StoreIdSetting = "CameraAgent__Silo__StoreId";
+    public const string StorageBindingIdSetting = "CameraAgent__Silo__StorageBindingId";
+    public const string WriterGenerationSetting = "CameraAgent__Silo__WriterGeneration";
+
     /// <summary>The setting files CameraAgent reads to find its store. #1968 consumes them; until then they are inert.</summary>
     public static IReadOnlyDictionary<string, string> CameraAgentSettings(Guid instanceId, Guid firstBootPauseId)
     {
@@ -116,12 +123,30 @@ internal static partial class SiloRuntimeProfile
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["CameraAgent__FirstBootPause__Id"] = firstBootPauseId.ToString("D"),
-            ["CameraAgent__Silo__StateContract"] = StateContract,
-            ["CameraAgent__Silo__Endpoint"] = Endpoint,
-            ["CameraAgent__Silo__Bucket"] = bucket,
-            ["CameraAgent__Silo__StoreId"] = storeId,
-            ["CameraAgent__Silo__StorageBindingId"] = StorageBindingIdFor(instanceId, storeId, bucket),
-            ["CameraAgent__Silo__WriterGeneration"] = WriterGeneration.ToString(CultureInfo.InvariantCulture)
+            [StateContractSetting] = StateContract,
+            [EndpointSetting] = Endpoint,
+            [BucketSetting] = bucket,
+            [StoreIdSetting] = storeId,
+            [StorageBindingIdSetting] = StorageBindingIdFor(instanceId, storeId, bucket),
+            [WriterGenerationSetting] = WriterGeneration.ToString(CultureInfo.InvariantCulture)
+        };
+    }
+
+    /// <summary>
+    /// The setting files that bind CameraAgent to its store, each with the exact value the instance's manifest records
+    /// (#1966 review: a verification proves the bucket and binding CameraAgent is configured with, not only the recorded
+    /// ones it then probes).
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> BindingSettings(SiloInstallationIdentity silo)
+    {
+        ArgumentNullException.ThrowIfNull(silo);
+        return new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [StateContractSetting] = silo.StateContract,
+            [BucketSetting] = silo.Bucket,
+            [StoreIdSetting] = silo.StoreId,
+            [StorageBindingIdSetting] = silo.StorageBindingId,
+            [WriterGenerationSetting] = silo.WriterGeneration.ToString(CultureInfo.InvariantCulture)
         };
     }
 
@@ -494,12 +519,24 @@ networks:
     /// A read-only binding check as the writer: the bucket is versioned and its marker's latest version is exactly the
     /// recorded one with the recorded SHA-256 and binds this instance. Prints the marker bytes base64-encoded.
     /// </summary>
-    /// <summary>What the host expects of CameraAgent's settings mount: the exact endpoint and each entry's identity.</summary>
-    internal sealed record SettingsExpectation(string Endpoint, string EndpointSha256, string Directory, string EndpointFile, string AccessFile, string SecretFile);
+    /// <summary>
+    /// What the host expects of CameraAgent's settings mount: the exact endpoint, each entry's identity, and the binding
+    /// settings with the identity and SHA-256 of the value each must hold.
+    /// </summary>
+    internal sealed record SettingsExpectation(
+        string Endpoint, string EndpointSha256, string Directory, string EndpointFile, string AccessFile, string SecretFile,
+        IReadOnlyList<ExpectedSetting> Binding);
 
-    /// <summary>The identities of the instance's settings directory and files on the host, as <c>stat -c %d:%i</c> prints them.</summary>
-    public static SettingsExpectation ExpectSettings(string settingsDirectory)
+    /// <summary>A binding setting file: its name, its identity on the host and the SHA-256 of the value it must hold.</summary>
+    internal sealed record ExpectedSetting(string Name, string Identity, string Sha256);
+
+    /// <summary>
+    /// The identities of the instance's settings directory and files on the host, as <c>stat -c %d:%i</c> prints them, and
+    /// the values the <paramref name="binding"/> settings must hold.
+    /// </summary>
+    public static SettingsExpectation ExpectSettings(string settingsDirectory, IReadOnlyDictionary<string, string> binding)
     {
+        ArgumentNullException.ThrowIfNull(binding);
         static string Identity(string path)
         {
             var node = NativeLinux.GetNodeIdentity(path);
@@ -513,7 +550,11 @@ networks:
             Identity(settingsDirectory),
             Identity(Path.Combine(settingsDirectory, "CameraAgent__Silo__Endpoint")),
             Identity(Path.Combine(settingsDirectory, WriterAccessKeySetting)),
-            Identity(Path.Combine(settingsDirectory, WriterSecretKeySetting)));
+            Identity(Path.Combine(settingsDirectory, WriterSecretKeySetting)),
+            [.. binding.OrderBy(static setting => setting.Key, StringComparer.Ordinal).Select(setting => new ExpectedSetting(
+                setting.Key,
+                Identity(Path.Combine(settingsDirectory, setting.Key)),
+                Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(setting.Value)))))]);
     }
 
     public static string VerifyBindingScript(string bucket, string markerVersionId, SettingsExpectation expectation)
@@ -522,8 +563,23 @@ networks:
         RequireBucket(bucket);
         if (!VersionIdPattern().IsMatch(markerVersionId)) throw new InstallerException("The recorded Silo marker version is invalid.");
         if (expectation.Endpoint != Endpoint || !Sha256Pattern().IsMatch(expectation.EndpointSha256) ||
-            new[] { expectation.Directory, expectation.EndpointFile, expectation.AccessFile, expectation.SecretFile }.Any(static identity => !IdentityPattern().IsMatch(identity)))
+            new[] { expectation.Directory, expectation.EndpointFile, expectation.AccessFile, expectation.SecretFile }.Any(static identity => !IdentityPattern().IsMatch(identity)) ||
+            expectation.Binding.Count == 0 || !expectation.Binding.Any(static setting => setting.Name == BucketSetting) ||
+            expectation.Binding.Any(static setting => !BindingSettingPattern().IsMatch(setting.Name) || !IdentityPattern().IsMatch(setting.Identity) ||
+                                                      !Sha256Pattern().IsMatch(setting.Sha256)))
             throw new InstallerException("The expected CameraAgent settings are not in the expected form.");
+        // Each binding setting CameraAgent reads must be this instance's own file holding exactly the recorded value: a stale
+        // or foreign bucket or binding is refused here, before any credential is read or request sent.
+        var bindingChecks = string.Join('\n', expectation.Binding.Select(static setting =>
+        {
+            var refusal = setting.Name == BucketSetting ? "cameraagent-bucket-not-the-instances" : "cameraagent-binding-not-the-instances";
+            return $$"""
+                own "$settings/{{setting.Name}}" '{{setting.Identity}}'
+                [[ -f "$settings/{{setting.Name}}" ]] || fail "cameraagent-settings-not-the-instances"
+                value_sha="$(sha256sum < "$settings/{{setting.Name}}")" || fail "cameraagent-settings-unreadable"
+                [ "${value_sha%% *}" = '{{setting.Sha256}}' ] || fail "{{refusal}}"
+                """;
+        }));
         // Run beside CameraAgent with its network namespace and its live mounts. Before any credential is read or anything
         // is sent, the settings mount must be this instance's own directory and files (by device and inode, no symbolic
         // link) and the endpoint file must hold exactly this instance's endpoint; the store is then reached only at that
@@ -542,6 +598,7 @@ networks:
             [[ -f "$settings/CameraAgent__Silo__Endpoint" ]] || fail "cameraagent-settings-not-the-instances"
             endpoint_sha="$(sha256sum < "$settings/CameraAgent__Silo__Endpoint")" || fail "cameraagent-settings-unreadable"
             [ "${endpoint_sha%% *}" = '{{expectation.EndpointSha256}}' ] || fail "cameraagent-endpoint-not-the-instances"
+            {{bindingChecks}}
             own "$settings/{{WriterAccessKeySetting}}" '{{expectation.AccessFile}}'
             own "$settings/{{WriterSecretKeySetting}}" '{{expectation.SecretFile}}'
             [[ -f "$settings/{{WriterAccessKeySetting}}" && -f "$settings/{{WriterSecretKeySetting}}" ]] || fail "cameraagent-settings-not-the-instances"
@@ -594,6 +651,9 @@ networks:
 
     [GeneratedRegex("^[A-Z0-9]{20}$", RegexOptions.CultureInvariant)]
     private static partial Regex GeneratedKeyPattern();
+
+    [GeneratedRegex("^CameraAgent__Silo__[A-Za-z]{1,40}$", RegexOptions.CultureInvariant)]
+    private static partial Regex BindingSettingPattern();
 
     [GeneratedRegex("^[A-Za-z0-9-]{1,64}$", RegexOptions.CultureInvariant)]
     internal static partial Regex VersionIdPattern();

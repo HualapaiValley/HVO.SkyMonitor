@@ -266,6 +266,8 @@ jobs:
             scripts/test:deployment-installer-qualification \
             scripts/qualify:filesystem-object-store \
             scripts/test:filesystem-object-store-qualification \
+            scripts/qualify:silo-runtime \
+            scripts/test:silo-runtime-qualification \
             scripts/lib/deployment-installer-qualification.sh
           ./scripts/test:deployment-installer-qualification
       - name: Run exhaustive production catalog lifecycle
@@ -279,6 +281,7 @@ jobs:
           ./scripts/test:deployment-logichost-outage-contract
           ./scripts/test:deployment-normal-flow-contract
           ./scripts/test:filesystem-object-store-qualification
+          ./scripts/test:silo-runtime-qualification
       - name: Run exhaustive deployment contracts in parallel
         if: needs.changes.outputs.deployment_shards == 'true'
         run: ./scripts/test:deploy-environment --parallel

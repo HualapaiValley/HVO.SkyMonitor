@@ -151,9 +151,9 @@ internal static partial class SiloArchiveProbe
             // The platform's current protocols; no legacy version is enabled.
             EnabledSslProtocols = SslProtocols.None,
             CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
-            RemoteCertificateValidationCallback = (_, certificate, _, errors) =>
+            RemoteCertificateValidationCallback = (_, certificate, peerChain, errors) =>
             {
-                var trusted = Trusted(certificate, errors, authority, out var sha256);
+                var trusted = Trusted(certificate, errors, authority, PeerCertificates(peerChain), out var sha256);
                 certificateSha256 = sha256;
                 tlsRejected = !trusted;
                 return trusted;
@@ -220,6 +220,20 @@ internal static partial class SiloArchiveProbe
     /// Whether the server's certificate is for the endpoint's name and chains to the configured authority alone.
     /// </summary>
     internal static bool Trusted(X509Certificate? certificate, SslPolicyErrors errors, X509Certificate2Collection authority, out string? sha256)
+        => Trusted(certificate, errors, authority, peerCertificates: null, out sha256);
+
+    /// <summary>
+    /// Whether the server's certificate is for the endpoint's name and chains to the configured authority alone. The
+    /// certificates the server sent with its own may complete that chain as untrusted intermediates (#1966 review): an
+    /// authority file that holds only the root still verifies a server that presents its intermediate. Only the configured
+    /// authority is ever a trust anchor; a root the server sends is not.
+    /// </summary>
+    internal static bool Trusted(
+        X509Certificate? certificate,
+        SslPolicyErrors errors,
+        X509Certificate2Collection authority,
+        X509Certificate2Collection? peerCertificates,
+        out string? sha256)
     {
         sha256 = null;
         if (certificate is null || (errors & (SslPolicyErrors.RemoteCertificateNameMismatch | SslPolicyErrors.RemoteCertificateNotAvailable)) != 0)
@@ -234,7 +248,23 @@ internal static partial class SiloArchiveProbe
         // The certificate must be good for TLS server authentication: a leaf (or an intermediate) that limits itself to
         // other purposes, such as client authentication, is not an archive server's certificate.
         chain.ChainPolicy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
+        if (peerCertificates is not null)
+            chain.ChainPolicy.ExtraStore.AddRange(peerCertificates);
         return chain.Build(leaf);
+    }
+
+    /// <summary>
+    /// The certificates the server presented besides its own, as the handshake's chain carries them: the platform's extra
+    /// store and the chain elements above the leaf. They are only chain inputs; trust stays with the configured authority.
+    /// </summary>
+    internal static X509Certificate2Collection? PeerCertificates(X509Chain? peerChain)
+    {
+        if (peerChain is null) return null;
+        var certificates = new X509Certificate2Collection();
+        certificates.AddRange(peerChain.ChainPolicy.ExtraStore);
+        for (var index = 1; index < peerChain.ChainElements.Count; index++)
+            certificates.Add(peerChain.ChainElements[index].Certificate);
+        return certificates;
     }
 
     /// <summary>AWS Signature Version 4 over a request with no body: the signature and the signed header list.</summary>

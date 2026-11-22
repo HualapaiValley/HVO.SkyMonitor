@@ -566,7 +566,7 @@ for a new instance and is never reached by conversion.
   bucket, store and binding identities, the writer key's ID and the exact versions and digests of the instance marker and
   fence. It holds no secret.
 - The stock Silo image is pinned by release, index digest and each platform's manifest and config digests. The
-  installer and the release tool share that pin, and `release.json` names it as `images.silo` (section 2). HVO does not
+  installer and the release tool share that pin, and `release.json` names it as `images.silo` (section 4). HVO does not
   ship the image. An offline site stages a `docker save --platform` archive of the pinned reference, which the installer
   verifies blob for blob before loading. [The runbook](runbooks/cameraagent-silo-runtime.md) gives the licence
   rationale, who provisions and verifies the image, and the offline route.

@@ -459,41 +459,4 @@ internal sealed partial class DockerClient
                 throw InstallerException.Refused("Another container references the Silo data root; it must belong to this instance's Silo alone.");
         }
     }
-
-    /// <summary>
-    /// Stops the instance's Silo container and proves its process has exited (contract 7.2 step 3): the daemon reports
-    /// it not running with an exit code, and the process it reported before the stop no longer exists on this host.
-    /// </summary>
-    public async Task<TimeSpan> StopSiloAndVerifyExitAsync(string containerName, CancellationToken cancellationToken)
-    {
-        var before = await ObserveSiloContainerAsync(containerName, cancellationToken).ConfigureAwait(false)
-            ?? throw new InstallerException("The Silo container does not exist.");
-        var stopwatch = Stopwatch.StartNew();
-        await RunDockerAsync(["container", "stop", "--time", "30", containerName], cancellationToken).ConfigureAwait(false);
-        var after = await ObserveSiloContainerAsync(containerName, cancellationToken).ConfigureAwait(false)
-            ?? throw new InstallerException("The Silo container disappeared during its stop.");
-        if (after.Running || after.ProcessId is not null)
-            throw new InstallerException("The Silo container did not report a stopped process.");
-        if (before.ProcessId is { } pid && Directory.Exists(Path.Combine("/proc", pid.ToString(CultureInfo.InvariantCulture))) &&
-            IsSiloProcess(pid))
-            throw new InstallerException("The Silo process still exists after its container stopped.");
-        return stopwatch.Elapsed;
-    }
-
-    private static bool IsSiloProcess(int pid)
-    {
-        try
-        {
-            var commandLine = File.ReadAllText(Path.Combine("/proc", pid.ToString(CultureInfo.InvariantCulture), "cmdline"));
-            return commandLine.Contains("silo", StringComparison.Ordinal);
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return true;
-        }
-    }
 }

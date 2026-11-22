@@ -23,6 +23,13 @@ public sealed partial class SiloBootstrapScriptTests
     [DataRow("replaced-endpoint-file", false)]
     [DataRow("settings-directory-elsewhere", false)]
     [DataRow("symlinked-secret", false)]
+    [DataRow("bucket-elsewhere", false)]
+    [DataRow("bucket-with-trailing-newline", false)]
+    [DataRow("symlinked-bucket", false)]
+    [DataRow("bucket-missing", false)]
+    [DataRow("binding-id-elsewhere", false)]
+    [DataRow("store-id-elsewhere", false)]
+    [DataRow("writer-generation-elsewhere", false)]
     public async Task Probe_ProvesTheExactLiveEndpointAndMountBeforeAnyCredentialReadOrNetworkCall(string change, bool verified)
     {
         using var run = new FakeStore(TestContext);
@@ -37,6 +44,7 @@ public sealed partial class SiloBootstrapScriptTests
         Setting(settings, "CameraAgent__Silo__Endpoint", SiloRuntimeProfile.Endpoint);
         Setting(settings, SiloRuntimeProfile.WriterAccessKeySetting, "AKIAEXAMPLEWRITER001");
         Setting(settings, SiloRuntimeProfile.WriterSecretKeySetting, "exampleWriterSecret0123456789ABCDEFGHIJ");
+        foreach (var (name, value) in Binding) Setting(settings, name, value);
         // What the host expects is taken before any change, as the installer takes it from its own records.
         var expectation = Expectation(settings);
         var mounted = settings;
@@ -60,6 +68,17 @@ public sealed partial class SiloBootstrapScriptTests
                 Directory.CreateDirectory(mounted);
                 foreach (var file in Directory.GetFiles(settings)) File.Copy(file, Path.Combine(mounted, Path.GetFileName(file)));
                 break;
+            case "bucket-elsewhere": Setting(settings, SiloRuntimeProfile.BucketSetting, "hvo-fedcba9876543210fedcba9876543210"); break;
+            case "bucket-with-trailing-newline": Setting(settings, SiloRuntimeProfile.BucketSetting, Bucket + "\n"); break;
+            case "symlinked-bucket":
+                Setting(run.Root, "bucket-elsewhere", Bucket);
+                File.Delete(Path.Combine(settings, SiloRuntimeProfile.BucketSetting));
+                File.CreateSymbolicLink(Path.Combine(settings, SiloRuntimeProfile.BucketSetting), Path.Combine(run.Root, "bucket-elsewhere"));
+                break;
+            case "bucket-missing": File.Delete(Path.Combine(settings, SiloRuntimeProfile.BucketSetting)); break;
+            case "binding-id-elsewhere": Setting(settings, SiloRuntimeProfile.StorageBindingIdSetting, new string('e', 64)); break;
+            case "store-id-elsewhere": Setting(settings, SiloRuntimeProfile.StoreIdSetting, "local-silo:00000000-0000-0000-0000-000000000001"); break;
+            case "writer-generation-elsewhere": Setting(settings, SiloRuntimeProfile.WriterGenerationSetting, "2"); break;
             case "symlinked-secret":
                 Setting(run.Root, "secret-elsewhere", "exampleWriterSecret0123456789ABCDEFGHIJ");
                 File.Delete(Path.Combine(settings, SiloRuntimeProfile.WriterSecretKeySetting));
@@ -79,6 +98,15 @@ public sealed partial class SiloBootstrapScriptTests
             Assert.AreEqual(3, exit, output);
             StringAssert.StartsWith(output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last(), "{\"outcome\":\"refused\"", StringComparison.Ordinal);
             Assert.IsEmpty(run.Calls, "Nothing is sent, authenticated or not, before the live endpoint and mount are proved: " + string.Join("; ", run.Calls));
+            var reason = change switch
+            {
+                "bucket-elsewhere" or "bucket-with-trailing-newline" => "cameraagent-bucket-not-the-instances",
+                "binding-id-elsewhere" or "store-id-elsewhere" or "writer-generation-elsewhere" => "cameraagent-binding-not-the-instances",
+                "symlinked-bucket" or "bucket-missing" => "cameraagent-settings-not-the-instances",
+                _ => null
+            };
+            if (reason is not null)
+                StringAssert.Contains(output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Last(), $"\"reason\":\"{reason}\"", StringComparison.Ordinal);
         }
     }
 
@@ -251,7 +279,17 @@ public sealed partial class SiloBootstrapScriptTests
     private static string ProbeScript(SiloRuntimeProfile.SettingsExpectation expectation)
         => SiloRuntimeProfile.VerifyBindingScript(Bucket, MarkerVersionFor(), expectation);
 
-    private static SiloRuntimeProfile.SettingsExpectation Expectation(string settings) => SiloRuntimeProfile.ExpectSettings(settings);
+    private static SiloRuntimeProfile.SettingsExpectation Expectation(string settings) => SiloRuntimeProfile.ExpectSettings(settings, Binding);
+
+    /// <summary>The bucket and binding settings the probe's expectation names, as an instance's manifest records them.</summary>
+    private static readonly IReadOnlyDictionary<string, string> Binding = new Dictionary<string, string>(StringComparer.Ordinal)
+    {
+        [SiloRuntimeProfile.StateContractSetting] = SiloRuntimeProfile.StateContract,
+        [SiloRuntimeProfile.BucketSetting] = Bucket,
+        [SiloRuntimeProfile.StoreIdSetting] = "local-silo:01234567-89ab-cdef-0123-456789abcdef",
+        [SiloRuntimeProfile.StorageBindingIdSetting] = new string('b', 64),
+        [SiloRuntimeProfile.WriterGenerationSetting] = "1"
+    };
 
     private static string MarkerVersionFor() => "v-" + Convert.ToHexStringLower(SHA256.HashData("{\"format\":\"marker\"}"u8.ToArray()))[..12];
 

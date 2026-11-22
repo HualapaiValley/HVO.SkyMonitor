@@ -262,6 +262,66 @@ public sealed class SiloArchiveProbeTests
         Assert.AreEqual("archive-unreachable", unreachable.Reason);
     }
 
+    /// <summary>
+    /// #1966 review: an authority file holding only the root verifies a server whose certificate needs an intermediate,
+    /// when the server presents that intermediate. The peer's certificates only complete the chain: a root the server sends
+    /// is never trusted, so another hierarchy's leaf is refused even with its whole chain presented.
+    /// </summary>
+    [TestMethod]
+    public void Trusted_CompletesTheChainWithTheServersIntermediateButTrustsOnlyTheConfiguredRoot()
+    {
+        using var root = Authority("HVO archive test root");
+        using var intermediate = Intermediate(root, "HVO archive test intermediate");
+        using var leaf = Leaf(intermediate, "archive.example", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        using var rogueRoot = Authority("Rogue root");
+        using var rogueIntermediate = Intermediate(rogueRoot, "Rogue intermediate");
+        using var rogueLeaf = Leaf(rogueIntermediate, "archive.example", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        var rootOnly = new X509Certificate2Collection(root);
+
+        Assert.IsTrue(SiloArchiveProbe.Trusted(leaf, SslPolicyErrors.RemoteCertificateChainErrors, rootOnly,
+            new X509Certificate2Collection(intermediate), out _), "The presented intermediate completes the chain to the root.");
+        Assert.IsFalse(SiloArchiveProbe.Trusted(leaf, SslPolicyErrors.RemoteCertificateChainErrors, rootOnly, [], out _),
+            "Without the intermediate the leaf does not chain to the root alone.");
+        Assert.IsFalse(SiloArchiveProbe.Trusted(rogueLeaf, SslPolicyErrors.RemoteCertificateChainErrors, rootOnly,
+            new X509Certificate2Collection(new[] { rogueIntermediate, rogueRoot }), out _), "A root the server sends is never a trust anchor.");
+    }
+
+    [TestMethod]
+    public async Task Probe_OverRealTls_AcceptsAServerThatPresentsItsIntermediateWithARootOnlyAuthority()
+    {
+        using var root = Authority("HVO archive test root");
+        using var intermediate = Intermediate(root, "HVO archive test intermediate");
+        using var leaf = Leaf(intermediate, "localhost", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        using var rogueRoot = Authority("Rogue root");
+        using var rogueIntermediate = Intermediate(rogueRoot, "Rogue intermediate");
+        using var rogueLeaf = Leaf(rogueIntermediate, "localhost", DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+        const string enabled = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
+        var rootOnly = new X509Certificate2Collection(root);
+
+        await using (var server = await TlsServer.StartAsync(leaf, enabled, TestContext.CancellationToken, new X509Certificate2Collection(intermediate)))
+        {
+            var verified = await RealProbeAsync(server.Port, rootOnly);
+            Assert.AreEqual(SiloArchiveState.Verified, verified.State, verified.Reason);
+            Assert.AreEqual(Convert.ToHexStringLower(SHA256.HashData(leaf.RawData)), verified.ServerCertificateSha256);
+            Assert.HasCount(1, server.Requests);
+        }
+        await using (var server = await TlsServer.StartAsync(leaf, enabled, TestContext.CancellationToken))
+        {
+            var incomplete = await RealProbeAsync(server.Port, rootOnly);
+            Assert.AreEqual(SiloArchiveState.Refused, incomplete.State);
+            Assert.AreEqual("archive-tls-untrusted", incomplete.Reason);
+            Assert.IsEmpty(server.Requests, "A chain the server does not complete is not trusted, and nothing is sent.");
+        }
+        await using (var server = await TlsServer.StartAsync(rogueLeaf, enabled, TestContext.CancellationToken,
+                         new X509Certificate2Collection(new[] { rogueIntermediate, rogueRoot })))
+        {
+            var rogue = await RealProbeAsync(server.Port, rootOnly);
+            Assert.AreEqual(SiloArchiveState.Refused, rogue.State);
+            Assert.AreEqual("archive-tls-untrusted", rogue.Reason);
+            Assert.IsEmpty(server.Requests, "A server presenting another hierarchy with its own root is refused before anything is sent.");
+        }
+    }
+
     private Task<SiloArchiveObservation> RealProbeAsync(int port, X509Certificate2Collection authority)
         => SiloArchiveProbe.ProbeAsync(new Uri($"https://localhost:{port}/"), "hvo-archive", authority, ("AKIAHVO123", Secret),
             TimeProvider.System, TestContext.CancellationToken);
@@ -281,6 +341,18 @@ public sealed class SiloArchiveProbeTests
 
     private static X509Certificate2 Leaf(X509Certificate2 authority, string dnsName, DateTimeOffset notBefore, DateTimeOffset notAfter)
         => Leaf(authority, dnsName, notBefore, notAfter, [new Oid("1.3.6.1.5.5.7.3.1")]);
+
+    /// <summary>An intermediate certificate authority under <paramref name="root"/>, holding its private key to issue leaves.</summary>
+    private static X509Certificate2 Intermediate(X509Certificate2 root, string name)
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest($"CN={name}", key, HashAlgorithmName.SHA256);
+        request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, true, 0, true));
+        request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+        request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+        using var signed = request.Create(root, DateTimeOffset.UtcNow.AddDays(-30), DateTimeOffset.UtcNow.AddDays(45), RandomNumberGenerator.GetBytes(8));
+        return signed.CopyWithPrivateKey(key);
+    }
 
     private static X509Certificate2 Leaf(
         X509Certificate2 authority, string dnsName, DateTimeOffset notBefore, DateTimeOffset notAfter, OidCollection? purposes)
@@ -325,17 +397,20 @@ public sealed class SiloArchiveProbeTests
 
         public int Port => ((IPEndPoint)listener.LocalEndpoint).Port;
 
-        public static Task<TlsServer> StartAsync(X509Certificate2 certificate, string body, CancellationToken cancellationToken)
+        /// <summary>A server presenting <paramref name="certificate"/>, and <paramref name="intermediates"/> after it when given.</summary>
+        public static Task<TlsServer> StartAsync(
+            X509Certificate2 certificate, string body, CancellationToken cancellationToken, X509Certificate2Collection? intermediates = null)
         {
             var server = new TlsServer();
             server.listener.Start();
             server.linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, server.stopping.Token);
             var token = server.linked.Token;
-            server.serving = Task.Run(() => server.ServeAsync(certificate, body, token), CancellationToken.None);
+            var context = SslStreamCertificateContext.Create(certificate, intermediates ?? new X509Certificate2Collection(), offline: true);
+            server.serving = Task.Run(() => server.ServeAsync(context, body, token), CancellationToken.None);
             return Task.FromResult(server);
         }
 
-        private async Task ServeAsync(X509Certificate2 certificate, string body, CancellationToken cancellationToken)
+        private async Task ServeAsync(SslStreamCertificateContext certificate, string body, CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested)
             {
@@ -353,7 +428,7 @@ public sealed class SiloArchiveProbeTests
                     try
                     {
                         await using var tls = new SslStream(client.GetStream());
-                        await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate }, cancellationToken);
+                        await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificateContext = certificate }, cancellationToken);
                         using var reader = new StreamReader(tls, Encoding.ASCII, leaveOpen: true);
                         var first = await reader.ReadLineAsync(cancellationToken);
                         while (!string.IsNullOrEmpty(await reader.ReadLineAsync(cancellationToken)))

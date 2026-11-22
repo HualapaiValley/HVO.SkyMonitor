@@ -824,6 +824,8 @@ deployment_paths=(
   "scripts/test:deployment-normal-flow-contract"
   "scripts/qualify:filesystem-object-store"
   "scripts/test:filesystem-object-store-qualification"
+  "scripts/qualify:silo-runtime"
+  "scripts/test:silo-runtime-qualification"
   "scripts/catalog:install"
   "scripts/infra:operation-lock"
   "deploy/acceptance/cameraagent-dual-standalone-smoke/compose.yml"
@@ -875,6 +877,8 @@ verify_targeted_suites "scripts/test:deployment-installer-qualification" false f
 verify_targeted_suites "scripts/test:deployment-normal-flow-contract" false false false
 verify_targeted_suites "scripts/qualify:filesystem-object-store" false false false
 verify_targeted_suites "scripts/test:filesystem-object-store-qualification" false false false
+verify_targeted_suites "scripts/qualify:silo-runtime" false false false
+verify_targeted_suites "scripts/test:silo-runtime-qualification" false false false
 
 # The complete fallback matrix.
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
@@ -1315,6 +1319,10 @@ extract_workflow_job() {
 deployment_job="$(extract_workflow_job deployment-contracts)"
 grep -Fq './scripts/test:filesystem-object-store-qualification' <<< "$deployment_job" || {
   printf 'Deployment Contracts must run the filesystem object-store qualification fixture.\n' >&2
+  exit 1
+}
+grep -Fq './scripts/test:silo-runtime-qualification' <<< "$deployment_job" || {
+  printf 'Deployment Contracts must run the stock Silo qualifier containment test.\n' >&2
   exit 1
 }
 

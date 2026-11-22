@@ -239,8 +239,8 @@ select_deployment_suites() {
       # The Deployment Contracts job always runs this lightweight preflight fixture.
       ;;
     scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification)
-      # A host qualification recipe for the stock Silo runtime (#1966), run on dispatched hosts, never in CI, and its
-      # Docker-free cleanup proof, run with it.
+      # A host qualification recipe for the stock Silo runtime (#1966), run on dispatched hosts and never in CI, and its
+      # Docker-free containment proof, which the Deployment Contracts job always runs beside the filesystem one.
       ;;
     .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
       deployment_shards="true"

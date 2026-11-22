@@ -27,8 +27,12 @@ internal sealed class SiloHarness : IDisposable
     {
     }
 
-    /// <summary>A harness on an existing instance's paths (a lifecycle fixture's), which it does not own.</summary>
-    public SiloHarness(InstallationPaths? paths, Guid instanceId)
+    /// <summary>
+    /// A harness on an existing instance's paths (a lifecycle fixture's), which it does not own. Unless
+    /// <paramref name="seed"/>, it writes nothing there: an installer flow creates the instance itself and the harness
+    /// only answers Docker.
+    /// </summary>
+    public SiloHarness(InstallationPaths? paths, Guid instanceId, bool seed = true)
     {
         InstanceId = instanceId;
         if (paths is null)
@@ -37,15 +41,18 @@ internal sealed class SiloHarness : IDisposable
             paths = InstallationPaths.Create(Path.Combine(root.FullName, "product"), InstanceId, ProductionCatalog.DefaultCatalogId);
         }
         Paths = paths;
-        Directory.CreateDirectory(Paths.InstanceRoot);
         var secrets = Path.Combine(Paths.ConfigRoot, "secrets");
-        SafeFileSystem.CreateOwnerDirectory(secrets);
-        SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, SiloRuntimeProfile.WriterAccessKeySetting), Access);
-        SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, SiloRuntimeProfile.WriterSecretKeySetting), Secret);
-        SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, "CameraAgent__Silo__Endpoint"), SiloRuntimeProfile.Endpoint);
-        SafeFileSystem.WriteTextAtomic(Path.Combine(SiloRuntimeProfile.RootSecretsDirectory(Paths), "root-user"), "hvoroot");
-        SafeFileSystem.WriteTextAtomic(Path.Combine(SiloRuntimeProfile.RootSecretsDirectory(Paths), "root-password"), "hvorootpassword0123456789");
-        Directory.CreateDirectory(DataRoot);
+        if (seed)
+        {
+            Directory.CreateDirectory(Paths.InstanceRoot);
+            SafeFileSystem.CreateOwnerDirectory(secrets);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, SiloRuntimeProfile.WriterAccessKeySetting), Access);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, SiloRuntimeProfile.WriterSecretKeySetting), Secret);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, "CameraAgent__Silo__Endpoint"), SiloRuntimeProfile.Endpoint);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(SiloRuntimeProfile.RootSecretsDirectory(Paths), "root-user"), "hvoroot");
+            SafeFileSystem.WriteTextAtomic(Path.Combine(SiloRuntimeProfile.RootSecretsDirectory(Paths), "root-password"), "hvorootpassword0123456789");
+            Directory.CreateDirectory(DataRoot);
+        }
         var created = DateTimeOffset.Parse("2026-11-22T00:00:00Z", System.Globalization.CultureInfo.InvariantCulture);
         Marker = SiloRuntimeProfile.Marker(InstanceId, created);
         Fence = SiloRuntimeProfile.Fence(InstanceId, Access, created);
@@ -57,6 +64,12 @@ internal sealed class SiloHarness : IDisposable
             SiloRuntimeProfile.StorageBindingIdFor(InstanceId, storeId, Bucket), SiloRuntimeProfile.WriterGeneration, Access,
             "3a70979c-3128-47c3-8653-7cdc283f4f05", Sha(Marker), "4b81a8ad-4239-48d4-9764-8ded394f5f16", Sha(Fence),
             Guid.NewGuid(), DiskSyncOnWrite: true);
+        // The bucket and binding CameraAgent is configured with, as the installer writes them.
+        if (seed)
+        {
+            foreach (var (name, value) in SiloRuntimeProfile.BindingSettings(Identity))
+                SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, name), value);
+        }
         CameraAgentStarted = DateTimeOffset.UtcNow.AddMinutes(1);
     }
 

@@ -77,7 +77,8 @@ hvo-sky-install cameraagent install --storage-layout silo --friendly-name "North
 ```
 
 Before anything is created, the installer refuses an install when any of the following holds:
-- the instance already exists in either layout;
+- the instance already exists in the other layout, or is an installed Silo-layout instance given any other input (an
+  install re-run with the same inputs verifies it, and an interrupted install resumes; see below);
 - it uses `--replay-profile local-runner`;
 - the data root exists or is not on local ext4;
 - the data root's filesystem lacks headroom;
@@ -412,6 +413,10 @@ Never disable the old key before step 6 shows the new key ready.
 - `upgrade`, `rollback`, `reinstall`, `backup`, `restore`, `reset-state` and the catalog commands refuse a Silo-layout
   instance before changing anything. Installers released before #1966 refuse it as well, because its manifest declares
   `cameraagent-silo-install-v1`.
+- `cameraagent owner-recovery` and the lifecycle control worker refuse a Silo-layout instance as well. Only status,
+  `first-resume`, `silo-verify`, `uninstall` and `purge` act on one.
+- **An uninstalled Silo-layout instance cannot be started again in this release.** No command starts it, and an install
+  re-run refuses it because it is no longer installed. Keep its state and data root for #1972's recovery, or purge it.
 - New-layout backup and recovery are #1972.
 
 ## Stock image replacement on the retained data root
@@ -425,6 +430,31 @@ uses the same storage drain:
 3. Start the replacement stock container on the same data root, with the pinned image and the same profile. Wait for
    it to report healthy.
 4. Read back the marker and earlier object versions by exact version and SHA-256.
+
+On an installed instance, as the user that installed it. `silo-verify` reads the marker back from CameraAgent's network
+(step 4), and its first-boot pause and capture state are unchanged by the replacement:
+
+```bash
+ID=<instance-id>; P=<product-root>; HVO=hvo-sky-install
+N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; DATA=$I/silo; set -euo pipefail
+COMPOSE=(docker compose --project-name "hvo-skymonitor-$N" --env-file "$I/config/compose/instance.env"
+  --file "$I/config/compose/compose.yml")
+"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -e '.readiness != "not-ready"'
+PID=$(docker inspect --format '{{.State.Pid}}' "$SILO")
+docker stop --time 30 "$SILO"                                                        # step 1
+[[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$SILO")" == "false 0" ]]
+if [[ -r /proc/$PID/cmdline ]] && tr '\0' ' ' < "/proc/$PID/cmdline" | grep -q silo; then echo "Silo $PID still runs" >&2; exit 1; fi
+for c in $(docker ps -aq --no-trunc); do                                             # step 2
+  [[ "$(docker inspect --format '{{.Name}}' "$c")" == "/$SILO" ]] && continue
+  docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$c" | while IFS= read -r s; do
+    [[ -n $s && ( $s == "$DATA" || $DATA == "${s%/}/"* || $s == "$DATA/"* ) ]] && { echo "$c mounts $s" >&2; exit 1; }
+  done
+done
+docker rm "$SILO"
+"${COMPOSE[@]}" up --detach --no-deps silo                                           # step 3
+until [[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" == healthy ]]; do sleep 2; done
+"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json         # step 4
+```
 
 **Replica pairing.** The optional archive (#1969) runs a separately qualified Silo on another host over authenticated
 TLS. This installer only verifies its configuration read-only (above); replication and holds are #1969's.
