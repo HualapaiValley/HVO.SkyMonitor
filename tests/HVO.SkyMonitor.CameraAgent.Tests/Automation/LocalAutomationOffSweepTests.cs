@@ -250,6 +250,9 @@ public sealed class LocalAutomationOffSweepTests : OrbitalStoreTestBase
             await harness.Worker.WhenIdleAsync().WaitAsync(Deadline).ConfigureAwait(false);
             using var unexpectedReservation = harness.Worker.TryReserve();
             Assert.IsNull(unexpectedReservation, "The runner must stop admission even when its cancellation callback throws.");
+            // In host order the runner's token reaches the callback first, so only the runner's stop caller receives
+            // the failure. The hosted worker stop that follows shares a drain that completed without it (#1936).
+            await harness.Worker.StopAsync(default).WaitAsync(Deadline).ConfigureAwait(false);
         }
         finally
         {
@@ -257,8 +260,57 @@ public sealed class LocalAutomationOffSweepTests : OrbitalStoreTestBase
         }
     }
 
+    /// <summary>
+    /// The worker's own cancellation reaches the adapter. With <paramref name="callbackThrows"/> false this is the
+    /// ordinary-shutdown control. Either way the stop waits for the adapter to release its reservation, and stop
+    /// callers receive only the original callback failure. Disposal drains without rethrowing it (#1936), and a
+    /// later stop still reports it. A failing cleanup cannot hide the first failing assertion (#1937). The
+    /// registered runner and hosted identities are exercised by
+    /// <c>OrbitalElementsCompositionTests.RegisteredAutomationShutdownCompletesProviderCleanupAfterACallbackFault</c>.
+    /// </summary>
     [TestMethod]
-    public async Task ShutdownDrainsBeforeReportingCancellationCallbackFailure()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ShutdownDrainsBeforeReportingCancellationCallbackFailure(bool callbackThrows)
+    {
+        var worker = new LocalAutomationOffSweepWorker();
+        var registered = Signal();
+        var cancellationObserved = Signal();
+        var release = Signal();
+        var failure = callbackThrows ? new ObjectDisposedException("test callback") : null;
+        var occurrence = CustomScriptTaskAdapterTests.Occurrence(CustomScriptTaskAdapterTests.Script());
+        using var reservation = worker.TryReserve();
+        Assert.IsNotNull(reservation);
+        reservation.Dispatch(AutomationShutdownAssertions.ControlledAdapter(registered, cancellationObserved, release, failure),
+            occurrence, occurrence.RunKey, default);
+        await AutomationShutdownAssertions.PreserveFirstFailureAsync(async () =>
+        {
+            await registered.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            var stop = worker.StopAsync(default);
+            await cancellationObserved.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            Assert.AreSame(stop, worker.StopAsync(default), "A repeated stop must join the same drain.");
+            Assert.IsFalse(stop.IsCompleted, "Neither ordinary cancellation nor a callback fault may bypass the drain.");
+            Assert.IsFalse(worker.WhenIdleAsync().IsCompleted, "The adapter keeps its reservation until it returns.");
+            Assert.IsNull(worker.TryReserve(), "Shutdown closes admission while the adapter drains.");
+            release.SetResult();
+            await AutomationShutdownAssertions.StopReportsAsync(stop, failure).ConfigureAwait(false);
+            Assert.IsTrue(worker.WhenIdleAsync().IsCompletedSuccessfully, "The reservation is released before a stop caller returns.");
+            worker.Dispose();
+            await AutomationShutdownAssertions.StopReportsAsync(worker.StopAsync(default), failure).ConfigureAwait(false);
+        }, async () =>
+        {
+            release.TrySetResult();
+            await worker.WhenIdleAsync().WaitAsync(Deadline).ConfigureAwait(false);
+            worker.Dispose();
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Disposal is the first shutdown caller, as in the dispose-then-stop order from #1932. It still waits for the
+    /// adapter, does not rethrow the callback failure, and leaves that failure to the later stop caller (#1936).
+    /// </summary>
+    [TestMethod]
+    public async Task DisposalBeforeStopDrainsAndLeavesTheCallbackFailureToTheStopCaller()
     {
         var worker = new LocalAutomationOffSweepWorker();
         var registered = Signal();
@@ -268,36 +320,98 @@ public sealed class LocalAutomationOffSweepTests : OrbitalStoreTestBase
         var occurrence = CustomScriptTaskAdapterTests.Occurrence(CustomScriptTaskAdapterTests.Script());
         using var reservation = worker.TryReserve();
         Assert.IsNotNull(reservation);
-        reservation.Dispatch(async token =>
-        {
-            using var registration = token.Register(() =>
-            {
-                cancellationObserved.SetResult();
-                throw failure;
-            });
-            registered.SetResult();
-            await release.Task.ConfigureAwait(false);
-        }, occurrence, occurrence.RunKey, default);
-        try
+        reservation.Dispatch(AutomationShutdownAssertions.ControlledAdapter(registered, cancellationObserved, release, failure),
+            occurrence, occurrence.RunKey, default);
+        Task? disposal = null;
+        await AutomationShutdownAssertions.PreserveFirstFailureAsync(async () =>
         {
             await registered.Task.WaitAsync(Deadline).ConfigureAwait(false);
-            var stop = worker.StopAsync(default);
+            disposal = Task.Factory.StartNew(worker.Dispose, CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
             await cancellationObserved.Task.WaitAsync(Deadline).ConfigureAwait(false);
-            var repeatedStop = worker.StopAsync(default);
-            Assert.AreSame(stop, repeatedStop);
-            Assert.IsFalse(stop.IsCompleted, "A cancellation callback fault must not bypass the drain.");
+            var stop = worker.StopAsync(default);
+            Assert.IsFalse(disposal.IsCompleted, "Disposal must wait for the cancelled adapter.");
+            Assert.IsFalse(stop.IsCompleted, "A later stop joins the drain that disposal started.");
+            Assert.IsFalse(worker.WhenIdleAsync().IsCompleted, "The adapter keeps its reservation until it returns.");
             release.SetResult();
-            var error = await Assert.ThrowsExactlyAsync<AggregateException>(() => stop.WaitAsync(Deadline)).ConfigureAwait(false);
-            Assert.AreSame(failure, error.Flatten().InnerExceptions.Single());
+            await disposal.WaitAsync(Deadline).ConfigureAwait(false);
+            await AutomationShutdownAssertions.StopReportsAsync(stop, failure).ConfigureAwait(false);
             Assert.IsTrue(worker.WhenIdleAsync().IsCompletedSuccessfully);
-        }
-        finally
+            Assert.IsNull(worker.TryReserve(), "A disposed worker refuses new reservations.");
+        }, async () =>
         {
             release.TrySetResult();
             await worker.WhenIdleAsync().WaitAsync(Deadline).ConfigureAwait(false);
-            var error = Assert.ThrowsExactly<AggregateException>(worker.Dispose);
-            Assert.AreSame(failure, error.Flatten().InnerExceptions.Single());
+            if (disposal is not null)
+            {
+                await disposal.WaitAsync(Deadline).ConfigureAwait(false);
+            }
+            worker.Dispose();
+        }).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// An induced assertion failure while the adapter still holds its reservation. Cleanup still releases and drains
+    /// the adapter. The induced assertion remains the reported failure, and an induced cleanup failure is kept beside
+    /// it rather than replacing it (#1937).
+    /// </summary>
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task InducedAssertionFailureStaysPrimaryWhileCleanupDrainsTheAdapter(bool cleanupFails)
+    {
+        const string Induced = "Induced #1937 failure while the adapter holds its reservation.";
+        var worker = new LocalAutomationOffSweepWorker();
+        var registered = Signal();
+        var cancellationObserved = Signal();
+        var release = Signal();
+        var callbackFailure = new ObjectDisposedException("test callback");
+        var cleanupFailure = new InvalidOperationException("Induced #1937 cleanup failure.");
+        var occurrence = CustomScriptTaskAdapterTests.Occurrence(CustomScriptTaskAdapterTests.Script());
+        using var reservation = worker.TryReserve();
+        Assert.IsNotNull(reservation);
+        reservation.Dispatch(AutomationShutdownAssertions.ControlledAdapter(registered, cancellationObserved, release, callbackFailure),
+            occurrence, occurrence.RunKey, default);
+        Task? stop = null;
+        var cleanupRan = false;
+        var run = AutomationShutdownAssertions.PreserveFirstFailureAsync(async () =>
+        {
+            await registered.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            stop = worker.StopAsync(default);
+            await cancellationObserved.Task.WaitAsync(Deadline).ConfigureAwait(false);
+            Assert.IsTrue(stop.IsCompleted, Induced);
+        }, async () =>
+        {
+            cleanupRan = true;
+            release.TrySetResult();
+            await worker.WhenIdleAsync().WaitAsync(Deadline).ConfigureAwait(false);
+            worker.Dispose();
+            if (cleanupFails)
+            {
+                throw cleanupFailure;
+            }
+        });
+
+        AssertFailedException primary;
+        if (cleanupFails)
+        {
+            var both = await Assert.ThrowsExactlyAsync<AggregateException>(() => run).ConfigureAwait(false);
+            StringAssert.StartsWith(both.Message, AutomationShutdownAssertions.BothFailedMessage, StringComparison.Ordinal);
+            Assert.HasCount(2, both.InnerExceptions);
+            primary = Assert.IsInstanceOfType<AssertFailedException>(both.InnerExceptions[0]);
+            Assert.AreSame(cleanupFailure, both.InnerExceptions[1]);
         }
+        else
+        {
+            primary = await Assert.ThrowsExactlyAsync<AssertFailedException>(() => run).ConfigureAwait(false);
+        }
+        Assert.Contains(Induced, primary.Message, StringComparison.Ordinal);
+        StringAssert.Contains(primary.StackTrace, nameof(InducedAssertionFailureStaysPrimaryWhileCleanupDrainsTheAdapter),
+            StringComparison.Ordinal);
+        Assert.IsTrue(cleanupRan);
+        Assert.IsNotNull(stop);
+        Assert.IsTrue(worker.WhenIdleAsync().IsCompletedSuccessfully, "Cleanup released the adapter's reservation.");
+        await AutomationShutdownAssertions.StopReportsAsync(stop, callbackFailure).ConfigureAwait(false);
     }
 
     [TestMethod]

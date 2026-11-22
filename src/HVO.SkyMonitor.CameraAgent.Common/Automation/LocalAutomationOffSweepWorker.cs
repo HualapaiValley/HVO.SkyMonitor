@@ -102,19 +102,18 @@ public sealed class LocalAutomationOffSweepWorker : BackgroundService
         await base.StopAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Joins the shared drain, so the stopping source is released only after an active adapter returns. A drain
+    /// fault, such as a throwing cancellation callback, stays on the shared task that every <see cref="StopAsync"/>
+    /// caller receives. Disposal does not rethrow it, so a service provider goes on to dispose its other singletons.
+    /// </summary>
     public override void Dispose()
     {
-        try
+        StopAsync(CancellationToken.None).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing).GetAwaiter().GetResult();
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
-            StopAsync(CancellationToken.None).GetAwaiter().GetResult();
-        }
-        finally
-        {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
-            {
-                _stopping.Dispose();
-                base.Dispose();
-            }
+            _stopping.Dispose();
+            base.Dispose();
         }
     }
 
