@@ -79,6 +79,7 @@ internal sealed partial class RawCaptureIngress :
         ProcessingGraphOperationsCoordinator? graphOperations = null,
         Capture.CaptureMaintenanceGate? maintenanceGate = null,
         CenteredExposureProductChanges? centeredProductChanges = null,
+        CenteredWindowWakeup? centeredWindowWakeup = null,
         SqliteCaptureProcessingStore? processingStore = null)
     {
         _options = options.Value;
@@ -110,7 +111,8 @@ internal sealed partial class RawCaptureIngress :
             _options.CaptureDistribution,
             resolvedLaneFaultInjector,
             timeProvider.GetUtcNow,
-            _options.TransientDetection, centeredProductChanges: centeredProductChanges);
+            _options.TransientDetection, centeredProductChanges: centeredProductChanges,
+            centeredWindowWakeup: centeredWindowWakeup);
         _files = new RawIngressFileStore(
             root,
             faultInjector,

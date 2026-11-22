@@ -268,7 +268,7 @@ public sealed record CenteredStackPlanV1(CameraKey Camera, Guid RunId, string Ge
             var slot = Slots[index];
             if (slot is null || slot.Offset != index - 2 || !Enum.IsDefined(slot.State) ||
                 slot.ExpectedStartUtc.Offset != TimeSpan.Zero || slot.ExpectedStartUtc <= previousStart ||
-                slot.ExpectedStartUtc > CloseDeadlineUtc || slot.CaptureId == Guid.Empty ||
+                slot.ExpectedStartUtc > CloseDeadlineUtc && slot.State == CenteredSlotState.Ready || slot.CaptureId == Guid.Empty ||
                 slot.ClosureReason is { } reason && !Bounded(reason) ||
                 slot.CaptureId is { } capture && !captures.Add(capture) ||
                 (slot.State == CenteredSlotState.Ready) != (slot.Exposure is not null) ||

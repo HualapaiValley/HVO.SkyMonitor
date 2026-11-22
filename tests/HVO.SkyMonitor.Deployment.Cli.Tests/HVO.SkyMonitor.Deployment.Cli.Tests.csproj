@@ -12,7 +12,7 @@
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Cli\HVO.SkyMonitor.Deployment.Cli.csproj" />
     <ProjectReference Include="..\..\src\HVO.SkyMonitor.Deployment.Contracts\HVO.SkyMonitor.Deployment.Contracts.csproj" />
     <EmbeddedResource Include="FrozenRawIngressV14.sql" />
-    <EmbeddedResource Include="FrozenRawIngressV17Additions.sql" />
+    <EmbeddedResource Include="FrozenRawIngressV17Delta.sql" />
     <EmbeddedResource Include="ReleaseManifestSchema1.json" />
     <EmbeddedResource Include="PartialPrepareInventory.json" />
     <EmbeddedResource Include="PreflightFixtures.json" />

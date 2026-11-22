@@ -2484,10 +2484,11 @@ public sealed partial class RawCaptureIngressTests
             Assert.HasCount(0, Evaluate(requirements));
 
             RawCaptureReceipt original;
-            using (var setup = new CenteredFixture(root))
+            // This raw-only predecessor has no processing schema or astrometry index.
+            using (var ingress = CreateIngress(root, new RawIngressState(TimeProvider.System)))
             {
                 var config = CenteredConfiguration("camera") with { CenteredExposure = null };
-                original = (await setup.Ingress.AcceptAsync(config, CenteredSubmission(Timestamp(1)), token).ConfigureAwait(false))!;
+                original = (await ingress.AcceptAsync(config, CenteredSubmission(Timestamp(1)), token).ConfigureAwait(false))!;
             }
             using (var connection = await OpenJournalAsync(root).ConfigureAwait(false))
                 await ExecuteTestSqlAsync(connection, DropCenteredSchemaSql + "PRAGMA user_version=16;").ConfigureAwait(false);
@@ -3025,7 +3026,7 @@ public sealed partial class RawCaptureIngressTests
 
         internal CenteredFixture(
             string root, IRawIngressFaultInjector? fault = null, TimeProvider? timeProvider = null,
-            int? requiredMaximumPendingCount = null)
+            int? requiredMaximumPendingCount = null, CenteredWindowWakeup? wakeup = null)
         {
             Options = Microsoft.Extensions.Options.Options.Create(new CameraAgentHostOptions
             {
@@ -3043,7 +3044,7 @@ public sealed partial class RawCaptureIngressTests
                 .AddSingleton(new CameraAgentRecipeExecutionAdapter(new ProcessingRecipeExecutor()))
                 .AddSingleton(_ => new RawCaptureIngress(Options, new FixedCapacityProvider(long.MaxValue), RawState, clock, _rawTelemetry,
                     NullLogger<RawCaptureIngress>.Instance, fault ?? new NullRawIngressFaultInjector(),
-                    Policy, graphOperations: GraphOperations, centeredProductChanges: Changes))
+                    Policy, graphOperations: GraphOperations, centeredProductChanges: Changes, centeredWindowWakeup: wakeup))
                 .AddSingleton(sp => new SqliteCalibrationLibraryStore(sp.GetRequiredService<RawCaptureIngress>(), Options, clock))
                 .AddSingleton(_ => new CalibrationLibraryProcessingInputLoader(Options, new CameraAgentClearReferenceLoader(Options)))
                 .BuildServiceProvider();
@@ -3051,7 +3052,7 @@ public sealed partial class RawCaptureIngressTests
                 [new("Calibration", typeof(CalibrationCaptureProcessingStep), typeof(CalibrationProcessingStepOptions), 20, false),
                  new("CenteredProbe", typeof(CenteredProbeStep), typeof(CenteredProbeOptions), 30, false)],
                 NullLogger<CaptureProcessingPipelineFactory>.Instance, Telemetry);
-            Store = new(Options, clock, centeredProductChanges: Changes);
+            Store = new(Options, clock, centeredProductChanges: Changes, centeredWindowWakeup: wakeup);
             _replayWakeup = new(Options);
             GraphOperations = new(Factory, Store, Options, clock, _replayWakeup);
             Ingress = _services.GetRequiredService<RawCaptureIngress>();
