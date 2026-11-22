@@ -161,17 +161,117 @@ is_fast_doc_path() {
 }
 
 # Certified inventory: the base-controlled manifest records every tracked
-# MSBuild definition and XML input, including modes and blob identities. Any
-# addition, removal or modification disables the exemption until reviewed.
+# MSBuild definition, XML input and resolved explicit import, including modes
+# and blob identities. Changes disable the exemption until reviewed.
 fast_inventory_for_tree() {
-  git ls-tree -rz "$1" | python3 -c '
-import sys
-for entry in sys.stdin.buffer.read().split(b"\0"):
-    if not entry: continue
-    meta, path = entry.split(b"\t", 1)
-    if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")):
-        print(meta.decode("ascii") + " " + repr(path))
-'
+  python3 -I - "$1" <<'PY_AUDIT'
+import os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
+
+commit = sys.argv[1]
+def fail(message):
+    print("docs inventory audit: " + message, file=sys.stderr)
+    sys.exit(1)
+def git(*args):
+    try:
+        return subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        fail("Git could not read the committed input tree")
+
+entries = {}
+try:
+    for entry in git("ls-tree", "-rz", commit).split(b"\0"):
+        if not entry: continue
+        meta, path = entry.split(b"\t", 1)
+        name = path.decode("utf-8")
+        entries[name] = (meta, path)
+except (ValueError, UnicodeError):
+    fail("unreadable tree entry")
+
+for name in entries:
+    lower = name.lower()
+    if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
+        fail("tracked automatic MSBuild input requires manual review")
+
+pending = [n for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
+seen = set()
+while pending:
+    name = pending.pop()
+    if name in seen: continue
+    seen.add(name)
+    meta, _ = entries[name]
+    if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
+        fail("non-regular build input")
+    raw = git("cat-file", "blob", commit + ":" + name)
+    if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
+        fail("document type declarations require manual review")
+    if re.search(rb"&#|%[0-9a-fA-F]{2}", raw):
+        fail("escaped build input requires manual review")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        fail("unparseable build input")
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
+        for text in list(node.attrib.values()) + ([node.text] if node.text else []):
+            norm = text.replace("\\", "/")
+            if re.search(r"(?i)(^|[^a-z0-9_])(README|AGENTS|CLAUDE)\.md([^a-z0-9_]|$)", norm):
+                fail("build input references a root documentation name")
+            for match in re.finditer(r"(?i)(?:^|/)docs/([^\s\"'<>;]+)", norm):
+                part = match.group(1).lower()
+                if ".." in part.split("/") or not part.startswith(("catalog/", "contracts/", "validation/", "images/", "upgrade-notes/", "evidence/", "generated/")):
+                    fail("build input references eligible documentation")
+        for attr in ("Include", "Update", "Remove"):
+            value = node.attrib.get(attr)
+            if not value or tag in ("PackageReference", "Reference"): continue
+            for part in value.split(";"):
+                part = part.replace("\\", "/")
+                if "@(" in part or "%(" in part:
+                    if name == "scripts/cameraagent-release.targets" and tag == "StaticWebAssetEndpoint" and part == "@(_HvoReleaseAssetEndpoints)":
+                        continue
+                    fail("unresolved item expression")
+                if "$(" in part:
+                    token = "$(MSBuildThisFileDirectory)"
+                    if not part.startswith(token): fail("unresolved item property")
+                    part = part[len(token):]
+                    if "$(" in part: fail("unresolved item property")
+                resolved_part = posixpath.normpath(posixpath.join(posixpath.dirname(name), part))
+                lower_part = resolved_part.lower()
+                if resolved_part.startswith("/") or resolved_part == ".." or resolved_part.startswith("../"):
+                    fail("item path escapes the committed tree")
+                if lower_part in ("readme.md", "agents.md", "claude.md") or (
+                    lower_part.startswith("docs/") and not lower_part.startswith(("docs/catalog/", "docs/contracts/", "docs/validation/", "docs/images/", "docs/upgrade-notes/", "docs/evidence/", "docs/generated/"))):
+                    fail("item references eligible documentation")
+                if "*" in part or "?" in part:
+                    prefix = re.split(r"[?*]", part, 1)[0]
+                    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), prefix))
+                    if resolved in ("", ".", "..") or resolved.startswith("../") or resolved == "docs" or resolved.startswith("docs/"):
+                        fail("item glob may reach documentation")
+        if tag == "ProjectReference":
+            value = node.attrib.get("Include", "").replace("\\", "/")
+            if not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+                fail("unresolved project reference")
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
+            if target not in entries:
+                fail("project reference outside committed inventory")
+            pending.append(target)
+        if tag == "Import":
+            if "Sdk" in node.attrib: fail("SDK import requires manual review")
+            value = node.attrib.get("Project", "").replace("\\", "/")
+            if name == "tests/Directory.Build.props" and value == "$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))":
+                target = "Directory.Build.props"
+            else:
+                token = "$(MSBuildThisFileDirectory)"
+                if value.startswith(token): value = value[len(token):]
+                if not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+                    fail("unresolved MSBuild import")
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
+            if target not in entries:
+                fail("MSBuild import outside committed inventory")
+            pending.append(target)
+for name in sorted(seen, key=lambda n: entries[n][1]):
+    meta, path = entries[name]
+    print(meta.decode("ascii") + " " + repr(path))
+PY_AUDIT
 }
 
 fast_doc_link_state() {
@@ -564,6 +664,23 @@ select_components() {
     select_complete_matrix
   fi
 }
+
+if [[ "$event_name" == "--print-docs-inventory" ]]; then
+  fast_inventory_for_tree "$base_sha"
+  exit $?
+fi
+
+if [[ "$event_name" == "--warn-docs-inventory" ]]; then
+  warn_expected="$(mktemp)" || { printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
+  warn_actual="$(mktemp)" || { rm -f "$warn_expected"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
+  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null ||
+     ! fast_inventory_for_tree "$base_sha" > "$warn_actual" ||
+     ! cmp -s "$warn_expected" "$warn_actual"; then
+    printf '::warning::Documentation CI build inventory is stale or unsafe; full validation will run.\n'
+  fi
+  rm -f "$warn_expected" "$warn_actual"
+  exit 0
+fi
 
 if [[ "$event_name" != "pull_request" ]]; then
   finish

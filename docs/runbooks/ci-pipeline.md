@@ -224,6 +224,17 @@ itself prevent that timeout. Refs #1747.
 
 A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent’s `scripts/ci:classify` against both the PR head and checked-out merge tree, relative to that base. Only a successful, literal `docs_fast_path=true` normalized by the shell skips the workload; a missing output or classifier failure selects the full workload. The artifact retains the exact path list, decision, reason and Preflight dependency. The base-controlled `scripts/ci:docs-inventory` certifies the audited build-input tree; changes to it require review, and a mismatch selects full validation with the inventory differences in the artifact. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs remain full validation; no result is reused across events. Refs #1989.
 
+### Refresh the documentation CI inventory
+
+When a build input changes, generate a candidate from the committed tree and replace the certificate only after the generator succeeds:
+
+```bash
+./scripts/ci:classify --print-docs-inventory HEAD > /tmp/hvo-docs-inventory.new
+cp /tmp/hvo-docs-inventory.new scripts/ci:docs-inventory
+```
+
+The generator follows committed explicit MSBuild imports regardless of suffix, checks the resulting inputs and rejects unknown imports, tracked automatic user/response inputs, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together: verify each import resolves to the intended committed file, that no imported or implicit input is missing, and that no eligible documentation becomes a build or test input. Run the generator again and compare its output byte-for-byte with the certificate, then run the classifier and workflow contract suites. A failed audit or stale certificate keeps the workload on the full path; Preflight reports a non-failing warning. A mandatory certificate-maintenance gate remains a separate follow-up. Refs #1989.
+
 ## Development v1 Preflight Budget
 
 **Development v1 / Preflight** has a six-minute (360-second) job timeout for

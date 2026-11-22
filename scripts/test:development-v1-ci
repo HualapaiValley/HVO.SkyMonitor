@@ -960,9 +960,9 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
         if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
             raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
     # A one-parent checkout with no head must never qualify.
-    git("checkout", "-q", "--detach", base)
+    git("checkout", "-q", "--detach", candidate)
     output.write_text("")
-    env.update(GITHUB_SHA=base, EVENT_NAME="pull_request", PR_HEAD_SHA="")
+    env.update(GITHUB_SHA=candidate, EVENT_NAME="pull_request", PR_HEAD_SHA="")
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
                             capture_output=True, text=True)
     if result.returncode or "reason=merge binding unavailable or mismatched" not in output.read_text().splitlines():
@@ -1041,6 +1041,52 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                             capture_output=True, text=True)
     if result.returncode or "reason=deleted or type-changed path in exact diff" not in output.read_text().splitlines():
         raise SystemExit(f"Unsafe PR endpoint qualified: {output.read_text()} {result.stderr}")
+    # A safe PR tip followed by an unsafe merge must evaluate both endpoints.
+    git("checkout", "-q", "--detach", real_base)
+    (fixture / "code.cs").write_text("unexpected merge code\n")
+    (fixture / "docs/safe.md").write_text("candidate edit\n")
+    git("add", "code.cs", "docs/safe.md")
+    unsafe_tree = git("write-tree")
+    unsafe_merge = git("commit-tree", unsafe_tree, "-p", real_base, "-p", doc_head, "-m", "merge")
+    git("reset", "--hard", "-q", unsafe_merge)
+    output.write_text("")
+    env.update(GITHUB_SHA=unsafe_merge, PR_HEAD_SHA=doc_head)
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    evidence_text = (evidence / "classification.md").read_text()
+    if result.returncode or "run_full=true" not in output.read_text().splitlines() or \
+            f"Classification endpoint: {doc_head}" not in evidence_text or \
+            f"Classification endpoint: {unsafe_merge}" not in evidence_text:
+        raise SystemExit(f"Unsafe merge endpoint qualified: {output.read_text()} {result.stderr}")
+
+    # Existing imports of XML or arbitrary suffixes must be included in the
+    # base-controlled inventory and audited through the actual workflow shell.
+    for suffix in ("xml", "items"):
+        git("checkout", "-q", "--detach", real_base)
+        (fixture / "Directory.Build.targets").write_text(f'<Import Project="linked.{suffix}" />\n')
+        (fixture / f"linked.{suffix}").write_text("<Project />\n")
+        git("add", "Directory.Build.targets", f"linked.{suffix}")
+        git("commit", "-qm", "safe import")
+        generated = subprocess.run(["bash", str(trusted), "--print-docs-inventory", "HEAD"],
+                                   cwd=fixture, capture_output=True, text=True, check=True).stdout
+        (fixture / "scripts/ci:docs-inventory").write_text(generated)
+        git("add", "scripts/ci:docs-inventory")
+        git("commit", "-qm", "certify safe import")
+        (fixture / f"linked.{suffix}").write_text('<None Include="docs/safe.md" />\n')
+        git("commit", "-qam", "unsafe imported item")
+        import_base = git("rev-parse", "HEAD")
+        (fixture / "docs/safe.md").write_text("docs edit\n")
+        git("commit", "-qam", "docs edit")
+        import_head = git("rev-parse", "HEAD")
+        import_tree = git("rev-parse", "HEAD^{tree}")
+        import_merge = git("commit-tree", import_tree, "-p", import_base, "-p", import_head, "-m", "merge")
+        git("checkout", "-q", "--detach", import_merge)
+        output.write_text("")
+        env.update(GITHUB_SHA=import_merge, PR_HEAD_SHA=import_head)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                                capture_output=True, text=True)
+        if result.returncode or "run_full=true" not in output.read_text().splitlines():
+            raise SystemExit(f"Unsafe {suffix} import qualified: {output.read_text()} {result.stderr}")
     # Preserve the expected merge identifier in the later manifest case.
     env.update(GITHUB_SHA=changed_merge)
     # Execute the actual manifest step for fast and missing-output fallback.
@@ -1063,7 +1109,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 14 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 17 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

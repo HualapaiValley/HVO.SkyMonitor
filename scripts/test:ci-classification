@@ -163,11 +163,7 @@ printf 'old\n' > "$fast_root/docs/contracts/linked.md"
 git -C "$fast_root" add .
 git -C "$fast_root" commit -qm base
 mkdir -p "$fast_root/scripts"
-git -C "$fast_root" ls-tree -rz HEAD | python3 -c 'import sys
-for entry in sys.stdin.buffer.read().split(b"\0"):
- if not entry: continue
- meta, path = entry.split(b"\t", 1)
- if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")): print(meta.decode("ascii") + " " + repr(path))' > "$fast_root/scripts/ci:docs-inventory"
+(cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
 git -C "$fast_root" add scripts/ci:docs-inventory
 git -C "$fast_root" commit -qm inventory
 fast_base="$(git -C "$fast_root" rev-parse HEAD)"
@@ -280,7 +276,7 @@ printf 'text\n' > "$fast_root/docs/executable.md"; chmod 755 "$fast_root/docs/ex
 git -C "$fast_root" add docs/executable.md && git -C "$fast_root" commit -qm executable
 fast_reason 'non-regular or missing path in exact diff' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # Link forms may appear in project files or imported targets, on the base tree.
-for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="../../**/*" />' '<None Include="../../docs/runbooks/?.md" />' '<None Include="../../&#100;ocs/runbooks/example.md" />' '<None Include="../../%64ocs/runbooks/example.md" />' '<None Include="../../THIRD-PARTY-NOTICES.md;../../README.md" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
+for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="../../**/*" />' '<Import Project="missing.items" />' '<None Include="@(UnknownItems)" />' '<ProjectReference Include="missing.proj" />' '<None Include="../../docs/runbooks/?.md" />' '<None Include="../../&#100;ocs/runbooks/example.md" />' '<None Include="../../%64ocs/runbooks/example.md" />' '<None Include="../../THIRD-PARTY-NOTICES.md;../../README.md" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/docs/runbooks"
   printf 'text\n' > "$fast_root/docs/runbooks/example.md"
@@ -290,7 +286,7 @@ for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Includ
   link_base="$(git -C "$fast_root" rev-parse HEAD)"
   printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
   git -C "$fast_root" commit -qam link-change
-  fast_reason 'project inventory differs from certified baseline' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+  fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
 done
 # An existing importer can consume a changed XML item file without any
 # accompanying project-file change. Certify the harmless baseline, then change
@@ -301,18 +297,42 @@ printf 'text\n' > "$fast_root/docs/runbooks/example.md"
 printf '<Import Project="items.xml" />\n' > "$fast_root/Directory.Build.targets"
 printf '<Project />\n' > "$fast_root/items.xml"
 git -C "$fast_root" add . && git -C "$fast_root" commit -qm import-base
-git -C "$fast_root" ls-tree -rz HEAD | python3 -c 'import sys
-for entry in sys.stdin.buffer.read().split(b"\0"):
- if not entry: continue
- meta, path = entry.split(b"\t", 1)
- if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")): print(meta.decode("ascii") + " " + repr(path))' > "$fast_root/scripts/ci:docs-inventory"
+(cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
 git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certify-import
 printf '<None Include="docs/runbooks/example.md" />\n' > "$fast_root/items.xml"
 git -C "$fast_root" commit -qam change-imported-xml
 xml_base="$(git -C "$fast_root" rev-parse HEAD)"
 printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
 git -C "$fast_root" commit -qam doc-change
-fast_reason 'project inventory differs from certified baseline' "$xml_base" "$(git -C "$fast_root" rev-parse HEAD)"
+fast_reason 'project inventory unavailable' "$xml_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# A forged refresh must not certify a build input that links eligible docs.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+printf '<None Include="../../docs/runbooks/example.md" />\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add docs/runbooks/example.md tests/Example/Example.csproj
+git -C "$fast_root" commit -qm unsafe-certified-input
+read -r item_mode item_type item_sha item_path < <(git -C "$fast_root" ls-tree HEAD -- tests/Example/Example.csproj)
+printf "%s %s %s b'%s'\n" "$item_mode" "$item_type" "$item_sha" "$item_path" > "$fast_root/scripts/ci:docs-inventory"
+git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm forged-certificate
+forged_base="$(git -C "$fast_root" rev-parse HEAD)"
+printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+git -C "$fast_root" commit -qam docs-change
+fast_reason 'project inventory unavailable' "$forged_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Force-added .user files are auto-imported; they must disable the exemption.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+printf '<None Include="../../docs/runbooks/example.md" />\n' > "$fast_root/tests/Example/Example.csproj.user"
+git -C "$fast_root" add -f tests/Example/Example.csproj.user
+git -C "$fast_root" add docs/runbooks/example.md && git -C "$fast_root" commit -qm user-input
+user_base="$(git -C "$fast_root" rev-parse HEAD)"
+warning_output="$(cd "$fast_root" && "$classifier" --warn-docs-inventory "$user_base")"
+grep -Fq '::warning::Documentation CI build inventory is stale or unsafe' <<< "$warning_output"
+printf 'Stale inventory warning passed.\n'
+printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+git -C "$fast_root" commit -qam docs-change
+fast_reason 'project inventory unavailable' "$user_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # Ignore settings must not hide a gitlink update accompanying a safe doc.
 git -C "$fast_root" reset -q --hard "$fast_base"
 git -C "$fast_root" update-index --add --cacheinfo "160000,$fast_base,submodule"
@@ -371,26 +391,39 @@ grep -Fq 'Fast path paths examined: 2' "$evidence_file"
 ((fast_cases += 1))
 # Canary the real committed inventory without changing any ref. A changed or
 # absent certificate must select full validation, never fail the PR by itself.
+(
 real_base="$(git -C "$repo_root" rev-parse HEAD)"
+(cd "$repo_root" && "$classifier" --warn-docs-inventory "$real_base")
+mkdir -p "$fast_root/.git/canary-objects"
+canary_source_objects="$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)"
+export GIT_OBJECT_DIRECTORY="$fast_root/.git/canary-objects"
+export GIT_ALTERNATE_OBJECT_DIRECTORIES="$canary_source_objects"
 canary_index="$fast_root/.git/canary-index"
 GIT_INDEX_FILE="$canary_index" git -C "$repo_root" read-tree "$real_base"
 canary_blob="$(printf 'canary documentation\n' | git -C "$repo_root" hash-object -w --stdin)"
 GIT_INDEX_FILE="$canary_index" git -C "$repo_root" update-index --add --cacheinfo "100644,$canary_blob,docs/runbooks/ci-fast-path-canary-1989.md"
 canary_tree="$(GIT_INDEX_FILE="$canary_index" git -C "$repo_root" write-tree)"
 canary_head="$(printf 'CI inventory canary\n' | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$canary_tree" -p "$real_base")"
+printf '%s\n' "$canary_head" > "$fast_root/.git/canary-commit"
 if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified" 2>/dev/null; then
-  git -C "$repo_root" ls-tree -rz "$real_base" | python3 -c 'import sys
-for entry in sys.stdin.buffer.read().split(b"\0"):
- if not entry: continue
- meta, path = entry.split(b"\t", 1)
- if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")): print(meta.decode("ascii") + " " + repr(path))' > "$fast_root/.git/actual"
-  if cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then canary_expected=true; else canary_expected=false; fi
+  if (cd "$repo_root" && "$classifier" --print-docs-inventory "$real_base") > "$fast_root/.git/actual" && cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then
+    canary_expected=true
+  else
+    canary_expected=false
+  fi
   canary_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$canary_head" docs-fast-only)"
   grep -Fxq "docs_fast_path=$canary_expected" <<< "$canary_output" || { printf 'Real inventory canary failed: %s\n' "$canary_output" >&2; exit 1; }
   printf 'Real inventory canary passed: expected %s.\n' "$canary_expected"
 else
   printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
 fi
+)
+canary_commit="$(cat "$fast_root/.git/canary-commit")"
+if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then
+  printf 'Canary wrote an object into the developer repository.\n' >&2
+  exit 1
+fi
+printf 'Canary object isolation passed.\n'
 printf 'Documentation fast path classification passed: %d cases.\n' "$fast_cases"
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
