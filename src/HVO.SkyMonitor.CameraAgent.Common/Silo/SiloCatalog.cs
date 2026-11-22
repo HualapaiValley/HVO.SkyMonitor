@@ -803,13 +803,20 @@ internal sealed class SiloCheckpointWriter(
         var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, binding.InstanceId, binding.BindingId, covers, coversSha, entries,
             reachedP4);
         var bytes = SiloJson.Serialize(checkpoint);
+        var key = SiloObjectNamespace.CheckpointKey(covers);
         if (bytes.Length > maximumBytes)
         {
+            // An earlier attempt may have landed within the bound before proof of P4 grew the list at this cursor. Only
+            // a new write is held to the bound here; a landed checkpoint is read only within it.
+            if (await ReadLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false) is { } inBound)
+            {
+                return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, inBound.VersionId), inBound.Length, inBound.Sha256, covers,
+                    coversSha);
+            }
             throw new SiloCheckpointTooLargeException(bytes.Length, maximumBytes);
         }
         var sha = SiloHash.Sha256(bytes);
         var name = await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
-        var key = SiloObjectNamespace.CheckpointKey(covers);
         try
         {
             var created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
@@ -834,9 +841,10 @@ internal sealed class SiloCheckpointWriter(
     }
 
     /// <summary>
-    /// The checkpoint already at this cursor's key, when it is this binding's checkpoint of exactly these records. Its P4
-    /// list may predate proof gained since at the same cursor; every list was proven when written, so it only settles
-    /// less. Anything else at the key stays a conflict.
+    /// The checkpoint already at this cursor's key, when it is this binding's checkpoint of exactly these records and
+    /// every P4 claim it makes is one the catalog proves now. Its list may be shorter, from before proof grew at the same
+    /// cursor, and then it only settles less. A claim the catalog cannot prove, or anything else at the key, stays a
+    /// conflict, so a retry never anchors a P4 that did not happen.
     /// </summary>
     private async ValueTask<(string VersionId, long Length, string Sha256)?> ReadLandedAsync(
         string key, SiloJournalCheckpoint wanted, CancellationToken cancellationToken)
@@ -857,7 +865,8 @@ internal sealed class SiloCheckpointWriter(
             return null;
         }
         var same = SiloJson.Serialize(landed with { ReachedP4 = [] }).AsSpan().SequenceEqual(SiloJson.Serialize(wanted with { ReachedP4 = [] }));
-        return same ? (current.Value.VersionId, current.Value.Bytes.Length, SiloHash.Sha256(current.Value.Bytes)) : null;
+        var proven = landed.ReachedP4.All(claim => wanted.ReachedP4.Contains(claim));
+        return same && proven ? (current.Value.VersionId, current.Value.Bytes.Length, SiloHash.Sha256(current.Value.Bytes)) : null;
     }
 }
 

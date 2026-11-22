@@ -235,6 +235,40 @@ public sealed class SiloFormatTests
     }
 
     [TestMethod]
+    [DataRow("manifest member")]
+    [DataRow("manifest dependency")]
+    [DataRow("view layer")]
+    [DataRow("publish member")]
+    [DataRow("expiry target")]
+    public void ANullElementInAnyCollectionIsAnInvalidObject(string where)
+    {
+        var golden = GoldenObjects().ToDictionary(static item => item.Name, static item => item.Bytes);
+        Action read;
+        if (where is "manifest member" or "manifest dependency" or "view layer")
+        {
+            var node = JsonNode.Parse(golden["group-manifest.json"])!;
+            var list = where switch
+            {
+                "manifest member" => node["members"]!,
+                "manifest dependency" => node["dependencies"]!,
+                _ => node["view"]!["layers"]!,
+            };
+            list[0] = null;
+            read = () => SiloJson.ReadManifest(Encoding.UTF8.GetBytes(node.ToJsonString()), "manifest");
+        }
+        else
+        {
+            var node = JsonNode.Parse(golden["journal-segment.json"])!;
+            var type = where == "publish member" ? "publish" : "expiry-intent";
+            var record = node["records"]!.AsArray().First(record => (string?)record!["type"] == type)!;
+            record[where == "publish member" ? "members" : "targets"]![0] = null;
+            read = () => SiloJson.ReadSegment(Encoding.UTF8.GetBytes(node.ToJsonString()), "segment");
+        }
+
+        read.Should().Throw<SiloInvalidObjectException>("a null element is malformed data, never a fault in a later check");
+    }
+
+    [TestMethod]
     public void AdditiveFieldsWithinAFormatVersionAreAcceptedAndAnUnknownViewFormatIsNot()
     {
         var node = JsonNode.Parse(SiloJson.Serialize(GoldenManifest()))!;

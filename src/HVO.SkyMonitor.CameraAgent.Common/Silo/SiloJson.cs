@@ -85,9 +85,14 @@ internal static class SiloJson
         var checkpoint = Deserialize<SiloJournalCheckpoint>(document.RootElement, subject);
         // Every entry must be a valid record, so a malformed one disqualifies the checkpoint as an anchor instead of
         // stopping a rebuild after it was chosen.
+        Validate(subject, () => RequireElements(checkpoint.Entries, nameof(checkpoint.Entries)));
         var published = new List<(string GroupId, string RevisionId)>();
         foreach (var entry in checkpoint.Entries)
         {
+            if (entry.Record.ValueKind != JsonValueKind.Object)
+            {
+                throw new SiloInvalidObjectException(subject, "a checkpoint entry holds no record");
+            }
             if (ReadRecord(entry.Record, $"{subject} entry g{entry.Generation}/{entry.Sequence}#{entry.Index}") is SiloPublishRecord publish)
             {
                 published.Add((publish.GroupId, publish.RevisionId));
@@ -206,6 +211,15 @@ internal static class SiloJson
         {
             SiloText.RequireText(manifest.CameraId, nameof(manifest.CameraId), 256);
         }
+        // Every typed collection is checked for null elements before anything reads one, so a malformed manifest is an
+        // invalid object, never a fault in a later check.
+        RequireElements(manifest.Members, nameof(manifest.Members));
+        RequireElements(manifest.Dependencies, nameof(manifest.Dependencies));
+        RequireElements(manifest.Provenance.RecipeInputIdentities, nameof(manifest.Provenance.RecipeInputIdentities));
+        if (manifest.View is { } section)
+        {
+            RequireElements(section.Layers, nameof(section.Layers));
+        }
         var members = new HashSet<(string, string)>();
         foreach (var member in manifest.Members)
         {
@@ -286,6 +300,20 @@ internal static class SiloJson
                 {
                     throw new ArgumentException("An assessed layer binds its evidence, observation time and order.", nameof(manifest));
                 }
+            }
+        }
+    }
+
+    /// <summary>A collection read from JSON holds no null elements, which nullable annotations do not check.</summary>
+    private static void RequireElements<T>(IReadOnlyList<T> items, string name)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(items, name);
+        foreach (var item in items)
+        {
+            if (item is null)
+            {
+                throw new ArgumentException($"{name} holds a null element.", name);
             }
         }
     }
@@ -406,6 +434,7 @@ internal static class SiloJson
                 SiloText.RequireToken(publish.GroupId, nameof(publish.GroupId), 128);
                 SiloText.RequireToken(publish.RevisionId, nameof(publish.RevisionId), 128);
                 ValidatePublished(publish.Manifest.Locator, publish.Manifest.Sha256, publish.Manifest.Length, publish.Manifest.Qualification);
+                RequireElements(publish.Members, nameof(publish.Members));
                 var members = new HashSet<(string, string)>();
                 foreach (var member in publish.Members)
                 {
@@ -465,6 +494,7 @@ internal static class SiloJson
                 intent.Role.Validate();
                 SiloText.RequireText(intent.Authorization, nameof(intent.Authorization), 512);
                 SiloText.RequireText(intent.PolicyReason, nameof(intent.PolicyReason), 512);
+                RequireElements(intent.Targets, nameof(intent.Targets));
                 if (intent.Targets.Count == 0)
                 {
                     throw new ArgumentException("An expiry intent names at least one exact target copy.", nameof(record));

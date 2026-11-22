@@ -371,6 +371,8 @@ public sealed class SiloAuthorityPathTests
     [TestMethod]
     [DataRow("this cursor's records", DisplayName = "a checkpoint retry at an unchanged cursor anchors the checkpoint that landed, with its earlier P4 proof")]
     [DataRow("response lost", DisplayName = "a checkpoint whose write landed but lost its response is anchored by the retry after a P4 at the same cursor")]
+    [DataRow("response lost at the bound", DisplayName = "a landed checkpoint at exactly the size bound is anchored although P4 growth puts the retry over it")]
+    [DataRow("landed over the bound", DisplayName = "a landed checkpoint over the size bound is never anchored; the retry is refused as too large")]
     [DataRow("other records", DisplayName = "a key holding a checkpoint of other records at this cursor is still a conflict")]
     public async Task ACheckpointRetryAtAnUnchangedCursorAnchorsTheCheckpointThatLanded(string landed)
     {
@@ -383,20 +385,34 @@ public sealed class SiloAuthorityPathTests
         await crash.Should().ThrowAsync<InvalidOperationException>().WithMessage("simulated crash*").ConfigureAwait(false);
         silo.Local.ReadUnavailable = key => key == RawKey();
         await silo.CatchUpAsync().ConfigureAwait(false);
-        SiloCheckpointWriter Writer() => new(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock);
+        long? bound = null;
+        SiloCheckpointWriter Writer() => bound is { } maximum
+            ? new(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock, maximum)
+            : new(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock);
+        async Task<int> SnapshotLengthAsync()
+        {
+            var (covers, coversSha, entries, reachedP4) = await silo.Index.ExportRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+            return SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, silo.Binding.InstanceId, silo.Binding.BindingId,
+                covers, coversSha, entries, reachedP4)).Length;
+        }
         var key = SiloObjectNamespace.CheckpointKey(new(1, 2));
         // The staged revision keeps its spooled bytes until the writer's own first P4; checkpoint attempts add none.
         var spooled = silo.StateRoot.Spool.Names();
         SiloAnchorRecord? first = null;
         string? landedVersion = null;
-        if (landed == "this cursor's records")
+        if (landed is "this cursor's records" or "landed over the bound")
         {
             // Written while the revision is closed on a raw timeout; the process stops before its anchor is recorded.
             first = await Writer().WriteAsync(CancellationToken.None).ConfigureAwait(false);
             landedVersion = first.Checkpoint.VersionId;
         }
-        else if (landed == "response lost")
+        else if (landed is "response lost" or "response lost at the bound")
         {
+            if (landed == "response lost at the bound")
+            {
+                // The first attempt is exactly as large as the readers accept.
+                bound = await SnapshotLengthAsync().ConfigureAwait(false);
+            }
             // The PUT lands, but the writer sees a timeout and never learns the version.
             silo.Local.FailAfterLanding = candidate => candidate == key;
             var uncertain = () => Writer().WriteAsync(CancellationToken.None).AsTask();
@@ -416,8 +432,22 @@ public sealed class SiloAuthorityPathTests
         await silo.Catalog.RetryClosedAsync(CancellationToken.None).ConfigureAwait(false);
         (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
             .Should().Be("visible", "the retry brings the revision to P4 at the same journal cursor");
+        if (bound is { } limit)
+        {
+            (await SnapshotLengthAsync().ConfigureAwait(false)).Should().BeGreaterThan((int)limit, "the P4 now on the list grows the snapshot past the bound");
+        }
 
+        if (landed == "landed over the bound")
+        {
+            // Readers would refuse the checkpoint that landed, so the bound applies to it as to a new write.
+            bound = first!.CheckpointLength - 1;
+        }
         var retry = () => Writer().WriteAsync(CancellationToken.None).AsTask();
+        if (landed == "landed over the bound")
+        {
+            await retry.Should().ThrowAsync<SiloCheckpointTooLargeException>().ConfigureAwait(false);
+            return;
+        }
 
         if (landedVersion is null)
         {
@@ -484,10 +514,13 @@ public sealed class SiloAuthorityPathTests
     }
 
     [TestMethod]
-    [DataRow(true, DisplayName = "a newest checkpoint whose publish entry has no group identity is passed over for the older trusted anchor")]
-    [DataRow(false, DisplayName = "a well-formed newest checkpoint starts the rebuild")]
-    public async Task AMalformedNewestCheckpointFallsBackToTheOlderTrustedAnchor(bool malformed)
+    [DataRow("no group identity", DisplayName = "a newest checkpoint whose publish entry has no group identity is passed over for the older trusted anchor")]
+    [DataRow("null member", DisplayName = "a newest checkpoint whose publish entry holds a null member is passed over for the older trusted anchor")]
+    [DataRow("null entry", DisplayName = "a newest checkpoint holding a null entry is passed over for the older trusted anchor")]
+    [DataRow("well-formed", DisplayName = "a well-formed newest checkpoint starts the rebuild")]
+    public async Task AMalformedNewestCheckpointFallsBackToTheOlderTrustedAnchor(string fault)
     {
+        var malformed = fault != "well-formed";
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
         var first = await AnchorAsync(silo, "sealed-1").ConfigureAwait(false);
@@ -499,7 +532,20 @@ public sealed class SiloAuthorityPathTests
             var (covers, coversSha, entries, reachedP4) = await silo.Index.ExportRecordsAsync(CancellationToken.None).ConfigureAwait(false);
             var node = JsonNode.Parse(SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, silo.Binding.InstanceId,
                 silo.Binding.BindingId, covers, coversSha, entries, reachedP4)))!;
-            node["entries"]!.AsArray().Last(static entry => (string?)entry!["record"]!["type"] == "publish")!["record"]!.AsObject().Remove("groupId");
+            var array = node["entries"]!.AsArray();
+            var publish = array.Last(static entry => (string?)entry!["record"]!["type"] == "publish")!["record"]!;
+            switch (fault)
+            {
+                case "no group identity":
+                    publish.AsObject().Remove("groupId");
+                    break;
+                case "null member":
+                    publish["members"]![0] = null;
+                    break;
+                default:
+                    array[array.Count - 1] = null;
+                    break;
+            }
             var bytes = Encoding.UTF8.GetBytes(node.ToJsonString());
             var key = SiloObjectNamespace.CheckpointKey(covers);
             second = new(silo.Local.Locator(key, silo.Local.Plant(key, bytes)), bytes.Length, SiloHash.Sha256(bytes), covers, coversSha);
@@ -516,6 +562,61 @@ public sealed class SiloAuthorityPathTests
         rebuilt.Anchor.Should().Be(malformed ? first.Covers : second.Covers);
         (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(1), "r1", CancellationToken.None).ConfigureAwait(false))!.State
             .Should().Be("visible");
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "a landed checkpoint claiming a P4 the catalog cannot prove is a conflict, never anchored")]
+    [DataRow(true, DisplayName = "a landed checkpoint whose shorter P4 list the catalog proves is anchored by the retry")]
+    public async Task ACheckpointRetryAnchorsOnlyP4ClaimsTheCatalogProves(bool proven)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        if (proven)
+        {
+            await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        }
+        // B commits P3, then its raw read times out, so nothing proves it reached P4.
+        var draft = SiloDrafts.Capture(silo.Payloads, 2);
+        string RawKey() => silo.MemberLocator(draft.GroupId, SiloDrafts.Raw(2)).Key;
+        await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false);
+        silo.Faults.Armed = SiloFaultPoint.AfterSegmentCommitted;
+        var crash = () => silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).AsTask();
+        await crash.Should().ThrowAsync<InvalidOperationException>().WithMessage("simulated crash*").ConfigureAwait(false);
+        silo.Local.ReadUnavailable = key => key == RawKey();
+        await silo.CatchUpAsync().ConfigureAwait(false);
+        var (covers, coversSha, entries, reachedP4) = await silo.Index.ExportRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+        // The checkpoint already at the key holds exactly these records. Proven: an earlier attempt's list, with only A.
+        // Unproven: a list that claims B reached P4.
+        IReadOnlyList<SiloCheckpointPublication> claims = proven ? reachedP4 : [new(draft.GroupId, draft.RevisionId)];
+        if (proven)
+        {
+            claims.Should().Equal(new SiloCheckpointPublication(SiloDrafts.CaptureGroup(1), "r1"));
+        }
+        var bytes = SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, silo.Binding.InstanceId, silo.Binding.BindingId,
+            covers, coversSha, entries, claims));
+        var key = SiloObjectNamespace.CheckpointKey(covers);
+        var version = silo.Local.Plant(key, bytes);
+        if (proven)
+        {
+            silo.Local.ReadUnavailable = null;
+            await silo.Catalog.RetryClosedAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
+        var retry = () => new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock)
+            .WriteAsync(CancellationToken.None).AsTask();
+
+        if (!proven)
+        {
+            (await retry.Should().ThrowAsync<SiloConflictException>().ConfigureAwait(false)).Which.Code
+                .Should().Be("silo.create-only-conflict", "a retry never anchors a claim of P4 the catalog cannot prove");
+            (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+                .Should().Be("closed");
+            return;
+        }
+        (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+            .Should().Be("visible", "B reached P4 at the same cursor after the earlier attempt landed");
+        var anchor = await retry().ConfigureAwait(false);
+        anchor.Checkpoint.VersionId.Should().Be(version, "every claim the landed checkpoint makes is proven; it only settles less");
+        anchor.CheckpointSha256.Should().Be(SiloHash.Sha256(bytes));
     }
 
     // ----- Fresh, same-intent proof for a copy eviction -----------------------------------------------------------
