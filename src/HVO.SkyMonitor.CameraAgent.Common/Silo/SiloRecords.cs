@@ -108,7 +108,7 @@ internal sealed record SiloMemberFacts(
 internal sealed record SiloCaptureSequence(string AgentId, long CaptureSequence);
 
 // ---------------------------------------------------------------------------------------------------------------
-// Journal, hvo.cameraagent.silo.journal-segment/1 and hvo.cameraagent.silo.journal-checkpoint/1 (#1965 4.5).
+// Journal, hvo.cameraagent.silo.journal-segment/1 and hvo.cameraagent.silo.journal-checkpoint/2 (#1965 4.5).
 // ---------------------------------------------------------------------------------------------------------------
 
 /// <summary>One create-only journal object. Its predecessor's SHA-256 chains it into the total (g, seq) order.</summary>

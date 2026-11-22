@@ -83,11 +83,17 @@ internal static class SiloJson
     {
         using var document = Parse(bytes, subject, SiloFormats.JournalCheckpoint);
         var checkpoint = Deserialize<SiloJournalCheckpoint>(document.RootElement, subject);
+        // Every entry must be a valid record, so a malformed one disqualifies the checkpoint as an anchor instead of
+        // stopping a rebuild after it was chosen.
+        var published = new List<(string GroupId, string RevisionId)>();
         foreach (var entry in checkpoint.Entries)
         {
-            RequireKnownRecordType(entry.Record, subject);
+            if (ReadRecord(entry.Record, $"{subject} entry g{entry.Generation}/{entry.Sequence}#{entry.Index}") is SiloPublishRecord publish)
+            {
+                published.Add((publish.GroupId, publish.RevisionId));
+            }
         }
-        Validate(subject, () => ValidateCheckpoint(checkpoint));
+        Validate(subject, () => ValidateCheckpoint(checkpoint, published));
         return checkpoint;
     }
 
@@ -340,7 +346,7 @@ internal static class SiloJson
         }
     }
 
-    internal static void ValidateCheckpoint(SiloJournalCheckpoint checkpoint)
+    internal static void ValidateCheckpoint(SiloJournalCheckpoint checkpoint, IReadOnlyList<(string GroupId, string RevisionId)> published)
     {
         SiloText.RequireText(checkpoint.InstanceId, nameof(checkpoint.InstanceId), 256);
         SiloHash.Require(checkpoint.StorageBindingId, nameof(checkpoint.StorageBindingId));
@@ -361,13 +367,9 @@ internal static class SiloJson
         // Each P4 publication names a covered revision, once, in the order its first publish record was committed.
         ArgumentNullException.ThrowIfNull(checkpoint.ReachedP4);
         var first = new Dictionary<(string GroupId, string RevisionId), int>();
-        foreach (var entry in checkpoint.Entries)
+        foreach (var revision in published)
         {
-            if (entry.Record.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
-                type.GetString() == SiloRecordTypes.Publish)
-            {
-                first.TryAdd((entry.Record.GetProperty("groupId").GetString()!, entry.Record.GetProperty("revisionId").GetString()!), first.Count);
-            }
+            first.TryAdd(revision, first.Count);
         }
         var named = -1;
         foreach (var publication in checkpoint.ReachedP4)

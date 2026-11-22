@@ -14,7 +14,7 @@ internal static class SiloFormats
 {
     public const string GroupManifest = "hvo.cameraagent.silo.group-manifest/1";
     public const string JournalSegment = "hvo.cameraagent.silo.journal-segment/1";
-    public const string JournalCheckpoint = "hvo.cameraagent.silo.journal-checkpoint/1";
+    public const string JournalCheckpoint = "hvo.cameraagent.silo.journal-checkpoint/2";
     public const string CatalogIndex = "hvo.cameraagent.silo.catalog-index/1";
     public const string PublicationState = "hvo.cameraagent.silo.publication-state/1";
     public const string StorageBinding = "hvo.cameraagent.silo.storage-binding/1";

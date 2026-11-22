@@ -810,24 +810,27 @@ internal sealed class SiloCheckpointWriter(
         var sha = SiloHash.Sha256(bytes);
         var name = await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         var key = SiloObjectNamespace.CheckpointKey(covers);
-        SiloCreated created;
         try
         {
-            created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
+            var created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
                 SiloFormats.JournalCheckpoint, binding.BindingId, clock, null, cancellationToken).ConfigureAwait(false);
+            return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, created.VersionId), bytes.Length, sha, covers, coversSha);
         }
         catch (SiloConflictException conflict) when (conflict.Code == "silo.create-only-conflict")
         {
+            // An earlier attempt landed, its response perhaps lost, and proof of P4 grew since at the same cursor.
             if (await ReadLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false) is not { } landed)
             {
                 throw;
             }
-            spool.Delete(name);
             return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, landed.VersionId), landed.Length, landed.Sha256, covers,
                 coversSha);
         }
-        spool.Delete(name);
-        return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, created.VersionId), bytes.Length, sha, covers, coversSha);
+        finally
+        {
+            // A checkpoint is regenerated from the catalog on retry, and one that landed is found at its key.
+            spool.Delete(name);
+        }
     }
 
     /// <summary>

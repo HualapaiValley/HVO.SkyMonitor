@@ -196,6 +196,45 @@ public sealed class SiloFormatTests
     }
 
     [TestMethod]
+    public async Task ACheckpointOfTheEarlierIdentityIsRefusedReadOnlyAndTheRebuildChangesNothing()
+    {
+        const string Earlier = "hvo.cameraagent.silo.journal-checkpoint/1";
+        static byte[] Earlier1(byte[] current)
+        {
+            // The earlier draft shape: the v1 identity and no P4 list.
+            var node = JsonNode.Parse(current)!;
+            node["format"] = Earlier;
+            node.AsObject().Remove("reachedP4");
+            return Encoding.UTF8.GetBytes(node.ToJsonString());
+        }
+        SiloFormats.JournalCheckpoint.Should().NotBe(Earlier, "the checkpoint gained a required field, so it has its own identity");
+        var read = () => SiloJson.ReadCheckpoint(Earlier1(GoldenObjects().Single(static item => item.Name == "journal-checkpoint.json").Bytes),
+            "checkpoint");
+        var refusal = read.Should().Throw<SiloFormatRefusedException>().Which;
+        refusal.Found.Should().Be(Earlier);
+        refusal.Supported.Should().Be(SiloFormats.JournalCheckpoint);
+        refusal.Message.Should().Contain("refused read-only and left unchanged");
+
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        var (covers, coversSha, entries, reachedP4) = await silo.Index.ExportRecordsAsync(CancellationToken.None).ConfigureAwait(false);
+        var bytes = Earlier1(SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, silo.Binding.InstanceId,
+            silo.Binding.BindingId, covers, coversSha, entries, reachedP4)));
+        var key = SiloObjectNamespace.CheckpointKey(covers);
+        var anchor = new SiloAnchorRecord(silo.Local.Locator(key, silo.Local.Plant(key, bytes)), bytes.Length, SiloHash.Sha256(bytes), covers,
+            coversSha);
+        await silo.AppendAsync(anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) }).ConfigureAwait(false);
+        silo.Authority.TrustAnchors = true;
+        var before = await FingerprintAsync(silo).ConfigureAwait(false);
+
+        var rebuild = () => RebuildInPlaceAsync(silo, withWriterEvidence: false);
+
+        (await rebuild.Should().ThrowAsync<SiloFormatRefusedException>().ConfigureAwait(false)).Which.Found.Should().Be(Earlier);
+        (await FingerprintAsync(silo).ConfigureAwait(false)).Should().Be(before);
+        Directory.EnumerateFiles(silo.RootPath, "*.rebuild-*").Should().BeEmpty();
+    }
+
+    [TestMethod]
     public void AdditiveFieldsWithinAFormatVersionAreAcceptedAndAnUnknownViewFormatIsNot()
     {
         var node = JsonNode.Parse(SiloJson.Serialize(GoldenManifest()))!;

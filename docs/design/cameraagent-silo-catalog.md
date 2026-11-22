@@ -18,14 +18,14 @@ unsupported object aborts before it replaces the catalog. The tests check each o
 | --- | --- | --- |
 | Group manifest | `hvo.cameraagent.silo.group-manifest/1` | Silo `m/<yyyy>/<mm>/<dd>/<groupId>/<revisionId>/<sha256>.json` |
 | Journal segment | `hvo.cameraagent.silo.journal-segment/1` | Silo `j/g<g:D6>/<seq:D12>.json` |
-| Journal checkpoint | `hvo.cameraagent.silo.journal-checkpoint/1` | Silo `c/g<g:D6>/<seq:D12>.json` |
+| Journal checkpoint | `hvo.cameraagent.silo.journal-checkpoint/2` | Silo `c/g<g:D6>/<seq:D12>.json` |
 | Catalog index database | `hvo.cameraagent.silo.catalog-index/1`, SQLite `application_id` `0x48534349`, `user_version` 1 | State `catalog-index.db` |
 | Publication state database | `hvo.cameraagent.silo.publication-state/1`, `application_id` `0x48535053`, `user_version` 1 | State `publication-state.db` |
 | Centered view documents inside a view manifest | `cameraagent-centered-view-base-v1`, `cameraagent-centered-view-revision-v1` | Embedded verbatim |
 
-`tests/fixtures/silo-catalog-v1/` pins the v1 JSON formats byte for byte. Once a format is released, any change to its
-bytes is a new format version. The v1 formats have not been released yet. Until their first release they are reviewed
-in place under their v1 identities, and their pins move with them.
+`tests/fixtures/silo-catalog-v1/` pins the new-layout JSON formats byte for byte. A change to them is a new format
+version. The checkpoint is at `/2` because it gained its required P4 list; a `/1` checkpoint is refused read-only like
+any other unsupported identity.
 
 A database is judged before anything writes to it:
 
@@ -194,8 +194,10 @@ not persistence-qualified is never named by a committed record.
   revision twice or revisions out of order, is refused. The checkpoint key is create-only, and proof of P4 can grow
   while the cursor stays put. So a retry at an unchanged cursor, after an earlier checkpoint landed but before its
   anchor was recorded, anchors the checkpoint that landed when it holds exactly the same records. Its shorter P4 list
-  only settles less. Any other object at the key is still a conflict. It refuses any checkpoint larger than the
-  readers' bound, so it never produces one a rebuild cannot read. Selection starts from the
+  only settles less. Any other object at the key is still a conflict. Every entry of a checkpoint must read as a
+  valid record, so a checkpoint whose bytes match its anchor but whose content is malformed does not qualify, and
+  selection falls back to the previous trusted anchor. It refuses any checkpoint larger than the readers' bound, so it
+  never produces one a rebuild cannot read. Selection starts from the
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
   length, which a newer version at the same key cannot hide. A replica is read only through the exact version a verified
