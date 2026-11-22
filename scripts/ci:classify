@@ -155,7 +155,7 @@ is_deployment_path() {
     scripts/deploy:environment | scripts/deploy/*)
       return 0
       ;;
-    scripts/qualify:filesystem-object-store | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
+    scripts/qualify:filesystem-object-store | scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification | scripts/test:deploy-environment | scripts/test:deploy-environment-cli | scripts/test:deployment-installer | scripts/test:deployment-installer-qualification | scripts/test:deployment-logichost-outage-contract | scripts/test:deployment-normal-flow-contract | scripts/test:filesystem-object-store-qualification)
       return 0
       ;;
     scripts/deploy-contracts/*)
@@ -237,6 +237,10 @@ select_deployment_suites() {
       ;;
     scripts/qualify:filesystem-object-store | scripts/test:filesystem-object-store-qualification)
       # The Deployment Contracts job always runs this lightweight preflight fixture.
+      ;;
+    scripts/qualify:silo-runtime | scripts/test:silo-runtime-qualification)
+      # A host qualification recipe for the stock Silo runtime (#1966), run on dispatched hosts, never in CI, and its
+      # Docker-free cleanup proof, run with it.
       ;;
     .dockerignore | src/HVO.SkyMonitor.CameraAgent/Dockerfile | src/HVO.SkyMonitor.LogicHost/Dockerfile)
       deployment_shards="true"

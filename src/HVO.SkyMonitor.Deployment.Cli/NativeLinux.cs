@@ -15,6 +15,7 @@ internal static partial class NativeLinux
     private const uint StatxMode = 0x00000002;
     private const uint StatxInode = 0x00000100;
     private const uint StatxMountId = 0x00001000;
+    private const uint StatxChangeTime = 0x00000080;
     private const uint DirectoryType = 0x4000;
     private const uint RegularFileType = 0x8000;
     internal const uint SocketNodeType = 0xC000;
@@ -302,6 +303,21 @@ internal static partial class NativeLinux
 
     public static void Unlock(SafeFileHandle handle) => _ = FLock(handle.DangerousGetHandle().ToInt32(), LockRelease);
 
+    /// <summary>
+    /// When <paramref name="path"/> last changed status, not following a final symbolic link: its inode change time, which
+    /// a rename into place (publication), a write, a chmod or a chown all advance, unlike its modification time, which a
+    /// rename keeps.
+    /// </summary>
+    public static DateTimeOffset GetChangeTimeUtc(string path)
+    {
+        if (StatX(AtFileDescriptorCurrentWorkingDirectory, path, AtSymbolicLinkNoFollow, StatxChangeTime, out var status) != 0 ||
+            (status.Mask & StatxChangeTime) != StatxChangeTime)
+        {
+            throw new InstallerException($"The change time of '{path}' could not be read.");
+        }
+        return DateTimeOffset.FromUnixTimeSeconds(status.ChangeTimeSeconds).AddTicks(status.ChangeTimeNanoseconds / 100);
+    }
+
     public static UnixFileIdentity GetOpenFileIdentity(SafeFileHandle handle, string path)
     {
         const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid;
@@ -474,6 +490,8 @@ internal static partial class NativeLinux
         [FieldOffset(24)] internal uint Gid;
         [FieldOffset(28)] internal ushort Mode;
         [FieldOffset(32)] internal ulong Inode;
+        [FieldOffset(96)] internal long ChangeTimeSeconds;
+        [FieldOffset(104)] internal uint ChangeTimeNanoseconds;
         [FieldOffset(136)] internal uint DeviceMajor;
         [FieldOffset(140)] internal uint DeviceMinor;
         [FieldOffset(144)] internal ulong MountId;

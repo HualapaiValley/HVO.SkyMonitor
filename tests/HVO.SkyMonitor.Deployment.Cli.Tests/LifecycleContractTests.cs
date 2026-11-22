@@ -3099,6 +3099,10 @@ public sealed partial class LifecycleContractTests
             return new LifecycleFixture(root, instanceId, applicationIdentity, paths, manifest, new FakeRunner(daemon, localRunner) { CatalogContract = image.CatalogContract! }, uid, gid);
         }
 
+        /// <summary>This fixture with <paramref name="manifest"/> as its recorded manifest; the caller has written it.</summary>
+        public LifecycleFixture WithManifest(InstanceManifest manifest)
+            => new(Root, InstanceId, ApplicationIdentity, Paths, manifest, Runner, Uid, Gid);
+
         public LifecycleRequest Request(LifecycleOperationKind? operation)
             => new(operation, InstanceId, Root, dryRun: false, resume: false, json: false)
             {

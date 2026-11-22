@@ -1,0 +1,619 @@
+#!/usr/bin/env bash
+# Qualifies the pinned stock Silo runtime profile of the CameraAgent Silo layout (#1966) on this host's local Docker
+# daemon, using only disposable resources it creates under a fresh name and a fresh root on the filesystem under test.
+#
+# Isolation rules the script enforces before it creates anything:
+#   - Docker is the local Unix socket named by --docker-socket (default /var/run/docker.sock); DOCKER_HOST,
+#     DOCKER_CONTEXT, TLS settings and the user's Docker configuration are cleared and never consulted.
+#   - --root is an absolute, canonical path that does not exist, under an owner-only parent on local ext4, and no
+#     existing container mounts it, any of its ancestors or anything beneath it.
+#   - The name prefix (generated, or --name) is fresh: none of the containers, networks, labels or the evidence file it
+#     will use exist. A name, even a generated one, is not ownership: every container and network this run creates also
+#     carries io.hvo.qualification.invocation, a 128-bit identity drawn for this invocation alone and never taken from
+#     an argument, and is read back by the ID Docker returned. Cleanup removes a resource only when the daemon reports
+#     that ID carrying that identity; anything else holding the run's name, label or reserved names is never removed.
+#   - Every inventory before startup, before the replacement and at cleanup must be answered: a query the daemon did not
+#     answer, or answered with anything but IDs, refuses the run (exit 3, before anything is created) or fails it before
+#     the next step; it never reads as an empty answer.
+#   - Every credential lives in owner-only files (umask 077) or in script text sent on standard input; none is ever an
+#     argument to docker or mcli, and shell tracing is refused. Credentials are deleted at exit, success or failure; a
+#     deletion that fails or leaves anything makes the script exit nonzero, naming paths only, and keep the root.
+#   - Every Docker call is bounded by a timeout and the run by --max-seconds; cleanup has its own bounded deadline after
+#     that, reconciles the IDs this invocation recorded and anything carrying its identity, and removes only those.
+#     Cleanup is complete only when a final read-only inventory of that identity, those IDs, the run's name label and
+#     reserved names is answered in full and empty; otherwise, including a failed query, an elapsed deadline or a
+#     resource of someone else's holding the name, the script exits nonzero and keeps the root. The evidence is then
+#     published beside the root without replacing anything there, and the root is removed; if either fails, the script
+#     exits nonzero and says what it kept.
+#
+# Host-wide effect, disclosed: the script never runs sync itself, but the qualified profile sets MINIO_FS_OSYNC=on, under
+# which Silo calls sync(2) before acknowledging every write it accepts in this run (bootstrap, versioned I/O, kill
+# recovery, replacement, rotation and the osync-cost probe alike). Each call flushes dirty data of every filesystem on
+# the host. The script imposes no I/O rate limit; the run's writes are bounded in count and size (about 0.3 GB including
+# --samples timing PUTs per size), and the run root's capacity is whatever its filesystem allows.
+#
+# Evidence (JSON lines on stdout and in ROOT/evidence.jsonl, linked beside ROOT on success):
+#   platform        daemon, image index and platform digests, labels, license, architecture, data-root filesystem
+#   listener        no published port, internal-only network, the only TCP listener is :9000, no console listener
+#   bootstrap       versioned bucket, scoped writer key, create-only marker and fence, exact-version readback
+#   writer-denials  no write or delete under meta/, no versioning change, other bucket, admin, policy or bucket delete
+#   versioned-io    two versions of objects of several sizes read back by version ID and SHA-256
+#   osync-cost      PUT latency with MINIO_FS_OSYNC on and off (the on profile is the qualified one)
+#   kill-recovery   SIGKILL after acknowledged PUTs; every acknowledged version verifies after restart
+#   exit-exclusive  stop with a verified process exit; no other container mounts the data root
+#   replacement     stock container replaced on the retained data root; old versions verify; timed
+#   rotation        new server-generated writer key works, old key disabled and refused
+#   wrong-endpoint  a sibling instance's store does not hold this instance's marker and refuses its key
+#   isolation       no TCP connection either way between the instance and the sibling store, by name or address
+set -euo pipefail
+umask 077
+[[ "$-" != *x* ]] || { echo 'Refusing to run with shell tracing on; it would print credentials.' >&2; exit 2; }
+(( BASH_VERSINFO[0] >= 4 )) || { echo 'Bash 4 or newer is required.' >&2; exit 2; }
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_CERT_PATH DOCKER_API_VERSION BUILDX_BUILDER
+
+image='docker.io/pgsty/silo@sha256:c20d112390b9a9ce8c11b8af95ad35bcaa62f4759663c09c936cd8d2b511f329'
+release='RELEASE.2026-11-12T00-00-00Z'
+revision='44e848fedf8cec3d8c0da4b1aa8422390a2b7a8b'
+root=''
+name="hvoq$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+# This invocation's own identity. No argument sets it, so two invocations given the same --name never share it.
+invocation="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+socket=/var/run/docker.sock
+samples=20
+max_seconds=1800
+keep=false
+
+usage() {
+  printf 'Usage: %s --root DIR [--name PREFIX] [--docker-socket PATH] [--samples N] [--max-seconds N] [--keep]\n' "$0" >&2
+  printf '  DIR must not exist; its parent must be an owner-only directory on the local ext4 filesystem under test.\n' >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --root) root="${2:?--root requires a directory}"; shift 2 ;;
+    --name) name="${2:?--name requires a prefix}"; shift 2 ;;
+    --docker-socket) socket="${2:?--docker-socket requires a path}"; shift 2 ;;
+    --samples) samples="${2:?--samples requires a count}"; shift 2 ;;
+    --max-seconds) max_seconds="${2:?--max-seconds requires a count}"; shift 2 ;;
+    --keep) keep=true; shift ;;
+    *) usage ;;
+  esac
+done
+
+refuse() { printf 'qualify:silo-runtime refused: %s\n' "$1" >&2; exit 3; }
+[[ -n "$root" ]] || usage
+[[ "$name" =~ ^[a-z0-9][a-z0-9-]{7,40}$ ]] || refuse 'the name prefix must be 8 to 41 lowercase letters, digits and dashes.'
+[[ "$invocation" =~ ^[0-9a-f]{32}$ ]] || refuse 'could not draw an invocation identity.'
+if ! [[ "$samples" =~ ^[1-9][0-9]{0,2}$ ]] || (( 10#$samples < 3 || 10#$samples > 100 )); then refuse '--samples must be a decimal 3 to 100.'; fi
+if ! [[ "$max_seconds" =~ ^[1-9][0-9]{0,3}$ ]] || (( 10#$max_seconds < 300 || 10#$max_seconds > 7200 )); then refuse '--max-seconds must be a decimal 300 to 7200.'; fi
+samples=$((10#$samples))
+max_seconds=$((10#$max_seconds))
+[[ "$socket" == /* && -S "$socket" && ! -L "$socket" ]] || refuse "$socket is not a local Unix socket."
+[[ "$root" == /* && "$root" == "$(realpath -m -- "$root")" ]] || refuse 'the root must be an absolute, canonical path.'
+[[ ! -e "$root" && ! -L "$root" ]] || refuse "the root $root already exists."
+parent="$(dirname -- "$root")"
+[[ -d "$parent" && "$parent" == "$(realpath -e -- "$parent")" ]] || refuse "the parent $parent is not an existing canonical directory."
+[[ "$(stat -c %u -- "$parent")" == "$(id -u)" ]] || refuse "the parent $parent is not owned by this user."
+(( (8#$(stat -c %a -- "$parent") & 8#022) == 0 )) || refuse "the parent $parent is writable by group or others."
+fstype="$(findmnt -no FSTYPE -T "$parent")"
+[[ "$fstype" == ext4 ]] || refuse "the parent $parent is on $fstype, not local ext4."
+(( $(df --output=avail -B1 -- "$parent" | tail -1) >= 2 * 1024 * 1024 * 1024 )) || refuse 'the parent filesystem has less than 2 GiB free.'
+evidence_copy="$parent/$name.evidence.jsonl"
+[[ ! -e "$evidence_copy" && ! -L "$evidence_copy" ]] || refuse "$evidence_copy already exists."
+uid="$(id -u)"
+gid="$(id -g)"
+[[ "$uid" != 0 ]] || refuse 'run as an unprivileged Docker user, not root.'
+
+deadline=$((SECONDS + max_seconds))
+docker_config=''
+containers_named=("$name-a" "$name-a2" "$name-off" "$name-b")
+networks_named=("$name-a" "$name-b" "$name-off")
+container_ids=()
+network_ids=()
+declare -A cid=() nid=()
+evidence="$root/evidence.jsonl"
+cleanup_seconds=180
+cleanup_deadline=0
+# >>> containment: scripts/test:silo-runtime-qualification runs this block exactly as written, against a fake daemon.
+remaining() { local left=$((deadline - SECONDS)); (( left > 0 )) || { echo 'qualify:silo-runtime: --max-seconds elapsed' >&2; exit 1; }; printf '%s' "$left"; }
+d() { DOCKER_CONFIG="$docker_config" timeout "$(remaining)" docker --host "unix://$socket" "$@"; }
+# Cleanup Docker calls: bounded per call and, together, by their own deadline that starts when cleanup does.
+dc() {
+  local left=$((cleanup_deadline - SECONDS))
+  (( left > 0 )) || return 124
+  DOCKER_CONFIG="$docker_config" timeout "$(( left < 30 ? left : 30 ))" docker --host "unix://$socket" "$@"
+}
+# One read-only query, through d or dc: the full IDs of the containers or networks a filter selects (every container
+# when there is no filter), one per line. It fails unless the daemon answered with nothing but full IDs, so that an
+# unanswered or unreadable query never reads as an empty one.
+listing() { # caller kind [filter]
+  local out line
+  if [[ "$2" == container && -z "${3:-}" ]]; then
+    out="$("$1" ps -aq --no-trunc)" || return 2
+  elif [[ "$2" == container ]]; then
+    out="$("$1" ps -aq --no-trunc --filter "$3")" || return 2
+  elif [[ "$2" == network && -n "${3:-}" ]]; then
+    out="$("$1" network ls -q --no-trunc --filter "$3")" || return 2
+  else
+    return 2
+  fi
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^[0-9a-f]{64}$ ]] || return 2
+  done <<< "$out"
+  [[ -z "$out" ]] || printf '%s\n' "$out"
+}
+found_own=''
+found_other=''
+# Adds listed IDs to $found_own, or to $found_other unless already listed.
+found() { # own|other ids
+  local id
+  while read -r id; do
+    [[ -n "$id" && " $found_own $found_other " != *" $id "* ]] || continue
+    if [[ "$1" == own ]]; then found_own+="$id "; else found_other+="$id "; fi
+  done <<< "$2"
+}
+# The run's inventory, read-only, through d (before startup) or dc (at cleanup). $found_own lists what carries this
+# invocation's identity or has an ID it recorded; $found_other lists anything else holding the run's name label or a
+# reserved name, which is never this run's to remove. Returns 0 only when the daemon answered every query and listed
+# nothing, 1 when it listed something and 2 when a query was not answered, including after a deadline.
+inventory() { # caller
+  local kind id ids
+  found_own=''
+  found_other=''
+  for kind in container network; do
+    ids="$(listing "$1" "$kind" "label=io.hvo.qualification.invocation=$invocation")" || return 2
+    found own "$ids"
+  done
+  # A recorded ID that is not a full ID could select anything; the inventory cannot be answered for it.
+  for id in "${container_ids[@]}"; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] && ids="$(listing "$1" container "id=$id")" || return 2
+    found own "$ids"
+  done
+  for id in "${network_ids[@]}"; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] && ids="$(listing "$1" network "id=$id")" || return 2
+    found own "$ids"
+  done
+  for kind in container network; do
+    ids="$(listing "$1" "$kind" "label=io.hvo.qualification=$name")" || return 2
+    found other "$ids"
+  done
+  for id in "${containers_named[@]}"; do ids="$(listing "$1" container "name=^/$id\$")" || return 2; found other "$ids"; done
+  for id in "${networks_named[@]}"; do ids="$(listing "$1" network "name=^$id\$")" || return 2; found other "$ids"; done
+  [[ -z "$found_own$found_other" ]]
+}
+mounted=''
+# Every container except one ID that mounts PATH, an ancestor of it or anything beneath it, as "name=source " in
+# $mounted. Returns 0 when the daemon answered for every container and none does, 1 when one does and 2 when a query
+# was not answered. A container listed and then gone is accepted only when the daemon's own listing no longer has it.
+mounting() { # caller path [own container ID]
+  local ids id out container source
+  mounted=''
+  ids="$(listing "$1" container)" || return 2
+  while IFS= read -r id; do
+    [[ -n "$id" && "$id" != "${3:-}" ]] || continue
+    if ! out="$("$1" container inspect --format '{{println .Name}}{{range .Mounts}}{{println .Source}}{{end}}' "$id" </dev/null)"; then
+      out="$(listing "$1" container "id=$id" </dev/null)" || return 2
+      [[ -z "$out" ]] || return 2
+      continue
+    fi
+    { IFS= read -r container
+      while IFS= read -r source; do
+        [[ -n "$source" ]] || continue
+        if [[ "$source" == "$2" || "$2" == "${source%/}/"* || "$source" == "$2/"* ]]; then mounted+="${container#/}=$source "; fi
+      done; } <<< "$out"
+  done <<< "$ids"
+  [[ -z "$mounted" ]] || return 1
+}
+# "ID NAME IDENTITY" for a container or network, as the daemon reports it by ID (a container's name starts with /).
+identity() { # caller kind id
+  local format='{{.Id}} {{.Name}} {{index .Config.Labels "io.hvo.qualification.invocation"}}'
+  [[ "$2" == network ]] && format='{{.Id}} {{.Name}} {{index .Labels "io.hvo.qualification.invocation"}}'
+  "$1" "$2" inspect --format "$format" "$3"
+}
+# Whether a container or network is this invocation's: the daemon reports exactly that ID carrying this invocation's
+# identity. Neither the caller-chosen name nor its label ever decides it.
+ours() { # kind id
+  local seen
+  seen="$(identity dc "$1" "$2" 2>/dev/null)" || return 1
+  [[ "$seen" == "$2 "*" $invocation" ]]
+}
+# Before the run root exists, the private Docker configuration is the only thing this run has made.
+discard_config() {
+  local status=$?
+  [[ -z "$docker_config" ]] || rm -rf -- "$docker_config"
+  if [[ -n "$docker_config" && ( -e "$docker_config" || -L "$docker_config" ) ]]; then
+    printf 'qualify:silo-runtime: could not remove the private Docker configuration %s\n' "$docker_config" >&2
+    (( status != 0 )) || status=1
+  fi
+  exit "$status"
+}
+# Removes the credentials and the private Docker configuration. Fails, naming paths only, when anything is left.
+scrub() {
+  local path left=''
+  rm -rf -- "$root"/secrets-* "$docker_config"
+  for path in "$root"/secrets-* "$docker_config"; do
+    [[ ! -e "$path" && ! -L "$path" ]] || left+="$path "
+  done
+  [[ -n "$left" ]] || return 0
+  printf 'qualify:silo-runtime: could not remove %s(credentials or the private Docker configuration)\n' "$left" >&2
+  return 1
+}
+# Publishes the evidence beside the root as a second link to the same file. The link is refused if anything already
+# holds that name, and the evidence counts as preserved only when that name is then this very file.
+publish_evidence() {
+  [[ -f "$evidence" && ! -L "$evidence" ]] && ln -T -- "$evidence" "$evidence_copy" &&
+    [[ ! -L "$evidence_copy" && "$evidence_copy" -ef "$evidence" ]]
+}
+cleanup() {
+  local status=$?
+  local clear=false
+  set +e
+  trap '' INT TERM HUP
+  cleanup_deadline=$((SECONDS + cleanup_seconds))
+  if [[ "$keep" == false ]]; then
+    # Reconcile what this invocation recorded with what carries its identity, which covers a create that timed out
+    # after Docker made the resource. Each is removed only when it reads back as this invocation's. Only the final
+    # inventory decides whether cleanup is complete.
+    local -A containers=() networks=()
+    local id
+    for id in "${container_ids[@]}"; do [[ "$id" =~ ^[0-9a-f]{64}$ ]] && containers[$id]=1; done
+    for id in "${network_ids[@]}"; do [[ "$id" =~ ^[0-9a-f]{64}$ ]] && networks[$id]=1; done
+    while read -r id; do [[ -n "$id" ]] && containers[$id]=1; done <<< "$(listing dc container "label=io.hvo.qualification.invocation=$invocation")"
+    while read -r id; do [[ -n "$id" ]] && networks[$id]=1; done <<< "$(listing dc network "label=io.hvo.qualification.invocation=$invocation")"
+    for id in "${!containers[@]}"; do
+      if ours container "$id"; then dc rm -f "$id" >/dev/null 2>&1; fi
+    done
+    for id in "${!networks[@]}"; do
+      if ours network "$id"; then dc network rm "$id" >/dev/null 2>&1; fi
+    done
+    inventory dc
+    case $? in
+      0) clear=true ;;
+      1)
+        [[ -z "$found_own" ]] ||
+          printf 'qualify:silo-runtime: cleanup left %s(recorded by or carrying invocation %s; not provably its own, or removal failed)\n' "$found_own" "$invocation" >&2
+        [[ -z "$found_other" ]] ||
+          printf 'qualify:silo-runtime: cleanup left %s(not invocation %s'"'"'s, never removed: it holds the name %s, its label or a reserved name)\n' "$found_other" "$invocation" "$name" >&2
+        ;;
+      *) printf 'qualify:silo-runtime: cleanup could not complete its final inventory (a Docker query failed or the cleanup deadline elapsed)\n' >&2 ;;
+    esac
+    [[ "$clear" == true ]] || (( status != 0 )) || status=1
+  fi
+  scrub || { clear=false; (( status != 0 )) || status=1; }
+  if [[ "$keep" == false && "$clear" == true && "$status" -eq 0 ]]; then
+    if ! publish_evidence; then
+      printf 'qualify:silo-runtime: could not publish the evidence at %s without replacing anything there\n' "$evidence_copy" >&2
+      status=1
+    else
+      rm -rf -- "$root"
+      if [[ -e "$root" || -L "$root" ]]; then
+        printf 'qualify:silo-runtime: could not remove the run root; the evidence is at %s\n' "$evidence_copy" >&2
+        status=1
+      fi
+    fi
+  fi
+  if (( status != 0 )) && [[ -e "$root" ]]; then
+    printf 'qualify:silo-runtime: kept %s (invocation %s)\n' "$root" "$invocation" >&2
+  fi
+  exit "$status"
+}
+# <<< containment
+trap discard_config EXIT
+trap 'exit 130' INT TERM HUP
+docker_config="$(mktemp -d)"
+
+[[ "$(d info --format '{{.OSType}}')" == linux ]] || refuse 'the Docker daemon is not a local Linux daemon.'
+daemon_id="$(d info --format '{{.ID}}')"
+preflight=0
+inventory d || preflight=$?
+case $preflight in
+  0) ;;
+  1) refuse "containers or networks with this run's name, label or reserved names already exist: $found_own$found_other" ;;
+  *) refuse 'the Docker daemon did not answer the inventory of the names and labels this run would use.' ;;
+esac
+preflight=0
+mounting d "$root" || preflight=$?
+case $preflight in
+  0) ;;
+  1) refuse "an existing container mounts the root, one of its ancestors or something beneath it: $mounted" ;;
+  *) refuse 'the Docker daemon did not answer the inventory of container mounts.' ;;
+esac
+
+mkdir -m 700 -- "$root"
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+
+record() { printf '%s\n' "$1" | tee -a "$evidence"; }
+fail() { record "{\"check\":\"$1\",\"result\":\"fail\",\"detail\":\"$2\"}"; exit 1; }
+now_ns() { date +%s%N; }
+hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
+
+mkdir -m 700 -- "$root/a-data" "$root/b-data" "$root/off-data" "$root/secrets-a" "$root/secrets-b"
+for side in a b; do
+  printf 'hvo%s' "$(hex 12)" > "$root/secrets-$side/root-user"
+  printf 'hvo%s' "$(hex 32)" > "$root/secrets-$side/root-password"
+done
+
+# --- platform ---------------------------------------------------------------------------------------------------
+d image inspect "$image" >/dev/null 2>&1 || d pull --quiet "$image" >/dev/null
+arch="$(d image inspect --format '{{.Architecture}}' "$image")"
+label() { d image inspect --format "{{index .Config.Labels \"$1\"}}" "$image"; }
+[[ "$(label org.opencontainers.image.version)" == "$release" ]] || fail platform "unexpected release label"
+[[ "$(label org.opencontainers.image.revision)" == "$revision" ]] || fail platform "unexpected source revision"
+[[ "$(label org.opencontainers.image.licenses)" == AGPL-3.0-or-later ]] || fail platform "unexpected license label"
+image_id="$(d image inspect --format '{{.Id}}' "$image")"
+repo_digests="$(d image inspect --format '{{join .RepoDigests ","}}' "$image")"
+[[ "$image_id" == "${image#*@}" || ",$repo_digests," == *"@${image#*@},"* ]] || fail platform "the local image is not named by the pinned index digest"
+record "{\"check\":\"platform\",\"result\":\"pass\",\"daemon\":\"$daemon_id\",\"socket\":\"$socket\",\"architecture\":\"$arch\",\"imageId\":\"$image_id\",\"repoDigests\":\"$repo_digests\",\"release\":\"$release\",\"revision\":\"$revision\",\"dataRootFileSystem\":\"$fstype\",\"device\":\"$(findmnt -no MAJ:MIN -T "$parent" | tr -d ' ')\",\"kernel\":\"$(uname -r)\",\"docker\":\"$(d version --format '{{.Server.Version}}')\"}"
+
+start_silo() { # name data secrets network osync
+  local id
+  id="$(d run -d --name "$1" --label "io.hvo.qualification=$name" --label "io.hvo.qualification.invocation=$invocation" \
+    --network "${nid[$4]}" --network-alias hvo-silo \
+    --user "$uid:$gid" --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777,size=64m \
+    --cap-drop ALL --security-opt no-new-privileges:true --cpus 1 --memory 1g --pids-limit 256 \
+    -v "$2:/data" -v "$3:/run/hvo-silo:ro" \
+    -e MINIO_BROWSER=off -e "MINIO_FS_OSYNC=$5" -e MINIO_UPDATE=off \
+    -e MINIO_ROOT_USER_FILE=/run/hvo-silo/root-user -e MINIO_ROOT_PASSWORD_FILE=/run/hvo-silo/root-password \
+    -e MINIO_ACCESS_KEY_FILE=/run/hvo-silo/root-user -e MINIO_SECRET_KEY_FILE=/run/hvo-silo/root-password \
+    --health-cmd 'curl --fail --silent http://127.0.0.1:9000/minio/health/live' --health-interval 2s --health-retries 30 \
+    "$image" server /data --address :9000)"
+  [[ "$id" =~ ^[0-9a-f]{64}$ ]] || fail startup "docker run did not return a container ID for $1"
+  container_ids+=("$id")
+  cid[$1]="$id"
+}
+# Reads back, by the ID Docker returned, what this run created: its name, this invocation's identity and, for a
+# container, the network it was created on. Containers are read back outside the timed startup and replacement windows.
+owned() { # network NAME | container NAME NETWORK
+  if [[ "$1" == network ]]; then
+    [[ "$(identity d network "${nid[$2]}")" == "${nid[$2]} $2 $invocation" ]] ||
+      fail startup "network $2 does not read back as this invocation's"
+  else
+    [[ "$(identity d container "${cid[$2]}")" == "${cid[$2]} /$2 $invocation" &&
+      "$(d container inspect --format '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{end}}' "${cid[$2]}")" == "${nid[$3]} " ]] ||
+      fail startup "container $2 does not read back as this invocation's, on its network"
+  fi
+}
+wait_healthy() {
+  local limit=$((SECONDS + 90)) target="${cid[$1]:-$1}"
+  until [[ "$(d inspect --format '{{.State.Health.Status}}' "$target")" == healthy ]]; do
+    [[ "$(d inspect --format '{{.State.Running}}' "$target")" == true ]] || fail startup "$1 exited"
+    (( SECONDS < limit )) || fail startup "$1 not healthy in 90 s"
+    sleep 0.2
+  done
+}
+# Runs a bash script in a Silo container with the root alias, and the writer alias when a writer is given. The script,
+# including any credential, travels on standard input; docker exec's arguments carry none.
+box() { # container script [access:secret]
+  local writer="${3:-}"
+  [[ -z "$writer" || "$writer" =~ ^[A-Za-z0-9]+:[A-Za-z0-9+/=]+$ ]] || fail credentials "a writer credential has an unexpected form"
+  {
+    # These lines are expanded by the container's shell, which reads the root credential from its own mounted files.
+    # shellcheck disable=SC2016
+    printf 'set -uo pipefail\nexport MC_CONFIG_DIR="$(mktemp -d /tmp/mc.XXXXXX)"\n'
+    # shellcheck disable=SC2016
+    printf 'export MC_HOST_root="http://$(cat /run/hvo-silo/root-user):$(cat /run/hvo-silo/root-password)@127.0.0.1:9000"\n'
+    [[ -z "$writer" ]] || printf "export MC_HOST_w='http://%s@127.0.0.1:9000'\n" "$writer"
+    printf '%s\n' "$2"
+  } | d exec -i "${cid[$1]:-$1}" bash -s
+}
+code_of() { local text="$1"; if [[ "$text" =~ \"Code\":\"([A-Za-z]+)\" ]]; then printf '%s' "${BASH_REMATCH[1]}"; else printf 'none'; fi; }
+# The TCP ports a container listens on, from its own /proc/net/tcp and tcp6 (state 0A), except Docker's embedded DNS
+# resolver, which listens on 127.0.0.11 (0B00007F) inside every container on a user-defined network.
+listeners() {
+  d exec "$1" cat /proc/net/tcp /proc/net/tcp6 2>/dev/null |
+    while read -r _ local _ state _; do
+      if [[ "$state" == 0A && "$local" != 0B00007F:* ]]; then printf '%d\n' "0x${local##*:}"; fi
+    done | sort -un | tr '\n' ' '
+}
+# OPEN or BLOCKED: whether a TCP connection to address:port opens from inside a container within three seconds. The probe
+# itself must run; a docker exec that fails is a failed check, never a blocked connection.
+probe() {
+  local out
+  out="$(d exec "$1" bash -c "if timeout 3 bash -c 'exec 3<>/dev/tcp/$2/$3' 2>/dev/null; then echo OPEN; else echo BLOCKED; fi")" ||
+    fail isolation "the TCP probe could not run in $1"
+  [[ "$out" == OPEN || "$out" == BLOCKED ]] || fail isolation "the TCP probe in $1 gave no result"
+  printf '%s' "$out"
+}
+# The listener checks every running Silo server must pass: no published port, only TCP 9000 (besides Docker's
+# resolver), no console, and a working probe that can see its own listener.
+check_listener() {
+  local ports published listening
+  ports="$(d inspect --format '{{json .HostConfig.PortBindings}}' "${cid[$1]}")"
+  published="$(d port "${cid[$1]}" || true)"
+  listening="$(listeners "${cid[$1]}")"
+  [[ ( "$ports" == '{}' || "$ports" == null ) && -z "$published" ]] || fail listener "$1 publishes ports $ports $published"
+  [[ "$listening" == '9000 ' ]] || fail listener "$1 listens on TCP [$listening], not only 9000"
+  [[ "$(probe "${cid[$1]}" 127.0.0.1 9000)" == OPEN ]] || fail listener "$1's probe cannot see its own listener"
+  [[ "$(probe "${cid[$1]}" 127.0.0.1 9001)" == BLOCKED ]] || fail listener "a console listener answers on 9001 in $1"
+}
+network_members() { d network inspect --format '{{range .Containers}}{{.Name}} {{end}}' "$1" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' '; }
+
+for network in "${networks_named[@]}"; do
+  network_id="$(d network create --internal --label "io.hvo.qualification=$name" \
+    --label "io.hvo.qualification.invocation=$invocation" "$network")" || fail startup "network $network was not created"
+  [[ "$network_id" =~ ^[0-9a-f]{64}$ ]] || fail startup "docker network create did not return a network ID for $network"
+  network_ids+=("$network_id")
+  nid[$network]="$network_id"
+  owned network "$network"
+done
+
+# --- startup and listener ---------------------------------------------------------------------------------------
+started=$(now_ns)
+start_silo "$name-a" "$root/a-data" "$root/secrets-a" "$name-a" on
+wait_healthy "$name-a"
+startup_ms=$(( ($(now_ns) - started) / 1000000 ))
+owned container "$name-a" "$name-a"
+check_listener "$name-a"
+internal="$(d network inspect --format '{{.Internal}}' "${nid[$name-a]}")"
+readonly_root="$(d inspect --format '{{.HostConfig.ReadonlyRootfs}}' "${cid[$name-a]}")"
+[[ "$internal" == true && "$readonly_root" == true ]] || fail listener "network or root filesystem not private"
+record "{\"check\":\"listener\",\"result\":\"pass\",\"startupMs\":$startup_ms,\"portBindings\":{},\"internalNetwork\":$internal,\"readOnlyRoot\":$readonly_root,\"tcpListeners\":\"9000\",\"consoleListener\":false,\"user\":\"$uid:$gid\"}"
+
+# --- bootstrap ----------------------------------------------------------------------------------------------------
+bucket="hvo-$(hex 16)"
+policy="{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"s3:GetBucketLocation\",\"s3:GetBucketVersioning\",\"s3:ListBucket\",\"s3:ListBucketVersions\"],\"Resource\":[\"arn:aws:s3:::$bucket\"]},{\"Effect\":\"Allow\",\"Action\":[\"s3:GetObject\",\"s3:GetObjectVersion\",\"s3:PutObject\",\"s3:DeleteObjectVersion\"],\"Resource\":[\"arn:aws:s3:::$bucket/*\"]},{\"Effect\":\"Deny\",\"Action\":[\"s3:PutObject\",\"s3:DeleteObject\",\"s3:DeleteObjectVersion\"],\"Resource\":[\"arn:aws:s3:::$bucket/meta/*\"]}]}"
+# The server generates the writer key and prints it once; it is held only in this shell's memory.
+make_writer() { # container generation -> access:secret
+  box "$1" "printf '%s' '$policy' > /tmp/p.json; mcli admin accesskey create root/ --policy /tmp/p.json --name hvo-writer-g$2 --json" |
+    { read -r line; [[ "$line" =~ \"accessKey\":\"([A-Za-z0-9]+)\".*\"secretKey\":\"([A-Za-z0-9+/=]+)\" ]] && printf '%s:%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; }
+}
+[[ "$(box "$name-a" "mcli mb --with-versioning root/$bucket >/dev/null && mcli version info root/$bucket --json")" == *'"Enabled"'* ]] ||
+  fail bootstrap "versioning not enabled"
+writer_a="$(make_writer "$name-a" 1)"; [[ -n "$writer_a" ]] || fail bootstrap "writer key not created"
+marker="{\"format\":\"hvo.cameraagent.silo.instance/1\",\"bucket\":\"$bucket\",\"qualification\":\"$name\"}"
+bind="$(box "$name-a" "
+printf '%s\n' '$marker' > /tmp/marker; printf '%s\n' '{\"writerGeneration\":1}' > /tmp/fence
+mcli put --disable-multipart --checksum SHA256 -H 'If-None-Match: *' /tmp/marker root/$bucket/meta/instance.v1.json >/dev/null 2>&1
+second=\$(mcli put --disable-multipart --checksum SHA256 -H 'If-None-Match: *' /tmp/marker root/$bucket/meta/instance.v1.json --json 2>&1 | tail -1)
+mcli put --disable-multipart --checksum SHA256 -H 'If-None-Match: *' /tmp/fence root/$bucket/meta/fence.json >/dev/null 2>&1
+stat=\$(mcli stat w/$bucket/meta/instance.v1.json --json); [[ \$stat =~ \\\"versionID\\\":\\\"([A-Za-z0-9-]+)\\\" ]]; v=\${BASH_REMATCH[1]}
+read=\$(mcli cat --version-id \$v w/$bucket/meta/instance.v1.json | sha256sum); want=\$(sha256sum < /tmp/marker)
+printf '%s|%s|%s|%s\n' \"\$v\" \"\${read%% *}\" \"\${want%% *}\" \"\$second\"" "$writer_a")"
+IFS='|' read -r marker_version marker_read marker_want marker_second <<<"$bind"
+[[ "$marker_read" == "$marker_want" ]] || fail bootstrap "marker readback differs"
+[[ "$(code_of "$marker_second")" == PreconditionFailed ]] || fail bootstrap "second create-only PUT was not refused"
+record "{\"check\":\"bootstrap\",\"result\":\"pass\",\"bucket\":\"$bucket\",\"markerVersion\":\"$marker_version\",\"markerSha256\":\"$marker_read\",\"secondCreate\":\"PreconditionFailed\"}"
+
+# --- writer denials -----------------------------------------------------------------------------------------------
+box "$name-a" 'mcli mb root/other-bucket >/dev/null'
+denials='{'
+# Every probe is non-destructive if refused; none uses rb --force, which deletes every version it may before the
+# bucket deletion itself is refused.
+for probe in "rm w/$bucket/meta/fence.json" "rm --version-id $marker_version w/$bucket/meta/instance.v1.json" \
+  "put /tmp/probe w/$bucket/meta/instance.v1.json" "version suspend w/$bucket" "ls w/other-bucket" "admin info w" \
+  "anonymous set public w/$bucket" "rb w/$bucket" "admin accesskey create w/"; do
+  out="$(box "$name-a" "printf probe > /tmp/probe; mcli $probe --json 2>&1; echo rc=\$?" "$writer_a")"
+  [[ "$out" == *rc=0* ]] && fail writer-denials "writer allowed: $probe"
+  denials+="\"${probe%% *} ${probe#* }\":\"$(code_of "$out")\","
+done
+marker_after="$(box "$name-a" "mcli cat --version-id $marker_version w/$bucket/meta/instance.v1.json | sha256sum" "$writer_a")"
+[[ "${marker_after%% *}" == "$marker_read" ]] || fail writer-denials "the marker changed after the denial probes"
+record "{\"check\":\"writer-denials\",\"result\":\"pass\",\"markerIntact\":true,\"codes\":${denials%,}}}"
+
+# --- versioned object I/O -----------------------------------------------------------------------------------------
+io="$(box "$name-a" "
+for size in 4096 1048576 7340032 26214400; do for round in 1 2; do
+  head -c \$size /dev/urandom > /tmp/o; want=\$(sha256sum < /tmp/o)
+  mcli put --disable-multipart --checksum SHA256 /tmp/o w/$bucket/p/full/q-\$size >/dev/null || exit 9
+  stat=\$(mcli stat w/$bucket/p/full/q-\$size --json); [[ \$stat =~ \\\"versionID\\\":\\\"([A-Za-z0-9-]+)\\\" ]]
+  printf '%s %s %s\n' \$size \${BASH_REMATCH[1]} \${want%% *}; rm -f /tmp/o
+done; done" "$writer_a")"
+printf '%s\n' "$io" > "$root/versions.txt"
+verify_versions() { # container writer -> count of matching versions
+  local container="$1" writer="$2" matched=0 size version want got
+  while read -r size version want; do
+    got="$(box "$container" "mcli cat --version-id $version w/$bucket/p/full/q-$size | sha256sum" "$writer")"
+    [[ "${got%% *}" == "$want" ]] && matched=$((matched + 1))
+  done < "$root/versions.txt"
+  printf '%s' "$matched"
+}
+[[ "$(verify_versions "$name-a" "$writer_a")" == 8 ]] || fail versioned-io "a version did not read back"
+record "{\"check\":\"versioned-io\",\"result\":\"pass\",\"versions\":8,\"sizes\":[4096,1048576,7340032,26214400]}"
+
+# --- MINIO_FS_OSYNC cost ------------------------------------------------------------------------------------------
+start_silo "$name-off" "$root/off-data" "$root/secrets-a" "$name-off" off
+wait_healthy "$name-off"
+owned container "$name-off" "$name-off"
+check_listener "$name-off"
+timing() { # container size -> sorted latencies in microseconds, one per successful PUT; a failed PUT ends the probe
+  box "$1" "mcli mb root/timing >/dev/null 2>&1; head -c $2 /dev/urandom > /tmp/t
+for i in \$(seq 1 $samples); do s=\$(date +%s%N); mcli put --disable-multipart -q /tmp/t root/timing/t-\$i >/dev/null || exit 9; e=\$(date +%s%N); echo \$(( (e - s) / 1000 )); done | sort -n"
+}
+stats() { # name -> json
+  local values=("${@:2}")
+  local n=${#values[@]}
+  printf '"%s":{"p50Us":%s,"p95Us":%s,"maxUs":%s}' "$1" "${values[$((n / 2))]}" "${values[$((n * 95 / 100))]}" "${values[$((n - 1))]}"
+}
+osync=''
+for size in 4096 7340032; do
+  mapfile -t on < <(timing "${cid[$name-a]}" "$size")
+  mapfile -t off < <(timing "${cid[$name-off]}" "$size")
+  (( ${#on[@]} == samples && ${#off[@]} == samples )) || fail osync-cost "a timing probe did not complete exactly $samples successful PUTs"
+  osync+="$(stats "on-$size" "${on[@]}"),$(stats "off-$size" "${off[@]}"),"
+done
+record "{\"check\":\"osync-cost\",\"result\":\"measured\",\"samples\":$samples,${osync%,},\"note\":\"MINIO_FS_OSYNC=on calls sync(2) before every acknowledged write, flushing every filesystem on the host; no I/O rate limit is applied; latency includes the mcli client start\"}"
+d rm -f "${cid[$name-off]}" >/dev/null
+
+# --- kill recovery (process crash, not power loss) ----------------------------------------------------------------
+kill_versions="$(box "$name-a" "
+for i in 1 2 3 4 5; do head -c 1048576 /dev/urandom > /tmp/k; want=\$(sha256sum < /tmp/k)
+  mcli put --disable-multipart --checksum SHA256 /tmp/k w/$bucket/p/full/kill-\$i >/dev/null
+  stat=\$(mcli stat w/$bucket/p/full/kill-\$i --json); [[ \$stat =~ \\\"versionID\\\":\\\"([A-Za-z0-9-]+)\\\" ]]
+  printf 'kill-%s %s %s\n' \$i \${BASH_REMATCH[1]} \${want%% *}; done" "$writer_a")"
+d kill --signal KILL "${cid[$name-a]}" >/dev/null
+d start "${cid[$name-a]}" >/dev/null
+wait_healthy "$name-a"
+killed_ok=0
+while read -r key version want; do
+  got="$(box "$name-a" "mcli cat --version-id $version w/$bucket/p/full/$key | sha256sum" "$writer_a")"
+  [[ "${got%% *}" == "$want" ]] && killed_ok=$((killed_ok + 1))
+done <<<"$kill_versions"
+[[ "$killed_ok" == 5 ]] || fail kill-recovery "an acknowledged version was lost after SIGKILL"
+record "{\"check\":\"kill-recovery\",\"result\":\"pass\",\"acknowledgedVersions\":5,\"verifiedAfterRestart\":$killed_ok}"
+
+# --- exit verification and exclusivity ----------------------------------------------------------------------------
+pid="$(d inspect --format '{{.State.Pid}}' "${cid[$name-a]}")"
+stopped=$(now_ns)
+d stop --time 30 "${cid[$name-a]}" >/dev/null
+stop_ms=$(( ($(now_ns) - stopped) / 1000000 ))
+[[ "$(d inspect --format '{{.State.Running}}/{{.State.Pid}}' "${cid[$name-a]}")" == false/0 ]] || fail exit-exclusive "container still running"
+if [[ -e "/proc/$pid" ]] && [[ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" == *silo* ]]; then
+  fail exit-exclusive "silo process $pid still exists"
+fi
+exclusive=0
+mounting d "$root/a-data" "${cid[$name-a]}" || exclusive=$?
+(( exclusive != 2 )) || fail exit-exclusive "the Docker daemon did not answer the inventory of container mounts"
+(( exclusive == 0 )) || fail exit-exclusive "another container mounts the data root or an ancestor: ${mounted% }"
+record "{\"check\":\"exit-exclusive\",\"result\":\"pass\",\"stopMs\":$stop_ms,\"exitCode\":$(d inspect --format '{{.State.ExitCode}}' "${cid[$name-a]}"),\"processGone\":true,\"otherMounts\":0}"
+
+# --- stock container replacement on the retained data root --------------------------------------------------------
+replaced=$(now_ns)
+d rm "${cid[$name-a]}" >/dev/null
+start_silo "$name-a2" "$root/a-data" "$root/secrets-a" "$name-a" on
+wait_healthy "$name-a2"
+check_listener "$name-a2"
+ready_ms=$(( ($(now_ns) - replaced) / 1000000 ))
+[[ "$(verify_versions "$name-a2" "$writer_a")" == 8 ]] || fail replacement "a retained version did not read back"
+first_ms=$(( ($(now_ns) - replaced) / 1000000 ))
+owned container "$name-a2" "$name-a"
+[[ "$(box "$name-a2" "mcli version info root/$bucket --json")" == *'"Enabled"'* ]] || fail replacement "versioning lost"
+record "{\"check\":\"replacement\",\"result\":\"pass\",\"removeToHealthyMs\":$ready_ms,\"removeToVerifiedOldVersionsMs\":$first_ms,\"stopMs\":$stop_ms,\"versionsVerified\":8}"
+
+# --- credential rotation ------------------------------------------------------------------------------------------
+writer_a2="$(make_writer "$name-a2" 2)"
+old_key="${writer_a%%:*}"
+[[ "$(box "$name-a2" "mcli cat w/$bucket/meta/instance.v1.json" "$writer_a2")" == *"$name"* ]] || fail rotation "new key cannot read the marker"
+box "$name-a2" "mcli admin accesskey disable root/ $old_key >/dev/null"
+old_out="$(box "$name-a2" "mcli ls w/$bucket --json 2>&1; echo rc=\$?" "$writer_a")"
+[[ "$old_out" != *rc=0* ]] || fail rotation "disabled key still works"
+record "{\"check\":\"rotation\",\"result\":\"pass\",\"oldKeyRefusal\":\"$(code_of "$old_out")\"}"
+
+# --- sibling instance: wrong endpoint and isolation ---------------------------------------------------------------
+start_silo "$name-b" "$root/b-data" "$root/secrets-b" "$name-b" on
+wait_healthy "$name-b"
+owned container "$name-b" "$name-b"
+check_listener "$name-b"
+box "$name-b" "mcli mb --with-versioning root/hvo-sibling >/dev/null"
+wrong_marker="$(box "$name-b" "mcli stat root/$bucket/meta/instance.v1.json --json 2>&1; echo rc=\$?")"
+wrong_key="$(box "$name-b" "mcli ls w/$bucket --json 2>&1; echo rc=\$?" "$writer_a2")"
+[[ "$wrong_marker" != *rc=0* && "$wrong_key" != *rc=0* ]] || fail wrong-endpoint "sibling store answered for this instance"
+record "{\"check\":\"wrong-endpoint\",\"result\":\"pass\",\"markerAtSibling\":\"$(code_of "$wrong_marker")\",\"keyAtSibling\":\"$(code_of "$wrong_key")\"}"
+[[ "$(network_members "${nid[$name-a]}")" == "$name-a2 " && "$(network_members "${nid[$name-b]}")" == "$name-b " ]] ||
+  fail isolation "a network has a member this run did not create"
+ip_a="$(d inspect --format "{{(index .NetworkSettings.Networks \"$name-a\").IPAddress}}" "${cid[$name-a2]}")"
+ip_b="$(d inspect --format "{{(index .NetworkSettings.Networks \"$name-b\").IPAddress}}" "${cid[$name-b]}")"
+[[ "$ip_a" =~ ^[0-9.]+$ && "$ip_b" =~ ^[0-9.]+$ ]] || fail isolation "a container address is missing"
+# Positive controls first: each server's probe opens its own listener by its own address, so BLOCKED below is a real
+# result and not a probe that cannot connect at all.
+[[ "$(probe "${cid[$name-a2]}" "$ip_a" 9000)" == OPEN && "$(probe "${cid[$name-b]}" "$ip_b" 9000)" == OPEN ]] ||
+  fail isolation "a server's probe cannot open its own address"
+[[ "$(probe "${cid[$name-a2]}" "$ip_b" 9000)" == BLOCKED ]] || fail isolation "the instance opens TCP to the sibling by address"
+[[ "$(probe "${cid[$name-b]}" "$ip_a" 9000)" == BLOCKED ]] || fail isolation "the sibling opens TCP to the instance by address"
+[[ "$(probe "${cid[$name-a2]}" "$name-b" 9000)" == BLOCKED ]] || fail isolation "the instance opens TCP to the sibling by name"
+[[ "$(probe "${cid[$name-b]}" "$name-a2" 9000)" == BLOCKED ]] || fail isolation "the sibling opens TCP to the instance by name"
+host_bridge=false
+timeout 3 bash -c "exec 3<>/dev/tcp/$ip_a/9000" >/dev/null 2>&1 && host_bridge=true
+record "{\"check\":\"isolation\",\"result\":\"pass\",\"selfControls\":\"open\",\"instanceToSiblingByAddress\":\"blocked\",\"siblingToInstanceByAddress\":\"blocked\",\"instanceToSiblingByName\":\"blocked\",\"siblingToInstanceByName\":\"blocked\",\"hostBridgeReachable\":$host_bridge}"
+record "{\"check\":\"summary\",\"result\":\"pass\",\"name\":\"$name\",\"architecture\":\"$arch\",\"daemon\":\"$daemon_id\"}"

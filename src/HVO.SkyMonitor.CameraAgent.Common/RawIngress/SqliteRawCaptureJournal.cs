@@ -24,7 +24,8 @@ internal sealed partial class SqliteRawCaptureJournal(
     TransientDetectionOptions? transientOptions = null,
     Action? inspectionSourceOpenedSeam = null,
     CenteredExposureProductChanges? centeredProductChanges = null,
-    CenteredWindowWakeup? centeredWindowWakeup = null)
+    CenteredWindowWakeup? centeredWindowWakeup = null,
+    FirstBootPauseIdentity? firstBootPause = null)
 {
     // v16 fences readers that do not honor capture-specific environmental unavailable evidence.
     internal const int CurrentSchemaVersion = 17;
@@ -197,6 +198,14 @@ internal sealed partial class SqliteRawCaptureJournal(
                 await ExecuteNonQueryAsync(
                     connection, transaction, NamedProfileSchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteNonQueryAsync(connection, transaction, CenteredSchemaSql, cancellationToken).ConfigureAwait(false);
+                if (firstBootPause is { } seed)
+                {
+                    // A Silo-layout clean install's first-boot pause (#1966) is written by the same transaction that
+                    // creates the capture control tables, so the first durable control state is the installer-owned
+                    // pause and a running version-0 row is never committed, even across an interruption here.
+                    await HVO.SkyMonitor.CameraAgent.Common.Capture.SqliteCaptureControlStore.SeedFirstBootPauseAsync(
+                        connection, transaction, seed, _utcNow(), cancellationToken).ConfigureAwait(false);
+                }
                 await ExecuteNonQueryAsync(
                     connection,
                     transaction,
