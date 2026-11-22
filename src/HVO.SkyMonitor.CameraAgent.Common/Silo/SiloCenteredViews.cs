@@ -55,9 +55,10 @@ internal static class SiloCenteredViews
     /// readback. Its group and revision IDs must be the store-issued base and revision IDs, its projection the section the
     /// documents derive under its predecessor, and the reopen rows it gives the reader (every member and every reopen
     /// dependency) exactly their reopen proof: each artifact revision of the proof once, as a member or as a reopen
-    /// dependency, with its digest and requirement, and no reopen dependency outside it. A Ready layer, the preview or a
-    /// stack's closed window therefore cannot be dropped, aliased or contradicted while the embedded revision ID stays the
-    /// same. Whether science is displayed is the producer's fact, so its row may also be required.
+    /// dependency, with its digest and requirement, and nothing outside it that reopen would require; a member outside it
+    /// may only be optional data. A Ready layer, the preview or a stack's closed window therefore cannot be dropped,
+    /// aliased or contradicted while the embedded revision ID stays the same. Whether science is displayed is the
+    /// producer's fact, so its row may also be required.
     /// </summary>
     /// <exception cref="ArgumentException">The manifest disagrees with its documents, or they are not a view the store writes.</exception>
     public static void RequireConformance(SiloGroupManifest manifest, SiloManifestView section)
@@ -115,11 +116,14 @@ internal static class SiloCenteredViews
                     $"View binding {artifactId}/{revision} must be a reopen entry with its digest and required={required}.", nameof(manifest));
             }
         }
+        // Outside the proof, a member may carry optional data, but nothing the typed view does not need may block reopen.
         foreach (var (key, row) in rows)
         {
-            if (!row.Member && !proof.ContainsKey(key))
+            if (!proof.ContainsKey(key) && (!row.Member || row.Required))
             {
-                throw new ArgumentException($"Reopen dependency {key.ArtifactId}/{key.Revision} is not in the view's reopen set.", nameof(manifest));
+                throw new ArgumentException(row.Member
+                    ? $"Required member {key.ArtifactId}/{key.Revision} is not in the view's reopen set."
+                    : $"Reopen dependency {key.ArtifactId}/{key.Revision} is not in the view's reopen set.", nameof(manifest));
             }
         }
     }
