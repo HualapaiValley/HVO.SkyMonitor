@@ -254,6 +254,10 @@ internal static class SiloJson
             {
                 throw new ArgumentException("The view base and revision are JSON objects.", nameof(manifest));
             }
+            // The embedded typed documents are the view. The projection, preview and exact reopen set (the preview, the
+            // closed window, displayed science and each evidence binding a Ready or Partial layer needs) must be exactly
+            // what they derive, so none can be dropped while the embedded revision ID stays the same.
+            SiloCenteredViews.RequireConformance(manifest, view);
             foreach (var layer in view.Layers)
             {
                 SiloText.RequireText(layer.Kind, nameof(layer.Kind), 256);
@@ -275,23 +279,6 @@ internal static class SiloJson
                     (layer.Evidence is null || layer.ObservedUtc is null || layer.EvidenceOrder == 0))
                 {
                     throw new ArgumentException("An assessed layer binds its evidence, observation time and order.", nameof(manifest));
-                }
-            }
-            // The exact reopen set follows from the view itself: the preview, and each evidence binding that any layer
-            // in Ready or Partial needs. Every one must be in the manifest with exactly that requirement.
-            foreach (var ((artifactId, revision, sha), required) in SiloCenteredViews.RequiredReopen(view))
-            {
-                var member = manifest.Members.FirstOrDefault(member =>
-                    member.ArtifactId == artifactId && member.ArtifactRevision == revision);
-                var dependency = manifest.Dependencies.FirstOrDefault(dependency => dependency.Kind == SiloDependencyKind.Reopen &&
-                    dependency.ArtifactId == artifactId && dependency.ArtifactRevision == revision);
-                var (declaredSha, declaredRequired) = member is not null ? (member.Sha256, member.Required)
-                    : dependency is not null ? (dependency.Sha256, dependency.Required)
-                    : throw new ArgumentException($"View binding {artifactId}/{revision} is not in the manifest's reopen set.", nameof(manifest));
-                if (!string.Equals(declaredSha, sha, StringComparison.Ordinal) || declaredRequired != required)
-                {
-                    throw new ArgumentException(
-                        $"View binding {artifactId}/{revision} must be a reopen entry with its digest and required={required}.", nameof(manifest));
                 }
             }
         }
