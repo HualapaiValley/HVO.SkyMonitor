@@ -291,13 +291,17 @@ for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Includ
 done
 # Relative imported items use the consuming project directory in MSBuild. The
 # audit refuses uncertainty, including partial directory globs.
-for audit_case in direct_partial imported_partial imported_glob imported_root; do
+for audit_case in direct_partial direct_padded direct_semicolon imported_partial imported_glob imported_root; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/fixtures/shared"
   printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
   case "$audit_case" in
     direct_partial)
       printf '<Project><ItemGroup><None Include="../../d*/runbooks/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
+    direct_padded)
+      printf '<Project><ItemGroup><None Include="  ../../d*/runbooks/releases.md  " CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
+    direct_semicolon)
+      printf '<Project><ItemGroup><None Include=" harmless.txt ;  ../../d*/runbooks/releases.md  " CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
     *)
       printf '<Project><Import Project="../fixtures/shared/markdown.props" /></Project>\n' > "$fast_root/tests/Example/Example.csproj"
       case "$audit_case" in
@@ -393,6 +397,53 @@ printf 'Stale inventory warning passed.\n'
 printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
 git -C "$fast_root" commit -qam docs-change
 fast_reason 'project inventory unavailable' "$user_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Tracked aliases cannot redirect any certified glob or explicit item into docs.
+for alias_case in glob_file directory file_update; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/fixtures/space-weather/swpc-v1"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  case "$alias_case" in
+    glob_file)
+      printf '<Project><ItemGroup><None Include="../fixtures/space-weather/swpc-v1/**/*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      printf 'fixture\n' > "$fast_root/tests/fixtures/space-weather/swpc-v1/source.json"
+      git -C "$fast_root" add . && git -C "$fast_root" commit -qm safe-glob
+      (cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
+      git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certified-glob
+      ln -s ../../../../docs/runbooks/releases.md "$fast_root/tests/fixtures/space-weather/swpc-v1/alias.md" ;;
+    directory)
+      printf '<Project><ItemGroup><None Include="../fixtures/shared-docs/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      ln -s ../../docs "$fast_root/tests/fixtures/shared-docs" ;;
+    file_update)
+      printf '<Project><ItemGroup><None Update="alias.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      ln -s ../../docs/runbooks/releases.md "$fast_root/tests/Example/alias.md" ;;
+  esac
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm tracked-alias
+  alias_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$alias_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/alias-error"; then
+    printf 'Tracked alias %s was certified.\n' "$alias_case" >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: tracked symlink requires manual review' "$fast_root/.git/alias-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$alias_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# A repository-root SDK project can copy implicit None items in Release.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+cat > "$fast_root/Root.csproj" <<'EOF'
+<Project Sdk="Microsoft.NET.Sdk"><ItemDefinitionGroup Condition="'$(Configuration)' == 'Release'"><None><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None></ItemDefinitionGroup></Project>
+EOF
+printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="Root.csproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm implicit-root-project
+implicit_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$implicit_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/implicit-error"; then
+  printf 'Root implicit-item project was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: project location permits implicit documentation items' "$fast_root/.git/implicit-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$implicit_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # Ignore settings must not hide a gitlink update accompanying a safe doc.
 git -C "$fast_root" reset -q --hard "$fast_base"
 git -C "$fast_root" update-index --add --cacheinfo "160000,$fast_base,submodule"
@@ -402,7 +453,7 @@ git -C "$fast_root" update-index --cacheinfo "160000,$link_base,submodule"
 printf 'text\n' > "$fast_root/docs/gitlink.md"
 git -C "$fast_root" add docs/gitlink.md && git -C "$fast_root" commit -qm gitlink-change
 git -C "$fast_root" config diff.ignoreSubmodules all
-fast_reason 'non-regular or missing path in exact diff' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
 git -C "$fast_root" config --unset diff.ignoreSubmodules
 # Failure controls exercise distinct fail-closed reasons.
 mkdir -p "$fast_root/.git/fault-bin"

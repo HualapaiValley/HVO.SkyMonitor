@@ -187,7 +187,11 @@ try:
 except (ValueError, UnicodeError):
     fail("unreadable tree entry")
 
-for name in entries:
+for name, (metadata, _) in entries.items():
+    if metadata.startswith(b"120000 "):
+        fail("tracked symlink requires manual review")
+    if metadata.startswith(b"160000 "):
+        fail("tracked submodule requires manual review")
     lower = name.lower()
     if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
         fail("tracked automatic MSBuild input requires manual review")
@@ -227,6 +231,11 @@ while pending:
     if (name, is_project) in visited: continue
     visited.add((name, is_project))
     seen.add(name)
+    # SDK default items include the project subtree. A project rooted at the
+    # repository or under docs can implicitly consume eligible documentation.
+    project_dir = posixpath.dirname(name).lower()
+    if is_project and (not project_dir or project_dir == "docs" or project_dir.startswith("docs/")):
+        fail("project location permits implicit documentation items")
     meta, _ = entries[name]
     if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
         fail("non-regular build input")
@@ -253,7 +262,8 @@ while pending:
             value = node.attrib.get(attr)
             if not value or tag in ("PackageReference", "PackageVersion", "Reference", "Using", "InternalsVisibleTo"): continue
             for part in value.split(";"):
-                part = part.replace("\\", "/")
+                part = part.strip().replace("\\", "/")
+                if not part: fail("empty item specification")
                 if "@(" in part or "%(" in part:
                     if name == "scripts/cameraagent-release.targets" and tag == "StaticWebAssetEndpoint" and part == "@(_HvoReleaseAssetEndpoints)":
                         continue
