@@ -157,8 +157,20 @@ internal sealed class CenteredViewLayerProducer(
             partial |= measurement.Sources.Detections.Count > evidence.Payload.Markers.Count;
         }
 
-        var mapped = MapPayload(evidence, definition.Preview.Transform, geometry, contributor is not null,
-            source.CaptureId == definition.Reference.Capture.CaptureId);
+        PresentationLayerPayloadV1 mapped;
+        try
+        {
+            mapped = MapPayload(evidence, definition.Preview.Transform, geometry, contributor is not null,
+                source.CaptureId == definition.Reference.Capture.CaptureId);
+        }
+        catch (ArgumentException) when (evidence.Payload.RichText is not null)
+        {
+            // The source already passed delivered-geometry validation. Settle the unrepresentable
+            // preview before the worker acknowledges the available source revision.
+            return await views.PublishLayerAsync(viewBase.BaseId, new(key, evidence.Lookup.Revision!.Value,
+                evidence.Pin, observedUtc, CenteredViewReadiness.Incompatible, "centered.rich-text-preview-too-small", null), token)
+                .ConfigureAwait(false);
+        }
         if (contributor is not null && evidence.Payload.Segments.Count > mapped.Segments.Count)
         {
             if (mapped.Segments.Count == 0)
@@ -312,7 +324,13 @@ internal sealed class CenteredViewLayerProducer(
         {
             if (contributor)
                 throw new InvalidDataException("Corner facts require reference or stack scope.");
-            return PresentationLayerPayloadJson.CreateRichText(identity, transform.PreviewWidth, transform.PreviewHeight, rich);
+            var scale = Math.Min(1, Math.Min((double)transform.PreviewWidth / source.WidthPixels,
+                (double)transform.PreviewHeight / source.HeightPixels));
+            var previewText = scale == 1 ? rich : rich with
+            {
+                Corners = rich.Corners.Select(corner => FitPreviewCorner(corner, scale, transform.PreviewWidth, transform.PreviewHeight)).ToArray()
+            };
+            return PresentationLayerPayloadJson.CreateRichText(identity, transform.PreviewWidth, transform.PreviewHeight, previewText);
         }
         if (registration is not null && (source.Ellipses.Count != 0 || source.TileMask is not null))
             throw new InvalidDataException("Ellipses and tile masks require the reference coordinate domain.");
@@ -353,6 +371,54 @@ internal sealed class CenteredViewLayerProducer(
                     ? Map(block.Point) : block.Point))
                 .Where(mapped => mapped.Point.HasValue).Select(mapped => mapped.Block with { Point = mapped.Point.GetValueOrDefault() }),
             tileMask: tileMask, sceneStyleIdentitySha256: source.SceneStyleIdentitySha256);
+    }
+
+    private static PresentationRichCornerV1 FitPreviewCorner(PresentationRichCornerV1 corner, double scale, int width, int height)
+    {
+        var preferred = Scale(scale);
+        if (Fits(preferred))
+            return preferred;
+
+        // The text scales, but the compositor's panel padding remains fixed in preview pixels.
+        // If necessary, fit against the actual packaged glyphs down to the supported font floor.
+        var best = Scale(0);
+        if (!Fits(best))
+            throw new ArgumentException("The Frame Facts corner cannot fit the preview.", nameof(corner));
+
+        var lower = 0d;
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            var mid = (lower + scale) / 2;
+            var candidate = Scale(mid);
+            if (Fits(candidate))
+            {
+                lower = mid;
+                best = candidate;
+            }
+            else
+                scale = mid;
+        }
+        return best;
+
+        PresentationRichCornerV1 Scale(double factor) => corner with
+        {
+            SizeMilliPixels = Math.Max(4_000, (int)Math.Floor(corner.SizeMilliPixels * factor)),
+            Inset = (int)Math.Floor(corner.Inset * factor),
+            LineSpacing = (int)Math.Floor(corner.LineSpacing * factor)
+        };
+
+        bool Fits(PresentationRichCornerV1 scaled)
+        {
+            try
+            {
+                using var layout = PresentationRichText.Layout(scaled, width, height);
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
     }
 
     private static void AddTileSegments(PresentationTileMaskV1 mask, CenteredViewPreviewTransform transform,

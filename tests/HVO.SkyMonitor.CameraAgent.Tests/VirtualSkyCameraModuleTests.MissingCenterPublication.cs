@@ -11,11 +11,14 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed partial class VirtualSkyCameraModuleTests
 {
     [TestMethod]
-    [DataRow(2, false, DisplayName = "FrozenMissingCenterArchivesLateStartupSingleWithoutIssuingIt")]
-    [DataRow(4, false, DisplayName = "FrozenMissingCenterArchivesLateSteadySingleWithoutIssuingIt")]
-    [DataRow(2, true, DisplayName = "FrozenMissingCenterRejectsPostCutoffPreFreezeStartupAdmissionWithoutRetry")]
-    [DataRow(4, true, DisplayName = "FrozenMissingCenterRejectsPostCutoffPreFreezeAdmissionWithoutRetry")]
-    public async Task CenteredViewKeepsLateMissingCenterArchiveOnly(int lateOrdinal, bool admitBeforeFreeze)
+    [DataRow(2, false, false, false, DisplayName = "FrozenMissingCenterArchivesLateStartupSingleWithoutIssuingIt")]
+    [DataRow(4, false, false, false, DisplayName = "FrozenMissingCenterArchivesLateSteadySingleWithoutIssuingIt")]
+    [DataRow(2, true, false, false, DisplayName = "FrozenMissingCenterRejectsPostCutoffPreFreezeStartupAdmissionWithoutRetry")]
+    [DataRow(4, true, false, false, DisplayName = "FrozenMissingCenterRejectsPostCutoffPreFreezeAdmissionWithoutRetry")]
+    [DataRow(2, true, true, false, DisplayName = "FrozenMissingCenterRejectsStartupSingleDrainedBeforeFreeze")]
+    [DataRow(2, true, true, true, DisplayName = "FrozenMissingCenterAllowsOnTimeStartupSingleRenderedAfterCutoff")]
+    public async Task CenteredViewKeepsLateMissingCenterArchiveOnly(int lateOrdinal, bool admitBeforeFreeze,
+        bool drainBeforeFreeze, bool onTime)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-late-center-view");
         var token = TestContext.CancellationToken;
@@ -78,18 +81,44 @@ public sealed partial class VirtualSkyCameraModuleTests
                 windowId = read.GetString(0);
                 deadline = new DateTimeOffset(read.GetInt64(1), TimeSpan.Zero);
             }
-            clock.UtcNow = deadline.AddTicks(1);
+            clock.UtcNow = onTime ? deadline : deadline.AddTicks(1);
             // The existing pre-close binder can publish a reference ID even when admission
             // occurred after the deadline and the later freeze excludes that capture.
             var lateReceipt = admitBeforeFreeze
                 ? await ingress.AcceptCenteredAsync(active, late.Submission, late.Reservation, token).ConfigureAwait(false)
                 : null;
+            string? beforeFreezeBase = null;
+            string? beforeFreezeCandidate = null;
+            if (drainBeforeFreeze)
+            {
+                Assert.IsNotNull(lateReceipt);
+                command.CommandText = "SELECT admitted_ticks FROM processing_centered_attempt_calendar WHERE attempt_id = $attempt;";
+                Assert.AreEqual(clock.UtcNow.UtcTicks, await command.ExecuteScalarAsync(token).ConfigureAwait(false));
+                clock.UtcNow = deadline.AddTicks(1);
+                Assert.AreEqual(issued.View.Base.BaseId, (await views.ReadLastLiveAsync(attempt.Camera, token)
+                    .ConfigureAwait(false))?.View.Base.BaseId);
+                await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+                await singles.DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+                Assert.IsNull(await store.ReadCenteredWindowDispositionAsync(windowId, token).ConfigureAwait(false));
+                beforeFreezeBase = (await views.ReadLastLiveAsync(attempt.Camera, token).ConfigureAwait(false))?.View.Base.BaseId;
+                beforeFreezeCandidate = await views.ReadLiveCandidateAsync(stream, token).ConfigureAwait(false);
+            }
+
             await provider.GetRequiredService<CenteredWindowCoordinator>().CloseDueAsync(token).ConfigureAwait(false);
             var frozen = await store.ReadCenteredWindowDispositionAsync(windowId, token).ConfigureAwait(false);
             Assert.IsNotNull(frozen);
             Assert.IsTrue(frozen.IsTerminal);
-            Assert.AreEqual(CenteredWindowSlotState.MissingExposure, frozen.Closure.Center.State);
-            Assert.IsNull(frozen.Closure.Center.Input);
+            if (onTime)
+            {
+                Assert.IsNotNull(frozen.Closure.Center.Input);
+                Assert.AreEqual(lateReceipt!.Manifest.Descriptor.Capture.CaptureId, frozen.Closure.Center.Input.Key.CaptureId);
+                Assert.AreEqual(deadline, frozen.Closure.Center.Input.AdmittedUtc);
+            }
+            else
+            {
+                Assert.AreEqual(CenteredWindowSlotState.MissingExposure, frozen.Closure.Center.State);
+                Assert.IsNull(frozen.Closure.Center.Input);
+            }
             Assert.IsNull(frozen.Publication);
             Assert.AreEqual(deadline, frozen.Closure.EvidenceCutoffUtc);
 
@@ -106,8 +135,11 @@ public sealed partial class VirtualSkyCameraModuleTests
             var queued = (await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).Contains(windowId);
             Assert.AreEqual(admitBeforeFreeze, queued);
 
-            await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
-            await singles.DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+            if (!drainBeforeFreeze)
+            {
+                await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
+                await singles.DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+            }
             await windows.PublishReadyAsync(token).ConfigureAwait(false);
             var archive = Assert.ContainsSingle(await views.ReadArchiveAsync(lateCapture, token).ConfigureAwait(false));
             Assert.AreEqual(CenteredViewKind.Single, archive.Base.Definition.Kind);
@@ -123,8 +155,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 SELECT terminal_reason FROM processing_centered_view_window_work
                 WHERE window_sha256 = $window AND live_base_id IS NULL AND retry_utc IS NULL;
                 """;
-            var terminalReason = (string?)await command.ExecuteScalarAsync(token).ConfigureAwait(false);
-            Assert.AreEqual(admitBeforeFreeze ? "centered.window-evidence-rejected" : null, terminalReason);
+            var terminalReason = (await command.ExecuteScalarAsync(token).ConfigureAwait(false)) as string;
+            Assert.AreEqual(admitBeforeFreeze && !onTime ? "centered.window-evidence-rejected" : null, terminalReason);
             await connection.CloseAsync().ConfigureAwait(false);
             await provider.DisposeAsync().ConfigureAwait(false);
 
@@ -144,11 +176,15 @@ public sealed partial class VirtualSkyCameraModuleTests
             CollectionAssert.AreEqual(lookup.Slots.ToArray(), reopenedLookup.Slots.ToArray());
             TestContext.WriteLine($"Late ordinal {lateOrdinal}: lookup={lookup.ClosureIdentity}, storedReference={storedReference ?? "absent"}, queued={queued}, " +
                 $"terminal={terminalReason ?? "none"}, archive={archive.Base.BaseId}, priorLive={issued.View.Base.BaseId}, " +
-                $"live={live?.View.Base.BaseId}, reopenedLive={reopenedLive?.View.Base.BaseId}, recoveredCandidate={recoveredCandidate}.");
-            Assert.AreEqual((issued.View.Base.BaseId, issued.View.Base.BaseId, issued.View.Base.BaseId),
-                (live?.View.Base.BaseId, reopenedLive?.View.Base.BaseId, recoveredCandidate),
-                "Neither immediate nor recovered live selection may promote the late single.");
-            Assert.IsNull(reopenedArchive.LastLiveRevisionId);
+                $"deadline={deadline:O}, cutoff={lookup.EvidenceCutoffUtc:O}, beforeFreeze={beforeFreezeBase}, " +
+                $"beforeFreezeCandidate={beforeFreezeCandidate}, live={live?.View.Base.BaseId}, " +
+                $"reopenedLive={reopenedLive?.View.Base.BaseId}, recoveredCandidate={recoveredCandidate}.");
+            var expectedLive = onTime ? archive.Base.BaseId : issued.View.Base.BaseId;
+            if (drainBeforeFreeze)
+                Assert.AreEqual((expectedLive, expectedLive), (beforeFreezeBase, beforeFreezeCandidate));
+            Assert.AreEqual((expectedLive, expectedLive, expectedLive),
+                (live?.View.Base.BaseId, reopenedLive?.View.Base.BaseId, recoveredCandidate));
+            Assert.AreEqual(onTime, reopenedArchive.LastLiveRevisionId is not null);
 
             CenteredWindowSnapshot AssertFrozenLookup(CenteredWindowSnapshot? result)
             {
@@ -164,8 +200,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.AreEqual(frozen.FailureReason, result.FailureReason);
                 Assert.HasCount(CenteredWindowScheduler.SlotCount, result.Slots);
                 var center = result.Slots[CenteredWindowScheduler.CenterIndex];
-                Assert.AreEqual(CenteredWindowSlotState.MissingExposure, center.State);
-                Assert.IsNull(center.Exposure);
+                Assert.AreEqual(frozen.Closure.Center.State, center.State);
+                Assert.AreEqual(frozen.Closure.Center.Input?.Key, center.Exposure);
                 Assert.IsNull(result.EvidenceArtifactId);
                 Assert.IsNull(result.PlanSha256);
                 Assert.IsNull(result.StackDisposition);

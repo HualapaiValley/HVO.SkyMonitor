@@ -144,7 +144,7 @@ internal sealed partial class SqliteCenteredViews
 
         var proposed = candidate.Base.Definition;
         if (proposed.Kind == CenteredViewKind.Single &&
-            await HasFrozenMissingCenterAsync(connection, transaction, stream.RunId, proposed.Reference.Capture.CaptureId,
+            await IsSingleOutsideCenterAsync(connection, transaction, stream.RunId, proposed.Reference.Capture.CaptureId,
                 cancellationToken).ConfigureAwait(false))
             return null;
 

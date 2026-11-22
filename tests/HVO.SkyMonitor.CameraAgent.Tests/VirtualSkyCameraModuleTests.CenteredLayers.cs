@@ -15,7 +15,10 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 public sealed partial class VirtualSkyCameraModuleTests
 {
     [TestMethod]
-    public async Task CenteredViewPublishesOptionalReferenceLayersFromTheFrozenLiveGraph()
+    [DataRow(224, 8_000, true, DisplayName = "CenteredReferenceLayersKeepTheirNativePreview")]
+    [DataRow(128, 24_000, true, DisplayName = "CenteredReferenceFactsFitTheResizedPreview")]
+    [DataRow(16, 24_000, false, DisplayName = "CenteredReferenceFactsSettleAnUnrepresentablePreview")]
+    public async Task CenteredViewPublishesOptionalReferenceLayersFromTheFrozenLiveGraph(int previewSize, int sourceFont, bool fits)
     {
         var root = FileSystemTestPaths.CreatePhysicalTemporaryDirectory("hvo-centered-reference-layers");
         var token = TestContext.CancellationToken;
@@ -47,7 +50,7 @@ public sealed partial class VirtualSkyCameraModuleTests
             new(FrameFactsPresentation.StepAlias, "facts", DependsOn: ["scene", "facts-preview"], Required: false, Publication: durable,
                 Options: JsonSerializer.SerializeToElement(new FrameFactsPresentationProcessingStepOptions
                 {
-                    WidthPixels = 224, HeightPixels = 224, Inset = 4, TopLeftSizeMilliPixels = 8_000,
+                    WidthPixels = 224, HeightPixels = 224, Inset = 4, TopLeftSizeMilliPixels = sourceFont,
                     TopLeftTemplate = "Gain {{acquisition.gain}}"
                 }))
         ]
@@ -58,6 +61,7 @@ public sealed partial class VirtualSkyCameraModuleTests
         {
             CenteredViewArchiveBase archived;
             Guid captureId;
+            CenteredViewLayer publishedFacts;
             using (var provider = CenteredRuntimeProvider(root, clock, services =>
                 services.AddLogging(logging => logging.AddConsole().SetMinimumLevel(LogLevel.Warning))))
             {
@@ -73,7 +77,15 @@ public sealed partial class VirtualSkyCameraModuleTests
                 captureId = receipt.Manifest.Descriptor.Capture.CaptureId;
                 await ProcessCenteredRuntimeExposureAsync(provider, active, token).ConfigureAwait(false);
                 var key = new ExposureKey(attempt.Reservation.Pending.Key.Camera, attempt.Reservation.Pending.Key.RunId, captureId);
+                var linear = await provider.GetRequiredService<IExposureProductReader>().ReadLinearAsync(key, token).ConfigureAwait(false);
+                Assert.IsNotNull(linear?.Product);
+                var stream = new CenteredViewStream(key.Camera, key.RunId, attempt.Reservation.Revision.State.RevisionId);
+                var initial = await provider.GetRequiredService<ICenteredViewProducer>().PublishSingleAsync(stream,
+                    linear.Product.Slot.ExecutionId, receipt.Manifest.Descriptor.Capture.CaptureSequence, linear,
+                    new(MaximumDimension: previewSize), token).ConfigureAwait(false);
+                Assert.IsNotNull(initial);
                 var view = await DrainCenteredReferenceAsync(provider, key, token).ConfigureAwait(false);
+                Assert.AreEqual(previewSize, view.Base.Definition.Preview.Transform.PreviewWidth);
                 var layers = view.Revision.Layers.ToDictionary(layer => layer.Key.Kind);
                 Assert.AreEqual(CenteredViewReadiness.Ready, layers["scene-image-circle"].Readiness);
                 Assert.AreEqual(CenteredViewReadiness.Incompatible, layers["cloud-label"].Readiness);
@@ -84,7 +96,8 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var execution = await store.ReadExecutionDetailAsync(view.Base.Definition.Reference.ExecutionId, token).ConfigureAwait(false);
                 Assert.IsNotNull(execution);
                 var nodeOutcomes = string.Join(", ", execution.Nodes.Select(node => $"{node.NodeId}={node.Status}/{node.Reason}"));
-                Assert.AreEqual(CenteredViewReadiness.Ready, layers["environment"].Readiness,
+                publishedFacts = layers["environment"];
+                Assert.AreEqual(fits ? CenteredViewReadiness.Ready : CenteredViewReadiness.Incompatible, publishedFacts.Readiness,
                     $"{layers["environment"].Reason}. {nodeOutcomes}");
                 Assert.AreEqual(CenteredViewReadiness.NotConfigured, layers["scene-deep-sky"].Readiness);
                 var ports = await store.ReadCenteredViewSourcesAsync(key, view.Base.Definition.Reference.ExecutionId, 0, 64, token)
@@ -99,15 +112,34 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual(new CenteredViewLayerKey(kind, CenteredViewLayerScope.Reference, captureId), layer.Key);
                     Assert.AreEqual(product.Product!.ArtifactId, layer.Evidence!.ArtifactId);
                     Assert.AreEqual(product.Revision, layer.EvidenceOrder);
-                    Assert.IsNotNull(layer.Drawable);
+                    Assert.AreEqual(ExposureProductAvailability.Available, product.Availability);
+                    Assert.AreEqual(kind != "environment" || fits, layer.Drawable is not null);
                 }
-                var facts = await provider.GetRequiredService<CaptureProcessingPersistence>()
-                    .ReadCenteredViewParentAsync(captureId, layers["environment"].Drawable!.SourceProduct.ArtifactId, token)
-                    .ConfigureAwait(false);
-                var factPayload = PresentationLayerPayloadJson.Parse(facts.Payload).Payload;
-                Assert.IsNotNull(factPayload?.RichText);
-                var topLeft = factPayload.RichText.Corners.Single(corner => corner.Anchor == PresentationTextAnchor.TopLeft);
-                Assert.AreEqual("Gain 1", string.Concat(Assert.ContainsSingle(topLeft.Lines).Runs.Select(run => run.Text)));
+                var cursor = await provider.GetRequiredService<SqliteCenteredViews>().ReadProductCursorAsync(key.Camera, token).ConfigureAwait(false);
+                Assert.IsGreaterThanOrEqualTo(publishedFacts.EvidenceOrder, cursor);
+                TestContext.WriteLine($"facts source={publishedFacts.Evidence?.ArtifactId} revision={publishedFacts.EvidenceOrder} cursor={cursor} " +
+                    $"preview={previewSize} readiness={publishedFacts.Readiness}/{publishedFacts.Reason}");
+                if (fits)
+                {
+                    var facts = await provider.GetRequiredService<CaptureProcessingPersistence>()
+                        .ReadCenteredViewParentAsync(captureId, publishedFacts.Drawable!.SourceProduct.ArtifactId, token)
+                        .ConfigureAwait(false);
+                    var factPayload = PresentationLayerPayloadJson.Parse(facts.Payload).Payload;
+                    Assert.IsNotNull(factPayload?.RichText);
+                    Assert.AreEqual((previewSize, previewSize), (factPayload.WidthPixels, factPayload.HeightPixels));
+                    var topLeft = factPayload.RichText.Corners.Single(corner => corner.Anchor == PresentationTextAnchor.TopLeft);
+                    Assert.AreEqual(sourceFont * previewSize / 224, topLeft.SizeMilliPixels);
+                    Assert.AreEqual(4 * previewSize / 224, topLeft.Inset);
+                    Assert.AreEqual("Gain 1", string.Concat(Assert.ContainsSingle(topLeft.Lines).Runs.Select(run => run.Text)));
+                }
+                else
+                {
+                    Assert.AreEqual("centered.rich-text-preview-too-small", publishedFacts.Reason);
+                    clock.UtcNow = clock.UtcNow.AddMinutes(1);
+                    var due = await provider.GetRequiredService<SqliteCenteredViews>().ReadDueProductRetriesAsync(key.Camera, 24, token)
+                        .ConfigureAwait(false);
+                    CollectionAssert.DoesNotContain(due.ToArray(), publishedFacts.EvidenceOrder);
+                }
                 archived = Assert.ContainsSingle(await provider.GetRequiredService<SqliteCenteredViews>()
                     .ReadArchiveAsync(captureId, token).ConfigureAwait(false));
             }
@@ -116,9 +148,17 @@ public sealed partial class VirtualSkyCameraModuleTests
             var views = reopened.GetRequiredService<SqliteCenteredViews>();
             Assert.AreEqual(archived.LatestRevisionId, Assert.ContainsSingle(await views
                 .ReadArchiveAsync(captureId, token).ConfigureAwait(false)).LatestRevisionId);
+            var exact = await views.ReadRevisionAsync(archived.Base.BaseId, archived.LatestRevisionId, token).ConfigureAwait(false);
+            Assert.IsNotNull(exact);
+            var retainedFacts = exact.Revision.Layers.Single(layer => layer.Key == publishedFacts.Key);
+            Assert.AreEqual(publishedFacts.Readiness, retainedFacts.Readiness);
+            Assert.AreEqual(publishedFacts.Evidence, retainedFacts.Evidence);
+            Assert.AreEqual(publishedFacts.Drawable?.SourceProduct, retainedFacts.Drawable?.SourceProduct);
             var reader = reopened.GetRequiredService<ICenteredViewPresentationReader>();
             var painted = await reader.ReadAsync(archived.Base.BaseId, archived.LatestRevisionId, token).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, painted.Status, painted.Reason);
+            Assert.IsNotNull(painted.Presentation);
+            Assert.AreEqual(fits, painted.Presentation.Layers.Any(layer => layer.Kind == "environment"));
         }
         finally
         {

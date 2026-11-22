@@ -451,6 +451,23 @@ public sealed partial class VirtualSkyCameraModuleTests
                     Assert.AreEqual(index >= 4 && expectStack ? CenteredViewKind.Stack : CenteredViewKind.Single,
                         live.View.Base.Definition.Kind,
                         $"Wrong kind after committed frame {index + 101}.");
+                    if (!expectStack && index is 0 or 3 or 5)
+                    {
+                        var context = await provider.GetRequiredService<ICenteredViewLookup>().ReadLiveContextAsync(token).ConfigureAwait(false);
+                        Assert.IsNotNull(context);
+                        Assert.AreEqual(stream, context.Stream);
+                        Assert.AreEqual(ids[index], context.AdmissionHead?.CaptureId);
+                        var expectedState = index switch
+                        {
+                            0 => CenteredViewLiveState.Warming,
+                            3 => CenteredViewLiveState.Building,
+                            _ => CenteredViewLiveState.Ready
+                        };
+                        TestContext.WriteLine($"admission={index + 101} selected={live.View.Base.Definition.Reference.Capture.CaptureSequence} " +
+                            $"receipt={disposition?.Publication?.StackDisposition} state={context.State}/{context.Reason}");
+                        Assert.AreEqual(expectedState, context.State);
+                        Assert.AreEqual(index == 3 ? "centered.awaiting-window-publication" : null, context.Reason);
+                    }
                     Assert.IsTrue(live.View.Revision.Layers.Any(item =>
                         item.Key == new CenteredViewLayerKey("measured-source-markers", CenteredViewLayerScope.Reference, ids[expectedReferenceIndex])
                         && item.Drawable is not null), "The live revision must include its exact reference's measured markers.");

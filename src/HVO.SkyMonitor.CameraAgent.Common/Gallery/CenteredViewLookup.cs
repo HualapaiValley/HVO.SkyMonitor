@@ -79,10 +79,14 @@ internal sealed class CenteredViewLookup(
             return new(stream, null, acquired.ObservedUtc, CenteredViewLiveState.Gap, "centered.admission-evidence-unavailable");
 
         var current = await views.ReadCurrentAsync(stream, token).ConfigureAwait(false);
-        var state = activeHead.Ordinal <= 3
-            ? CenteredViewLiveState.Warming
-            : current?.View.Base.Definition.Kind == CenteredViewKind.Stack
-                ? CenteredViewLiveState.Ready : CenteredViewLiveState.Building;
+        var state = CenteredViewLiveState.Warming;
+        if (activeHead.Ordinal > 3)
+        {
+            var ready = current is not null &&
+                (current.View.Base.Definition.Kind == CenteredViewKind.Stack ||
+                    await views.IsPublishedSingleFallbackAsync(current.View.Base, token).ConfigureAwait(false));
+            state = ready ? CenteredViewLiveState.Ready : CenteredViewLiveState.Building;
+        }
         return new(stream, admission, acquired.ObservedUtc, state, state == CenteredViewLiveState.Building
             ? "centered.awaiting-window-publication" : null);
     }
