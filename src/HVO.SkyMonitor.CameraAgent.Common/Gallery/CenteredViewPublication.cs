@@ -201,3 +201,16 @@ public interface ICenteredViewPublisher
         string owner, Guid selectionId, string baseId, string revisionId, IReadOnlyList<string> enabledLayerIds,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>Step 50's single-exposure producer at the committed exposure-product boundary.</summary>
+public interface ICenteredViewProducer
+{
+    ValueTask<CenteredView?> PublishSingleAsync(
+        CenteredViewStream stream, Guid executionId, long referenceOrder, LinearExposureLookup result,
+        CenteredViewPreviewOptions options, CancellationToken cancellationToken = default);
+
+    ValueTask<CenteredView?> PublishRegisteredStackAsync(
+        CenteredViewStream stream, string windowIdentity, Guid registrationEvidenceArtifactId,
+        IExposureProductReader exposureProducts, CenteredViewPreviewOptions options,
+        CancellationToken cancellationToken = default);
+}

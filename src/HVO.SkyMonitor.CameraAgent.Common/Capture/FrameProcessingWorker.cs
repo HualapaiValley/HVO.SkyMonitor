@@ -504,7 +504,7 @@ internal sealed class FrameProcessingWorker
                                 duration,
                                 outcome?.Status,
                                 context.CurrentExecutionRoute,
-                                cancellationToken).ConfigureAwait(false);
+                                cancellationToken, rawCapture.Manifest).ConfigureAwait(false);
                         }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             node.Step is IDurableCaptureProcessingPostCommit memoryOnlyCleanup)
@@ -547,7 +547,7 @@ internal sealed class FrameProcessingWorker
                                 : ProcessingOutcomeStatus.TerminalFailure;
                             await persistence.CompleteOutputlessExecutionNodeAsync(item.Execution, node, status, reason,
                                 persistedAttempt, timeProvider.GetUtcNow(), duration, publicationOutcome,
-                                context.CurrentExecutionRoute, cancellationToken).ConfigureAwait(false);
+                                context.CurrentExecutionRoute, cancellationToken, rawCapture.Manifest).ConfigureAwait(false);
                         }
                         if (item.Execution?.AllowAutomaticPublication != false &&
                             status == DurableProcessingNodeStatus.Completed &&

@@ -142,6 +142,12 @@ internal sealed partial class SqliteCenteredViews
         if (candidate is null || candidate.Base.Definition.Stream != stream || candidate.Base.Definition.RecomputedFromBaseId is not null)
             return null;
 
+        var proposed = candidate.Base.Definition;
+        if (proposed.Kind == CenteredViewKind.Single &&
+            await IsSingleOutsideCenterAsync(connection, transaction, stream.RunId, proposed.Reference.Capture.CaptureId,
+                cancellationToken).ConfigureAwait(false))
+            return null;
+
         var cameraId = Identity(stream.Camera);
         var current = await ReadCurrentAsync(connection, transaction, streamId: null, cameraId, cancellationToken).ConfigureAwait(false);
         var authority = await ReadRunAuthorityAsync(connection, transaction, stream, cancellationToken).ConfigureAwait(false);
@@ -152,7 +158,6 @@ internal sealed partial class SqliteCenteredViews
         if (current is not null && current.View.Base.Definition.Stream == stream)
         {
             var existing = current.View.Base.Definition;
-            var proposed = candidate.Base.Definition;
             if (proposed.ReferenceOrder < existing.ReferenceOrder ||
                 proposed.ReferenceOrder == existing.ReferenceOrder &&
                 (proposed.Reference.Capture.CaptureId != existing.Reference.Capture.CaptureId || proposed.Kind <= existing.Kind))

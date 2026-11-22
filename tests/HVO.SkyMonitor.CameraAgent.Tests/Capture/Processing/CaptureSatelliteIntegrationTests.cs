@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
 using HVO.SkyMonitor.CameraAgent.Common.Capture;
@@ -100,6 +102,8 @@ public sealed partial class CaptureSatelliteIntegrationTests
                 Assert.AreEqual(OrbitalTrackPresentation.LayerKind, layer.Kind);
                 Assert.IsFalse(layer.EnabledByDefault);
                 Assert.IsTrue(layer.Satellite!.Renderable);
+                await AssertCenteredSatelliteProjectionAsync(restarted, receipt.Manifest.Descriptor, config.Rig,
+                    layer.Satellite.Status).ConfigureAwait(false);
                 await AssertAuthenticatedReadAsync(restarted, presentation.Presentation).ConfigureAwait(false);
                 StringAssert.Contains(Encoding.UTF8.GetString(presentation.Presentation.Svg.Span), "hvo-layer-0", StringComparison.Ordinal);
                 var materializer = restarted.GetRequiredService<ICameraAgentPresentationMaterializer>();
@@ -119,6 +123,59 @@ public sealed partial class CaptureSatelliteIntegrationTests
             }
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    private static async Task AssertCenteredSatelliteProjectionAsync(ServiceProvider provider, ReconstructionDescriptor raw,
+        CameraRigConfig rig, string predictionStatus)
+    {
+        var token = CancellationToken.None;
+        var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
+        var output = Assert.ContainsSingle((await store.ReadNodeAsync(raw.Capture.CaptureId, "satellite-layer", token)
+            .ConfigureAwait(false))!.Outputs.Where(product => product.Artifact.Variant == "capture-satellites-v1-layer"));
+        var exposure = new ExposureKey(new(raw.Capture.AgentId, "retained-satellite"), Guid.NewGuid(), raw.Capture.CaptureId);
+        var stream = new CenteredViewStream(exposure.Camera, exposure.RunId, "retained-satellite-proof");
+        var execution = Guid.NewGuid();
+        var input = new ExposureInputV1(exposure, raw,
+            new(raw.Layout, rig.Orientation, raw.Profiles.Rig.Sha256, rig.Optics.CalibrationVersion, null));
+        var fallback = new LinearExposureLookup(input, LinearExposureDisposition.Unavailable, 1, null, null, "linear.no-configured-step");
+        var preview = await provider.GetRequiredService<ICenteredViewProducer>().PublishSingleAsync(stream, execution,
+            raw.Capture.CaptureSequence, fallback, new(MaximumDimension: 300, Crop: new(10, 10, 620, 620)), token)
+            .ConfigureAwait(false);
+        Assert.IsNotNull(preview);
+
+        var slot = new ExposureProductSlot(execution, output.Artifact.SourceId, output.ProductSchemaVersion!, output.Artifact.Variant);
+        var reference = new ExposureProductRef(exposure, slot, output.ArtifactId, output.OutputIdentitySha256,
+            output.Artifact.ChecksumSha256, output.ContentIdentitySha256);
+        var lookup = new ExposureProductLookup(exposure, slot, ExposureProductAvailability.Available, 2, reference, null);
+        var publisher = provider.GetRequiredService<ICenteredViewLayerProducer>();
+        var view = await publisher.PublishAsync(preview.Base.BaseId, CenteredViewLayerScope.Contributor,
+            lookup, new("predicted-satellites", 400, false), raw.Timing.ExposureEndedUtc, cancellationToken: token).ConfigureAwait(false);
+        Assert.IsNotNull(view);
+        var layer = Assert.ContainsSingle(view.Revision.Layers);
+        Assert.AreEqual(predictionStatus == "Partial" ? CenteredViewReadiness.Partial : CenteredViewReadiness.Ready, layer.Readiness);
+        Assert.AreEqual(exposure.CaptureId, layer.Key.SourceCaptureId);
+        Assert.AreEqual(reference.ArtifactId, layer.Evidence!.ArtifactId);
+        Assert.IsNotNull(layer.Drawable);
+        Assert.IsFalse(layer.Drawable.EnabledByDefault);
+
+        var persistence = provider.GetRequiredService<CaptureProcessingPersistence>();
+        var source = await persistence.ReadCenteredViewParentAsync(exposure.CaptureId, output.ArtifactId, token).ConfigureAwait(false);
+        var original = PresentationLayerPayloadJson.Parse(source.Payload).Payload;
+        Assert.IsNotNull(original);
+        Assert.IsNotEmpty(original.Segments);
+        var endpoint = provider.GetRequiredService<ICenteredViewPresentationReader>();
+        var served = await endpoint.ReadAsync(view.Base.BaseId, view.Revision.RevisionId, token).ConfigureAwait(false);
+        Assert.AreEqual(CameraAgentLayeredPresentationStatus.Found, served.Status, served.Reason);
+        var svg = XDocument.Parse(Encoding.UTF8.GetString(served.Presentation!.Svg.Span));
+        var lines = svg.Descendants().Where(element => element.Name.LocalName == "line").ToArray();
+        Assert.IsNotEmpty(lines);
+        var first = original.Segments[0];
+        Assert.AreEqual((first.From.X - 10) * 300 / 620, Coordinate("x1"), .001);
+        Assert.AreEqual((first.From.Y - 10) * 300 / 620, Coordinate("y1"), .001);
+        Assert.AreEqual((first.To.X - 10) * 300 / 620, Coordinate("x2"), .001);
+        Assert.AreEqual((first.To.Y - 10) * 300 / 620, Coordinate("y2"), .001);
+
+        double Coordinate(string name) => double.Parse(lines[0].Attribute(name)!.Value, CultureInfo.InvariantCulture);
     }
 
     [TestMethod]

@@ -470,6 +470,7 @@ public class Program
 
         app.MapControllers();
         app.MapCameraAgentGalleryEndpoints();
+        app.MapCameraAgentCenteredViewEndpoints();
         app.MapCameraAgentArtifactEndpoints();
         app.MapCameraAgentStillProductEndpoints();
         app.MapCameraAgentTimeLapseSampleEndpoints();

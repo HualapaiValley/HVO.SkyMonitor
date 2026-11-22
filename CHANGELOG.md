@@ -28,6 +28,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Centered capture tracks actual shutter requests in five-slot windows that close on their original deadlines. The capture's window record preserves shutter refusals and remains available when the center arrives after closure. #1921
 
+- The opt-in centered CameraAgent profile retains single and stack previews with their original overlay revisions, so an archived view can be reopened after late evidence arrives. #1922
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
