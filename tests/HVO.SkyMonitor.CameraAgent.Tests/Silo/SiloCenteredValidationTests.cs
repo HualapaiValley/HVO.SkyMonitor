@@ -112,6 +112,8 @@ public sealed class SiloCenteredValidationTests
     [DataRow("member-dependency-alias")]
     [DataRow("member-dependency-duplicate")]
     [DataRow("extra-reopen-dependency")]
+    [DataRow("extra-required-member")]
+    [DataRow("extra-optional-member")]
     public async Task AViewThatDisagreesWithItsTypedDocumentsIsRefusedAtStagingAndClosedOnReadback(string forgery)
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -128,9 +130,15 @@ public sealed class SiloCenteredValidationTests
                 null, SiloTypedViews.Drawable("stars", stars.Artifact))
         ]);
         // The preview is published in the view's own group; everything else it reopens from is a dependency.
-        var draft = Forge(SiloTypedViews.Draft(view, null, [stack.Preview.Member(silo.Payloads)], [], 1), forgery, view, stack, stars);
+        var draft = Forge(SiloTypedViews.Draft(view, null, [stack.Preview.Member(silo.Payloads)], [], 1), forgery, view, stack, stars,
+            silo.Payloads);
 
-        if (forgery != "none")
+        if (forgery == "extra-optional-member")
+        {
+            (await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false)).Should()
+                .BeTrue("optional data outside the typed proof is allowed");
+        }
+        else if (!Accepted(forgery))
         {
             var stage = () => silo.Publisher.StageAsync(draft, CancellationToken.None).AsTask();
             await stage.Should().ThrowAsync<ArgumentException>("staging validates the manifest it will publish").ConfigureAwait(false);
@@ -141,7 +149,22 @@ public sealed class SiloCenteredValidationTests
         await AssertReadbackAsync(silo, forgery, draft).ConfigureAwait(false);
         await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
         await AssertReadbackAsync(silo, forgery, draft).ConfigureAwait(false);
+        if (forgery == "extra-optional-member")
+        {
+            // Losing optional data the typed view does not reference is reported, and never blocks exact reopen.
+            var extra = SiloTypedViews.Evidence("forged-extra").ArtifactId;
+            silo.Local.Delete(silo.MemberLocator(draft.GroupId, extra, draft.RevisionId));
+            await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None, includeAvailable: true).ConfigureAwait(false);
+            var reopen = await silo.Catalog.ReopenViewAsync(SiloTypedViews.StreamId("forged"), SiloTypedViews.ReferenceCapture("forged").ToString("D"),
+                draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
+            reopen.Reopenable.Should().BeTrue();
+            reopen.Items.Single(item => item.Role.Id == extra).Should()
+                .Match<SiloReopenItem>(static item => !item.Required && item.Disposition == SiloDisposition.Missing);
+        }
     }
+
+    /// <summary>Rows whose manifest is the canonical projection, or adds only optional data outside it.</summary>
+    private static bool Accepted(string forgery) => forgery is "none" or "extra-optional-member";
 
     private static CenteredViewLayer Waiting(string kind) =>
         new(new(kind, CenteredViewLayerScope.Stack, null), 0, null, null, CenteredViewReadiness.Waiting, null, null);
@@ -181,7 +204,7 @@ public sealed class SiloCenteredValidationTests
         var publication = (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
         var reopen = await silo.Catalog.ReopenViewAsync(SiloTypedViews.StreamId("forged"), SiloTypedViews.ReferenceCapture("forged").ToString("D"),
             draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
-        if (forgery == "none")
+        if (Accepted(forgery))
         {
             publication.State.Should().Be("visible", "the control manifest is committed the same way and conforms");
             reopen.Reopenable.Should().BeTrue();
@@ -193,7 +216,8 @@ public sealed class SiloCenteredValidationTests
         reopen.Reopenable.Should().BeFalse();
     }
 
-    private static SiloGroupDraft Forge(SiloGroupDraft draft, string forgery, CenteredView typed, SiloStackView stack, SiloViewProduct stars)
+    private static SiloGroupDraft Forge(
+        SiloGroupDraft draft, string forgery, CenteredView typed, SiloStackView stack, SiloViewProduct stars, SiloTestPayloads payloads)
     {
         var view = draft.View!;
         IReadOnlyList<SiloManifestDependency> Without(SiloViewProduct product) =>
@@ -279,6 +303,14 @@ public sealed class SiloCenteredValidationTests
             case "extra-reopen-dependency":
                 // A reopen row the typed view does not imply.
                 return draft with { Dependencies = [.. draft.Dependencies, Reopen(other, other.Bytes, false)] };
+            case "extra-required-member":
+            case "extra-optional-member":
+                // A distinct member the typed view never references. Required, its loss would block exact reopen although
+                // every typed proof still holds; optional, it is only data.
+                return draft with
+                {
+                    Members = [.. draft.Members, SiloTypedViews.Evidence("forged-extra").Member(payloads, forgery == "extra-required-member")]
+                };
             default:
                 throw new ArgumentOutOfRangeException(nameof(forgery));
         }
