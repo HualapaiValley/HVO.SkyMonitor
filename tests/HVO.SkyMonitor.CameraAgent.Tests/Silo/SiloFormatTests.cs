@@ -27,22 +27,27 @@ public sealed class SiloFormatTests
     private static SiloExactLocator Payload(SiloRetentionClass retentionClass, string sha, string version) =>
         new("local-silo", "instance-bucket", SiloObjectNamespace.PayloadKey(retentionClass, sha), version);
 
+    /// <summary>A centered view revision: a true typed stack with a Ready and a Waiting layer, its preview a member.</summary>
     internal static SiloGroupManifest GoldenManifest()
     {
-        var preview = SiloHash.Sha256("preview"u8);
-        var evidence = SiloHash.Sha256("evidence"u8);
+        var stack = SiloTypedViews.Stack("base-0001");
+        var stars = SiloTypedViews.Evidence("0001");
+        var view = SiloTypedViews.View(stack.Definition, "rev-0001", 2,
+        [
+            new(new("clouds", CenteredViewLayerScope.Stack, null), 0, null, null, CenteredViewReadiness.Waiting, null, null),
+            new(new("stars", CenteredViewLayerScope.Stack, null), 3, stars.Artifact, At.AddSeconds(-5), CenteredViewReadiness.Ready, null, null)
+        ]);
+        var preview = stack.Preview;
+        var previewSha = SiloHash.Sha256(preview.Bytes);
+        var members = new HashSet<(string, string)> { (preview.ArtifactId, preview.Artifact.IdentitySha256) };
         return new(SiloFormats.GroupManifest, Binding.InstanceId, Binding.BindingId, 1, SiloJson.CenteredViewGroupKind, "base-0001", "rev-0002",
             At, At.AddSeconds(-100), At,
-            [new("preview-0001", "1", "preview", SiloRetentionClass.Display, "image/jpeg", 900, preview, true,
-                Payload(SiloRetentionClass.Display, preview, "v-0007"), Producer: "centered-preview/1", RecipeIdentitySha256: Sha)],
-            [new("evidence-0001", "1", evidence, SiloDependencyKind.Reopen, true), new("raw-0103", "1", Sha, SiloDependencyKind.Compute, true)],
+            [new(preview.ArtifactId, preview.Artifact.IdentitySha256, "preview", SiloRetentionClass.Display, "image/jpeg", preview.Bytes.Length,
+                previewSha, true, Payload(SiloRetentionClass.Display, previewSha, "v-0007"), Producer: "centered-preview/1", RecipeIdentitySha256: Sha)],
+            [.. SiloCenteredViews.ReopenDependencies(view, scienceDisplayed: true, members), new("raw-0103", "1", Sha, SiloDependencyKind.Compute, true)],
             new([Sha], SiloJson.SerializeToElement(new { captureId = "capture-0103" }), Sha, "rig-3", "site-7"),
             "rev-0001", "camera-1",
-            new("camera-1/run-1/generation-1", "reference-0103", 2, new("preview-0001", "1", preview), CenteredViewBase.SchemaVersion,
-                SiloJson.SerializeToElement(new { baseId = "base-0001" }),
-                CenteredViewRevision.SchemaVersion, SiloJson.SerializeToElement(new { baseId = "base-0001", revisionId = "rev-0002" }),
-                [new("stars", "Stack", 3, "Ready", null, new("evidence-0001", "1", evidence), At.AddSeconds(-5)),
-                 new("clouds", "Stack", 0, "Waiting")]));
+            SiloCenteredViews.Section(view, "rev-0001"));
     }
 
     internal static SiloJournalSegment GoldenGenesis() =>

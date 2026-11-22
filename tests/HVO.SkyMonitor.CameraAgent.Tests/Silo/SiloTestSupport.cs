@@ -558,33 +558,24 @@ internal static class SiloDrafts
             CameraId: "camera-1", Capture: new("agent-0001", number));
     }
 
-    public static string ReferenceCapture(string baseId) => "reference-" + baseId;
+    public static string ReferenceCapture(string baseId) => SiloTypedViews.ReferenceCapture(baseId).ToString("D");
 
-    public static SiloViewEvidence PreviewBinding(string baseId) =>
-        new("view-preview-" + baseId, "1", SiloHash.Sha256(Bytes("view-preview-" + baseId, 900)));
+    public static SiloViewEvidence PreviewBinding(string baseId) => SiloTypedViews.Stack(baseId).Preview.Binding;
 
     /// <summary>
-    /// A centered view revision whose base preview is a member of the first revision and a dependency afterwards. Its
-    /// reopen dependencies are derived from its preview and layers, exactly as manifest validation requires; callers add
-    /// only compute dependencies.
+    /// A centered view revision of a true typed stack base, seeded by <paramref name="baseId"/>. Its revision ID is
+    /// derived from that base, the predecessor and the layers. The base's preview, science and closed window are members of
+    /// the first revision and dependencies afterwards. Its section and reopen dependencies come from the typed view, exactly
+    /// as manifest validation derives them again; callers add only compute dependencies.
     /// </summary>
     public static SiloGroupDraft View(
         SiloTestPayloads payloads, string baseId, string revisionId, string? previousRevisionId, long order,
         IReadOnlyList<SiloViewLayerBinding> layers, IReadOnlyList<SiloManifestDependency> computeDependencies, bool publishPreview)
     {
-        var anchor = SiloHarness.Start.AddMinutes(30);
-        var preview = Bytes("view-preview-" + baseId, 900);
-        var members = publishPreview
-            ? new[] { Member(payloads, "view-preview-" + baseId, "preview", SiloRetentionClass.Display, "image/jpeg", preview) }
-            : [];
-        var view = new SiloManifestView("camera-1/run-1/generation-1", ReferenceCapture(baseId), order, PreviewBinding(baseId),
-            CenteredViewBase.SchemaVersion, SiloJson.SerializeToElement(new { baseId, kind = "Stack", referenceOrder = 103 }),
-            CenteredViewRevision.SchemaVersion, SiloJson.SerializeToElement(new { revisionId, baseId, order, layers = layers.Count }), layers);
-        var reopen = SiloCenteredViews.RequiredReopen(view)
-            .Where(pair => !(publishPreview && pair.Key.ArtifactId == "view-preview-" + baseId))
-            .Select(static pair => new SiloManifestDependency(pair.Key.ArtifactId, pair.Key.Revision, pair.Key.Sha256, SiloDependencyKind.Reopen, pair.Value));
-        return new SiloGroupDraft(SiloJson.CenteredViewGroupKind, baseId, revisionId, anchor.AddSeconds(order), anchor, anchor.AddSeconds(100),
-            members, [.. reopen, .. computeDependencies], new SiloManifestProvenance([]), previousRevisionId, "camera-1", view);
+        var stack = SiloTypedViews.Stack(baseId);
+        var view = SiloTypedViews.View(stack.Definition, previousRevisionId, order, [.. layers.Select(SiloTypedViews.Layer)]);
+        var members = publishPreview ? stack.Products.Select(product => product.Member(payloads)).ToArray() : [];
+        return SiloTypedViews.Draft(baseId, revisionId, previousRevisionId, view, members, computeDependencies, order);
     }
 
     /// <summary>An evidence product published as its own group; layers bind to it by identity and digest.</summary>
@@ -592,12 +583,11 @@ internal static class SiloDrafts
     {
         var anchor = SiloHarness.Start.AddMinutes(10);
         return new SiloGroupDraft("product", "product-" + name, "r1", anchor, anchor, anchor.AddSeconds(1),
-            [Member(payloads, "evidence-" + name, "evidence", SiloRetentionClass.Metadata, "application/json", Bytes("evidence-" + name, 200))],
-            [], new SiloManifestProvenance([]), CameraId: "camera-1");
+            [SiloTypedViews.Evidence(name).Member(payloads)], [], new SiloManifestProvenance([]), CameraId: "camera-1");
     }
 
     public static SiloViewLayerBinding Layer(string kind, string readiness, string? evidenceName, long order) =>
         new(kind, "Stack", order, readiness,
-            Evidence: evidenceName is null ? null : new SiloViewEvidence("evidence-" + evidenceName, "1", SiloHash.Sha256(Bytes("evidence-" + evidenceName, 200))),
+            Evidence: evidenceName is null ? null : SiloTypedViews.Evidence(evidenceName).Binding,
             ObservedUtc: evidenceName is null ? null : SiloHarness.Start.AddMinutes(11), Reason: readiness == "Incompatible" ? "geometry" : null);
 }

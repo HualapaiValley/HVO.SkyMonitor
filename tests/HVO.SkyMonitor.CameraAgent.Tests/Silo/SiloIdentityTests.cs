@@ -33,7 +33,8 @@ public sealed class SiloIdentityTests
         var manifest = SiloFormatTests.GoldenManifest();
         var weakened = manifest with
         {
-            Dependencies = [.. manifest.Dependencies.Select(dependency => dependency.ArtifactId == "evidence-0001" ? dependency with { Required = false } : dependency)]
+            Dependencies = [.. manifest.Dependencies.Select(dependency =>
+                dependency.ArtifactId == SiloTypedViews.EvidenceId("0001") ? dependency with { Required = false } : dependency)]
         };
 
         var validate = () => SiloJson.ValidateManifest(weakened, "manifest");
@@ -65,13 +66,16 @@ public sealed class SiloIdentityTests
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-l", "rev-1", null, 1, [SiloDrafts.Layer("clouds", "Waiting", null, 0)],
             [], publishPreview: true)).ConfigureAwait(false);
-        const string Stream = "camera-1/run-1/generation-1";
+        var stream = SiloTypedViews.StreamId("base-l");
 
-        (await silo.Catalog.ReopenViewAsync(Stream, SiloDrafts.ReferenceCapture("base-l"), "base-l", "rev-1", CancellationToken.None)
+        (await silo.Catalog.ReopenViewAsync(stream, SiloDrafts.ReferenceCapture("base-l"), "base-l", "rev-1", CancellationToken.None)
             .ConfigureAwait(false)).Reopenable.Should().BeTrue();
-        foreach (var (stream, reference) in new[] { ("camera-2/run-1/generation-1", SiloDrafts.ReferenceCapture("base-l")), (Stream, "reference-other") })
+        foreach (var (otherStream, reference) in new[]
+                 {
+                     (SiloTypedViews.StreamId("base-other"), SiloDrafts.ReferenceCapture("base-l")), (stream, SiloDrafts.ReferenceCapture("base-other"))
+                 })
         {
-            var link = await silo.Catalog.ReopenViewAsync(stream, reference, "base-l", "rev-1", CancellationToken.None).ConfigureAwait(false);
+            var link = await silo.Catalog.ReopenViewAsync(otherStream, reference, "base-l", "rev-1", CancellationToken.None).ConfigureAwait(false);
             link.Reopenable.Should().BeFalse();
             link.ClosedOutcome.Should().Be(SiloCatalogIndex.LinkMismatch);
         }
