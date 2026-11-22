@@ -402,7 +402,7 @@ Never disable the old key before step 6 shows the new key ready.
   the design, not a measured guarantee. A process crash (SIGKILL) has been qualified. A physical power cut has not been
   measured, and that proof is #1968/#1974 work.
 - `scripts/qualify:silo-runtime` measures the cost (`osync-cost`). `sync(2)` is host-wide, so the cost depends on other
-  dirty data on the host. The Raspberry Pi measurement on physical storage is the relevant one.
+  dirty data on the host. The native ARM64 measurement on physical storage is the relevant one.
 
 ## Uninstall, purge and unsupported operations
 
@@ -486,8 +486,11 @@ published as `<parent>/<name>.evidence.jsonl`.
 
 ### What the qualification proves, and what it does not
 
-The independent runs on a Raspberry Pi 5 (ARM64) and two amd64 hosts used the qualifier at `791117913`. That version
-differs from the integrated one only in cleanup, inventory and ownership read-back, not in the checks below.
+The independent runs on one native ARM64 host and two native amd64 hosts used an earlier revision of this qualifier,
+with the same probes, workloads and checks as below. The integrated revision only tightens ownership and cleanup. Each
+container and network it creates carries this run's own identity and is read back by the ID Docker returned. An
+inventory the daemon does not answer refuses or fails the run, including the data-root exclusivity check. The run root
+is removed only after a complete, empty final inventory.
 
 - **Process crash.** `kill-recovery` sends one SIGKILL to the Silo process after five acknowledged PUTs. All five
   versions verify by exact version and SHA-256 after restart. That is a short, single-event sample. It is not a
@@ -501,8 +504,8 @@ differs from the integrated one only in cleanup, inventory and ownership read-ba
     run by `docker exec` in the Silo container.
   - Each sample therefore includes the client's start, and measures the client path end to end, not the server's sync
     alone.
-  - On the Raspberry Pi, 20 samples per size gave a p50 of 23.9 ms (on) versus 22.8 ms (off) at 4 KiB, and 81.2 versus
-    86.7 ms at 7 MiB.
+  - On the native ARM64 host, 20 samples per size gave a p50 of 23.9 ms (on) versus 22.8 ms (off) at 4 KiB, and 81.2
+    versus 86.7 ms at 7 MiB.
   - One amd64 run was on a virtual disk, which does not establish the cost for physical storage.
 - **Trusted host.** All three hosts recorded `hostBridgeReachable`: processes on the host itself reach the instance's
   bridge address. See the topology caveat above.
