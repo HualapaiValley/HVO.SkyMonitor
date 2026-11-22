@@ -192,13 +192,22 @@ public sealed class GpsTimeReaderTests
     [TestMethod]
     public async Task ReadAfterDispose_ThrowsWithoutConsumingOrDisposingCallerStream()
     {
-        using var source = Source(Rmc());
-        var reader = CreateReader(new FakeTimeProvider(Now));
+        using var reader = CreateReader(new FakeTimeProvider(Now));
+        using var seed = Source(Rmc(), Gga());
+        await reader.ReadAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        reader.ObserveSimulatedPps();
+        var before = reader.GetStatus();
+        Assert.AreEqual(GpsSignalState.Available, before.State);
         reader.Dispose();
 
-        await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => reader.ReadAsync(source, CancellationToken.None)).ConfigureAwait(false);
-        Assert.AreEqual(0L, source.Position);
-        Assert.IsTrue(source.CanRead);
+        foreach (var token in new[] { CancellationToken.None, new CancellationToken(canceled: true) })
+        {
+            using var source = Source(Rmc());
+            await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => reader.ReadAsync(source, token)).ConfigureAwait(false);
+            Assert.AreEqual(before, reader.GetStatus());
+            Assert.AreEqual(0L, source.Position);
+            Assert.IsTrue(source.CanRead);
+        }
     }
 
     [TestMethod]
@@ -463,6 +472,12 @@ public sealed class GpsTimeReaderTests
         await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(canceled, cancellation.Token)).ConfigureAwait(false);
         Assert.AreEqual(before, reader.GetStatus());
         Assert.IsTrue(canceled.CanRead);
+
+        using var followUp = Source(Gga());
+        var followUpRead = reader.ReadAsync(followUp, CancellationToken.None);
+        Assert.IsTrue(followUpRead.IsCompleted, "Caller cancellation should release the read gate.");
+        await followUpRead.ConfigureAwait(false);
+        Assert.AreEqual(followUp.Length, followUp.Position);
     }
 
     [TestMethod]

@@ -46,7 +46,8 @@ internal deadline is requested. Caller cancellation and the internal deadline
 on their own retain completed evidence until normal expiry. Caller cancellation
 also propagates if both cancellation sources are requested. Unexpected
 programming exceptions propagate. A subsequent valid sentence permits recovery.
-EOF simply ends a scripted round.
+EOF simply ends a scripted round and is not interpreted as a real-device
+unplug indication.
 
 `ReportInto` returns an immutable `ClockSyncSnapshot` copy with `Gps` diagnostics.
 It preserves network selection and kernel evidence. `ArrivalOffset` is NMEA UTC
