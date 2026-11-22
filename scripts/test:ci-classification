@@ -160,6 +160,7 @@ git -C "$fast_root" config user.name fixture
 mkdir -p "$fast_root/tests/Example" "$fast_root/docs/contracts"
 printf '<None Include="../../docs/contracts/linked.md" />\n' > "$fast_root/tests/Example/Example.csproj"
 printf 'old\n' > "$fast_root/docs/contracts/linked.md"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
 git -C "$fast_root" add .
 git -C "$fast_root" commit -qm base
 mkdir -p "$fast_root/scripts"
@@ -288,6 +289,64 @@ for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Includ
   git -C "$fast_root" commit -qam link-change
   fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
 done
+# Relative imported items use the consuming project directory in MSBuild. The
+# audit refuses uncertainty, including partial directory globs.
+for audit_case in direct_partial imported_partial imported_glob imported_root; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/fixtures/shared"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  case "$audit_case" in
+    direct_partial)
+      printf '<Project><ItemGroup><None Include="../../d*/runbooks/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
+    *)
+      printf '<Project><Import Project="../fixtures/shared/markdown.props" /></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      case "$audit_case" in
+        imported_partial) item='../../d*/runbooks/releases.md' ;;
+        imported_glob) item='../../**/*.md' ;;
+        imported_root) item='../../README.md' ;;
+      esac
+      printf '<Project><ItemGroup><None Include="%s" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' "$item" > "$fast_root/tests/fixtures/shared/markdown.props" ;;
+  esac
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm audit-case
+  audit_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$audit_base") > "$fast_root/.git/unsafe-inventory" 2>/dev/null; then
+    printf 'Unsafe %s was certified.\n' "$audit_case" >&2; exit 1
+  fi
+  if [[ "$audit_case" == imported_root ]]; then printf 'changed\n' > "$fast_root/README.md"; git -C "$fast_root" add README.md; else printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"; git -C "$fast_root" add docs/runbooks/releases.md; fi
+  git -C "$fast_root" commit -qm doc-change
+  fast_reason 'project inventory unavailable' "$audit_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# A project listed only by the solution is audited regardless of its suffix.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/Extra"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Extra/Extra.fsproj"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="tests/Extra/Extra.fsproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm safe-solution-project
+(cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/.git/solution-inventory"
+grep -Fq "b'tests/Extra/Extra.fsproj'" "$fast_root/.git/solution-inventory"
+grep -Fq "b'HVO.SkyMonitor.v9.slnx'" "$fast_root/.git/solution-inventory"
+printf '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><None Include="../../docs/runbooks/releases.md" /></ItemGroup></Project>\n' > "$fast_root/tests/Extra/Extra.fsproj"
+git -C "$fast_root" commit -qam unsafe-solution-project
+solution_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$solution_base") > "$fast_root/.git/unsafe-inventory" 2>/dev/null; then
+  printf 'Unsafe solution-only project was certified.\n' >&2; exit 1
+fi
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$solution_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Missing solution entries are uncertainty, not an empty project selection.
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="missing.fsproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" commit -qam missing-solution-project
+missing_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$missing_base") > "$fast_root/.git/unsafe-inventory" 2>/dev/null; then
+  printf 'Missing solution project was certified.\n' >&2; exit 1
+fi
+mkdir -p "$fast_root/docs/runbooks"
+printf 'changed\n' > "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" add docs/runbooks/releases.md && git -C "$fast_root" commit -qm doc-change
+fast_reason 'project inventory unavailable' "$missing_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # An existing importer can consume a changed XML item file without any
 # accompanying project-file change. Certify the harmless baseline, then change
 # only the imported XML on the base before the documentation edit.
@@ -313,7 +372,8 @@ printf '<None Include="../../docs/runbooks/example.md" />\n' > "$fast_root/tests
 git -C "$fast_root" add docs/runbooks/example.md tests/Example/Example.csproj
 git -C "$fast_root" commit -qm unsafe-certified-input
 read -r item_mode item_type item_sha item_path < <(git -C "$fast_root" ls-tree HEAD -- tests/Example/Example.csproj)
-printf "%s %s %s b'%s'\n" "$item_mode" "$item_type" "$item_sha" "$item_path" > "$fast_root/scripts/ci:docs-inventory"
+sed -i "/tests\/Example\/Example.csproj/d" "$fast_root/scripts/ci:docs-inventory"
+printf "%s %s %s b'%s'\n" "$item_mode" "$item_type" "$item_sha" "$item_path" >> "$fast_root/scripts/ci:docs-inventory"
 git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm forged-certificate
 forged_base="$(git -C "$fast_root" rev-parse HEAD)"
 printf 'change\n' >> "$fast_root/docs/runbooks/example.md"

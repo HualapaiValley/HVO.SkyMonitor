@@ -229,8 +229,10 @@ A ready PR still runs the required Build and Unit job after successful hosted Pr
 When a build input changes, generate a candidate from the committed tree and replace the certificate only after the generator succeeds:
 
 ```bash
-./scripts/ci:classify --print-docs-inventory HEAD > /tmp/hvo-docs-inventory.new
-cp /tmp/hvo-docs-inventory.new scripts/ci:docs-inventory
+inventory_tmp="$(mktemp "${TMPDIR:-/tmp}/hvo-docs-inventory.XXXXXXXX")" &&
+  ./scripts/ci:classify --print-docs-inventory HEAD > "$inventory_tmp" &&
+  cp "$inventory_tmp" scripts/ci:docs-inventory &&
+  rm "$inventory_tmp"
 ```
 
 The generator follows committed explicit MSBuild imports regardless of suffix, checks the resulting inputs and rejects unknown imports, tracked automatic user/response inputs, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together: verify each import resolves to the intended committed file, that no imported or implicit input is missing, and that no eligible documentation becomes a build or test input. Run the generator again and compare its output byte-for-byte with the certificate, then run the classifier and workflow contract suites. A failed audit or stale certificate keeps the workload on the full path; Preflight reports a non-failing warning. A mandatory certificate-maintenance gate remains a separate follow-up. Refs #1989.

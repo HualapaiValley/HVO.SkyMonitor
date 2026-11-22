@@ -192,11 +192,40 @@ for name in entries:
     if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
         fail("tracked automatic MSBuild input requires manual review")
 
-pending = [n for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
-seen = set()
+# Certify the exact solution the workflow restores and builds. Unknown solution
+# syntax or project paths cannot establish the exemption.
+solution = "HVO.SkyMonitor.v9.slnx"
+if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
+    fail("solution is unavailable or non-regular")
+solution_raw = git("cat-file", "blob", commit + ":" + solution)
+if b"<!DOCTYPE" in solution_raw.upper() or b"<!ENTITY" in solution_raw.upper() or re.search(rb"&#|%[0-9a-fA-F]{2}", solution_raw):
+    fail("unsafe solution syntax")
+try:
+    solution_root = ET.fromstring(solution_raw)
+except ET.ParseError:
+    fail("unparseable solution")
+if solution_root.tag != "Solution": fail("unknown solution format")
+projects = set()
+for node in solution_root.iter():
+    if node.tag not in ("Solution", "Folder", "Project"):
+        fail("unknown solution entry")
+    if node.tag == "Project":
+        value = node.attrib.get("Path", "").replace("\\", "/")
+        if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+            fail("unresolved solution project")
+        target = posixpath.normpath(value)
+        if target == ".." or target.startswith("../") or target not in entries or target in projects:
+            fail("solution project outside committed inventory")
+        projects.add(target)
+if not projects: fail("solution has no projects")
+pending = [(n, True) for n in projects]
+pending += [(n, n.lower().endswith(".csproj")) for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
+seen = {solution}
+visited = set()
 while pending:
-    name = pending.pop()
-    if name in seen: continue
+    name, is_project = pending.pop()
+    if (name, is_project) in visited: continue
+    visited.add((name, is_project))
     seen.add(name)
     meta, _ = entries[name]
     if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
@@ -222,13 +251,18 @@ while pending:
                     fail("build input references eligible documentation")
         for attr in ("Include", "Update", "Remove"):
             value = node.attrib.get(attr)
-            if not value or tag in ("PackageReference", "Reference"): continue
+            if not value or tag in ("PackageReference", "PackageVersion", "Reference", "Using", "InternalsVisibleTo"): continue
             for part in value.split(";"):
                 part = part.replace("\\", "/")
                 if "@(" in part or "%(" in part:
                     if name == "scripts/cameraagent-release.targets" and tag == "StaticWebAssetEndpoint" and part == "@(_HvoReleaseAssetEndpoints)":
                         continue
                     fail("unresolved item expression")
+                token = "$(MSBuildThisFileDirectory)"
+                if not is_project and not part.startswith(token):
+                    if name == "scripts/cameraagent-release.targets" and tag == "_HvoReleaseAssetHeader" and part == "Replace":
+                        continue
+                    fail("relative item in imported build input")
                 if "$(" in part:
                     token = "$(MSBuildThisFileDirectory)"
                     if not part.startswith(token): fail("unresolved item property")
@@ -243,6 +277,10 @@ while pending:
                     fail("item references eligible documentation")
                 if "*" in part or "?" in part:
                     prefix = re.split(r"[?*]", part, 1)[0]
+                    # A partial component is not a directory boundary: d* can
+                    # match docs. Confine only the complete preceding directory.
+                    if not prefix.endswith("/"):
+                        prefix = posixpath.dirname(prefix)
                     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), prefix))
                     if resolved in ("", ".", "..") or resolved.startswith("../") or resolved == "docs" or resolved.startswith("docs/"):
                         fail("item glob may reach documentation")
@@ -253,7 +291,7 @@ while pending:
             target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
             if target not in entries:
                 fail("project reference outside committed inventory")
-            pending.append(target)
+            pending.append((target, True))
         if tag == "Import":
             if "Sdk" in node.attrib: fail("SDK import requires manual review")
             value = node.attrib.get("Project", "").replace("\\", "/")
@@ -267,7 +305,7 @@ while pending:
                 target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
             if target not in entries:
                 fail("MSBuild import outside committed inventory")
-            pending.append(target)
+            pending.append((target, False))
 for name in sorted(seen, key=lambda n: entries[n][1]):
     meta, path = entries[name]
     print(meta.decode("ascii") + " " + repr(path))
