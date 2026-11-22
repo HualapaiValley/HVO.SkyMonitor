@@ -162,6 +162,14 @@ printf '<None Include="../../docs/contracts/linked.md" />\n' > "$fast_root/tests
 printf 'old\n' > "$fast_root/docs/contracts/linked.md"
 git -C "$fast_root" add .
 git -C "$fast_root" commit -qm base
+mkdir -p "$fast_root/scripts"
+git -C "$fast_root" ls-tree -rz HEAD | python3 -c 'import sys
+for entry in sys.stdin.buffer.read().split(b"\0"):
+ if not entry: continue
+ meta, path = entry.split(b"\t", 1)
+ if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")): print(meta.decode("ascii") + " " + repr(path))' > "$fast_root/scripts/ci:docs-inventory"
+git -C "$fast_root" add scripts/ci:docs-inventory
+git -C "$fast_root" commit -qm inventory
 fast_base="$(git -C "$fast_root" rev-parse HEAD)"
 fast_cases=0
 fast_expect() {
@@ -196,7 +204,7 @@ fast_expect true pull_request "$modified_base" "$modified_head"
 mkdir -p "$fast_root/.git/fast-bin"
 cat > "$fast_root/.git/fast-bin/git" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$1" == grep ]]; then exit 2; fi
+if [[ "$1" == show ]]; then exit 2; fi
 exec "$FAST_REAL_GIT" "$@"
 EOF
 chmod +x "$fast_root/.git/fast-bin/git"
@@ -250,7 +258,7 @@ for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evide
   git -C "$fast_root" add "$excluded" && git -C "$fast_root" commit -qm excluded
   fast_reason 'path outside documentation allowlist' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
 done
-for body in 'bad\377' 'bad\001'; do
+for body in 'bad\377' 'bad\001' 'bad\177' 'bad\302\200'; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   printf '%b' "$body" > "$fast_root/docs/invalid.md"
   git -C "$fast_root" add docs/invalid.md && git -C "$fast_root" commit -qm invalid
@@ -272,17 +280,39 @@ printf 'text\n' > "$fast_root/docs/executable.md"; chmod 755 "$fast_root/docs/ex
 git -C "$fast_root" add docs/executable.md && git -C "$fast_root" commit -qm executable
 fast_reason 'non-regular or missing path in exact diff' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # Link forms may appear in project files or imported targets, on the base tree.
-for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="../../**/*" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
+for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="../../**/*" />' '<None Include="../../docs/runbooks/?.md" />' '<None Include="../../&#100;ocs/runbooks/example.md" />' '<None Include="../../%64ocs/runbooks/example.md" />' '<None Include="../../THIRD-PARTY-NOTICES.md;../../README.md" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
   git -C "$fast_root" reset -q --hard "$fast_base"
   mkdir -p "$fast_root/docs/runbooks"
   printf 'text\n' > "$fast_root/docs/runbooks/example.md"
   printf '%s\n' "$link" > "$fast_root/Directory.Build.targets"
+  printf '%s\n' "$link" > "$fast_root/items.xml"
   git -C "$fast_root" add . && git -C "$fast_root" commit -qm link-base
   link_base="$(git -C "$fast_root" rev-parse HEAD)"
   printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
   git -C "$fast_root" commit -qam link-change
-  fast_reason 'documentation is linked to a project' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+  fast_reason 'project inventory differs from certified baseline' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
 done
+# An existing importer can consume a changed XML item file without any
+# accompanying project-file change. Certify the harmless baseline, then change
+# only the imported XML on the base before the documentation edit.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+printf '<Import Project="items.xml" />\n' > "$fast_root/Directory.Build.targets"
+printf '<Project />\n' > "$fast_root/items.xml"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm import-base
+git -C "$fast_root" ls-tree -rz HEAD | python3 -c 'import sys
+for entry in sys.stdin.buffer.read().split(b"\0"):
+ if not entry: continue
+ meta, path = entry.split(b"\t", 1)
+ if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")): print(meta.decode("ascii") + " " + repr(path))' > "$fast_root/scripts/ci:docs-inventory"
+git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certify-import
+printf '<None Include="docs/runbooks/example.md" />\n' > "$fast_root/items.xml"
+git -C "$fast_root" commit -qam change-imported-xml
+xml_base="$(git -C "$fast_root" rev-parse HEAD)"
+printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory differs from certified baseline' "$xml_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # Ignore settings must not hide a gitlink update accompanying a safe doc.
 git -C "$fast_root" reset -q --hard "$fast_base"
 git -C "$fast_root" update-index --add --cacheinfo "160000,$fast_base,submodule"
@@ -294,6 +324,73 @@ git -C "$fast_root" add docs/gitlink.md && git -C "$fast_root" commit -qm gitlin
 git -C "$fast_root" config diff.ignoreSubmodules all
 fast_reason 'non-regular or missing path in exact diff' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
 git -C "$fast_root" config --unset diff.ignoreSubmodules
+# Failure controls exercise distinct fail-closed reasons.
+mkdir -p "$fast_root/.git/fault-bin"
+cat > "$fast_root/.git/fault-bin/git" <<'EOF'
+#!/usr/bin/env bash
+case "$FAIL_KIND:$1:${2:-}" in
+  ls-tree:ls-tree:* | blob:cat-file:blob | diff:diff:* | inventory:show:*) exit 2 ;;
+esac
+exec "$FAST_REAL_GIT" "$@"
+EOF
+chmod +x "$fast_root/.git/fault-bin/git"
+for fault in ls-tree blob diff inventory; do
+  case "$fault" in
+    ls-tree) fault_reason='non-regular or missing path in exact diff' ;;
+    blob) fault_reason='documentation is binary or unreadable' ;;
+    diff) fault_reason='exact diff failed or is empty' ;;
+    inventory) fault_reason='project inventory unavailable' ;;
+  esac
+  PATH="$fast_root/.git/fault-bin:$PATH" FAST_REAL_GIT="$fast_real_git" FAIL_KIND="$fault" fast_reason "$fault_reason" "$modified_base" "$modified_head"
+done
+printf '#!/usr/bin/env bash\nexit 2\n' > "$fast_root/.git/fault-bin/python3"
+chmod +x "$fast_root/.git/fault-bin/python3"
+PATH="$fast_root/.git/fault-bin:$PATH" FAST_REAL_GIT="$fast_real_git" FAIL_KIND=none fast_reason 'documentation is binary or unreadable' "$modified_base" "$modified_head"
+rm "$fast_root/.git/fault-bin/python3"
+# Existing regular file changed to symlink and the inverse are type changes.
+for type_mode in regular symlink; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  if [[ "$type_mode" == regular ]]; then printf 'text\n' > "$fast_root/docs/type.md"; else ln -s contracts/linked.md "$fast_root/docs/type.md"; fi
+  git -C "$fast_root" add docs/type.md && git -C "$fast_root" commit -qm type-base
+  type_base="$(git -C "$fast_root" rev-parse HEAD)"
+  rm "$fast_root/docs/type.md"
+  if [[ "$type_mode" == regular ]]; then ln -s contracts/linked.md "$fast_root/docs/type.md"; else printf 'text\n' > "$fast_root/docs/type.md"; fi
+  git -C "$fast_root" add docs/type.md && git -C "$fast_root" commit -qm type-change
+  fast_reason 'deleted or type-changed path in exact diff' "$type_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Rejection evidence lists the complete exact diff and only the docs decision.
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'unsafe\n' > "$fast_root/CHANGELOG.md"
+printf 'safe\n' > "$fast_root/docs/second.md"
+git -C "$fast_root" add CHANGELOG.md docs/second.md && git -C "$fast_root" commit -qm evidence
+evidence_file="$fast_root/.git/fast-summary"
+(cd "$fast_root" && GITHUB_STEP_SUMMARY="$evidence_file" "$classifier" pull_request "$fast_base" HEAD docs-fast-only >/dev/null)
+grep -Fq 'docs/second.md' "$evidence_file"
+grep -Fq 'Fast path paths examined: 2' "$evidence_file"
+! grep -Fq 'Mode: **' "$evidence_file"
+((fast_cases += 1))
+# Canary the real committed inventory without changing any ref. A changed or
+# absent certificate must select full validation, never fail the PR by itself.
+real_base="$(git -C "$repo_root" rev-parse HEAD)"
+canary_index="$fast_root/.git/canary-index"
+GIT_INDEX_FILE="$canary_index" git -C "$repo_root" read-tree "$real_base"
+canary_blob="$(printf 'canary documentation\n' | git -C "$repo_root" hash-object -w --stdin)"
+GIT_INDEX_FILE="$canary_index" git -C "$repo_root" update-index --add --cacheinfo "100644,$canary_blob,docs/runbooks/ci-fast-path-canary-1989.md"
+canary_tree="$(GIT_INDEX_FILE="$canary_index" git -C "$repo_root" write-tree)"
+canary_head="$(printf 'CI inventory canary\n' | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$canary_tree" -p "$real_base")"
+if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified" 2>/dev/null; then
+  git -C "$repo_root" ls-tree -rz "$real_base" | python3 -c 'import sys
+for entry in sys.stdin.buffer.read().split(b"\0"):
+ if not entry: continue
+ meta, path = entry.split(b"\t", 1)
+ if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")): print(meta.decode("ascii") + " " + repr(path))' > "$fast_root/.git/actual"
+  if cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then canary_expected=true; else canary_expected=false; fi
+  canary_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$canary_head" docs-fast-only)"
+  grep -Fxq "docs_fast_path=$canary_expected" <<< "$canary_output" || { printf 'Real inventory canary failed: %s\n' "$canary_output" >&2; exit 1; }
+  printf 'Real inventory canary passed: expected %s.\n' "$canary_expected"
+else
+  printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
+fi
 printf 'Documentation fast path classification passed: %d cases.\n' "$fast_cases"
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"

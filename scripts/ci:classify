@@ -5,6 +5,7 @@ event_name="${1:-}"
 base_sha="${2:-}"
 head_sha="${3:-}"
 summary_file="${GITHUB_STEP_SUMMARY:-}"
+classification_scope="${4:-}"
 
 mode="full"
 reason="non-pull-request events always run the full matrix"
@@ -38,7 +39,7 @@ write_summary_path() {
 }
 
 finish() {
-  if [[ -n "$summary_file" ]]; then
+  if [[ -n "$summary_file" && "${classification_scope:-}" != "docs-fast-only" ]]; then
     printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nCatalog recipe: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
       "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
@@ -48,6 +49,10 @@ finish() {
 
   printf 'Docs fast path: %s; reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >&2
   [[ -z "$summary_file" ]] || printf '\nDocs fast path: **%s**  \nDocs fast path reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >> "$summary_file"
+  if [[ "$classification_scope" == docs-fast-only ]]; then
+    printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
+    return
+  fi
   printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s release_scripts=%s catalog_recipe=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
     "$delivery" "$secret_scan_contract" "$release_scripts" "$catalog_recipe" "$reason" "$deployment_reason" \
@@ -155,52 +160,39 @@ is_fast_doc_path() {
   return 1
 }
 
-# Query committed project files directly; an unavailable tree or failed search is
-# uncertainty, not evidence that the document has no consumers.
+# Certified inventory: the base-controlled manifest records every tracked
+# MSBuild definition and XML input, including modes and blob identities. Any
+# addition, removal or modification disables the exemption until reviewed.
+fast_inventory_for_tree() {
+  git ls-tree -rz "$1" | python3 -c '
+import sys
+for entry in sys.stdin.buffer.read().split(b"\0"):
+    if not entry: continue
+    meta, path = entry.split(b"\t", 1)
+    if path.lower().endswith((b".csproj", b".props", b".targets", b".xml")):
+        print(meta.decode("ascii") + " " + repr(path))
+'
+}
+
 fast_doc_link_state() {
-  local matches status line attr_re value file remaining
-  # References to excluded contracts/validation are known and cannot select
-  # this path; unknown document references and dynamic includes fail closed.
-  if matches="$(git grep -i -E 'docs[/\\]|\.(md|markdown|txt)([^[:alnum:]]|$)|Include[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']*\$\(' "$head_sha" -- ':(glob)**/*.csproj' ':(glob)**/*.props' ':(glob)**/*.targets')"; then
-    while IFS= read -r line; do
-      case "$line" in
-        *'$(MSBuildThisFileDirectory)TestSettings/ConnectionPoolClearContract.cs'*) continue ;;
-        *THIRD-PARTY-NOTICES.md* | *Fonts/DejaVu-LICENSE.txt*)
-          case "$line" in *docs/* | *docs\\* | *'*'* | *'$('* ) return 0 ;; esac
-          continue ;;
-        *docs/contracts/* | *docs/validation/* | *docs\\validation\\*)
-          case "$line" in *docs/contracts/*'..'* | *docs/validation/*'..'* | *docs\\validation\\*'..'* | *'*'* | *'$('* ) return 0 ;; esac
-          continue ;;
-        *) return 0 ;;
-      esac
-    done <<< "$matches"
-  else
-    status=$?
-    [[ "$status" -eq 1 ]] || return 2
+  local expected actual
+  expected="$(mktemp)" || return 2
+  actual="$(mktemp)" || { rm -f "$expected"; return 2; }
+  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
+     ! fast_inventory_for_tree "$head_sha" > "$actual"; then
+    rm -f "$expected" "$actual"
+    return 2
   fi
-  # A wildcard without the word docs can nevertheless include it. Only the
-  # established fixture and source-local globs are proven confined here.
-  if matches="$(git grep -i -E '(Include|Update|Remove)[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']*\*' "$head_sha" -- ':(glob)**/*.csproj' ':(glob)**/*.props' ':(glob)**/*.targets')"; then
-    attr_re="(Include|Update|Remove)[[:space:]]*=[[:space:]]*[\"']([^\"']*\*[^\"']*)[\"']"
-    while IFS= read -r line; do
-      [[ "$line" =~ $attr_re ]] || return 0
-      value="${BASH_REMATCH[2]//\\//}"
-      remaining="${line#*"${BASH_REMATCH[0]}"}"
-      [[ ! "$remaining" =~ $attr_re ]] || return 0
-      file="${line#*:}"; file="${file%%:*}"
-      case "$value" in *'$('* | *';'* | *'/../'* | *'/..' ) return 0 ;; esac
-      case "$file:$value" in
-        tests/*/*.csproj:../fixtures/* | tests/*/*.csproj:Fixtures/* | \
-        src/HVO.SkyMonitor.Deployment.Cli/HVO.SkyMonitor.Deployment.Cli.csproj:SplitHost/*.jq | \
-        src/HVO.SkyMonitor.LogicHost/HVO.SkyMonitor.LogicHost.csproj:Components/Account/*.cs | \
-        src/HVO.SkyMonitor.CameraAgent.Common/HVO.SkyMonitor.CameraAgent.Common.csproj:OrbitalPlanning/TimeData/*) continue ;;
-        *) return 0 ;;
-      esac
-    done <<< "$matches"
-  else
-    status=$?
-    [[ "$status" -eq 1 ]] || return 2
+  if ! cmp -s "$expected" "$actual"; then
+    if [[ -n "$summary_file" ]]; then
+      printf '\nBuild inventory differs from the certified base inventory:\n```diff\n' >> "$summary_file"
+      diff -u "$expected" "$actual" >> "$summary_file" || true
+      printf '\n```\n' >> "$summary_file"
+    fi
+    rm -f "$expected" "$actual"
+    return 0
   fi
+  rm -f "$expected" "$actual"
   return 1
 }
 
@@ -622,6 +614,7 @@ if git diff --name-status --no-renames --ignore-submodules=none -z "$base_sha" "
     fi
     ((fast_count += 1))
     [[ -z "$summary_file" ]] || printf -- '- %q %q\n' "$fast_status" "$fast_path" >> "$summary_file"
+    [[ "$fast_ok" == true ]] || continue
     if [[ "$fast_status" != A && "$fast_status" != M ]]; then
       fast_ok=false; docs_fast_path_reason="deleted or type-changed path in exact diff"
     elif ! fast_entry="$(git ls-tree "$head_sha" -- ":(literal)$fast_path")" \
@@ -636,23 +629,27 @@ text = codecs.getincrementaldecoder("utf-8")("strict")
 try:
     while chunk := sys.stdin.buffer.read(65536):
         decoded = text.decode(chunk)
-        if any(ord(c) < 32 and c not in "\t\r\n" for c in decoded): sys.exit(1)
+        if any((ord(c) < 32 and c not in "\t\r\n") or 127 <= ord(c) <= 159 for c in decoded): sys.exit(1)
     text.decode(b"", final=True)
 except UnicodeError:
     sys.exit(1)' ; then
       fast_ok=false; docs_fast_path_reason="documentation is binary or unreadable"
     else
-      if fast_doc_link_state "$fast_path"; then
-        fast_ok=false; docs_fast_path_reason="documentation is linked to a project"
-      else
-        fast_link_status=$?
-        if [[ "$fast_link_status" -ne 1 ]]; then
-          fast_ok=false; docs_fast_path_reason="project link search failed"
+      if [[ -z "${fast_inventory_status:-}" ]]; then
+        if fast_doc_link_state; then fast_inventory_status=changed; else
+          fast_link_status=$?
+          if [[ "$fast_link_status" -eq 1 ]]; then fast_inventory_status=clean; else fast_inventory_status=failed; fi
         fi
       fi
+      case "$fast_inventory_status" in
+        changed) fast_ok=false; docs_fast_path_reason="project inventory differs from certified baseline" ;;
+        failed) fast_ok=false; docs_fast_path_reason="project inventory unavailable" ;;
+      esac
     fi
-    if [[ "$fast_ok" != true ]]; then break; fi
+    # Continue listing every path, even after a rejection.
+    [[ "$fast_ok" == true ]] || continue
   done < "$fast_diff"
+  [[ -z "$summary_file" ]] || printf '\nFast path paths examined: %s\n' "$fast_count" >> "$summary_file"
   if [[ "$fast_ok" == true && "$fast_count" -gt 0 ]]; then
     docs_fast_path=true
     docs_fast_path_reason="all exact base/head paths are safe documentation"

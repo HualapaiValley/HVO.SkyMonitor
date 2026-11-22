@@ -437,7 +437,7 @@ def violations(short, full, queue=None, extra=None):
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
                      '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
-                     'docs_fast_path=true) run_full=false', 'classifier output missing or invalid'):
+                     'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"', 'if [[ "$eligible" == true ]]; then run_full=false; fi', 'classifier output missing or invalid'):
         require(expected in fast, f"exact classification wiring: {expected}")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in step(build, "Checkout exact commit") and
             build.find("Classify exact documentation diff") < build.find("Setup .NET from global.json"),
@@ -564,6 +564,8 @@ if errors:
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
     ("fast classification missing", short.replace("id: docs-classify", "id: absent"), full),
+    ("missing PR head allowed", short.replace('-n "$PR_HEAD_SHA" && ', ''), full),
+    ("tip comparison omitted", short.replace('for endpoint in "$PR_HEAD_SHA" "$merge_commit"', 'for endpoint in "$merge_commit"'), full),
     ("merge parent not bound", short.replace('"$second" == "$PR_HEAD_SHA"', '"$second" == "$second"'), full),
     ("base classifier not trusted", short.replace('git show "$base:scripts/ci:classify"', 'git show "HEAD:scripts/ci:classify"'), full),
     ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"', ""), full),
@@ -957,13 +959,22 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
         lines = output.read_text().splitlines()
         if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
             raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
+    # A one-parent checkout with no head must never qualify.
+    git("checkout", "-q", "--detach", base)
+    output.write_text("")
+    env.update(GITHUB_SHA=base, EVENT_NAME="pull_request", PR_HEAD_SHA="")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "reason=merge binding unavailable or mismatched" not in output.read_text().splitlines():
+        raise SystemExit(f"Missing PR head qualified: {output.read_text()} {result.stderr}")
     # Real base classifier must reject a candidate edit to the classifier itself,
     # even if that candidate tries to print a passing answer.
     git("checkout", "-q", "--detach", base)
     trusted.write_text((root / "scripts/ci:classify").read_text())
     (fixture / "docs").mkdir(exist_ok=True)
     (fixture / "docs/safe.md").write_text("original\n")
-    git("add", "scripts/ci:classify", "docs/safe.md")
+    (fixture / "scripts/ci:docs-inventory").write_text("")
+    git("add", "scripts/ci:classify", "scripts/ci:docs-inventory", "docs/safe.md")
     git("commit", "-qm", "real trusted classifier")
     real_base = git("rev-parse", "HEAD")
     trusted.write_text('#!/usr/bin/env bash\nprintf "docs_fast_path=true\ndocs_fast_path_reason=forged\n"\n')
@@ -998,7 +1009,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     env.update(GITHUB_SHA=linked_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=doc_head)
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
                             capture_output=True, text=True)
-    if result.returncode or "reason=documentation is linked to a project" not in output.read_text().splitlines():
+    if result.returncode or "reason=deleted or type-changed path in exact diff" not in output.read_text().splitlines():
         raise SystemExit(f"Moved-base link was not rejected: {output.read_text()} {result.stderr}")
     # A merge tree that drops a base-side code file is also classified against
     # the actual first parent, not the stale payload base.
@@ -1016,6 +1027,22 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                             capture_output=True, text=True)
     if result.returncode or "run_full=true" not in output.read_text().splitlines():
         raise SystemExit(f"Changed merge tree qualified: {output.read_text()} {result.stderr}")
+    # The PR tip deletes a base-only source file while the merge keeps it;
+    # the merge-only diff is documentation but the exact tip diff is unsafe.
+    git("checkout", "-q", "--detach", code_base)
+    (fixture / "docs/safe.md").write_text("candidate edit\n")
+    git("add", "docs/safe.md")
+    kept_tree = git("write-tree")
+    kept_merge = git("commit-tree", kept_tree, "-p", code_base, "-p", doc_head, "-m", "merge")
+    git("reset", "--hard", "-q", kept_merge)
+    output.write_text("")
+    env.update(GITHUB_SHA=kept_merge, PR_HEAD_SHA=doc_head)
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "reason=deleted or type-changed path in exact diff" not in output.read_text().splitlines():
+        raise SystemExit(f"Unsafe PR endpoint qualified: {output.read_text()} {result.stderr}")
+    # Preserve the expected merge identifier in the later manifest case.
+    env.update(GITHUB_SHA=changed_merge)
     # Execute the actual manifest step for fast and missing-output fallback.
     summary_step = step(job(short, "build-unit"), "Write evidence summary")
     summary_script = textwrap.dedent(summary_step.split("        run: |\n", 1)[1])
@@ -1036,7 +1063,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 12 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 14 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

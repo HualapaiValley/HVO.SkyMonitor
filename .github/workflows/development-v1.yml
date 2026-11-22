@@ -166,19 +166,28 @@ jobs:
             reason='merge binding unavailable or mismatched'
             parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
             read -r merge_commit base second extra <<< "$parents"
-            if [[ "$merge_commit" == "$GITHUB_SHA" && -n "$base" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
+            if [[ "$merge_commit" == "$GITHUB_SHA" && -n "$base" && -n "$PR_HEAD_SHA" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
               reason='base classifier unavailable or failed'
-              if git show "$base:scripts/ci:classify" > "$classifier" &&
-                 GITHUB_STEP_SUMMARY="$evidence" bash "$classifier" pull_request "$base" "$merge_commit" docs-fast-only > "$output"; then
-                reason='classifier output missing or invalid'
-                mapfile -t decisions < <(grep '^docs_fast_path=' "$output" || true)
-                mapfile -t reasons < <(grep '^docs_fast_path_reason=' "$output" || true)
-                if [[ ${#decisions[@]} -eq 1 && ${#reasons[@]} -eq 1 && "${reasons[0]}" =~ ^docs_fast_path_reason=[a-zA-Z0-9\ .,/-]+$ ]]; then
-                  case "${decisions[0]}" in
-                    docs_fast_path=true) run_full=false; reason="${reasons[0]#*=}" ;;
-                    docs_fast_path=false) reason="${reasons[0]#*=}" ;;
-                  esac
-                fi
+              if git show "$base:scripts/ci:classify" > "$classifier"; then
+                eligible=true
+                for endpoint in "$PR_HEAD_SHA" "$merge_commit"; do
+                  reason='base classifier unavailable or failed'
+                  printf '\nClassification endpoint: %s\n' "$endpoint" >> "$evidence"
+                  if GITHUB_STEP_SUMMARY="$evidence" bash "$classifier" pull_request "$base" "$endpoint" docs-fast-only > "$output"; then
+                    reason='classifier output missing or invalid'
+                    mapfile -t decisions < <(grep '^docs_fast_path=' "$output" || true)
+                    mapfile -t reasons < <(grep '^docs_fast_path_reason=' "$output" || true)
+                    if [[ ${#decisions[@]} -eq 1 && ${#reasons[@]} -eq 1 && "${reasons[0]}" =~ ^docs_fast_path_reason=[a-zA-Z0-9\ .,/-]+$ ]]; then
+                      case "${decisions[0]}" in
+                        docs_fast_path=true) reason="${reasons[0]#*=}"; continue ;;
+                        docs_fast_path=false) reason="${reasons[0]#*=}" ;;
+                      esac
+                    fi
+                  fi
+                  eligible=false
+                  break
+                done
+                if [[ "$eligible" == true ]]; then run_full=false; fi
               fi
             fi
           fi
