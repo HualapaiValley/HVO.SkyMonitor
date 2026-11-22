@@ -1762,19 +1762,29 @@ internal static class EvidenceRetention
     }
 
     /// <summary>
-    /// What each phase did, shared by the operation and the caller. Publication and attachment each start only by
-    /// opening their gate before the cutoff and before the caller has sealed its decision; every phase records when it
-    /// ended, whether it succeeded or threw.
+    /// What each phase did, shared by the operation and the caller. Publication and attachment each pass a gate with
+    /// explicit atomic transitions: the worker reserves it, samples the clock, and only then confirms the start; the
+    /// caller seals any gate that is not confirmed. Every phase records when it ended, whether it succeeded or threw.
     /// </summary>
     private sealed class Attempt(TimeProvider clock, TimeSpan budget) : IDisposable
     {
+        /// <summary>No start has been attempted.</summary>
         private const int Closed = 0;
-        private const int Open = 1;
-        private const int Refused = 2;
+
+        /// <summary>The worker is checking the cutoff; nothing has started, and the caller may still seal.</summary>
+        private const int Reserved = 1;
+
+        /// <summary>The start was admitted before the cutoff and before sealing: the only state read as started.</summary>
+        private const int Started = 2;
+
+        /// <summary>The worker's own cutoff check refused the start.</summary>
+        private const int Refused = 3;
+
+        /// <summary>The caller sealed before any start was admitted; the phase can never start.</summary>
+        private const int Sealed = 4;
 
         private readonly CancellationTokenSource stop = new();
         private readonly long started = clock.GetTimestamp();
-        private int sealedByCaller;
         private int publishGate;
         private int attachGate;
         private long prepareEndedAt = -1;
@@ -1817,35 +1827,60 @@ internal static class EvidenceRetention
             Interlocked.Exchange(ref attachEndedAt, Elapsed());
         }
 
-        /// <summary>Seals the caller's decision, after which no gate opens, and returns what the phases had done.</summary>
+        /// <summary>
+        /// Seals both gates and returns what the phases had done. A gate the worker has not confirmed is sealed at once,
+        /// without waiting for its clock sample, so only an admitted start is ever reported as started.
+        /// </summary>
         internal RetentionPhases Seal()
         {
-            Interlocked.Exchange(ref sealedByCaller, 1);
+            var publishStarted = SealGate(ref publishGate);
+            var attachStarted = SealGate(ref attachGate);
             var prepareEnded = Interlocked.Read(ref prepareEndedAt);
             var publishEnded = Interlocked.Read(ref publishEndedAt);
             var attachEnded = Interlocked.Read(ref attachEndedAt);
             return new RetentionPhases(
                 prepareEnded, Volatile.Read(ref prepareFailure),
-                Volatile.Read(ref publishGate) == Open, publishEnded, Volatile.Read(ref publishFailure),
-                Volatile.Read(ref attachGate) == Open, attachEnded, Volatile.Read(ref attachFailure));
+                publishStarted, publishEnded, Volatile.Read(ref publishFailure),
+                attachStarted, attachEnded, Volatile.Read(ref attachFailure));
         }
 
         /// <summary>
-        /// Opens a gate only before the cutoff and before the caller has sealed. Both are read after the gate is won,
-        /// so a phase can start only while time remains; a gate won too late is refused before the phase begins.
+        /// The worker's side of a gate. Reserving it, sampling the cutoff, and confirming the start are separate atomic
+        /// steps: if the caller seals while the sample is taken, the confirmation fails and the phase is never invoked.
         /// </summary>
         private bool TryOpen(ref int gate)
         {
-            if (Interlocked.CompareExchange(ref gate, Open, Closed) != Closed)
+            if (Interlocked.CompareExchange(ref gate, Reserved, Closed) != Closed)
             {
                 return false;
             }
-            if (Volatile.Read(ref sealedByCaller) == 1 || clock.GetElapsedTime(started) >= budget)
+            if (clock.GetElapsedTime(started) >= budget)
             {
-                Volatile.Write(ref gate, Refused);
+                Interlocked.CompareExchange(ref gate, Refused, Reserved);
                 return false;
             }
-            return true;
+            return Interlocked.CompareExchange(ref gate, Started, Reserved) == Reserved;
+        }
+
+        /// <summary>The caller's side of a gate: seal it unless the worker has confirmed a start. Returns whether it had.</summary>
+        private static bool SealGate(ref int gate)
+        {
+            while (true)
+            {
+                var found = Volatile.Read(ref gate);
+                if (found == Started)
+                {
+                    return true;
+                }
+                if (found is Refused or Sealed)
+                {
+                    return false;
+                }
+                if (Interlocked.CompareExchange(ref gate, Sealed, found) == found)
+                {
+                    return false;
+                }
+            }
         }
 
         private long Elapsed() => clock.GetElapsedTime(started).Ticks;

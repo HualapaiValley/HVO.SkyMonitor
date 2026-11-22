@@ -815,6 +815,100 @@ public sealed class CalendarDayPreviewEvidenceTests
     }
 
     [TestMethod]
+    [DataRow("rename", "held-timer-first", DisplayName = "rename gate check held across the cutoff, timer seals first")]
+    [DataRow("rename", "held-refusal-first", DisplayName = "rename gate check held across the cutoff, refusal first")]
+    [DataRow("rename", "admitted", DisplayName = "rename admitted in time, then held across the cutoff")]
+    [DataRow("rename", "success", DisplayName = "rename admitted after a paused check, ordinary success")]
+    [DataRow("attach", "held-timer-first", DisplayName = "attachment gate check held across the cutoff, timer seals first")]
+    [DataRow("attach", "held-refusal-first", DisplayName = "attachment gate check held across the cutoff, refusal first")]
+    [DataRow("attach", "admitted", DisplayName = "attachment admitted in time, then held across the cutoff")]
+    [DataRow("attach", "success", DisplayName = "attachment admitted after a paused check, ordinary success")]
+    [SuppressMessage("Usage", "CA1849:Call async methods when in an async method",
+        Justification = "The writer stays synchronous so the gate's next clock read happens on the same worker thread and can be held.")]
+    public async Task OnlyAnAdmittedPhaseIsSeenAsStarted(string phase, string scenario)
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        var invocations = 0;
+        using var invoked = new ManualResetEventSlim();
+        using var releasePhase = new ManualResetEventSlim();
+        void RunPhase(Action work)
+        {
+            Interlocked.Increment(ref invocations);
+            invoked.Set();
+            if (scenario == "admitted") releasePhase.Wait(TimeSpan.FromSeconds(30));
+            work();
+        }
+        try
+        {
+            var running = EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root,
+                    writer: (path, content, _) =>
+                    {
+                        File.WriteAllText(path, content);
+                        if (phase == "rename") clock.HoldNextRead(skip: 0);
+                        return Task.CompletedTask;
+                    },
+                    publish: (temporary, path) =>
+                    {
+                        if (phase == "rename") RunPhase(() => File.Move(temporary, path));
+                        else File.Move(temporary, path);
+                        if (phase == "attach") clock.HoldNextRead(skip: 1);
+                    },
+                    attach: phase == "attach" ? _ => RunPhase(static () => { }) : null),
+                CutoffBudget, clock);
+            Assert.IsTrue(clock.Held.Wait(TimeSpan.FromSeconds(30)), "the gate's cutoff check was reached and held");
+            EvidenceRetentionResult<string> result;
+            switch (scenario)
+            {
+                case "held-timer-first":
+                    clock.Advance(CrossedBy);
+                    clock.FireTimers();
+                    result = await running.ConfigureAwait(false);
+                    clock.ReleaseHeld.Set();
+                    break;
+                case "held-refusal-first":
+                    clock.Advance(CrossedBy);
+                    clock.ReleaseHeld.Set();
+                    result = await running.ConfigureAwait(false);
+                    break;
+                case "admitted":
+                    clock.ReleaseHeld.Set();
+                    Assert.IsTrue(invoked.Wait(TimeSpan.FromSeconds(30)));
+                    clock.Advance(CrossedBy);
+                    clock.FireTimers();
+                    result = await running.ConfigureAwait(false);
+                    releasePhase.Set();
+                    break;
+                default:
+                    clock.ReleaseHeld.Set();
+                    result = await running.ConfigureAwait(false);
+                    break;
+            }
+            await Completion(result.Operation).ConfigureAwait(false);
+
+            var (expected, expired, calls) = (phase, scenario) switch
+            {
+                (_, "success") => (EvidenceRetentionOutcome.Published, false, 1),
+                ("rename", "admitted") => (EvidenceRetentionOutcome.PublicationUnconfirmed, true, 1),
+                ("attach", "admitted") => (EvidenceRetentionOutcome.AttachmentUnconfirmed, true, 1),
+                ("rename", _) => (EvidenceRetentionOutcome.NotPublished, true, 0),
+                _ => (EvidenceRetentionOutcome.PublishedNotAttached, true, 0)
+            };
+            Assert.AreEqual(expected, result.Outcome, "only an admitted start can be reported as started");
+            Assert.AreEqual(expired, result.Expired);
+            Assert.AreEqual(calls, Volatile.Read(ref invocations), "a phase whose gate was sealed or refused is never invoked");
+        }
+        finally
+        {
+            clock.ReleaseHeld.Set();
+            releasePhase.Set();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task StatusLineWaitsOnlyForTheRemainingBudget()
     {
         using var release = new ManualResetEventSlim();
@@ -894,10 +988,36 @@ public sealed class CalendarDayPreviewEvidenceTests
     {
         private readonly System.Collections.Concurrent.ConcurrentQueue<(TimerCallback Callback, object? State)> timers = new();
         private long now;
+        private int heldThread;
+        private int readsBeforeHold;
 
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
-        public override long GetTimestamp() => Interlocked.Read(ref now);
+        /// <summary>Signalled when a read is held; the held read returns the clock as it is when released.</summary>
+        internal ManualResetEventSlim Held { get; } = new();
+
+        internal ManualResetEventSlim ReleaseHeld { get; } = new();
+
+        /// <summary>Holds this thread's read after skipping <paramref name="skip"/> reads: a paused cutoff check.</summary>
+        internal void HoldNextRead(int skip)
+        {
+            readsBeforeHold = skip;
+            Volatile.Write(ref heldThread, Environment.CurrentManagedThreadId);
+        }
+
+        public override long GetTimestamp()
+        {
+            if (Volatile.Read(ref heldThread) == Environment.CurrentManagedThreadId)
+            {
+                if (readsBeforeHold-- <= 0)
+                {
+                    Volatile.Write(ref heldThread, 0);
+                    Held.Set();
+                    ReleaseHeld.Wait(TimeSpan.FromSeconds(30));
+                }
+            }
+            return Interlocked.Read(ref now);
+        }
 
         internal void Advance(TimeSpan by) => Interlocked.Add(ref now, by.Ticks);
 
