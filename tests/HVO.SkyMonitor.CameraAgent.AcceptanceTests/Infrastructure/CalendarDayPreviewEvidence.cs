@@ -1556,6 +1556,20 @@ internal sealed record EvidenceRetentionResult<T>(
 }
 
 /// <summary>
+/// When each phase of an attempt ended, in elapsed ticks since entry (-1 if it had not), whether publication and
+/// attachment started, and the type of any phase's exception.
+/// </summary>
+internal readonly record struct RetentionPhases(
+    long PrepareEndedAt,
+    string? PrepareFailure,
+    bool PublishStarted,
+    long PublishEndedAt,
+    string? PublishFailure,
+    bool AttachStarted,
+    long AttachEndedAt,
+    string? AttachFailure);
+
+/// <summary>
 /// The retention boundary: one supervised operation captures, serializes and durably writes evidence under a
 /// temporary name, publishes it by rename, and attaches it to the run. Two gates decide against the deadline:
 /// publication must win the commit gate before renaming, and attaching must win the attachment gate before it
@@ -1586,38 +1600,57 @@ internal static class EvidenceRetention
         CalendarDayPreviewEvidence.ObserveFaults(operation);
         _ = operation.ContinueWith(static (_, state) => ((Attempt)state!).Dispose(), attempt,
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-        // The timer only wakes the caller. Every decision is made against the cutoff captured at entry, so a late
-        // timer continuation cannot let work that finished after the cutoff count as in time.
+        // The timer only wakes the caller. The outcome is one decision over when each phase started and ended,
+        // measured against the cutoff captured at entry, so it does not depend on which completion woke the caller.
         await Task.WhenAny(operation, Task.Delay(budget, clock)).ConfigureAwait(false);
-        var completed = operation.IsCompleted;
-        var state = !completed || attempt.PastCutoff() ? attempt.Expire() : attempt.State;
-        if (!completed)
+        var phases = attempt.Seal();
+        if (!operation.IsCompleted)
         {
             attempt.StopOffPath();
         }
-        var value = attempt.Value as T;
-        var publishedInTime = attempt.InTime(attempt.PublishedAt);
-        return state switch
+        var (outcome, expired, failure) = Decide(phases, budget);
+        return outcome switch
         {
-            Attempt.Attached when publishedInTime && attempt.InTime(attempt.AttachEndedAt) =>
-                new(EvidenceRetentionOutcome.Published, value, attempt.Path, null, null, false, operation),
-            Attempt.Attached when publishedInTime =>
-                new(EvidenceRetentionOutcome.AttachmentUnconfirmed, value, attempt.Path, null, null, true, operation),
-            Attempt.AttachFailed when publishedInTime =>
-                new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, attempt.AttachFailure,
-                    !attempt.InTime(attempt.AttachEndedAt), operation),
-            Attempt.AttachRefused or Attempt.Published when publishedInTime =>
-                new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, null, true, operation),
-            Attempt.Attaching when publishedInTime =>
-                new(EvidenceRetentionOutcome.AttachmentUnconfirmed, value, attempt.Path, null, null, true, operation),
-            Attempt.Attached or Attempt.AttachFailed or Attempt.AttachRefused or Attempt.Published or Attempt.Attaching =>
-                new(EvidenceRetentionOutcome.PublicationUnconfirmed, null, null, attempt.Path, null, true, operation),
-            Attempt.Committing when !completed =>
-                new(EvidenceRetentionOutcome.PublicationUnconfirmed, null, null, attempt.Path, null, true, operation),
-            _ => new(EvidenceRetentionOutcome.NotPublished, null, null, null,
-                operation.IsFaulted ? CalendarEvidenceVocabulary.TypeName(operation.Exception?.InnerException?.GetType()) : null,
-                !completed || attempt.CrossedCutoff, operation)
+            EvidenceRetentionOutcome.Published or EvidenceRetentionOutcome.PublishedNotAttached or EvidenceRetentionOutcome.AttachmentUnconfirmed =>
+                new(outcome, attempt.Value as T, attempt.Path, null, failure, expired, operation),
+            EvidenceRetentionOutcome.PublicationUnconfirmed => new(outcome, null, null, attempt.Path, null, expired, operation),
+            _ => new(outcome, null, null, null, failure, expired, operation)
         };
+    }
+
+    /// <summary>
+    /// The single outcome rule, the same for success and for an exception. A phase counts only if it ended before the
+    /// cutoff, with elapsed time strictly below the budget. One that had started by then but not ended is unconfirmed,
+    /// whatever it did later, and one that had not started never will.
+    /// </summary>
+    internal static (EvidenceRetentionOutcome Outcome, bool Expired, string? FailureType) Decide(RetentionPhases phases, TimeSpan budget)
+    {
+        bool InTime(long endedAt) => endedAt >= 0 && endedAt < budget.Ticks;
+        if (!phases.PublishStarted)
+        {
+            return phases.PrepareFailure is not null && InTime(phases.PrepareEndedAt)
+                ? (EvidenceRetentionOutcome.NotPublished, false, phases.PrepareFailure)
+                : (EvidenceRetentionOutcome.NotPublished, true, null);
+        }
+        if (!InTime(phases.PublishEndedAt))
+        {
+            return (EvidenceRetentionOutcome.PublicationUnconfirmed, true, null);
+        }
+        if (phases.PublishFailure is not null)
+        {
+            return (EvidenceRetentionOutcome.NotPublished, false, phases.PublishFailure);
+        }
+        if (!phases.AttachStarted)
+        {
+            return (EvidenceRetentionOutcome.PublishedNotAttached, true, null);
+        }
+        if (!InTime(phases.AttachEndedAt))
+        {
+            return (EvidenceRetentionOutcome.AttachmentUnconfirmed, true, null);
+        }
+        return phases.AttachFailure is not null
+            ? (EvidenceRetentionOutcome.PublishedNotAttached, false, phases.AttachFailure)
+            : (EvidenceRetentionOutcome.Published, false, null);
     }
 
     /// <summary>
@@ -1648,22 +1681,49 @@ internal static class EvidenceRetention
         where T : class
     {
         var token = attempt.Token;
-        var value = await capture(token).ConfigureAwait(false);
-        var content = serialize(value);
-        var path = Path.Combine(store.Root, fileName(value));
+        T value;
+        string content;
+        string path;
+        try
+        {
+            value = await capture(token).ConfigureAwait(false);
+            content = serialize(value);
+            path = Path.Combine(store.Root, fileName(value));
+            Directory.CreateDirectory(store.Root);
+        }
+        catch (Exception exception)
+        {
+            attempt.PrepareFailed(exception);
+            throw;
+        }
         var temporary = path + ".partial";
-        Directory.CreateDirectory(store.Root);
         var published = false;
         try
         {
-            await store.WriteDurablyAsync(temporary, content, token).ConfigureAwait(false);
-            if (!attempt.TryBeginCommit(path))
+            try
             {
-                throw new OperationCanceledException("The evidence attempt expired before publication.");
+                await store.WriteDurablyAsync(temporary, content, token).ConfigureAwait(false);
             }
-            store.Publish(temporary, path);
+            catch (Exception exception)
+            {
+                attempt.PrepareFailed(exception);
+                throw;
+            }
+            if (!attempt.TryBeginPublish(path))
+            {
+                throw new OperationCanceledException("The evidence attempt reached its cutoff before publication.");
+            }
+            try
+            {
+                store.Publish(temporary, path);
+            }
+            catch (Exception exception)
+            {
+                attempt.PublishEnded(null, exception);
+                throw;
+            }
             published = true;
-            attempt.Publish(value);
+            attempt.PublishEnded(value, null);
         }
         finally
         {
@@ -1677,11 +1737,11 @@ internal static class EvidenceRetention
             try
             {
                 store.Attach(path);
-                attempt.MarkAttached();
+                attempt.AttachEnded(null);
             }
             catch (Exception exception)
             {
-                attempt.MarkAttachFailed(exception.GetType());
+                attempt.AttachEnded(exception);
             }
         }
         return (value, path);
@@ -1702,139 +1762,93 @@ internal static class EvidenceRetention
     }
 
     /// <summary>
-    /// The gates shared by the operation and the caller. Exactly one of commit or abandonment wins, and exactly one of
-    /// starting the attachment or refusing it at the deadline wins; an attachment already started is never refused.
+    /// What each phase did, shared by the operation and the caller. Publication and attachment each start only by
+    /// opening their gate before the cutoff and before the caller has sealed its decision; every phase records when it
+    /// ended, whether it succeeded or threw.
     /// </summary>
     private sealed class Attempt(TimeProvider clock, TimeSpan budget) : IDisposable
     {
-        internal const int Running = 0;
-        internal const int Committing = 1;
-        internal const int Published = 2;
-        internal const int Attaching = 3;
-        internal const int Attached = 4;
-        internal const int AttachFailed = 5;
-        internal const int Abandoned = 6;
-        internal const int AttachRefused = 7;
+        private const int Closed = 0;
+        private const int Open = 1;
+        private const int Refused = 2;
 
         private readonly CancellationTokenSource stop = new();
         private readonly long started = clock.GetTimestamp();
-        private int state;
-        private int expired;
-        private int crossedCutoff;
-        private long publishedAt = -1;
+        private int sealedByCaller;
+        private int publishGate;
+        private int attachGate;
+        private long prepareEndedAt = -1;
+        private long publishEndedAt = -1;
         private long attachEndedAt = -1;
+        private string? prepareFailure;
+        private string? publishFailure;
+        private string? attachFailure;
 
         internal CancellationToken Token => stop.Token;
-
-        internal int State => Volatile.Read(ref state);
-
-        /// <summary>Elapsed ticks since entry when the rename completed, or -1.</summary>
-        internal long PublishedAt => Interlocked.Read(ref publishedAt);
-
-        /// <summary>Elapsed ticks since entry when the attachment returned or failed, or -1.</summary>
-        internal long AttachEndedAt => Interlocked.Read(ref attachEndedAt);
-
-        /// <summary>True when a gate refused because the cutoff had passed.</summary>
-        internal bool CrossedCutoff => Volatile.Read(ref crossedCutoff) == 1;
-
-        internal bool PastCutoff() => clock.GetElapsedTime(started) >= budget;
-
-        internal bool InTime(long elapsedTicks) => elapsedTicks >= 0 && elapsedTicks < budget.Ticks;
-
-        private long Elapsed() => clock.GetElapsedTime(started).Ticks;
 
         internal string? Path { get; private set; }
 
         internal object? Value { get; private set; }
 
-        internal string? AttachFailure { get; private set; }
+        internal void PrepareFailed(Exception exception)
+        {
+            Volatile.Write(ref prepareFailure, CalendarEvidenceVocabulary.TypeName(exception.GetType()));
+            Interlocked.Exchange(ref prepareEndedAt, Elapsed());
+        }
 
-        /// <summary>
-        /// Wins the commit gate only before the cutoff. The cutoff is read after the gate is won, so a rename can start
-        /// only while time remains; a gate won too late is given up before anything is renamed.
-        /// </summary>
-        internal bool TryBeginCommit(string path)
+        internal bool TryBeginPublish(string path)
         {
             Path = path;
-            if (Interlocked.CompareExchange(ref state, Committing, Running) != Running)
-            {
-                return false;
-            }
-            if (PastCutoff())
-            {
-                Volatile.Write(ref crossedCutoff, 1);
-                Volatile.Write(ref state, Abandoned);
-                return false;
-            }
-            return true;
+            return TryOpen(ref publishGate);
         }
 
-        /// <summary>Only the operation leaves <see cref="Committing"/>, so publication needs no compare-exchange.</summary>
-        internal void Publish(object value)
+        internal void PublishEnded(object? value, Exception? failure)
         {
             Value = value;
-            Interlocked.Exchange(ref publishedAt, Elapsed());
-            Volatile.Write(ref state, Published);
+            Volatile.Write(ref publishFailure, failure is null ? null : CalendarEvidenceVocabulary.TypeName(failure.GetType()));
+            Interlocked.Exchange(ref publishEndedAt, Elapsed());
         }
 
-        /// <summary>Wins the attachment gate only before the cutoff and before the caller has marked the deadline.</summary>
-        internal bool TryBeginAttach()
-        {
-            if (Volatile.Read(ref expired) == 1)
-            {
-                Interlocked.CompareExchange(ref state, AttachRefused, Published);
-                return false;
-            }
-            if (Interlocked.CompareExchange(ref state, Attaching, Published) != Published)
-            {
-                return false;
-            }
-            if (PastCutoff())
-            {
-                Volatile.Write(ref crossedCutoff, 1);
-                Volatile.Write(ref state, AttachRefused);
-                return false;
-            }
-            return true;
-        }
+        internal bool TryBeginAttach() => TryOpen(ref attachGate);
 
-        internal void MarkAttached()
+        internal void AttachEnded(Exception? failure)
         {
+            Volatile.Write(ref attachFailure, failure is null ? null : CalendarEvidenceVocabulary.TypeName(failure.GetType()));
             Interlocked.Exchange(ref attachEndedAt, Elapsed());
-            Volatile.Write(ref state, Attached);
         }
 
-        internal void MarkAttachFailed(Type type)
+        /// <summary>Seals the caller's decision, after which no gate opens, and returns what the phases had done.</summary>
+        internal RetentionPhases Seal()
         {
-            AttachFailure = CalendarEvidenceVocabulary.TypeName(type);
-            Interlocked.Exchange(ref attachEndedAt, Elapsed());
-            Volatile.Write(ref state, AttachFailed);
+            Interlocked.Exchange(ref sealedByCaller, 1);
+            var prepareEnded = Interlocked.Read(ref prepareEndedAt);
+            var publishEnded = Interlocked.Read(ref publishEndedAt);
+            var attachEnded = Interlocked.Read(ref attachEndedAt);
+            return new RetentionPhases(
+                prepareEnded, Volatile.Read(ref prepareFailure),
+                Volatile.Read(ref publishGate) == Open, publishEnded, Volatile.Read(ref publishFailure),
+                Volatile.Read(ref attachGate) == Open, attachEnded, Volatile.Read(ref attachFailure));
         }
 
         /// <summary>
-        /// Marks the deadline: a running attempt can no longer publish, and a published file that has not started its
-        /// attachment never will. Returns the state the deadline found.
+        /// Opens a gate only before the cutoff and before the caller has sealed. Both are read after the gate is won,
+        /// so a phase can start only while time remains; a gate won too late is refused before the phase begins.
         /// </summary>
-        internal int Expire()
+        private bool TryOpen(ref int gate)
         {
-            Interlocked.Exchange(ref expired, 1);
-            while (true)
+            if (Interlocked.CompareExchange(ref gate, Open, Closed) != Closed)
             {
-                var found = Volatile.Read(ref state);
-                if (found == Running)
-                {
-                    if (Interlocked.CompareExchange(ref state, Abandoned, Running) == Running) return Abandoned;
-                }
-                else if (found == Published)
-                {
-                    if (Interlocked.CompareExchange(ref state, AttachRefused, Published) == Published) return AttachRefused;
-                }
-                else
-                {
-                    return found;
-                }
+                return false;
             }
+            if (Volatile.Read(ref sealedByCaller) == 1 || clock.GetElapsedTime(started) >= budget)
+            {
+                Volatile.Write(ref gate, Refused);
+                return false;
+            }
+            return true;
         }
+
+        private long Elapsed() => clock.GetElapsedTime(started).Ticks;
 
         /// <summary>Requests the abandoned work to stop on another thread, so no callback can reach the caller.</summary>
         internal void StopOffPath() => CalendarDayPreviewEvidence.ObserveFaults(Task.Run(stop.Cancel));

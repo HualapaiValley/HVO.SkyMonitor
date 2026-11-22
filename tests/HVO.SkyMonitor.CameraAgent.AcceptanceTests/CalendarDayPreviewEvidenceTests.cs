@@ -708,6 +708,113 @@ public sealed class CalendarDayPreviewEvidenceTests
     }
 
     [TestMethod]
+    [DataRow("write", "before", DisplayName = "write fault before the cutoff")]
+    [DataRow("write", "fault-first", DisplayName = "write fault after the cutoff, fault completes first")]
+    [DataRow("write", "timer-first", DisplayName = "write fault after the cutoff, timer runs first")]
+    [DataRow("rename", "before", DisplayName = "rename fault before the cutoff")]
+    [DataRow("rename", "fault-first", DisplayName = "rename fault after the cutoff, fault completes first")]
+    [DataRow("rename", "timer-first", DisplayName = "rename fault after the cutoff, timer runs first")]
+    [DataRow("attach", "before", DisplayName = "attachment fault before the cutoff")]
+    [DataRow("attach", "fault-first", DisplayName = "attachment fault after the cutoff, fault completes first")]
+    [DataRow("attach", "timer-first", DisplayName = "attachment fault after the cutoff, timer runs first")]
+    public async Task PhaseFaultsAreJudgedByWhenThePhaseEnded(string phase, string timing)
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        using var started = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        void Fault()
+        {
+            if (timing == "fault-first")
+            {
+                clock.Advance(CrossedBy);
+            }
+            else if (timing == "timer-first")
+            {
+                started.Set();
+                release.Wait(TimeSpan.FromSeconds(30));
+            }
+            throw new IOException("PHASE_FAULT_1916");
+        }
+        try
+        {
+            var running = EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{\"schema\":\"complete\"}"), static _ => "case.evidence.json", static value => value,
+                Store(root,
+                    writer: phase == "write" ? (_, _, _) => Task.Run(Fault, CancellationToken.None) : null,
+                    publish: phase == "rename" ? (_, _) => Fault() : null,
+                    attach: phase == "attach" ? _ => Fault() : null),
+                CutoffBudget, clock);
+            if (timing == "timer-first")
+            {
+                Assert.IsTrue(started.Wait(TimeSpan.FromSeconds(30)));
+                clock.Advance(CrossedBy);
+                clock.FireTimers();
+            }
+            var result = await running.ConfigureAwait(false);
+            release.Set();
+            await Completion(result.Operation).ConfigureAwait(false);
+
+            var late = timing != "before";
+            var expected = (phase, late) switch
+            {
+                ("write", _) => EvidenceRetentionOutcome.NotPublished,
+                ("rename", false) => EvidenceRetentionOutcome.NotPublished,
+                ("rename", true) => EvidenceRetentionOutcome.PublicationUnconfirmed,
+                (_, false) => EvidenceRetentionOutcome.PublishedNotAttached,
+                _ => EvidenceRetentionOutcome.AttachmentUnconfirmed
+            };
+            Assert.AreEqual(expected, result.Outcome);
+            Assert.AreEqual(late, result.Expired);
+            Assert.AreEqual(late ? null : typeof(IOException).FullName, result.FailureType,
+                "a phase that ended after the cutoff is judged like one still running, whether it succeeded or threw");
+            Assert.IsFalse(Directory.GetFiles(root).Any(static file => file.EndsWith(".partial", StringComparison.Ordinal)));
+            Assert.AreEqual(phase == "attach", File.Exists(Path.Combine(root, "case.evidence.json")),
+                "only a completed rename leaves a published file");
+        }
+        finally
+        {
+            release.Set();
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow("rename", 0L, DisplayName = "rename ending exactly at the cutoff")]
+    [DataRow("attach", 0L, DisplayName = "attachment ending exactly at the cutoff")]
+    [DataRow("attach", -1L, DisplayName = "attachment ending one tick before the cutoff")]
+    public async Task APhaseEndingAtTheCutoffIsLate(string phase, long ticksFromCutoff)
+    {
+        var root = RetentionRoot();
+        var clock = new ManualTimeProvider();
+        var reachCutoff = TimeSpan.FromTicks(CutoffBudget.Ticks + ticksFromCutoff);
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root,
+                    publish: phase == "rename" ? (temporary, path) =>
+                    {
+                        File.Move(temporary, path);
+                        clock.Advance(reachCutoff);
+                    }
+            : null,
+                    attach: phase == "attach" ? _ => clock.Advance(reachCutoff) : null),
+                CutoffBudget, clock).ConfigureAwait(false);
+
+            var expected = ticksFromCutoff < 0 ? EvidenceRetentionOutcome.Published
+                : phase == "rename" ? EvidenceRetentionOutcome.PublicationUnconfirmed
+                : EvidenceRetentionOutcome.AttachmentUnconfirmed;
+            Assert.AreEqual(expected, result.Outcome);
+            Assert.AreEqual(ticksFromCutoff >= 0, result.Expired);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task StatusLineWaitsOnlyForTheRemainingBudget()
     {
         using var release = new ManualResetEventSlim();
