@@ -1,22 +1,51 @@
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
+using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 internal sealed partial class SqliteCenteredViews
 {
+    // A pre-close binding can retain a reference ID even when the cutoff
+    // excludes that exposure. The frozen center records the actual decision.
+    private const string FrozenMissingCenterSql = """
+        SELECT 1
+        FROM processing_centered_attempt_calendar calendar
+        JOIN processing_centered_windows window ON window.window_sha256 = calendar.window_sha256
+        WHERE calendar.attempt_id = attempt.attempt_id AND calendar.run_id = attempt.run_id
+            AND window.terminal = 1
+            AND CASE WHEN json_valid(CAST(window.closure_json AS TEXT))
+                THEN json_extract(CAST(window.closure_json AS TEXT), '$.slots[' || $centerIndex || '].input') IS NULL
+            END
+        """;
+
     internal async ValueTask<string?> ReadLiveCandidateAsync(CenteredViewStream stream, CancellationToken token)
     {
         using var connection = await OpenAsync(token).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, """
+        using var command = CreateCommand(connection, null, $$"""
             SELECT b.base_id
             FROM processing_centered_view_bases b
             JOIN centered_exposure_attempts attempt ON attempt.capture_id = lower(replace(b.reference_id, '-', ''))
-            WHERE b.stream_id = $stream AND b.recomputed_from IS NULL AND attempt.run_id = $run AND (
-                (b.kind = $single AND attempt.ordinal <= 3) OR
-                EXISTS (SELECT 1 FROM processing_centered_view_window_work work WHERE work.live_base_id = b.base_id))
+            WHERE b.stream_id = $stream AND b.recomputed_from IS NULL AND attempt.run_id = $run
+                AND (b.kind <> $single OR NOT EXISTS ({{FrozenMissingCenterSql}}))
+                AND ((b.kind = $single AND attempt.ordinal <= 3) OR
+                    EXISTS (SELECT 1 FROM processing_centered_view_window_work work WHERE work.live_base_id = b.base_id))
             ORDER BY b.reference_order DESC, b.kind DESC LIMIT 1;
-            """, ("$stream", StreamId(stream)), ("$run", stream.RunId.ToString("N")), ("$single", (int)CenteredViewKind.Single));
+            """, ("$stream", StreamId(stream)), ("$run", stream.RunId.ToString("N")), ("$single", (int)CenteredViewKind.Single),
+            ("$centerIndex", CenteredWindowScheduler.CenterIndex));
         return (string?)await command.ExecuteScalarAsync(token).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<bool> HasFrozenMissingCenterAsync(SqliteConnection connection, SqliteTransaction transaction,
+        Guid runId, Guid captureId, CancellationToken token)
+    {
+        using var command = CreateCommand(connection, transaction, $$"""
+            SELECT 1
+            FROM centered_exposure_attempts attempt
+            WHERE attempt.capture_id = $capture AND attempt.run_id = $run AND EXISTS ({{FrozenMissingCenterSql}});
+            """, ("$capture", captureId.ToString("N")), ("$run", runId.ToString("N")),
+            ("$centerIndex", CenteredWindowScheduler.CenterIndex));
+        return await command.ExecuteScalarAsync(token).ConfigureAwait(false) is not null;
     }
 
     internal async ValueTask<IReadOnlyList<string>> ReadDueWindowPublicationsAsync(int limit, CancellationToken token)

@@ -343,10 +343,13 @@ internal sealed partial class CaptureProcessingPersistence(
         TimeSpan? duration,
         ProcessingOutcomeStatus? outcome,
         ProcessingNodeExecutionRoute executionRoute,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        ArtifactManifestV2? rawManifest = null)
         => _store.CompleteOutputlessExecutionNodeAsync(
             execution, node, status, reason, attempt, completedUtc, duration, outcome,
-            executionRoute, cancellationToken);
+            executionRoute, cancellationToken,
+            rawManifest is not null && execution is { ExecutionClass: ProcessingGraphExecutionClass.Live, AllowAutomaticPublication: true }
+                ? CenteredExposureProductReader.CreateOutputlessViewSettlements(rawManifest, node, status, reason) : null);
 
     public ValueTask<IReadOnlyList<ProcessingRetentionHold>> GetRetentionHoldsAsync(
         string storageRoot,

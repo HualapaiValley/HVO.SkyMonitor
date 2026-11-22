@@ -6,6 +6,7 @@ using HVO.SkyMonitor.CameraAgent.Common.Background;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.DeploymentLocation;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.Modules.VirtualSky;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Services;
@@ -318,6 +319,18 @@ public sealed partial class VirtualSkyCameraModuleTests
                         Assert.AreEqual("measurement-publication-io", retry.Reason);
                         Assert.AreEqual(CaptureLaneHandlerOutcome.RetryableFailure,
                             await laneStore.FailAsync(first, retry, token).ConfigureAwait(false));
+                        var stream = CenteredViewLookup.ResolveStream(await ingress.ReadCurrentAsync(attempt.Camera, token).ConfigureAwait(false));
+                        Assert.IsNotNull(stream);
+                        await provider.GetRequiredService<CenteredViewPublicationWorker>()
+                            .DrainCameraAsync(attempt.Camera, stream, CancellationToken.None, token).ConfigureAwait(false);
+                        var views = provider.GetRequiredService<SqliteCenteredViews>();
+                        var pending = Assert.ContainsSingle(await views.ReadArchiveAsync(ids[4].CaptureId, token).ConfigureAwait(false));
+                        var view = await views.ReadRevisionAsync(pending.Base.BaseId, pending.LatestRevisionId, token).ConfigureAwait(false);
+                        Assert.IsNotNull(view);
+                        Assert.AreEqual(CenteredViewReadiness.Waiting, view.Revision.Layers.Single(layer =>
+                            layer.Key.Kind == "measured-source-markers").Readiness);
+                        Assert.AreEqual(CenteredViewReadiness.NotConfigured, view.Revision.Layers.Single(layer =>
+                            layer.Key.Kind == "predicted-satellites").Readiness);
                         await provider.GetRequiredService<CenteredWindowCoordinator>().CloseReadyAsync(token).ConfigureAwait(false);
                         var beforeRetry = provider.GetRequiredService<SqliteCaptureProcessingStore>();
                         Assert.IsNull(await beforeRetry.ReadCenteredWindowByReferenceAsync(ids[2].CaptureId, token).ConfigureAwait(false));
@@ -334,6 +347,13 @@ public sealed partial class VirtualSkyCameraModuleTests
                 var slot = new ExposureProductSlot(measurementExecutionId, ExposureMeasurementProducts.StepAlias,
                     ExposureMeasurementProducts.SchemaVersion, ExposureMeasurementProducts.Variant);
                 Assert.IsNull(await inputs.ReadProductAsync(ids[4], slot, token).ConfigureAwait(false));
+                var failed = await inputs.ReadProductAsync(ids[4], slot with
+                {
+                    SchemaVersion = CenteredViewLayerBindings.DispositionPrefix + slot.SchemaVersion
+                }, token).ConfigureAwait(false);
+                Assert.IsNotNull(failed);
+                Assert.AreEqual(ExposureProductAvailability.Failed, failed.Availability);
+                Assert.IsNull(failed.Product);
                 var execution = await store.ReadExecutionDetailAsync(slot.ExecutionId, token).ConfigureAwait(false);
                 var terminal = execution!.Nodes.Single(node => node.NodeId == slot.Producer);
                 Assert.AreEqual("TerminalFailure", terminal.Status);
@@ -372,6 +392,19 @@ public sealed partial class VirtualSkyCameraModuleTests
             if (closeAfterDeadline)
                 await reopened.GetRequiredService<CenteredWindowCoordinator>().CloseDueAsync(token).ConfigureAwait(false);
             var reopenedStore = reopened.GetRequiredService<SqliteCaptureProcessingStore>();
+            var publisher = reopened.GetRequiredService<CenteredViewPublicationWorker>();
+            await publisher.DrainCameraAsync(ids[4].Camera, null, CancellationToken.None, token).ConfigureAwait(false);
+            var reopenedViews = reopened.GetRequiredService<SqliteCenteredViews>();
+            var archive = Assert.ContainsSingle(await reopenedViews.ReadArchiveAsync(ids[4].CaptureId, token).ConfigureAwait(false));
+            var latestView = await reopenedViews.ReadRevisionAsync(archive.Base.BaseId, archive.LatestRevisionId, token).ConfigureAwait(false);
+            Assert.IsNotNull(latestView);
+            var settledLayer = latestView.Revision.Layers.Single(layer => layer.Key.Kind == "measured-source-markers");
+            Assert.AreEqual(CenteredViewReadiness.Incompatible, settledLayer.Readiness);
+            Assert.AreEqual("centered.product-failed/measurement-publication-io", settledLayer.Reason);
+            Assert.IsNull(settledLayer.Drawable);
+            await publisher.DrainCameraAsync(ids[4].Camera, null, CancellationToken.None, token).ConfigureAwait(false);
+            Assert.AreEqual(archive.LatestRevisionId, Assert.ContainsSingle(await reopenedViews
+                .ReadArchiveAsync(ids[4].CaptureId, token).ConfigureAwait(false)).LatestRevisionId);
             var recovered = await reopenedStore.ReadCenteredWindowByReferenceAsync(ids[2].CaptureId, token).ConfigureAwait(false);
             Assert.IsNotNull(recovered);
             Assert.AreEqual(deadline, recovered.Closure.Schedule.DeadlineUtc);
