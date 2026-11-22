@@ -308,13 +308,15 @@ internal sealed class SiloTestFaults : ISiloFaults
 /// <summary>Generation witnesses and anchor seal evidence, which #1972 supplies in production.</summary>
 internal sealed class SiloTestAuthority : ISiloGenerationWitness, ISiloAnchorTrust
 {
-    public HashSet<long> Witnessed { get; } = [];
+    /// <summary>Witnessed openings, bound to the generation and the exact prefix end each one continues.</summary>
+    public HashSet<(long Generation, string PrefixEndSha256)> WitnessedOpenings { get; } = [];
 
     public bool TrustAnchors { get; set; }
 
     public HashSet<SiloJournalPosition> UntrustedCovers { get; } = [];
 
-    public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position) => Witnessed.Contains(open.Generation);
+    public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position) =>
+        open.PrefixEndSha256 is { } prefixEnd && WitnessedOpenings.Contains((open.Generation, prefixEnd));
 
     public bool IsTrusted(SiloAnchorRecord anchor, SiloJournalPosition position) =>
         TrustAnchors && !UntrustedCovers.Contains(anchor.Covers);
@@ -369,7 +371,7 @@ internal sealed class SiloHarness : IDisposable
         {
             await harness.Journal.OpenFirstGenerationAsync(new Dictionary<string, long> { ["capture-sequence"] = 0 }, CancellationToken.None)
                 .ConfigureAwait(false);
-            await harness.Catalog.CatchUpAsync(null, CancellationToken.None).ConfigureAwait(false);
+            await harness.CatchUpAsync().ConfigureAwait(false);
         }
         return harness;
     }
@@ -415,15 +417,26 @@ internal sealed class SiloHarness : IDisposable
         return await Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>Catch the catalog up to the writer's committed head, as startup does.</summary>
+    public async Task<SiloWalkEnd> CatchUpAsync() =>
+        await Catalog.CatchUpAsync(await State.ReadWriterEvidenceAsync(CancellationToken.None).ConfigureAwait(false), null,
+            CancellationToken.None).ConfigureAwait(false);
+
+    public Task<SiloWriterEvidence> WriterEvidenceAsync() => State.ReadWriterEvidenceAsync(CancellationToken.None).AsTask();
+
+    /// <summary>Append records as one operation with a fresh key, then catch the catalog up.</summary>
     public async Task<SiloCommittedSegment> AppendAsync(params SiloJournalRecord[] records)
     {
-        var committed = await Journal.AppendAsync(records, CancellationToken.None).ConfigureAwait(false);
-        await Catalog.CatchUpAsync(null, CancellationToken.None).ConfigureAwait(false);
+        var committed = await Journal.AppendAsync(records, "test-" + Guid.NewGuid().ToString("N"), CancellationToken.None).ConfigureAwait(false);
+        await CatchUpAsync().ConfigureAwait(false);
         return committed;
     }
 
-    /// <summary>Delete the catalog index (SQLite loss with Silo and publication state intact), then rebuild it.</summary>
-    public async Task<SiloRebuildResult> DeleteCatalogAndRebuildAsync(SiloRebuildOptions? options = null)
+    /// <summary>
+    /// Delete the catalog index (SQLite loss with Silo and publication state intact), then rebuild it as a host would:
+    /// from the local journal, with the surviving writer evidence, unless a test names another source.
+    /// </summary>
+    public async Task<SiloRebuildResult> DeleteCatalogAndRebuildAsync(SiloRebuildOptions? options = null, ISiloFaults? faults = null)
     {
         Close();
         foreach (var suffix in new[] { string.Empty, "-wal", "-shm", "-journal" })
@@ -431,9 +444,12 @@ internal sealed class SiloHarness : IDisposable
             File.Delete(Path.Combine(RootPath, SiloStateRoot.IndexDatabaseFileName + suffix));
         }
         await OpenAsync().ConfigureAwait(false);
-        return await SiloCatalog.RebuildAsync(StateRoot, Binding, Stores, Authority, Authority, Clock, options ?? new(Local),
-            CancellationToken.None).ConfigureAwait(false);
+        return await RebuildAsync(options, faults).ConfigureAwait(false);
     }
+
+    public async Task<SiloRebuildResult> RebuildAsync(SiloRebuildOptions? options = null, ISiloFaults? faults = null) =>
+        await SiloCatalog.RebuildAsync(StateRoot, Binding, Stores, Authority, Authority, Clock,
+            options ?? new(Local, Writer: await WriterEvidenceAsync().ConfigureAwait(false)), CancellationToken.None, faults).ConfigureAwait(false);
 
     /// <summary>Every committed record in the local journal, in order, read straight from the bucket.</summary>
     public IReadOnlyList<SiloJournalRecord> JournalRecords()
@@ -542,25 +558,34 @@ internal static class SiloDrafts
             CameraId: "camera-1", Capture: new("agent-0001", number));
     }
 
-    /// <summary>A centered view revision whose base preview is a member of the first revision and a dependency afterwards.</summary>
+    public static string ReferenceCapture(string baseId) => "reference-" + baseId;
+
+    public static SiloViewEvidence PreviewBinding(string baseId) =>
+        new("view-preview-" + baseId, "1", SiloHash.Sha256(Bytes("view-preview-" + baseId, 900)));
+
+    /// <summary>
+    /// A centered view revision whose base preview is a member of the first revision and a dependency afterwards. Its
+    /// reopen dependencies are derived from its preview and layers, exactly as manifest validation requires; callers add
+    /// only compute dependencies.
+    /// </summary>
     public static SiloGroupDraft View(
         SiloTestPayloads payloads, string baseId, string revisionId, string? previousRevisionId, long order,
-        IReadOnlyList<SiloViewLayerBinding> layers, IReadOnlyList<SiloManifestDependency> dependencies, bool publishPreview)
+        IReadOnlyList<SiloViewLayerBinding> layers, IReadOnlyList<SiloManifestDependency> computeDependencies, bool publishPreview)
     {
         var anchor = SiloHarness.Start.AddMinutes(30);
         var preview = Bytes("view-preview-" + baseId, 900);
         var members = publishPreview
             ? new[] { Member(payloads, "view-preview-" + baseId, "preview", SiloRetentionClass.Display, "image/jpeg", preview) }
             : [];
-        var view = new SiloManifestView("camera-1/run-1/generation-1", order, CenteredViewBase.SchemaVersion,
-            SiloJson.SerializeToElement(new { baseId, kind = "Stack", referenceOrder = 103 }), CenteredViewRevision.SchemaVersion,
-            SiloJson.SerializeToElement(new { revisionId, baseId, order, layers = layers.Count }), layers);
+        var view = new SiloManifestView("camera-1/run-1/generation-1", ReferenceCapture(baseId), order, PreviewBinding(baseId),
+            CenteredViewBase.SchemaVersion, SiloJson.SerializeToElement(new { baseId, kind = "Stack", referenceOrder = 103 }),
+            CenteredViewRevision.SchemaVersion, SiloJson.SerializeToElement(new { revisionId, baseId, order, layers = layers.Count }), layers);
+        var reopen = SiloCenteredViews.RequiredReopen(view)
+            .Where(pair => !(publishPreview && pair.Key.ArtifactId == "view-preview-" + baseId))
+            .Select(static pair => new SiloManifestDependency(pair.Key.ArtifactId, pair.Key.Revision, pair.Key.Sha256, SiloDependencyKind.Reopen, pair.Value));
         return new SiloGroupDraft(SiloJson.CenteredViewGroupKind, baseId, revisionId, anchor.AddSeconds(order), anchor, anchor.AddSeconds(100),
-            members, dependencies, new SiloManifestProvenance([]), previousRevisionId, "camera-1", view);
+            members, [.. reopen, .. computeDependencies], new SiloManifestProvenance([]), previousRevisionId, "camera-1", view);
     }
-
-    public static SiloManifestDependency PreviewDependency(string baseId) =>
-        new("view-preview-" + baseId, "1", SiloHash.Sha256(Bytes("view-preview-" + baseId, 900)), SiloDependencyKind.Reopen, true);
 
     /// <summary>An evidence product published as its own group; layers bind to it by identity and digest.</summary>
     public static SiloGroupDraft Evidence(SiloTestPayloads payloads, string name)
@@ -570,9 +595,6 @@ internal static class SiloDrafts
             [Member(payloads, "evidence-" + name, "evidence", SiloRetentionClass.Metadata, "application/json", Bytes("evidence-" + name, 200))],
             [], new SiloManifestProvenance([]), CameraId: "camera-1");
     }
-
-    public static SiloManifestDependency EvidenceDependency(string name, bool required) =>
-        new("evidence-" + name, "1", SiloHash.Sha256(Bytes("evidence-" + name, 200)), SiloDependencyKind.Reopen, required);
 
     public static SiloViewLayerBinding Layer(string kind, string readiness, string? evidenceName, long order) =>
         new(kind, "Stack", order, readiness,

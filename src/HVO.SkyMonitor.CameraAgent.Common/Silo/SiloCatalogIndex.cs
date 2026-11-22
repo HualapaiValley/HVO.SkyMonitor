@@ -105,6 +105,7 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
             revision TEXT NOT NULL,
             sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
             length INTEGER NOT NULL CHECK(length >= 0),
+            facts_sha256 TEXT NOT NULL CHECK(length(facts_sha256) = 64),
             generation INTEGER NOT NULL,
             sequence INTEGER NOT NULL,
             record_index INTEGER NOT NULL,
@@ -119,8 +120,8 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
         ) STRICT;
         CREATE INDEX roles_disposition ON roles(disposition, generation, sequence, record_index);
         CREATE TRIGGER roles_identity_fixed BEFORE UPDATE ON roles
-        WHEN NEW.sha256 IS NOT OLD.sha256 OR NEW.length IS NOT OLD.length
-        BEGIN SELECT RAISE(ABORT, 'a role is bound to exactly one length and SHA-256'); END;
+        WHEN NEW.sha256 IS NOT OLD.sha256 OR NEW.length IS NOT OLD.length OR NEW.facts_sha256 IS NOT OLD.facts_sha256
+        BEGIN SELECT RAISE(ABORT, 'a role is bound to exactly one length, SHA-256 and set of facts'); END;
 
         CREATE TABLE locators(
             kind TEXT NOT NULL,
@@ -162,6 +163,7 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
             capture_sequence INTEGER,
             manifest_status TEXT NOT NULL CHECK(manifest_status IN ('pending', 'verified', 'temporarily-unavailable', 'missing', 'unverified', 'conflict', 'policy-expired')),
             state TEXT NOT NULL CHECK(state IN ('pending', 'visible', 'closed')),
+            requires_members INTEGER NOT NULL DEFAULT 1 CHECK(requires_members IN (0, 1)),
             outcome TEXT CHECK(outcome IS NULL OR outcome IN ('temporarily-unavailable', 'missing', 'unverified', 'conflict', 'policy-expired')),
             outcome_detail TEXT,
             published_utc_ticks INTEGER,
@@ -169,6 +171,7 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
             to_utc_ticks INTEGER,
             camera_id TEXT,
             stream_id TEXT,
+            reference_capture_id TEXT,
             revision_order INTEGER,
             manifest_json TEXT,
             PRIMARY KEY(group_id, revision_id),
@@ -189,6 +192,7 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
             artifact_revision TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             length INTEGER NOT NULL,
+            facts_sha256 TEXT NOT NULL,
             required INTEGER NOT NULL CHECK(required IN (0, 1)),
             store_id TEXT NOT NULL,
             bucket TEXT NOT NULL,
@@ -338,6 +342,16 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
             PRIMARY KEY(generation, sequence, record_index)
         ) STRICT;
 
+        CREATE TABLE verification_cursors(
+            name TEXT PRIMARY KEY CHECK(name IN ('lazy', 'audit')),
+            generation INTEGER NOT NULL,
+            sequence INTEGER NOT NULL,
+            record_index INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            id TEXT NOT NULL,
+            revision TEXT NOT NULL
+        ) STRICT;
+
         CREATE TABLE unproven_publications(
             generation INTEGER NOT NULL,
             sequence INTEGER NOT NULL,
@@ -356,11 +370,21 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
 
     public SiloStorageBinding Binding { get; } = binding;
 
+    /// <summary>
+    /// Finish or discard an interrupted replacement, refuse a foreign or newer catalog (judging committed WAL pages on a
+    /// copy, so nothing is written), then create or prove the schema.
+    /// </summary>
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
+        SiloCatalogFiles.Recover(Path);
+        var metadata = SiloPublicationState.BindingMetadata(Binding);
+        if (new FileInfo(Path + "-wal") is { Exists: true, Length: > 0 })
+        {
+            await InspectAsync(Path, Format, metadata, System.IO.Path.GetDirectoryName(Path)!, cancellationToken).ConfigureAwait(false);
+        }
         RefuseUnsupportedHeader(Path, Format);
         using var connection = await OpenAsync(Path, cancellationToken).ConfigureAwait(false);
-        await EnsureSchemaAsync(connection, Format, SiloPublicationState.BindingMetadata(Binding), cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, Format, metadata, cancellationToken).ConfigureAwait(false);
         await ExecuteAsync(connection, null, """
             INSERT INTO catalog_cursor(cursor_key, generation, sequence) VALUES(1, 0, 0) ON CONFLICT(cursor_key) DO NOTHING;
             INSERT INTO catalog_authority(authority_key, start_kind, end_reason, unknown_interval, evaluated_unix_ms)
@@ -429,7 +453,13 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
     internal async ValueTask SealForReplacementAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await ExecuteAsync(connection, null, "PRAGMA wal_checkpoint(TRUNCATE);", cancellationToken).ConfigureAwait(false);
-        await ScalarStringAsync(connection, null, "PRAGMA journal_mode = DELETE;", cancellationToken).ConfigureAwait(false);
+        await Sqlite.SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            command.CommandText = "PRAGMA journal_mode = DELETE;";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
     }
 }

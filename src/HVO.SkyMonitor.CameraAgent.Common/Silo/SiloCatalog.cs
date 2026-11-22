@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.Storage.FileSystem;
 
@@ -24,17 +25,15 @@ internal sealed record SiloWalkEnd(SiloJournalPosition? Last, string? LastSha256
 /// <summary>
 /// Reads the authenticated journal prefix forward from a known point: every segment in (g, seq) order, gapless within a
 /// generation, naming its predecessor's SHA-256, and every generation boundary a witnessed opening that names the end it
-/// continues. It stops at the first missing, altered or unauthenticated record or unproven boundary.
+/// continues. A segment is delivered only once the next segment names its exact SHA-256, or, at the writer's known
+/// committed head, once its SHA-256 equals that head's. Nothing past a known head is read as authority. Without a known
+/// head, the last segment that chains back is the tail of the evidence. The walk stops at the first missing, altered or
+/// unauthenticated record or unproven boundary.
 /// </summary>
 internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBinding binding, ISiloGenerationWitness witness)
 {
     public ISiloObjectStore Source => source;
 
-    /// <summary>
-    /// Walk forward from a known point. A segment is delivered only once the next segment names its exact SHA-256, or
-    /// as the tail when nothing follows, so an altered segment is never applied even when it still parses. When the
-    /// writer's committed head is known, a tail at that position must carry that head's SHA-256.
-    /// </summary>
     public async ValueTask<SiloWalkEnd> WalkAsync(
         SiloJournalPosition? after, string? afterSha256, Func<SiloWalkedSegment, ValueTask<bool>> onSegment, CancellationToken cancellationToken,
         SiloJournalPosition? knownHead = null, string? knownHeadSha256 = null)
@@ -42,6 +41,10 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
         var walk = new WalkState(after, afterSha256);
         while (true)
         {
+            if (knownHead is { } head && walk.ReadPosition is { } read && read >= head)
+            {
+                return await FinishAsync(walk, SiloPrefixEnd.Tail, onSegment, knownHead, knownHeadSha256).ConfigureAwait(false);
+            }
             string? nextKey;
             try
             {
@@ -59,20 +62,24 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
                 ? position == new SiloJournalPosition(1, 1)
                 : position == new SiloJournalPosition(last.Generation, last.Sequence + 1) ||
                   position.Generation > last.Generation && position.Sequence == 1;
-            if (!continues)
+            if (!continues || knownHead is { } bound && position > bound)
             {
                 return await FinishAsync(walk, SiloPrefixEnd.Gap, onSegment, knownHead, knownHeadSha256).ConfigureAwait(false);
             }
-            (string VersionId, byte[] Bytes)? read;
+            (string VersionId, byte[] Bytes)? found;
             try
             {
-                read = await SiloVerifier.ReadCurrentAsync(source, nextKey, cancellationToken).ConfigureAwait(false);
+                found = await SiloVerifier.ReadCurrentAsync(source, nextKey, cancellationToken).ConfigureAwait(false);
             }
             catch (SiloStoreUnavailableException)
             {
                 return await FinishAsync(walk, SiloPrefixEnd.SourceUnavailable, onSegment, knownHead, knownHeadSha256).ConfigureAwait(false);
             }
-            if (read is not { } found)
+            catch (SiloInvalidObjectException)
+            {
+                return await FinishAsync(walk, SiloPrefixEnd.Invalid, onSegment, knownHead, knownHeadSha256).ConfigureAwait(false);
+            }
+            if (found is not { } current)
             {
                 return await FinishAsync(walk, SiloPrefixEnd.Gap, onSegment, knownHead, knownHeadSha256).ConfigureAwait(false);
             }
@@ -80,7 +87,7 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
             IReadOnlyList<SiloPositionedRecord> records;
             try
             {
-                (segment, records) = Parse(found.Bytes, position);
+                (segment, records) = Parse(current.Bytes, position);
             }
             catch (SiloInvalidObjectException)
             {
@@ -124,7 +131,7 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
                 }
                 walk.Delivered(confirmed);
             }
-            walk.Read(new(position, SiloHash.Sha256(found.Bytes), found.VersionId, segment, records, witnessed));
+            walk.Read(new(position, SiloHash.Sha256(current.Bytes), current.VersionId, segment, records, witnessed));
         }
     }
 
@@ -147,8 +154,8 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
     }
 
     /// <summary>
-    /// The last read segment chains back to authenticated history but nothing after it confirms its bytes. It is the
-    /// tail of the evidence and is delivered, unless the writer's known head at that position names other bytes.
+    /// Nothing after the last read segment confirms its bytes. At the writer's known head it is delivered only if its
+    /// SHA-256 is the head's; otherwise it chains back to authenticated history and is the tail of the evidence.
     /// </summary>
     private static async ValueTask<SiloWalkEnd> FinishAsync(
         WalkState walk, string reason, Func<SiloWalkedSegment, ValueTask<bool>> onSegment, SiloJournalPosition? knownHead,
@@ -187,6 +194,19 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
             }
         }
         return null;
+    }
+
+    /// <summary>The predecessor hash named by the first segment after a position: the authenticated SHA-256 of that position.</summary>
+    public async ValueTask<string?> SuccessorNamedShaAsync(SiloJournalPosition position, CancellationToken cancellationToken)
+    {
+        var key = await NextSegmentKeyAsync(position, cancellationToken).ConfigureAwait(false);
+        if (key is null || !SiloObjectNamespace.TryParseSegmentKey(key, out var next) ||
+            await SiloVerifier.ReadCurrentAsync(source, key, cancellationToken).ConfigureAwait(false) is not { } found)
+        {
+            return null;
+        }
+        var (segment, _) = Parse(found.Bytes, next);
+        return segment.Previous == position ? segment.PreviousSha256 : null;
     }
 
     /// <summary>Publications named past the prefix. Nothing about them is claimed; they are reported as authority-unproven.</summary>
@@ -233,17 +253,22 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
 }
 
 /// <summary>
-/// Where to read the journal, whether that source may lag the lost writer (an archive replica), and the writer's committed
-/// head when instance State survived, which authenticates the tail and exposes a lost one.
+/// Where to read the journal; whether that source may lag the writer (an archive replica); the writer's surviving
+/// evidence, which authenticates the tail, exposes a lost tail and names P3s awaiting their first P4; and the largest
+/// checkpoint the reader accepts.
 /// </summary>
 internal sealed record SiloRebuildOptions(
-    ISiloObjectStore JournalSource, bool SourceMayBeIncomplete = false, SiloJournalPosition? KnownHead = null, string? KnownHeadSha256 = null);
+    ISiloObjectStore JournalSource,
+    bool SourceMayBeIncomplete = false,
+    SiloWriterEvidence? Writer = null,
+    long MaximumCheckpointBytes = SiloJson.MaximumMetadataObjectBytes);
 
 internal sealed record SiloRebuildResult(string StartKind, SiloJournalPosition? Anchor, SiloAuthorityReport Authority);
 
 /// <summary>
-/// The catalog's authority operations: startup catch-up from the cursor with P3 recovery, and rebuild of an empty index
-/// from durable records. Startup work is bounded by the journal after the cursor, never by history size (#1965 F5).
+/// The catalog's authority operations: startup catch-up bounded by the writer's committed head, with P3 recovery, and
+/// rebuild of an empty index from durable records. Startup work is bounded by the journal after the cursor, never by
+/// history size (#1965 F5).
 /// </summary>
 internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, ISiloGenerationWitness witness)
 {
@@ -252,14 +277,21 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
     public SiloStoreSet Stores => stores;
 
     /// <summary>
-    /// Apply every authenticated segment after the cursor, then run P3 recovery on publications awaiting P4. A cursor that
-    /// the journal no longer holds is divergence: the catalog must be rebuilt, not served as authoritative.
+    /// Apply every authenticated segment after the cursor up to the writer's committed head, then run P3 recovery on
+    /// publications awaiting P4. A segment past the committed head is not authority; the head itself must carry the
+    /// head's SHA-256; and the authority-unknown interval clears only when the committed head is read again. A cursor the
+    /// journal no longer holds, or one ahead of the committed head, is divergence: the catalog must be rebuilt.
     /// </summary>
-    public async ValueTask<SiloWalkEnd> CatchUpAsync(SiloFreshEvidence? fresh, CancellationToken cancellationToken)
+    public async ValueTask<SiloWalkEnd> CatchUpAsync(SiloWriterEvidence writer, SiloFreshEvidence? fresh, CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(writer);
         var (cursor, cursorSha) = await index.ReadCursorAsync(cancellationToken).ConfigureAwait(false);
         if (cursor is { } position)
         {
+            if (writer.Head is not { } head || position > head)
+            {
+                throw new SiloCatalogDivergedException($"The catalog cursor {position} is ahead of the writer's committed head; rebuild the catalog.");
+            }
             var key = SiloObjectNamespace.SegmentKey(position);
             (string VersionId, byte[] Bytes)? found;
             try
@@ -268,7 +300,7 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
             }
             catch (SiloStoreUnavailableException)
             {
-                await RecordEndAsync(new(cursor, cursorSha, SiloPrefixEnd.SourceUnavailable), cancellationToken).ConfigureAwait(false);
+                await RecordEndAsync(new(cursor, cursorSha, SiloPrefixEnd.SourceUnavailable), unknown: true, [], cancellationToken).ConfigureAwait(false);
                 return new(cursor, cursorSha, SiloPrefixEnd.SourceUnavailable);
             }
             if (found is not { } segment || !string.Equals(SiloHash.Sha256(segment.Bytes), cursorSha, StringComparison.Ordinal))
@@ -283,22 +315,23 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
             await index.ApplySegmentAsync(segment.Position, segment.Sha256, segment.Segment.PreviousSha256, segment.Records,
                 segment.Witnessed, cancellationToken).ConfigureAwait(false);
             return true;
-        }, cancellationToken).ConfigureAwait(false);
-        await RecordEndAsync(end, cancellationToken).ConfigureAwait(false);
-        // Reported afresh on every catch-up, so a list from an earlier outage never outlives it.
-        await index.RecordUnprovenAsync(end.Reason == SiloPrefixEnd.Tail
-            ? []
-            : await walker.ReadUnprovenPublicationsAsync(end.Last, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-        await index.EvaluatePublicationsAsync(stores, SiloEvaluationMode.Startup, fresh, retryClosed: false, cancellationToken)
-            .ConfigureAwait(false);
+        }, cancellationToken, writer.Head, writer.HeadSha256).ConfigureAwait(false);
+        var healed = end.Reason == SiloPrefixEnd.Tail && end.Last == writer.Head &&
+            string.Equals(end.LastSha256, writer.HeadSha256, StringComparison.Ordinal);
+        var unproven = await walker.ReadUnprovenPublicationsAsync(end.Last, cancellationToken).ConfigureAwait(false);
+        await RecordEndAsync(healed ? end : end with { Reason = end.Reason == SiloPrefixEnd.Tail ? SiloPrefixEnd.PossiblyIncompleteTail : end.Reason },
+            !healed, unproven, cancellationToken).ConfigureAwait(false);
+        await index.EvaluatePublicationsAsync(stores, fresh, retryClosed: false, cancellationToken).ConfigureAwait(false);
         return end;
     }
 
-    private async ValueTask RecordEndAsync(SiloWalkEnd end, CancellationToken cancellationToken)
+    private async ValueTask RecordEndAsync(
+        SiloWalkEnd end, bool unknown, IReadOnlyList<(SiloJournalPosition Position, int Index, string GroupId, string RevisionId)> unproven,
+        CancellationToken cancellationToken)
     {
         var authority = await index.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false);
-        var unknown = end.Reason != SiloPrefixEnd.Tail;
         await index.RecordAuthorityAsync(authority.StartKind, authority.Start, end.Reason, unknown, cancellationToken).ConfigureAwait(false);
+        await index.RecordUnprovenAsync(unproven, cancellationToken).ConfigureAwait(false);
         if (unknown != authority.UnknownInterval)
         {
             await index.RecomputeAllRolesAsync(cancellationToken).ConfigureAwait(false);
@@ -307,7 +340,10 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
 
     /// <summary>Retry closed revisions whose outcome may change, such as a timed-out GET (#1965 5.3).</summary>
     public ValueTask<int> RetryClosedAsync(CancellationToken cancellationToken) =>
-        index.EvaluatePublicationsAsync(stores, SiloEvaluationMode.Startup, null, retryClosed: true, cancellationToken);
+        index.EvaluatePublicationsAsync(stores, null, retryClosed: true, cancellationToken);
+
+    public ValueTask<string?> ConfirmP4Async(string groupId, string revisionId, SiloFreshEvidence fresh, CancellationToken cancellationToken) =>
+        index.ConfirmP4Async(stores, groupId, revisionId, fresh, cancellationToken);
 
     public ValueTask<int> VerifyRolesAsync(int limit, CancellationToken cancellationToken, bool includeAvailable = false) =>
         index.VerifyRolesAsync(stores, limit, cancellationToken, includeAvailable);
@@ -315,184 +351,206 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
     public ValueTask<SiloReopenResult> ReopenAsync(string groupId, string revisionId, CancellationToken cancellationToken) =>
         index.ReopenAsync(stores, groupId, revisionId, cancellationToken);
 
+    public ValueTask<SiloReopenResult> ReopenViewAsync(
+        string streamId, string referenceCaptureId, string baseId, string revisionId, CancellationToken cancellationToken) =>
+        index.ReopenViewAsync(stores, streamId, referenceCaptureId, baseId, revisionId, cancellationToken);
+
     /// <summary>
-    /// Rebuild an empty index from durable records (#1965 5.3, 7.5). The index is built beside the live file and published
-    /// by rename only when complete, so a crash or refusal leaves the previous file untouched. Replay starts at the newest
-    /// trusted anchor whose bytes verify, falls back to the previous one, and otherwise starts at generation 1. Each
-    /// manifest is verified through an eligible locator; member roles start unverified for the lazy phase.
+    /// Rebuild an empty index from durable records (#1965 5.3, 7.5). The live catalog, including committed pages in its
+    /// WAL, is first proven to be this instance's own supported catalog on a copy, so a foreign or newer one is refused
+    /// untouched. The new index is built aside, published as a complete <c>.replacement</c>, and swapped in by rename;
+    /// <see cref="SiloCatalogFiles.Recover"/> finishes or discards any interruption. Replay starts at the newest trusted
+    /// anchor whose exact version verifies, falls back to older ones, and otherwise starts at generation 1. With the
+    /// writer's evidence, nothing past its committed head is adopted and a P3 awaiting its first P4 is recovered under
+    /// P3 recovery rather than as settled history.
     /// </summary>
     public static async ValueTask<SiloRebuildResult> RebuildAsync(
         SiloStateRoot root, SiloStorageBinding binding, SiloStoreSet stores, ISiloGenerationWitness witness, ISiloAnchorTrust trust,
-        TimeProvider clock, SiloRebuildOptions options, CancellationToken cancellationToken)
+        TimeProvider clock, SiloRebuildOptions options, CancellationToken cancellationToken, ISiloFaults? faults = null)
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(options);
         var target = root.IndexDatabasePath;
-        // A newer or foreign index is refused, never replaced by an older reader's rebuild.
-        SiloSqlite.RefuseUnsupportedHeader(target, SiloCatalogIndex.Format);
-        var temporary = root.Root.Resolve($"{SiloStateRoot.IndexDatabaseFileName}.rebuild-{Guid.NewGuid():N}");
+        SiloCatalogFiles.Recover(target);
+        await SiloSqlite.InspectAsync(target, SiloCatalogIndex.Format, SiloPublicationState.BindingMetadata(binding), root.Root.Path,
+            cancellationToken).ConfigureAwait(false);
+        var building = SiloCatalogFiles.Building(target);
+        SiloCatalogFiles.DeleteWithSidecars(building);
+        var writer = options.Writer;
+        string startKind;
+        SiloJournalPosition? anchor;
         try
         {
-            using var index = new SiloCatalogIndex(temporary, binding, clock);
-            await index.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            var walker = new SiloJournalWalker(options.JournalSource, binding, witness);
-            var start = await ChooseStartAsync(walker, binding, trust, cancellationToken).ConfigureAwait(false);
-            if (start.Checkpoint is { } checkpoint)
+            using (var index = new SiloCatalogIndex(building, binding, clock))
             {
-                await index.ApplyCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
-            }
-            var end = await walker.WalkAsync(start.Checkpoint?.Covers, start.Checkpoint?.CoversSha256, async segment =>
-            {
-                await index.ApplySegmentAsync(segment.Position, segment.Sha256, segment.Segment.PreviousSha256, segment.Records,
-                    segment.Witnessed, cancellationToken).ConfigureAwait(false);
-                return true;
-            }, cancellationToken, options.KnownHead, options.KnownHeadSha256).ConfigureAwait(false);
-            var lostTail = options.KnownHead is { } head && (end.Last is not { } last || last < head);
-            var unknown = end.Reason != SiloPrefixEnd.Tail || options.SourceMayBeIncomplete || lostTail;
-            var reason = end.Reason == SiloPrefixEnd.Tail && unknown ? SiloPrefixEnd.PossiblyIncompleteTail : end.Reason;
-            await index.RecordAuthorityAsync(start.Checkpoint is null ? "genesis" : "anchor", start.Checkpoint?.Covers, reason, unknown,
-                cancellationToken).ConfigureAwait(false);
-            if (unknown)
-            {
+                await index.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                var walker = new SiloJournalWalker(options.JournalSource, binding, witness);
+                var start = await ChooseStartAsync(walker, binding, trust, writer, options.MaximumCheckpointBytes, cancellationToken)
+                    .ConfigureAwait(false);
+                if (start is { } checkpoint)
+                {
+                    await index.ApplyCheckpointAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+                }
+                var end = await walker.WalkAsync(start?.Covers, start?.CoversSha256, async segment =>
+                {
+                    await index.ApplySegmentAsync(segment.Position, segment.Sha256, segment.Segment.PreviousSha256, segment.Records,
+                        segment.Witnessed, cancellationToken).ConfigureAwait(false);
+                    return true;
+                }, cancellationToken, writer?.Head, writer?.HeadSha256).ConfigureAwait(false);
+                var reachedHead = writer is null || end.Last == writer.Head && string.Equals(end.LastSha256, writer.HeadSha256, StringComparison.Ordinal);
+                var unknown = end.Reason != SiloPrefixEnd.Tail || options.SourceMayBeIncomplete || !reachedHead;
+                var reason = end.Reason == SiloPrefixEnd.Tail && unknown ? SiloPrefixEnd.PossiblyIncompleteTail : end.Reason;
+                startKind = start is null ? "genesis" : "anchor";
+                anchor = start?.Covers;
+                await index.RecordAuthorityAsync(startKind, anchor, reason, unknown, cancellationToken).ConfigureAwait(false);
                 await index.RecordUnprovenAsync(await walker.ReadUnprovenPublicationsAsync(end.Last, cancellationToken).ConfigureAwait(false),
                     cancellationToken).ConfigureAwait(false);
-                await index.RecomputeAllRolesAsync(cancellationToken).ConfigureAwait(false);
-            }
-            await index.EvaluatePublicationsAsync(stores, SiloEvaluationMode.Rebuild, null, retryClosed: false, cancellationToken)
-                .ConfigureAwait(false);
-            await index.SealForReplacementAsync(cancellationToken).ConfigureAwait(false);
-            DurableSync.File(temporary);
-            foreach (var suffix in new[] { "-wal", "-shm", "-journal" })
-            {
-                var sidecar = target + suffix;
-                if (File.Exists(sidecar))
+                if (unknown)
                 {
-                    root.Root.Verify(sidecar, "silo-catalog-rebuild");
-                    File.Delete(sidecar);
+                    await index.RecomputeAllRolesAsync(cancellationToken).ConfigureAwait(false);
                 }
+                await index.MarkHistoryAsync(writer?.AwaitingFirstP4 ?? SiloWriterEvidence.Empty.AwaitingFirstP4, cancellationToken)
+                    .ConfigureAwait(false);
+                await index.EvaluatePublicationsAsync(stores, null, retryClosed: false, cancellationToken).ConfigureAwait(false);
+                await index.SealForReplacementAsync(cancellationToken).ConfigureAwait(false);
             }
-            File.Move(temporary, target, overwrite: true);
+            DurableSync.File(building);
+            File.Move(building, SiloCatalogFiles.Replacement(target));
             DurableSync.Directory(root.Root.Path);
-            using var rebuilt = new SiloCatalogIndex(target, binding, clock);
-            await rebuilt.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            return new(start.Checkpoint is null ? "genesis" : "anchor", start.Checkpoint?.Covers,
-                await rebuilt.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false));
         }
         finally
         {
-            foreach (var suffix in new[] { string.Empty, "-wal", "-shm", "-journal" })
-            {
-                var leftover = temporary + suffix;
-                if (File.Exists(leftover))
-                {
-                    File.Delete(leftover);
-                }
-            }
+            SiloCatalogFiles.DeleteWithSidecars(building);
         }
+        // From here a complete replacement exists; any interruption is finished by Recover.
+        faults?.Hit(SiloFaultPoint.AfterReplacementReady);
+        if (File.Exists(target))
+        {
+            SiloCatalogFiles.Retire(target);
+        }
+        faults?.Hit(SiloFaultPoint.AfterTargetRetired);
+        SiloCatalogFiles.Recover(target);
+        using var rebuilt = new SiloCatalogIndex(target, binding, clock);
+        await rebuilt.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return new(startKind, anchor, await rebuilt.ReadAuthorityAsync(cancellationToken).ConfigureAwait(false));
     }
 
-    private sealed record Start(SiloJournalCheckpoint? Checkpoint);
-
     /// <summary>
-    /// The newest checkpoint is a trusted anchor only if its exact bytes match an <c>anchor</c> record committed in the
-    /// authenticated chain after it, and the seal evidence is trusted. A damaged or untrusted checkpoint authenticates
-    /// nothing, and the search falls back.
+    /// Choose the newest trusted anchor (#1965 4.5). A checkpoint's covered SHA-256 is the predecessor hash named by the
+    /// first segment after it; the authenticated chain from there must contain a trusted <c>anchor</c> record for that
+    /// checkpoint; and the anchor's exact version must read back with its length and SHA-256 within the reader's bound.
+    /// A candidate that is unreadable, oversized, absent or unproven is skipped and an older one is tried, then genesis.
     /// </summary>
-    private static async ValueTask<Start> ChooseStartAsync(
-        SiloJournalWalker walker, SiloStorageBinding binding, ISiloAnchorTrust trust, CancellationToken cancellationToken)
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Only data and store failures of one candidate are isolated; refusals and binding conflicts propagate.")]
+    private static async ValueTask<SiloJournalCheckpoint?> ChooseStartAsync(
+        SiloJournalWalker walker, SiloStorageBinding binding, ISiloAnchorTrust trust, SiloWriterEvidence? writer, long maximumBytes,
+        CancellationToken cancellationToken)
     {
         var source = walker.Source;
-        var checkpoints = new List<(string Key, SiloJournalPosition Covers)>();
+        var candidates = new List<(string Key, SiloJournalPosition Covers)>();
         try
         {
             await foreach (var key in source.ListKeysAsync(SiloObjectNamespace.CheckpointPrefix, null, cancellationToken).ConfigureAwait(false))
             {
-                if (SiloObjectNamespace.TryParseCheckpointKey(key, out var covers))
+                if (SiloObjectNamespace.TryParseCheckpointKey(key, out var covers) && (writer?.Head is not { } head || covers <= head))
                 {
-                    checkpoints.Add((key, covers));
+                    candidates.Add((key, covers));
                 }
             }
         }
         catch (SiloStoreUnavailableException)
         {
-            return new(null);
+            return null;
         }
-        foreach (var (key, covers) in checkpoints.OrderByDescending(static checkpoint => checkpoint.Covers))
+        var sameStore = string.Equals(source.Descriptor.StoreId, binding.StoreId, StringComparison.Ordinal) &&
+            string.Equals(source.Descriptor.Bucket, binding.Bucket, StringComparison.Ordinal);
+        foreach (var (key, covers) in candidates.OrderByDescending(static candidate => candidate.Covers))
         {
-            (string VersionId, byte[] Bytes)? read;
             try
             {
-                read = await SiloVerifier.ReadCurrentAsync(source, key, cancellationToken).ConfigureAwait(false);
-            }
-            catch (SiloStoreUnavailableException)
-            {
-                continue;
-            }
-            if (read is not { } found)
-            {
-                continue;
-            }
-            SiloJournalCheckpoint checkpoint;
-            try
-            {
-                checkpoint = SiloJson.ReadCheckpoint(found.Bytes, "journal checkpoint " + covers);
-            }
-            catch (SiloInvalidObjectException)
-            {
-                continue;
-            }
-            if (!string.Equals(checkpoint.InstanceId, binding.InstanceId, StringComparison.Ordinal) ||
-                !string.Equals(checkpoint.StorageBindingId, binding.BindingId, StringComparison.Ordinal))
-            {
-                throw new SiloConflictException("silo.binding-mismatch",
-                    $"Journal checkpoint {covers} belongs to another instance or storage binding; nothing was read from this bucket.");
-            }
-            if (checkpoint.Covers != covers)
-            {
-                continue;
-            }
-            var sha = SiloHash.Sha256(found.Bytes);
-            var sameStore = string.Equals(source.Descriptor.StoreId, binding.StoreId, StringComparison.Ordinal) &&
-                string.Equals(source.Descriptor.Bucket, binding.Bucket, StringComparison.Ordinal);
-            var trusted = false;
-            await walker.WalkAsync(checkpoint.Covers, checkpoint.CoversSha256, segment =>
-            {
-                foreach (var record in segment.Records)
+                var coversSha = await walker.SuccessorNamedShaAsync(covers, cancellationToken).ConfigureAwait(false);
+                if (coversSha is null)
                 {
-                    if (record.Record is SiloAnchorRecord anchor &&
-                        string.Equals(anchor.Checkpoint.Key, key, StringComparison.Ordinal) &&
-                        (!sameStore || string.Equals(anchor.Checkpoint.VersionId, found.VersionId, StringComparison.Ordinal)) &&
-                        string.Equals(anchor.CheckpointSha256, sha, StringComparison.Ordinal) && anchor.CheckpointLength == found.Bytes.Length &&
-                        anchor.Covers == checkpoint.Covers && string.Equals(anchor.CoversSha256, checkpoint.CoversSha256, StringComparison.Ordinal) &&
-                        trust.IsTrusted(anchor, segment.Position))
-                    {
-                        trusted = true;
-                    }
+                    continue;
                 }
-                return ValueTask.FromResult(!trusted);
-            }, cancellationToken).ConfigureAwait(false);
-            if (trusted)
+                SiloAnchorRecord? anchor = null;
+                await walker.WalkAsync(covers, coversSha, segment =>
+                {
+                    anchor ??= segment.Records.Select(static record => record.Record).OfType<SiloAnchorRecord>().FirstOrDefault(candidate =>
+                        string.Equals(candidate.Checkpoint.Key, key, StringComparison.Ordinal) && candidate.Covers == covers &&
+                        string.Equals(candidate.CoversSha256, coversSha, StringComparison.Ordinal) &&
+                        trust.IsTrusted(candidate, segment.Position));
+                    return ValueTask.FromResult(anchor is null);
+                }, cancellationToken, writer?.Head, writer?.HeadSha256).ConfigureAwait(false);
+                if (anchor is null || anchor.CheckpointLength > maximumBytes)
+                {
+                    continue;
+                }
+                var locator = sameStore
+                    ? anchor.Checkpoint with { StoreId = source.Descriptor.StoreId, Bucket = source.Descriptor.Bucket }
+                    : await source.LocateCurrentVersionAsync(key, cancellationToken).ConfigureAwait(false) is { } version
+                        ? new SiloExactLocator(source.Descriptor.StoreId, source.Descriptor.Bucket, key, version)
+                        : null;
+                if (locator is null)
+                {
+                    continue;
+                }
+                var probe = await SiloVerifier.ProbeAsync(source, locator, anchor.CheckpointLength, anchor.CheckpointSha256, TimeProvider.System,
+                    captureBytes: true, cancellationToken).ConfigureAwait(false);
+                if (probe is not { Status: SiloProbeStatus.Verified, Bytes: { } bytes })
+                {
+                    continue;
+                }
+                var checkpoint = SiloJson.ReadCheckpoint(bytes, "journal checkpoint " + covers);
+                if (!string.Equals(checkpoint.InstanceId, binding.InstanceId, StringComparison.Ordinal) ||
+                    !string.Equals(checkpoint.StorageBindingId, binding.BindingId, StringComparison.Ordinal))
+                {
+                    throw new SiloConflictException("silo.binding-mismatch",
+                        $"Journal checkpoint {covers} belongs to another instance or storage binding; nothing was read from this bucket.");
+                }
+                if (checkpoint.Covers == covers && string.Equals(checkpoint.CoversSha256, coversSha, StringComparison.Ordinal))
+                {
+                    return checkpoint;
+                }
+            }
+            catch (Exception exception) when (exception is SiloInvalidObjectException or SiloStoreUnavailableException)
             {
-                return new(checkpoint);
+                // This candidate cannot be proven; an older anchor or genesis may still be.
             }
         }
-        return new(null);
+        return null;
     }
+}
+
+/// <summary>The checkpoint would exceed what any reader accepts; it is refused before anything is written.</summary>
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Internal Silo exception; every instance carries the evidence its handlers need.")]
+internal sealed class SiloCheckpointTooLargeException(long length, long maximum)
+    : InvalidOperationException($"A checkpoint of {length} bytes exceeds the {maximum}-byte bound every reader enforces; it was not written.")
+{
+    public long Length { get; } = length;
+    public long Maximum { get; } = maximum;
 }
 
 /// <summary>
 /// Write a checkpoint of the catalog's applied records at its cursor (#1965 4.5). It becomes a trusted anchor only
-/// after #1972 seals it in a backup and appends an <c>anchor</c> record with that evidence.
+/// after #1972 seals it in a backup and appends an <c>anchor</c> record with that evidence. A checkpoint larger than the
+/// readers' bound is refused rather than written, so the writer never produces one that would disable a rebuild.
 /// </summary>
 internal sealed class SiloCheckpointWriter(
-    SiloCatalogIndex index, SiloObjectSpool spool, ISiloObjectStore local, SiloStorageBinding binding, TimeProvider clock)
+    SiloCatalogIndex index, SiloObjectSpool spool, ISiloObjectStore local, SiloStorageBinding binding, TimeProvider clock,
+    long maximumBytes = SiloJson.MaximumMetadataObjectBytes)
 {
-    /// <summary>Returns the anchor record that names the verified checkpoint, ready for seal evidence.</summary>
+    /// <summary>Returns the anchor record that names the verified checkpoint's exact version, ready for seal evidence.</summary>
     public async ValueTask<SiloAnchorRecord> WriteAsync(CancellationToken cancellationToken)
     {
         var (covers, coversSha, entries) = await index.ExportRecordsAsync(cancellationToken).ConfigureAwait(false);
         var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, binding.InstanceId, binding.BindingId, covers, coversSha, entries);
         var bytes = SiloJson.Serialize(checkpoint);
+        if (bytes.Length > maximumBytes)
+        {
+            throw new SiloCheckpointTooLargeException(bytes.Length, maximumBytes);
+        }
         var sha = SiloHash.Sha256(bytes);
         var name = await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         var key = SiloObjectNamespace.CheckpointKey(covers);

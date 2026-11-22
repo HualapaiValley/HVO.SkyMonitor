@@ -32,11 +32,15 @@ internal sealed record SiloDraftMember(
     string? ContentIdentitySha256 = null,
     string? OutputIdentitySha256 = null,
     string? Producer = null,
-    string? RecipeIdentitySha256 = null);
+    string? RecipeIdentitySha256 = null)
+{
+    public SiloMemberFacts Facts() => new(Role, RetentionClass, MediaType, ContentIdentitySha256, OutputIdentitySha256, Producer, RecipeIdentitySha256);
+}
 
 /// <summary>
 /// The payload spool seam (#1968 owns the spool). It reopens a member's exact staged bytes after a restart and is told
-/// when they may be released: only after the group is visible or its staged work was abandoned (#1965 5.2).
+/// when they may be released: only after the group is visible or its staged work was abandoned (#1965 5.2). Release is
+/// retried after an interruption or a lost acknowledgment, so it must be idempotent.
 /// </summary>
 internal interface ISiloPayloadSpool
 {
@@ -53,7 +57,23 @@ internal sealed record SiloJournalHead(long WriterGeneration, long Generation, l
     public SiloJournalPosition? Position => Sequence == 0 ? null : new(Generation, Sequence);
 }
 
-internal sealed record SiloPendingSegment(SiloJournalPosition Position, string Sha256, long Length, string? GroupId, string? RevisionId);
+/// <summary>A segment whose exact bytes are fixed and spooled, awaiting its create-only write and readback.</summary>
+internal sealed record SiloPendingSegment(
+    SiloJournalPosition Position, string Sha256, long Length, string OperationId, string? GroupId, string? RevisionId);
+
+/// <summary>A committed journal operation, found again by its key when a caller retries it.</summary>
+internal sealed record SiloCommittedOperation(string OperationId, SiloJournalPosition Position, string Sha256, string VersionId);
+
+/// <summary>
+/// What the writer's surviving State proves (#1965 4.5, 5.3): the committed head that authenticates the journal tail,
+/// and the committed publications whose first P4 has not happened yet, which recovery treats as P3 recovery rather than
+/// as settled history.
+/// </summary>
+internal sealed record SiloWriterEvidence(
+    SiloJournalPosition? Head, string? HeadSha256, IReadOnlySet<(string GroupId, string RevisionId)> AwaitingFirstP4)
+{
+    public static SiloWriterEvidence Empty { get; } = new(null, null, new HashSet<(string, string)>());
+}
 
 internal sealed record SiloStagedMember(int Ordinal, SiloDraftMember Draft, string? VersionId, DateTimeOffset? VerifiedUtc, bool Released);
 
@@ -68,8 +88,10 @@ internal sealed record SiloStagedGroup(
     DateTimeOffset? ManifestVerifiedUtc,
     SiloJournalPosition? JournalPosition,
     string? BlockedCode,
-    string? BlockedDetail);
+    string? BlockedDetail,
+    string? SupersededManifestVersionId);
 
+/// <summary>A version that staged work created and no committed record names. An empty version is an unknown one.</summary>
 internal sealed record SiloOrphanCandidate(SiloExactLocator Locator, string Sha256, long Length, string Reason, string? GroupId, string? RevisionId);
 
 /// <summary>
@@ -79,6 +101,9 @@ internal sealed record SiloOrphanCandidate(SiloExactLocator Locator, string Sha2
 internal sealed class SiloPublicationState(string path, SiloStorageBinding binding, TimeProvider clock)
 {
     internal const int ApplicationId = 0x48535053; // "HSPS"
+
+    /// <summary>The empty version of an orphan candidate: a write may have landed a version that was never recorded.</summary>
+    public const string UnknownVersion = "";
 
     internal static readonly SiloSqliteFormat Format = new(SiloFormats.PublicationState, ApplicationId, 1, SchemaSql,
         "Silo publication state");
@@ -113,6 +138,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             sequence INTEGER NOT NULL CHECK(sequence >= 1),
             sha256 TEXT NOT NULL CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
             length INTEGER NOT NULL CHECK(length > 0),
+            operation_id TEXT NOT NULL CHECK(length(operation_id) BETWEEN 1 AND 256),
             purpose_group_id TEXT,
             purpose_revision_id TEXT,
             created_unix_ms INTEGER NOT NULL,
@@ -120,6 +146,19 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         ) STRICT;
         CREATE TRIGGER journal_pending_fixed BEFORE UPDATE ON journal_pending
         BEGIN SELECT RAISE(ABORT, 'a pending segment is replayed with its exact bytes, never changed'); END;
+
+        CREATE TABLE journal_operations(
+            operation_id TEXT PRIMARY KEY CHECK(length(operation_id) BETWEEN 1 AND 256),
+            generation INTEGER NOT NULL,
+            sequence INTEGER NOT NULL,
+            sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+            version_id TEXT NOT NULL,
+            UNIQUE(generation, sequence)
+        ) STRICT;
+        CREATE TRIGGER journal_operations_fixed BEFORE UPDATE ON journal_operations
+        BEGIN SELECT RAISE(ABORT, 'a committed operation is permanent'); END;
+        CREATE TRIGGER journal_operations_no_delete BEFORE DELETE ON journal_operations
+        BEGIN SELECT RAISE(ABORT, 'a committed operation is permanent'); END;
 
         CREATE TABLE staged_groups(
             group_id TEXT NOT NULL CHECK(length(group_id) BETWEEN 1 AND 128),
@@ -132,6 +171,8 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             manifest_length INTEGER CHECK(manifest_length IS NULL OR manifest_length > 0),
             manifest_version_id TEXT,
             manifest_verified_unix_ms INTEGER,
+            manifest_put_started_unix_ms INTEGER,
+            superseded_manifest_version_id TEXT,
             journal_generation INTEGER,
             journal_sequence INTEGER,
             blocked_code TEXT,
@@ -150,21 +191,22 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         CREATE TRIGGER staged_groups_draft_fixed BEFORE UPDATE ON staged_groups
         WHEN NEW.group_kind IS NOT OLD.group_kind OR NEW.draft_sha256 IS NOT OLD.draft_sha256
             OR NEW.draft_json IS NOT OLD.draft_json OR NEW.staged_unix_ms IS NOT OLD.staged_unix_ms
-            OR (OLD.manifest_sha256 IS NOT NULL AND NEW.manifest_sha256 IS NOT OLD.manifest_sha256)
-            OR (OLD.manifest_version_id IS NOT NULL AND NEW.manifest_version_id IS NOT OLD.manifest_version_id)
+            OR (OLD.state IN ('recorded', 'visible', 'abandoned') AND (NEW.manifest_sha256 IS NOT OLD.manifest_sha256
+                OR NEW.manifest_version_id IS NOT OLD.manifest_version_id OR NEW.manifest_verified_unix_ms IS NOT OLD.manifest_verified_unix_ms))
             OR (OLD.journal_sequence IS NOT NULL AND (NEW.journal_sequence IS NOT OLD.journal_sequence
                 OR NEW.journal_generation IS NOT OLD.journal_generation))
-        BEGIN SELECT RAISE(ABORT, 'staged identity, manifest bytes and commit position are fixed'); END;
+        BEGIN SELECT RAISE(ABORT, 'staged identity is fixed, and manifest bytes and commit position are fixed at the commit'); END;
         CREATE TRIGGER staged_groups_forward BEFORE UPDATE OF state ON staged_groups
         WHEN NEW.state IS NOT OLD.state AND (
             OLD.state IN ('visible', 'abandoned')
             OR (NEW.state = 'abandoned' AND OLD.state = 'recorded')
-            OR (NEW.state <> 'abandoned' AND
-                (CASE NEW.state WHEN 'staged' THEN 0 WHEN 'payloads-qualified' THEN 1 WHEN 'manifest-qualified' THEN 2
-                    WHEN 'recorded' THEN 3 ELSE 4 END) <=
-                (CASE OLD.state WHEN 'staged' THEN 0 WHEN 'payloads-qualified' THEN 1 WHEN 'manifest-qualified' THEN 2
-                    WHEN 'recorded' THEN 3 ELSE 4 END)))
-        BEGIN SELECT RAISE(ABORT, 'publication only moves forward; committed work is never abandoned'); END;
+            OR (NEW.state <> 'abandoned'
+                AND NOT (OLD.state = 'manifest-qualified' AND NEW.state = 'payloads-qualified' AND NEW.manifest_sha256 IS NULL)
+                AND (CASE NEW.state WHEN 'staged' THEN 0 WHEN 'payloads-qualified' THEN 1 WHEN 'manifest-qualified' THEN 2
+                        WHEN 'recorded' THEN 3 ELSE 4 END) <=
+                    (CASE OLD.state WHEN 'staged' THEN 0 WHEN 'payloads-qualified' THEN 1 WHEN 'manifest-qualified' THEN 2
+                        WHEN 'recorded' THEN 3 ELSE 4 END)))
+        BEGIN SELECT RAISE(ABORT, 'publication only moves forward, except to re-qualify a manifest before the commit'); END;
         CREATE TRIGGER staged_groups_no_delete BEFORE DELETE ON staged_groups
         BEGIN SELECT RAISE(ABORT, 'staged publication history is retained'); END;
 
@@ -176,9 +218,11 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             artifact_revision TEXT NOT NULL,
             sha256 TEXT NOT NULL CHECK(length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
             length INTEGER NOT NULL CHECK(length >= 0),
+            facts_sha256 TEXT NOT NULL CHECK(length(facts_sha256) = 64),
             source_token TEXT NOT NULL CHECK(length(source_token) BETWEEN 1 AND 1024),
             version_id TEXT,
             verified_unix_ms INTEGER,
+            put_started_unix_ms INTEGER,
             released INTEGER NOT NULL DEFAULT 0 CHECK(released IN (0, 1)),
             PRIMARY KEY(group_id, revision_id, ordinal),
             UNIQUE(group_id, revision_id, artifact_id, artifact_revision),
@@ -186,11 +230,15 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             CHECK((version_id IS NULL) = (verified_unix_ms IS NULL))
         ) STRICT;
         CREATE INDEX staged_members_identity ON staged_members(artifact_id, artifact_revision);
+        CREATE INDEX staged_members_unreleased ON staged_members(group_id, revision_id) WHERE released = 0;
         CREATE TRIGGER staged_members_fixed BEFORE UPDATE ON staged_members
         WHEN NEW.artifact_id IS NOT OLD.artifact_id OR NEW.artifact_revision IS NOT OLD.artifact_revision
-            OR NEW.sha256 IS NOT OLD.sha256 OR NEW.length IS NOT OLD.length OR NEW.source_token IS NOT OLD.source_token
-            OR (OLD.version_id IS NOT NULL AND NEW.version_id IS NOT OLD.version_id) OR NEW.released < OLD.released
-        BEGIN SELECT RAISE(ABORT, 'a staged member and its named locator are fixed'); END;
+            OR NEW.sha256 IS NOT OLD.sha256 OR NEW.length IS NOT OLD.length OR NEW.facts_sha256 IS NOT OLD.facts_sha256
+            OR NEW.source_token IS NOT OLD.source_token OR NEW.released < OLD.released
+            OR ((NEW.version_id IS NOT OLD.version_id OR NEW.verified_unix_ms IS NOT OLD.verified_unix_ms)
+                AND (SELECT state FROM staged_groups g WHERE g.group_id = OLD.group_id AND g.revision_id = OLD.revision_id)
+                    IN ('recorded', 'visible', 'abandoned'))
+        BEGIN SELECT RAISE(ABORT, 'a staged member is fixed, and its named locator is fixed at the commit'); END;
 
         CREATE TABLE orphan_candidates(
             store_id TEXT NOT NULL,
@@ -218,6 +266,12 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
+        if (new FileInfo(Path + "-wal") is { Exists: true, Length: > 0 })
+        {
+            // Committed pages still in a WAL are judged on a copy first, so a foreign or newer database is never written.
+            await InspectAsync(Path, Format, BindingMetadata(binding), System.IO.Path.GetDirectoryName(Path)!, cancellationToken)
+                .ConfigureAwait(false);
+        }
         RefuseUnsupportedHeader(Path, Format);
         using var connection = await OpenAsync(Path, cancellationToken).ConfigureAwait(false);
         await EnsureSchemaAsync(connection, Format, BindingMetadata(binding), cancellationToken).ConfigureAwait(false);
@@ -239,7 +293,9 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
 
     private long Now() => clock.GetUtcNow().ToUnixTimeMilliseconds();
 
-    // ----- Journal writer head and pending segment -----------------------------------------------------------
+    private const string Unfinished = "('staged', 'payloads-qualified', 'manifest-qualified')";
+
+    // ----- Journal writer head, pending segment and committed operations ---------------------------------------
 
     public async ValueTask<SiloJournalHead> ReadHeadAsync(CancellationToken cancellationToken)
     {
@@ -260,45 +316,85 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         return new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2), NullableString(reader, 3), NullableString(reader, 4));
     }
 
+    /// <summary>The committed head and the committed publications still awaiting their first P4.</summary>
+    public async ValueTask<SiloWriterEvidence> ReadWriterEvidenceAsync(CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var head = await ReadHeadAsync(connection, null, cancellationToken).ConfigureAwait(false);
+        var awaiting = new HashSet<(string, string)>();
+        using var command = CreateCommand(connection, null, "SELECT group_id, revision_id FROM staged_groups WHERE state = 'recorded';");
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            awaiting.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        return new(head.Position, head.Sha256, awaiting);
+    }
+
     public async ValueTask<SiloPendingSegment?> ReadPendingAsync(CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         using var command = CreateCommand(connection, null, """
-            SELECT generation, sequence, sha256, length, purpose_group_id, purpose_revision_id
+            SELECT generation, sequence, sha256, length, operation_id, purpose_group_id, purpose_revision_id
             FROM journal_pending WHERE pending_key = 1;
             """);
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
-            ? new(new(reader.GetInt64(0), reader.GetInt64(1)), reader.GetString(2), reader.GetInt64(3),
-                NullableString(reader, 4), NullableString(reader, 5))
+            ? new(new(reader.GetInt64(0), reader.GetInt64(1)), reader.GetString(2), reader.GetInt64(3), reader.GetString(4),
+                NullableString(reader, 5), NullableString(reader, 6))
             : null;
     }
 
-    /// <summary>Record the next segment's fixed bytes. Only one segment is pending, and only at the head's successor.</summary>
+    public async ValueTask<SiloCommittedOperation?> ReadOperationAsync(string operationId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null,
+            "SELECT generation, sequence, sha256, version_id FROM journal_operations WHERE operation_id = $operation;",
+            ("$operation", operationId));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false)
+            ? new(operationId, new(reader.GetInt64(0), reader.GetInt64(1)), reader.GetString(2), reader.GetString(3))
+            : null;
+    }
+
+    /// <summary>
+    /// Record the next segment's fixed bytes. Only one segment is pending, and only at the head's successor. A segment
+    /// that opens a later generation advances the writer generation in the same transaction, so a crash leaves either
+    /// nothing or a pending opening that replays.
+    /// </summary>
     public async ValueTask InsertPendingAsync(SiloPendingSegment pending, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
         var head = await ReadHeadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        var expected = head.Generation == head.WriterGeneration
-            ? new SiloJournalPosition(head.WriterGeneration, head.Sequence + 1)
-            : new SiloJournalPosition(head.WriterGeneration, 1);
-        if (pending.Position != expected)
+        var opensLater = pending.Position.Sequence == 1 && pending.Position.Generation > head.WriterGeneration;
+        var expected = opensLater
+            ? pending.Position
+            : head.Generation == head.WriterGeneration
+                ? new SiloJournalPosition(head.WriterGeneration, head.Sequence + 1)
+                : new SiloJournalPosition(head.WriterGeneration, 1);
+        if (pending.Position != expected || opensLater && head.Generation != head.WriterGeneration)
         {
             throw new InvalidOperationException("A pending segment must be the head's immediate successor.");
         }
+        if (opensLater)
+        {
+            await ExecuteAsync(connection, transaction, "UPDATE journal_head SET writer_generation = $g WHERE head_key = 1;",
+                cancellationToken, ("$g", pending.Position.Generation)).ConfigureAwait(false);
+        }
         await ExecuteAsync(connection, transaction, """
-            INSERT INTO journal_pending(pending_key, generation, sequence, sha256, length, purpose_group_id, purpose_revision_id, created_unix_ms)
-            VALUES(1, $g, $s, $sha, $length, $group, $revision, $now);
+            INSERT INTO journal_pending(pending_key, generation, sequence, sha256, length, operation_id, purpose_group_id,
+                purpose_revision_id, created_unix_ms)
+            VALUES(1, $g, $s, $sha, $length, $operation, $group, $revision, $now);
             """, cancellationToken, ("$g", pending.Position.Generation), ("$s", pending.Position.Sequence),
-            ("$sha", pending.Sha256), ("$length", pending.Length), ("$group", pending.GroupId),
+            ("$sha", pending.Sha256), ("$length", pending.Length), ("$operation", pending.OperationId), ("$group", pending.GroupId),
             ("$revision", pending.RevisionId), ("$now", Now())).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// The pending segment is committed: in one transaction the head advances to it and, for a publication, the group
-    /// moves to <c>recorded</c> at that position. A crash on either side leaves both or neither.
+    /// The pending segment is committed: in one transaction the head advances to it, its operation is recorded and, for
+    /// a publication, the group moves to <c>recorded</c> at that position. A crash leaves all of these or none.
     /// </summary>
     public async ValueTask CommitPendingAsync(SiloPendingSegment pending, string versionId, CancellationToken cancellationToken)
     {
@@ -314,8 +410,9 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         }
         await ExecuteAsync(connection, transaction, """
             UPDATE journal_head SET generation = $g, sequence = $s, sha256 = $sha, version_id = $version WHERE head_key = 1;
+            INSERT INTO journal_operations(operation_id, generation, sequence, sha256, version_id) VALUES($operation, $g, $s, $sha, $version);
             """, cancellationToken, ("$g", pending.Position.Generation), ("$s", pending.Position.Sequence),
-            ("$sha", pending.Sha256), ("$version", versionId)).ConfigureAwait(false);
+            ("$sha", pending.Sha256), ("$version", versionId), ("$operation", pending.OperationId)).ConfigureAwait(false);
         if (pending.GroupId is not null)
         {
             var updated = await ExecuteAsync(connection, transaction, """
@@ -331,24 +428,12 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>Advance the writer to a new generation (#1972 opens it after takeover). Its first segment must open it.</summary>
-    public async ValueTask AdvanceWriterGenerationAsync(long generation, CancellationToken cancellationToken)
-    {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
-        var head = await ReadHeadAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-        if (generation <= head.WriterGeneration || head.Generation != head.WriterGeneration)
-        {
-            throw new InvalidOperationException("A new writer generation is above every issued generation and follows a committed open.");
-        }
-        await ExecuteAsync(connection, transaction, "UPDATE journal_head SET writer_generation = $g WHERE head_key = 1;",
-            cancellationToken, ("$g", generation)).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-    }
-
     // ----- Staged groups --------------------------------------------------------------------------------------
 
-    /// <summary>Stage a draft once. The same draft again is idempotent; a different draft for the same revision is a conflict.</summary>
+    /// <summary>
+    /// Stage a draft once. The same draft again is idempotent. A different draft for the same revision, or an artifact
+    /// revision already staged with other bytes or other producer and sidecar facts, is a conflict.
+    /// </summary>
     public async ValueTask<bool> StageAsync(SiloGroupDraft draft, string draftJson, string draftSha256, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -367,13 +452,13 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         {
             var other = await ScalarStringAsync(connection, transaction, """
                 SELECT sha256 FROM staged_members WHERE artifact_id = $artifact AND artifact_revision = $revision
-                    AND (sha256 <> $sha OR length <> $length) LIMIT 1;
+                    AND (sha256 <> $sha OR length <> $length OR facts_sha256 <> $facts) LIMIT 1;
                 """, cancellationToken, ("$artifact", member.ArtifactId), ("$revision", member.ArtifactRevision),
-                ("$sha", member.Sha256), ("$length", member.Length)).ConfigureAwait(false);
+                ("$sha", member.Sha256), ("$length", member.Length), ("$facts", member.Facts().Sha256())).ConfigureAwait(false);
             if (other is not null)
             {
                 throw new SiloConflictException("silo.artifact-revision-conflict",
-                    $"Artifact revision {member.ArtifactId}/{member.ArtifactRevision} is already staged with another digest.");
+                    $"Artifact revision {member.ArtifactId}/{member.ArtifactRevision} is already staged with other bytes or facts.");
             }
         }
         var now = Now();
@@ -386,11 +471,11 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         {
             var member = draft.Members[ordinal];
             await ExecuteAsync(connection, transaction, """
-                INSERT INTO staged_members(group_id, revision_id, ordinal, artifact_id, artifact_revision, sha256, length, source_token)
-                VALUES($group, $revision, $ordinal, $artifact, $artifactRevision, $sha, $length, $token);
+                INSERT INTO staged_members(group_id, revision_id, ordinal, artifact_id, artifact_revision, sha256, length, facts_sha256, source_token)
+                VALUES($group, $revision, $ordinal, $artifact, $artifactRevision, $sha, $length, $facts, $token);
                 """, cancellationToken, ("$group", draft.GroupId), ("$revision", draft.RevisionId), ("$ordinal", ordinal),
                 ("$artifact", member.ArtifactId), ("$artifactRevision", member.ArtifactRevision), ("$sha", member.Sha256),
-                ("$length", member.Length), ("$token", member.SourceToken)).ConfigureAwait(false);
+                ("$length", member.Length), ("$facts", member.Facts().Sha256()), ("$token", member.SourceToken)).ConfigureAwait(false);
         }
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return true;
@@ -402,7 +487,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         SiloStagedGroup? group;
         using (var command = CreateCommand(connection, null, """
             SELECT draft_json, draft_sha256, state, manifest_sha256, manifest_length, manifest_version_id, manifest_verified_unix_ms,
-                journal_generation, journal_sequence, blocked_code, blocked_detail
+                journal_generation, journal_sequence, blocked_code, blocked_detail, superseded_manifest_version_id
             FROM staged_groups WHERE group_id = $group AND revision_id = $revision;
             """, ("$group", groupId), ("$revision", revisionId)))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
@@ -417,7 +502,7 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
                 NullableLong(reader, 4), NullableString(reader, 5),
                 NullableLong(reader, 6) is { } verified ? DateTimeOffset.FromUnixTimeMilliseconds(verified) : null,
                 NullableLong(reader, 7) is { } generation ? new SiloJournalPosition(generation, reader.GetInt64(8)) : null,
-                NullableString(reader, 9), NullableString(reader, 10));
+                NullableString(reader, 9), NullableString(reader, 10), NullableString(reader, 11));
         }
         var members = new List<SiloStagedMember>();
         using (var command = CreateCommand(connection, null, """
@@ -438,13 +523,25 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
     }
 
     /// <summary>Open staged work, oldest first: everything not yet visible or abandoned.</summary>
-    public async ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListOpenAsync(int limit, CancellationToken cancellationToken)
-    {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, """
+    public ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListOpenAsync(int limit, CancellationToken cancellationToken) =>
+        ListGroupsAsync("""
             SELECT group_id, revision_id FROM staged_groups WHERE state NOT IN ('visible', 'abandoned')
             ORDER BY staged_unix_ms, group_id, revision_id LIMIT $limit;
-            """, ("$limit", limit));
+            """, limit, cancellationToken);
+
+    /// <summary>Visible or abandoned groups that still have members whose spooled bytes were not released.</summary>
+    public ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListUnreleasedAsync(int limit, CancellationToken cancellationToken) =>
+        ListGroupsAsync("""
+            SELECT g.group_id, g.revision_id FROM staged_groups g
+            WHERE g.state IN ('visible', 'abandoned')
+                AND EXISTS (SELECT 1 FROM staged_members m WHERE m.group_id = g.group_id AND m.revision_id = g.revision_id AND m.released = 0)
+            ORDER BY g.updated_unix_ms, g.group_id, g.revision_id LIMIT $limit;
+            """, limit, cancellationToken);
+
+    private async ValueTask<IReadOnlyList<(string GroupId, string RevisionId)>> ListGroupsAsync(string sql, int limit, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var command = CreateCommand(connection, null, sql, ("$limit", limit));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<(string, string)>();
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -454,36 +551,61 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         return result;
     }
 
-    /// <summary>Artifact revisions referenced by staged work that is not yet visible or abandoned, for retention holds.</summary>
+    /// <summary>Exact versions that staged work still names before its commit, for retention holds (#1970).</summary>
     public async ValueTask<IReadOnlyList<SiloExactLocator>> ListStagedLocatorsAsync(CancellationToken cancellationToken)
     {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var command = CreateCommand(connection, null, """
-            SELECT m.sha256, m.version_id, g.draft_json, m.ordinal FROM staged_members m
-            JOIN staged_groups g ON g.group_id = m.group_id AND g.revision_id = m.revision_id
-            WHERE g.state NOT IN ('visible', 'abandoned') AND m.version_id IS NOT NULL;
-            """);
-        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new List<SiloExactLocator>();
-        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        foreach (var (groupId, revisionId) in await ListOpenAsync(int.MaxValue, cancellationToken).ConfigureAwait(false))
         {
-            var draft = System.Text.Json.JsonSerializer.Deserialize<SiloGroupDraft>(reader.GetString(2), SiloJson.Options)!;
-            var member = draft.Members[reader.GetInt32(3)];
-            result.Add(new(binding.StoreId, binding.Bucket, SiloObjectNamespace.PayloadKey(member.RetentionClass, reader.GetString(0)),
-                reader.GetString(1)));
+            var group = await ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false);
+            foreach (var member in group!.Members.Where(static member => member.VersionId is not null))
+            {
+                result.Add(new(binding.StoreId, binding.Bucket, SiloObjectNamespace.PayloadKey(member.Draft.RetentionClass, member.Draft.Sha256),
+                    member.VersionId!));
+            }
+            if (group.ManifestVersionId is { } manifest)
+            {
+                result.Add(new(binding.StoreId, binding.Bucket,
+                    SiloObjectNamespace.ManifestKey(group.Draft.FromUtc, groupId, revisionId), manifest));
+            }
         }
         return result;
     }
 
-    public async ValueTask RecordMemberLocatorAsync(
-        string groupId, string revisionId, int ordinal, string versionId, DateTimeOffset verifiedUtc, CancellationToken cancellationToken)
+    /// <summary>Mark that a PUT of this member may land, before it is sent, so an abandon can find what it created.</summary>
+    public async ValueTask RecordMemberPutStartedAsync(string groupId, string revisionId, int ordinal, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await ExecuteAsync(connection, null, """
+            UPDATE staged_members SET put_started_unix_ms = COALESCE(put_started_unix_ms, $now)
+            WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal;
+            """, cancellationToken, ("$now", Now()), ("$group", groupId), ("$revision", revisionId), ("$ordinal", ordinal)).ConfigureAwait(false);
+    }
+
+    public async ValueTask RecordManifestPutStartedAsync(string groupId, string revisionId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await ExecuteAsync(connection, null, """
+            UPDATE staged_groups SET manifest_put_started_unix_ms = COALESCE(manifest_put_started_unix_ms, $now)
+            WHERE group_id = $group AND revision_id = $revision;
+            """, cancellationToken, ("$now", Now()), ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false);
+    }
+
+    /// <summary>Name (or, before the commit, re-name) a member's qualified exact version and its verification time.</summary>
+    public async ValueTask SetMemberLocatorAsync(
+        string groupId, string revisionId, int ordinal, string versionId, DateTimeOffset verifiedUtc, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        var updated = await ExecuteAsync(connection, null, $"""
             UPDATE staged_members SET version_id = $version, verified_unix_ms = $verified
-            WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal AND version_id IS NULL;
+            WHERE group_id = $group AND revision_id = $revision AND ordinal = $ordinal
+                AND (SELECT state FROM staged_groups g WHERE g.group_id = $group AND g.revision_id = $revision) IN {Unfinished};
             """, cancellationToken, ("$version", versionId), ("$verified", verifiedUtc.ToUnixTimeMilliseconds()),
             ("$group", groupId), ("$revision", revisionId), ("$ordinal", ordinal)).ConfigureAwait(false);
+        if (updated != 1)
+        {
+            throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is no longer before its commit.");
+        }
     }
 
     public async ValueTask MoveAsync(string groupId, string revisionId, SiloStagedState from, SiloStagedState to, CancellationToken cancellationToken)
@@ -510,20 +632,63 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             ("$revision", revisionId)).ConfigureAwait(false);
     }
 
-    public async ValueTask RecordManifestQualifiedAsync(
+    /// <summary>Name (or, before the commit, re-name) the qualified manifest version; the manifest bytes never change here.</summary>
+    public async ValueTask SetManifestVersionAsync(
         string groupId, string revisionId, string versionId, DateTimeOffset verifiedUtc, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         var updated = await ExecuteAsync(connection, null, """
             UPDATE staged_groups SET manifest_version_id = $version, manifest_verified_unix_ms = $verified,
                 state = 'manifest-qualified', updated_unix_ms = $now, blocked_code = NULL, blocked_detail = NULL
-            WHERE group_id = $group AND revision_id = $revision AND state = 'payloads-qualified' AND manifest_sha256 IS NOT NULL;
+            WHERE group_id = $group AND revision_id = $revision AND state IN ('payloads-qualified', 'manifest-qualified')
+                AND manifest_sha256 IS NOT NULL;
             """, cancellationToken, ("$version", versionId), ("$verified", verifiedUtc.ToUnixTimeMilliseconds()),
             ("$now", Now()), ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false);
         if (updated != 1)
         {
             throw new InvalidOperationException($"Group revision {groupId}/{revisionId} had no spooled manifest to qualify.");
         }
+    }
+
+    /// <summary>
+    /// A payload locator changed before the commit, so the manifest that named the old one must be rebuilt. Its version,
+    /// if one was qualified, is handed to retention as an orphan candidate and remembered as superseded.
+    /// </summary>
+    public async ValueTask InvalidateManifestAsync(string groupId, string revisionId, string reason, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        using var transaction = BeginImmediate(connection);
+        string draftJson;
+        string? sha, version;
+        long length;
+        using (var command = CreateCommand(connection, transaction, $"""
+            SELECT draft_json, manifest_sha256, manifest_length, manifest_version_id FROM staged_groups
+            WHERE group_id = $group AND revision_id = $revision AND state IN {Unfinished};
+            """, ("$group", groupId), ("$revision", revisionId)))
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is no longer before its commit.");
+            }
+            (draftJson, sha, length, version) = (reader.GetString(0), NullableString(reader, 1), NullableLong(reader, 2) ?? 0,
+                NullableString(reader, 3));
+        }
+        if (version is not null && sha is not null)
+        {
+            var draft = System.Text.Json.JsonSerializer.Deserialize<SiloGroupDraft>(draftJson, SiloJson.Options)!;
+            await InsertOrphanAsync(connection, transaction, new(new(binding.StoreId, binding.Bucket,
+                SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId), version), sha, length, reason, groupId, revisionId),
+                Now(), cancellationToken).ConfigureAwait(false);
+        }
+        await ExecuteAsync(connection, transaction, """
+            UPDATE staged_groups SET state = CASE WHEN state = 'manifest-qualified' THEN 'payloads-qualified' ELSE state END,
+                manifest_sha256 = NULL, manifest_length = NULL, manifest_version_id = NULL, manifest_verified_unix_ms = NULL,
+                superseded_manifest_version_id = COALESCE($version, superseded_manifest_version_id), updated_unix_ms = $now
+            WHERE group_id = $group AND revision_id = $revision;
+            """, cancellationToken, ("$version", version), ("$now", Now()), ("$group", groupId), ("$revision", revisionId))
+            .ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Record why the writer stopped for this group. The group stays staged and hidden; nothing is replaced.</summary>
@@ -546,54 +711,58 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
     }
 
     /// <summary>
-    /// Abandon staged work before P3 and hand every version it created to retention as an orphan candidate. A shared,
-    /// content-addressed version stays a candidate only: retention must still find no retained reference (#1965 7.3).
+    /// Abandon staged work before P3 and hand every version it created, or may have created through an uncertain write,
+    /// to retention as orphan candidates. A shared, content-addressed version stays a candidate only: retention must still
+    /// find no retained reference (#1965 7.3). An unknown version is recorded with an empty version ID.
     /// </summary>
     public async ValueTask AbandonAsync(string groupId, string revisionId, string reason, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         using var transaction = BeginImmediate(connection);
-        var draftJson = await ScalarStringAsync(connection, transaction, """
-            SELECT draft_json FROM staged_groups WHERE group_id = $group AND revision_id = $revision
-                AND state IN ('staged', 'payloads-qualified', 'manifest-qualified');
-            """, cancellationToken, ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is not abandonable staged work.");
-        var draft = System.Text.Json.JsonSerializer.Deserialize<SiloGroupDraft>(draftJson, SiloJson.Options)!;
-        var now = Now();
-        using (var command = CreateCommand(connection, transaction, """
-            SELECT ordinal, version_id FROM staged_members WHERE group_id = $group AND revision_id = $revision AND version_id IS NOT NULL;
-            """, ("$group", groupId), ("$revision", revisionId)))
-        {
-            var created = new List<(int, string)>();
-            using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-            {
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    created.Add((reader.GetInt32(0), reader.GetString(1)));
-                }
-            }
-            foreach (var (ordinal, version) in created)
-            {
-                var member = draft.Members[ordinal];
-                await InsertOrphanAsync(connection, transaction, new(new(binding.StoreId, binding.Bucket,
-                        SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256), version), member.Sha256, member.Length,
-                    reason, groupId, revisionId), now, cancellationToken).ConfigureAwait(false);
-            }
-        }
-        using (var command = CreateCommand(connection, transaction, """
-            SELECT manifest_sha256, manifest_length, manifest_version_id FROM staged_groups
-            WHERE group_id = $group AND revision_id = $revision AND manifest_version_id IS NOT NULL;
+        string draftJson;
+        string? manifestSha, manifestVersion;
+        long manifestLength;
+        bool manifestPutStarted;
+        using (var command = CreateCommand(connection, transaction, $"""
+            SELECT draft_json, manifest_sha256, manifest_length, manifest_version_id, manifest_put_started_unix_ms FROM staged_groups
+            WHERE group_id = $group AND revision_id = $revision AND state IN {Unfinished};
             """, ("$group", groupId), ("$revision", revisionId)))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                var orphan = new SiloOrphanCandidate(new(binding.StoreId, binding.Bucket,
-                    SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId), reader.GetString(2)),
-                    reader.GetString(0), reader.GetInt64(1), reason, groupId, revisionId);
-                await reader.DisposeAsync().ConfigureAwait(false);
-                await InsertOrphanAsync(connection, transaction, orphan, now, cancellationToken).ConfigureAwait(false);
+                throw new InvalidOperationException($"Group revision {groupId}/{revisionId} is not abandonable staged work.");
             }
+            (draftJson, manifestSha, manifestLength, manifestVersion) = (reader.GetString(0), NullableString(reader, 1),
+                NullableLong(reader, 2) ?? 0, NullableString(reader, 3));
+            manifestPutStarted = !await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false);
+        }
+        var draft = System.Text.Json.JsonSerializer.Deserialize<SiloGroupDraft>(draftJson, SiloJson.Options)!;
+        var now = Now();
+        var members = new List<(int Ordinal, string? Version, bool Started)>();
+        using (var command = CreateCommand(connection, transaction, """
+            SELECT ordinal, version_id, put_started_unix_ms FROM staged_members WHERE group_id = $group AND revision_id = $revision;
+            """, ("$group", groupId), ("$revision", revisionId)))
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                members.Add((reader.GetInt32(0), NullableString(reader, 1), !await reader.IsDBNullAsync(2, cancellationToken).ConfigureAwait(false)));
+            }
+        }
+        foreach (var (ordinal, version, started) in members.Where(static member => member.Version is not null || member.Started))
+        {
+            var member = draft.Members[ordinal];
+            await InsertOrphanAsync(connection, transaction, new(new(binding.StoreId, binding.Bucket,
+                    SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256), version ?? UnknownVersion), member.Sha256, member.Length,
+                version is null ? "uncertain-write: " + reason : reason, groupId, revisionId), now, cancellationToken).ConfigureAwait(false);
+        }
+        if (manifestVersion is not null || manifestPutStarted && manifestSha is not null)
+        {
+            await InsertOrphanAsync(connection, transaction, new(new(binding.StoreId, binding.Bucket,
+                    SiloObjectNamespace.ManifestKey(draft.FromUtc, groupId, revisionId), manifestVersion ?? UnknownVersion),
+                manifestSha!, manifestLength, manifestVersion is null ? "uncertain-write: " + reason : reason, groupId, revisionId),
+                now, cancellationToken).ConfigureAwait(false);
         }
         await ExecuteAsync(connection, transaction, """
             UPDATE staged_groups SET state = 'abandoned', blocked_code = 'abandoned', blocked_detail = $reason, updated_unix_ms = $now
@@ -617,8 +786,8 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             ON CONFLICT DO NOTHING;
             """, cancellationToken, ("$store", orphan.Locator.StoreId), ("$bucket", orphan.Locator.Bucket),
             ("$key", orphan.Locator.Key), ("$version", orphan.Locator.VersionId), ("$sha", orphan.Sha256),
-            ("$length", orphan.Length), ("$reason", orphan.Reason), ("$group", orphan.GroupId),
-            ("$revision", orphan.RevisionId), ("$now", now));
+            ("$length", orphan.Length), ("$reason", orphan.Reason.Length > 256 ? orphan.Reason[..256] : orphan.Reason),
+            ("$group", orphan.GroupId), ("$revision", orphan.RevisionId), ("$now", now));
 
     public async ValueTask<IReadOnlyList<SiloOrphanCandidate>> ListOrphansAsync(CancellationToken cancellationToken)
     {

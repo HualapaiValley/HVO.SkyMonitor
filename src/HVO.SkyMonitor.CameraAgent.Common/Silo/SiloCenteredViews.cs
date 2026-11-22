@@ -1,33 +1,112 @@
 using System.Globalization;
-using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
 /// <summary>
-/// Maps a centered view revision onto a group manifest (#1965 4.4, 6.1). The revision ID hashes the complete layer list,
-/// so every supplied binding is kept exactly, in every layer state. Which evidence bytes block exact reopen depends only
-/// on the layer state: Ready and Partial need their evidence payload; AssessedEmpty, Incompatible, Waiting and
-/// NotConfigured reopen from the binding alone.
+/// One normalized representation of a centered view revision (#1965 4.4, 6.1, 6.3). The typed view is serialized
+/// through the store's own functions, its revision ID is recomputed rather than trusted, and the exact reopen set is
+/// derived from its preview and layers: every supplied binding is kept, and an evidence payload is required wherever
+/// any layer using it is Ready or Partial.
 /// </summary>
 internal static class SiloCenteredViews
 {
-    public static SiloManifestView Section(CenteredView view, string streamId, JsonElement baseDocument, JsonElement revisionDocument)
+    /// <summary>The view section for a typed revision, with its documents, bindings, preview and reference capture.</summary>
+    public static SiloManifestView Section(CenteredView view, string? previousRevisionId)
     {
         ArgumentNullException.ThrowIfNull(view);
-        return Section(view.Base.BaseId, view.Revision.RevisionId, view.Revision.Order, view.Revision.Layers, streamId, baseDocument,
-            revisionDocument);
+        var expected = SqliteCenteredViews.RevisionIdentity(view.Base.BaseId, previousRevisionId, view.Revision.Layers);
+        if (!string.Equals(expected, view.Revision.RevisionId, StringComparison.Ordinal) ||
+            !string.Equals(view.Revision.BaseId, view.Base.BaseId, StringComparison.Ordinal))
+        {
+            throw new ArgumentException("The revision ID does not derive from its base, predecessor and layer bindings.", nameof(view));
+        }
+        var definition = view.Base.Definition;
+        return new(
+            SqliteCenteredViews.StreamIdentity(definition.Stream),
+            definition.Reference.Capture.CaptureId.ToString("D", CultureInfo.InvariantCulture),
+            view.Revision.Order,
+            Preview(definition),
+            CenteredViewBase.SchemaVersion,
+            SqliteCenteredViews.SerializeDocument(view.Base),
+            CenteredViewRevision.SchemaVersion,
+            SqliteCenteredViews.SerializeDocument(view.Revision),
+            Bindings(view.Revision.Layers));
     }
 
-    public static SiloManifestView Section(
-        string baseId, string revisionId, long order, IReadOnlyList<CenteredViewLayer> layers, string streamId, JsonElement baseDocument,
-        JsonElement revisionDocument)
+    /// <summary>
+    /// The reopen dependencies of a typed revision: its derived reopen set, plus the base's science and closed window. A
+    /// member published in the same group is listed there instead and is excluded here.
+    /// </summary>
+    public static IReadOnlyList<SiloManifestDependency> ReopenDependencies(
+        CenteredView view, bool scienceDisplayed, IReadOnlySet<(string ArtifactId, string Revision)>? members = null)
     {
-        RequireDocument(baseDocument, "baseId", baseId, nameof(baseDocument));
-        RequireDocument(revisionDocument, "baseId", baseId, nameof(revisionDocument));
-        RequireDocument(revisionDocument, "revisionId", revisionId, nameof(revisionDocument));
-        return new(streamId, order, CenteredViewBase.SchemaVersion, baseDocument.Clone(), CenteredViewRevision.SchemaVersion,
-            revisionDocument.Clone(), Bindings(layers));
+        ArgumentNullException.ThrowIfNull(view);
+        var definition = view.Base.Definition;
+        return Dependencies(Preview(definition), definition.Science, scienceDisplayed, definition.ClosedWindow, Bindings(view.Revision.Layers),
+            members);
+    }
+
+    /// <summary>The same derivation from the contract's parts.</summary>
+    public static IReadOnlyList<SiloManifestDependency> ReopenDependencies(
+        CenteredViewArtifact preview, CenteredViewArtifact science, bool scienceDisplayed, CenteredViewArtifact? closedWindow,
+        IReadOnlyList<CenteredViewLayer> layers) =>
+        Dependencies(Evidence(preview), science, scienceDisplayed, closedWindow, Bindings(layers), null);
+
+    private static List<SiloManifestDependency> Dependencies(
+        SiloViewEvidence preview, CenteredViewArtifact science, bool scienceDisplayed, CenteredViewArtifact? closedWindow,
+        IReadOnlyList<SiloViewLayerBinding> layers, IReadOnlySet<(string ArtifactId, string Revision)>? members)
+    {
+        var required = new Dictionary<(string ArtifactId, string Revision), (string Sha, bool Required)>();
+        void Add(SiloViewEvidence evidence, bool needed)
+        {
+            var key = (evidence.ArtifactId, evidence.IdentitySha256);
+            var sha = LowerHex(evidence.PayloadSha256);
+            required[key] = required.TryGetValue(key, out var existing) ? (existing.Sha, existing.Required || needed) : (sha, needed);
+        }
+        foreach (var ((artifactId, revision, sha), needed) in RequiredReopen(preview, layers))
+        {
+            Add(new(artifactId, revision, sha), needed);
+        }
+        Add(Evidence(science), scienceDisplayed);
+        if (closedWindow is not null)
+        {
+            Add(Evidence(closedWindow), true);
+        }
+        return required.Where(pair => members is null || !members.Contains(pair.Key))
+            .Select(static pair => new SiloManifestDependency(pair.Key.ArtifactId, pair.Key.Revision, pair.Value.Sha, SiloDependencyKind.Reopen,
+                pair.Value.Required))
+            .ToList();
+    }
+
+    /// <summary>
+    /// The exact reopen set a view section implies: its preview, required, and every evidence binding, required when any
+    /// layer that uses it is Ready or Partial. Bindings on other layers are kept but do not block reopen.
+    /// </summary>
+    public static IReadOnlyDictionary<(string ArtifactId, string Revision, string Sha256), bool> RequiredReopen(SiloManifestView view)
+    {
+        ArgumentNullException.ThrowIfNull(view);
+        return RequiredReopen(view.Preview, view.Layers);
+    }
+
+    private static Dictionary<(string ArtifactId, string Revision, string Sha256), bool> RequiredReopen(
+        SiloViewEvidence preview, IReadOnlyList<SiloViewLayerBinding> layers)
+    {
+        var result = new Dictionary<(string, string, string), bool>
+        {
+            [(preview.ArtifactId, preview.IdentitySha256, LowerHex(preview.PayloadSha256))] = true
+        };
+        foreach (var layer in layers)
+        {
+            if (layer.Evidence is not { } evidence)
+            {
+                continue;
+            }
+            var key = (evidence.ArtifactId, evidence.IdentitySha256, LowerHex(evidence.PayloadSha256));
+            var needed = EvidenceBlocksReopen(layer.Readiness);
+            result[key] = result.TryGetValue(key, out var existing) ? existing || needed : needed;
+        }
+        return result;
     }
 
     public static IReadOnlyList<SiloViewLayerBinding> Bindings(IReadOnlyList<CenteredViewLayer> layers) =>
@@ -37,9 +116,7 @@ internal static class SiloCenteredViews
             layer.EvidenceOrder,
             layer.Readiness.ToString(),
             layer.Key.SourceCaptureId?.ToString("D", CultureInfo.InvariantCulture),
-            layer.Evidence is { } evidence
-                ? new SiloViewEvidence(evidence.ArtifactId.ToString("D", CultureInfo.InvariantCulture), evidence.IdentitySha256, evidence.PayloadSha256)
-                : null,
+            layer.Evidence is { } evidence ? Evidence(evidence) : null,
             layer.ObservedUtc?.ToUniversalTime(),
             layer.Reason)).ToArray();
 
@@ -47,58 +124,20 @@ internal static class SiloCenteredViews
     public static bool EvidenceBlocksReopen(string readiness) =>
         readiness is nameof(CenteredViewReadiness.Ready) or nameof(CenteredViewReadiness.Partial);
 
-    /// <summary>
-    /// The reopen dependencies of a view revision: the base's exact artifacts are required; each layer's evidence binding
-    /// is a reopen dependency, required only where its state needs the bytes. The binding itself is kept regardless.
-    /// </summary>
-    public static IReadOnlyList<SiloManifestDependency> ReopenDependencies(CenteredView view, bool scienceDisplayed)
-    {
-        ArgumentNullException.ThrowIfNull(view);
-        var definition = view.Base.Definition;
-        var preview = new CenteredViewArtifact(definition.Preview.Product.ArtifactId, definition.Preview.Product.ProductIdentitySha256,
+    private static SiloViewEvidence Preview(CenteredViewBaseDefinition definition) =>
+        new(definition.Preview.Product.ArtifactId.ToString("D", CultureInfo.InvariantCulture), definition.Preview.Product.ProductIdentitySha256,
             definition.Preview.PayloadSha256);
-        return ReopenDependencies(preview, definition.Science, scienceDisplayed, definition.ClosedWindow, view.Revision.Layers);
-    }
 
-    public static IReadOnlyList<SiloManifestDependency> ReopenDependencies(
-        CenteredViewArtifact preview, CenteredViewArtifact science, bool scienceDisplayed, CenteredViewArtifact? closedWindow,
-        IReadOnlyList<CenteredViewLayer> layers)
+    private static SiloViewEvidence Evidence(CenteredViewArtifact artifact) =>
+        new(artifact.ArtifactId.ToString("D", CultureInfo.InvariantCulture), artifact.IdentitySha256, artifact.PayloadSha256);
+
+    /// <summary>The canonical lowercase form of a hex digest; anything that is not hex is returned unchanged to fail validation.</summary>
+    internal static string LowerHex(string sha256)
     {
-        ArgumentNullException.ThrowIfNull(layers);
-        var result = new List<SiloManifestDependency>();
-        var seen = new HashSet<(string, string)>();
-        void Add(CenteredViewArtifact artifact, bool required)
+        if (sha256.Length != 64 || !sha256.All(static character => char.IsAsciiHexDigit(character)))
         {
-            var id = artifact.ArtifactId.ToString("D", CultureInfo.InvariantCulture);
-            if (seen.Add((id, artifact.IdentitySha256)))
-            {
-                result.Add(new(id, artifact.IdentitySha256, LowerHex(artifact.PayloadSha256), SiloDependencyKind.Reopen, required));
-            }
+            return sha256;
         }
-        Add(preview, true);
-        Add(science, scienceDisplayed);
-        if (closedWindow is not null)
-        {
-            Add(closedWindow, true);
-        }
-        foreach (var layer in layers)
-        {
-            if (layer.Evidence is { } evidence)
-            {
-                Add(evidence, EvidenceBlocksReopen(layer.Readiness.ToString()));
-            }
-        }
-        return result;
-    }
-
-    private static string LowerHex(string sha256) => Convert.ToHexStringLower(Convert.FromHexString(sha256));
-
-    private static void RequireDocument(JsonElement document, string property, string expected, string name)
-    {
-        if (document.ValueKind != JsonValueKind.Object || !document.TryGetProperty(property, out var value) ||
-            value.ValueKind != JsonValueKind.String || !string.Equals(value.GetString(), expected, StringComparison.Ordinal))
-        {
-            throw new ArgumentException($"The verbatim view document must name {property} '{expected}'.", name);
-        }
+        return Convert.ToHexStringLower(Convert.FromHexString(sha256));
     }
 }

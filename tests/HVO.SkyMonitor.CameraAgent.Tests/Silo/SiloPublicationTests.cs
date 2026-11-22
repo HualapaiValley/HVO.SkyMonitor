@@ -44,16 +44,16 @@ public sealed class SiloPublicationTests
     }
 
     [TestMethod]
-    [DataRow(nameof(SiloFaultPoint.AfterPayloadPut), false, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterPayloadVerified), false, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterManifestSpooled), false, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterManifestPut), false, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterManifestQualified), false, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterSegmentSpooled), false, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterSegmentPut), true, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterSegmentCommitted), true, false)]
-    [DataRow(nameof(SiloFaultPoint.AfterIndexApplied), true, true)]
-    public async Task ACrashAtAnyPublicationBoundaryResumesToExactlyOneVisibleRevision(string point, bool committed, bool indexed)
+    [DataRow(nameof(SiloFaultPoint.AfterPayloadPut), false, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterPayloadVerified), false, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterManifestSpooled), false, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterManifestPut), false, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterManifestQualified), false, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterSegmentSpooled), false, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterSegmentPut), true, false, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterSegmentCommitted), true, true, false)]
+    [DataRow(nameof(SiloFaultPoint.AfterIndexApplied), true, true, true)]
+    public async Task ACrashAtAnyPublicationBoundaryResumesToExactlyOneVisibleRevision(string point, bool landed, bool committed, bool indexed)
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         var draft = SiloDrafts.Capture(silo.Payloads, 1);
@@ -63,7 +63,8 @@ public sealed class SiloPublicationTests
         var crash = () => silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).AsTask();
         await crash.Should().ThrowAsync<InvalidOperationException>().WithMessage("simulated crash*").ConfigureAwait(false);
 
-        silo.JournalRecords().OfType<SiloPublishRecord>().Should().HaveCount(committed ? 1 : 0);
+        // A landed segment that the writer has not read back and committed is not yet authority.
+        silo.JournalRecords().OfType<SiloPublishRecord>().Should().HaveCount(landed ? 1 : 0);
         silo.Payloads.Released.Should().BeEmpty("spooled bytes are released only after the group is visible");
         var browse = await silo.Index.QueryVisibleAsync(Day, Day.AddHours(1), null, 10, CancellationToken.None).ConfigureAwait(false);
         browse.Should().HaveCount(indexed ? 1 : 0);
@@ -179,7 +180,7 @@ public sealed class SiloPublicationTests
         silo.Local.VersionsOf(segmentKey).Should().ContainSingle();
         silo.Local.Read(segmentKey, silo.Local.Current(segmentKey)!).Should().Equal("{\"format\":\"another writer\"}"u8.ToArray());
         var pin = new SiloPinRecord("pin-1", "group", draft.GroupId, "r1", true, "operator");
-        var append = () => silo.Journal.AppendAsync([pin], CancellationToken.None).AsTask();
+        var append = () => silo.Journal.AppendAsync([pin], "pin-1", CancellationToken.None).AsTask();
         await append.Should().ThrowAsync<SiloConflictException>("the writer stays fenced on its pending sequence").ConfigureAwait(false);
         (await silo.Index.ReadPublicationAsync(draft.GroupId, "r1", CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
     }

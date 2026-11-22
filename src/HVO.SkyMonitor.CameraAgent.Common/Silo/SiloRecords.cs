@@ -64,7 +64,9 @@ internal sealed record SiloManifestProvenance(
 /// </summary>
 internal sealed record SiloManifestView(
     string StreamId,
+    string ReferenceCaptureId,
     long RevisionOrder,
+    SiloViewEvidence Preview,
     string BaseFormat,
     JsonElement Base,
     string RevisionFormat,
@@ -81,7 +83,27 @@ internal sealed record SiloViewLayerBinding(
     DateTimeOffset? ObservedUtc = null,
     string? Reason = null);
 
+/// <summary>An exact artifact binding as the view contract states it; its identity is the artifact revision.</summary>
 internal sealed record SiloViewEvidence(string ArtifactId, string IdentitySha256, string PayloadSha256);
+
+/// <summary>
+/// The producer and sidecar facts of one artifact revision (#1965 4.2). Any change to them is a new revision, so the
+/// revision is bound to their digest as well as to its bytes.
+/// </summary>
+internal sealed record SiloMemberFacts(
+    string Role,
+    SiloRetentionClass RetentionClass,
+    string MediaType,
+    string? ContentIdentitySha256,
+    string? OutputIdentitySha256,
+    string? Producer,
+    string? RecipeIdentitySha256)
+{
+    public string Sha256() => SiloHash.Sha256(SiloJson.Serialize(this));
+
+    public static SiloMemberFacts Of(SiloManifestMember member) => new(member.Role, member.RetentionClass, member.MediaType,
+        member.ContentIdentitySha256, member.OutputIdentitySha256, member.Producer, member.RecipeIdentitySha256);
+}
 
 internal sealed record SiloCaptureSequence(string AgentId, long CaptureSequence);
 
@@ -189,6 +211,7 @@ internal sealed record SiloPublishedMember(
     string ArtifactRevision,
     long Length,
     string Sha256,
+    string FactsSha256,
     bool Required,
     SiloExactLocator Locator,
     SiloQualification Qualification);

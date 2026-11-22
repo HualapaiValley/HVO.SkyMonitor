@@ -7,8 +7,9 @@ internal sealed record SiloPublicationOutcome(
 /// <summary>
 /// Group publication (#1965 5.3). Payloads are qualified first (P1), then the manifest that names only qualified
 /// locators (P2), then the <c>publish</c> record that commits it (P3), and only then does the catalog make the revision
-/// browsable (P4). Every step resumes after a crash from durable state, replaying exact bytes, so a revision is never
-/// visible early, never committed twice, and never names a locator a crash could lose.
+/// browsable (P4). Before P2 and again before P3 every named version is read back by exact GET; a version lost before
+/// the commit is recreated from its retained spooled bytes, and a commit never names a version that is gone. The writer
+/// releases spooled bytes only after its own first P4 has verified every required member in that same operation.
 /// </summary>
 internal sealed class SiloPublisher(
     SiloPublicationState state,
@@ -20,14 +21,18 @@ internal sealed class SiloPublisher(
     TimeProvider clock,
     ISiloFaults? faults = null) : IDisposable
 {
-    private const int MaximumSteps = 8;
+    private const int MaximumSteps = 12;
+    private const int SweepBatch = 256;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private ISiloObjectStore Local => journal.Store;
 
+    public static string PublishOperation(string groupId, string revisionId) => $"publish:{groupId}:{revisionId}";
+
     /// <summary>
     /// Stage a group revision. The same draft again is idempotent. A different draft for the same revision, or an
-    /// artifact revision already staged or published with another digest, is a conflict and stages nothing.
+    /// artifact revision already staged or published with other bytes or other producer and sidecar facts, is a conflict
+    /// and stages nothing.
     /// </summary>
     public async ValueTask<bool> StageAsync(SiloGroupDraft draft, CancellationToken cancellationToken)
     {
@@ -53,10 +58,10 @@ internal sealed class SiloPublisher(
             foreach (var member in draft.Members)
             {
                 var identity = new SiloObjectIdentity(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision, member.Sha256, member.Length);
-                if (await catalog.Index.ConflictsWithPublishedAsync(identity, cancellationToken).ConfigureAwait(false))
+                if (await catalog.Index.ConflictsWithPublishedAsync(identity, member.Facts().Sha256(), cancellationToken).ConfigureAwait(false))
                 {
                     throw new SiloConflictException("silo.artifact-revision-conflict",
-                        $"Artifact revision {member.ArtifactId}/{member.ArtifactRevision} is published with another digest; it is never replaced.");
+                        $"Artifact revision {member.ArtifactId}/{member.ArtifactRevision} is published with other bytes or facts; it is never replaced.");
                 }
             }
             return await state.StageAsync(draft, json, sha, cancellationToken).ConfigureAwait(false);
@@ -115,8 +120,9 @@ internal sealed class SiloPublisher(
     }
 
     /// <summary>
-    /// Startup: replay any pending segment, bring the catalog to the journal tail with P3 recovery, then advance staged
-    /// work. The work is bounded by unreleased staged groups and the journal after the cursor (#1965 F5).
+    /// Startup: replay any pending segment, bring the catalog to the writer's committed head with P3 recovery, finish any
+    /// interrupted release, then advance staged work. The work is bounded by unreleased staged groups and the journal
+    /// after the cursor (#1965 F5).
     /// </summary>
     public async ValueTask<IReadOnlyList<SiloPublicationOutcome>> ResumeAsync(int limit, CancellationToken cancellationToken)
     {
@@ -125,7 +131,13 @@ internal sealed class SiloPublisher(
         {
             await CleanupSpoolLockedAsync(cancellationToken).ConfigureAwait(false);
             await journal.ResumePendingAsync(cancellationToken).ConfigureAwait(false);
-            await catalog.CatchUpAsync(null, cancellationToken).ConfigureAwait(false);
+            await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), null, cancellationToken)
+                .ConfigureAwait(false);
+            foreach (var (groupId, revisionId) in await state.ListUnreleasedAsync(SweepBatch, cancellationToken).ConfigureAwait(false))
+            {
+                await ReleaseAsync((await state.ReadGroupAsync(groupId, revisionId, cancellationToken).ConfigureAwait(false))!, cancellationToken)
+                    .ConfigureAwait(false);
+            }
             var outcomes = new List<SiloPublicationOutcome>();
             foreach (var (groupId, revisionId) in await state.ListOpenAsync(limit, cancellationToken).ConfigureAwait(false))
             {
@@ -140,8 +152,8 @@ internal sealed class SiloPublisher(
     }
 
     /// <summary>
-    /// Abandon staged work before P3 and hand the versions it created to retention as orphan candidates. A pending
-    /// commit is replayed first, so work that reached P3 is never abandoned.
+    /// Abandon staged work before P3 and hand the versions it created, or may have created, to retention as orphan
+    /// candidates. A pending commit is replayed first, so work that reached P3 is never abandoned.
     /// </summary>
     public async ValueTask AbandonAsync(string groupId, string revisionId, string reason, CancellationToken cancellationToken)
     {
@@ -161,8 +173,8 @@ internal sealed class SiloPublisher(
 
     private async ValueTask<SiloPublicationOutcome> AdvanceLockedAsync(string groupId, string revisionId, CancellationToken cancellationToken)
     {
-        // Verifications this advance performs itself, so live P4 need not repeat them. Scoped to one advance, so the
-        // evidence never outlives the work it describes; after an interruption P3 recovery reads the bytes again.
+        // Verifications this advance performs itself, so its own P4 need not repeat them. Scoped to one advance, so the
+        // evidence never outlives the work it describes; after an interruption the bytes are read again.
         var fresh = new SiloFreshEvidence();
         for (var step = 0; step < MaximumSteps; step++)
         {
@@ -173,19 +185,13 @@ internal sealed class SiloPublisher(
                 switch (group.State)
                 {
                     case SiloStagedState.Staged:
-                        if (!await QualifyPayloadsAsync(group, fresh, cancellationToken).ConfigureAwait(false))
-                        {
-                            return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
-                        }
+                        await QualifyPayloadsAsync(group, fresh, cancellationToken).ConfigureAwait(false);
                         break;
                     case SiloStagedState.PayloadsQualified:
-                        if (!await QualifyManifestAsync(group, fresh, cancellationToken).ConfigureAwait(false))
-                        {
-                            return await OutcomeAsync(groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
-                        }
+                        await QualifyManifestAsync(group, fresh, cancellationToken).ConfigureAwait(false);
                         break;
                     case SiloStagedState.ManifestQualified:
-                        await RecordAsync(group, cancellationToken).ConfigureAwait(false);
+                        await RecordAsync(group, fresh, cancellationToken).ConfigureAwait(false);
                         break;
                     case SiloStagedState.Recorded:
                         await IndexAsync(group, fresh, cancellationToken).ConfigureAwait(false);
@@ -222,30 +228,92 @@ internal sealed class SiloPublisher(
         return new(groupId, revisionId, group!.State, transientCode ?? group.BlockedCode, indexed?.State, indexed?.Outcome);
     }
 
+    private SiloExactLocator PayloadLocator(SiloDraftMember member, string versionId) =>
+        new(Local.Descriptor.StoreId, Local.Descriptor.Bucket, SiloObjectNamespace.PayloadKey(member.RetentionClass, member.Sha256), versionId);
+
+    private SiloExactLocator ManifestLocator(SiloGroupDraft draft, string versionId) =>
+        new(Local.Descriptor.StoreId, Local.Descriptor.Bucket, SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId), versionId);
+
+    /// <summary>Create, read back and qualify one payload from its exact spooled bytes, recording the attempt first.</summary>
+    private async ValueTask PutPayloadAsync(SiloStagedGroup group, SiloStagedMember member, SiloFreshEvidence fresh, CancellationToken cancellationToken)
+    {
+        var draft = member.Draft;
+        await state.RecordMemberPutStartedAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, cancellationToken).ConfigureAwait(false);
+        var created = await SiloCreateOnly.PutVerifiedAsync(Local, SiloObjectNamespace.PayloadKey(draft.RetentionClass, draft.Sha256), draft.Length,
+            draft.Sha256, token => payloads.OpenAsync(draft.SourceToken, token), null, binding.BindingId, clock,
+            () => faults?.Hit(SiloFaultPoint.AfterPayloadPut), cancellationToken).ConfigureAwait(false);
+        fresh.Verified(PayloadLocator(draft, created.VersionId), created.VerifiedUtc);
+        await state.SetMemberLocatorAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, created.VersionId, created.VerifiedUtc,
+            cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>P1: create, read back and qualify each payload's content-addressed locator from its exact spooled bytes.</summary>
-    private async ValueTask<bool> QualifyPayloadsAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
+    private async ValueTask QualifyPayloadsAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
     {
         foreach (var member in group.Members.Where(static member => member.VersionId is null))
         {
-            var draft = member.Draft;
-            var key = SiloObjectNamespace.PayloadKey(draft.RetentionClass, draft.Sha256);
-            var created = await SiloCreateOnly.PutVerifiedAsync(Local, key, draft.Length, draft.Sha256,
-                token => payloads.OpenAsync(draft.SourceToken, token), null, binding.BindingId, clock,
-                () => faults?.Hit(SiloFaultPoint.AfterPayloadPut), cancellationToken).ConfigureAwait(false);
-            fresh.Verified(new(Local.Descriptor.StoreId, Local.Descriptor.Bucket, key, created.VersionId), created.VerifiedUtc);
-            await state.RecordMemberLocatorAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, created.VersionId,
-                created.VerifiedUtc, cancellationToken).ConfigureAwait(false);
+            await PutPayloadAsync(group, member, fresh, cancellationToken).ConfigureAwait(false);
             faults?.Hit(SiloFaultPoint.AfterPayloadVerified);
         }
         await state.MoveAsync(group.Draft.GroupId, group.Draft.RevisionId, SiloStagedState.Staged, SiloStagedState.PayloadsQualified,
             cancellationToken).ConfigureAwait(false);
-        return true;
     }
 
-    /// <summary>P2: the manifest names only qualified payload locators; its exact bytes are spooled before the first PUT.</summary>
-    private async ValueTask<bool> QualifyManifestAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
+    /// <summary>
+    /// Read every named payload version back now. A version that is gone is recreated from its retained spooled bytes and
+    /// re-named; a version that holds other bytes stops the group. Returns whether any locator changed.
+    /// </summary>
+    private async ValueTask<bool> RevalidatePayloadsAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
+    {
+        var replaced = false;
+        foreach (var member in group.Members)
+        {
+            if (member.VersionId is not { } version)
+            {
+                throw new InvalidOperationException("Every payload is qualified before its manifest is written.");
+            }
+            var locator = PayloadLocator(member.Draft, version);
+            if (fresh.TryGet(locator, out _, out _))
+            {
+                continue;
+            }
+            var probe = await SiloVerifier.ProbeAsync(Local, locator, member.Draft.Length, member.Draft.Sha256, clock, captureBytes: false,
+                cancellationToken).ConfigureAwait(false);
+            switch (probe.Status)
+            {
+                case SiloProbeStatus.Verified:
+                    fresh.Verified(locator, probe.ObservedUtc);
+                    await state.SetMemberLocatorAsync(group.Draft.GroupId, group.Draft.RevisionId, member.Ordinal, version, probe.ObservedUtc,
+                        cancellationToken).ConfigureAwait(false);
+                    break;
+                case SiloProbeStatus.Absent:
+                    await PutPayloadAsync(group, member, fresh, cancellationToken).ConfigureAwait(false);
+                    replaced = true;
+                    break;
+                case SiloProbeStatus.Damaged:
+                    throw new SiloConflictException("silo.qualified-version-damaged",
+                        $"The qualified version {locator} no longer reads back with its exact bytes ({probe.Detail}); it is never replaced.");
+                default:
+                    throw new SiloStoreUnavailableException(Local.Descriptor.StoreId, "exact readback of " + locator.Key, writeMayHaveLanded: false);
+            }
+        }
+        return replaced;
+    }
+
+    /// <summary>
+    /// P2: the manifest names only payload locators verified now; its exact bytes are spooled before the first PUT. If a
+    /// payload locator changed after a manifest was spooled or qualified, that manifest is superseded and rebuilt.
+    /// </summary>
+    private async ValueTask QualifyManifestAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
     {
         var draft = group.Draft;
+        if (await RevalidatePayloadsAsync(group, fresh, cancellationToken).ConfigureAwait(false) && group.ManifestSha256 is not null)
+        {
+            await state.InvalidateManifestAsync(draft.GroupId, draft.RevisionId, "superseded before the commit by a replaced payload version",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        group = (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false))!;
         byte[] bytes;
         if (group.ManifestSha256 is { } spooledSha)
         {
@@ -262,17 +330,35 @@ internal sealed class SiloPublisher(
             await state.RecordManifestBytesAsync(draft.GroupId, draft.RevisionId, SiloHash.Sha256(bytes), bytes.Length, cancellationToken)
                 .ConfigureAwait(false);
             faults?.Hit(SiloFaultPoint.AfterManifestSpooled);
+            group = (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false))!;
         }
+        await PutManifestAsync(group, bytes, fresh, cancellationToken).ConfigureAwait(false);
+        faults?.Hit(SiloFaultPoint.AfterManifestQualified);
+    }
+
+    private async ValueTask PutManifestAsync(SiloStagedGroup group, byte[] bytes, SiloFreshEvidence fresh, CancellationToken cancellationToken)
+    {
+        var draft = group.Draft;
         var sha = SiloHash.Sha256(bytes);
         var key = SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId);
-        var created = await SiloCreateOnly.PutVerifiedAsync(Local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
-            SiloFormats.GroupManifest, binding.BindingId, clock, () => faults?.Hit(SiloFaultPoint.AfterManifestPut), cancellationToken)
+        await state.RecordManifestPutStartedAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
+        SiloCreated created;
+        try
+        {
+            created = await SiloCreateOnly.PutVerifiedAsync(Local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
+                SiloFormats.GroupManifest, binding.BindingId, clock, () => faults?.Hit(SiloFaultPoint.AfterManifestPut), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SiloConflictException conflict) when (conflict.Code == "silo.create-only-conflict" && group.SupersededManifestVersionId is not null)
+        {
+            // §5.3: the superseded manifest still holds this create-only key and is never replaced. Publication resumes
+            // once retention has removed that orphaned version.
+            throw new SiloConflictException("silo.manifest-supersession-blocked",
+                $"Manifest {key} is still held by superseded version {group.SupersededManifestVersionId}; nothing was committed or replaced.");
+        }
+        fresh.Verified(ManifestLocator(draft, created.VersionId), created.VerifiedUtc, bytes);
+        await state.SetManifestVersionAsync(draft.GroupId, draft.RevisionId, created.VersionId, created.VerifiedUtc, cancellationToken)
             .ConfigureAwait(false);
-        fresh.Verified(new(Local.Descriptor.StoreId, Local.Descriptor.Bucket, key, created.VersionId), created.VerifiedUtc, bytes);
-        await state.RecordManifestQualifiedAsync(draft.GroupId, draft.RevisionId, created.VersionId, created.VerifiedUtc, cancellationToken)
-            .ConfigureAwait(false);
-        faults?.Hit(SiloFaultPoint.AfterManifestQualified);
-        return true;
     }
 
     /// <summary>The manifest is a pure function of the draft, binding, generation and locators; rebuild it only if it matches exactly.</summary>
@@ -292,58 +378,91 @@ internal sealed class SiloPublisher(
     }
 
     private SiloExactLocator[] Locators(SiloStagedGroup group) =>
-        group.Members.Select(member => new SiloExactLocator(Local.Descriptor.StoreId, Local.Descriptor.Bucket,
-            SiloObjectNamespace.PayloadKey(member.Draft.RetentionClass, member.Draft.Sha256),
+        group.Members.Select(member => PayloadLocator(member.Draft,
             member.VersionId ?? throw new InvalidOperationException("A manifest names only qualified locators."))).ToArray();
 
-    /// <summary>P3: commit the publish record, which names the qualified manifest and members with their original qualification.</summary>
-    private async ValueTask RecordAsync(SiloStagedGroup group, CancellationToken cancellationToken)
+    /// <summary>
+    /// P3: read every named version back now, recreate any that is gone from its spooled bytes, and only then commit the
+    /// publish record with the qualification of exactly the versions it names.
+    /// </summary>
+    private async ValueTask RecordAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
     {
+        var draft = group.Draft;
         // A publish segment spooled before a crash commits here, moving this group to recorded exactly once.
         await journal.ResumePendingAsync(cancellationToken).ConfigureAwait(false);
-        var current = await state.ReadGroupAsync(group.Draft.GroupId, group.Draft.RevisionId, cancellationToken).ConfigureAwait(false);
-        if (current!.State != SiloStagedState.ManifestQualified)
+        var current = (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false))!;
+        if (current.State != SiloStagedState.ManifestQualified)
         {
             return;
         }
-        var draft = current.Draft;
+        if (await RevalidatePayloadsAsync(current, fresh, cancellationToken).ConfigureAwait(false))
+        {
+            await state.InvalidateManifestAsync(draft.GroupId, draft.RevisionId, "superseded before the commit by a replaced payload version",
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        var manifest = ManifestLocator(draft, current.ManifestVersionId!);
+        if (!fresh.TryGet(manifest, out _, out _))
+        {
+            var probe = await SiloVerifier.ProbeAsync(Local, manifest, current.ManifestLength!.Value, current.ManifestSha256!, clock,
+                captureBytes: false, cancellationToken).ConfigureAwait(false);
+            switch (probe.Status)
+            {
+                case SiloProbeStatus.Verified:
+                    fresh.Verified(manifest, probe.ObservedUtc);
+                    await state.SetManifestVersionAsync(draft.GroupId, draft.RevisionId, manifest.VersionId, probe.ObservedUtc, cancellationToken)
+                        .ConfigureAwait(false);
+                    break;
+                case SiloProbeStatus.Absent:
+                    var bytes = await spool.ReadAsync(SiloObjectSpool.NameOf(current.ManifestSha256!), current.ManifestSha256!, cancellationToken)
+                        .ConfigureAwait(false)
+                        ?? await RebuildManifestBytesAsync(current, current.ManifestSha256!, cancellationToken).ConfigureAwait(false)
+                        ?? throw new SiloConflictException("silo.manifest-spool-lost",
+                            $"The manifest of {draft.GroupId}/{draft.RevisionId} is lost and cannot be reproduced exactly.");
+                    await PutManifestAsync(current, bytes, fresh, cancellationToken).ConfigureAwait(false);
+                    break;
+                case SiloProbeStatus.Damaged:
+                    throw new SiloConflictException("silo.qualified-version-damaged",
+                        $"The qualified manifest {manifest} no longer reads back with its exact bytes ({probe.Detail}); it is never replaced.");
+                default:
+                    throw new SiloStoreUnavailableException(Local.Descriptor.StoreId, "exact readback of " + manifest.Key, writeMayHaveLanded: false);
+            }
+            current = (await state.ReadGroupAsync(draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false))!;
+        }
         var qualified = Local.Descriptor.PersistenceQualified;
         var locators = Locators(current);
         var members = current.Members.Select((member, index) => new SiloPublishedMember(member.Draft.ArtifactId,
-            member.Draft.ArtifactRevision, member.Draft.Length, member.Draft.Sha256, member.Draft.Required, locators[index],
-            new(member.VerifiedUtc!.Value, SiloFormats.ExactGetSha256, qualified))).ToArray();
-        var manifest = new SiloPublishedObject(
-            new(Local.Descriptor.StoreId, Local.Descriptor.Bucket, SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId),
-                current.ManifestVersionId!),
-            current.ManifestLength!.Value, current.ManifestSha256!, new(current.ManifestVerifiedUtc!.Value, SiloFormats.ExactGetSha256, qualified));
-        var publish = new SiloPublishRecord(draft.GroupKind, draft.GroupId, draft.RevisionId, manifest, members,
+            member.Draft.ArtifactRevision, member.Draft.Length, member.Draft.Sha256, member.Draft.Facts().Sha256(), member.Draft.Required,
+            locators[index], new(member.VerifiedUtc!.Value, SiloFormats.ExactGetSha256, qualified))).ToArray();
+        var published = new SiloPublishedObject(ManifestLocator(draft, current.ManifestVersionId!), current.ManifestLength!.Value,
+            current.ManifestSha256!, new(current.ManifestVerifiedUtc!.Value, SiloFormats.ExactGetSha256, qualified));
+        var publish = new SiloPublishRecord(draft.GroupKind, draft.GroupId, draft.RevisionId, published, members,
             draft.PreviousRevisionId, draft.Capture);
-        await journal.AppendAsync([publish], draft.GroupId, draft.RevisionId, cancellationToken).ConfigureAwait(false);
+        await journal.AppendAsync([publish], PublishOperation(draft.GroupId, draft.RevisionId), draft.GroupId, draft.RevisionId, cancellationToken)
+            .ConfigureAwait(false);
     }
 
-    /// <summary>P4: the catalog indexes the original P3 sequence. Only a visible group releases its spooled bytes.</summary>
+    /// <summary>
+    /// The writer's first P4: bring the catalog to the committed head, then confirm this revision by P3 recovery in this
+    /// operation. Only a confirmed revision becomes visible to the writer and releases its spooled bytes.
+    /// </summary>
     private async ValueTask IndexAsync(SiloStagedGroup group, SiloFreshEvidence fresh, CancellationToken cancellationToken)
     {
-        await catalog.CatchUpAsync(fresh, cancellationToken).ConfigureAwait(false);
-        var indexed = await catalog.Index.ReadPublicationAsync(group.Draft.GroupId, group.Draft.RevisionId, cancellationToken)
+        await catalog.CatchUpAsync(await state.ReadWriterEvidenceAsync(cancellationToken).ConfigureAwait(false), fresh, cancellationToken)
             .ConfigureAwait(false);
-        if (indexed is { State: "closed", Outcome: SiloDisposition.TemporarilyUnavailable or SiloDisposition.Unverified })
-        {
-            // The P3 record stays authoritative; a later successful verification brings the same revision to P4.
-            await catalog.RetryClosedAsync(cancellationToken).ConfigureAwait(false);
-            indexed = await catalog.Index.ReadPublicationAsync(group.Draft.GroupId, group.Draft.RevisionId, cancellationToken)
-                .ConfigureAwait(false);
-        }
+        var confirmed = await catalog.ConfirmP4Async(group.Draft.GroupId, group.Draft.RevisionId, fresh, cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterIndexApplied);
-        if (indexed?.State != "visible")
+        if (confirmed != "visible")
         {
             return;
         }
         await state.MoveAsync(group.Draft.GroupId, group.Draft.RevisionId, SiloStagedState.Recorded, SiloStagedState.Visible,
             cancellationToken).ConfigureAwait(false);
+        faults?.Hit(SiloFaultPoint.AfterVisibleCommitted);
         await ReleaseAsync(group, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>Release every unreleased member and the manifest spool. Idempotent: a resume finishes an interrupted release.</summary>
     private async ValueTask ReleaseAsync(SiloStagedGroup group, CancellationToken cancellationToken)
     {
         foreach (var member in group.Members.Where(static member => !member.Released))

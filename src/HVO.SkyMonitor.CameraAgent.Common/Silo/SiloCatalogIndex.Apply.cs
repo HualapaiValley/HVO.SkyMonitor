@@ -148,21 +148,31 @@ internal sealed partial class SiloCatalogIndex
         return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? (reader.GetString(0), reader.GetInt64(1)) : null;
     }
 
-    /// <summary>True when the role is new or already bound to the same bytes; false for a conflicting digest.</summary>
+    /// <summary>
+    /// True when the role is new or already bound to the same bytes and facts; false for a conflicting digest or for
+    /// changed producer or sidecar facts, which must be a new revision (#1965 4.2).
+    /// </summary>
     private static async ValueTask<bool> EnsureRoleAsync(
-        SqliteConnection connection, SqliteTransaction transaction, SiloObjectIdentity identity, RecordAt at, CancellationToken cancellationToken)
+        SqliteConnection connection, SqliteTransaction transaction, SiloObjectIdentity identity, string factsSha256, RecordAt at,
+        CancellationToken cancellationToken)
     {
-        var existing = await ReadRoleIdentityAsync(connection, transaction, identity.Role, cancellationToken).ConfigureAwait(false);
-        if (existing is { } bound)
+        using (var command = CreateCommand(connection, transaction,
+            "SELECT sha256, length, facts_sha256 FROM roles WHERE kind = $kind AND id = $id AND revision = $revision;",
+            ("$kind", KindName(identity.Kind)), ("$id", identity.Id), ("$revision", identity.Revision)))
+        using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
-            return string.Equals(bound.Sha256, identity.Sha256, StringComparison.Ordinal) && bound.Length == identity.Length;
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return string.Equals(reader.GetString(0), identity.Sha256, StringComparison.Ordinal) && reader.GetInt64(1) == identity.Length &&
+                    string.Equals(reader.GetString(2), factsSha256, StringComparison.Ordinal);
+            }
         }
         await ExecuteAsync(connection, transaction, """
-            INSERT INTO roles(kind, id, revision, sha256, length, generation, sequence, record_index, disposition)
-            VALUES($kind, $id, $revision, $sha, $length, $g, $s, $i, 'unverified');
+            INSERT INTO roles(kind, id, revision, sha256, length, facts_sha256, generation, sequence, record_index, disposition)
+            VALUES($kind, $id, $revision, $sha, $length, $facts, $g, $s, $i, 'unverified');
             """, cancellationToken, ("$kind", KindName(identity.Kind)), ("$id", identity.Id), ("$revision", identity.Revision),
-            ("$sha", identity.Sha256), ("$length", identity.Length), ("$g", at.Generation), ("$s", at.Sequence), ("$i", at.Index))
-            .ConfigureAwait(false);
+            ("$sha", identity.Sha256), ("$length", identity.Length), ("$facts", factsSha256), ("$g", at.Generation), ("$s", at.Sequence),
+            ("$i", at.Index)).ConfigureAwait(false);
         return true;
     }
 
@@ -175,7 +185,11 @@ internal sealed partial class SiloCatalogIndex
                 store_class, retrieval, custody, eligible, ineligible_reason, copy_state)
             VALUES($kind, $id, $revision, $store, $bucket, $key, $version, $source, $g, $s, $i,
                 $class, $retrieval, $custody, $eligible, $reason, 'active')
-            ON CONFLICT DO NOTHING;
+            ON CONFLICT(kind, id, revision, store_id, bucket, key, version_id) DO UPDATE SET
+                source = excluded.source, generation = excluded.generation, sequence = excluded.sequence,
+                record_index = excluded.record_index, store_class = excluded.store_class, retrieval = excluded.retrieval,
+                custody = excluded.custody, eligible = 1, ineligible_reason = NULL
+            WHERE locators.eligible = 0 AND excluded.eligible = 1;
             """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
             ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key), ("$version", locator.VersionId),
             ("$source", source), ("$g", at.Generation), ("$s", at.Sequence), ("$i", at.Index),
@@ -207,7 +221,7 @@ internal sealed partial class SiloCatalogIndex
             publish.Manifest.Sha256, publish.Manifest.Length);
         var conflicts = new List<string>();
         var consistent = new List<(SiloRoleKey Role, SiloExactLocator Locator)>();
-        if (await EnsureRoleAsync(connection, transaction, manifestIdentity, at, cancellationToken).ConfigureAwait(false))
+        if (await EnsureRoleAsync(connection, transaction, manifestIdentity, manifestIdentity.Sha256, at, cancellationToken).ConfigureAwait(false))
         {
             consistent.Add((manifestIdentity.Role, publish.Manifest.Locator));
         }
@@ -218,7 +232,7 @@ internal sealed partial class SiloCatalogIndex
         foreach (var member in publish.Members)
         {
             var identity = new SiloObjectIdentity(SiloIdentityKind.Member, member.ArtifactId, member.ArtifactRevision, member.Sha256, member.Length);
-            if (await EnsureRoleAsync(connection, transaction, identity, at, cancellationToken).ConfigureAwait(false))
+            if (await EnsureRoleAsync(connection, transaction, identity, member.FactsSha256, at, cancellationToken).ConfigureAwait(false))
             {
                 consistent.Add((identity.Role, member.Locator));
             }
@@ -248,11 +262,12 @@ internal sealed partial class SiloCatalogIndex
         {
             var member = publish.Members[ordinal];
             await ExecuteAsync(connection, transaction, """
-                INSERT INTO publication_members(group_id, revision_id, ordinal, artifact_id, artifact_revision, sha256, length, required,
-                    store_id, bucket, key, version_id)
-                VALUES($group, $revision, $ordinal, $artifact, $artifactRevision, $sha, $length, $required, $store, $bucket, $key, $version);
+                INSERT INTO publication_members(group_id, revision_id, ordinal, artifact_id, artifact_revision, sha256, length, facts_sha256,
+                    required, store_id, bucket, key, version_id)
+                VALUES($group, $revision, $ordinal, $artifact, $artifactRevision, $sha, $length, $facts, $required, $store, $bucket, $key, $version);
                 """, cancellationToken, ("$group", publish.GroupId), ("$revision", publish.RevisionId), ("$ordinal", ordinal),
                 ("$artifact", member.ArtifactId), ("$artifactRevision", member.ArtifactRevision), ("$sha", member.Sha256),
+                ("$facts", member.FactsSha256),
                 ("$length", member.Length), ("$required", member.Required ? 1 : 0), ("$store", member.Locator.StoreId),
                 ("$bucket", member.Locator.Bucket), ("$key", member.Locator.Key), ("$version", member.Locator.VersionId))
                 .ConfigureAwait(false);
@@ -273,6 +288,15 @@ internal sealed partial class SiloCatalogIndex
                 cancellationToken, ("$group", live.GroupId), ("$revision", live.RevisionId)).ConfigureAwait(false) == 0)
         {
             return "unpublished-revision";
+        }
+        if (await ScalarLongAsync(connection, transaction, """
+                SELECT COUNT(*) FROM live_intervals WHERE camera_id = $camera AND ended_change_order IS NULL
+                    AND group_id = $group AND revision_id = $revision AND change_order = $order;
+                """, cancellationToken, ("$camera", live.CameraId), ("$group", live.GroupId), ("$revision", live.RevisionId),
+                ("$order", live.ChangeOrder)).ConfigureAwait(false) != 0)
+        {
+            // The same issue again changes nothing; it never closes its own interval or opens a second one.
+            return "duplicate-live-issue";
         }
         await ExecuteAsync(connection, transaction, """
             UPDATE live_intervals SET ended_change_order = $order, ended_utc_ticks = $utc
@@ -306,14 +330,37 @@ internal sealed partial class SiloCatalogIndex
             storeClass = string.Equals(locator.StoreId, Binding.StoreId, StringComparison.Ordinal) ? SiloStoreClass.Local : SiloStoreClass.Archive;
             retrieval = SiloRetrieval.Online;
         }
-        await AddLocatorAsync(connection, transaction, identity.Role, locator, source, at, storeClass, retrieval, custody, reason,
+        var changed = await AddLocatorAsync(connection, transaction, identity.Role, locator, source, at, storeClass, retrieval, custody, reason,
             cancellationToken).ConfigureAwait(false);
         if (reason is null)
         {
             var unknown = await UnknownIntervalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await RecomputeRoleAsync(connection, transaction, identity.Role, unknown, cancellationToken).ConfigureAwait(false);
+            if (changed == 1)
+            {
+                await RequeueAsync(connection, transaction, identity.Role, cancellationToken).ConfigureAwait(false);
+            }
         }
         return reason;
+    }
+
+    /// <summary>
+    /// A newly eligible or restored copy can change a closed revision's outcome, so every revision that P3 recovery or
+    /// a rebuild closed for want of that role is evaluated again, exactly as a rebuild would.
+    /// </summary>
+    private static async ValueTask RequeueAsync(
+        SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, CancellationToken cancellationToken)
+    {
+        await ExecuteAsync(connection, transaction, """
+            UPDATE publications SET state = 'pending', outcome = NULL, outcome_detail = NULL,
+                manifest_status = CASE WHEN manifest_status IN ('missing', 'unverified', 'temporarily-unavailable') THEN 'pending'
+                    ELSE manifest_status END
+            WHERE state = 'closed' AND outcome IN ('missing', 'unverified', 'temporarily-unavailable')
+                AND (($kind = 'manifest' AND group_id = $id AND revision_id = $revision)
+                    OR ($kind = 'member' AND EXISTS (SELECT 1 FROM publication_members m
+                        WHERE m.group_id = publications.group_id AND m.revision_id = publications.revision_id
+                            AND m.artifact_id = $id AND m.artifact_revision = $revision AND m.required = 1)));
+            """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision)).ConfigureAwait(false);
     }
 
     private static async ValueTask<string?> ApplyReserveAsync(
@@ -369,13 +416,16 @@ internal sealed partial class SiloCatalogIndex
         return null;
     }
 
-    /// <summary>The role's current authoritative copies: eligible exact versions not proven absent or found missing.</summary>
+    /// <summary>
+    /// The role's current authoritative copies: every eligible exact version whose absence was not proven under an
+    /// authorized intent. A copy found unexpectedly missing stays a member until an intent covers it and proves it absent.
+    /// </summary>
     private static async ValueTask<HashSet<SiloExactLocator>> AuthoritativeCopiesAsync(
         SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, CancellationToken cancellationToken)
     {
         using var command = CreateCommand(connection, transaction, """
             SELECT store_id, bucket, key, version_id FROM locators
-            WHERE kind = $kind AND id = $id AND revision = $revision AND eligible = 1 AND copy_state IN ('active', 'quarantined');
+            WHERE kind = $kind AND id = $id AND revision = $revision AND eligible = 1 AND copy_state IN ('active', 'quarantined', 'missing');
             """, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         var result = new HashSet<SiloExactLocator>();
@@ -534,6 +584,10 @@ internal sealed partial class SiloCatalogIndex
                 _ => "active"
             };
             await SetCopyStateAsync(connection, transaction, locator, role, state, cancellationToken).ConfigureAwait(false);
+            if (availability.State == SiloAvailabilityState.Restored)
+            {
+                await RequeueAsync(connection, transaction, role, cancellationToken).ConfigureAwait(false);
+            }
             return null;
         }
         if (availability.State == SiloAvailabilityState.PolicyExpired &&
@@ -562,7 +616,7 @@ internal sealed partial class SiloCatalogIndex
             return "role-expiry-without-intent";
         }
         using (var command = CreateCommand(connection, transaction, """
-            SELECT scope, kind, id, revision, covers_authoritative FROM expiry_intents WHERE intent_id = $intent;
+            SELECT scope, kind, id, revision, covers_authoritative, last_copy FROM expiry_intents WHERE intent_id = $intent;
             """, ("$intent", intentId)))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -570,6 +624,10 @@ internal sealed partial class SiloCatalogIndex
                 reader.GetString(1) != KindName(role.Kind) || reader.GetString(2) != role.Id || reader.GetString(3) != role.Revision)
             {
                 return "role-expiry-intent-mismatch";
+            }
+            if (reader.GetInt64(5) != 1)
+            {
+                return "role-expiry-without-last-copy-authority";
             }
             if (reader.GetInt64(4) != 1)
             {
@@ -624,13 +682,15 @@ internal sealed partial class SiloCatalogIndex
                     NullableString(reader, 4), NullableLong(reader, 5)));
             }
         }
+        // Settled authority first, then present physical evidence. A journaled or earlier `missing` observation is only
+        // evidence of absence: it never outranks a source that could not be checked, an unprobed source, or an
+        // authority-unknown interval in which a later copy may exist.
         var verified = probes.FirstOrDefault(static probe => probe.Status == "verified");
         var disposition = journaled switch
         {
             "policy-expired" => SiloDisposition.PolicyExpired,
             "conflict" => SiloDisposition.Conflict,
             _ when verified.Locator is not null => SiloDisposition.Available,
-            "missing" => SiloDisposition.Missing,
             _ when probes.Any(static probe => probe.Status == "unavailable") => SiloDisposition.TemporarilyUnavailable,
             _ when probes.Any(static probe => probe.Status is null) => SiloDisposition.Unverified,
             _ => unknownInterval ? SiloDisposition.Unverified : SiloDisposition.Missing

@@ -38,7 +38,8 @@ public sealed class SiloFormatTests
             [new("evidence-0001", "1", evidence, SiloDependencyKind.Reopen, true), new("raw-0103", "1", Sha, SiloDependencyKind.Compute, true)],
             new([Sha], SiloJson.SerializeToElement(new { captureId = "capture-0103" }), Sha, "rig-3", "site-7"),
             "rev-0001", "camera-1",
-            new("camera-1/run-1/generation-1", 2, CenteredViewBase.SchemaVersion, SiloJson.SerializeToElement(new { baseId = "base-0001" }),
+            new("camera-1/run-1/generation-1", "reference-0103", 2, new("preview-0001", "1", preview), CenteredViewBase.SchemaVersion,
+                SiloJson.SerializeToElement(new { baseId = "base-0001" }),
                 CenteredViewRevision.SchemaVersion, SiloJson.SerializeToElement(new { baseId = "base-0001", revisionId = "rev-0002" }),
                 [new("stars", "Stack", 3, "Ready", null, new("evidence-0001", "1", evidence), At.AddSeconds(-5)),
                  new("clouds", "Stack", 0, "Waiting")]));
@@ -58,7 +59,7 @@ public sealed class SiloFormatTests
         return new(SiloFormats.JournalSegment, Binding.InstanceId, Binding.BindingId, 1, 2, At,
             [
                 new SiloPublishRecord("capture", "capture-0103", "r1", new(manifest, 512, Sha, qualification),
-                    [new("raw-0103", "1", 7, Sha, true, locator, qualification)], Capture: new("agent-0001", 103)),
+                    [new("raw-0103", "1", 7, Sha, Sha, true, locator, qualification)], Capture: new("agent-0001", 103)),
                 new SiloLiveIssueRecord("camera-1", "camera-1/run-1/generation-1", "base-0001", "rev-0002", 9, At),
                 new SiloCopyRecord(identity, archive, SiloStoreClass.Archive, SiloRetrieval.Online, "replica", At, SiloFormats.ExactGetSha256),
                 new SiloReserveSurvivorRecord("hold-1", identity, archive, At, "intent-1"),
@@ -177,7 +178,7 @@ public sealed class SiloFormatTests
         var version = silo.Local.Plant(key, bytes);
         await silo.Journal.AppendAsync([new SiloPublishRecord(SiloJson.CenteredViewGroupKind, "capture-0777", "r1",
             new(silo.Local.Locator(key, version), bytes.Length, SiloHash.Sha256(bytes), new(At, SiloFormats.ExactGetSha256, true)), [])],
-            CancellationToken.None).ConfigureAwait(false);
+            "publish-unsupported", CancellationToken.None).ConfigureAwait(false);
         var before = await FingerprintAsync(silo).ConfigureAwait(false);
 
         var rebuild = () => RebuildInPlaceAsync(silo);

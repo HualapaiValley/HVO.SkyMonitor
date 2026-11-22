@@ -12,7 +12,10 @@ internal enum SiloFaultPoint
     AfterSegmentSpooled,
     AfterSegmentPut,
     AfterSegmentCommitted,
-    AfterIndexApplied
+    AfterIndexApplied,
+    AfterVisibleCommitted,
+    AfterReplacementReady,
+    AfterTargetRetired
 }
 
 internal interface ISiloFaults
@@ -96,12 +99,14 @@ internal static class SiloCreateOnly
         _ => ValueTask.FromResult<Stream>(new MemoryStream(bytes, writable: false));
 }
 
-internal sealed record SiloCommittedSegment(SiloJournalPosition Position, string Sha256, string VersionId, SiloJournalSegment Segment);
+internal sealed record SiloCommittedSegment(SiloJournalPosition Position, string Sha256, string VersionId);
 
 /// <summary>
 /// The single journal writer for one bucket (#1965 4.5). Sequences are gapless within a generation and each segment
 /// names its predecessor's SHA-256. One segment is pending at a time; its exact bytes are spooled before its first PUT
-/// and replayed after a crash, so a sequence is never reused for different bytes.
+/// and replayed after a crash, so a sequence is never reused for different bytes. Every append carries an operation
+/// key: a retry of the same operation, whether its segment is still pending or already committed, returns that
+/// segment rather than appending the operation again.
 /// </summary>
 internal sealed class SiloJournalWriter(
     SiloPublicationState state,
@@ -113,23 +118,36 @@ internal sealed class SiloJournalWriter(
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    private sealed record Completed(SiloCommittedSegment Segment, string OperationId);
+
     public ISiloObjectStore Store => local;
+
+    /// <summary>The operation key of a generation opening: the generation and the exact prefix end it continues.</summary>
+    public static string GenerationOpenOperation(SiloGenerationOpenRecord open)
+    {
+        ArgumentNullException.ThrowIfNull(open);
+        return open.Generation == 1 ? "generation-open:1" : $"generation-open:{open.Generation}:{open.PrefixEndSha256}";
+    }
 
     /// <summary>Open generation 1 at install. Its segment is the first of the journal.</summary>
     public async ValueTask<SiloCommittedSegment> OpenFirstGenerationAsync(
         IReadOnlyDictionary<string, long> identityFloors, CancellationToken cancellationToken)
     {
+        var open = new SiloGenerationOpenRecord(1, "install", 0, identityFloors);
+        var operation = GenerationOpenOperation(open);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false);
+            if (await AlreadyAsync(operation, cancellationToken).ConfigureAwait(false) is { } done)
+            {
+                return done;
+            }
             var head = await state.ReadHeadAsync(cancellationToken).ConfigureAwait(false);
             if (head.Sequence != 0 || head.WriterGeneration != 1)
             {
                 throw new InvalidOperationException("Generation 1 opens only an empty journal.");
             }
-            return await AppendLockedAsync(
-                [new SiloGenerationOpenRecord(1, "install", 0, identityFloors)], null, null, cancellationToken).ConfigureAwait(false);
+            return await AppendLockedAsync([open], operation, null, null, null, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -139,22 +157,31 @@ internal sealed class SiloJournalWriter(
 
     /// <summary>
     /// Open a later generation after takeover. #1972 proves the highest issued generation through its witnesses and
-    /// supplies the record; this writer only orders it and makes it the first segment of the new generation.
+    /// supplies the record; this writer only orders it and makes it the first segment of the new generation. The writer
+    /// generation advances in the same transaction that records the opening as pending, so a crash at any point leaves
+    /// either nothing or an opening that the same call, or startup, completes.
     /// </summary>
     public async ValueTask<SiloCommittedSegment> OpenGenerationAsync(SiloGenerationOpenRecord open, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(open);
+        var operation = GenerationOpenOperation(open);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false);
+            if (await AlreadyAsync(operation, cancellationToken).ConfigureAwait(false) is { } done)
+            {
+                return done;
+            }
             var head = await state.ReadHeadAsync(cancellationToken).ConfigureAwait(false);
             if (head.Position is not { } end || open.PrefixEnd != end || !string.Equals(open.PrefixEndSha256, head.Sha256, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("A new generation names the committed journal end it continues.");
             }
-            await state.AdvanceWriterGenerationAsync(open.Generation, cancellationToken).ConfigureAwait(false);
-            return await AppendLockedAsync([open], null, null, cancellationToken).ConfigureAwait(false);
+            if (open.Generation <= head.WriterGeneration)
+            {
+                throw new InvalidOperationException("A new writer generation is above every issued generation.");
+            }
+            return await AppendLockedAsync([open], operation, null, null, open.Generation, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -168,7 +195,7 @@ internal sealed class SiloJournalWriter(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false);
+            return (await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false))?.Segment;
         }
         finally
         {
@@ -176,18 +203,20 @@ internal sealed class SiloJournalWriter(
         }
     }
 
-    public async ValueTask<SiloCommittedSegment> AppendAsync(
-        IReadOnlyList<SiloJournalRecord> records, CancellationToken cancellationToken) =>
-        await AppendAsync(records, null, null, cancellationToken).ConfigureAwait(false);
+    /// <summary>Append one segment for one operation. Retrying the same operation key never appends it twice.</summary>
+    public ValueTask<SiloCommittedSegment> AppendAsync(
+        IReadOnlyList<SiloJournalRecord> records, string operationId, CancellationToken cancellationToken) =>
+        AppendAsync(records, operationId, null, null, cancellationToken);
 
     /// <summary>
-    /// Append one segment. A publication names its group revision, so the commit and the group's move to
-    /// <c>recorded</c> happen in one transaction.
+    /// A publication names its group revision, so the commit and the group's move to <c>recorded</c> happen in one
+    /// transaction.
     /// </summary>
     internal async ValueTask<SiloCommittedSegment> AppendAsync(
-        IReadOnlyList<SiloJournalRecord> records, string? groupId, string? revisionId, CancellationToken cancellationToken)
+        IReadOnlyList<SiloJournalRecord> records, string operationId, string? groupId, string? revisionId, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(records);
+        SiloText.RequireText(operationId, nameof(operationId), 256);
         if (records.Count == 0 || records.Any(static record => record is SiloGenerationOpenRecord))
         {
             throw new ArgumentException("Append at least one record; generations open through their own operations.", nameof(records));
@@ -195,8 +224,8 @@ internal sealed class SiloJournalWriter(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false);
-            return await AppendLockedAsync(records, groupId, revisionId, cancellationToken).ConfigureAwait(false);
+            return await AlreadyAsync(operationId, cancellationToken).ConfigureAwait(false)
+                ?? await AppendLockedAsync(records, operationId, groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -204,13 +233,29 @@ internal sealed class SiloJournalWriter(
         }
     }
 
+    /// <summary>The operation's segment if it is committed, or once its pending segment is completed; otherwise null.</summary>
+    private async ValueTask<SiloCommittedSegment?> AlreadyAsync(string operationId, CancellationToken cancellationToken)
+    {
+        var resumed = await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false);
+        if (resumed is not null && string.Equals(resumed.OperationId, operationId, StringComparison.Ordinal))
+        {
+            return resumed.Segment;
+        }
+        return await state.ReadOperationAsync(operationId, cancellationToken).ConfigureAwait(false) is { } committed
+            ? new(committed.Position, committed.Sha256, committed.VersionId)
+            : null;
+    }
+
     private async ValueTask<SiloCommittedSegment> AppendLockedAsync(
-        IReadOnlyList<SiloJournalRecord> records, string? groupId, string? revisionId, CancellationToken cancellationToken)
+        IReadOnlyList<SiloJournalRecord> records, string operationId, string? groupId, string? revisionId, long? openGeneration,
+        CancellationToken cancellationToken)
     {
         var head = await state.ReadHeadAsync(cancellationToken).ConfigureAwait(false);
-        var position = head.Generation == head.WriterGeneration
-            ? new SiloJournalPosition(head.WriterGeneration, head.Sequence + 1)
-            : new SiloJournalPosition(head.WriterGeneration, 1);
+        var position = openGeneration is { } opening
+            ? new SiloJournalPosition(opening, 1)
+            : head.Generation == head.WriterGeneration
+                ? new SiloJournalPosition(head.WriterGeneration, head.Sequence + 1)
+                : new SiloJournalPosition(head.WriterGeneration, 1);
         var segment = new SiloJournalSegment(SiloFormats.JournalSegment, binding.InstanceId, binding.BindingId,
             position.Generation, position.Sequence, clock.GetUtcNow().ToUniversalTime(), records, head.Position, head.Sha256);
         try
@@ -225,12 +270,12 @@ internal sealed class SiloJournalWriter(
         var sha = SiloHash.Sha256(bytes);
         await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterSegmentSpooled);
-        await state.InsertPendingAsync(new(position, sha, bytes.Length, groupId, revisionId), cancellationToken).ConfigureAwait(false);
-        return await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false)
+        await state.InsertPendingAsync(new(position, sha, bytes.Length, operationId, groupId, revisionId), cancellationToken).ConfigureAwait(false);
+        return (await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false))?.Segment
             ?? throw new InvalidOperationException("The pending segment vanished before it committed.");
     }
 
-    private async ValueTask<SiloCommittedSegment?> CompletePendingLockedAsync(CancellationToken cancellationToken)
+    private async ValueTask<Completed?> CompletePendingLockedAsync(CancellationToken cancellationToken)
     {
         var pending = await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
         if (pending is null)
@@ -248,8 +293,7 @@ internal sealed class SiloJournalWriter(
         await state.CommitPendingAsync(pending, created.VersionId, cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterSegmentCommitted);
         spool.Delete(name);
-        var segment = SiloJson.ReadSegment(bytes, "journal segment " + pending.Position);
-        return new(pending.Position, pending.Sha256, created.VersionId, segment);
+        return new(new(pending.Position, pending.Sha256, created.VersionId), pending.OperationId);
     }
 
     /// <summary>Run work that must not interleave with an append, such as removing unreferenced spool files.</summary>

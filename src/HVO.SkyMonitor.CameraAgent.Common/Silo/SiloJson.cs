@@ -247,7 +247,9 @@ internal static class SiloJson
                 throw new SiloFormatRefusedException(subject + " view revision", view.RevisionFormat, CenteredViewRevisionFormat);
             }
             SiloText.RequireText(view.StreamId, nameof(view.StreamId), 512);
+            SiloText.RequireText(view.ReferenceCaptureId, nameof(view.ReferenceCaptureId), 256);
             ArgumentOutOfRangeException.ThrowIfNegative(view.RevisionOrder);
+            RequireEvidence(view.Preview);
             if (view.Base.ValueKind != JsonValueKind.Object || view.Revision.ValueKind != JsonValueKind.Object)
             {
                 throw new ArgumentException("The view base and revision are JSON objects.", nameof(manifest));
@@ -264,7 +266,44 @@ internal static class SiloJson
                 {
                     RequireUtc(observed, nameof(layer.ObservedUtc));
                 }
+                if (layer.Evidence is { } evidence)
+                {
+                    RequireEvidence(evidence);
+                }
+                // F17: an assessed layer binds a committed evidence product, its observation time and its order.
+                if (layer.Readiness is "Ready" or "Partial" or "AssessedEmpty" &&
+                    (layer.Evidence is null || layer.ObservedUtc is null || layer.EvidenceOrder == 0))
+                {
+                    throw new ArgumentException("An assessed layer binds its evidence, observation time and order.", nameof(manifest));
+                }
             }
+            // The exact reopen set follows from the view itself: the preview, and each evidence binding that any layer
+            // in Ready or Partial needs. Every one must be in the manifest with exactly that requirement.
+            foreach (var ((artifactId, revision, sha), required) in SiloCenteredViews.RequiredReopen(view))
+            {
+                var member = manifest.Members.FirstOrDefault(member =>
+                    member.ArtifactId == artifactId && member.ArtifactRevision == revision);
+                var dependency = manifest.Dependencies.FirstOrDefault(dependency => dependency.Kind == SiloDependencyKind.Reopen &&
+                    dependency.ArtifactId == artifactId && dependency.ArtifactRevision == revision);
+                var (declaredSha, declaredRequired) = member is not null ? (member.Sha256, member.Required)
+                    : dependency is not null ? (dependency.Sha256, dependency.Required)
+                    : throw new ArgumentException($"View binding {artifactId}/{revision} is not in the manifest's reopen set.", nameof(manifest));
+                if (!string.Equals(declaredSha, sha, StringComparison.Ordinal) || declaredRequired != required)
+                {
+                    throw new ArgumentException(
+                        $"View binding {artifactId}/{revision} must be a reopen entry with its digest and required={required}.", nameof(manifest));
+                }
+            }
+        }
+    }
+
+    private static void RequireEvidence(SiloViewEvidence evidence)
+    {
+        SiloText.RequireText(evidence.ArtifactId, nameof(evidence.ArtifactId), 256);
+        SiloText.RequireText(evidence.IdentitySha256, nameof(evidence.IdentitySha256), 256);
+        if (!SiloHash.IsValid(SiloCenteredViews.LowerHex(evidence.PayloadSha256)))
+        {
+            throw new ArgumentException("A view binding names a SHA-256 payload digest.", nameof(evidence));
         }
     }
 
@@ -362,6 +401,7 @@ internal static class SiloJson
                 {
                     SiloText.RequireText(member.ArtifactId, nameof(member.ArtifactId), 256);
                     SiloText.RequireText(member.ArtifactRevision, nameof(member.ArtifactRevision), 256);
+                    SiloHash.Require(member.FactsSha256, nameof(member.FactsSha256));
                     ValidatePublished(member.Locator, member.Sha256, member.Length, member.Qualification);
                     if (!members.Add((member.ArtifactId, member.ArtifactRevision)))
                     {

@@ -267,12 +267,17 @@ internal sealed partial class SiloCatalogIndex
         return new(role, sha, length, disposition, journaled, available, locators);
     }
 
-    /// <summary>Whether an artifact revision is already published with another length or digest.</summary>
-    public async ValueTask<bool> ConflictsWithPublishedAsync(SiloObjectIdentity identity, CancellationToken cancellationToken)
+    /// <summary>Whether an artifact revision is already published with another length, digest or set of facts.</summary>
+    public async ValueTask<bool> ConflictsWithPublishedAsync(SiloObjectIdentity identity, string factsSha256, CancellationToken cancellationToken)
     {
         using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        var bound = await ReadRoleIdentityAsync(connection, null, identity.Role, cancellationToken).ConfigureAwait(false);
-        return bound is { } value && (!string.Equals(value.Sha256, identity.Sha256, StringComparison.Ordinal) || value.Length != identity.Length);
+        using var command = CreateCommand(connection, null,
+            "SELECT sha256, length, facts_sha256 FROM roles WHERE kind = $kind AND id = $id AND revision = $revision;",
+            ("$kind", KindName(identity.Kind)), ("$id", identity.Id), ("$revision", identity.Revision));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) &&
+            (!string.Equals(reader.GetString(0), identity.Sha256, StringComparison.Ordinal) || reader.GetInt64(1) != identity.Length ||
+             !string.Equals(reader.GetString(2), factsSha256, StringComparison.Ordinal));
     }
 
     public async ValueTask<IReadOnlyDictionary<string, long>> ReadIdentityFloorsAsync(CancellationToken cancellationToken)
@@ -357,11 +362,11 @@ internal sealed partial class SiloCatalogIndex
         ("publications", """
             SELECT generation, sequence, record_index, group_kind, group_id, revision_id, previous_revision_id, manifest_sha256,
                 manifest_length, agent_id, capture_sequence, manifest_status, state, outcome, published_utc_ticks, from_utc_ticks,
-                to_utc_ticks, camera_id, stream_id, revision_order, manifest_json
+                to_utc_ticks, camera_id, stream_id, reference_capture_id, revision_order, manifest_json
             FROM publications ORDER BY generation, sequence, record_index;
             """),
         ("members", """
-            SELECT group_id, revision_id, ordinal, artifact_id, artifact_revision, sha256, length, required, store_id, bucket, key,
+            SELECT group_id, revision_id, ordinal, artifact_id, artifact_revision, sha256, length, facts_sha256, required, store_id, bucket, key,
                 version_id, role, retention_class, media_type, content_identity_sha256, output_identity_sha256, producer,
                 recipe_identity_sha256
             FROM publication_members ORDER BY group_id, revision_id, ordinal;
@@ -369,7 +374,7 @@ internal sealed partial class SiloCatalogIndex
         ("dependencies", "SELECT * FROM dependencies ORDER BY group_id, revision_id, ordinal;"),
         ("layers", "SELECT * FROM view_layers ORDER BY group_id, revision_id, ordinal;"),
         ("roles", """
-            SELECT kind, id, revision, sha256, length, generation, sequence, record_index, journaled, disposition,
+            SELECT kind, id, revision, sha256, length, facts_sha256, generation, sequence, record_index, journaled, disposition,
                 available_store, available_bucket, available_key, available_version
             FROM roles ORDER BY kind, id, revision;
             """),

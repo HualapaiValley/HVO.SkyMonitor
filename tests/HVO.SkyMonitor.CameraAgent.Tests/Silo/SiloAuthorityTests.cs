@@ -151,7 +151,7 @@ public sealed class SiloAuthorityTests
         await silo.Journal.OpenGenerationAsync(new SiloGenerationOpenRecord(2, "restore", 1,
             new Dictionary<string, long> { ["capture-sequence"] = floor }, head.Position, head.Sha256,
             Witnesses: SiloJson.SerializeToElement(new { set = WitnessSet })), CancellationToken.None).ConfigureAwait(false);
-        await silo.Journal.AppendAsync(remaps, CancellationToken.None).ConfigureAwait(false);
+        await silo.Journal.AppendAsync(remaps, "remaps-after-restore", CancellationToken.None).ConfigureAwait(false);
 
         var unwitnessed = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
         await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
@@ -162,7 +162,7 @@ public sealed class SiloAuthorityTests
         var raw1 = new SiloRoleKey(SiloIdentityKind.Member, SiloDrafts.Raw(1), "1");
         (await silo.Index.ReadRoleAsync(raw1, CancellationToken.None).ConfigureAwait(false))!.Disposition.Should().Be(SiloDisposition.Unverified);
 
-        silo.Authority.Witnessed.Add(2);
+        silo.Authority.WitnessedOpenings.Add((2, head.Sha256!));
         var witnessed = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
         await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
 
@@ -233,28 +233,24 @@ public sealed class SiloAuthorityTests
     }
 
     [TestMethod]
-    public async Task ACatchUpThatReachesTheTailAgainClearsAnEarlierUnknownInterval()
+    public async Task ACatchUpThatReadsTheCommittedHeadAgainClearsAnEarlierGapAndItsUnprovenList()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
-        var sha = SiloHash.Sha256("stray"u8);
-        var stray = new SiloJournalSegment(SiloFormats.JournalSegment, silo.Binding.InstanceId, silo.Binding.BindingId, 1, 4,
-            SiloHarness.Start, [new SiloPublishRecord("capture", "capture-0042", "r1",
-                new(silo.Local.Locator(SiloObjectNamespace.ManifestKey(SiloHarness.Start, "capture-0042", "r1"), "local-silo-v99999"), 5, sha,
-                    new(SiloHarness.Start, SiloFormats.ExactGetSha256, true)), [])],
-            new(1, 3), sha);
-        var key = SegmentKey(1, 4);
-        silo.Local.Plant(key, SiloJson.Serialize(stray));
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 2)).ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 3)).ConfigureAwait(false);
+        var key = SegmentKey(1, 3);
+        var bytes = silo.Local.Read(key, silo.Local.Current(key)!);
+        silo.Local.Delete(key, silo.Local.Current(key)!);
 
-        await silo.Catalog.CatchUpAsync(null, CancellationToken.None).ConfigureAwait(false);
-        var gap = await silo.Index.ReadAuthorityAsync(CancellationToken.None).ConfigureAwait(false);
+        var gap = (await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false)).Authority;
 
         gap.EndReason.Should().Be(SiloPrefixEnd.Gap);
         gap.UnknownInterval.Should().BeTrue();
-        gap.UnprovenPublications.Should().ContainSingle().Which.GroupId.Should().Be("capture-0042");
+        gap.UnprovenPublications.Should().ContainSingle().Which.GroupId.Should().Be(SiloDrafts.CaptureGroup(3));
 
-        silo.Local.Delete(key, silo.Local.Current(key)!);
-        await silo.Catalog.CatchUpAsync(null, CancellationToken.None).ConfigureAwait(false);
+        silo.Local.Plant(key, bytes);
+        await silo.CatchUpAsync().ConfigureAwait(false);
         var tail = await silo.Index.ReadAuthorityAsync(CancellationToken.None).ConfigureAwait(false);
 
         tail.EndReason.Should().Be(SiloPrefixEnd.Tail);
@@ -296,11 +292,12 @@ public sealed class SiloAuthorityTests
         (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(2), "r1", CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
         (await silo.Index.ReadRoleAsync(raw1, CancellationToken.None).ConfigureAwait(false))!.Disposition.Should().Be(SiloDisposition.Unverified);
 
-        var behindHead = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, KnownHead: head.Position, KnownHeadSha256: head.Sha256))
+        var writer = await silo.WriterEvidenceAsync().ConfigureAwait(false);
+        var behindHead = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, Writer: writer))
             .ConfigureAwait(false);
         behindHead.Authority.UnknownInterval.Should().BeTrue("the surviving writer head proves the replica lost its tail");
 
-        var authoritative = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local, KnownHead: head.Position, KnownHeadSha256: head.Sha256))
+        var authoritative = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local, Writer: writer))
             .ConfigureAwait(false);
         await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
         authoritative.Authority.EndReason.Should().Be(SiloPrefixEnd.Tail);
@@ -321,7 +318,7 @@ public sealed class SiloAuthorityTests
         silo.Local.Delete(tailKey, silo.Local.Current(tailKey)!);
         silo.Local.Plant(tailKey, System.Text.Encoding.UTF8.GetBytes(original.ToJsonString()));
 
-        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local, KnownHead: head.Position, KnownHeadSha256: head.Sha256))
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local, Writer: await silo.WriterEvidenceAsync().ConfigureAwait(false)))
             .ConfigureAwait(false);
 
         rebuilt.Authority.PrefixEnd.Should().Be(new SiloJournalPosition(1, 2));

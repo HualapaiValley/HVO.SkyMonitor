@@ -57,6 +57,9 @@ internal static class SiloSqlite
         }
     }
 
+    private static readonly string BusyTimeoutPragma =
+        string.Create(CultureInfo.InvariantCulture, $"PRAGMA busy_timeout = {BusyTimeoutSeconds * 1000};");
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
         Justification = "Only internal constant PRAGMA statements with a constant numeric bound are executed.")]
     public static async ValueTask<SqliteConnection> OpenAsync(string path, CancellationToken cancellationToken)
@@ -70,18 +73,21 @@ internal static class SiloSqlite
         }.ToString());
         await SqliteConnectionConfigurationGate.OpenAndConfigureAsync(connection, async (configured, token) =>
         {
+            // Connection-level settings only, one statement per command: none writes the database before its format is verified.
             using var command = configured.CreateCommand();
-            // Connection-level settings only: none of these writes the database before its format is verified.
-            command.CommandText = string.Create(CultureInfo.InvariantCulture,
-                $"PRAGMA busy_timeout = {BusyTimeoutSeconds * 1000}; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;");
+            command.CommandText = BusyTimeoutPragma;
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA synchronous = FULL;";
+            await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
+            command.CommandText = "PRAGMA foreign_keys = ON;";
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
         return connection;
     }
 
     /// <summary>
-    /// Create the schema in an empty database, or prove an existing one is exactly this format, then enable WAL.
-    /// Verification precedes every write, so an unsupported database is refused unchanged.
+    /// Create the schema in an empty database, or prove an existing one is exactly this format and binding, then enable
+    /// WAL. Verification precedes every write, so an unsupported database is refused unchanged.
     /// </summary>
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
         Justification = "Only internal constant schema and PRAGMA statements are executed.")]
@@ -91,19 +97,13 @@ internal static class SiloSqlite
     {
         using (var transaction = BeginImmediate(connection))
         {
-            var applicationId = await ScalarLongAsync(connection, transaction, "PRAGMA application_id;", cancellationToken).ConfigureAwait(false);
-            var userVersion = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-            if ((applicationId, userVersion) == (0, 0))
+            if (!await ValidateAsync(connection, transaction, format, metadata, cancellationToken).ConfigureAwait(false))
             {
-                if (await ScalarLongAsync(connection, transaction,
-                        "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", cancellationToken).ConfigureAwait(false) != 0)
-                {
-                    throw new SiloFormatRefusedException(format.Subject, "unversioned schema objects", format.Format);
-                }
                 await ExecuteAsync(connection, transaction, format.SchemaSql, cancellationToken).ConfigureAwait(false);
                 await ExecuteAsync(connection, transaction, string.Create(CultureInfo.InvariantCulture,
-                    $"PRAGMA application_id = {format.ApplicationId}; PRAGMA user_version = {format.UserVersion};"),
-                    cancellationToken).ConfigureAwait(false);
+                    $"PRAGMA application_id = {format.ApplicationId};"), cancellationToken).ConfigureAwait(false);
+                await ExecuteAsync(connection, transaction, string.Create(CultureInfo.InvariantCulture,
+                    $"PRAGMA user_version = {format.UserVersion};"), cancellationToken).ConfigureAwait(false);
                 await ExecuteAsync(connection, transaction, "INSERT INTO silo_meta(key, value) VALUES('format', $value);",
                     cancellationToken, ("$value", format.Format)).ConfigureAwait(false);
                 foreach (var (key, value) in metadata)
@@ -111,39 +111,106 @@ internal static class SiloSqlite
                     await ExecuteAsync(connection, transaction, "INSERT INTO silo_meta(key, value) VALUES($key, $value);",
                         cancellationToken, ("$key", key), ("$value", value)).ConfigureAwait(false);
                 }
-            }
-            else if (applicationId != format.ApplicationId || userVersion != format.UserVersion)
-            {
-                throw new SiloFormatRefusedException(format.Subject,
-                    string.Create(CultureInfo.InvariantCulture, $"application_id 0x{applicationId:X8}, user_version {userVersion}"),
-                    format.Format);
-            }
-            var actual = await ReadDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-            if (!actual.SequenceEqual(format.Definitions, StringComparer.Ordinal))
-            {
-                throw new SiloFormatRefusedException(format.Subject, "a drifted schema", format.Format);
-            }
-            var stored = await ReadMetadataAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
-            if (!stored.TryGetValue("format", out var storedFormat) || !string.Equals(storedFormat, format.Format, StringComparison.Ordinal))
-            {
-                throw new SiloFormatRefusedException(format.Subject, storedFormat, format.Format);
-            }
-            foreach (var (key, value) in metadata)
-            {
-                if (!stored.TryGetValue(key, out var existing) || !string.Equals(existing, value, StringComparison.Ordinal))
+                if (!await ValidateAsync(connection, transaction, format, metadata, cancellationToken).ConfigureAwait(false))
                 {
-                    throw new SiloConflictException("silo.binding-mismatch", string.Create(CultureInfo.InvariantCulture,
-                        $"{format.Subject} belongs to another instance or storage binding ({key}); it was left unchanged."));
+                    throw new InvalidDataException(format.Subject + " did not validate after creation.");
                 }
             }
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        using var command = connection.CreateCommand();
-        command.CommandText = "PRAGMA journal_mode = WAL;";
-        var mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        string? mode = null;
+        await SqliteConnectionConfigurationGate.RunAsync(async () =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA journal_mode = WAL;";
+            mode = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
+        }, cancellationToken).ConfigureAwait(false);
         if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(format.Subject + " could not enable write-ahead logging.");
+        }
+    }
+
+    /// <summary>
+    /// Prove a database is exactly this format and binding. False means it is empty and may be created; any other
+    /// content is refused. It reads through the connection, so committed pages still in a WAL are what it judges.
+    /// </summary>
+    private static async ValueTask<bool> ValidateAsync(
+        SqliteConnection connection, SqliteTransaction transaction, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata,
+        CancellationToken cancellationToken)
+    {
+        var applicationId = await ScalarLongAsync(connection, transaction, "PRAGMA application_id;", cancellationToken).ConfigureAwait(false);
+        var userVersion = await ScalarLongAsync(connection, transaction, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
+        if ((applicationId, userVersion) == (0, 0))
+        {
+            return await ScalarLongAsync(connection, transaction,
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%';", cancellationToken).ConfigureAwait(false) == 0
+                ? false
+                : throw new SiloFormatRefusedException(format.Subject, "unversioned schema objects", format.Format);
+        }
+        if (applicationId != format.ApplicationId || userVersion != format.UserVersion)
+        {
+            throw new SiloFormatRefusedException(format.Subject,
+                string.Create(CultureInfo.InvariantCulture, $"application_id 0x{applicationId:X8}, user_version {userVersion}"),
+                format.Format);
+        }
+        var actual = await ReadDefinitionsAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (!actual.SequenceEqual(format.Definitions, StringComparer.Ordinal))
+        {
+            throw new SiloFormatRefusedException(format.Subject, "a drifted schema", format.Format);
+        }
+        var stored = await ReadMetadataAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+        if (!stored.TryGetValue("format", out var storedFormat) || !string.Equals(storedFormat, format.Format, StringComparison.Ordinal))
+        {
+            throw new SiloFormatRefusedException(format.Subject, storedFormat, format.Format);
+        }
+        foreach (var (key, value) in metadata)
+        {
+            if (!stored.TryGetValue(key, out var existing) || !string.Equals(existing, value, StringComparison.Ordinal))
+            {
+                throw new SiloConflictException("silo.binding-mismatch", string.Create(CultureInfo.InvariantCulture,
+                    $"{format.Subject} belongs to another instance or storage binding ({key}); it was left unchanged."));
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Judge an existing database without touching it: its main file and its WAL, which may hold committed pages the
+    /// main file's header does not yet show, are copied into a scratch directory and the copy is validated. Returns false
+    /// when there is no database or it is empty; refuses any other format or binding. The original is never opened.
+    /// </summary>
+    public static async ValueTask<bool> InspectAsync(
+        string path, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata, string scratchDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+        RefuseUnsupportedHeader(path, format);
+        Directory.CreateDirectory(scratchDirectory);
+        var copy = Path.Combine(scratchDirectory, "inspect-" + Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            File.Copy(path, copy);
+            if (File.Exists(path + "-wal"))
+            {
+                File.Copy(path + "-wal", copy + "-wal");
+            }
+            var connection = await OpenAsync(copy, cancellationToken).ConfigureAwait(false);
+            await using (connection.ConfigureAwait(false))
+            {
+                using var transaction = BeginImmediate(connection);
+                return await ValidateAsync(connection, transaction, format, metadata, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            foreach (var suffix in new[] { string.Empty, "-wal", "-shm", "-journal" })
+            {
+                File.Delete(copy + suffix);
+            }
         }
     }
 

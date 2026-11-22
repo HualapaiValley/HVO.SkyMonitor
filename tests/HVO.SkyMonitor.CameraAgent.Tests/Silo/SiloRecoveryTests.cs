@@ -26,6 +26,52 @@ public sealed class SiloRecoveryTests
     }
 
     [TestMethod]
+    public async Task ContradictoryAuthenticatedEvidenceClosesTheRevisionAsAConflictAndRebuildsTheSame()
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 2)).ConfigureAwait(false);
+        var first = silo.PublishRecord(SiloDrafts.CaptureGroup(1));
+        var second = silo.PublishRecord(SiloDrafts.CaptureGroup(2));
+        var raw = first.Members.Single(member => member.ArtifactId == SiloDrafts.Raw(1));
+        var other = SiloDrafts.Bytes("a different raw", 64);
+        var otherKey = SiloObjectNamespace.PayloadKey(SiloRetentionClass.Full, SiloHash.Sha256(other));
+        var otherVersion = silo.Local.Plant(otherKey, other);
+        // Staging refuses both contradictions, so they can only arrive as authenticated records from a damaged or foreign writer.
+        var claim = first with
+        {
+            GroupId = "capture-0050",
+            Members = [raw with { Length = other.Length, Sha256 = SiloHash.Sha256(other), Locator = silo.Local.Locator(otherKey, otherVersion) }],
+            Capture = null
+        };
+        var republished = second with { Manifest = second.Manifest with { Sha256 = SiloHash.Sha256("another manifest"u8) } };
+        var preview = SiloHarness.Identity(second, SiloDrafts.Preview(2));
+        await silo.AppendAsync(claim, republished, new SiloAvailabilityRecord(SiloAvailabilityScope.Role, preview,
+            SiloAvailabilityState.Conflict, silo.Clock.GetUtcNow(), "replicas disagree about the preview")).ConfigureAwait(false);
+
+        async Task AssertConflictsAsync()
+        {
+            (await silo.Index.ReadPublicationAsync("capture-0050", "r1", CancellationToken.None).ConfigureAwait(false))!
+                .Outcome.Should().Be(SiloDisposition.Conflict, "an artifact revision is bound to one digest");
+            (await silo.Index.ReadPublicationAsync(first.GroupId, "r1", CancellationToken.None).ConfigureAwait(false))!
+                .State.Should().Be("visible");
+            (await RoleAsync(silo, raw.ArtifactId).ConfigureAwait(false)).Sha256.Should().Be(raw.Sha256, "a verified payload is never replaced");
+            (await silo.Index.ReadPublicationAsync(second.GroupId, "r1", CancellationToken.None).ConfigureAwait(false))!
+                .Outcome.Should().Be(SiloDisposition.Conflict, "the same revision was published with different manifest bytes");
+            var reopened = await silo.Catalog.ReopenAsync(second.GroupId, "r1", CancellationToken.None).ConfigureAwait(false);
+            reopened.Reopenable.Should().BeFalse();
+            reopened.ClosedOutcome.Should().Be(SiloDisposition.Conflict);
+            (await RoleAsync(silo, SiloDrafts.Preview(2)).ConfigureAwait(false)).Disposition.Should().Be(SiloDisposition.Conflict);
+            (await silo.Index.ReadAuthorityAsync(CancellationToken.None).ConfigureAwait(false)).FirstIncompletePublication!
+                .GroupId.Should().Be(second.GroupId, "the complete-publication frontier never advances past a contradiction");
+        }
+
+        await AssertConflictsAsync().ConfigureAwait(false);
+        await RebuildAndVerifyAsync(silo).ConfigureAwait(false);
+        await AssertConflictsAsync().ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task ATimedOutReadDuringP3RecoveryKeepsTheRevisionClosedUntilTheSameRevisionReachesP4()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -100,13 +146,13 @@ public sealed class SiloRecoveryTests
         await silo.PublishAsync(SiloDrafts.Evidence(silo.Payloads, "stars")).ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-a", "rev-1", null, 1,
             [SiloDrafts.Layer("stars", "Ready", "stars", 4), SiloDrafts.Layer("clouds", "Waiting", null, 0)],
-            [SiloDrafts.EvidenceDependency("stars", required: true)], publishPreview: true)).ConfigureAwait(false);
+            [], publishPreview: true)).ConfigureAwait(false);
         await silo.AppendAsync(new SiloLiveIssueRecord("camera-1", "camera-1/run-1/generation-1", "base-a", "rev-1", 7,
             SiloHarness.Start.AddMinutes(31))).ConfigureAwait(false);
         // A late layer revision on the base is archive-only: published, never live-issued.
         await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-a", "rev-2", "rev-1", 2,
             [SiloDrafts.Layer("stars", "Ready", "stars", 4), SiloDrafts.Layer("clouds", "Incompatible", null, 5)],
-            [SiloDrafts.PreviewDependency("base-a"), SiloDrafts.EvidenceDependency("stars", required: true)], publishPreview: false))
+            [], publishPreview: false))
             .ConfigureAwait(false);
         var capture1 = silo.PublishRecord(SiloDrafts.CaptureGroup(1));
         await silo.AppendAsync(
