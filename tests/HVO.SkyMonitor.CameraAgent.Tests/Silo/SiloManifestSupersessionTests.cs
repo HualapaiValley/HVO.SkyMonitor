@@ -149,7 +149,7 @@ public sealed class SiloManifestSupersessionTests
             silo.Local.FailBeforeLanding = null;
         }
         var group = (await silo.State.ReadGroupAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
-        group.ManifestPutStarted.Should().BeTrue();
+        group.ManifestPutUnresolved.Should().BeTrue();
         group.ManifestVersionId.Should().BeNull("the write was uncertain");
         var oldKey = SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId, group.ManifestSha256!);
         var landedVersion = silo.Local.Current(oldKey);
@@ -166,61 +166,6 @@ public sealed class SiloManifestSupersessionTests
         orphan.Locator.VersionId.Should().Be(landed ? landedVersion : SiloPublicationState.UnknownVersion,
             "a landed write is resolved to its exact version; otherwise the never-committed key itself is handed over");
         orphan.Reason.StartsWith("uncertain-write", StringComparison.Ordinal).Should().Be(!landed);
-    }
-
-    [TestMethod]
-    [DataRow(true, true, DisplayName = "publish segment landed, reconciled at startup")]
-    [DataRow(false, true, DisplayName = "publish segment never landed, reconciled at startup")]
-    [DataRow(true, false, DisplayName = "publish segment landed, reconciled by the caller's retry")]
-    [DataRow(false, false, DisplayName = "publish segment never landed, reconciled by the caller's retry")]
-    public async Task AnUncertainCommitIsReconciledWithItsExactBytesAndNeverReplacedByASecond(bool landed, bool startup)
-    {
-        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
-        var draft = SiloDrafts.Capture(silo.Payloads, 5);
-        await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false);
-        static bool Segment(string key) => key.StartsWith(SiloObjectNamespace.JournalPrefix, StringComparison.Ordinal);
-        if (landed)
-        {
-            silo.Local.FailAfterLanding = Segment;
-        }
-        else
-        {
-            silo.Local.FailBeforeLanding = Segment;
-        }
-        (await silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false)).BlockedCode
-            .Should().Be("silo.store-unavailable");
-        (silo.Local.FailAfterLanding, silo.Local.FailBeforeLanding) = (null, null);
-        var group = (await silo.State.ReadGroupAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
-        var manifest = silo.Local.Locator(
-            SiloObjectNamespace.ManifestKey(draft.FromUtc, draft.GroupId, draft.RevisionId, group.ManifestSha256!), group.ManifestVersionId!);
-        var named = group.Members[0].VersionId!;
-        silo.Local.Delete(RawKey(draft), named);
-
-        // While that commit is uncertain, nothing may re-name a locator of the revision it commits.
-        var replace = () => silo.State.ReplaceMemberLocatorAsync(draft.GroupId, draft.RevisionId, 0, named, "another-version",
-            silo.Clock.GetUtcNow(), null, CancellationToken.None).AsTask();
-        await replace.Should().ThrowAsync<InvalidOperationException>().WithMessage("*reconciled*").ConfigureAwait(false);
-
-        SiloPublicationOutcome outcome;
-        if (startup)
-        {
-            await silo.RestartAsync().ConfigureAwait(false);
-            outcome = (await silo.Publisher.ResumeAsync(10, CancellationToken.None).ConfigureAwait(false)).Single();
-        }
-        else
-        {
-            // The same writer retries the publication itself: P3 reconciles the pending commit before reading anything back.
-            outcome = await silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false);
-        }
-
-        var publish = silo.JournalRecords().OfType<SiloPublishRecord>().Should().ContainSingle(record => record.GroupId == draft.GroupId).Which;
-        publish.Manifest.Locator.Should().Be(manifest, "the uncertain P3 commits with its exact bytes, naming its original manifest");
-        publish.Members[0].Locator.VersionId.Should().Be(named, "no locator is substituted after P3");
-        silo.Local.Keys(Prefix(draft)).Should().Equal([manifest.Key]);
-        (await silo.State.ListOrphansAsync(CancellationToken.None).ConfigureAwait(false)).Should().BeEmpty();
-        outcome.State.Should().Be(SiloStagedState.Recorded);
-        outcome.CatalogOutcome.Should().Be(SiloDisposition.Missing, "P3 recovery closes the revision for the lost member");
-        silo.Payloads.Released.Should().BeEmpty("the spool is kept until the revision reaches P4");
     }
 
     [TestMethod]

@@ -606,7 +606,9 @@ internal sealed partial class SiloCatalogIndex
 
     /// <summary>
     /// #1965 7.3 step 9: a role is policy-expired only under an authorized role-scoped intent that covered the complete
-    /// authoritative copy set, with proven absence for every target under that same intent, and no copy outside it.
+    /// authoritative copy set, with proven absence for every target under that same intent, and no copy outside it. A
+    /// copy that became authoritative after the intent must also be proven absent under that intent before it settles,
+    /// even when a different operation has since removed it: its arrival is reconciled, never skipped.
     /// </summary>
     private static async ValueTask<string?> RoleExpirySettledAsync(
         SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, string? intentId, CancellationToken cancellationToken)
@@ -615,8 +617,10 @@ internal sealed partial class SiloCatalogIndex
         {
             return "role-expiry-without-intent";
         }
+        long intentGeneration, intentSequence, intentIndex;
         using (var command = CreateCommand(connection, transaction, """
-            SELECT scope, kind, id, revision, covers_authoritative, last_copy FROM expiry_intents WHERE intent_id = $intent;
+            SELECT scope, kind, id, revision, covers_authoritative, last_copy, generation, sequence, record_index
+            FROM expiry_intents WHERE intent_id = $intent;
             """, ("$intent", intentId)))
         using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -633,6 +637,19 @@ internal sealed partial class SiloCatalogIndex
             {
                 return "role-expiry-incomplete-copy-set";
             }
+            (intentGeneration, intentSequence, intentIndex) = (reader.GetInt64(6), reader.GetInt64(7), reader.GetInt64(8));
+        }
+        if (await ScalarLongAsync(connection, transaction, """
+                SELECT COUNT(*) FROM locators l
+                WHERE l.kind = $kind AND l.id = $id AND l.revision = $revision AND l.eligible = 1
+                    AND (l.generation, l.sequence, l.record_index) > ($g, $s, $i)
+                    AND NOT EXISTS (SELECT 1 FROM expiry_targets t WHERE t.intent_id = $intent AND t.store_id = l.store_id
+                        AND t.bucket = l.bucket AND t.key = l.key AND t.version_id = l.version_id
+                        AND t.outcome IN ('deleted', 'already-absent'));
+                """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
+                ("$g", intentGeneration), ("$s", intentSequence), ("$i", intentIndex), ("$intent", intentId)).ConfigureAwait(false) != 0)
+        {
+            return "role-expiry-copy-arrived-after-intent";
         }
         if (await ScalarLongAsync(connection, transaction, """
                 SELECT COUNT(*) FROM expiry_targets WHERE intent_id = $intent AND COALESCE(outcome, '') NOT IN ('deleted', 'already-absent');

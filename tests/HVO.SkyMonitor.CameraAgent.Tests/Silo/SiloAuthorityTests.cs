@@ -148,7 +148,7 @@ public sealed class SiloAuthorityTests
         }
         var head = await silo.State.ReadHeadAsync(CancellationToken.None).ConfigureAwait(false);
         var floor = 2L << 40;
-        await silo.Journal.OpenGenerationAsync(new SiloGenerationOpenRecord(2, "restore", 1,
+        var opening = await silo.Journal.OpenGenerationAsync(new SiloGenerationOpenRecord(2, "restore", 1,
             new Dictionary<string, long> { ["capture-sequence"] = floor }, head.Position, head.Sha256,
             Witnesses: SiloJson.SerializeToElement(new { set = WitnessSet })), CancellationToken.None).ConfigureAwait(false);
         await silo.Journal.AppendAsync(remaps, "remaps-after-restore", CancellationToken.None).ConfigureAwait(false);
@@ -162,7 +162,7 @@ public sealed class SiloAuthorityTests
         var raw1 = new SiloRoleKey(SiloIdentityKind.Member, SiloDrafts.Raw(1), "1");
         (await silo.Index.ReadRoleAsync(raw1, CancellationToken.None).ConfigureAwait(false))!.Disposition.Should().Be(SiloDisposition.Unverified);
 
-        silo.Authority.WitnessedOpenings.Add((2, head.Sha256!));
+        silo.Authority.WitnessedOpenings.Add((2, opening.Sha256));
         var witnessed = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
         await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
 

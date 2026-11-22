@@ -37,6 +37,12 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
     /// <summary>A GET of the key times out.</summary>
     public Func<string, bool>? ReadUnavailable { get; set; }
 
+    /// <summary>The process dies while the PUT is in flight, before anything lands.</summary>
+    public Func<string, bool>? CrashBeforeLanding { get; set; }
+
+    /// <summary>Runs after a PUT lands, before the writer reads it back: another actor acting on the bucket meanwhile.</summary>
+    public Action<string>? AfterLanding { get; set; }
+
     public int Puts { get; private set; }
 
     public async ValueTask<SiloPutResult> PutCreateOnlyAsync(SiloPutRequest request, CancellationToken cancellationToken)
@@ -45,6 +51,10 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
         if (FailBeforeLanding?.Invoke(request.Key) == true)
         {
             throw new SiloStoreUnavailableException(Descriptor.StoreId, "put " + request.Key, writeMayHaveLanded: false);
+        }
+        if (CrashBeforeLanding?.Invoke(request.Key) == true)
+        {
+            throw new InvalidOperationException("simulated crash while putting " + request.Key);
         }
         var stream = await request.OpenContent(cancellationToken).ConfigureAwait(false);
         byte[] bytes;
@@ -73,6 +83,7 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
                 Versions(request.Key).RemoveAll(stored => stored.VersionId == version);
             }
         }
+        AfterLanding?.Invoke(request.Key);
         if (FailAfterLanding?.Invoke(request.Key) == true)
         {
             throw new SiloStoreUnavailableException(Descriptor.StoreId, "put " + request.Key, writeMayHaveLanded: true);
@@ -305,21 +316,27 @@ internal sealed class SiloTestFaults : ISiloFaults
     }
 }
 
-/// <summary>Generation witnesses and anchor seal evidence, which #1972 supplies in production.</summary>
+/// <summary>Generation witnesses, anchor seal evidence and archive receipts, which #1972 and #1969 supply in production.</summary>
 internal sealed class SiloTestAuthority : ISiloGenerationWitness, ISiloAnchorTrust
 {
-    /// <summary>Witnessed openings, bound to the generation and the exact prefix end each one continues.</summary>
-    public HashSet<(long Generation, string PrefixEndSha256)> WitnessedOpenings { get; } = [];
+    /// <summary>Witnessed openings, each bound to its generation and the exact SHA-256 of the segment that opens it.</summary>
+    public HashSet<(long Generation, string OpeningSegmentSha256)> WitnessedOpenings { get; } = [];
 
     public bool TrustAnchors { get; set; }
 
     public HashSet<SiloJournalPosition> UntrustedCovers { get; } = [];
 
-    public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position) =>
-        open.PrefixEndSha256 is { } prefixEnd && WitnessedOpenings.Contains((open.Generation, prefixEnd));
+    /// <summary>The exact version a verified receipt names for an anchored checkpoint in another store.</summary>
+    public Dictionary<(SiloExactLocator Checkpoint, string StoreId), SiloExactLocator> ReceiptedCheckpoints { get; } = [];
+
+    public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position, string openingSegmentSha256) =>
+        WitnessedOpenings.Contains((open.Generation, openingSegmentSha256));
 
     public bool IsTrusted(SiloAnchorRecord anchor, SiloJournalPosition position) =>
         TrustAnchors && !UntrustedCovers.Contains(anchor.Covers);
+
+    public SiloExactLocator? ReceiptedCopy(SiloAnchorRecord anchor, SiloStoreDescriptor store) =>
+        ReceiptedCheckpoints.TryGetValue((anchor.Checkpoint, store.StoreId), out var locator) ? locator : null;
 }
 
 internal sealed class SiloTestClock(DateTimeOffset start) : TimeProvider
@@ -392,7 +409,7 @@ internal sealed class SiloHarness : IDisposable
         Index = new SiloCatalogIndex(StateRoot.IndexDatabasePath, Binding, Clock);
         await Index.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         Stores = new SiloStoreSet(Local, Archive);
-        Catalog = new SiloCatalog(Index, Stores, Authority);
+        Catalog = new SiloCatalog(Index, Stores, Authority, Faults);
         Journal = new SiloJournalWriter(State, StateRoot.Spool, Local, Binding, Clock, Faults);
         Publisher = new SiloPublisher(State, StateRoot.Spool, Journal, Catalog, Payloads, Binding, Clock, Faults);
     }

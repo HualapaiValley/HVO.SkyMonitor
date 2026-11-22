@@ -3,16 +3,26 @@ using static HVO.SkyMonitor.CameraAgent.Common.Silo.SiloSqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 
-/// <summary>Whether a later generation's opening is proven by its witnesses (#1972 supplies the proof).</summary>
+/// <summary>
+/// Whether a later generation's opening is proven by its witnesses (#1972 supplies the proof). The proof binds the
+/// exact opening: the SHA-256 of the segment that carries it, so a witness of any other opening of the same generation
+/// and prefix, differing in any field, proves nothing.
+/// </summary>
 internal interface ISiloGenerationWitness
 {
-    bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position);
+    bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position, string openingSegmentSha256);
 }
 
-/// <summary>Whether an anchored checkpoint is inside a sealed backup and, when enabled, a verified archive receipt (#1972).</summary>
+/// <summary>
+/// Whether an anchored checkpoint is inside a sealed backup and, when enabled, a verified archive receipt (#1972), and
+/// which exact version of it a verified receipt names in another store. A replica's checkpoint is read only through
+/// that exact receipted version, never through whatever version its key holds now.
+/// </summary>
 internal interface ISiloAnchorTrust
 {
     bool IsTrusted(SiloAnchorRecord anchor, SiloJournalPosition position);
+
+    SiloExactLocator? ReceiptedCopy(SiloAnchorRecord anchor, SiloStoreDescriptor store);
 }
 
 /// <summary>The default: nothing is proven, so later generations end the prefix and replay starts at generation 1.</summary>
@@ -20,9 +30,11 @@ internal sealed class SiloNoAuthorityEvidence : ISiloGenerationWitness, ISiloAnc
 {
     public static SiloNoAuthorityEvidence Instance { get; } = new();
 
-    public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position) => false;
+    public bool IsWitnessed(SiloGenerationOpenRecord open, SiloJournalPosition position, string openingSegmentSha256) => false;
 
     public bool IsTrusted(SiloAnchorRecord anchor, SiloJournalPosition position) => false;
+
+    public SiloExactLocator? ReceiptedCopy(SiloAnchorRecord anchor, SiloStoreDescriptor store) => null;
 }
 
 /// <summary>Role dispositions (#1965 5.3, 5.4, 6.2). Copy states never imply a role state.</summary>
@@ -371,13 +383,13 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
     public SiloStorageBinding Binding { get; } = binding;
 
     /// <summary>
-    /// Finish or discard an interrupted replacement, refuse a foreign or newer catalog (judging committed WAL pages on a
-    /// copy, so nothing is written), then create or prove the schema.
+    /// Prove any interrupted replacement belongs to this instance before finishing or discarding it, refuse a foreign or
+    /// newer catalog (judging committed WAL pages on a copy, so nothing is written), then create or prove the schema.
     /// </summary>
     public async ValueTask InitializeAsync(CancellationToken cancellationToken)
     {
-        SiloCatalogFiles.Recover(Path);
         var metadata = SiloPublicationState.BindingMetadata(Binding);
+        await SiloCatalogFiles.RecoverAsync(Path, Format, metadata, cancellationToken).ConfigureAwait(false);
         if (new FileInfo(Path + "-wal") is { Exists: true, Length: > 0 })
         {
             await InspectAsync(Path, Format, metadata, System.IO.Path.GetDirectoryName(Path)!, cancellationToken).ConfigureAwait(false);
@@ -420,33 +432,64 @@ internal sealed partial class SiloCatalogIndex(string path, SiloStorageBinding b
         await ScalarLongAsync(connection, transaction, "SELECT unknown_interval FROM catalog_authority WHERE authority_key = 1;",
             cancellationToken).ConfigureAwait(false) == 1;
 
-    internal async ValueTask RecordAuthorityAsync(
-        string startKind, SiloJournalPosition? start, string endReason, bool unknownInterval, CancellationToken cancellationToken)
-    {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await ExecuteAsync(connection, null, """
-            UPDATE catalog_authority SET start_kind = $kind, start_generation = $g, start_sequence = $s, end_reason = $reason,
-                unknown_interval = $unknown, evaluated_unix_ms = $now WHERE authority_key = 1;
-            """, cancellationToken, ("$kind", startKind), ("$g", start?.Generation), ("$s", start?.Sequence),
-            ("$reason", endReason), ("$unknown", unknownInterval ? 1 : 0), ("$now", Now())).ConfigureAwait(false);
-    }
-
-    internal async ValueTask RecordUnprovenAsync(
-        IReadOnlyList<(SiloJournalPosition Position, int Index, string GroupId, string RevisionId)> publications,
+    /// <summary>
+    /// Record where the authenticated prefix ends, in one transaction with the publications named past it and every role
+    /// disposition the authority-unknown interval implies, so a crash leaves all of them or none (#1965 4.5, 5.4). A null
+    /// start kind keeps the recorded start. A complete scan replaces the unproven names; an incomplete one only adds to
+    /// them, because a read that failed proves nothing about the gap.
+    /// </summary>
+    internal async ValueTask RecordAuthorityEndAsync(
+        string? startKind, SiloJournalPosition? start, string endReason, bool unknownInterval, SiloUnprovenScan unproven,
         CancellationToken cancellationToken)
     {
-        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        using var transaction = BeginImmediate(connection);
-        await ExecuteAsync(connection, transaction, "DELETE FROM unproven_publications;", cancellationToken).ConfigureAwait(false);
-        foreach (var (position, index, group, revision) in publications)
+        ArgumentNullException.ThrowIfNull(unproven);
+        await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
+            using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+            using var transaction = BeginImmediate(connection);
+            var wasUnknown = await UnknownIntervalAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, """
-                INSERT INTO unproven_publications(generation, sequence, record_index, group_id, revision_id)
-                VALUES($g, $s, $i, $group, $revision) ON CONFLICT DO NOTHING;
-                """, cancellationToken, ("$g", position.Generation), ("$s", position.Sequence), ("$i", index),
-                ("$group", group), ("$revision", revision)).ConfigureAwait(false);
+                UPDATE catalog_authority SET start_kind = COALESCE($kind, start_kind),
+                    start_generation = CASE WHEN $kind IS NULL THEN start_generation ELSE $g END,
+                    start_sequence = CASE WHEN $kind IS NULL THEN start_sequence ELSE $s END,
+                    end_reason = $reason, unknown_interval = $unknown, evaluated_unix_ms = $now WHERE authority_key = 1;
+                """, cancellationToken, ("$kind", startKind), ("$g", start?.Generation), ("$s", start?.Sequence),
+                ("$reason", endReason), ("$unknown", unknownInterval ? 1 : 0), ("$now", Now())).ConfigureAwait(false);
+            if (unproven.Complete)
+            {
+                await ExecuteAsync(connection, transaction, "DELETE FROM unproven_publications;", cancellationToken).ConfigureAwait(false);
+            }
+            foreach (var (position, index, group, revision) in unproven.Found)
+            {
+                await ExecuteAsync(connection, transaction, """
+                    INSERT INTO unproven_publications(generation, sequence, record_index, group_id, revision_id)
+                    VALUES($g, $s, $i, $group, $revision) ON CONFLICT DO NOTHING;
+                    """, cancellationToken, ("$g", position.Generation), ("$s", position.Sequence), ("$i", index),
+                    ("$group", group), ("$revision", revision)).ConfigureAwait(false);
+            }
+            if (wasUnknown != unknownInterval)
+            {
+                var roles = new List<SiloRoleKey>();
+                using (var command = CreateCommand(connection, transaction, "SELECT kind, id, revision FROM roles ORDER BY kind, id, revision;"))
+                using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        roles.Add(new(ParseKind(reader.GetString(0)), reader.GetString(1), reader.GetString(2)));
+                    }
+                }
+                foreach (var role in roles)
+                {
+                    await RecomputeRoleAsync(connection, transaction, role, unknownInterval, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        finally
+        {
+            _writer.Release();
+        }
     }
 
     /// <summary>Fold the WAL into the main file and leave rollback journaling, so the file can be published by rename.</summary>

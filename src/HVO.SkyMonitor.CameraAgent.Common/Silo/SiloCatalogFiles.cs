@@ -6,14 +6,17 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 /// Staged replacement of the catalog file (#1965 4.6). A rebuild writes <c>.building</c>; when complete and synced it is
 /// renamed to <c>.replacement</c>, so that name exists only for a complete catalog. The live catalog is retired by
 /// rename, main file first and then its WAL, so its committed pages are never separated from it and nothing can open a
-/// half-moved pair; then the replacement is installed and the retired files are deleted. <see cref="Recover"/> finishes
-/// or discards every intermediate state deterministically and is run before the catalog is opened or rebuilt.
+/// half-moved pair; then the replacement is installed and the retired files are deleted. <see cref="RecoverAsync"/>
+/// runs before the catalog is opened or rebuilt: it proves every catalog it could keep, install or put back is this
+/// instance's own supported one, and only then finishes or discards each intermediate state and removes the inspection
+/// scratch a crash left. A foreign, newer or other-binding catalog is refused with every file left unchanged.
 /// </summary>
 internal static class SiloCatalogFiles
 {
     public const string BuildingSuffix = ".building";
     public const string ReplacementSuffix = ".replacement";
     public const string RetiredSuffix = ".retired";
+    public const string InspectionInfix = ".inspect-";
 
     private static readonly string[] Sidecars = ["-wal", "-shm", "-journal"];
 
@@ -23,6 +26,56 @@ internal static class SiloCatalogFiles
 
     public static string Retired(string target) => target + RetiredSuffix;
 
+    /// <summary>Validate, then recover. Nothing is moved, deleted or cleaned for a catalog that is not this instance's own.</summary>
+    public static async ValueTask RecoverAsync(
+        string target, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata, CancellationToken cancellationToken)
+    {
+        var directory = Path.GetDirectoryName(target)!;
+        var scratch = InspectionScratch(target);
+        var retired = Retired(target);
+        if (!File.Exists(Building(target)) && !File.Exists(Replacement(target)) && !File.Exists(retired) &&
+            !Sidecars.Any(suffix => File.Exists(retired + suffix)) && scratch.Count == 0)
+        {
+            return;
+        }
+        await SiloSqlite.InspectAsync(target, format, metadata, directory, cancellationToken).ConfigureAwait(false);
+        await SiloSqlite.InspectAsync(Replacement(target), format, metadata, directory, cancellationToken).ConfigureAwait(false);
+        // A retired catalog's WAL is beside it, or still beside the target name when its retirement was interrupted.
+        await SiloSqlite.InspectAsync(retired, format, metadata, directory, cancellationToken,
+            File.Exists(retired + "-wal") || File.Exists(target) ? retired + "-wal" : target + "-wal").ConfigureAwait(false);
+        foreach (var file in scratch)
+        {
+            DeleteIfPresent(file);
+        }
+        Recover(target);
+    }
+
+    /// <summary>
+    /// Inspection copies a crash left behind: named for one of this target's catalog files, and nothing else, so no
+    /// unrelated file is ever removed.
+    /// </summary>
+    public static IReadOnlyList<string> InspectionScratch(string target)
+    {
+        var directory = Path.GetDirectoryName(target)!;
+        var prefix = Path.GetFileName(target);
+        return Directory.Exists(directory)
+            ? Directory.EnumerateFiles(directory, prefix + "*" + InspectionInfix + "*")
+                .Where(path => Path.GetFileName(path) is { } name && name.StartsWith(prefix, StringComparison.Ordinal) &&
+                    name.IndexOf(InspectionInfix, prefix.Length, StringComparison.Ordinal) >= 0)
+                .ToArray()
+            : [];
+    }
+
+    /// <summary>Remove the inspection scratch of a database already proven to be this instance's own.</summary>
+    public static void DeleteInspectionScratch(string target)
+    {
+        foreach (var file in InspectionScratch(target))
+        {
+            DeleteIfPresent(file);
+        }
+    }
+
+    /// <summary>Finish or discard an interrupted replacement; only after <see cref="RecoverAsync"/> has validated it.</summary>
     public static void Recover(string target)
     {
         var directory = Path.GetDirectoryName(target)!;

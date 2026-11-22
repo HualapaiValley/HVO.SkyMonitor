@@ -67,7 +67,7 @@ The State directory holds two databases with different recovery properties (4.6)
 | State | Rebuildable from Silo | Needs the instance backup | Why |
 | --- | --- | --- | --- |
 | `catalog-index.db`: publications, members, dependencies, layer bindings, roles, locators, copies, remaps, expiry intents and outcomes, survivor reservations, live intervals, pins, policies, floors, generations, anchors, cursor, authority, verification cursors | Yes, within the authenticated journal prefix | No. Backing it up only shortens recovery. | Derived from the journal, the manifests and exact-version reads |
-| `publication-state.db`: journal writer head, its one pending segment and every committed operation key, staged groups with their members' named locators and PUT attempts, orphan candidates | No | Yes | Staged work and the pending commit are not yet in the journal. The committed head authenticates the journal tail and exposes a lost one. |
+| `publication-state.db`: journal writer head, its one pending segment with its write attempts, every committed operation key with the fingerprint of its records, staged groups with their members' named locators and unresolved writes, orphan candidates | No | Yes | Staged work and the pending commit are not yet in the journal. The committed head authenticates the journal tail and exposes a lost one. |
 | `spool/`: exact bytes of the pending segment and of staged manifests | No | Yes, while `publication-state.db` references them | They replay an uncertain write with identical bytes |
 | Payload spool (#1968), admission journal and sequences, processing executions and pins, schedules, rig and calibration library, restore and replay leases | No | Yes | Contract 4.6. The capture-sequence floor is also journaled in `generation-open` records. |
 | Identity, Data Protection keys, provisioning, settings, automations, site profile, deployment location, orbital and space-weather stores, time data | No | Yes | Contract 4.1 and 8.5. None of it is published to Silo. |
@@ -82,13 +82,17 @@ Publication moves through these states, recorded in `publication-state.db` (5.3)
 
 1. `staged`: the draft is fixed. Staging the same draft again is idempotent. A different draft for the same revision,
    or an artifact revision staged or published with other bytes or facts, is a conflict and stages nothing.
-2. `payloads-qualified` (P1): each payload is created from its exact spooled bytes, read back and qualified. The
-   attempt is recorded before the PUT.
+2. `payloads-qualified` (P1): each payload is created from its exact spooled bytes, read back and qualified. Before
+   each PUT the key is marked unresolved, and storing the version it produced resolves it.
 3. `manifest-qualified` (P2): every named payload version is read back again first, and a lost one is recreated from
    its spooled bytes. The manifest then names only verified versions. Its exact bytes are spooled before the first PUT.
-4. `recorded` (P3): an uncertain commit of this revision is reconciled first, by replaying its exact spooled segment,
-   so a revision is never committed twice and nothing it names changes afterwards. Then every named version, manifest
-   included, is read back once more. A lost manifest is recreated from its exact spooled bytes under the same digest
+4. `recorded` (P3): a pending commit of this revision is reconciled first. A segment that may have been written,
+   because a write timed out after it could have landed, a crash left a write in flight, or any earlier attempt
+   landed, is replayed with its exact spooled bytes. The revision is committed once and nothing it names changes
+   afterwards. A segment that provably never reached the store, because it was never sent or the store definitely
+   refused every attempt, is withdrawn. The group is then requalified from its staged inputs before its first actual
+   commit, which takes the same uncommitted sequence. An absent key is never taken as proof that nothing was written.
+   Then every named version, manifest included, is read back again, never trusting a proof from P1 or P2. A lost manifest is recreated from its exact spooled bytes under the same digest
    key. A lost payload is recreated from its spooled bytes, and one transaction re-names the member and supersedes the
    manifest built from the old locator:
    - the superseded manifest's exact never-committed locator is handed to retention as an orphan candidate. An
@@ -97,54 +101,75 @@ Publication moves through these states, recorded in `publication-state.db` (5.3)
    - the group returns to P2, which writes a new manifest from the current locators under its own digest key.
 
    The logical revision never changes, the superseded version is never overwritten or deleted, and nothing waits for
-   retention. The `publish` segment commits under the operation key `publish:<group>:<revision>`. In the same
-   transaction the group moves to `recorded` at that position. P3 recovery checks that the committed manifest locator
-   is the key its UTC anchor, revision and digest fix.
-5. `visible` (P4): the writer's own first P4 runs P3 recovery for that revision within the same operation. Only when
-   it verifies does the group become visible and release its spooled bytes. An interrupted release is finished on resume.
+   retention. The `publish` segment commits under the operation key `publish:<sha256>`, where the digest covers the
+   length-prefixed group and the revision, so every valid identity has a bounded, stable key. In the same transaction
+   the group moves to `recorded` at that position. P3 recovery checks that the committed manifest locator is the key
+   its UTC anchor, revision and digest fix.
+5. `visible` (P4): the writer's own first P4 runs P3 recovery for that revision, reading every required member again
+   after the commit. Only when it verifies does the group become visible and release its spooled bytes. An
+   interrupted release is finished on resume.
 
-`abandoned` is reachable only before P3. It hands every version the group created, or may have created through an
-uncertain write (recorded with an empty version ID), to retention as an orphan candidate. A store whose profile is not
-persistence-qualified is never named by a committed record.
+`abandoned` is reachable only before P3. It hands every version the group created, or may have created, to retention
+as an orphan candidate. Each recorded version is handed over exactly. A write that may have landed a version not yet
+named, whether the first write, a recreated payload or a recreated manifest, is resolved through its key: the version
+it holds now is handed over exactly, and otherwise the key itself, with an empty version ID. A store whose profile is
+not persistence-qualified is never named by a committed record.
 
 ## Journal and authority
 
 - **Ordering and idempotence.** Records are ordered by `(g, seq)`. Sequences have no gaps within a generation, and each
-  segment names its predecessor's position and SHA-256. One writer holds one pending segment, and every append carries
-  an operation key. A retry of the same key returns the original segment, whether it is still pending or committed but
-  unacknowledged. A generation opening advances the writer generation in the same transaction that makes it pending,
-  so a crash leaves nothing or an opening that the same call completes.
+  segment names its predecessor's position and SHA-256. One writer holds one pending segment. Every append carries an
+  operation key bound to the canonical SHA-256 of its records. A retry with the same records returns the original
+  segment, whether it is still pending or committed but unacknowledged. A retry under that key with any other records
+  is `silo.operation-conflict`. That covers a changed live interval and an opening with changed floors. Every write
+  attempt of the pending segment is recorded as in flight before it is sent, and its outcome after. A generation
+  opening advances the writer generation in the same transaction that makes it pending, so a crash leaves nothing or an
+  opening that the same call completes.
 - **Authentication.** A segment is applied only when the next segment names its exact SHA-256. With the writer's
-  evidence it must instead match the writer's committed head, past which nothing is read as authority. Without that
-  evidence, as after total loss, it is accepted as the tail. An altered segment that still parses therefore ends the
-  prefix rather than entering the catalog.
+  evidence it must instead match the writer's committed head, past which nothing is read as authority. A writer that
+  committed nothing proves the journal empty, so even a genesis that landed but never committed is not adopted.
+  Without the writer's evidence, as after total loss, the last segment that chains back is accepted as the tail. An
+  altered segment that still parses therefore ends the prefix rather than entering the catalog.
 - **Writer evidence.** Startup catch-up and a rebuild with surviving State both take `SiloWriterEvidence`: the
   committed head, and the P3s still awaiting their first P4. The authority-unknown interval clears only when the
   committed head is read again with its SHA-256. A P3 awaiting its first P4 is recovered under P3 rules, never as
   settled history.
 - **Generations.** The first segment of every generation opens it. A later generation must name the end of the prefix
-  it continues. `ISiloGenerationWitness`, supplied by #1972, must prove that exact opening. Without that proof the
-  prefix ends at the boundary.
+  it continues. `ISiloGenerationWitness`, supplied by #1972, must prove that exact opening by the SHA-256 of the
+  segment that carries it. A witness of another opening of the same generation and prefix, differing in any field,
+  proves nothing. Without that proof the prefix ends at the boundary.
 - **Trusted anchors.** `SiloCheckpointWriter` writes a checkpoint of every applied record at the cursor. It refuses any
   checkpoint larger than the readers' bound, so it never produces one a rebuild cannot read. Selection starts from the
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
-  length, which a newer version at the same key cannot hide. An unreadable, oversized, absent or unproven candidate is
-  skipped and an older one tried, then generation 1. `SiloJournalRetention.RemovableThrough` permits removing segments
+  length, which a newer version at the same key cannot hide. A replica is read only through the exact version a verified
+  receipt names there (`ISiloAnchorTrust.ReceiptedCopy`), never through whatever its key holds now. An unreadable,
+  oversized, absent, unreceipted or unproven candidate is skipped and an older one tried, then generation 1. `SiloJournalRetention.RemovableThrough` permits removing segments
   only behind the previous trusted anchor.
 - **Reporting.** The catalog reports these separately (4.5, 5.4):
   - the authenticated prefix end and why it ended;
   - the complete-publication frontier;
   - whether an authority-unknown interval follows;
-  - the publications named past the prefix, as authority-unproven, refreshed on every catch-up.
+  - the publications named past the prefix, as authority-unproven. A complete scan replaces them. A scan that could
+    not read everything only adds to them, so a known gap keeps its names while the journal times out. Reading the
+    committed head again clears them.
+
+  The prefix end, the unproven names and every role disposition the authority-unknown interval implies are recorded in
+  one transaction, so a crash leaves all of them or none.
 
 ## Catalog file replacement
 
 A rebuild validates the live catalog, including committed WAL pages, on a copy before it touches anything. It then
 builds `catalog-index.db.building` and renames it to `.replacement` only when complete and synced. Next it retires the
 live catalog by rename, main file first and then its WAL, so committed pages never leave their database. Finally it
-installs the replacement and deletes the retired files. `SiloCatalogFiles.Recover` runs before the catalog is opened or
-rebuilt. It finishes or discards each intermediate state deterministically, so no residue survives.
+installs the replacement and deletes the retired files.
+
+`SiloCatalogFiles.RecoverAsync` runs before the catalog is opened or rebuilt. It first proves, on copies, that every
+catalog it could keep, install or put back belongs to this instance and has a supported format and schema. That covers
+the live catalog, the replacement and the retired catalog, each with its own WAL. A foreign, newer or other-binding
+catalog is refused, and every file, including any scratch, is left unchanged. Only then does recovery finish or discard
+each intermediate state and remove inspection copies a crash left behind. Those copies are named
+`<file>.inspect-<id>` for the database they inspect, so only attributable scratch is ever removed.
 
 ## Eligibility and dispositions
 
@@ -173,13 +198,17 @@ Role expiry needs all of these:
 
 - affirmative last-copy authority on a role-scoped intent;
 - that intent covering every authoritative copy, including copies found unexpectedly missing;
-- `deleted` or `already-absent` for each of them under that intent.
+- `deleted` or `already-absent` for each of them under that intent;
+- the same proof under that intent for every copy that became authoritative after it. A copy that arrived after the
+  intent blocks settlement even when a different operation has since removed it. A new intent must cover it.
 
 Copy-scoped eviction never makes a role `policy-expired`.
 
 Reopen (`ReopenAsync`, or `ReopenViewAsync` for an exact link that must also name the stream and reference capture)
 only reads. It never changes a revision's publication state. Within that operation it verifies the manifest, every
-required member and every required reopen dependency by exact read. It falls back from the local copy to eligible
+required member and every required reopen dependency by exact read. A verification is reused only for the same exact
+version, length and SHA-256. A manifest, or another member read through the same version, never stands in for a
+different role, so a receipt that names the wrong version cannot make a revision reopenable. It falls back from the local copy to eligible
 replicas, and returns the locator that verified. Lazy verification and audit (`VerifyRolesAsync`, `includeAvailable`)
 resume after durable cursors and wrap around. A role that keeps timing out, or a healthy early role, never starves the
 rest. A deleted or damaged version behind a valid catalog is found (#1059 negative control).
@@ -192,7 +221,7 @@ rest. A deleted or damaged version behind a valid catalog is found (#1059 negati
 | #1968 | The production `ISiloObjectStore` adapter on that runtime. `ISiloPayloadSpool`, whose release must be idempotent. `SiloPublisher` staging and resume. `SiloCenteredViews` from typed views. Host and DI wiring. |
 | #1969, #1970 | Append `copy`, `reserve-survivor`, `expiry-intent`, `expiry-disposition` and `availability` records through `SiloJournalWriter` with operation keys. `SiloPublicationState.ListStagedLocatorsAsync` lists versions that staged work still names. |
 | #1971 | `ReopenAsync`, `ReopenViewAsync`, `VerifyRolesAsync` and the role and locator reads |
-| #1972 | `ISiloGenerationWitness`, `ISiloAnchorTrust`, `SiloJournalWriter.OpenGenerationAsync`, `SiloCheckpointWriter`, and `SiloRebuildOptions` (`Writer`, `SourceMayBeIncomplete`, `MaximumCheckpointBytes`) |
+| #1972 | `ISiloGenerationWitness` (bound to the opening segment's SHA-256), `ISiloAnchorTrust` (trust and the receipted replica version of a checkpoint), `SiloJournalWriter.OpenGenerationAsync`, `SiloCheckpointWriter`, and `SiloRebuildOptions` (`Writer`, `SourceMayBeIncomplete`, `MaximumCheckpointBytes`) |
 
 ## Known limits
 
@@ -203,6 +232,9 @@ rest. A deleted or damaged version behind a valid catalog is found (#1059 negati
   belongs to #1972.
 - Deleting journal segments, issuing deletes and accounting for reclamation belong to #1970. This code only records
   and applies their outcomes, and hands superseded and abandoned versions to retention as orphan candidates.
-- A payload lost after its P3 was written, even while that P3 was still uncertain, is never substituted. The revision
+- Proof never crosses a phase, so each required payload is read three times per publication: its P1 readback, again
+  before P3, and again at the first P4. #1968 may replace a readback only with an independently qualified equivalent,
+  and its performance evidence must include this cost.
+- A payload lost after its P3 may have been written is never substituted. The revision
   stays closed with its P3 recovery outcome and keeps its spool until an eligible copy or qualified remap restores the
   member (#1969, #1971).

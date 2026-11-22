@@ -156,21 +156,29 @@ public sealed class SiloWriterAuthorityTests
     }
 
     [TestMethod]
-    public async Task AWitnessBindsToTheExactOpeningNotOnlyToItsGenerationNumber()
+    [DataRow("reason", "\"replacement\"", DisplayName = "another opening differs only in its reason")]
+    [DataRow("highestPriorGeneration", "0", DisplayName = "another opening differs only in its prior-generation evidence")]
+    public async Task AWitnessBindsToTheExactOpeningBytesNotToItsGenerationAndPrefix(string field, string valueJson)
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
         var head = await silo.State.ReadHeadAsync(CancellationToken.None).ConfigureAwait(false);
         var open = new SiloGenerationOpenRecord(2, "restore", 1, new Dictionary<string, long>(), head.Position, head.Sha256);
-        await silo.Journal.OpenGenerationAsync(open, CancellationToken.None).ConfigureAwait(false);
+        var opening = await silo.Journal.OpenGenerationAsync(open, CancellationToken.None).ConfigureAwait(false);
         await silo.Journal.AppendAsync([new SiloPinRecord("pin-1", "group", SiloDrafts.CaptureGroup(1), "r1", true, "operator")],
             "pin-1", CancellationToken.None).ConfigureAwait(false);
+        var key = SegmentKey(2, 1);
+        var bytes = silo.Local.Read(key, silo.Local.Current(key)!);
+        // The same generation, continuing the same prefix end, but a different opening in exactly one field.
+        var other = SiloJournalBoundaryTests.WithOpeningField(bytes, field, valueJson);
+        SiloHash.Sha256(other).Should().NotBe(opening.Sha256);
 
-        silo.Authority.WitnessedOpenings.Add((2, SiloHash.Sha256("a different opening"u8)));
-        var other = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
-        other.Authority.EndReason.Should().Be(SiloPrefixEnd.UnprovenGeneration, "a witness of another opening proves nothing here");
+        silo.Authority.WitnessedOpenings.Add((2, SiloHash.Sha256(other)));
+        var unproven = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
+        unproven.Authority.EndReason.Should().Be(SiloPrefixEnd.UnprovenGeneration, "a witness of another opening proves nothing here");
+        unproven.Authority.PrefixEnd.Should().Be(head.Position);
 
-        silo.Authority.WitnessedOpenings.Add((2, head.Sha256!));
+        silo.Authority.WitnessedOpenings.Add((2, opening.Sha256));
         var witnessed = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
         witnessed.Authority.PrefixEnd.Should().Be(new SiloJournalPosition(2, 2));
     }

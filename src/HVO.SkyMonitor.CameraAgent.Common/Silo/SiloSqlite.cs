@@ -178,11 +178,14 @@ internal static class SiloSqlite
     /// <summary>
     /// Judge an existing database without touching it: its main file and its WAL, which may hold committed pages the
     /// main file's header does not yet show, are copied into a scratch directory and the copy is validated. Returns false
-    /// when there is no database or it is empty; refuses any other format or binding. The original is never opened.
+    /// when there is no database or it is empty; refuses any other format or binding. The original is never opened. The
+    /// copy is named for the file it inspects (<c>&lt;file&gt;.inspect-&lt;id&gt;</c>), so scratch a crash leaves is
+    /// attributable and recovery removes it. A WAL still beside another name, as an interrupted retirement leaves it, is
+    /// named explicitly.
     /// </summary>
     public static async ValueTask<bool> InspectAsync(
         string path, SiloSqliteFormat format, IReadOnlyDictionary<string, string> metadata, string scratchDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? walPath = null)
     {
         if (!File.Exists(path))
         {
@@ -190,13 +193,14 @@ internal static class SiloSqlite
         }
         RefuseUnsupportedHeader(path, format);
         Directory.CreateDirectory(scratchDirectory);
-        var copy = Path.Combine(scratchDirectory, "inspect-" + Guid.NewGuid().ToString("N") + ".db");
+        var copy = Path.Combine(scratchDirectory, Path.GetFileName(path) + SiloCatalogFiles.InspectionInfix + Guid.NewGuid().ToString("N"));
+        var wal = walPath ?? path + "-wal";
         try
         {
             File.Copy(path, copy);
-            if (File.Exists(path + "-wal"))
+            if (File.Exists(wal))
             {
-                File.Copy(path + "-wal", copy + "-wal");
+                File.Copy(wal, copy + "-wal");
             }
             var connection = await OpenAsync(copy, cancellationToken).ConfigureAwait(false);
             await using (connection.ConfigureAwait(false))

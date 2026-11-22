@@ -11,12 +11,14 @@ internal enum SiloFaultPoint
     AfterManifestQualified,
     AfterPayloadReplaced,
     AfterSegmentSpooled,
+    AfterSegmentPending,
     AfterSegmentPut,
     AfterSegmentCommitted,
     AfterIndexApplied,
     AfterVisibleCommitted,
     AfterReplacementReady,
-    AfterTargetRetired
+    AfterTargetRetired,
+    AfterAuthorityRecorded
 }
 
 internal interface ISiloFaults
@@ -61,10 +63,21 @@ internal static class SiloCreateOnly
         {
             metadata[SiloObjectHeaders.Format] = format;
         }
+        var landed = false;
         for (var attempt = 0; attempt < MaximumAttempts; attempt++)
         {
-            var result = await store.PutCreateOnlyAsync(new(key, length, sha256, open, metadata), cancellationToken)
-                .ConfigureAwait(false);
+            SiloPutResult result;
+            try
+            {
+                result = await store.PutCreateOnlyAsync(new(key, length, sha256, open, metadata), cancellationToken).ConfigureAwait(false);
+            }
+            catch (SiloStoreUnavailableException refused) when (landed && !refused.WriteMayHaveLanded)
+            {
+                // A later attempt that definitely did not apply proves nothing about an earlier one that did.
+                throw new SiloStoreUnavailableException(store.Descriptor.StoreId, "a create-only write of " + key + " after an earlier one landed",
+                    writeMayHaveLanded: true, refused);
+            }
+            landed = true;
             var version = result.Created
                 ? result.VersionId
                 : await store.LocateCurrentVersionAsync(key, cancellationToken).ConfigureAwait(false);
@@ -104,10 +117,10 @@ internal sealed record SiloCommittedSegment(SiloJournalPosition Position, string
 
 /// <summary>
 /// The single journal writer for one bucket (#1965 4.5). Sequences are gapless within a generation and each segment
-/// names its predecessor's SHA-256. One segment is pending at a time; its exact bytes are spooled before its first PUT
-/// and replayed after a crash, so a sequence is never reused for different bytes. Every append carries an operation
-/// key: a retry of the same operation, whether its segment is still pending or already committed, returns that
-/// segment rather than appending the operation again.
+/// names its predecessor's SHA-256. One segment is pending at a time; its exact bytes are spooled before its first PUT,
+/// and every write attempt is recorded before it is sent. Every append carries an operation key bound to the canonical
+/// fingerprint of its records: a retry of the same operation, pending or committed, returns that segment, and a retry
+/// of the key with any other records is a conflict.
 /// </summary>
 internal sealed class SiloJournalWriter(
     SiloPublicationState state,
@@ -130,16 +143,20 @@ internal sealed class SiloJournalWriter(
         return open.Generation == 1 ? "generation-open:1" : $"generation-open:{open.Generation}:{open.PrefixEndSha256}";
     }
 
+    /// <summary>The canonical fingerprint of an operation's records: what its key promises on every retry.</summary>
+    public static string Fingerprint(IReadOnlyList<SiloJournalRecord> records) => SiloHash.Sha256(SiloJson.Serialize(records));
+
     /// <summary>Open generation 1 at install. Its segment is the first of the journal.</summary>
     public async ValueTask<SiloCommittedSegment> OpenFirstGenerationAsync(
         IReadOnlyDictionary<string, long> identityFloors, CancellationToken cancellationToken)
     {
         var open = new SiloGenerationOpenRecord(1, "install", 0, identityFloors);
         var operation = GenerationOpenOperation(open);
+        SiloJournalRecord[] records = [open];
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (await AlreadyAsync(operation, cancellationToken).ConfigureAwait(false) is { } done)
+            if (await AlreadyAsync(operation, Fingerprint(records), cancellationToken).ConfigureAwait(false) is { } done)
             {
                 return done;
             }
@@ -148,7 +165,7 @@ internal sealed class SiloJournalWriter(
             {
                 throw new InvalidOperationException("Generation 1 opens only an empty journal.");
             }
-            return await AppendLockedAsync([open], operation, null, null, null, cancellationToken).ConfigureAwait(false);
+            return await AppendLockedAsync(records, operation, null, null, null, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -166,10 +183,11 @@ internal sealed class SiloJournalWriter(
     {
         ArgumentNullException.ThrowIfNull(open);
         var operation = GenerationOpenOperation(open);
+        SiloJournalRecord[] records = [open];
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (await AlreadyAsync(operation, cancellationToken).ConfigureAwait(false) is { } done)
+            if (await AlreadyAsync(operation, Fingerprint(records), cancellationToken).ConfigureAwait(false) is { } done)
             {
                 return done;
             }
@@ -182,7 +200,7 @@ internal sealed class SiloJournalWriter(
             {
                 throw new InvalidOperationException("A new writer generation is above every issued generation.");
             }
-            return await AppendLockedAsync([open], operation, null, null, open.Generation, cancellationToken).ConfigureAwait(false);
+            return await AppendLockedAsync(records, operation, null, null, open.Generation, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -190,13 +208,17 @@ internal sealed class SiloJournalWriter(
         }
     }
 
-    /// <summary>Finish a pending segment left by a crash, replaying its exact spooled bytes.</summary>
-    public async ValueTask<SiloCommittedSegment?> ResumePendingAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Reconcile a pending segment left by a crash or a failed write before anything else is appended or cleaned up. A
+    /// segment that may have been written is replayed with its exact spooled bytes. A publication's segment that provably
+    /// never reached the store is withdrawn instead, so its group is requalified before its first actual commit.
+    /// </summary>
+    public async ValueTask<SiloCommittedSegment?> ReconcilePendingAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return (await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false))?.Segment;
+            return (await ReconcilePendingLockedAsync(cancellationToken).ConfigureAwait(false))?.Segment;
         }
         finally
         {
@@ -225,7 +247,7 @@ internal sealed class SiloJournalWriter(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return await AlreadyAsync(operationId, cancellationToken).ConfigureAwait(false)
+            return await AlreadyAsync(operationId, Fingerprint(records), cancellationToken).ConfigureAwait(false)
                 ?? await AppendLockedAsync(records, operationId, groupId, revisionId, null, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -234,17 +256,37 @@ internal sealed class SiloJournalWriter(
         }
     }
 
-    /// <summary>The operation's segment if it is committed, or once its pending segment is completed; otherwise null.</summary>
-    private async ValueTask<SiloCommittedSegment?> AlreadyAsync(string operationId, CancellationToken cancellationToken)
+    /// <summary>
+    /// The operation's segment if it is committed, or once its pending segment is completed; otherwise null. The same key
+    /// with other records is refused before anything is written or replayed.
+    /// </summary>
+    private async ValueTask<SiloCommittedSegment?> AlreadyAsync(string operationId, string fingerprint, CancellationToken cancellationToken)
     {
-        var resumed = await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false);
+        if (await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false) is { } pending &&
+            string.Equals(pending.OperationId, operationId, StringComparison.Ordinal) && !Withdrawable(pending))
+        {
+            RequireSameOperation(operationId, pending.OperationSha256, fingerprint);
+        }
+        var resumed = await ReconcilePendingLockedAsync(cancellationToken).ConfigureAwait(false);
         if (resumed is not null && string.Equals(resumed.OperationId, operationId, StringComparison.Ordinal))
         {
             return resumed.Segment;
         }
-        return await state.ReadOperationAsync(operationId, cancellationToken).ConfigureAwait(false) is { } committed
-            ? new(committed.Position, committed.Sha256, committed.VersionId)
-            : null;
+        if (await state.ReadOperationAsync(operationId, cancellationToken).ConfigureAwait(false) is not { } committed)
+        {
+            return null;
+        }
+        RequireSameOperation(operationId, committed.OperationSha256, fingerprint);
+        return new(committed.Position, committed.Sha256, committed.VersionId);
+    }
+
+    private static void RequireSameOperation(string operationId, string recorded, string requested)
+    {
+        if (!string.Equals(recorded, requested, StringComparison.Ordinal))
+        {
+            throw new SiloConflictException("silo.operation-conflict",
+                $"Operation {operationId} is already journaled with other records; a retry under its key must ask for exactly the same records.");
+        }
     }
 
     private async ValueTask<SiloCommittedSegment> AppendLockedAsync(
@@ -271,26 +313,53 @@ internal sealed class SiloJournalWriter(
         var sha = SiloHash.Sha256(bytes);
         await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterSegmentSpooled);
-        await state.InsertPendingAsync(new(position, sha, bytes.Length, operationId, groupId, revisionId), cancellationToken).ConfigureAwait(false);
-        return (await CompletePendingLockedAsync(cancellationToken).ConfigureAwait(false))?.Segment
-            ?? throw new InvalidOperationException("The pending segment vanished before it committed.");
+        var pending = new SiloPendingSegment(position, sha, bytes.Length, operationId, Fingerprint(records), groupId, revisionId);
+        await state.InsertPendingAsync(pending, cancellationToken).ConfigureAwait(false);
+        faults?.Hit(SiloFaultPoint.AfterSegmentPending);
+        return (await SendPendingLockedAsync(pending, cancellationToken).ConfigureAwait(false)).Segment;
     }
 
-    private async ValueTask<Completed?> CompletePendingLockedAsync(CancellationToken cancellationToken)
+    /// <summary>A publication's segment that provably never reached the store; it is requalified, never replayed.</summary>
+    private static bool Withdrawable(SiloPendingSegment pending) => pending.GroupId is not null && pending.ProvablyUnapplied;
+
+    private async ValueTask<Completed?> ReconcilePendingLockedAsync(CancellationToken cancellationToken)
     {
-        var pending = await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false);
-        if (pending is null)
+        if (await state.ReadPendingAsync(cancellationToken).ConfigureAwait(false) is not { } pending)
         {
             return null;
         }
+        if (Withdrawable(pending) && await state.WithdrawPendingAsync(pending, cancellationToken).ConfigureAwait(false))
+        {
+            spool.Delete(SiloObjectSpool.NameOf(pending.Sha256));
+            return null;
+        }
+        return await SendPendingLockedAsync(pending, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Write the pending segment's exact bytes once and commit it. The attempt is recorded as in flight before it is sent,
+    /// and its outcome after: a definite refusal leaves it provably unapplied, anything else may have landed.
+    /// </summary>
+    private async ValueTask<Completed> SendPendingLockedAsync(SiloPendingSegment pending, CancellationToken cancellationToken)
+    {
         var name = SiloObjectSpool.NameOf(pending.Sha256);
         var bytes = await spool.ReadAsync(name, pending.Sha256, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidDataException(
                 $"The exact bytes of pending journal segment {pending.Position} are lost from the spool; the writer stays fenced.");
         var key = SiloObjectNamespace.SegmentKey(pending.Position);
-        var created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, pending.Sha256, SiloCreateOnly.FromBytes(bytes),
-            SiloFormats.JournalSegment, binding.BindingId, clock, () => faults?.Hit(SiloFaultPoint.AfterSegmentPut), cancellationToken)
-            .ConfigureAwait(false);
+        await state.BeginPendingAttemptAsync(pending, cancellationToken).ConfigureAwait(false);
+        SiloCreated created;
+        try
+        {
+            created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, pending.Sha256, SiloCreateOnly.FromBytes(bytes),
+                SiloFormats.JournalSegment, binding.BindingId, clock, () => faults?.Hit(SiloFaultPoint.AfterSegmentPut), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (SiloStoreUnavailableException unavailable)
+        {
+            await state.EndPendingAttemptAsync(pending, unavailable.WriteMayHaveLanded, cancellationToken).ConfigureAwait(false);
+            throw;
+        }
         await state.CommitPendingAsync(pending, created.VersionId, cancellationToken).ConfigureAwait(false);
         faults?.Hit(SiloFaultPoint.AfterSegmentCommitted);
         spool.Delete(name);

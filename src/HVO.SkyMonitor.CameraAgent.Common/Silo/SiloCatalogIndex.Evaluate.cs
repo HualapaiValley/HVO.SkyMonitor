@@ -13,19 +13,24 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Silo;
 internal enum SiloEvaluationMode { Startup, Rebuild }
 
 /// <summary>
-/// Exact-version verifications made during one operation. They let the same operation avoid repeating its own GETs, and
-/// they never outlive it: the next operation reads the bytes again.
+/// Exact-version verifications made during one operation. Each proves one exact version held the length and SHA-256 an
+/// object was required to have, and is reused only for that same exact expectation: a verified manifest, or another
+/// member read through the same version, never stands in for a different role. They let the same operation avoid
+/// repeating its own GETs, and they never outlive it: the next operation reads the bytes again.
 /// </summary>
 internal sealed class SiloFreshEvidence
 {
-    private readonly Dictionary<SiloExactLocator, (DateTimeOffset When, byte[]? Bytes)> _verified = new();
+    private readonly Dictionary<(SiloExactLocator Locator, long Length, string Sha256), (DateTimeOffset When, byte[]? Bytes)> _verified = new();
 
-    public void Verified(SiloExactLocator locator, DateTimeOffset when, byte[]? bytes = null) =>
-        _verified[locator] = (when, bytes ?? (_verified.TryGetValue(locator, out var existing) ? existing.Bytes : null));
-
-    public bool TryGet(SiloExactLocator locator, out DateTimeOffset when, out byte[]? bytes)
+    public void Verified(SiloExactLocator locator, long length, string sha256, DateTimeOffset when, byte[]? bytes = null)
     {
-        if (_verified.TryGetValue(locator, out var value))
+        var key = (locator, length, sha256);
+        _verified[key] = (when, bytes ?? (_verified.TryGetValue(key, out var existing) ? existing.Bytes : null));
+    }
+
+    public bool TryGet(SiloExactLocator locator, long length, string sha256, out DateTimeOffset when, out byte[]? bytes)
+    {
+        if (_verified.TryGetValue((locator, length, sha256), out var value))
         {
             (when, bytes) = value;
             return true;
@@ -401,7 +406,7 @@ internal sealed partial class SiloCatalogIndex
         foreach (var locator in locators)
         {
             SiloProbe probe;
-            if (fresh.TryGet(locator, out var when, out var freshBytes) && (!captureBytes || freshBytes is not null))
+            if (fresh.TryGet(locator, length, sha256, out var when, out var freshBytes) && (!captureBytes || freshBytes is not null))
             {
                 probe = new(SiloProbeStatus.Verified, locator, when, SiloFormats.ExactGetSha256) { Bytes = freshBytes };
             }
@@ -410,7 +415,7 @@ internal sealed partial class SiloCatalogIndex
                 probe = await SiloVerifier.ProbeAsync(stores, locator, length, sha256, clock, captureBytes, cancellationToken).ConfigureAwait(false);
                 if (probe.Status == SiloProbeStatus.Verified)
                 {
-                    fresh.Verified(locator, probe.ObservedUtc, probe.Bytes);
+                    fresh.Verified(locator, length, sha256, probe.ObservedUtc, probe.Bytes);
                 }
             }
             await ExecuteAsync(connection, null, """
@@ -431,36 +436,6 @@ internal sealed partial class SiloCatalogIndex
         var unknown = await UnknownIntervalAsync(connection, null, cancellationToken).ConfigureAwait(false);
         var disposition = await RecomputeRoleAsync(connection, null, role, unknown, cancellationToken).ConfigureAwait(false);
         return (disposition, bytes, servedFrom);
-    }
-
-    /// <summary>Re-derive every role's disposition, for example after the authority-unknown interval opens or closes.</summary>
-    public async ValueTask RecomputeAllRolesAsync(CancellationToken cancellationToken)
-    {
-        await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-            var roles = new List<SiloRoleKey>();
-            using (var command = CreateCommand(connection, null, "SELECT kind, id, revision FROM roles ORDER BY kind, id, revision;"))
-            using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
-            {
-                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    roles.Add(new(ParseKind(reader.GetString(0)), reader.GetString(1), reader.GetString(2)));
-                }
-            }
-            var unknown = await UnknownIntervalAsync(connection, null, cancellationToken).ConfigureAwait(false);
-            using var transaction = BeginImmediate(connection);
-            foreach (var role in roles)
-            {
-                await RecomputeRoleAsync(connection, transaction, role, unknown, cancellationToken).ConfigureAwait(false);
-            }
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            _writer.Release();
-        }
     }
 
     private const string VerificationColumns = "kind, id, revision, sha256, length, generation, sequence, record_index";
