@@ -222,7 +222,7 @@ itself prevent that timeout. Refs #1747.
 
 ## Development v1 documentation fast path
 
-A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout reruns `scripts/ci:classify` against the exact PR base and head trees. Only a successful explicit `docs_fast_path=true` skips the workload; a missing output or classifier failure selects the full workload. The artifact retains the exact path list, mode, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs remain full validation; no result is reused across events. Refs #1989.
+A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent’s `scripts/ci:classify` against that base and the checked-out merge tree. Only a successful, literal `docs_fast_path=true` normalized by the shell skips the workload; a missing output or classifier failure selects the full workload. The artifact retains the exact path list, mode, reason and Preflight dependency. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs remain full validation; no result is reused across events. Refs #1989.
 
 ## Development v1 Preflight Budget
 

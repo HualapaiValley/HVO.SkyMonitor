@@ -425,25 +425,26 @@ def violations(short, full, queue=None, extra=None):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
             "coverage failures propagate and retain stage identity")
-    fast_condition = "if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.docs_fast_path != 'true' }}"
+    fast_condition = "if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}"
     for name in ("Setup .NET from global.json", "Restore solution", "Build warning-clean Release solution",
                  "Run Docker-disabled Unit selection", "Enforce canonical per-file coverage floors"):
         body = step(build, name)
         require(body.count(fast_condition) == 1 and "continue-on-error:" not in body,
                 f"{name} skips only explicit successful docs classification")
     fast = step(build, "Classify exact documentation diff")
-    for expected in ('id: docs-classify', 'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
-                     'HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+    for expected in ('id: docs-classify', 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
                      'EVENT_NAME: ${{ github.event_name }}', 'Preflight dependency: success',
-                     './scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA"',
-                     'cat "$DEV_V1_EVIDENCE_ROOT/classifier-output.txt" >> "$GITHUB_OUTPUT"',
-                     'Classifier failed; full validation required.'):
+                     'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
+                     '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
+                     '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
+                     'docs_fast_path=true) run_full=false', 'classifier output missing or invalid'):
         require(expected in fast, f"exact classification wiring: {expected}")
-    require('fetch-depth: 0' in step(build, "Checkout exact commit") and
+    require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in step(build, "Checkout exact commit") and
             build.find("Classify exact documentation diff") < build.find("Setup .NET from global.json"),
-            "classification follows full checkout and precedes workloads")
-    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"' in build,
-            "fast decision and preflight in retained manifest")
+            "event-specific checkout depth and classification order")
+    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"' in build and
+            'baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha' in build,
+            "fast decision, commits and preflight in retained manifest")
     require(0 <= build.find("- name: Run Docker-disabled Unit selection") <
             build.find("- name: Enforce canonical per-file coverage floors") <
             build.find("- name: Write evidence summary"), "coverage runs after Unit and before evidence")
@@ -458,7 +459,7 @@ def violations(short, full, queue=None, extra=None):
     require("workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount" in build, "summary matches enforced budgets")
     require("--logger trx" in build and "if-no-files-found: error" in build, "retained evidence")
     require(build.count("if: always()") == 2, "failure evidence summary and upload")
-    require("hvo-development-v1-ci-v5" in build, "versioned short-profile evidence")
+    require("hvo-development-v1-ci-v6" in build, "versioned short-profile evidence")
     for heavy in ("./scripts/ci:shellcheck", "./scripts/test:ci-shellcheck",
                   "scripts/test-categories/HVO.SkyMonitor.TestCategoryAudit.csproj",
                   "TestCategory=Integration", "gh workflow run ci.yml"):
@@ -563,8 +564,8 @@ if errors:
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
     ("fast classification missing", short.replace("id: docs-classify", "id: absent"), full),
-    ("fast base not exact", short.replace("BASE_SHA: ${{ github.event.pull_request.base.sha }}", "BASE_SHA: ${{ github.sha }}"), full),
-    ("fast head not exact", short.replace("HEAD_SHA: ${{ github.event.pull_request.head.sha }}", "HEAD_SHA: ${{ github.sha }}"), full),
+    ("merge parent not bound", short.replace('"$second" == "$PR_HEAD_SHA"', '"$second" == "$second"'), full),
+    ("base classifier not trusted", short.replace('git show "$base:scripts/ci:classify"', 'git show "HEAD:scripts/ci:classify"'), full),
     ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"', ""), full),
     ("inflated summary hard timeout", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:13200"), full),
     ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
@@ -588,7 +589,7 @@ mutations = (
     ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
     ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
     ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
-    ("coverage step conditional", short.replace("if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.docs_fast_path != 'true' }}", "if: false"), full),
+    ("coverage step conditional", short.replace("if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}", "if: false"), full),
     ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
     ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
     ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),
@@ -910,6 +911,133 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
+# Run the actual decision shell with synthetic merge commits and a trusted-base
+# classifier. This verifies literal output parsing and merge-parent binding.
+fast_step = step(job(short, "build-unit"), "Classify exact documentation diff")
+fast_script = textwrap.dedent(fast_step.split("        run: |\n", 1)[1])
+with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
+    fixture = pathlib.Path(directory)
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=fixture, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "fixture")
+    (fixture / "scripts").mkdir()
+    trusted = fixture / "scripts/ci:classify"
+    trusted.write_text('#!/usr/bin/env bash\nprintf "%s" "$FAKE_CONTENT"\nexit "$FAKE_EXIT"\n')
+    git("add", ".")
+    git("commit", "-qm", "trusted base")
+    base = git("rev-parse", "HEAD")
+    trusted.write_text('#!/usr/bin/env bash\nprintf "docs_fast_path=true\ndocs_fast_path_reason=candidate\n"\n')
+    git("commit", "-qam", "candidate classifier")
+    candidate = git("rev-parse", "HEAD")
+    tree = git("rev-parse", "HEAD^{tree}")
+    merge = git("commit-tree", tree, "-p", base, "-p", candidate, "-m", "merge")
+    git("checkout", "-q", "--detach", merge)
+    for label, content, exit_code, event, pr_head, expected, reason in (
+        ("positive", "docs_fast_path=true\ndocs_fast_path_reason=safe\n", "0", "pull_request", candidate, "false", "safe"),
+        ("false", "docs_fast_path=false\ndocs_fast_path_reason=outside\n", "0", "pull_request", candidate, "true", "outside"),
+        ("mixed case", "docs_fast_path=True\ndocs_fast_path_reason=safe\n", "0", "pull_request", candidate, "true", "classifier output missing or invalid"),
+        ("missing", "", "0", "pull_request", candidate, "true", "classifier output missing or invalid"),
+        ("duplicate", "docs_fast_path=true\ndocs_fast_path=true\ndocs_fast_path_reason=safe\n", "0", "pull_request", candidate, "true", "classifier output missing or invalid"),
+        ("failure after true", "docs_fast_path=true\ndocs_fast_path_reason=safe\n", "2", "pull_request", candidate, "true", "base classifier unavailable or failed"),
+        ("wrong parent", "docs_fast_path=true\ndocs_fast_path_reason=safe\n", "0", "pull_request", base, "true", "merge binding unavailable or mismatched"),
+        ("push", "docs_fast_path=true\ndocs_fast_path_reason=safe\n", "0", "push", candidate, "true", "non-pull-request event requires full validation"),
+        ("merge group", "docs_fast_path=true\ndocs_fast_path_reason=safe\n", "0", "merge_group", candidate, "true", "non-pull-request event requires full validation"),
+    ):
+        evidence = fixture / "evidence"
+        evidence.mkdir(exist_ok=True)
+        output = fixture / "output"
+        output.write_text("")
+        env = dict(os.environ, DEV_V1_EVIDENCE_ROOT=str(evidence), GITHUB_OUTPUT=str(output),
+                   GITHUB_SHA=merge, EVENT_NAME=event, PR_HEAD_SHA=pr_head,
+                   FAKE_CONTENT=content, FAKE_EXIT=exit_code)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                                capture_output=True, text=True)
+        lines = output.read_text().splitlines()
+        if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
+            raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
+    # Real base classifier must reject a candidate edit to the classifier itself,
+    # even if that candidate tries to print a passing answer.
+    git("checkout", "-q", "--detach", base)
+    trusted.write_text((root / "scripts/ci:classify").read_text())
+    (fixture / "docs").mkdir(exist_ok=True)
+    (fixture / "docs/safe.md").write_text("original\n")
+    git("add", "scripts/ci:classify", "docs/safe.md")
+    git("commit", "-qm", "real trusted classifier")
+    real_base = git("rev-parse", "HEAD")
+    trusted.write_text('#!/usr/bin/env bash\nprintf "docs_fast_path=true\ndocs_fast_path_reason=forged\n"\n')
+    (fixture / "docs/safe.md").write_text("changed\n")
+    git("commit", "-qam", "untrusted classifier")
+    real_head = git("rev-parse", "HEAD")
+    real_tree = git("rev-parse", "HEAD^{tree}")
+    real_merge = git("commit-tree", real_tree, "-p", real_base, "-p", real_head, "-m", "merge")
+    git("checkout", "-q", "--detach", real_merge)
+    output.write_text("")
+    env.update(GITHUB_SHA=real_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=real_head)
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "run_full=true" not in output.read_text().splitlines() or \
+            "reason=path outside documentation allowlist" not in output.read_text().splitlines():
+        raise SystemExit(f"Candidate classifier edit was trusted: {output.read_text()} {result.stderr}")
+    # A moved base links the edited document. The decision uses the merge tree,
+    # even when an older payload base would have classified the doc as safe.
+    git("checkout", "-q", "--detach", real_base)
+    (fixture / "Directory.Build.targets").write_text('<None Include="docs/safe.md" />\n')
+    git("add", "Directory.Build.targets")
+    git("commit", "-qm", "base introduces link")
+    linked_base = git("rev-parse", "HEAD")
+    git("checkout", "-q", "--detach", real_base)
+    (fixture / "docs/safe.md").write_text("candidate edit\n")
+    git("commit", "-qam", "doc edit")
+    doc_head = git("rev-parse", "HEAD")
+    git("checkout", "-q", "--detach", linked_base)
+    git("merge", "--no-ff", "-m", "merge", doc_head)
+    linked_merge = git("rev-parse", "HEAD")
+    output.write_text("")
+    env.update(GITHUB_SHA=linked_merge, EVENT_NAME="pull_request", PR_HEAD_SHA=doc_head)
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "reason=documentation is linked to a project" not in output.read_text().splitlines():
+        raise SystemExit(f"Moved-base link was not rejected: {output.read_text()} {result.stderr}")
+    # A merge tree that drops a base-side code file is also classified against
+    # the actual first parent, not the stale payload base.
+    git("checkout", "-q", "--detach", real_base)
+    (fixture / "code.cs").write_text("code\n")
+    git("add", "code.cs")
+    git("commit", "-qm", "base code")
+    code_base = git("rev-parse", "HEAD")
+    doc_tree = git("rev-parse", doc_head + "^{tree}")
+    changed_merge = git("commit-tree", doc_tree, "-p", code_base, "-p", doc_head, "-m", "merge")
+    git("checkout", "-q", "--detach", changed_merge)
+    output.write_text("")
+    env.update(GITHUB_SHA=changed_merge, PR_HEAD_SHA=doc_head)
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "run_full=true" not in output.read_text().splitlines():
+        raise SystemExit(f"Changed merge tree qualified: {output.read_text()} {result.stderr}")
+    # Execute the actual manifest step for fast and missing-output fallback.
+    summary_step = step(job(short, "build-unit"), "Write evidence summary")
+    summary_script = textwrap.dedent(summary_step.split("        run: |\n", 1)[1])
+    (evidence / "unit").mkdir(exist_ok=True)
+    (evidence / "timing").mkdir(exist_ok=True)
+    for decision, outcome, expected in (("false", "success", True), ("", "failure", False)):
+        env.update(CLASSIFY_OUTCOME=outcome, RUN_FULL=decision, DOCS_FAST_PATH_REASON="",
+                   CLASSIFIED_BASE=code_base, GITHUB_EVENT_NAME="pull_request", PR_HEAD_SHA=doc_head,
+                   RESTORE_OUTCOME="skipped", BUILD_OUTCOME="skipped", UNIT_OUTCOME="skipped",
+                   COVERAGE_OUTCOME="skipped", DEV_V1_STARTED_AT_EPOCH="0")
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", summary_script], cwd=fixture, env=env,
+                                capture_output=True, text=True)
+        if result.returncode:
+            raise SystemExit(f"Manifest simulation failed: {result.stderr}")
+        manifest = json.loads((evidence / "manifest.json").read_text())
+        if (manifest["docsFastPath"] is not expected or not manifest["docsFastPathReason"] or
+                manifest["baseSha"] != code_base or manifest["prHeadSha"] != doc_head or
+                manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
+                (expected and manifest["sdkVersion"] is not None)):
+            raise SystemExit(f"Invalid manifest evidence: {manifest}")
+    print("Fast workflow shell: 12 decision, binding and trusted-base cases; 2 manifest cases passed.")
+
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
 promotion_step = promotion.split("      - name: Open or refresh the promotion pull request\n", 1)[1]

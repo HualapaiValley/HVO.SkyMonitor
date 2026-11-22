@@ -235,6 +235,65 @@ fast_expect false pull_request "$fast_base" "$fast_base"
 fast_expect false pull_request missing "$fast_base"
 fast_expect false push "$fast_base" "$fast_base"
 fast_expect false merge_group "$fast_base" "$fast_base"
+# Reason-specific controls for exclusions and unsafe tree modes.
+fast_reason() {
+  local reason="$1" base="$2" head="$3" result
+  result="$(cd "$fast_root" && "$classifier" pull_request "$base" "$head" docs-fast-only)"
+  grep -Fxq "docs_fast_path=false" <<< "$result"
+  grep -Fxq "docs_fast_path_reason=$reason" <<< "$result" || { printf 'Expected reason %s: %s\n' "$reason" "$result" >&2; exit 1; }
+  ((fast_cases += 1))
+}
+for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/UPPER.MD; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$excluded")"
+  printf 'text\n' > "$fast_root/$excluded"
+  git -C "$fast_root" add "$excluded" && git -C "$fast_root" commit -qm excluded
+  fast_reason 'path outside documentation allowlist' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+for body in 'bad\377' 'bad\001'; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  printf '%b' "$body" > "$fast_root/docs/invalid.md"
+  git -C "$fast_root" add docs/invalid.md && git -C "$fast_root" commit -qm invalid
+  fast_reason 'documentation is binary or unreadable' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+for initial in 644 755; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  printf 'text\n' > "$fast_root/docs/mode.md"
+  chmod "$initial" "$fast_root/docs/mode.md"
+  git -C "$fast_root" add docs/mode.md && git -C "$fast_root" commit -qm mode-base
+  mode_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if [[ "$initial" == 644 ]]; then chmod 755 "$fast_root/docs/mode.md"; else chmod 644 "$fast_root/docs/mode.md"; fi
+  git -C "$fast_root" add docs/mode.md && git -C "$fast_root" commit -qm mode-change
+  if [[ "$initial" == 644 ]]; then mode_reason='non-regular or missing path in exact diff'; else mode_reason='non-regular or executable base path'; fi
+  fast_reason "$mode_reason" "$mode_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'text\n' > "$fast_root/docs/executable.md"; chmod 755 "$fast_root/docs/executable.md"
+git -C "$fast_root" add docs/executable.md && git -C "$fast_root" commit -qm executable
+fast_reason 'non-regular or missing path in exact diff' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Link forms may appear in project files or imported targets, on the base tree.
+for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+  printf '%s\n' "$link" > "$fast_root/Directory.Build.targets"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm link-base
+  link_base="$(git -C "$fast_root" rev-parse HEAD)"
+  printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+  git -C "$fast_root" commit -qam link-change
+  fast_reason 'documentation is linked to a project' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Ignore settings must not hide a gitlink update accompanying a safe doc.
+git -C "$fast_root" reset -q --hard "$fast_base"
+git -C "$fast_root" update-index --add --cacheinfo "160000,$fast_base,submodule"
+git -C "$fast_root" commit -qm gitlink-base
+link_base="$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" update-index --cacheinfo "160000,$link_base,submodule"
+printf 'text\n' > "$fast_root/docs/gitlink.md"
+git -C "$fast_root" add docs/gitlink.md && git -C "$fast_root" commit -qm gitlink-change
+git -C "$fast_root" config diff.ignoreSubmodules all
+fast_reason 'non-regular or missing path in exact diff' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" config --unset diff.ignoreSubmodules
 printf 'Documentation fast path classification passed: %d cases.\n' "$fast_cases"
 
 base_sha="$(git -C "$work_root" rev-parse HEAD)"

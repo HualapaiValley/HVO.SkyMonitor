@@ -149,7 +149,7 @@ is_reduced_path() {
 
 is_fast_doc_path() {
   case "$1" in
-    docs/catalog/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/*/generated/* | docs/images/*) return 1 ;;
+    docs/catalog/* | docs/contracts/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/generated/* | docs/*/generated/* | docs/images/* | docs/upgrade-notes/* | docs/runbooks/development-v1-merge-queue-drill/*) return 1 ;;
     docs/*.md | docs/*.markdown | docs/*.txt | README.md | AGENTS.md | CLAUDE.md) return 0 ;;
   esac
   return 1
@@ -158,10 +158,20 @@ is_fast_doc_path() {
 # Query committed project files directly; an unavailable tree or failed search is
 # uncertainty, not evidence that the document has no consumers.
 fast_doc_link_state() {
-  local path="$1" status
-  if git grep -q -F -e "Include=\"../../${path}\"" \
-    -e "Include=\"..\\..\\${path//\//\\}\"" "$head_sha" -- ':(glob)**/*.csproj'; then
-    return 0
+  local matches status line
+  # Any unapproved document reference or dynamic input in MSBuild is uncertain.
+  # The two existing document inputs below are under excluded directories.
+  if matches="$(git grep -i -E 'docs[/\\]|\.(md|markdown|txt)([^[:alnum:]]|$)|Include[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']*\$\(' "$head_sha" -- ':(glob)**/*.csproj' ':(glob)**/*.props' ':(glob)**/*.targets')"; then
+    while IFS= read -r line; do
+      case "$line" in
+        *'$(MSBuildThisFileDirectory)TestSettings/ConnectionPoolClearContract.cs'*) continue ;;
+        *docs/contracts/* | *docs/validation/* | *docs\\validation\\*)
+          case "$line" in *docs/contracts/*'..'* | *docs/validation/*'..'* | *docs\\validation\\*'..'* | *'*'* | *'$('* ) return 0 ;; esac
+          continue ;;
+        *) return 0 ;;
+      esac
+    done <<< "$matches"
+    return 1
   else
     status=$?
     [[ "$status" -eq 1 ]] && return 1
@@ -575,7 +585,7 @@ fi
 fast_diff="$(mktemp)"
 trap 'rm -f "$fast_diff" "${diff_file:-}"' EXIT
 docs_fast_path_reason="exact diff failed or is empty"
-if git diff --name-status --no-renames -z "$base_sha" "$head_sha" -- > "$fast_diff"; then
+if git diff --name-status --no-renames --ignore-submodules=none -z "$base_sha" "$head_sha" -- > "$fast_diff"; then
   fast_ok=true
   fast_count=0
   [[ -z "$summary_file" ]] || printf '\nExact base/head paths for docs fast path:\n' >> "$summary_file"
@@ -590,8 +600,10 @@ if git diff --name-status --no-renames -z "$base_sha" "$head_sha" -- > "$fast_di
     if [[ "$fast_status" != A && "$fast_status" != M ]]; then
       fast_ok=false; docs_fast_path_reason="deleted or type-changed path in exact diff"
     elif ! fast_entry="$(git ls-tree "$head_sha" -- ":(literal)$fast_path")" \
-      || [[ "${fast_entry%% *}" != 100644 && "${fast_entry%% *}" != 100755 ]]; then
+      || [[ "${fast_entry%% *}" != 100644 ]]; then
       fast_ok=false; docs_fast_path_reason="non-regular or missing path in exact diff"
+    elif [[ "$fast_status" == M ]] && { ! fast_base_entry="$(git ls-tree "$base_sha" -- ":(literal)$fast_path")" || [[ "${fast_base_entry%% *}" != 100644 ]]; }; then
+      fast_ok=false; docs_fast_path_reason="non-regular or executable base path"
     elif ! is_fast_doc_path "$fast_path"; then
       fast_ok=false; docs_fast_path_reason="path outside documentation allowlist"
     elif ! git cat-file blob "$head_sha:$fast_path" | python3 -c 'import codecs, sys
@@ -614,11 +626,17 @@ except UnicodeError:
         fi
       fi
     fi
+    if [[ "$fast_ok" != true ]]; then break; fi
   done < "$fast_diff"
   if [[ "$fast_ok" == true && "$fast_count" -gt 0 ]]; then
     docs_fast_path=true
     docs_fast_path_reason="all exact base/head paths are safe documentation"
   fi
+fi
+
+if [[ "${4:-}" == "docs-fast-only" ]]; then
+  finish
+  exit 0
 fi
 
 diff_file="$(mktemp)"
