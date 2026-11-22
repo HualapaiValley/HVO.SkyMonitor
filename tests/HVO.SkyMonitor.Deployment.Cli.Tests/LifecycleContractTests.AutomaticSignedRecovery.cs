@@ -241,6 +241,7 @@ public sealed partial class LifecycleContractTests
         public List<Guid> OwnedRequests { get; } = [];
         public bool SupportsOwnedResume { get; init; }
         public bool LoseAcknowledgement { get; init; }
+        public int PauseRequests { get; private set; }
         public int GenericResumeCalls { get; private set; }
         private Guid _operationId;
 
@@ -250,7 +251,8 @@ public sealed partial class LifecycleContractTests
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             _operationId = operationId;
-            WriteCommand("paused", $"lifecycle:{PauseCommandId:D}:pause", $"installer-lifecycle:{PauseCommandId:D}",
+            var command = PauseRequests++ == 0 ? PauseCommandId : Guid.NewGuid();
+            WriteCommand("paused", $"lifecycle:{command:D}:pause", $"installer-lifecycle:{command:D}",
                 $"transactional lifecycle operation {operationId:D} pause", changed: ReadBoundary().CaptureState != "Paused");
             return Task.FromResult(ReadBoundary());
         }

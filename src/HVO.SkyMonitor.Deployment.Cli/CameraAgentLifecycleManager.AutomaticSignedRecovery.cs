@@ -27,6 +27,43 @@ internal sealed partial class CameraAgentLifecycleManager
         }
     }
 
+    private static async Task VerifyRetainedAutomaticPauseAsync(
+        InstallationPaths paths, LifecycleOperationState operation, LifecycleContinuity continuity,
+        CancellationToken cancellationToken)
+    {
+        var original = operation.PreMutationContinuity!;
+        if (!IsValidRecoveryBoundary(original) || !continuity.CaptureInitialized ||
+            original.CaptureState != "Paused" || continuity.CaptureState != "Paused" ||
+            continuity.CaptureVersion != original.CaptureVersion || continuity.CaptureSequence < original.CaptureSequence ||
+            operation.SignedRecoveryPauseCommandId is not { } expected ||
+            await ReadAutomaticRecoveryPauseAsync(paths, operation.OperationId, original, cancellationToken).ConfigureAwait(false) != expected)
+            throw InstallerException.Refused("The interrupted signed upgrade no longer owns its recorded changed pause. Capture admission was preserved.");
+    }
+
+    private static async Task StartPendingSignedPredecessorAsync(
+        InstallationPaths paths, InstanceManifest manifest, LifecycleOperationState operation,
+        DockerClient docker, ComposeFiles compose, HostPrerequisiteReport? hostLimits, string operationRoot,
+        CancellationToken cancellationToken)
+    {
+        EnsureDaemon(manifest.DockerDaemon, await docker.PreflightAsync(cancellationToken).ConfigureAwait(false));
+        var runtime = await docker.InspectContainerAsync(compose.ContainerName, cancellationToken).ConfigureAwait(false);
+        if (runtime.Exists && runtime.ImageId != manifest.Image.ImageId &&
+            (runtime.Running || runtime.ImageId != operation.CandidateImage?.ImageId))
+            throw InstallerException.Refused("The pending signed recovery could not identify an exact predecessor or stopped candidate.");
+        if (!runtime.Running)
+        {
+            if (runtime.Exists)
+            {
+                var image = runtime.ImageId == manifest.Image.ImageId ? manifest.Image : operation.CandidateImage!;
+                await docker.VerifyContainerOwnershipAsync(compose, paths, image, manifest.RuntimeUid,
+                    manifest.RuntimeGid, cancellationToken).ConfigureAwait(false);
+                await docker.VerifyRecoveryContainerAsync(compose, paths, manifest, cancellationToken).ConfigureAwait(false);
+            }
+            await StartOnThisHostAsync(docker, compose, hostLimits, operationRoot, cancellationToken).ConfigureAwait(false);
+        }
+        await docker.VerifyRecoveryContainerAsync(compose, paths, manifest, cancellationToken).ConfigureAwait(false);
+    }
+
     private static void VerifyAutomaticRecoveryRelease(LifecycleOperationState operation, AcquiredImage release)
     {
         if (release.VerifiedRelease.ChecksumsSha256 !=
