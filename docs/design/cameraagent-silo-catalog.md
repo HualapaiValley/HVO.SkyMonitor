@@ -201,8 +201,10 @@ file and WAL and any scratch, is left byte for byte unchanged.
 
 Only then does recovery finish or discard each intermediate state and remove inspection copies a crash left behind.
 It removes exactly the shape this code emits: `<file>.inspect-<32 hex>`, optionally followed by a SQLite sidecar
-suffix, where `<file>` is the catalog, its replacement or its retired copy. A name an operator gives under the same
-prefix, such as `catalog-index.db.backup.inspect-notes`, is never removed.
+suffix, where `<file>` is a file that database's own inspections read. The catalog inspects itself, its replacement and
+its retired copy. The publication state inspects only itself, so a replacement- or retired-shaped name beside it is
+never its own. A name an operator gives under the same prefix, such as `catalog-index.db.backup.inspect-notes`, is
+never removed.
 
 ## Eligibility and dispositions
 
@@ -236,6 +238,10 @@ Role expiry needs all of these:
   first eligible record, on promotion by a later valid receipt, and on restoration after eviction. Each such copy
   blocks settlement until it is proven absent under that intent, even when a different operation has since removed
   it. A new intent must cover it.
+
+Proof counts only at or after a copy's latest entry, compared by generation, segment and record position. An intent
+that proved a copy absent before the copy returned holds stale proof, whether the copy was an original target or a
+later arrival. It must prove that copy absent again.
 
 Copy-scoped eviction never makes a role `policy-expired`.
 

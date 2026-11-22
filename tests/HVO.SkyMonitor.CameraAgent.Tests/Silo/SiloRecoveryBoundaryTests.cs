@@ -218,6 +218,86 @@ public sealed class SiloRecoveryBoundaryTests
         }
     }
 
+    [TestMethod]
+    [DataRow("stale", DisplayName = "R deleted B, B was restored and then evicted by another intent: R's disposition is stale")]
+    [DataRow("redisposed", DisplayName = "R deleted B, B was restored and R proved it absent again: R settles")]
+    public async Task ARoleIntentSettlesOnlyOnDispositionsAtOrAfterEachCopysLatestEntry(string after)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        var capture = silo.PublishRecord(SiloDrafts.CaptureGroup(1));
+        var raw = SiloHarness.Identity(capture, SiloDrafts.Raw(1));
+        var a = silo.MemberLocator(capture.GroupId, raw.Id);
+        var b = silo.ReplicateToArchive(raw, a);
+        await silo.AppendAsync(b).ConfigureAwait(false);
+        // R names both authoritative copies from the start.
+        await silo.AppendAsync(new SiloExpiryIntentRecord("expire-raw", SiloExpiryScope.Role, raw, "last-copy-policy:operator",
+            [new(a, "local", "allocation-raw", raw.Length), new(b.Locator, "archive")], "retention", LastCopy: true)).ConfigureAwait(false);
+        await silo.AppendAsync(new SiloExpiryDispositionRecord("expire-raw", b.Locator, SiloExpiryOutcome.Deleted, silo.Clock.GetUtcNow(),
+            "NoSuchVersion")).ConfigureAwait(false);
+        // B returns to the authority set after R's disposition of it.
+        await silo.AppendAsync(new SiloAvailabilityRecord(SiloAvailabilityScope.Copy, raw, SiloAvailabilityState.Restored, silo.Clock.GetUtcNow(),
+            "found again", b.Locator)).ConfigureAwait(false);
+        if (after == "stale")
+        {
+            await EvictAsync(silo, raw, b.Locator, "evict-b").ConfigureAwait(false);
+        }
+        else
+        {
+            await silo.AppendAsync(new SiloExpiryDispositionRecord("expire-raw", b.Locator, SiloExpiryOutcome.AlreadyAbsent,
+                silo.Clock.GetUtcNow(), "NoSuchVersion")).ConfigureAwait(false);
+        }
+        silo.Local.Delete(a);
+        await silo.AppendAsync(
+            new SiloExpiryDispositionRecord("expire-raw", a, SiloExpiryOutcome.Deleted, silo.Clock.GetUtcNow(), "NoSuchVersion"),
+            new SiloAvailabilityRecord(SiloAvailabilityScope.Role, raw, SiloAvailabilityState.PolicyExpired, silo.Clock.GetUtcNow(),
+                "claimed", IntentId: "expire-raw")).ConfigureAwait(false);
+        var role = new SiloRoleKey(SiloIdentityKind.Member, raw.Id, raw.Revision);
+
+        foreach (var pass in new[] { "replayed", "rebuilt" })
+        {
+            if (pass == "rebuilt")
+            {
+                await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
+                await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
+            }
+            var status = (await silo.Index.ReadRoleAsync(role, CancellationToken.None).ConfigureAwait(false))!;
+            if (after == "stale")
+            {
+                status.Journaled.Should().BeNull($"{pass}: R's disposition of B predates B's return, so it proves nothing now");
+                status.Disposition.Should().NotBe(SiloDisposition.PolicyExpired);
+            }
+            else
+            {
+                status.Journaled.Should().Be(SiloDisposition.PolicyExpired, $"{pass}: R proved B absent again after its return");
+            }
+        }
+    }
+
+    [TestMethod]
+    [DataRow("publication-state.db.inspect-{0}", true, DisplayName = "publication state: its own inspection scratch is collected")]
+    [DataRow("publication-state.db.inspect-{0}-wal", true, DisplayName = "publication state: its own scratch sidecar is collected")]
+    [DataRow("publication-state.db.replacement.inspect-{0}", false, DisplayName = "publication state: a replacement-shaped name it never emits survives")]
+    [DataRow("publication-state.db.retired.inspect-{0}-wal", false, DisplayName = "publication state: a retired-shaped name it never emits survives")]
+    [DataRow("catalog-index.db.inspect-{0}", true, DisplayName = "catalog: its own inspection scratch is collected")]
+    [DataRow("catalog-index.db.replacement.inspect-{0}", true, DisplayName = "catalog: its replacement's inspection scratch is collected")]
+    [DataRow("catalog-index.db.retired.inspect-{0}-shm", true, DisplayName = "catalog: its retired copy's inspection scratch is collected")]
+    public async Task EachDatabaseCollectsOnlyTheScratchItsOwnInspectionsCanEmit(string pattern, bool collected)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
+        silo.Close();
+        var path = Path.Combine(silo.RootPath, string.Format(System.Globalization.CultureInfo.InvariantCulture, pattern,
+            new string('0', 24) + "0123abcd"));
+        File.WriteAllBytes(path, [1, 2, 3]);
+
+        await silo.OpenAsync().ConfigureAwait(false);
+
+        File.Exists(path).Should().Be(!collected, collected
+            ? "scratch the opening database's own inspections emit is removed once it is proven its own"
+            : "a name no inspection of that database can emit is an operator's file");
+    }
+
     private static async Task EvictAsync(SiloHarness silo, SiloObjectIdentity role, SiloExactLocator copy, string intent)
     {
         await silo.AppendAsync(new SiloExpiryIntentRecord(intent, SiloExpiryScope.Copy, role, "operator eviction", [new(copy, "archive")],

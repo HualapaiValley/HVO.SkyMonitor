@@ -37,7 +37,7 @@ internal static class SiloCatalogFiles
     {
         ArgumentNullException.ThrowIfNull(format);
         var directory = Path.GetDirectoryName(target)!;
-        var scratch = InspectionScratch(target);
+        var scratch = InspectionScratch(CatalogSources(target));
         var replacement = Replacement(target);
         var retired = Retired(target);
         if (!File.Exists(Building(target)) && !File.Exists(replacement) && !File.Exists(retired) &&
@@ -67,22 +67,27 @@ internal static class SiloCatalogFiles
         Recover(target);
     }
 
+    /// <summary>The files the catalog's recovery inspects: the catalog, its replacement and its retired copy.</summary>
+    public static IReadOnlyList<string> CatalogSources(string target) => [target, Replacement(target), Retired(target)];
+
     /// <summary>
-    /// The inspection copies a crash left behind, and nothing else: exactly <c>&lt;file&gt;.inspect-&lt;32 hex&gt;</c>,
-    /// optionally with a SQLite sidecar suffix, for a file this code inspects (the catalog, its replacement or its retired
-    /// copy). A name an operator gave under the same prefix is never matched.
+    /// The inspection copies a crash left behind for exactly these inspected source files, and nothing else:
+    /// <c>&lt;source&gt;.inspect-&lt;32 hex&gt;</c>, optionally with a SQLite sidecar suffix. Each caller names only the
+    /// sources its own inspections can emit, so a name under another source, or one an operator gave under the same
+    /// prefix, is never matched.
     /// </summary>
-    public static IReadOnlyList<string> InspectionScratch(string target)
+    public static IReadOnlyList<string> InspectionScratch(IReadOnlyList<string> sources)
     {
-        var directory = Path.GetDirectoryName(target)!;
-        if (!Directory.Exists(directory))
-        {
-            return [];
-        }
+        ArgumentNullException.ThrowIfNull(sources);
         var result = new List<string>();
-        foreach (var inspected in new[] { target, Replacement(target), Retired(target) }.Select(Path.GetFileName))
+        foreach (var source in sources)
         {
-            var prefix = inspected + InspectionInfix;
+            var directory = Path.GetDirectoryName(source)!;
+            if (!Directory.Exists(directory))
+            {
+                continue;
+            }
+            var prefix = Path.GetFileName(source) + InspectionInfix;
             foreach (var path in Directory.EnumerateFiles(directory, prefix + "*"))
             {
                 if (IsEmittedScratch(Path.GetFileName(path).AsSpan(prefix.Length)))
@@ -124,10 +129,13 @@ internal static class SiloCatalogFiles
         return false;
     }
 
-    /// <summary>Remove the inspection scratch of a database already proven to be this instance's own.</summary>
-    public static void DeleteInspectionScratch(string target)
+    /// <summary>
+    /// Remove the inspection scratch of exactly these sources, once the database they belong to is proven this instance's
+    /// own.
+    /// </summary>
+    public static void DeleteInspectionScratch(IReadOnlyList<string> sources)
     {
-        foreach (var file in InspectionScratch(target))
+        foreach (var file in InspectionScratch(sources))
         {
             DeleteIfPresent(file);
         }

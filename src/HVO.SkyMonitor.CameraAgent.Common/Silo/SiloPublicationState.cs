@@ -302,8 +302,9 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
             INSERT INTO journal_head(head_key, writer_generation, generation, sequence) VALUES(1, 1, 0, 0)
             ON CONFLICT(head_key) DO NOTHING;
             """, cancellationToken).ConfigureAwait(false);
-        // Only now that the database is proven this instance's own is the inspection scratch a crash left removed.
-        SiloCatalogFiles.DeleteInspectionScratch(Path);
+        // Only now that the database is proven this instance's own is the inspection scratch a crash left removed. It only
+        // ever inspects this one file, so no replacement- or retired-shaped name is its own.
+        SiloCatalogFiles.DeleteInspectionScratch([Path]);
     }
 
     internal static Dictionary<string, string> BindingMetadata(SiloStorageBinding binding) => new(StringComparer.Ordinal)

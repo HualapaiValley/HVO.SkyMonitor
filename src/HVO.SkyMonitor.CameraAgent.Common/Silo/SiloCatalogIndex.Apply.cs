@@ -624,6 +624,8 @@ internal sealed partial class SiloCatalogIndex
     /// authoritative copy set, with proven absence for every target under that same intent, and no copy outside it. A
     /// copy that entered the authoritative set after the intent, by arrival, promotion or restoration after eviction, must
     /// also be proven absent under that intent before it settles, even when a different operation has since removed it.
+    /// Proof counts only at or after a copy's latest entry, by ordered generation, segment and record position, so an
+    /// intent's earlier disposition of a copy that has since returned, original target or not, is stale.
     /// </summary>
     private static async ValueTask<string?> RoleExpirySettledAsync(
         SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, string? intentId, CancellationToken cancellationToken)
@@ -660,7 +662,9 @@ internal sealed partial class SiloCatalogIndex
                     AND (l.entered_generation, l.entered_sequence, l.entered_index) > ($g, $s, $i)
                     AND NOT EXISTS (SELECT 1 FROM expiry_targets t WHERE t.intent_id = $intent AND t.store_id = l.store_id
                         AND t.bucket = l.bucket AND t.key = l.key AND t.version_id = l.version_id
-                        AND t.outcome IN ('deleted', 'already-absent'));
+                        AND t.outcome IN ('deleted', 'already-absent')
+                        AND (t.outcome_generation, t.outcome_sequence, t.outcome_index)
+                            >= (l.entered_generation, l.entered_sequence, l.entered_index));
                 """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
                 ("$g", intentGeneration), ("$s", intentSequence), ("$i", intentIndex), ("$intent", intentId)).ConfigureAwait(false) != 0)
         {
