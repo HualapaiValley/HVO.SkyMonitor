@@ -336,66 +336,330 @@ public sealed class CalendarDayPreviewEvidenceTests
     }
 
     [TestMethod]
-    public async Task FileSinkAttachesOneCompleteFileAndLeavesNoPartialFile()
+    public async Task NaturalSuccessPublishesOneCompleteFile()
     {
-        var directory = SinkDirectory();
-        var attached = new List<string>();
+        var root = RetentionRoot();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
         try
         {
-            var path = await new FileEvidenceSink(directory, attached.Add, static _ => { })
-                .PersistAsync("case.evidence.json", "{}", CancellationToken.None).ConfigureAwait(false);
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{\"schema\":\"complete\"}"), static _ => "case.evidence.json", static value => value,
+                Store(root, attach: attached.Enqueue), TimeSpan.FromSeconds(10)).ConfigureAwait(false);
 
-            CollectionAssert.AreEqual(new[] { path }, attached);
-            CollectionAssert.AreEqual(new[] { path }, Directory.GetFiles(directory));
-            Assert.AreEqual("{}", await File.ReadAllTextAsync(path).ConfigureAwait(false));
+            Assert.AreEqual(EvidenceRetentionOutcome.Published, result.Outcome);
+            Assert.AreEqual("attached", result.AttachmentNote());
+            CollectionAssert.AreEqual(new[] { result.Path }, attached.ToArray());
+            Assert.IsFalse(result.Expired);
+            CollectionAssert.AreEqual(new[] { result.Path }, Directory.GetFiles(root));
+            Assert.AreEqual("{\"schema\":\"complete\"}", await File.ReadAllTextAsync(result.Path!).ConfigureAwait(false));
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            Directory.Delete(root, recursive: true);
         }
     }
 
     [TestMethod]
-    public async Task FileSinkLeavesNothingWhenAttachmentFails()
+    [DataRow("capture", DisplayName = "capture that stalls synchronously before returning")]
+    [DataRow("writer", DisplayName = "writer that stalls synchronously before returning")]
+    [DataRow("async-writer", DisplayName = "writer that stalls asynchronously")]
+    public async Task StalledAttemptsReturnByTheDeadlineAndNeverPublishLate(string stall)
     {
-        var directory = SinkDirectory();
+        var root = RetentionRoot();
         try
         {
-            var sink = new FileEvidenceSink(directory, static _ => throw new IOException("attach failed"), static _ => { });
+            var capture = stall == "capture" ? SynchronouslyStalledCapture() : static _ => Task.FromResult("{}");
+            var writer = stall switch
+            {
+                "writer" => SynchronouslyStalledWriter(),
+                "async-writer" => AsynchronouslyStalledWriter(),
+                _ => null
+            };
+            var started = System.Diagnostics.Stopwatch.StartNew();
 
-            await Assert.ThrowsExactlyAsync<IOException>(() => sink.PersistAsync("case.evidence.json", "{}", CancellationToken.None)).ConfigureAwait(false);
+            var result = await EvidenceRetention.RunAsync(capture, static _ => "case.evidence.json", static value => value,
+                Store(root, writer), Budget).ConfigureAwait(false);
 
-            Assert.IsEmpty(Directory.Exists(directory) ? Directory.GetFileSystemEntries(directory) : []);
+            Assert.IsLessThan(Stall, started.Elapsed, "the caller does not wait for the stalled step");
+            Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
+            Assert.IsTrue(result.Expired);
+            StringAssert.Contains(result.Describe("row", Budget), "cannot publish or attach", StringComparison.Ordinal);
+            await Completion(result.Operation).ConfigureAwait(false);
+            Assert.IsEmpty(Directory.Exists(root) ? Directory.GetFiles(root) : [], "the late attempt published nothing and removed its temporary file");
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
 
     [TestMethod]
-    public async Task FileSinkLeavesNothingWhenCancelled()
+    public async Task TimeoutDuringTheDurableWriteNeverPublishesAHalfFile()
     {
-        var directory = SinkDirectory();
-        var attached = new List<string>();
-        using var cancelled = new CancellationTokenSource();
-        await cancelled.CancelAsync().ConfigureAwait(false);
+        var root = RetentionRoot();
+        var halfWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         try
         {
-            var sink = new FileEvidenceSink(directory, attached.Add, static _ => { });
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult(new string('x', 4096)), static _ => "case.evidence.json", static value => value,
+                Store(root, async (path, content, _) =>
+                {
+                    var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write);
+                    await using (stream.ConfigureAwait(false))
+                    {
+                        await stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes(content[..2048]), CancellationToken.None).ConfigureAwait(false);
+                        await stream.FlushAsync(CancellationToken.None).ConfigureAwait(false);
+                        halfWritten.TrySetResult();
+                        await Task.Delay(Stall, CancellationToken.None).ConfigureAwait(false);
+                        await stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes(content[2048..]), CancellationToken.None).ConfigureAwait(false);
+                    }
+                }), Budget).ConfigureAwait(false);
 
-            await Assert.ThrowsAsync<OperationCanceledException>(() => sink.PersistAsync("case.evidence.json", "{}", cancelled.Token)).ConfigureAwait(false);
-
-            Assert.IsEmpty(attached);
-            Assert.IsEmpty(Directory.Exists(directory) ? Directory.GetFileSystemEntries(directory) : []);
+            await halfWritten.Task.ConfigureAwait(false);
+            Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
+            Assert.IsTrue(result.Expired);
+            Assert.IsFalse(Directory.GetFiles(root).Any(static file => file.EndsWith(".evidence.json", StringComparison.Ordinal)),
+                "a half-written file is never published under its final name");
+            await Completion(result.Operation).ConfigureAwait(false);
+            Assert.IsEmpty(Directory.GetFiles(root), "the completed late write is refused and its temporary file removed");
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            Directory.Delete(root, recursive: true);
         }
     }
 
-    private static string SinkDirectory() => Path.Combine(Path.GetTempPath(), "hvo-1916-sink-" + Guid.NewGuid().ToString("N"));
+    [TestMethod]
+    public async Task TimeoutDuringPublicationIsReportedAsUnconfirmed()
+    {
+        var root = RetentionRoot();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{\"schema\":\"complete\"}"), static _ => "case.evidence.json", static value => value,
+                Store(root, publish: static (temporary, path) =>
+                {
+                    Thread.Sleep(Stall);
+                    File.Move(temporary, path);
+                }, attach: attached.Enqueue), Budget).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.PublicationUnconfirmed, result.Outcome);
+            Assert.AreEqual("case.evidence.json", Path.GetFileName(result.PendingPath));
+            StringAssert.Contains(result.Describe("row", Budget), "may appear but is never attached", StringComparison.Ordinal);
+            await Completion(result.Operation).ConfigureAwait(false);
+            Assert.IsEmpty(attached, "an attachment that had not started by the deadline never starts");
+            CollectionAssert.AreEqual(new[] { result.PendingPath }, Directory.GetFiles(root), "the rename that was in progress completed with the whole file");
+            Assert.AreEqual("{\"schema\":\"complete\"}", await File.ReadAllTextAsync(result.PendingPath!).ConfigureAwait(false));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "throwing cancellation callback, writer fails immediately")]
+    [DataRow(true, DisplayName = "throwing cancellation callback, writer stalls")]
+    public async Task ThrowingCancellationCallbacksStayOffTheCallersPath(bool stalls)
+    {
+        var root = RetentionRoot();
+        var unobserved = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> observe = (_, args) =>
+        {
+            if (args.Exception.ToString().Contains("FAULT_1916", StringComparison.Ordinal)) unobserved.Enqueue(args.Exception);
+        };
+        TaskScheduler.UnobservedTaskException += observe;
+        try
+        {
+            var started = System.Diagnostics.Stopwatch.StartNew();
+
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root, async (_, _, token) =>
+                {
+                    token.Register(static () => throw new InvalidOperationException("CALLBACK_FAULT_1916"));
+                    if (stalls) await Task.Delay(Stall, CancellationToken.None).ConfigureAwait(false);
+                    throw new IOException("WRITE_FAULT_1916");
+                }), Budget).ConfigureAwait(false);
+
+            Assert.IsLessThan(Stall, started.Elapsed);
+            Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
+            Assert.AreEqual(stalls, result.Expired);
+            Assert.AreEqual(stalls ? null : typeof(IOException).FullName, result.FailureType);
+            await Completion(result.Operation).ConfigureAwait(false);
+            await Task.Delay(200).ConfigureAwait(false);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.IsEmpty(unobserved, "a callback or write fault went unobserved");
+            Assert.IsEmpty(Directory.Exists(root) ? Directory.GetFiles(root) : []);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= observe;
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task SynchronousAttachmentThatBlocksAfterTheRenameIsUnconfirmed()
+    {
+        var root = RetentionRoot();
+        var attached = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        try
+        {
+            var started = System.Diagnostics.Stopwatch.StartNew();
+
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{\"schema\":\"complete\"}"), static _ => "case.evidence.json", static value => value,
+                Store(root, attach: path =>
+                {
+                    Thread.Sleep(Stall);
+                    attached.Enqueue(path);
+                }), Budget).ConfigureAwait(false);
+
+            Assert.IsLessThan(Stall, started.Elapsed, "the caller does not wait for the blocked attachment");
+            Assert.AreEqual(EvidenceRetentionOutcome.AttachmentUnconfirmed, result.Outcome);
+            StringAssert.Contains(result.AttachmentNote(), "not confirmed by the deadline; it may still complete", StringComparison.Ordinal);
+            Assert.AreEqual("{\"schema\":\"complete\"}", await File.ReadAllTextAsync(result.Path!).ConfigureAwait(false),
+                "the file was complete before attaching started");
+            await Completion(result.Operation).ConfigureAwait(false);
+            CollectionAssert.AreEqual(new[] { result.Path }, attached.ToArray(), "the attachment that had started completes late");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AttachmentThatThrowsImmediatelyLeavesTheCompleteFileLocal()
+    {
+        var root = RetentionRoot();
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{\"schema\":\"complete\"}"), static _ => "case.evidence.json", static value => value,
+                Store(root, attach: static _ => throw new IOException("attach failed")), TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.PublishedNotAttached, result.Outcome);
+            Assert.IsFalse(result.Expired);
+            Assert.AreEqual(typeof(IOException).FullName, result.FailureType);
+            StringAssert.Contains(result.AttachmentNote(), "complete local file only", StringComparison.Ordinal);
+            CollectionAssert.AreEqual(new[] { result.Path }, Directory.GetFiles(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task AttachmentThatFaultsLateIsUnconfirmedAndObserved()
+    {
+        var root = RetentionRoot();
+        var unobserved = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> observe = (_, args) =>
+        {
+            if (args.Exception.ToString().Contains("FAULT_1916", StringComparison.Ordinal)) unobserved.Enqueue(args.Exception);
+        };
+        TaskScheduler.UnobservedTaskException += observe;
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root, attach: static _ =>
+                {
+                    Thread.Sleep(Stall);
+                    throw new IOException("LATE_ATTACH_FAULT_1916");
+                }), Budget).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.AttachmentUnconfirmed, result.Outcome);
+            Assert.IsTrue(result.Expired);
+            await Completion(result.Operation).ConfigureAwait(false);
+            await Task.Delay(200).ConfigureAwait(false);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.IsEmpty(unobserved, "the late attachment fault went unobserved");
+            CollectionAssert.AreEqual(new[] { result.Path }, Directory.GetFiles(root), "the published file stays complete");
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= observe;
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task FailingWriteLeavesNoFile()
+    {
+        var root = RetentionRoot();
+        try
+        {
+            var result = await EvidenceRetention.RunAsync(
+                static _ => Task.FromResult("{}"), static _ => "case.evidence.json", static value => value,
+                Store(root, static async (path, _, _) =>
+                {
+                    await File.WriteAllTextAsync(path, "{", CancellationToken.None).ConfigureAwait(false);
+                    throw new IOException("partial write failed");
+                }), TimeSpan.FromSeconds(10)).ConfigureAwait(false);
+
+            Assert.AreEqual(EvidenceRetentionOutcome.NotPublished, result.Outcome);
+            Assert.IsFalse(result.Expired);
+            Assert.AreEqual(typeof(IOException).FullName, result.FailureType);
+            StringAssert.Contains(result.Describe("row", Budget), "nothing was published", StringComparison.Ordinal);
+            Assert.IsEmpty(Directory.GetFiles(root));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static Func<CancellationToken, Task<string>> SynchronouslyStalledCapture() => static _ =>
+    {
+        Thread.Sleep(Stall);
+        return Task.FromResult("{}");
+    };
+
+    private static Func<string, string, CancellationToken, Task> SynchronouslyStalledWriter() => static (path, content, _) =>
+    {
+        Thread.Sleep(Stall);
+        return CalendarEvidenceStore.DurableWriteAsync(path, content, CancellationToken.None);
+    };
+
+    private static Func<string, string, CancellationToken, Task> AsynchronouslyStalledWriter() => static async (path, content, _) =>
+    {
+        await Task.Delay(Stall, CancellationToken.None).ConfigureAwait(false);
+        await CalendarEvidenceStore.DurableWriteAsync(path, content, CancellationToken.None).ConfigureAwait(false);
+    };
+
+    private static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan Stall = TimeSpan.FromSeconds(3);
+
+    private static string RetentionRoot() => Path.Combine(
+        Path.GetTempPath(), "hvo-1916-retention-" + Guid.NewGuid().ToString("N"), "calendar-preview-failures");
+
+    private static CalendarEvidenceStore Store(
+        string root, Func<string, string, CancellationToken, Task>? writer = null, Action<string, string>? publish = null,
+        Action<string>? attach = null) =>
+        new(root, attach ?? (static _ => { }), static _ => { }, writer, publish);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The abandoned operation's own fault is the subject under test, observed separately.")]
+    private static async Task Completion(Task operation)
+    {
+        try
+        {
+            await operation.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Only completion matters here.
+        }
+    }
 
     private static void AssertCategories(CalendarDayPreviewObservation observation, params Category[] expected) =>
         CollectionAssert.AreEqual(expected, CalendarDayPreviewClassifier.Classify(observation).ToArray());

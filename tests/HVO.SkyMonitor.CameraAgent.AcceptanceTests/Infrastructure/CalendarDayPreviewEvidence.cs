@@ -466,7 +466,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
 
     private readonly IPage page;
     private readonly TestContext testContext;
-    private readonly ICalendarEvidenceSink sink;
+    private readonly CalendarEvidenceStore store;
     private readonly TimeSpan budget;
     private readonly ServerLogEvidence? serverLog;
     private readonly string selectedDay;
@@ -488,11 +488,11 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
 
     private CalendarDayPreviewEvidence(
         IPage page, TestContext testContext, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel,
-        ICalendarEvidenceSink sink, TimeSpan budget)
+        CalendarEvidenceStore store, TimeSpan budget)
     {
         this.page = page;
         this.testContext = testContext;
-        this.sink = sink;
+        this.store = store;
         this.budget = budget;
         this.serverLog = serverLog;
         this.selectedDay = selectedDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -519,13 +519,13 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
 
     internal static CalendarDayPreviewEvidence Observe(
         IPage page, TestContext testContext, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null,
-        ICalendarEvidenceSink? sink = null, TimeSpan? budget = null)
+        CalendarEvidenceStore? store = null, TimeSpan? budget = null)
     {
         ArgumentNullException.ThrowIfNull(page);
         ArgumentNullException.ThrowIfNull(testContext);
         ArgumentException.ThrowIfNullOrWhiteSpace(previewPath);
         return new CalendarDayPreviewEvidence(page, testContext, serverLog, selectedDay, previewPath, rowLabel,
-            sink ?? FileEvidenceSink.ForTestContext(testContext), budget ?? DefaultBudget);
+            store ?? CalendarEvidenceStore.ForTestContext(testContext), budget ?? DefaultBudget);
     }
 
     /// <summary>Records the route and whether the shell had become interactive immediately before the day link click.</summary>
@@ -565,7 +565,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
                 : entries.Any(static entry => entry.Kind == "enhanced-fetch") ? "enhanced"
                 : entries.Any(static entry => entry.Kind == "navigated") ? "in-circuit" : "none-observed";
             var previews = previewRequests.ToArray();
-            sink.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            store.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"Calendar day preview passed ({rowLabel}): assertions complete {Elapsed()} ms after the click; interactiveAtClick={interactiveAtClick}; navigation={navigation}; previewResponses={previews.Count(static request => request.Outcome == "response")}; previewFailures={previews.Count(static request => request.Outcome == "failed")}"));
         }
         catch (Exception)
@@ -579,33 +579,45 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         exception is TimeoutException or PlaywrightException or AssertFailedException;
 
     /// <summary>
-    /// Captures, classifies, writes and attaches the evidence for <paramref name="failure"/> within one deadline. It never
-    /// throws, so the caller rethrows its original failure object unchanged. Work abandoned at the deadline has its
-    /// faults observed, and the sink attaches only a complete file.
+    /// Retains the evidence for <paramref name="failure"/> through one supervised operation that captures, publishes and
+    /// attaches it, and returns by the deadline whatever that operation has done. It never throws, so the caller rethrows
+    /// its original failure object. Nothing on this path can block on output: the single status line is written off it,
+    /// within a reserve taken from the same budget.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Evidence capture runs while the original assertion unwinds and must never replace it.")]
+        Justification = "Evidence retention runs while the original assertion unwinds and must never replace it.")]
     internal async Task<CalendarDayPreviewReport?> RetainAsync(Exception failure, TimeSpan settleWindow)
     {
         ArgumentNullException.ThrowIfNull(failure);
-        using var deadline = new CancellationTokenSource(budget);
+        var reserve = TimeSpan.FromTicks(Math.Min(TimeSpan.FromSeconds(1).Ticks, budget.Ticks / 10));
+        EvidenceRetentionResult<CalendarDayPreviewReport> result;
         try
         {
-            var report = await Bounded(CaptureAsync(failure, settleWindow, deadline.Token), budget, deadline.Token).ConfigureAwait(false);
-            var path = await Bounded(sink.PersistAsync(FileName(report), report.ToJson(), deadline.Token), budget, deadline.Token)
+            result = await EvidenceRetention.RunAsync(
+                token => CaptureAsync(failure, settleWindow, token), FileName, static report => report.ToJson(), store, budget - reserve)
                 .ConfigureAwait(false);
-            LastReport = report with { EvidencePath = path };
-            TryWriteLine(report.Summary(Path.GetFileName(path)));
-            return LastReport;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            await deadline.CancelAsync().ConfigureAwait(false);
-            TryWriteLine("Calendar day preview evidence was not retained: " +
-                         (exception is OperationCanceledException ? "evidence budget exhausted" : CalendarEvidenceVocabulary.TypeName(exception.GetType())));
             return null;
         }
+        LastRetention = result;
+        string line;
+        if (result is { Value: { } report, Path: { } path })
+        {
+            LastReport = report with { EvidencePath = path };
+            line = LastReport.Summary(Path.GetFileName(path)) + "; " + result.AttachmentNote();
+        }
+        else
+        {
+            line = result.Describe(rowLabel, budget);
+        }
+        await WriteLineWithinAsync(line, reserve).ConfigureAwait(false);
+        return result.Path is null ? null : LastReport;
     }
+
+    /// <summary>The outcome of the most recent evidence attempt, including its supervised operation.</summary>
+    internal EvidenceRetentionResult<CalendarDayPreviewReport>? LastRetention { get; private set; }
 
     public void Dispose()
     {
@@ -643,24 +655,19 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         await task.WaitAsync(call.Token).ConfigureAwait(false);
     }
 
-    private static void ObserveFaults(Task task) => _ = task.ContinueWith(
+    internal static void ObserveFaults(Task task) => _ = task.ContinueWith(
         static completed => _ = completed.Exception,
         CancellationToken.None,
         TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
         TaskScheduler.Default);
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "A summary line is diagnostic; a failing sink must not replace the original assertion.")]
-    private void TryWriteLine(string line)
+    /// <summary>Writes one bounded status line on another thread and waits for it no longer than <paramref name="reserve"/>.</summary>
+    private async Task WriteLineWithinAsync(string line, TimeSpan reserve)
     {
-        try
-        {
-            sink.WriteLine(line);
-        }
-        catch (Exception)
-        {
-            // The original assertion remains the reported failure.
-        }
+        var bounded = line.Length > 4_000 ? line[..4_000] + "…" : line;
+        var write = Task.Run(() => store.WriteLine(bounded));
+        ObserveFaults(write);
+        await Task.WhenAny(write, Task.Delay(reserve)).ConfigureAwait(false);
     }
 
     private async Task<CalendarDayPreviewReport> CaptureAsync(Exception failure, TimeSpan settleWindow, CancellationToken token)
@@ -1454,58 +1461,207 @@ internal sealed record CalendarDayPreviewReport(
     }
 }
 
-/// <summary>Where retained evidence goes: one complete file, attached to the run, and one summary line.</summary>
-internal interface ICalendarEvidenceSink
-{
-    Task<string> PersistAsync(string fileName, string content, CancellationToken cancellationToken);
-
-    void WriteLine(string line);
-}
-
 /// <summary>
-/// Writes evidence under a directory and attaches it to the test run. The file is written under a temporary name and
-/// published by rename, then attached; a cancelled or failed write, publication or attachment leaves no file behind,
-/// so only complete evidence is ever attached.
+/// Where evidence is published, how a confirmed file is registered with the test run, and where the summary goes. With
+/// deployment disabled every <see cref="TestContext"/> directory is the test output directory, outside the uploaded
+/// results tree; registering the file is what places a copy in the run's results directory, which CI uploads.
 /// </summary>
-internal sealed class FileEvidenceSink(string directory, Action<string> attach, Action<string> writeLine) : ICalendarEvidenceSink
+internal sealed class CalendarEvidenceStore(
+    string root,
+    Action<string> attach,
+    Action<string> writeLine,
+    Func<string, string, CancellationToken, Task>? writeDurably = null,
+    Action<string, string>? publish = null)
 {
-    internal static FileEvidenceSink ForTestContext(TestContext testContext) => new(
+    internal string Root { get; } = root;
+
+    internal static CalendarEvidenceStore ForTestContext(TestContext testContext) => new(
         Path.Combine(testContext.ResultsDirectory ?? Path.GetTempPath(), CalendarDayPreviewEvidence.EvidenceDirectoryName),
         testContext.AddResultFile,
         testContext.WriteLine);
 
-    public async Task<string> PersistAsync(string fileName, string content, CancellationToken cancellationToken)
+    internal void Attach(string path) => attach(path);
+
+    internal void WriteLine(string line) => writeLine(line);
+
+    /// <summary>Writes the complete content to a new file and forces it to storage before returning.</summary>
+    internal Task WriteDurablyAsync(string path, string content, CancellationToken cancellationToken) =>
+        (writeDurably ?? DurableWriteAsync)(path, content, cancellationToken);
+
+    /// <summary>Publishes a complete temporary file under its final name with one rename.</summary>
+    internal void Publish(string temporary, string path) => (publish ?? DefaultPublish)(temporary, path);
+
+    [SuppressMessage("Usage", "CA1849:Call async methods when in an async method",
+        Justification = "Forcing the file to storage has no asynchronous form; it runs inside the supervised operation, off the caller's path.")]
+    internal static async Task DurableWriteAsync(string path, string content, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, fileName);
-        var partial = path + ".partial";
-        var published = false;
-        try
+        var bytes = new UTF8Encoding(false).GetBytes(content);
+        var stream = new FileStream(path, new FileStreamOptions
         {
-            await File.WriteAllTextAsync(partial, content, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(partial, path, overwrite: false);
-            published = true;
-            cancellationToken.ThrowIfCancellationRequested();
-            attach(path);
-            return path;
-        }
-        catch
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+            Options = FileOptions.Asynchronous | FileOptions.WriteThrough
+        });
+        await using (stream.ConfigureAwait(false))
         {
-            TryDelete(partial);
-            if (published)
-            {
-                TryDelete(path);
-            }
-            throw;
+            await stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+            await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            stream.Flush(flushToDisk: true);
         }
     }
 
-    public void WriteLine(string line) => writeLine(line);
+    private static void DefaultPublish(string temporary, string path) => File.Move(temporary, path, overwrite: false);
+}
+
+internal enum EvidenceRetentionOutcome
+{
+    /// <summary>A complete file was published and attached within the deadline.</summary>
+    Published,
+
+    /// <summary>A complete file was published; attaching it failed, or the deadline came before attaching started.</summary>
+    PublishedNotAttached,
+
+    /// <summary>A complete file was published and attaching it had started, but was not confirmed by the deadline.</summary>
+    AttachmentUnconfirmed,
+
+    /// <summary>The deadline found the final rename in progress; a complete file may appear, and is never attached.</summary>
+    PublicationUnconfirmed,
+
+    /// <summary>Nothing was published: the attempt failed first, or expired before its commit and can no longer commit.</summary>
+    NotPublished
+}
+
+internal sealed record EvidenceRetentionResult<T>(
+    EvidenceRetentionOutcome Outcome, T? Value, string? Path, string? PendingPath, string? FailureType, bool Expired, Task Operation)
+    where T : class
+{
+    /// <summary>What happened to the attachment of a published file.</summary>
+    internal string AttachmentNote() => Outcome switch
+    {
+        EvidenceRetentionOutcome.Published => "attached",
+        EvidenceRetentionOutcome.AttachmentUnconfirmed => "attaching had started and was not confirmed by the deadline; it may still complete",
+        _ when FailureType is not null => $"not attached ({FailureType}); complete local file only",
+        _ => "not attached: the deadline came before attaching started; complete local file only"
+    };
+
+    internal string Describe(string row, TimeSpan budget)
+    {
+        var seconds = budget.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+        var file = PendingPath is null ? "" : System.IO.Path.GetFileName(PendingPath);
+        return Outcome switch
+        {
+            EvidenceRetentionOutcome.PublicationUnconfirmed =>
+                $"Calendar day preview evidence ({row}): publication was in progress at the {seconds} s deadline; a complete local file {file} may appear but is never attached.",
+            _ when Expired =>
+                $"Calendar day preview evidence ({row}): not retained within the {seconds} s deadline; the late attempt cannot publish or attach. An unfinished temporary file is removed when its write returns; a write the system never returns from can leave it behind.",
+            _ =>
+                $"Calendar day preview evidence ({row}): not retained ({FailureType ?? "other"}); nothing was published."
+        };
+    }
+}
+
+/// <summary>
+/// The retention boundary: one supervised operation captures, serializes and durably writes evidence under a
+/// temporary name, publishes it by rename, and attaches it to the run. Two gates decide against the deadline:
+/// publication must win the commit gate before renaming, and attaching must win the attachment gate before it
+/// starts. The caller waits for the operation or the deadline, never for a callback or an attachment; stopping
+/// abandoned work happens off its path, and every abandoned task's fault is observed.
+/// </summary>
+internal static class EvidenceRetention
+{
+    internal static async Task<EvidenceRetentionResult<T>> RunAsync<T>(
+        Func<CancellationToken, Task<T>> capture,
+        Func<T, string> fileName,
+        Func<T, string> serialize,
+        CalendarEvidenceStore store,
+        TimeSpan budget)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(capture);
+        ArgumentNullException.ThrowIfNull(fileName);
+        ArgumentNullException.ThrowIfNull(serialize);
+        ArgumentNullException.ThrowIfNull(store);
+#pragma warning disable CA2000 // The attempt is disposed by the continuation that runs when its operation ends.
+        var attempt = new Attempt();
+#pragma warning restore CA2000
+        // Task.Run keeps every synchronous step, including any before the first await, off the caller's path.
+        var operation = Task.Run(() => PublishAsync(capture, fileName, serialize, store, attempt));
+        CalendarDayPreviewEvidence.ObserveFaults(operation);
+        _ = operation.ContinueWith(static (_, state) => ((Attempt)state!).Dispose(), attempt,
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        await Task.WhenAny(operation, Task.Delay(budget)).ConfigureAwait(false);
+        var expired = !operation.IsCompleted;
+        var state = expired ? attempt.Expire() : attempt.State;
+        if (expired)
+        {
+            attempt.StopOffPath();
+        }
+        var value = attempt.Value as T;
+        return state switch
+        {
+            Attempt.Attached => new(EvidenceRetentionOutcome.Published, value, attempt.Path, null, null, expired, operation),
+            Attempt.AttachFailed => new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, attempt.AttachFailure, expired, operation),
+            Attempt.AttachRefused or Attempt.Published => new(EvidenceRetentionOutcome.PublishedNotAttached, value, attempt.Path, null, null, expired, operation),
+            Attempt.Attaching => new(EvidenceRetentionOutcome.AttachmentUnconfirmed, value, attempt.Path, null, null, true, operation),
+            Attempt.Committing when expired => new(EvidenceRetentionOutcome.PublicationUnconfirmed, null, null, attempt.Path, null, true, operation),
+            _ => new(EvidenceRetentionOutcome.NotPublished, null, null, null,
+                operation.IsFaulted ? CalendarEvidenceVocabulary.TypeName(operation.Exception?.InnerException?.GetType()) : null, expired, operation)
+        };
+    }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
-        Justification = "Cleanup after a failed write is best-effort; the write's own failure is what propagates.")]
+        Justification = "A failed attachment leaves the published file local; it is recorded as the attachment outcome.")]
+    private static async Task<(T Value, string Path)> PublishAsync<T>(
+        Func<CancellationToken, Task<T>> capture,
+        Func<T, string> fileName,
+        Func<T, string> serialize,
+        CalendarEvidenceStore store,
+        Attempt attempt)
+        where T : class
+    {
+        var token = attempt.Token;
+        var value = await capture(token).ConfigureAwait(false);
+        var content = serialize(value);
+        var path = Path.Combine(store.Root, fileName(value));
+        var temporary = path + ".partial";
+        Directory.CreateDirectory(store.Root);
+        var published = false;
+        try
+        {
+            await store.WriteDurablyAsync(temporary, content, token).ConfigureAwait(false);
+            if (!attempt.TryBeginCommit(path))
+            {
+                throw new OperationCanceledException("The evidence attempt expired before publication.");
+            }
+            store.Publish(temporary, path);
+            published = true;
+            attempt.Publish(value);
+        }
+        finally
+        {
+            if (!published)
+            {
+                TryDelete(temporary);
+            }
+        }
+        if (attempt.TryBeginAttach())
+        {
+            try
+            {
+                store.Attach(path);
+                attempt.MarkAttached();
+            }
+            catch (Exception exception)
+            {
+                attempt.MarkAttachFailed(exception.GetType());
+            }
+        }
+        return (value, path);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Removing an unpublished temporary file is best-effort; the attempt's own outcome is already decided.")]
     private static void TryDelete(string path)
     {
         try
@@ -1514,7 +1670,110 @@ internal sealed class FileEvidenceSink(string directory, Action<string> attach, 
         }
         catch (Exception)
         {
-            // The write's failure propagates; a cleanup failure must not replace it.
+            // An unpublished temporary file that cannot be removed is never published.
+        }
+    }
+
+    /// <summary>
+    /// The gates shared by the operation and the caller. Exactly one of commit or abandonment wins, and exactly one of
+    /// starting the attachment or refusing it at the deadline wins; an attachment already started is never refused.
+    /// </summary>
+    private sealed class Attempt : IDisposable
+    {
+        internal const int Running = 0;
+        internal const int Committing = 1;
+        internal const int Published = 2;
+        internal const int Attaching = 3;
+        internal const int Attached = 4;
+        internal const int AttachFailed = 5;
+        internal const int Abandoned = 6;
+        internal const int AttachRefused = 7;
+
+        private readonly CancellationTokenSource stop = new();
+        private int state;
+        private int expired;
+
+        internal CancellationToken Token => stop.Token;
+
+        internal int State => Volatile.Read(ref state);
+
+        internal string? Path { get; private set; }
+
+        internal object? Value { get; private set; }
+
+        internal string? AttachFailure { get; private set; }
+
+        internal bool TryBeginCommit(string path)
+        {
+            Path = path;
+            return Interlocked.CompareExchange(ref state, Committing, Running) == Running;
+        }
+
+        /// <summary>Only the operation leaves <see cref="Committing"/>, so publication needs no compare-exchange.</summary>
+        internal void Publish(object value)
+        {
+            Value = value;
+            Volatile.Write(ref state, Published);
+        }
+
+        internal bool TryBeginAttach()
+        {
+            if (Volatile.Read(ref expired) == 1)
+            {
+                Interlocked.CompareExchange(ref state, AttachRefused, Published);
+                return false;
+            }
+            return Interlocked.CompareExchange(ref state, Attaching, Published) == Published;
+        }
+
+        internal void MarkAttached() => Volatile.Write(ref state, Attached);
+
+        internal void MarkAttachFailed(Type type)
+        {
+            AttachFailure = CalendarEvidenceVocabulary.TypeName(type);
+            Volatile.Write(ref state, AttachFailed);
+        }
+
+        /// <summary>
+        /// Marks the deadline: a running attempt can no longer publish, and a published file that has not started its
+        /// attachment never will. Returns the state the deadline found.
+        /// </summary>
+        internal int Expire()
+        {
+            Interlocked.Exchange(ref expired, 1);
+            while (true)
+            {
+                var found = Volatile.Read(ref state);
+                if (found == Running)
+                {
+                    if (Interlocked.CompareExchange(ref state, Abandoned, Running) == Running) return Abandoned;
+                }
+                else if (found == Published)
+                {
+                    if (Interlocked.CompareExchange(ref state, AttachRefused, Published) == Published) return AttachRefused;
+                }
+                else
+                {
+                    return found;
+                }
+            }
+        }
+
+        /// <summary>Requests the abandoned work to stop on another thread, so no callback can reach the caller.</summary>
+        internal void StopOffPath() => CalendarDayPreviewEvidence.ObserveFaults(Task.Run(stop.Cancel));
+
+        [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+            Justification = "Releasing the stop source after the operation ends is best-effort cleanup off the caller's path.")]
+        public void Dispose()
+        {
+            try
+            {
+                stop.Dispose();
+            }
+            catch (Exception)
+            {
+                // A disposal failure has no consumer.
+            }
         }
     }
 }

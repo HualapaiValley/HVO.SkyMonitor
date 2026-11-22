@@ -267,7 +267,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         var lines = new List<string>();
         using var evidence = CalendarDayPreviewEvidence.Observe(
             page, TestContext, DailySummaryCalendarScenario.SelectedDay, OpaquePreviewPath, "opaque-1440x900",
-            opaqueLog, new FileEvidenceSink(directory, attached.Add, lines.Add));
+            opaqueLog, new CalendarEvidenceStore(directory, attached.Add, lines.Add));
         await page.EvaluateAsync("""
             () => {
                 console.error('OPAQUE_CONSOLE_1916');
@@ -301,26 +301,47 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     }
 
     [TestMethod]
-    [DataRow("stalled", DisplayName = "stalled sink")]
-    [DataRow("failing-attach", DisplayName = "sink whose attachment fails")]
-    public async Task UnretainableEvidenceKeepsTheOriginalAssertion(string sinkKind)
+    [DataRow("sync-stall", DisplayName = "writer that stalls synchronously before returning")]
+    [DataRow("async-stall", DisplayName = "writer that stalls asynchronously")]
+    [DataRow("late-publish", DisplayName = "write that completes after the deadline")]
+    [DataRow("throwing-callback", DisplayName = "writer with a throwing cancellation callback that fails immediately")]
+    [DataRow("failing-attach", DisplayName = "published file whose registration fails")]
+    [DataRow("stalled-attach", DisplayName = "registration that blocks after the file is published")]
+    public async Task UnretainableEvidenceKeepsTheOriginalAssertion(string row)
     {
         var budget = TimeSpan.FromSeconds(3);
+        var late = budget + TimeSpan.FromSeconds(3);
         var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "unretainable-" + Guid.NewGuid().ToString("N"));
-        var attached = new List<string>();
-        var stalled = new StalledSink(budget + TimeSpan.FromSeconds(4));
-        ICalendarEvidenceSink sink = sinkKind == "stalled"
-            ? stalled
-            : new FileEvidenceSink(directory, _ => throw new IOException("ATTACH_SINK_FAULT_1916"), _ => { });
+        var attached = new ConcurrentQueue<string>();
+        var writer = row switch
+        {
+            "sync-stall" => SynchronouslyStalledWriter(late),
+            "async-stall" => AsynchronouslyStalledWriter(late),
+            "late-publish" => LateWriter(late),
+            "throwing-callback" => ThrowingCallbackWriter(),
+            _ => null
+        };
+        Action<string> attach = row switch
+        {
+            "failing-attach" => _ => throw new IOException("ATTACH_FAULT_1916"),
+            "stalled-attach" => path =>
+            {
+                Thread.Sleep(late);
+                attached.Enqueue(path);
+            }
+            ,
+            _ => attached.Enqueue
+        };
+        var store = new CalendarEvidenceStore(directory, attach, _ => { }, writer);
         var unobserved = new ConcurrentQueue<Exception>();
         EventHandler<UnobservedTaskExceptionEventArgs> observe = (_, args) =>
         {
-            if (args.Exception.ToString().Contains("SINK_FAULT_1916", StringComparison.Ordinal)) unobserved.Enqueue(args.Exception);
+            if (args.Exception.ToString().Contains("FAULT_1916", StringComparison.Ordinal)) unobserved.Enqueue(args.Exception);
         };
         TaskScheduler.UnobservedTaskException += observe;
         try
         {
-            await using var run = await InducedRun.StartAsync(TestContext, sink: sink, budget: budget);
+            await using var run = await InducedRun.StartAsync(TestContext, store: store, budget: budget);
             var original = new AssertFailedException("ORIGINAL_ASSERTION_1916");
             var started = Stopwatch.StartNew();
 
@@ -328,26 +349,86 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 run.Page, run.Cell, run.Evidence, "partial", run.PreviewPath, InducedTimeout, TimeSpan.FromMilliseconds(300), () => throw original));
 
             var elapsed = started.Elapsed;
+            var attachedAtReturn = attached.Count;
             Assert.AreSame(original, thrown, "the original assertion object is rethrown unchanged");
-            Assert.IsLessThan(budget + TimeSpan.FromSeconds(3), elapsed, "the whole evidence attempt is bounded");
-            Assert.IsNull(run.Evidence.LastReport);
-            Assert.IsEmpty(attached);
-            Assert.IsFalse(Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(),
-                "no complete or partial evidence file is left behind");
-            if (sinkKind == "stalled")
+            Assert.IsLessThan(budget + TimeSpan.FromSeconds(2), elapsed, "the whole evidence attempt is bounded");
+
+            // Let any abandoned work finish, then require that it published, attached and left nothing, and that its
+            // faults, including the cancellation callback's, were observed.
+            await IgnoreOutcome(run.Evidence.LastRetention!.Operation.WaitAsync(TimeSpan.FromSeconds(30)));
+            await Task.Delay(200);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.IsEmpty(unobserved, "an abandoned evidence task left an unobserved fault");
+            var files = Directory.Exists(directory) ? Directory.GetFiles(directory) : [];
+            Assert.IsFalse(files.Any(static file => file.EndsWith(".partial", StringComparison.Ordinal)), "no unpublished temporary file remains");
+            if (row == "stalled-attach")
             {
-                // The abandoned write faults later; that fault must already be observed.
-                await stalled.Faulted.WaitAsync(TimeSpan.FromSeconds(30));
-                await Task.Delay(200);
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-                Assert.IsEmpty(unobserved, "an abandoned evidence task left an unobserved fault");
+                // Registration started before the deadline, so it is reported unconfirmed and may complete late.
+                Assert.AreEqual(EvidenceRetentionOutcome.AttachmentUnconfirmed, run.Evidence.LastRetention.Outcome);
+                Assert.AreEqual(0, attachedAtReturn);
+            }
+            else
+            {
+                Assert.AreEqual(attachedAtReturn, attached.Count, "no attachment starts after the original assertion is rethrown");
+            }
+            if (row is "failing-attach" or "stalled-attach")
+            {
+                // Publication was confirmed before the registration; the complete file stays published.
+                Assert.IsNotNull(run.Evidence.LastReport);
+                Assert.HasCount(1, files);
+                using var document = JsonDocument.Parse(await File.ReadAllTextAsync(files[0]));
+                Assert.AreEqual(CalendarDayPreviewEvidence.Schema, document.RootElement.GetProperty("schema").GetString());
+            }
+            else
+            {
+                Assert.IsNull(run.Evidence.LastReport);
+                Assert.IsEmpty(attached);
+                Assert.IsEmpty(files, "an attempt that was not published within its deadline never publishes");
             }
         }
         finally
         {
             TaskScheduler.UnobservedTaskException -= observe;
+        }
+    }
+
+    private static Func<string, string, CancellationToken, Task> SynchronouslyStalledWriter(TimeSpan stall) => (_, _, _) =>
+    {
+        Thread.Sleep(stall);
+        return Task.FromException(new IOException("SYNC_WRITE_FAULT_1916"));
+    };
+
+    private static Func<string, string, CancellationToken, Task> AsynchronouslyStalledWriter(TimeSpan stall) => async (_, _, _) =>
+    {
+        await Task.Delay(stall, CancellationToken.None).ConfigureAwait(false);
+        throw new IOException("ASYNC_WRITE_FAULT_1916");
+    };
+
+    private static Func<string, string, CancellationToken, Task> LateWriter(TimeSpan delay) => async (path, content, _) =>
+    {
+        await Task.Delay(delay, CancellationToken.None).ConfigureAwait(false);
+        await CalendarEvidenceStore.DurableWriteAsync(path, content, CancellationToken.None).ConfigureAwait(false);
+    };
+
+    private static Func<string, string, CancellationToken, Task> ThrowingCallbackWriter() => (_, _, token) =>
+    {
+        token.Register(static () => throw new InvalidOperationException("CALLBACK_FAULT_1916"));
+        return Task.FromException(new IOException("IMMEDIATE_WRITE_FAULT_1916"));
+    };
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "The abandoned operation's own fault is the subject under test, observed separately.")]
+    private static async Task IgnoreOutcome(Task task)
+    {
+        try
+        {
+            await task;
+        }
+        catch (Exception)
+        {
+            // Only completion matters here.
         }
     }
 
@@ -372,7 +453,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
             Justification = "The browser context is transferred to the run, which disposes it.")]
         internal static async Task<InducedRun> StartAsync(
-            TestContext testContext, bool dropCircuit = false, ICalendarEvidenceSink? sink = null, TimeSpan? budget = null)
+            TestContext testContext, bool dropCircuit = false, CalendarEvidenceStore? store = null, TimeSpan? budget = null)
         {
             Assert.IsNotNull(browser, "the class host and browser were initialized");
             Assert.IsNotNull(host);
@@ -397,7 +478,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 await run.Cell.Locator(".calendar-products i[data-nightly-state='Partial']").Filter(new() { HasText = "D" }).WaitForAsync();
                 run.Evidence = CalendarDayPreviewEvidence.Observe(
                     run.Page, testContext, DailySummaryCalendarScenario.SelectedDay, run.PreviewPath,
-                    DailySummaryCalendarScenario.RowLabel(1440, 900, complete: false), serverLog, sink, budget);
+                    DailySummaryCalendarScenario.RowLabel(1440, 900, complete: false), serverLog, store, budget);
                 return run;
             }
             catch
@@ -460,6 +541,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
             secrets.AddRange((await Page.Context.CookiesAsync()).Select(static cookie => cookie.Value).Where(static value => value.Length >= 8));
             secrets.AddRange(circuitTokens);
             Assert.IsGreaterThan(0, circuitTokens.Count, "the run must have observed a circuit token to prove it is excluded");
+            Assert.AreEqual(EvidenceRetentionOutcome.Published, Evidence.LastRetention!.Outcome, "the complete file was registered with the run");
             foreach (var secret in secrets.Distinct(StringComparer.Ordinal))
             {
                 Assert.DoesNotContain(secret, json, StringComparison.Ordinal, "retained evidence must exclude credential and session values");
@@ -508,25 +590,6 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 await owned[index].DisposeAsync();
             }
         }
-    }
-}
-
-/// <summary>A sink that never finishes within the evidence budget, ignores cancellation, and faults afterwards.</summary>
-internal sealed class StalledSink(TimeSpan faultAfter) : ICalendarEvidenceSink
-{
-    private readonly TaskCompletionSource faulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    internal Task Faulted => faulted.Task;
-
-    public async Task<string> PersistAsync(string fileName, string content, CancellationToken cancellationToken)
-    {
-        await Task.Delay(faultAfter, CancellationToken.None).ConfigureAwait(false);
-        faulted.TrySetResult();
-        throw new IOException("STALLED_SINK_FAULT_1916");
-    }
-
-    public void WriteLine(string line)
-    {
     }
 }
 
