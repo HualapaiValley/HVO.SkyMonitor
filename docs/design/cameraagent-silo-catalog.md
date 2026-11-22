@@ -42,21 +42,31 @@ retention class, media type, content and output identity, producer and recipe (4
 revision are a conflict at staging, in the publish record (`factsSha256`) and in the index.
 
 A centered view manifest embeds its typed base and revision documents, and those documents are the view. Staging and
-every manifest readback derive the projection from them again: stream, reference capture, order, preview and layer
-bindings. They also derive the exact reopen set:
+every manifest readback check the manifest against them again:
 
-- the preview is required;
-- a stack's closed window is required;
-- the science is required when it is displayed, which is the producer's fact;
-- each evidence binding is required when any layer using it is `Ready` or `Partial`;
-- `Ready`, `Partial` and `AssessedEmpty` layers must bind their evidence, observation time and order (F17).
+- Its outer group ID must be the store-issued base ID and its revision ID the store-issued revision ID. The predecessor
+  is bound through the revision ID's derivation.
+- Its projection (stream, reference capture, order, preview and layer bindings) must be the section the documents
+  derive, with layers in the store's own normalized order. That is the one order the revision ID covers.
+- Its reopen rows, meaning every member and every reopen dependency, must be exactly the view's reopen proof. That is
+  one row per artifact revision, with its digest and requirement, and no reopen dependency outside the proof. A view
+  that binds one artifact revision to two digests is refused.
 
-A manifest whose projection or reopen entries disagree with its embedded documents is refused. Nothing the view needs
-can therefore be dropped while its embedded revision ID stays the same.
+The reopen proof is:
+
+- the preview, required;
+- a stack's closed window, required;
+- the science, required when it is displayed, which is the producer's fact;
+- each evidence binding, required when any layer using it is `Ready` or `Partial`.
+
+`Ready`, `Partial` and `AssessedEmpty` layers must bind their evidence, observation time and order (F17). A manifest
+that disagrees with its embedded documents in any of these is refused. Nothing the view needs can therefore be dropped,
+aliased or contradicted while its embedded revision ID stays the same.
 
 `SiloCenteredViews.Section(CenteredView, previousRevisionId)` builds the section from the typed view. It accepts only a
-view the store itself writes under that predecessor, uses the store's own document serialization and stream identity,
-and recomputes the base and revision IDs rather than trusting them.
+view the store itself writes under that predecessor, uses the store's own document serialization, stream identity and
+layer order, and recomputes the base and revision IDs rather than trusting them. The producer's reopen dependencies and
+the validator share one derivation of the proof.
 
 ## Object namespace and headers
 
