@@ -58,13 +58,14 @@ second, where every covariance component is withheld as `exposure-not-qualified`
 Historical available covariance above one second is unsupported and fails
 retained validation. Historical long-exposure products have the earlier settings
 identity and can fail current input-bound validation even when they already
-withheld covariance for a different reason. Such products can show
-`Unavailable` / `retained-evidence-invalid-or-unavailable`; replay or prepared
-restore fails closed rather than rewriting the immutable product. There is no
-automatic requalification or recompute command, storage-layout change or prepared
-data deletion. Keep original products as evidence; future long-exposure
-qualification/reprocessing remains under Refs #1179. Duration uses exact UTC
-endpoints with no tolerance above one second.
+withheld covariance for a different reason. When readable evidence fails
+validation, the selected capture read returns `Unavailable` with reason
+`retained-evidence-invalid`. Replay or prepared restore fails closed and
+preserves the immutable product. There is no automatic requalification or
+recompute command, storage-layout change or prepared data deletion. Keep
+original products as evidence; future long-exposure qualification/reprocessing
+remains under Refs #1179. Duration uses exact UTC endpoints with no tolerance
+above one second.
 
 On development prereleases (not stable 0.9.0), a pre-upgrade long-exposure product with `available` uncertainty still queued in a CameraAgent outbox is rejected by LogicHost ingest with HTTP 400 and quarantined by CameraAgent as `http-400`, a terminal outcome with no retry loop or blocked outbox.
 
@@ -165,6 +166,21 @@ an assessment that has not yet been retained; completed outcomes stay immutable.
 Archived Retry image layers or Refresh measured evidence rereads the selected capture.
 The authenticated read projects only the compact solution, exact mapping and bounded shared
 residual diagnostics; catalog rows and raw buffers stay inside the read boundary.
+
+A recoverable read failure, such as a temporarily unreadable artifact, returns
+`Unavailable` / `retained-evidence-temporarily-unavailable` for the selected
+capture. Retry the read after access recovers. If the latest-fit search is
+pending on a temporary failure, Current Sky can keep the previously verified
+summary and its original exposure timestamp while it retries.
+
+Confirmed quarantine of the assessment or a required input returns
+`Unavailable` / `retained-evidence-invalid` for the affected capture. Check the
+artifact's recorded availability to distinguish quarantine from other validation
+failures. Current Sky withdraws the quarantined fit even if an older candidate
+is temporarily unreadable. The latest-fit search skips the quarantined evidence
+and can show an older verified fit with its own exposure timestamp. If the
+search completes without a verified fit, the summary clears. The selected image
+still requires its own verified mapping for measured layers and calculators.
 
 Measured stellar associations and astrometric residuals are separate typed layers,
 both initially off. Green marks fitting stars and amber marks held-out stars.
