@@ -1,6 +1,5 @@
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
-using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Gallery;
@@ -60,18 +59,27 @@ internal sealed partial class SqliteCenteredViews
 
     internal async ValueTask<bool> IsPublishedSingleFallbackAsync(CenteredViewBase selected, CancellationToken token)
     {
+        var stream = selected.Definition.Stream;
+        var reference = selected.Definition.Reference.Capture.CaptureId;
+        // A completed publisher decision can select a Single even when registration produced no receipt.
         using var connection = await OpenAsync(token).ConfigureAwait(false);
         using var command = CreateCommand(connection, null, """
             SELECT 1
             FROM processing_centered_view_window_work work
             JOIN processing_centered_windows window ON window.window_sha256 = work.window_sha256
-            WHERE work.live_base_id = $base AND window.terminal = 1 AND window.reference_capture_id = $reference
-                AND CASE WHEN json_valid(CAST(window.publication_json AS TEXT))
-                    THEN json_extract(CAST(window.publication_json AS TEXT), '$.stackDisposition') = $singleExposure
+            JOIN processing_centered_view_bases b ON b.base_id = work.live_base_id
+            WHERE b.base_id = $base AND b.stream_id = $stream AND b.kind = $single AND b.recomputed_from IS NULL
+                AND window.terminal = 1 AND window.reference_capture_id = $reference
+                AND lower(replace(b.reference_id, '-', '')) = window.reference_capture_id
+                AND work.retry_utc IS NULL AND work.terminal_reason IS NULL
+                AND CASE WHEN json_valid(CAST(window.closure_json AS TEXT)) THEN
+                    json_extract(CAST(window.closure_json AS TEXT), $center || '.captureId') = $capture
+                    AND json_extract(CAST(window.closure_json AS TEXT), $center || '.runId') = $run
                 END
             LIMIT 1;
-            """, ("$base", selected.BaseId), ("$reference", selected.Definition.Reference.Capture.CaptureId.ToString("N")),
-            ("$singleExposure", (int)CenteredStackDisposition.SingleExposure));
+            """, ("$base", selected.BaseId), ("$stream", StreamId(stream)), ("$single", (int)CenteredViewKind.Single),
+            ("$reference", reference.ToString("N")), ("$capture", reference.ToString("D")), ("$run", stream.RunId.ToString("D")),
+            ("$center", $"$.slots[{CenteredWindowScheduler.CenterIndex}].input.key"));
         return await command.ExecuteScalarAsync(token).ConfigureAwait(false) is not null;
     }
 

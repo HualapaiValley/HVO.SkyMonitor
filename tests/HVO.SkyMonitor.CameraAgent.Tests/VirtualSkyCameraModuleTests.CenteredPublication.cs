@@ -90,15 +90,29 @@ public sealed partial class VirtualSkyCameraModuleTests
             }
             var terminalSingle = Assert.ContainsSingle(await views.ReadArchiveAsync(terminalReference, token).ConfigureAwait(false)).Base;
             Assert.AreEqual(CenteredViewImageSource.RawFallback, terminalSingle.Definition.Preview.Source);
+            var lookup = provider.GetRequiredService<ICenteredViewLookup>();
+            var pending = await lookup.ReadLiveContextAsync(token).ConfigureAwait(false);
+            Assert.IsNotNull(pending);
+            Assert.AreEqual(stream, pending.Stream);
+            Assert.AreEqual(terminalReference, pending.AdmissionHead?.CaptureId);
+            Assert.AreEqual(CenteredViewLiveState.Building, pending.State);
+            Assert.AreEqual("centered.awaiting-window-publication", pending.Reason);
+            TestContext.WriteLine($"Before terminal publication: state={pending.State}/{pending.Reason}");
+
             var window = await provider.GetRequiredService<ICenteredWindowReader>().ReadAsync(terminalReference, token).ConfigureAwait(false);
             Assert.IsNotNull(window);
             clock.UtcNow = window.DeadlineUtc.AddMilliseconds(1);
             await provider.GetRequiredService<CenteredWindowCoordinator>().CloseDueAsync(token).ConfigureAwait(false);
-            await provider.GetRequiredService<CenteredViewWindowPublicationWorker>().PublishReadyAsync(token).ConfigureAwait(false);
             var store = provider.GetRequiredService<SqliteCaptureProcessingStore>();
             var disposition = await store.ReadCenteredWindowByReferenceAsync(terminalReference, token).ConfigureAwait(false);
             Assert.IsNotNull(disposition);
             Assert.IsTrue(disposition.IsTerminal);
+            Assert.AreEqual(CenteredWindowSlotState.Rejected, disposition.Closure.Center.State);
+            Assert.AreEqual(new ExposureKey(key, stream.RunId, terminalReference), disposition.Closure.Center.Input?.Key);
+            Assert.IsNull(disposition.Publication);
+            Assert.IsFalse(await views.IsPublishedSingleFallbackAsync(terminalSingle, token).ConfigureAwait(false),
+                "The archived Single must wait for the publisher to select it, even after the window is terminal.");
+            await provider.GetRequiredService<CenteredViewWindowPublicationWorker>().PublishReadyAsync(token).ConfigureAwait(false);
             using var connection = await store.OpenCenteredViewsAsync(token).ConfigureAwait(false);
             using var command = connection.CreateCommand();
             command.CommandText = """
@@ -113,6 +127,26 @@ public sealed partial class VirtualSkyCameraModuleTests
                 Assert.IsTrue(await result.IsDBNullAsync(1, token).ConfigureAwait(false));
                 Assert.IsTrue(await result.IsDBNullAsync(2, token).ConfigureAwait(false));
             }
+            var candidate = await views.ReadLiveCandidateAsync(stream, token).ConfigureAwait(false);
+            Assert.IsNotNull(candidate);
+            Assert.AreEqual(terminalSingle.BaseId, candidate);
+            var live = await views.SelectLiveAsync(stream, candidate, token).ConfigureAwait(false);
+            Assert.IsNotNull(live);
+            Assert.AreEqual(terminalSingle.BaseId, live.View.Base.BaseId);
+            var definition = live.View.Base.Definition;
+            Assert.AreEqual(CenteredViewKind.Single, definition.Kind);
+            Assert.AreEqual(CenteredViewImageSource.RawFallback, definition.Preview.Source);
+            Assert.AreEqual("linear.no-configured-step", definition.Preview.QualificationReason);
+            Assert.AreEqual(terminalSingle.Definition.Preview.PayloadSha256, definition.Preview.PayloadSha256);
+            var context = await lookup.ReadLiveContextAsync(token).ConfigureAwait(false);
+            Assert.IsNotNull(context);
+            Assert.AreEqual(stream, context.Stream);
+            Assert.AreEqual(terminalReference, context.AdmissionHead?.CaptureId);
+            TestContext.WriteLine($"terminal={disposition.IsTerminal}, center={disposition.Closure.Center.State}, receipt=absent, " +
+                $"selected={definition.ReferenceOrder}, source={definition.Preview.Source}, state={context.State}/{context.Reason}");
+            Assert.AreEqual(CenteredViewLiveState.Ready, context.State);
+            Assert.IsNull(context.Reason);
+
             clock.UtcNow = clock.UtcNow.AddSeconds(16);
             CollectionAssert.DoesNotContain((await views.ReadDueWindowPublicationsAsync(8, token).ConfigureAwait(false)).ToArray(),
                 disposition.Closure.Schedule.Identity);
