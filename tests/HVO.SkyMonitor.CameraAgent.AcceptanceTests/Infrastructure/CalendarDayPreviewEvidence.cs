@@ -2,9 +2,12 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 
@@ -22,7 +25,7 @@ internal enum CalendarDayPreviewFailureCategory
     /// <summary>The preview failed in the browser, the tile showed its failure state, or the authenticated re-read failed.</summary>
     UnavailableProductImage,
 
-    /// <summary>A script error, a Blazor circuit or connection failure, an error boundary, or a product error notice.</summary>
+    /// <summary>A script error, a Blazor circuit or connection failure, an error boundary, or a product error notice on the page.</summary>
     PageError,
 
     /// <summary>The selected day was reached without errors and the preview image appeared, but not within the wait.</summary>
@@ -122,27 +125,354 @@ internal static class CalendarDayPreviewClassifier
 }
 
 /// <summary>
+/// The strict positive allowlist every retained value passes through. The browser only collects raw structure; this
+/// decides what survives. Anything not named here is dropped: unknown elements with their subtrees, attributes, class
+/// tokens and text, and URLs other than the product's own route shapes.
+/// </summary>
+internal static partial class CalendarEvidenceVocabulary
+{
+    internal const string ExpectedProduct = "{expected-product}";
+    internal const string OtherProduct = "{other-product}";
+    private const int MarkupCharacters = 16_384;
+
+    private static readonly HashSet<string> Tags = new(StringComparer.Ordinal)
+    {
+        "article", "section", "header", "div", "span", "p", "small", "strong", "i", "h2", "h3", "a", "button", "img",
+        "time", "ol", "ul", "li", "dl", "dt", "dd"
+    };
+
+    private static readonly HashSet<string> VoidTags = new(StringComparer.Ordinal) { "img" };
+
+    private static readonly HashSet<string> ClassTokens = new(StringComparer.Ordinal)
+    {
+        "calendar-day", "calendar-day--outside", "calendar-day--empty", "calendar-day--today", "calendar-day__link",
+        "calendar-day__date", "calendar-day__details", "calendar-products", "calendar-thumb", "calendar-thumb--missing",
+        "day-quality", "day-quality--event", "available", "partial", "unavailable", "not-produced", "event",
+        "daily-products", "daily-products__note", "daily-products__note--warning", "product-slots", "product-slot",
+        "product-slot--pending", "product-slot--sample", "product-slot__media", "product-slot__failed", "product-slot__open",
+        "product-slot__chips", "product-slot__hourly", "product-slot__play", "hvo-chip", "hvo-chip--success",
+        "hvo-chip--warning", "hvo-chip--info", "hvo-chip--neutral", "page-state", "page-state--error", "page-state--warning",
+        "page-state--info", "page-state__actions", "spinner-border", "spinner-border-sm", "eyebrow", "bi", "bi-image",
+        "bi-arrows-angle-expand", "bi-stars", "bi-journal-text", "bi-bar-chart-steps", "bi-film", "bi-play-circle"
+    };
+
+    private static readonly HashSet<string> ProductKinds = new(StringComparer.Ordinal)
+    {
+        "daily summary", "star trail", "keogram", "time-lapse"
+    };
+
+    private static readonly HashSet<string> NightlyStates = new(StringComparer.Ordinal)
+    {
+        "Produced", "Partial", "NotProduced", "OtherPeriod", "Pending", "NotGenerated", "Unavailable",
+        "available", "partial", "unavailable", "unavailable not-produced"
+    };
+
+    private static readonly HashSet<string> TileIds = new(StringComparer.Ordinal)
+    {
+        "product-tile-daily-summary", "product-tile-star-trail", "product-tile-keogram", "product-tile-time-lapse"
+    };
+
+    private static readonly HashSet<string> NoticeTitles = new(StringComparer.Ordinal)
+    {
+        "Loading observing calendar", "Observing calendar unavailable", "Legacy noon view uses UTC", "Nightly products hidden",
+        "Nightly product status unavailable", "Loading observing day", "Observing day unavailable", "Observing day not recognised"
+    };
+
+    private static readonly HashSet<string> Labels = new(NoticeTitles, StringComparer.Ordinal)
+    {
+        "T", "S", "K", "D", "!", "Produced", "Partial", "Not produced", "Other period only", "Pending", "Not generated",
+        "Unavailable", "Preview unavailable", "Star trail", "Keogram", "Daily summary", "Nightly products",
+        "Generated products", "Loading nightly products…", "Nightly product status unavailable.", "Night time-lapse",
+        "Play sample", "Sample"
+    };
+
+    private static readonly HashSet<string> ReconnectStates = new(StringComparer.Ordinal)
+    {
+        "components-reconnect-show", "components-reconnect-hide", "components-reconnect-failed", "components-reconnect-rejected",
+        "components-reconnect-retrying", "components-reconnect-paused", "components-reconnect-resume-failed"
+    };
+
+    private static readonly HashSet<string> CalendarVersions = new(StringComparer.Ordinal)
+    {
+        SunriseReportingPeriod.CurrentVersion, ObservingDayCalendar.LegacyNoonVersion
+    };
+
+    private static readonly Uri RelativeBase = new("http://evidence.local/");
+
+    /// <summary>
+    /// The product route a URL names, with only public components kept: dates that parse, product identities reduced
+    /// to whether they are the expected product, and the product's own query keys with valid values. Any other path,
+    /// query key, value, scheme or origin is replaced by a fixed marker.
+    /// </summary>
+    internal static string RouteShape(string? value, Guid? expectedProduct)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "[empty]";
+        }
+        if (string.Equals(value, "about:blank", StringComparison.Ordinal))
+        {
+            return value;
+        }
+        if (!Uri.TryCreate(RelativeBase, value, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return "[unparsed]";
+        }
+        var path = PathShape(uri.AbsolutePath, expectedProduct);
+        if (path == "[other-route]")
+        {
+            return path;
+        }
+        var parts = new List<string>();
+        var otherKeys = false;
+        foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var split = pair.Split('=', 2);
+            var key = Uri.UnescapeDataString(split[0]);
+            var raw = split.Length == 2 ? Uri.UnescapeDataString(split[1].Replace('+', ' ')) : string.Empty;
+            var part = key switch
+            {
+                "month" => "month=" + (MonthValue().IsMatch(raw) ? raw : "[other]"),
+                "calendar" => "calendar=" + (CalendarVersions.Contains(raw) ? raw : "[other]"),
+                "view" => "view=" + (raw == "retained" ? raw : "[other]"),
+                "download" => "download=" + (raw == "1" ? raw : "[other]"),
+                _ => null
+            };
+            if (part is null)
+            {
+                otherKeys = true;
+            }
+            else if (!parts.Contains(part, StringComparer.Ordinal))
+            {
+                parts.Add(part);
+            }
+        }
+        if (otherKeys)
+        {
+            parts.Add("[other-query]");
+        }
+        return parts.Count == 0 ? path : path + "?" + string.Join('&', parts);
+    }
+
+    private static string PathShape(string path, Guid? expectedProduct)
+    {
+        if (path is "/" or "/archive/calendar" or "/archive/products" or "/Account/Login" or "/_blazor")
+        {
+            return path;
+        }
+        if (DayRoute().Match(path) is { Success: true } day)
+        {
+            return DateOnly.TryParseExact(day.Groups["date"].Value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+                ? path
+                : "/archive/day/{invalid-date}";
+        }
+        if (PreviewRoute().Match(path) is { Success: true } preview)
+        {
+            return "/api/v1/operations/still-products/" + Product(preview.Groups["id"].Value, expectedProduct) + "/preview";
+        }
+        if (DetailRoute().Match(path) is { Success: true } detail)
+        {
+            return "/archive/products/nightly/" + Product(detail.Groups["id"].Value, expectedProduct);
+        }
+        if (ThumbnailRoute().IsMatch(path))
+        {
+            return "/api/v1/operations/gallery/{capture}/thumbnail";
+        }
+        return CaptureRoute().IsMatch(path) ? "/gallery/{capture}" : "[other-route]";
+    }
+
+    private static string Product(string value, Guid? expectedProduct) =>
+        !Guid.TryParseExact(value, "D", out var id) ? "{invalid-product}"
+        : id == expectedProduct ? ExpectedProduct
+        : OtherProduct;
+
+    /// <summary>The expected product of a preview route, so retained routes can say whether they name it.</summary>
+    internal static Guid? ProductOf(string previewPath)
+    {
+        var match = PreviewRoute().Match(previewPath);
+        return match.Success && Guid.TryParseExact(match.Groups["id"].Value, "D", out var id) ? id : null;
+    }
+
+    /// <summary>Renders a collected element tree through the allowlist, or null when there is nothing to render.</summary>
+    internal static string? RenderMarkup(JsonElement node, Guid? expectedProduct, bool omitOtherProducts = false)
+    {
+        if (node.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+        var builder = new StringBuilder();
+        Render(node, builder, expectedProduct, omitOtherProducts);
+        return builder.Length == 0 ? null
+            : builder.Length > MarkupCharacters ? builder.ToString(0, MarkupCharacters) + "…[truncated]"
+            : builder.ToString();
+    }
+
+    private static void Render(JsonElement node, StringBuilder builder, Guid? expectedProduct, bool omitOtherProducts)
+    {
+        if (builder.Length > MarkupCharacters)
+        {
+            return;
+        }
+        if (node.ValueKind == JsonValueKind.String)
+        {
+            var text = node.GetString()!.Trim();
+            if (Labels.Contains(text) || DayNumber().IsMatch(text))
+            {
+                builder.Append(WebUtility.HtmlEncode(text));
+            }
+            return;
+        }
+        if (node.ValueKind != JsonValueKind.Object ||
+            !node.TryGetProperty("t", out var tagElement) || tagElement.GetString() is not { } tag || !Tags.Contains(tag))
+        {
+            return;
+        }
+        var attributes = new List<(string Name, string Value)>();
+        if (node.TryGetProperty("a", out var raw) && raw.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var pair in raw.EnumerateArray())
+            {
+                if (pair.ValueKind == JsonValueKind.Array && pair.GetArrayLength() == 2 &&
+                    Attribute(pair[0].GetString(), pair[1].GetString(), expectedProduct) is { } attribute)
+                {
+                    attributes.Add(attribute);
+                }
+            }
+        }
+        var kind = attributes.FirstOrDefault(static attribute => attribute.Name == "data-product-kind").Value;
+        if (omitOtherProducts && tag == "article" && kind is not null && kind != "daily summary")
+        {
+            builder.Append("<article data-product-kind=\"").Append(WebUtility.HtmlEncode(kind)).Append("\" data-evidence=\"omitted\"></article>");
+            return;
+        }
+        builder.Append('<').Append(tag);
+        foreach (var (name, value) in attributes)
+        {
+            builder.Append(' ').Append(name).Append("=\"").Append(WebUtility.HtmlEncode(value)).Append('"');
+        }
+        builder.Append('>');
+        if (VoidTags.Contains(tag))
+        {
+            return;
+        }
+        if (node.TryGetProperty("c", out var children) && children.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in children.EnumerateArray())
+            {
+                Render(child, builder, expectedProduct, omitOtherProducts);
+            }
+        }
+        builder.Append("</").Append(tag).Append('>');
+    }
+
+    private static (string Name, string Value)? Attribute(string? name, string? value, Guid? expectedProduct)
+    {
+        if (name is null || value is null)
+        {
+            return null;
+        }
+        string? kept = name switch
+        {
+            "class" => string.Join(' ', value.Split(' ', StringSplitOptions.RemoveEmptyEntries).Where(ClassTokens.Contains).Distinct(StringComparer.Ordinal)),
+            "id" => TileIds.Contains(value) ? value : null,
+            "data-product-kind" => ProductKinds.Contains(value) ? value : null,
+            "data-nightly-state" or "data-video-state" => NightlyStates.Contains(value) ? value : null,
+            "aria-busy" or "aria-hidden" => value is "true" or "false" ? value : null,
+            "aria-haspopup" => value == "dialog" ? value : null,
+            "aria-current" => value == "date" ? value : null,
+            "role" => value is "status" or "alert" or "note" ? value : null,
+            "type" => value == "button" ? value : null,
+            "datetime" => DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _) ? value : null,
+            "loading" => value is "lazy" or "eager" ? value : null,
+            "decoding" => value is "async" or "sync" or "auto" ? value : null,
+            "src" or "href" => RouteShape(value, expectedProduct),
+            _ => null
+        };
+        return string.IsNullOrEmpty(kept) ? null : (name, kept);
+    }
+
+    internal static string Allowed(string? value, params string[] allowed) =>
+        value is not null && allowed.Contains(value, StringComparer.Ordinal) ? value : "other";
+
+    internal static string NoticeTitle(string? title) => title?.Trim() is { } trimmed && NoticeTitles.Contains(trimmed) ? trimmed : "other";
+
+    internal static string NightlyState(string? value) => value is not null && NightlyStates.Contains(value) ? value : "other";
+
+    internal static IReadOnlyList<string> ReconnectClasses(IEnumerable<string?> classes) =>
+        [.. classes.Where(static name => name is not null && ReconnectStates.Contains(name)).Select(static name => name!).Distinct(StringComparer.Ordinal)];
+
+    internal static string NoticeKind(IEnumerable<string?> classes)
+    {
+        var tokens = classes.ToHashSet(StringComparer.Ordinal);
+        return tokens.Contains("page-state--error") ? "page-state--error"
+            : tokens.Contains("page-state--warning") ? "page-state--warning"
+            : tokens.Contains("page-state--info") ? "page-state--info"
+            : "page-state";
+    }
+
+    /// <summary>A code-defined exception type name, or "other".</summary>
+    internal static string TypeName(Type? type) =>
+        type?.FullName is { } name && TypeNamePattern().IsMatch(name) ? name : "other";
+
+    /// <summary>The coarse host component a log category belongs to.</summary>
+    internal static string CoarseCategory(string? category) =>
+        category is null ? "other"
+        : CoarseCategories.FirstOrDefault(prefix => category == prefix || category.StartsWith(prefix + ".", StringComparison.Ordinal)) ?? "other";
+
+    private static readonly string[] CoarseCategories =
+    [
+        "Microsoft.AspNetCore.Components", "Microsoft.AspNetCore.SignalR", "Microsoft.AspNetCore.Http.Connections",
+        "Microsoft.AspNetCore", "Microsoft.Extensions", "HVO.SkyMonitor.CameraAgent", "HVO.SkyMonitor"
+    ];
+
+    [GeneratedRegex(@"^\d{4}-(0[1-9]|1[0-2])$", RegexOptions.CultureInvariant)]
+    private static partial Regex MonthValue();
+
+    [GeneratedRegex("^([1-9]|[12][0-9]|3[01])$", RegexOptions.CultureInvariant)]
+    private static partial Regex DayNumber();
+
+    [GeneratedRegex("^/archive/day/(?<date>[^/]*)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DayRoute();
+
+    [GeneratedRegex("^/api/v1/operations/still-products/(?<id>[^/]*)/preview$", RegexOptions.CultureInvariant)]
+    private static partial Regex PreviewRoute();
+
+    [GeneratedRegex("^/archive/products/nightly/(?<id>[^/]*)$", RegexOptions.CultureInvariant)]
+    private static partial Regex DetailRoute();
+
+    [GeneratedRegex("^/api/v1/operations/gallery/[^/]*/thumbnail$", RegexOptions.CultureInvariant)]
+    private static partial Regex ThumbnailRoute();
+
+    [GeneratedRegex("^/gallery/[^/]*$", RegexOptions.CultureInvariant)]
+    private static partial Regex CaptureRoute();
+
+    [GeneratedRegex(@"^(System|Microsoft|HVO\.SkyMonitor)(\.[A-Za-z_][A-Za-z0-9_]{0,80}){1,12}$", RegexOptions.CultureInvariant)]
+    private static partial Regex TypeNamePattern();
+}
+
+/// <summary>
 /// Retains credential-free evidence when the Calendar day link does not lead to the Daily Summary preview (#1916):
-/// selected day, URLs reduced to origin-relative paths with query keys only, scoped day-card markup with comments,
-/// scripts, values and styles removed, bounded browser and circuit signal labels, preview request outcomes and an
-/// authenticated re-read of the preview. Free-text console, page-error and server-log messages are never retained.
+/// the selected day, known route shapes, allowlisted markup of the Calendar cell and Daily Summary tile, bounded
+/// browser and circuit signal labels, preview request outcomes and an authenticated re-read of the preview. Coarse
+/// host log metadata is kept as context only. One deadline bounds capture, writing and attachment.
 /// </summary>
 internal sealed partial class CalendarDayPreviewEvidence : IDisposable
 {
     internal const string EvidenceDirectoryName = "calendar-preview-failures";
-    internal const string Schema = "hvo-calendar-day-preview-failure-v1";
+    internal const string Schema = "hvo-calendar-day-preview-failure-v2";
     private const int TimelineCapacity = 256;
-    private const int MessageLineCapacity = 12;
-    private const int MessageLineCharacters = 300;
     private static readonly TimeSpan BrowserCallTimeout = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan CaptureBudget = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan DefaultBudget = TimeSpan.FromSeconds(60);
 
     private readonly IPage page;
     private readonly TestContext testContext;
+    private readonly ICalendarEvidenceSink sink;
+    private readonly TimeSpan budget;
     private readonly ServerLogEvidence? serverLog;
     private readonly string selectedDay;
     private readonly string selectedDayPath;
     private readonly string previewPath;
+    private readonly Guid? expectedProduct;
     private readonly string rowLabel;
     private readonly Stopwatch clock = Stopwatch.StartNew();
     private readonly DateTimeOffset startedUtc = DateTimeOffset.UtcNow;
@@ -153,18 +483,22 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     private int timelineCount;
     private long? clickAtMilliseconds;
     private string interactiveAtClick = "not-recorded";
-    private string urlAtClick = "not-recorded";
+    private string routeAtClick = "not-recorded";
     private bool detached;
 
     private CalendarDayPreviewEvidence(
-        IPage page, TestContext testContext, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel)
+        IPage page, TestContext testContext, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel,
+        ICalendarEvidenceSink sink, TimeSpan budget)
     {
         this.page = page;
         this.testContext = testContext;
+        this.sink = sink;
+        this.budget = budget;
         this.serverLog = serverLog;
         this.selectedDay = selectedDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
         selectedDayPath = "/archive/day/" + this.selectedDay;
         this.previewPath = previewPath;
+        expectedProduct = CalendarEvidenceVocabulary.ProductOf(previewPath);
         this.rowLabel = PlaywrightDiagnosticContext.SafeName(rowLabel);
         page.FrameNavigated += OnFrameNavigated;
         page.Request += OnRequest;
@@ -184,33 +518,36 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     internal CalendarDayPreviewReport? LastReport { get; private set; }
 
     internal static CalendarDayPreviewEvidence Observe(
-        IPage page, TestContext testContext, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null)
+        IPage page, TestContext testContext, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null,
+        ICalendarEvidenceSink? sink = null, TimeSpan? budget = null)
     {
         ArgumentNullException.ThrowIfNull(page);
         ArgumentNullException.ThrowIfNull(testContext);
         ArgumentException.ThrowIfNullOrWhiteSpace(previewPath);
-        return new CalendarDayPreviewEvidence(page, testContext, serverLog, selectedDay, previewPath, rowLabel);
+        return new CalendarDayPreviewEvidence(page, testContext, serverLog, selectedDay, previewPath, rowLabel,
+            sink ?? FileEvidenceSink.ForTestContext(testContext), budget ?? DefaultBudget);
     }
 
-    /// <summary>Records the URL and whether the shell had become interactive immediately before the day link click.</summary>
+    /// <summary>Records the route and whether the shell had become interactive immediately before the day link click.</summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Recording pre-click state is diagnostic and must never change the outcome of the click under test.")]
     internal async Task BeforeDayLinkClickAsync()
     {
         Step = "click day link";
-        urlAtClick = SafeUrl(page.Url);
+        routeAtClick = Route(page.Url);
         try
         {
-            interactiveAtClick = await page.EvaluateAsync<string>(
-                    "() => document.querySelector('.app-frame')?.getAttribute('data-interactive') ?? 'absent'")
-                .WaitAsync(BrowserCallTimeout).ConfigureAwait(false);
+            var raw = await Bounded(page.EvaluateAsync<string>(
+                    "() => document.querySelector('.app-frame')?.getAttribute('data-interactive') ?? 'absent'"),
+                BrowserCallTimeout, CancellationToken.None).ConfigureAwait(false);
+            interactiveAtClick = CalendarEvidenceVocabulary.Allowed(raw, "true", "false", "absent");
         }
         catch (Exception)
         {
             interactiveAtClick = "unreadable";
         }
         clickAtMilliseconds = clock.ElapsedMilliseconds;
-        Record("click", $"interactive={interactiveAtClick} url={urlAtClick}");
+        Record("click", $"interactive={interactiveAtClick} route={routeAtClick}");
     }
 
     /// <summary>
@@ -228,7 +565,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
                 : entries.Any(static entry => entry.Kind == "enhanced-fetch") ? "enhanced"
                 : entries.Any(static entry => entry.Kind == "navigated") ? "in-circuit" : "none-observed";
             var previews = previewRequests.ToArray();
-            testContext.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            sink.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"Calendar day preview passed ({rowLabel}): assertions complete {Elapsed()} ms after the click; interactiveAtClick={interactiveAtClick}; navigation={navigation}; previewResponses={previews.Count(static request => request.Outcome == "response")}; previewFailures={previews.Count(static request => request.Outcome == "failed")}"));
         }
         catch (Exception)
@@ -242,32 +579,30 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         exception is TimeoutException or PlaywrightException or AssertFailedException;
 
     /// <summary>
-    /// Captures, classifies and retains the evidence for <paramref name="failure"/>. Capture is bounded and best-effort:
-    /// it never throws, so the caller's original failure remains the reported outcome.
+    /// Captures, classifies, writes and attaches the evidence for <paramref name="failure"/> within one deadline. It never
+    /// throws, so the caller rethrows its original failure object unchanged. Work abandoned at the deadline has its
+    /// faults observed, and the sink attaches only a complete file.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "Evidence capture runs while the original assertion unwinds and must never replace it.")]
     internal async Task<CalendarDayPreviewReport?> RetainAsync(Exception failure, TimeSpan settleWindow)
     {
         ArgumentNullException.ThrowIfNull(failure);
+        using var deadline = new CancellationTokenSource(budget);
         try
         {
-            var report = await CaptureAsync(failure, settleWindow).WaitAsync(CaptureBudget).ConfigureAwait(false);
-            var path = await WriteAsync(report).ConfigureAwait(false);
-            testContext.WriteLine(report.Summary(Path.GetFileName(path)));
+            var report = await Bounded(CaptureAsync(failure, settleWindow, deadline.Token), budget, deadline.Token).ConfigureAwait(false);
+            var path = await Bounded(sink.PersistAsync(FileName(report), report.ToJson(), deadline.Token), budget, deadline.Token)
+                .ConfigureAwait(false);
             LastReport = report with { EvidencePath = path };
+            TryWriteLine(report.Summary(Path.GetFileName(path)));
             return LastReport;
         }
         catch (Exception exception)
         {
-            try
-            {
-                testContext.WriteLine($"Calendar day preview evidence capture failed: {exception.GetType().Name}");
-            }
-            catch (Exception)
-            {
-                // The original assertion remains the reported failure.
-            }
+            await deadline.CancelAsync().ConfigureAwait(false);
+            TryWriteLine("Calendar day preview evidence was not retained: " +
+                         (exception is OperationCanceledException ? "evidence budget exhausted" : CalendarEvidenceVocabulary.TypeName(exception.GetType())));
             return null;
         }
     }
@@ -288,44 +623,82 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         page.WebSocket -= OnWebSocket;
     }
 
-    private async Task<CalendarDayPreviewReport> CaptureAsync(Exception failure, TimeSpan settleWindow)
+    /// <summary>Awaits <paramref name="task"/> until <paramref name="cap"/> or <paramref name="token"/>; an abandoned task's fault is observed.</summary>
+    internal static async Task<T> Bounded<T>(Task<T> task, TimeSpan cap, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ObserveFaults(task);
+        using var call = CancellationTokenSource.CreateLinkedTokenSource(token);
+        call.CancelAfter(cap);
+        return await task.WaitAsync(call.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>Awaits <paramref name="task"/> until <paramref name="cap"/> or <paramref name="token"/>; an abandoned task's fault is observed.</summary>
+    internal static async Task Bounded(Task task, TimeSpan cap, CancellationToken token)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ObserveFaults(task);
+        using var call = CancellationTokenSource.CreateLinkedTokenSource(token);
+        call.CancelAfter(cap);
+        await task.WaitAsync(call.Token).ConfigureAwait(false);
+    }
+
+    private static void ObserveFaults(Task task) => _ = task.ContinueWith(
+        static completed => _ = completed.Exception,
+        CancellationToken.None,
+        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+        TaskScheduler.Default);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "A summary line is diagnostic; a failing sink must not replace the original assertion.")]
+    private void TryWriteLine(string line)
+    {
+        try
+        {
+            sink.WriteLine(line);
+        }
+        catch (Exception)
+        {
+            // The original assertion remains the reported failure.
+        }
+    }
+
+    private async Task<CalendarDayPreviewReport> CaptureAsync(Exception failure, TimeSpan settleWindow, CancellationToken token)
     {
         var failureAt = clock.ElapsedMilliseconds;
         var step = Step;
-        var urlAtFailure = SafeUrl(page.Url);
+        var routeAtFailure = Route(page.Url);
         var onDayAtFailure = IsSelectedDay(page.Url);
-        Record("failure", $"step={step} type={failure.GetType().Name}");
-        var atFailure = await SnapshotAsync().ConfigureAwait(false);
-        var probe = await ProbeAsync().ConfigureAwait(false);
+        Record("failure", $"step={step} type={CalendarEvidenceVocabulary.TypeName(failure.GetType())}");
+        var atFailure = await SnapshotAsync(token).ConfigureAwait(false);
+        var probe = await ProbeAsync(token).ConfigureAwait(false);
 
         long? visibleAfterSettle = null;
         var settle = Stopwatch.StartNew();
         try
         {
-            await page.Locator("[data-product-kind='daily summary'] img")
-                .WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = (float)settleWindow.TotalMilliseconds })
-                .ConfigureAwait(false);
+            await Bounded(page.Locator("[data-product-kind='daily summary'] img")
+                    .WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = (float)settleWindow.TotalMilliseconds }),
+                settleWindow + TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
             visibleAfterSettle = settle.ElapsedMilliseconds;
-            Record("settle", $"preview image visible after {visibleAfterSettle} ms");
+            Record("settle", "preview image visible after " + visibleAfterSettle.Value.ToString(CultureInfo.InvariantCulture) + " ms");
         }
-        catch (Exception exception) when (exception is TimeoutException or PlaywrightException)
+        catch (Exception exception) when (exception is TimeoutException or PlaywrightException ||
+                                          (exception is OperationCanceledException && !token.IsCancellationRequested))
         {
-            Record("settle", $"preview image not visible within {(long)settleWindow.TotalMilliseconds} ms");
+            Record("settle", "preview image not visible within " + ((long)settleWindow.TotalMilliseconds).ToString(CultureInfo.InvariantCulture) + " ms");
         }
-        var urlAfterSettle = SafeUrl(page.Url);
+        var routeAfterSettle = Route(page.Url);
         var onDayAfterSettle = IsSelectedDay(page.Url);
-        var afterSettle = await SnapshotAsync().ConfigureAwait(false);
+        var afterSettle = await SnapshotAsync(token).ConfigureAwait(false);
 
-        var serverEntries = ServerEntriesSinceStart();
-        var signals = PageErrorSignals(atFailure, afterSettle, serverEntries);
-        var requests = previewRequests.ToArray();
         var observation = new CalendarDayPreviewObservation(
             onDayAtFailure,
             onDayAfterSettle,
             atFailure.PreviewFailedMarker || afterSettle.PreviewFailedMarker,
-            requests,
+            previewRequests.ToArray(),
             probe,
-            signals,
+            ComposePageErrorSignals(eventSignals, atFailure, afterSettle),
             atFailure.Image.Visible,
             visibleAfterSettle,
             afterSettle.DayLoading,
@@ -336,16 +709,16 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             rowLabel,
             selectedDay,
             selectedDayPath,
-            previewPath,
+            CalendarEvidenceVocabulary.RouteShape(previewPath, expectedProduct),
             step,
-            failure.GetType().FullName ?? failure.GetType().Name,
-            MessageLines(failure.Message),
+            CalendarEvidenceVocabulary.TypeName(failure.GetType()),
+            TimeoutMilliseconds(failure.Message),
             CalendarDayPreviewClassifier.Classify(observation),
             observation,
             interactiveAtClick,
-            urlAtClick,
-            urlAtFailure,
-            urlAfterSettle,
+            routeAtClick,
+            routeAtFailure,
+            routeAfterSettle,
             clickAtMilliseconds,
             failureAt,
             (long)settleWindow.TotalMilliseconds,
@@ -353,94 +726,86 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             afterSettle,
             consoleLabels.OrderBy(static pair => pair.Key, StringComparer.Ordinal)
                 .Select(static pair => new KeyValuePair<string, int>(pair.Key, pair.Value)).ToArray(),
-            serverEntries,
+            ServerContext(),
             timeline.OrderBy(static entry => entry.Sequence).ToArray(),
             null);
     }
 
-    private IReadOnlyList<string> PageErrorSignals(PageSnapshot atFailure, PageSnapshot afterSettle, IReadOnlyList<ServerLogEntry> serverEntries)
+    /// <summary>
+    /// The page and circuit signals that can attribute a failure. Host log events are deliberately absent: a host
+    /// error is not shown to be the page's error, so it is retained as context and never decides the category.
+    /// </summary>
+    internal static IReadOnlyList<string> ComposePageErrorSignals(IEnumerable<string> pageEventSignals, params PageSnapshot[] snapshots)
     {
-        var signals = new SortedSet<string>(eventSignals, StringComparer.Ordinal);
-        foreach (var snapshot in new[] { atFailure, afterSettle })
+        var signals = new SortedSet<string>(pageEventSignals, StringComparer.Ordinal);
+        foreach (var snapshot in snapshots)
         {
-            foreach (var signal in snapshot.Signals)
-            {
-                signals.Add(signal);
-            }
-        }
-        var clickUtc = clickAtMilliseconds is { } click ? startedUtc.AddMilliseconds(click) : startedUtc;
-        foreach (var entry in serverEntries.Where(entry => entry.AtUtc >= clickUtc &&
-                                                           (entry.Level >= LogLevel.Error || entry.ExceptionType is not null)))
-        {
-            signals.Add($"server:{entry.Level}:{entry.EventName ?? entry.EventId.ToString(CultureInfo.InvariantCulture)}:{entry.ExceptionType ?? "none"}");
+            signals.UnionWith(snapshot.Signals);
         }
         return [.. signals];
     }
 
-    private ServerLogEntry[] ServerEntriesSinceStart() =>
-        serverLog?.Snapshot().Where(entry => entry.AtUtc >= startedUtc).ToArray() ?? [];
+    private ServerLogContext[] ServerContext()
+    {
+        var clickUtc = clickAtMilliseconds is { } click ? startedUtc.AddMilliseconds(click) : startedUtc;
+        return serverLog?.Snapshot()
+            .Where(entry => entry.AtUtc >= startedUtc)
+            .Select(entry => new ServerLogContext(
+                (long)(entry.AtUtc - clickUtc).TotalMilliseconds, entry.Level, entry.Category, entry.EventId, entry.ExceptionType, entry.InnerExceptionType))
+            .ToArray() ?? [];
+    }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "A page that cannot be inspected is itself evidence; the snapshot records that instead of failing.")]
-    private async Task<PageSnapshot> SnapshotAsync()
+    private async Task<PageSnapshot> SnapshotAsync(CancellationToken token)
     {
         try
         {
-            var json = await page.EvaluateAsync<JsonElement>(SnapshotScript, new { day = selectedDay })
-                .WaitAsync(BrowserCallTimeout).ConfigureAwait(false);
-            return PageSnapshot.From(json);
+            var json = await Bounded(page.EvaluateAsync<JsonElement>(SnapshotScript, new { day = selectedDay }), BrowserCallTimeout, token)
+                .ConfigureAwait(false);
+            return PageSnapshot.From(json, expectedProduct);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!token.IsCancellationRequested && exception is not OutOfMemoryException)
         {
-            return PageSnapshot.FromUnreadable(exception.GetType().Name);
+            return PageSnapshot.FromUnreadable(exception is OperationCanceledException ? "timeout" : "unreadable");
         }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "The authenticated re-read is diagnostic; its own failure is recorded as its outcome.")]
-    private async Task<CalendarDayPreviewProbe> ProbeAsync()
+    private async Task<CalendarDayPreviewProbe> ProbeAsync(CancellationToken token)
     {
         IAPIResponse? response = null;
         try
         {
-            response = await page.Context.APIRequest.GetAsync(
+            response = await Bounded(page.Context.APIRequest.GetAsync(
                     new Uri(new Uri(page.Url), previewPath).AbsoluteUri,
-                    new() { MaxRedirects = 0, Timeout = (float)BrowserCallTimeout.TotalMilliseconds })
-                .WaitAsync(BrowserCallTimeout + TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            var body = await response.BodyAsync().ConfigureAwait(false);
+                    new() { MaxRedirects = 0, Timeout = (float)BrowserCallTimeout.TotalMilliseconds }),
+                BrowserCallTimeout + TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
+            var body = await Bounded(response.BodyAsync(), BrowserCallTimeout, token).ConfigureAwait(false);
             response.Headers.TryGetValue("content-type", out var contentType);
             return new CalendarDayPreviewProbe(response.Status, BoundedContentType(contentType), body.LongLength, HasImageSignature(body), null);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (!token.IsCancellationRequested && exception is not OutOfMemoryException)
         {
-            return new CalendarDayPreviewProbe(null, null, 0, false, exception.GetType().Name);
+            return new CalendarDayPreviewProbe(null, null, 0, false,
+                exception is OperationCanceledException ? "timeout" : CalendarEvidenceVocabulary.TypeName(exception.GetType()));
         }
         finally
         {
             if (response is not null)
             {
-                try
-                {
-                    await response.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception)
-                {
-                    // Disposal of a diagnostic response cannot affect the evidence already read.
-                }
+                ObserveFaults(DisposeResponseAsync(response));
             }
         }
     }
 
-    private async Task<string> WriteAsync(CalendarDayPreviewReport report)
-    {
-        var directory = Path.Combine(testContext.ResultsDirectory ?? Path.GetTempPath(), EvidenceDirectoryName);
-        Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, string.Create(CultureInfo.InvariantCulture,
-            $"{PlaywrightDiagnosticContext.SafeName(report.TestClass)}.{PlaywrightDiagnosticContext.SafeName(report.TestName)}.{report.Row}.{Guid.NewGuid():N}.evidence.json"));
-        await File.WriteAllTextAsync(path, report.ToJson(), new UTF8Encoding(false)).ConfigureAwait(false);
-        testContext.AddResultFile(path);
-        return path;
-    }
+    private static async Task DisposeResponseAsync(IAPIResponse response) => await response.DisposeAsync().ConfigureAwait(false);
+
+    private static string FileName(CalendarDayPreviewReport report) => string.Create(CultureInfo.InvariantCulture,
+        $"{PlaywrightDiagnosticContext.SafeName(report.TestClass)}.{PlaywrightDiagnosticContext.SafeName(report.TestName)}.{report.Row}.{Guid.NewGuid():N}.evidence.json");
+
+    private string Route(string? url) => CalendarEvidenceVocabulary.RouteShape(url, expectedProduct);
 
     private bool IsSelectedDay(string url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri) && string.Equals(uri.AbsolutePath, selectedDayPath, StringComparison.Ordinal);
@@ -462,7 +827,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         if (frame == page.MainFrame)
         {
-            Record("navigated", SafeUrl(frame.Url));
+            Record("navigated", Route(frame.Url));
         }
     }
 
@@ -474,18 +839,18 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         {
             if (IsPreview(request.Url))
             {
-                Record("preview-request", $"method={BoundedMethod(request.Method)}");
+                Record("preview-request", "method=" + BoundedMethod(request.Method));
             }
             else if (request.IsNavigationRequest && request.Frame == page.MainFrame)
             {
-                Record("document-request", SafeUrl(request.Url));
+                Record("document-request", Route(request.Url));
             }
             else if (request.ResourceType is "fetch" or "xhr" &&
                      Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) &&
                      uri.AbsolutePath.StartsWith("/archive/", StringComparison.Ordinal))
             {
                 // Blazor enhanced navigation fetches the next page instead of navigating the document.
-                Record("enhanced-fetch", SafeUrl(request.Url));
+                Record("enhanced-fetch", Route(request.Url));
             }
         }
         catch (Exception)
@@ -505,11 +870,11 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
                 response.Headers.TryGetValue("content-type", out var contentType);
                 var bounded = BoundedContentType(contentType);
                 previewRequests.Enqueue(new(Elapsed(), "response", response.Status, bounded, null));
-                Record("preview-response", $"status={response.Status} type={bounded}");
+                Record("preview-response", string.Create(CultureInfo.InvariantCulture, $"status={response.Status} type={bounded}"));
             }
             else if (response.Request.IsNavigationRequest && response.Request.Frame == page.MainFrame)
             {
-                Record("document-response", $"status={response.Status} {SafeUrl(response.Url)}");
+                Record("document-response", string.Create(CultureInfo.InvariantCulture, $"status={response.Status} {Route(response.Url)}"));
             }
         }
         catch (Exception)
@@ -532,7 +897,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             }
             else if (request.IsNavigationRequest && request.Frame == page.MainFrame)
             {
-                Record("document-failed", $"{failure} {SafeUrl(request.Url)}");
+                Record("document-failed", failure + " " + Route(request.Url));
             }
         }
         catch (Exception)
@@ -577,31 +942,6 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     }
 
     private long Elapsed() => clock.ElapsedMilliseconds - (clickAtMilliseconds ?? 0);
-
-    /// <summary>An origin-relative path with query keys only; values, fragments and foreign origins are never kept.</summary>
-    internal static string SafeUrl(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "[empty]";
-        }
-        if (string.Equals(value, "about:blank", StringComparison.Ordinal))
-        {
-            return value;
-        }
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-        {
-            return "[unparsed]";
-        }
-        var keys = uri.Query.TrimStart('?')
-            .Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Select(static pair => pair.Split('=', 2)[0])
-            .Select(static key => SafeQueryKey().IsMatch(key) ? key : "key")
-            .Select(static key => key + "=…")
-            .ToArray();
-        var path = SafePath().IsMatch(uri.AbsolutePath) ? uri.AbsolutePath : "[unsafe-path]";
-        return keys.Length == 0 ? path : path + "?" + string.Join('&', keys);
-    }
 
     /// <summary>A bounded label for a console message, or null for message types that carry no failure signal.</summary>
     internal static string? ClassifyConsole(string type, string? text)
@@ -651,11 +991,17 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             : "OTHER";
     }
 
-    internal static string BoundedNetworkError(string? failure)
+    internal static string BoundedNetworkError(string? failure) =>
+        failure is not null && NetworkErrors.Contains(failure) ? failure : "OTHER";
+
+    private static readonly HashSet<string> NetworkErrors = new(StringComparer.Ordinal)
     {
-        var match = NetworkErrorCode().Match(failure ?? string.Empty);
-        return match.Success ? match.Value : "OTHER";
-    }
+        "net::ERR_ABORTED", "net::ERR_FAILED", "net::ERR_CONNECTION_REFUSED", "net::ERR_CONNECTION_RESET",
+        "net::ERR_CONNECTION_CLOSED", "net::ERR_CONNECTION_FAILED", "net::ERR_EMPTY_RESPONSE", "net::ERR_TIMED_OUT",
+        "net::ERR_NAME_NOT_RESOLVED", "net::ERR_INTERNET_DISCONNECTED", "net::ERR_ADDRESS_UNREACHABLE",
+        "net::ERR_INVALID_RESPONSE", "net::ERR_HTTP2_PROTOCOL_ERROR", "net::ERR_INCOMPLETE_CHUNKED_ENCODING",
+        "net::ERR_BLOCKED_BY_CLIENT", "net::ERR_CACHE_MISS"
+    };
 
     internal static string BoundedContentType(string? contentType)
     {
@@ -676,14 +1022,14 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         body.StartsWith((ReadOnlySpan<byte>)[0xFF, 0xD8, 0xFF]) ||
         (body.Length >= 12 && body[..4].SequenceEqual("RIFF"u8) && body.Slice(8, 4).SequenceEqual("WEBP"u8));
 
-    internal static IReadOnlyList<string> MessageLines(string? message) =>
-        (message ?? string.Empty).Split('\n')
-            .Select(static line => line.TrimEnd('\r'))
-            .Where(static line => line.Length > 0)
-            .Take(MessageLineCapacity)
-            .Select(static line => PlaywrightDiagnosticContext.Sanitize(
-                line.Length > MessageLineCharacters ? line[..MessageLineCharacters] + "…" : line))
-            .ToArray();
+    /// <summary>The wait a Playwright timeout reports, the only part of a failure message that is retained.</summary>
+    internal static int? TimeoutMilliseconds(string? message)
+    {
+        var match = PlaywrightTimeout().Match(message ?? string.Empty);
+        return match.Success && int.TryParse(match.Groups["ms"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : null;
+    }
 
     private static string BoundedMethod(string value) => value.ToUpperInvariant() switch
     {
@@ -691,11 +1037,8 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         _ => "OTHER"
     };
 
-    [GeneratedRegex("^[A-Za-z0-9_.-]{1,40}$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafeQueryKey();
-
-    [GeneratedRegex("^/[A-Za-z0-9_./-]{0,200}$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafePath();
+    [GeneratedRegex(@"\ATimeout (?<ms>\d{1,7})ms exceeded", RegexOptions.CultureInvariant)]
+    private static partial Regex PlaywrightTimeout();
 
     [GeneratedRegex("unhandled exception on the current circuit", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex UnhandledCircuitException();
@@ -717,50 +1060,31 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     [GeneratedRegex("^(?:Uncaught )?(?<name>[A-Za-z]{1,40})(?::|$)", RegexOptions.CultureInvariant)]
     private static partial Regex LeadingErrorName();
 
-    [GeneratedRegex("^net::ERR_[A-Z_]{1,60}$", RegexOptions.CultureInvariant)]
-    private static partial Regex NetworkErrorCode();
-
     /// <summary>
-    /// Returns bounded page facts and scrubbed markup for the selected Calendar cell and the Daily Summary tile. The
-    /// markup keeps product-owned element structure and text, and removes comments (Blazor component descriptors),
-    /// scripts, templates, dialogs, hidden inputs, form values, inline styles, event attributes and query values.
+    /// Collects raw facts and element trees for the selected Calendar cell, the Daily Summary tile, the products
+    /// section and page notices. It decides nothing about retention: every value is filtered by
+    /// <see cref="CalendarEvidenceVocabulary"/> before it can be serialized.
     /// </summary>
     private const string SnapshotScript = """
         ({ day }) => {
-          const maxMarkup = 16384;
-          const safeUrl = value => {
-            if (value === null || value === undefined || value === '') return null;
-            try {
-              const url = new URL(value, location.href);
-              if (url.origin !== location.origin) return '[external]';
-              const keys = [...new Set([...url.searchParams.keys()])].map(key => /^[A-Za-z0-9_.-]{1,40}$/.test(key) ? key : 'key');
-              return url.pathname + (keys.length ? '?' + keys.map(key => key + '=…').join('&') : '');
-            } catch { return '[unparsed]'; }
-          };
-          const scrub = (element, prune) => {
+          const collect = element => {
             if (!element) return null;
-            const clone = element.cloneNode(true);
-            const comments = [];
-            const walker = document.createTreeWalker(clone, NodeFilter.SHOW_COMMENT);
-            while (walker.nextNode()) comments.push(walker.currentNode);
-            comments.forEach(node => node.remove());
-            clone.querySelectorAll('script, template, dialog, noscript, input[type=hidden]').forEach(node => node.remove());
-            if (prune) prune(clone);
-            for (const node of [clone, ...clone.querySelectorAll('*')]) {
-              for (const attribute of [...node.attributes]) {
-                const name = attribute.name.toLowerCase();
-                if (name === 'value' || name === 'style' || name === 'srcset' || name === 'nonce' || name.startsWith('on')) {
-                  node.removeAttribute(attribute.name);
-                } else if (name === 'src' || name === 'href' || name === 'action' || name === 'poster' || name === 'formaction') {
-                  node.setAttribute(attribute.name, safeUrl(attribute.value) ?? '');
-                }
+            let count = 0;
+            const walk = (node, depth) => {
+              if (count++ > 600 || depth > 16) return null;
+              if (node.nodeType === Node.TEXT_NODE) {
+                const text = node.textContent.trim();
+                return text ? text.slice(0, 120) : null;
               }
-              if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement) {
-                node.replaceChildren();
+              if (node.nodeType !== Node.ELEMENT_NODE) return null;
+              const children = [];
+              for (const child of node.childNodes) {
+                const value = walk(child, depth + 1);
+                if (value !== null) children.push(value);
               }
-            }
-            const html = clone.outerHTML;
-            return html.length > maxMarkup ? html.slice(0, maxMarkup) + '…[truncated]' : html;
+              return { t: node.localName, a: [...node.attributes].slice(0, 32).map(attribute => [attribute.name, attribute.value.slice(0, 300)]), c: children };
+            };
+            return walk(element, 0);
           };
           const visible = element => {
             if (!element || !element.isConnected) return false;
@@ -773,10 +1097,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
           const image = tile?.querySelector('img') ?? null;
           const rect = image?.getBoundingClientRect();
           const products = document.querySelector('section.daily-products');
-          const notices = [...document.querySelectorAll('.content-container .page-state')].map(notice => ({
-            kind: [...notice.classList].find(name => name.startsWith('page-state--')) ?? 'page-state',
-            title: (notice.querySelector('strong')?.textContent ?? '').trim().slice(0, 160)
-          }));
+          const notices = [...document.querySelectorAll('.content-container .page-state')];
           const errorUi = document.getElementById('blazor-error-ui');
           const reconnect = document.getElementById('components-reconnect-modal');
           const dayPage = document.querySelector('.day-page');
@@ -794,8 +1115,8 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
               complete: image.complete,
               naturalWidth: image.naturalWidth,
               naturalHeight: image.naturalHeight,
-              src: safeUrl(image.getAttribute('src')),
-              currentSrc: safeUrl(image.currentSrc),
+              src: image.getAttribute('src'),
+              currentSrc: image.currentSrc,
               loading: image.getAttribute('loading'),
               width: Math.round(rect.width),
               height: Math.round(rect.height),
@@ -803,23 +1124,13 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             },
             blazorErrorUi: errorUi !== null && getComputedStyle(errorUi).display !== 'none',
             errorBoundary: document.querySelector('.error-display') !== null,
-            reconnect: reconnect === null ? null : {
-              open: reconnect.open === true,
-              states: [...reconnect.classList].filter(name => /^components-reconnect-[a-z-]{1,40}$/.test(name))
-            },
-            notices,
-            markup: {
-              calendarCell: scrub(cell),
-              dayTile: scrub(tile),
-              dailyProducts: scrub(products, clone => {
-                clone.querySelectorAll("[data-product-kind]:not([data-product-kind='daily summary'])").forEach(other => {
-                  const placeholder = document.createElement(other.tagName.toLowerCase());
-                  placeholder.setAttribute('data-product-kind', other.getAttribute('data-product-kind'));
-                  placeholder.setAttribute('data-evidence', 'omitted');
-                  other.replaceWith(placeholder);
-                });
-              }),
-              pageStates: [...document.querySelectorAll('.content-container .page-state')].map(notice => scrub(notice))
+            reconnect: reconnect === null ? null : { open: reconnect.open === true, classes: [...reconnect.classList] },
+            notices: notices.map(notice => ({ classes: [...notice.classList], title: notice.querySelector('strong')?.textContent ?? '' })),
+            trees: {
+              calendarCell: collect(cell),
+              dayTile: collect(tile),
+              dailyProducts: collect(products),
+              pageStates: notices.map(collect)
             }
           };
         }
@@ -834,7 +1145,7 @@ internal sealed record PageImageState(
 
 internal sealed record PageNotice(string Kind, string Title);
 
-/// <summary>Bounded facts read from the page at one instant.</summary>
+/// <summary>Allowlisted facts read from the page at one instant.</summary>
 internal sealed record PageSnapshot(
     string? Unreadable,
     string Interactive,
@@ -856,8 +1167,9 @@ internal sealed record PageSnapshot(
     private static readonly PageImageState NoImage = new(false, false, false, 0, 0, null, null, null, 0, 0, false);
 
     internal static PageSnapshot FromUnreadable(string reason) =>
-        new(reason, "unreadable", "unreadable", false, false, false, false, null, NoImage, false, false, false, [], [],
-            new Dictionary<string, string?>(StringComparer.Ordinal), []);
+        new(CalendarEvidenceVocabulary.Allowed(reason, "timeout", "unreadable"), "unreadable", "unreadable", false, false, false, false, null,
+            NoImage, false, false, false, [], [],
+            new Dictionary<string, string?>(StringComparer.Ordinal) { ["calendarCell"] = null, ["dayTile"] = null, ["dailyProducts"] = null }, []);
 
     internal IEnumerable<string> Signals
     {
@@ -874,7 +1186,7 @@ internal sealed record PageSnapshot(
         }
     }
 
-    internal static PageSnapshot From(JsonElement json)
+    internal static PageSnapshot From(JsonElement json, Guid? expectedProduct)
     {
         var image = json.GetProperty("image");
         var imageState = image.GetProperty("present").GetBoolean()
@@ -884,59 +1196,53 @@ internal sealed record PageSnapshot(
                 image.GetProperty("complete").GetBoolean(),
                 image.GetProperty("naturalWidth").GetInt32(),
                 image.GetProperty("naturalHeight").GetInt32(),
-                OptionalString(image, "src"),
-                OptionalString(image, "currentSrc"),
-                OptionalString(image, "loading"),
+                CalendarEvidenceVocabulary.RouteShape(OptionalString(image, "src"), expectedProduct),
+                CalendarEvidenceVocabulary.RouteShape(OptionalString(image, "currentSrc"), expectedProduct),
+                OptionalString(image, "loading") is { } loading ? CalendarEvidenceVocabulary.Allowed(loading, "lazy", "eager") : null,
                 image.GetProperty("width").GetInt32(),
                 image.GetProperty("height").GetInt32(),
                 image.GetProperty("visible").GetBoolean())
             : NoImage;
         var reconnect = json.GetProperty("reconnect");
-        var markup = json.GetProperty("markup");
+        var trees = json.GetProperty("trees");
         return new PageSnapshot(
             null,
-            Bounded(json.GetProperty("interactive").GetString()),
-            Bounded(json.GetProperty("readyState").GetString()),
+            CalendarEvidenceVocabulary.Allowed(json.GetProperty("interactive").GetString(), "true", "false", "absent"),
+            CalendarEvidenceVocabulary.Allowed(json.GetProperty("readyState").GetString(), "loading", "interactive", "complete"),
             json.GetProperty("dayPage").GetBoolean(),
             json.GetProperty("dayLoading").GetBoolean(),
             json.GetProperty("nightlyUnavailable").GetBoolean(),
             json.GetProperty("previewFailedMarker").GetBoolean(),
-            OptionalString(json, "tileState"),
+            OptionalString(json, "tileState") is { } state ? CalendarEvidenceVocabulary.NightlyState(state) : null,
             imageState,
             json.GetProperty("blazorErrorUi").GetBoolean(),
             json.GetProperty("errorBoundary").GetBoolean(),
             reconnect.ValueKind == JsonValueKind.Object && reconnect.GetProperty("open").GetBoolean(),
             reconnect.ValueKind == JsonValueKind.Object
-                ? [.. reconnect.GetProperty("states").EnumerateArray().Select(static state => Bounded(state.GetString()))]
+                ? CalendarEvidenceVocabulary.ReconnectClasses(reconnect.GetProperty("classes").EnumerateArray().Select(static name => name.GetString()))
                 : [],
             [.. json.GetProperty("notices").EnumerateArray().Select(static notice => new PageNotice(
-                Bounded(notice.GetProperty("kind").GetString()),
-                PlaywrightDiagnosticContext.Sanitize(notice.GetProperty("title").GetString() ?? string.Empty)))],
+                CalendarEvidenceVocabulary.NoticeKind(notice.GetProperty("classes").EnumerateArray().Select(static name => name.GetString())),
+                CalendarEvidenceVocabulary.NoticeTitle(notice.GetProperty("title").GetString())))],
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
-                ["calendarCell"] = SanitizedMarkup(markup, "calendarCell"),
-                ["dayTile"] = SanitizedMarkup(markup, "dayTile"),
-                ["dailyProducts"] = SanitizedMarkup(markup, "dailyProducts")
+                ["calendarCell"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("calendarCell"), expectedProduct),
+                ["dayTile"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("dayTile"), expectedProduct),
+                ["dailyProducts"] = CalendarEvidenceVocabulary.RenderMarkup(trees.GetProperty("dailyProducts"), expectedProduct, omitOtherProducts: true)
             },
-            [.. markup.GetProperty("pageStates").EnumerateArray()
-                .Select(static state => PlaywrightDiagnosticContext.Sanitize(state.GetString() ?? string.Empty))]);
+            [.. trees.GetProperty("pageStates").EnumerateArray()
+                .Select(state => CalendarEvidenceVocabulary.RenderMarkup(state, expectedProduct))
+                .Where(static markup => markup is not null)
+                .Select(static markup => markup!)]);
     }
 
     private static string? OptionalString(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
-            ? PlaywrightDiagnosticContext.Sanitize(value.GetString()!)
-            : null;
-
-    private static string? SanitizedMarkup(JsonElement markup, string name) =>
-        markup.GetProperty(name).ValueKind == JsonValueKind.String
-            ? PlaywrightDiagnosticContext.Sanitize(markup.GetProperty(name).GetString()!)
-            : null;
-
-    private static string Bounded(string? value) =>
-        value is { Length: > 0 and <= 60 } && value.All(static character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_')
-            ? value
-            : "other";
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 }
+
+/// <summary>A host log event retained as coarse context: it never decides a failure category.</summary>
+internal sealed record ServerLogContext(
+    long AtMillisecondsAfterClick, LogLevel Level, string Category, int EventId, string? ExceptionType, string? InnerExceptionType);
 
 internal sealed record CalendarDayPreviewReport(
     string TestClass,
@@ -944,10 +1250,10 @@ internal sealed record CalendarDayPreviewReport(
     string Row,
     string SelectedDay,
     string SelectedDayPath,
-    string PreviewPath,
+    string PreviewRoute,
     string FailedStep,
     string ExceptionType,
-    IReadOnlyList<string> MessageLines,
+    int? TimeoutMilliseconds,
     IReadOnlyList<CalendarDayPreviewFailureCategory> Categories,
     CalendarDayPreviewObservation Observation,
     string InteractiveAtClick,
@@ -960,7 +1266,7 @@ internal sealed record CalendarDayPreviewReport(
     PageSnapshot AtFailure,
     PageSnapshot AfterSettle,
     IReadOnlyList<KeyValuePair<string, int>> ConsoleLabels,
-    IReadOnlyList<ServerLogEntry> ServerLog,
+    IReadOnlyList<ServerLogContext> ServerLog,
     IReadOnlyList<CalendarDayPreviewEvidence.TimelineEntry> Timeline,
     string? EvidencePath)
 {
@@ -985,15 +1291,16 @@ internal sealed record CalendarDayPreviewReport(
             $"step={FailedStep}",
             $"exception={ExceptionType}",
             $"interactiveAtClick={InteractiveAtClick}",
-            $"url@click={UrlAtClick}",
-            $"url@failure={UrlAtFailure}",
-            $"url@settle={UrlAfterSettle}",
+            $"route@click={UrlAtClick}",
+            $"route@failure={UrlAtFailure}",
+            $"route@settle={UrlAfterSettle}",
             $"previewRequests={previews}",
             $"previewProbe={probe}",
             $"image@failure={image}",
             $"image@settle={settled}",
             $"dayLoading@settle={AfterSettle.DayLoading}",
             $"signals={(Observation.PageErrorSignals.Count == 0 ? "none" : string.Join(',', Observation.PageErrorSignals))}",
+            FormattableString.Invariant($"hostLogContext={ServerLog.Count}"),
             $"file={fileName}");
     }
 
@@ -1009,19 +1316,19 @@ internal sealed record CalendarDayPreviewReport(
             writer.WriteString("row", Row);
             writer.WriteString("selectedDay", SelectedDay);
             writer.WriteString("selectedDayPath", SelectedDayPath);
-            writer.WriteString("previewPath", PreviewPath);
+            writer.WriteString("previewRoute", PreviewRoute);
             writer.WriteStartObject("failure");
             writer.WriteString("step", FailedStep);
             writer.WriteString("exceptionType", ExceptionType);
-            WriteStrings(writer, "messageLines", MessageLines);
+            if (TimeoutMilliseconds is { } timeout) writer.WriteNumber("timeoutMs", timeout);
             writer.WriteEndObject();
             WriteStrings(writer, "categories", Categories.Select(static category => category.ToString()));
             WriteStrings(writer, "pageErrorSignals", Observation.PageErrorSignals);
             writer.WriteStartObject("navigation");
             writer.WriteString("interactiveAtClick", InteractiveAtClick);
-            writer.WriteString("urlAtClick", UrlAtClick);
-            writer.WriteString("urlAtFailure", UrlAtFailure);
-            writer.WriteString("urlAfterSettle", UrlAfterSettle);
+            writer.WriteString("routeAtClick", UrlAtClick);
+            writer.WriteString("routeAtFailure", UrlAtFailure);
+            writer.WriteString("routeAfterSettle", UrlAfterSettle);
             writer.WriteBoolean("onSelectedDayAtFailure", Observation.OnSelectedDayAtFailure);
             writer.WriteBoolean("onSelectedDayAfterSettle", Observation.OnSelectedDayAfterSettle);
             if (ClickAtMilliseconds is { } click) writer.WriteNumber("clickAtMs", click);
@@ -1059,15 +1366,14 @@ internal sealed record CalendarDayPreviewReport(
             writer.WriteStartObject("consoleLabels");
             foreach (var (label, count) in ConsoleLabels) writer.WriteNumber(label, count);
             writer.WriteEndObject();
-            writer.WriteStartArray("serverLog");
+            writer.WriteStartArray("hostLogContext");
             foreach (var entry in ServerLog)
             {
                 writer.WriteStartObject();
-                writer.WriteString("atUtc", entry.AtUtc.ToString("O", CultureInfo.InvariantCulture));
+                writer.WriteNumber("atMsAfterClick", entry.AtMillisecondsAfterClick);
                 writer.WriteString("level", entry.Level.ToString());
                 writer.WriteString("category", entry.Category);
                 writer.WriteNumber("eventId", entry.EventId);
-                if (entry.EventName is not null) writer.WriteString("eventName", entry.EventName);
                 if (entry.ExceptionType is not null) writer.WriteString("exceptionType", entry.ExceptionType);
                 if (entry.InnerExceptionType is not null) writer.WriteString("innerExceptionType", entry.InnerExceptionType);
                 writer.WriteEndObject();
@@ -1080,7 +1386,7 @@ internal sealed record CalendarDayPreviewReport(
                 writer.WriteNumber("sequence", entry.Sequence);
                 writer.WriteNumber("atMsAfterClick", entry.AtMilliseconds);
                 writer.WriteString("kind", entry.Kind);
-                writer.WriteString("detail", PlaywrightDiagnosticContext.Sanitize(entry.Detail));
+                writer.WriteString("detail", entry.Detail);
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
@@ -1148,22 +1454,87 @@ internal sealed record CalendarDayPreviewReport(
     }
 }
 
-internal sealed record ServerLogEntry(
-    DateTimeOffset AtUtc, LogLevel Level, string Category, int EventId, string? EventName, string? ExceptionType, string? InnerExceptionType);
+/// <summary>Where retained evidence goes: one complete file, attached to the run, and one summary line.</summary>
+internal interface ICalendarEvidenceSink
+{
+    Task<string> PersistAsync(string fileName, string content, CancellationToken cancellationToken);
+
+    void WriteLine(string line);
+}
 
 /// <summary>
-/// Captures Warning-and-above host log events as category, event and exception type only. Messages, structured state
-/// and scopes are never read, because circuit diagnostics carry circuit identifiers and request data.
+/// Writes evidence under a directory and attaches it to the test run. The file is written under a temporary name and
+/// published by rename, then attached; a cancelled or failed write, publication or attachment leaves no file behind,
+/// so only complete evidence is ever attached.
+/// </summary>
+internal sealed class FileEvidenceSink(string directory, Action<string> attach, Action<string> writeLine) : ICalendarEvidenceSink
+{
+    internal static FileEvidenceSink ForTestContext(TestContext testContext) => new(
+        Path.Combine(testContext.ResultsDirectory ?? Path.GetTempPath(), CalendarDayPreviewEvidence.EvidenceDirectoryName),
+        testContext.AddResultFile,
+        testContext.WriteLine);
+
+    public async Task<string> PersistAsync(string fileName, string content, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(directory);
+        var path = Path.Combine(directory, fileName);
+        var partial = path + ".partial";
+        var published = false;
+        try
+        {
+            await File.WriteAllTextAsync(partial, content, new UTF8Encoding(false), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(partial, path, overwrite: false);
+            published = true;
+            cancellationToken.ThrowIfCancellationRequested();
+            attach(path);
+            return path;
+        }
+        catch
+        {
+            TryDelete(partial);
+            if (published)
+            {
+                TryDelete(path);
+            }
+            throw;
+        }
+    }
+
+    public void WriteLine(string line) => writeLine(line);
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types",
+        Justification = "Cleanup after a failed write is best-effort; the write's own failure is what propagates.")]
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception)
+        {
+            // The write's failure propagates; a cleanup failure must not replace it.
+        }
+    }
+}
+
+internal sealed record ServerLogEntry(
+    DateTimeOffset AtUtc, LogLevel Level, string Category, int EventId, string? ExceptionType, string? InnerExceptionType);
+
+/// <summary>
+/// Captures Warning-and-above host log events as coarse component, level, numeric event id and exception type only.
+/// Messages, structured state, scopes, event names and full category names are never read or kept.
 /// </summary>
 [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
     Justification = "Instantiated by the Calendar browser tests and registered as a host logger provider.")]
-internal sealed partial class ServerLogEvidence : ILoggerProvider
+internal sealed class ServerLogEvidence : ILoggerProvider
 {
     private const int Capacity = 512;
     private readonly ConcurrentQueue<ServerLogEntry> entries = new();
     private int count;
 
-    public ILogger CreateLogger(string categoryName) => new EvidenceLogger(this, BoundedCategory(categoryName));
+    public ILogger CreateLogger(string categoryName) => new EvidenceLogger(this, CalendarEvidenceVocabulary.CoarseCategory(categoryName));
 
     internal IReadOnlyList<ServerLogEntry> Snapshot() => entries.ToArray();
 
@@ -1172,12 +1543,6 @@ internal sealed partial class ServerLogEvidence : ILoggerProvider
         // Entries stay readable after the host disposes its providers.
     }
 
-    internal static string BoundedCategory(string? category) =>
-        category is not null && SafeCategory().IsMatch(category) ? category : "other";
-
-    internal static string? BoundedEventName(string? name) =>
-        name is not null && SafeEventName().IsMatch(name) ? name : null;
-
     private void Add(ServerLogEntry entry)
     {
         if (Interlocked.Increment(ref count) <= Capacity)
@@ -1185,12 +1550,6 @@ internal sealed partial class ServerLogEvidence : ILoggerProvider
             entries.Enqueue(entry);
         }
     }
-
-    [GeneratedRegex("^[A-Za-z0-9_.+`]{1,200}$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafeCategory();
-
-    [GeneratedRegex("^[A-Za-z0-9_.]{1,100}$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafeEventName();
 
     private sealed class EvidenceLogger(ServerLogEvidence owner, string category) : ILogger
     {
@@ -1209,9 +1568,8 @@ internal sealed partial class ServerLogEvidence : ILoggerProvider
                 logLevel,
                 category,
                 eventId.Id,
-                BoundedEventName(eventId.Name),
-                exception?.GetType().FullName,
-                exception?.InnerException?.GetType().FullName));
+                exception is null ? null : CalendarEvidenceVocabulary.TypeName(exception.GetType()),
+                exception?.InnerException is null ? null : CalendarEvidenceVocabulary.TypeName(exception.InnerException.GetType())));
         }
     }
 }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure;
@@ -8,6 +9,7 @@ using HVO.SkyMonitor.CameraAgent.Common.TimeLapses;
 using HVO.SkyMonitor.CameraAgent.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 using Category = HVO.SkyMonitor.CameraAgent.AcceptanceTests.Infrastructure.CalendarDayPreviewFailureCategory;
 
@@ -33,6 +35,41 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     private const string ConsoleSentinel = "CONSOLE_SENTINEL_1916";
     private static readonly string[] ExpectedPageErrorSignals = ["dom:nightly-products-unavailable", "script-error:TypeError"];
     private static readonly InducedNightlyDay NightlyDay = new();
+    private const string OpaqueOrigin = "http://opaque-host-1916.invalid";
+    private const string OpaquePreviewPath = "/api/v1/operations/still-products/00000000-0000-0000-0000-000000001916/preview";
+
+    private static readonly string[] OpaqueSentinels =
+    [
+        "opaque-host-1916", "OPAQUE_SEGMENT_1916", "OPAQUE_QUERYNAME_1916", "OPAQUE_VALUE_1916", "OPAQUE_MONTH_1916",
+        "OPAQUE_INTERACTIVE_1916", "OPAQUE_NOTICE_CLASS_1916", "OPAQUE_NOTICE_TITLE_1916", "OPAQUE_NOTICE_MESSAGE_1916",
+        "OPAQUE_ATTRIBUTE_1916", "OPAQUE_CLASS_1916", "OPAQUE_STATE_ATTR_1916", "OPAQUE_LABEL_1916", "OPAQUE_TITLE_1916",
+        "OPAQUE_ID_1916", "OPAQUE_TEXT_1916", "OPAQUE_LINK_SEGMENT_1916", "OPAQUE_LINK_QUERYNAME_1916", "OPAQUE_IMAGE_SEGMENT_1916",
+        "OPAQUE_IMAGE_QUERYNAME_1916", "OPAQUE_ALT_1916", "opaque-element-1916", "OPAQUE_CUSTOM_1916", "OPAQUE_COMMENT_1916",
+        "OPAQUE_CELL_CLASS_1916", "OPAQUE_CAL_1916", "OPAQUE_BADGE_TITLE_1916", "OPAQUE_RECONNECT_1916", "OPAQUE_CONSOLE_1916",
+        "OPAQUE_ERROR_1916", "OPAQUE_FAILURE_LINE_1916", "OPAQUE_SELECTOR_1916", "OPAQUE_CATEGORY_1916", "OPAQUE_EVENT_1916",
+        "OPAQUE_STATE_1916", "OPAQUE_EXCEPTION_1916"
+    ];
+
+    /// <summary>A product-shaped day page whose every free value is an opaque sentinel.</summary>
+    private const string OpaqueDayPage = """
+        <!DOCTYPE html><html><body>
+        <div class="app-frame" data-interactive="OPAQUE_INTERACTIVE_1916"><main><div class="content-container"><div class="day-page">
+          <section class="page-state page-state--error OPAQUE_NOTICE_CLASS_1916" role="alert"><div><strong>OPAQUE_NOTICE_TITLE_1916</strong><p>OPAQUE_NOTICE_MESSAGE_1916</p></div></section>
+          <ol><li class="calendar-day OPAQUE_CELL_CLASS_1916"><a class="calendar-day__link" href="/archive/day/2026-10-01?calendar=OPAQUE_CAL_1916"><time datetime="2026-10-01">1</time><span class="calendar-products"><i class="partial" data-nightly-state="Partial" title="OPAQUE_BADGE_TITLE_1916">D</i></span></a></li></ol>
+          <section class="daily-products" aria-busy="false" data-opaque="OPAQUE_ATTRIBUTE_1916">
+            <article class="product-slot OPAQUE_CLASS_1916" data-product-kind="daily summary" data-nightly-state="OPAQUE_STATE_ATTR_1916" aria-label="OPAQUE_LABEL_1916" title="OPAQUE_TITLE_1916" id="OPAQUE_ID_1916">
+              <button type="button" class="product-slot__media"><span class="product-slot__failed"><i class="bi bi-image"></i>Preview unavailable</span></button>
+              <h3>Daily summary</h3><p>OPAQUE_TEXT_1916</p>
+              <a href="/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
+              <img src="/api/v1/operations/still-products/OPAQUE_IMAGE_SEGMENT_1916/preview?OPAQUE_IMAGE_QUERYNAME_1916=1" alt="OPAQUE_ALT_1916" style="width:10px;height:10px">
+              <opaque-element-1916>OPAQUE_CUSTOM_1916</opaque-element-1916>
+              <!-- OPAQUE_COMMENT_1916 -->
+            </article>
+          </section>
+        </div></div></main></div>
+        <dialog id="components-reconnect-modal" class="components-reconnect-show OPAQUE_RECONNECT_1916"></dialog>
+        </body></html>
+        """;
     private static IPlaywright? playwright;
     private static IBrowser? browser;
     private static CameraAgentKestrelFixture? host;
@@ -179,18 +216,139 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     }
 
     [TestMethod]
-    public async Task LateDayRenderIsRetainedAsTestSynchronization()
+    [DataRow(false, DisplayName = "late render")]
+    [DataRow(true, DisplayName = "late render with unrelated host warning and error")]
+    public async Task LateDayRenderIsRetainedAsTestSynchronization(bool unrelatedHostSignals)
     {
         NightlyDay.Delay(TimeSpan.FromSeconds(4));
         await using var run = await InducedRun.StartAsync(TestContext);
+        // Host work unrelated to the page logs a warning and an exception after the click, during the late render.
+        var unrelated = host!.Services.GetRequiredService<ILoggerFactory>().CreateLogger("HVO.SkyMonitor.CameraAgent.UnrelatedHostWork");
+        Func<Task>? afterClick = null;
+        if (unrelatedHostSignals)
+        {
+            afterClick = () =>
+            {
+                unrelated.Log(LogLevel.Warning, new EventId(1916, "UnrelatedWarning"), "unrelated warning", null, static (state, _) => state);
+                unrelated.Log(LogLevel.Error, new EventId(1917, "UnrelatedError"), "unrelated error",
+                    new InvalidOperationException("unrelated host failure"), static (state, _) => state);
+                return Task.CompletedTask;
+            };
+        }
 
-        var report = await run.FailAsync(TimeSpan.FromSeconds(20), timeout: 1_000);
+        var report = await run.FailAsync(TimeSpan.FromSeconds(20), afterClick, timeout: 1_000);
 
         CollectionAssert.AreEqual(new[] { Category.TestSynchronization }, report.Categories.ToArray());
         Assert.IsNotNull(report.Observation.ImageVisibleAfterSettleMilliseconds, "the preview appeared after the wait gave up");
         Assert.AreEqual(run.DayPath, report.UrlAfterSettle.Split('?')[0]);
         Assert.IsEmpty(report.Observation.PageErrorSignals);
+        if (unrelatedHostSignals)
+        {
+            // Retained as coarse context, never as a cause.
+            Assert.IsTrue(report.ServerLog.Any(static entry => entry.Level == LogLevel.Warning && entry.EventId == 1916));
+            Assert.IsTrue(report.ServerLog.Any(static entry => entry.Level == LogLevel.Error && entry.EventId == 1917));
+        }
         await run.AssertRetainedEvidenceAsync(report);
+    }
+
+    [TestMethod]
+    public async Task OpaqueValuesNeverReachRetainedEvidence()
+    {
+        Assert.IsNotNull(browser);
+        await using var context = await browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 900 } });
+        var page = await context.NewPageAsync();
+        await page.RouteAsync(OpaqueOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage }));
+        await page.GotoAsync(OpaqueOrigin + "/archive/day/OPAQUE_SEGMENT_1916?OPAQUE_QUERYNAME_1916=OPAQUE_VALUE_1916&month=OPAQUE_MONTH_1916");
+        var opaqueLog = new ServerLogEvidence();
+        opaqueLog.CreateLogger("OPAQUE_CATEGORY_1916").Log(LogLevel.Error, new EventId(7, "OPAQUE_EVENT_1916"), "OPAQUE_STATE_1916",
+            new InvalidOperationException("OPAQUE_EXCEPTION_1916"), static (state, _) => state);
+        var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "opaque-" + Guid.NewGuid().ToString("N"));
+        var attached = new List<string>();
+        var lines = new List<string>();
+        using var evidence = CalendarDayPreviewEvidence.Observe(
+            page, TestContext, DailySummaryCalendarScenario.SelectedDay, OpaquePreviewPath, "opaque-1440x900",
+            opaqueLog, new FileEvidenceSink(directory, attached.Add, lines.Add));
+        await page.EvaluateAsync("""
+            () => {
+                console.error('OPAQUE_CONSOLE_1916');
+                setTimeout(() => { throw new TypeError('OPAQUE_ERROR_1916'); }, 0);
+            }
+            """);
+        await page.WaitForFunctionAsync("() => document.readyState === 'complete'");
+        await evidence.BeforeDayLinkClickAsync();
+
+        var report = await evidence.RetainAsync(new TimeoutException(
+            "Timeout 30000ms exceeded.\nCall log:\n  - OPAQUE_FAILURE_LINE_1916 waiting for Locator(\"OPAQUE_SELECTOR_1916\")"),
+            TimeSpan.FromMilliseconds(300));
+
+        Assert.IsNotNull(report);
+        Assert.HasCount(1, attached);
+        var retained = await File.ReadAllTextAsync(report.EvidencePath!) + "\n" + string.Join('\n', lines);
+        foreach (var opaque in OpaqueSentinels)
+        {
+            Assert.DoesNotContain(opaque, retained, StringComparison.Ordinal, "an opaque value reached retained evidence");
+        }
+        // The cause evidence survives the allowlist.
+        CollectionAssert.Contains(report.Categories.ToArray(), Category.UnavailableProductImage);
+        CollectionAssert.Contains(report.Categories.ToArray(), Category.PageError);
+        CollectionAssert.Contains(report.Observation.PageErrorSignals.ToArray(), "script-error:TypeError");
+        CollectionAssert.Contains(report.Observation.PageErrorSignals.ToArray(), "dom:error-notice");
+        StringAssert.StartsWith(report.UrlAtFailure, "/archive/day/", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "product-slot__failed", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "Preview unavailable", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "data-product-kind=\"daily summary\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
+    }
+
+    [TestMethod]
+    [DataRow("stalled", DisplayName = "stalled sink")]
+    [DataRow("failing-attach", DisplayName = "sink whose attachment fails")]
+    public async Task UnretainableEvidenceKeepsTheOriginalAssertion(string sinkKind)
+    {
+        var budget = TimeSpan.FromSeconds(3);
+        var directory = Path.Combine(TestContext.ResultsDirectory ?? Path.GetTempPath(), "unretainable-" + Guid.NewGuid().ToString("N"));
+        var attached = new List<string>();
+        var stalled = new StalledSink(budget + TimeSpan.FromSeconds(4));
+        ICalendarEvidenceSink sink = sinkKind == "stalled"
+            ? stalled
+            : new FileEvidenceSink(directory, _ => throw new IOException("ATTACH_SINK_FAULT_1916"), _ => { });
+        var unobserved = new ConcurrentQueue<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> observe = (_, args) =>
+        {
+            if (args.Exception.ToString().Contains("SINK_FAULT_1916", StringComparison.Ordinal)) unobserved.Enqueue(args.Exception);
+        };
+        TaskScheduler.UnobservedTaskException += observe;
+        try
+        {
+            await using var run = await InducedRun.StartAsync(TestContext, sink: sink, budget: budget);
+            var original = new AssertFailedException("ORIGINAL_ASSERTION_1916");
+            var started = Stopwatch.StartNew();
+
+            var thrown = await Assert.ThrowsExactlyAsync<AssertFailedException>(() => DailySummaryCalendarScenario.OpenDailySummaryFromCalendarAsync(
+                run.Page, run.Cell, run.Evidence, "partial", run.PreviewPath, InducedTimeout, TimeSpan.FromMilliseconds(300), () => throw original));
+
+            var elapsed = started.Elapsed;
+            Assert.AreSame(original, thrown, "the original assertion object is rethrown unchanged");
+            Assert.IsLessThan(budget + TimeSpan.FromSeconds(3), elapsed, "the whole evidence attempt is bounded");
+            Assert.IsNull(run.Evidence.LastReport);
+            Assert.IsEmpty(attached);
+            Assert.IsFalse(Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(),
+                "no complete or partial evidence file is left behind");
+            if (sinkKind == "stalled")
+            {
+                // The abandoned write faults later; that fault must already be observed.
+                await stalled.Faulted.WaitAsync(TimeSpan.FromSeconds(30));
+                await Task.Delay(200);
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                Assert.IsEmpty(unobserved, "an abandoned evidence task left an unobserved fault");
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= observe;
+        }
     }
 
     /// <summary>One induced Calendar run: its own browser context and signed-in page, and the secrets to exclude.</summary>
@@ -213,7 +371,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
 
         [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope",
             Justification = "The browser context is transferred to the run, which disposes it.")]
-        internal static async Task<InducedRun> StartAsync(TestContext testContext, bool dropCircuit = false)
+        internal static async Task<InducedRun> StartAsync(
+            TestContext testContext, bool dropCircuit = false, ICalendarEvidenceSink? sink = null, TimeSpan? budget = null)
         {
             Assert.IsNotNull(browser, "the class host and browser were initialized");
             Assert.IsNotNull(host);
@@ -238,7 +397,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 await run.Cell.Locator(".calendar-products i[data-nightly-state='Partial']").Filter(new() { HasText = "D" }).WaitForAsync();
                 run.Evidence = CalendarDayPreviewEvidence.Observe(
                     run.Page, testContext, DailySummaryCalendarScenario.SelectedDay, run.PreviewPath,
-                    DailySummaryCalendarScenario.RowLabel(1440, 900, complete: false), serverLog);
+                    DailySummaryCalendarScenario.RowLabel(1440, 900, complete: false), serverLog, sink, budget);
                 return run;
             }
             catch
@@ -277,11 +436,11 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 var root = document.RootElement;
                 Assert.AreEqual(CalendarDayPreviewEvidence.Schema, root.GetProperty("schema").GetString());
                 Assert.AreEqual("2026-10-01", root.GetProperty("selectedDay").GetString());
-                Assert.AreEqual(PreviewPath, root.GetProperty("previewPath").GetString());
+                Assert.AreEqual("/api/v1/operations/still-products/{expected-product}/preview", root.GetProperty("previewRoute").GetString());
                 CollectionAssert.AreEqual(
                     report.Categories.Select(static category => category.ToString()).ToArray(),
                     root.GetProperty("categories").EnumerateArray().Select(static value => value.GetString()).ToArray());
-                Assert.IsTrue(root.GetProperty("navigation").TryGetProperty("urlAtFailure", out _));
+                Assert.IsTrue(root.GetProperty("navigation").TryGetProperty("routeAtFailure", out _));
                 Assert.IsTrue(root.GetProperty("preview").TryGetProperty("authenticatedReRead", out _));
                 Assert.IsTrue(root.GetProperty("atFailure").TryGetProperty("markup", out _));
             }
@@ -349,6 +508,25 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
                 await owned[index].DisposeAsync();
             }
         }
+    }
+}
+
+/// <summary>A sink that never finishes within the evidence budget, ignores cancellation, and faults afterwards.</summary>
+internal sealed class StalledSink(TimeSpan faultAfter) : ICalendarEvidenceSink
+{
+    private readonly TaskCompletionSource faulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    internal Task Faulted => faulted.Task;
+
+    public async Task<string> PersistAsync(string fileName, string content, CancellationToken cancellationToken)
+    {
+        await Task.Delay(faultAfter, CancellationToken.None).ConfigureAwait(false);
+        faulted.TrySetResult();
+        throw new IOException("STALLED_SINK_FAULT_1916");
+    }
+
+    public void WriteLine(string line)
+    {
     }
 }
 
