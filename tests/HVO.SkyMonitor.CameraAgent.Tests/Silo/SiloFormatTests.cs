@@ -99,7 +99,7 @@ public sealed class SiloFormatTests
             }
         }
         var checkpoint = SiloJson.Serialize(new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, Binding.InstanceId, Binding.BindingId,
-            new(1, 2), SiloHash.Sha256(segment), entries));
+            new(1, 2), SiloHash.Sha256(segment), entries, [new("capture-0103", "r1")]));
         return [("group-manifest.json", manifest), ("journal-segment-genesis.json", genesis), ("journal-segment.json", segment),
             ("journal-checkpoint.json", checkpoint)];
     }
@@ -126,7 +126,9 @@ public sealed class SiloFormatTests
         SiloJson.Serialize(SiloJson.ReadSegment(golden["journal-segment-genesis.json"], "genesis")).Should().Equal(golden["journal-segment-genesis.json"]);
         SiloJson.ReadSegment(golden["journal-segment.json"], "segment").Records.Select(SiloJson.RecordType)
             .Should().BeEquivalentTo(SiloRecordTypes.All.Except([SiloRecordTypes.GenerationOpen]));
-        SiloJson.ReadCheckpoint(golden["journal-checkpoint.json"], "checkpoint").Entries.Should().HaveCount(13);
+        var checkpoint = SiloJson.ReadCheckpoint(golden["journal-checkpoint.json"], "checkpoint");
+        checkpoint.Entries.Should().HaveCount(13);
+        checkpoint.Visible.Should().Equal(new SiloCheckpointVisible("capture-0103", "r1"));
         Encoding.UTF8.GetString(golden["group-manifest.json"]).Should().StartWith("{\"format\":\"hvo.cameraagent.silo.group-manifest/1\"");
     }
 
@@ -145,6 +147,36 @@ public sealed class SiloFormatTests
         refusal.Found.Should().Be(format);
         refusal.Supported.Should().Be(SiloFormats.GroupManifest);
         refusal.Message.Should().Contain("refused read-only and left unchanged");
+    }
+
+    [TestMethod]
+    [DataRow("uncovered", DisplayName = "a checkpoint naming a visible publication it does not cover is refused")]
+    [DataRow("repeated", DisplayName = "a checkpoint naming one visible publication twice is refused")]
+    [DataRow("absent", DisplayName = "a checkpoint without its visible publications is refused")]
+    public void ACheckpointsVisiblePublicationsNameItsOwnPublishRecordsOnce(string change)
+    {
+        var golden = GoldenObjects().Single(static item => item.Name == "journal-checkpoint.json").Bytes;
+        var node = JsonNode.Parse(golden)!;
+        switch (change)
+        {
+            case "uncovered":
+                node["visible"]!.AsArray().Add(new JsonObject { ["groupId"] = "capture-9999", ["revisionId"] = "r1" });
+                break;
+            case "repeated":
+                node["visible"]!.AsArray().Add(new JsonObject { ["groupId"] = "capture-0103", ["revisionId"] = "r1" });
+                break;
+            default:
+                node.AsObject().Remove("visible");
+                break;
+        }
+
+        var read = () => SiloJson.ReadCheckpoint(Encoding.UTF8.GetBytes(node.ToJsonString()), "checkpoint");
+
+        var refusal = read.Should().Throw<SiloInvalidObjectException>().Which;
+        if (change != "absent")
+        {
+            refusal.Message.Should().Contain("visible publications name covered publish records once");
+        }
     }
 
     [TestMethod]

@@ -172,15 +172,20 @@ not persistence-qualified is never named by a committed record.
 - **Writer evidence.** Startup catch-up and a rebuild with surviving State both take `SiloWriterEvidence`: the
   committed head, the P3s still awaiting their first P4, and the writer's records of each committed segment's
   SHA-256 and of each first P4 it completed. The authority-unknown interval clears only when the committed head is
-  read again with its SHA-256. A rebuild treats a publication as settled history, its member bytes verified lazily,
-  only when the writer's records prove it reached its first P4. Every other publication, whether awaiting its first
-  P4 or without proof either way, is verified as its first P4 would be, and becomes visible only on that proof. A
-  read that cannot complete becomes the publication's reported state, so the rebuild never stalls on it.
+  read again with its SHA-256. A rebuild treats a publication as settled history only on positive proof that it
+  reached P4: the writer's records, or the trusted anchor the rebuild starts from, which names each covered
+  publication that was visible when its checkpoint was written. Settled history is rebuilt from its verified manifest,
+  and its member bytes wait for the lazy phase, so a member read that times out never hides it. A revision the writer
+  lists as awaiting its first P4 is never settled. Every other publication, including one without proof either way,
+  is verified as its first P4 would be, and becomes visible only on that proof. A read that cannot complete becomes
+  the publication's reported state, so the rebuild never stalls on it.
 - **Generations.** The first segment of every generation opens it. A later generation must name the end of the prefix
   it continues. `ISiloGenerationWitness`, supplied by #1972, must prove that exact opening by the SHA-256 of the
   segment that carries it. A witness of another opening of the same generation and prefix, differing in any field,
   proves nothing. Without that proof the prefix ends at the boundary.
-- **Trusted anchors.** `SiloCheckpointWriter` writes a checkpoint of every applied record at the cursor. It refuses any
+- **Trusted anchors.** `SiloCheckpointWriter` writes a checkpoint of every applied record at the cursor. It also names,
+  in journal order, each covered publication that had reached P4 then, because no journal record carries P4. A
+  checkpoint without that list, or naming a publication it does not cover or one twice, is refused. It refuses any
   checkpoint larger than the readers' bound, so it never produces one a rebuild cannot read. Selection starts from the
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its

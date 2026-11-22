@@ -251,6 +251,69 @@ public sealed class SiloAuthorityPathTests
         }
     }
 
+    [TestMethod]
+    [DataRow(true, DisplayName = "total loss: history the trusted anchor records as visible stays visible while a member read times out")]
+    [DataRow(false, DisplayName = "total loss: a P3 the trusted anchor records as never visible stays fenced while a member read times out")]
+    public async Task ATrustedAnchorKeepsTheHistoryItRecordsAsVisibleBrowsableAfterTotalLoss(bool reachedP4)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1);
+        var raw = new SiloRoleKey(SiloIdentityKind.Member, SiloDrafts.Raw(1), "1");
+        string RawKey() => silo.MemberLocator(draft.GroupId, raw.Id).Key;
+        if (reachedP4)
+        {
+            await silo.PublishAsync(draft).ConfigureAwait(false);
+        }
+        else
+        {
+            // P3 commits; the raw read times out before anything can verify it, so the revision never reaches P4.
+            await silo.Publisher.StageAsync(draft, CancellationToken.None).ConfigureAwait(false);
+            silo.Faults.Armed = SiloFaultPoint.AfterSegmentCommitted;
+            var crash = () => silo.Publisher.PublishAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).AsTask();
+            await crash.Should().ThrowAsync<InvalidOperationException>().WithMessage("simulated crash*").ConfigureAwait(false);
+            silo.Local.ReadUnavailable = key => key == RawKey();
+            await silo.CatchUpAsync().ConfigureAwait(false);
+        }
+        (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+            .Should().Be(reachedP4 ? "visible" : "closed");
+        var anchor = await new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock)
+            .WriteAsync(CancellationToken.None).ConfigureAwait(false);
+        await silo.AppendAsync(anchor with { SealEvidence = SiloJson.SerializeToElement(new { backup = "sealed-1" }) }).ConfigureAwait(false);
+        silo.Authority.TrustAnchors = true;
+        await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 2)).ConfigureAwait(false);
+        // Total loss: no writer State survives. The raw read times out; the manifest and the preview still read.
+        silo.Local.ReadUnavailable = key => key == RawKey();
+
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local)).ConfigureAwait(false);
+
+        rebuilt.StartKind.Should().Be("anchor");
+        rebuilt.Authority.PrefixEnd.Should().Be(anchor.Covers);
+        async Task<IReadOnlyList<SiloIndexedPublication>> BrowseAsync() =>
+            await silo.Index.QueryVisibleAsync(SiloHarness.Start.AddDays(-1), SiloHarness.Start.AddDays(2), null, 10, CancellationToken.None)
+                .ConfigureAwait(false);
+        var publication = (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!;
+        if (reachedP4)
+        {
+            publication.State.Should().Be("visible", "history rebuilds from its verified manifest; member bytes wait for the lazy phase");
+            (await BrowseAsync().ConfigureAwait(false)).Select(static item => item.GroupId).Should().Contain(draft.GroupId);
+            (await silo.Index.ReadRoleAsync(raw, CancellationToken.None).ConfigureAwait(false))!.Disposition
+                .Should().Be(SiloDisposition.Unverified, "every history role starts unverified");
+
+            await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
+
+            (await silo.Index.ReadRoleAsync(raw, CancellationToken.None).ConfigureAwait(false))!.Disposition
+                .Should().Be(SiloDisposition.TemporarilyUnavailable, "the lazy phase reports the timeout on the role");
+            (await BrowseAsync().ConfigureAwait(false)).Select(static item => item.GroupId)
+                .Should().Contain(draft.GroupId, "a role the lazy phase cannot reach never hides published history");
+        }
+        else
+        {
+            publication.State.Should().Be("closed", "a P3 that never reached P4 is verified as its first P4 would be");
+            publication.Outcome.Should().Be(SiloDisposition.TemporarilyUnavailable);
+            (await BrowseAsync().ConfigureAwait(false)).Select(static item => item.GroupId).Should().NotContain(draft.GroupId);
+        }
+    }
+
     // ----- Fresh, same-intent proof for a copy eviction -----------------------------------------------------------
 
     [TestMethod]

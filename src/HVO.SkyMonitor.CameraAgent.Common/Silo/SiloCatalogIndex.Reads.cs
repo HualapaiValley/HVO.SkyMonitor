@@ -294,8 +294,8 @@ internal sealed partial class SiloCatalogIndex
     }
 
     /// <summary>Every applied record at or before the cursor, exactly as committed, for a checkpoint.</summary>
-    internal async ValueTask<(SiloJournalPosition Covers, string CoversSha256, IReadOnlyList<SiloCheckpointEntry> Entries)> ExportRecordsAsync(
-        CancellationToken cancellationToken)
+    internal async ValueTask<(SiloJournalPosition Covers, string CoversSha256, IReadOnlyList<SiloCheckpointEntry> Entries,
+        IReadOnlyList<SiloCheckpointVisible> Visible)> ExportRecordsAsync(CancellationToken cancellationToken)
     {
         await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -307,17 +307,31 @@ internal sealed partial class SiloCatalogIndex
             {
                 throw new InvalidOperationException("An empty catalog has nothing to checkpoint.");
             }
-            using var command = CreateCommand(connection, null, """
-                SELECT generation, sequence, record_index, record_json FROM journal_records ORDER BY generation, sequence, record_index;
-                """);
-            using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             var entries = new List<SiloCheckpointEntry>();
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            using (var command = CreateCommand(connection, null, """
+                SELECT generation, sequence, record_index, record_json FROM journal_records ORDER BY generation, sequence, record_index;
+                """))
+            using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
-                using var document = System.Text.Json.JsonDocument.Parse(reader.GetString(3));
-                entries.Add(new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt32(2), document.RootElement.Clone()));
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    using var document = System.Text.Json.JsonDocument.Parse(reader.GetString(3));
+                    entries.Add(new(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt32(2), document.RootElement.Clone()));
+                }
             }
-            return (covers, sha!, entries);
+            // A visible publication reached P4: it was verified as a first P4, or rebuilt as history that was proven so.
+            var visible = new List<SiloCheckpointVisible>();
+            using (var command = CreateCommand(connection, null, """
+                SELECT group_id, revision_id FROM publications WHERE state = 'visible' ORDER BY generation, sequence, record_index;
+                """))
+            using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    visible.Add(new(reader.GetString(0), reader.GetString(1)));
+                }
+            }
+            return (covers, sha!, entries, visible);
         }
         finally
         {

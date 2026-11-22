@@ -358,6 +358,29 @@ internal static class SiloJson
             }
             previous = key;
         }
+        // Each visible publication names a covered publish record, once, in journal order.
+        ArgumentNullException.ThrowIfNull(checkpoint.Visible);
+        var published = new List<(string GroupId, string RevisionId)>();
+        foreach (var entry in checkpoint.Entries)
+        {
+            if (entry.Record.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
+                type.GetString() == SiloRecordTypes.Publish)
+            {
+                published.Add((entry.Record.GetProperty("groupId").GetString()!, entry.Record.GetProperty("revisionId").GetString()!));
+            }
+        }
+        var next = 0;
+        foreach (var visible in checkpoint.Visible)
+        {
+            ArgumentNullException.ThrowIfNull(visible);
+            var found = published.FindIndex(next, pair => pair == (visible.GroupId, visible.RevisionId));
+            if (found < 0)
+            {
+                throw new ArgumentException("A checkpoint's visible publications name covered publish records once, in journal order.",
+                    nameof(checkpoint));
+            }
+            next = found + 1;
+        }
     }
 
     internal static void ValidateRecord(SiloJournalRecord record)

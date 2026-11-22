@@ -622,7 +622,7 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
                     ? await walker.ReadUnprovenPublicationsAsync(end.Last, cancellationToken).ConfigureAwait(false)
                     : SiloUnprovenScan.Healed;
                 await index.RecordAuthorityEndAsync(startKind, anchor, reason, unknown, unproven, cancellationToken).ConfigureAwait(false);
-                await index.MarkHistoryAsync(writer, cancellationToken).ConfigureAwait(false);
+                await index.MarkHistoryAsync(writer, start?.Visible, cancellationToken).ConfigureAwait(false);
                 await index.EvaluatePublicationsAsync(stores, null, retryClosed: false, cancellationToken).ConfigureAwait(false);
                 await index.SealForReplacementAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -795,8 +795,9 @@ internal sealed class SiloCheckpointWriter(
     /// <summary>Returns the anchor record that names the verified checkpoint's exact version, ready for seal evidence.</summary>
     public async ValueTask<SiloAnchorRecord> WriteAsync(CancellationToken cancellationToken)
     {
-        var (covers, coversSha, entries) = await index.ExportRecordsAsync(cancellationToken).ConfigureAwait(false);
-        var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, binding.InstanceId, binding.BindingId, covers, coversSha, entries);
+        var (covers, coversSha, entries, visible) = await index.ExportRecordsAsync(cancellationToken).ConfigureAwait(false);
+        var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, binding.InstanceId, binding.BindingId, covers, coversSha, entries,
+            visible);
         var bytes = SiloJson.Serialize(checkpoint);
         if (bytes.Length > maximumBytes)
         {

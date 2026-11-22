@@ -106,16 +106,20 @@ internal sealed partial class SiloCatalogIndex
     }
 
     /// <summary>
-    /// After a rebuild applies the journal, decide each pending publication's footing (#1965 5.3, 7.5). Only one the
-    /// writer's records prove reached its first P4 is settled history: rebuilt from its manifest, its member bytes read
-    /// lazily. Any other, whether the writer lists it as awaiting its first P4 or has no proof either way, is verified
-    /// exactly as a first P4 would be: its manifest, required members and required reopen dependencies by exact read, and
-    /// it becomes visible only on that proof. Absence of proof is not evidence of settlement. A read that cannot complete
-    /// becomes a reported state, never a stalled rebuild.
+    /// After a rebuild applies the journal, decide each pending publication's footing (#1965 5.3, 7.5). Settled history
+    /// is rebuilt from its verified manifest, its member bytes read lazily. A publication is settled only on positive
+    /// proof that it reached P4: the writer's own records, or the trusted anchor the rebuild started from, which records
+    /// each covered publication that was visible when it was written. The writer's list of revisions awaiting their first
+    /// P4 overrides both. Any other publication, including one with no proof either way, is verified exactly as a first
+    /// P4 would be: its manifest, required members and required reopen dependencies by exact read, and it becomes visible
+    /// only on that proof. Absence of proof is not evidence of settlement. A read that cannot complete becomes a reported
+    /// state, never a stalled rebuild.
     /// </summary>
-    internal async ValueTask MarkHistoryAsync(SiloWriterEvidence? writer, CancellationToken cancellationToken)
+    internal async ValueTask MarkHistoryAsync(
+        SiloWriterEvidence? writer, IReadOnlyList<SiloCheckpointVisible>? anchoredVisible, CancellationToken cancellationToken)
     {
         var awaitingFirstP4 = writer?.AwaitingFirstP4 ?? SiloWriterEvidence.Empty.AwaitingFirstP4;
+        var anchored = (anchoredVisible ?? []).Select(static visible => (visible.GroupId, visible.RevisionId)).ToHashSet();
         await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -132,7 +136,8 @@ internal sealed partial class SiloCatalogIndex
             var settled = new List<(string, string)>();
             foreach (var pair in pending.Where(pair => !awaitingFirstP4.Contains(pair)))
             {
-                if (writer?.Records is { } records && await records.ReachedFirstP4Async(pair.Item1, pair.Item2, cancellationToken).ConfigureAwait(false))
+                if (anchored.Contains(pair) ||
+                    writer?.Records is { } records && await records.ReachedFirstP4Async(pair.Item1, pair.Item2, cancellationToken).ConfigureAwait(false))
                 {
                     settled.Add(pair);
                 }
