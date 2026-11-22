@@ -351,6 +351,55 @@ grep -Fxq 'docs inventory audit: SDK generated restore imports are uncertified' 
 printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
 git -C "$fast_root" commit -qam doc-change
 fast_reason 'project inventory unavailable' "$sdk_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# SDK declarations in an imported file can introduce restore-generated imports.
+for sdk_form in attribute element; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  printf '<Project><Import Project="shared.props" /></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+  if [[ "$sdk_form" == attribute ]]; then
+    printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Example/shared.props"
+  else
+    printf '<Project><Sdk Name="Microsoft.NET.Sdk" /></Project>\n' > "$fast_root/tests/Example/shared.props"
+  fi
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm imported-sdk
+  imported_sdk_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$imported_sdk_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/imported-sdk-error"; then
+    printf 'Imported SDK %s was certified.\n' "$sdk_form" >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: SDK generated restore imports are uncertified' "$fast_root/.git/imported-sdk-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$imported_sdk_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Ordinary UTF-8 declarations, including case variants, remain eligible.
+for declared in utf-8 UTF-8; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  printf '<?xml version="1.0" encoding="%s"?><Project />\n' "$declared" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm utf8-declaration
+  (cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
+  git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certificate
+  utf8_base="$(git -C "$fast_root" rev-parse HEAD)"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_expect true pull_request "$utf8_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# ASCII bytes do not make a non-UTF-8 XML declaration acceptable.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<?xml version="1.0" encoding="iso-8859-1"?><Project />\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm ascii-latin-declaration
+encoding_decl_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$encoding_decl_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/decl-error"; then
+  printf 'Non-UTF-8 XML declaration was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: XML declares a non-UTF-8 encoding' "$fast_root/.git/decl-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$encoding_decl_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # UTF-8 and UTF-16 encodings of the same escaped link must both fail closed.
 for encoding in utf-8 utf-16; do
   git -C "$fast_root" reset -q --hard "$fast_base"

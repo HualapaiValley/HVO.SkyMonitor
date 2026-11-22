@@ -1113,6 +1113,46 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                                 capture_output=True, text=True)
         if result.returncode or "run_full=true" not in output.read_text().splitlines():
             raise SystemExit(f"Unsafe {suffix} import qualified: {output.read_text()} {result.stderr}")
+    # Both SDK declaration forms in an imported file must be rejected even if
+    # its changed blob was written into a forged inventory certificate.
+    for sdk_form in ("attribute", "element"):
+        git("checkout", "-q", "--detach", real_base)
+        (fixture / "src/fixture/fixture.csproj").write_text('<Project><Import Project="shared.props" /></Project>\n')
+        (fixture / "src/fixture/shared.props").write_text("<Project />\n")
+        git("add", "src/fixture/fixture.csproj", "src/fixture/shared.props")
+        git("commit", "-qm", "safe shared import")
+        generated = subprocess.run(["bash", str(trusted), "--print-docs-inventory", "HEAD"],
+                                   cwd=fixture, capture_output=True, text=True, check=True).stdout
+        (fixture / "scripts/ci:docs-inventory").write_text(generated)
+        git("add", "scripts/ci:docs-inventory")
+        git("commit", "-qm", "certify shared import")
+        shared = ('<Project Sdk="Microsoft.NET.Sdk" />\n' if sdk_form == "attribute" else
+                  '<Project><Sdk Name="Microsoft.NET.Sdk" /></Project>\n')
+        (fixture / "src/fixture/shared.props").write_text(shared)
+        git("commit", "-qam", "imported SDK")
+        meta, path = git("ls-tree", "HEAD", "src/fixture/shared.props").split("\t", 1)
+        certificate = fixture / "scripts/ci:docs-inventory"
+        lines = certificate.read_text().splitlines()
+        matching = [index for index, line in enumerate(lines) if line.endswith(repr(path.encode()))]
+        if len(matching) != 1:
+            raise SystemExit("Shared import missing from synthetic certificate")
+        lines[matching[0]] = meta + " " + repr(path.encode())
+        certificate.write_text("\n".join(lines) + "\n")
+        git("add", "scripts/ci:docs-inventory")
+        git("commit", "-qm", "forge certificate")
+        sdk_base = git("rev-parse", "HEAD")
+        (fixture / "docs/safe.md").write_text("docs edit\n")
+        git("commit", "-qam", "docs edit")
+        sdk_head = git("rev-parse", "HEAD")
+        sdk_tree = git("rev-parse", "HEAD^{tree}")
+        sdk_merge = git("commit-tree", sdk_tree, "-p", sdk_base, "-p", sdk_head, "-m", "merge")
+        git("checkout", "-q", "--detach", sdk_merge)
+        output.write_text("")
+        env.update(GITHUB_SHA=sdk_merge, PR_HEAD_SHA=sdk_head)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                                capture_output=True, text=True)
+        if result.returncode or "reason=project inventory unavailable" not in output.read_text().splitlines():
+            raise SystemExit(f"Imported SDK {sdk_form} qualified: {output.read_text()} {result.stderr}")
     # Preserve the expected merge identifier in the later manifest case.
     env.update(GITHUB_SHA=changed_merge)
     # Execute the actual manifest step for fast and missing-output fallback.
@@ -1135,7 +1175,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 17 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 19 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.
