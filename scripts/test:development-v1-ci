@@ -425,9 +425,25 @@ def violations(short, full, queue=None, extra=None):
         require(coverage.splitlines().count(command) == 1, f"per-file gate wiring: {command}")
     require('        id: coverage\n' in coverage and 'bash -euo pipefail -c' in coverage,
             "coverage failures propagate and retain stage identity")
-    for name, body in (("Unit", unit), ("coverage", coverage)):
-        require("        if:" not in body and "continue-on-error:" not in body,
-                f"{name} cannot skip or tolerate errors")
+    fast_condition = "if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.docs_fast_path != 'true' }}"
+    for name in ("Setup .NET from global.json", "Restore solution", "Build warning-clean Release solution",
+                 "Run Docker-disabled Unit selection", "Enforce canonical per-file coverage floors"):
+        body = step(build, name)
+        require(body.count(fast_condition) == 1 and "continue-on-error:" not in body,
+                f"{name} skips only explicit successful docs classification")
+    fast = step(build, "Classify exact documentation diff")
+    for expected in ('id: docs-classify', 'BASE_SHA: ${{ github.event.pull_request.base.sha }}',
+                     'HEAD_SHA: ${{ github.event.pull_request.head.sha }}',
+                     'EVENT_NAME: ${{ github.event_name }}', 'Preflight dependency: success',
+                     './scripts/ci:classify "$EVENT_NAME" "$BASE_SHA" "$HEAD_SHA"',
+                     'cat "$DEV_V1_EVIDENCE_ROOT/classifier-output.txt" >> "$GITHUB_OUTPUT"',
+                     'Classifier failed; full validation required.'):
+        require(expected in fast, f"exact classification wiring: {expected}")
+    require('fetch-depth: 0' in step(build, "Checkout exact commit") and
+            build.find("Classify exact documentation diff") < build.find("Setup .NET from global.json"),
+            "classification follows full checkout and precedes workloads")
+    require('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"' in build,
+            "fast decision and preflight in retained manifest")
     require(0 <= build.find("- name: Run Docker-disabled Unit selection") <
             build.find("- name: Enforce canonical per-file coverage floors") <
             build.find("- name: Write evidence summary"), "coverage runs after Unit and before evidence")
@@ -546,6 +562,10 @@ if errors:
 
 # Mutation controls prove the checks reject costly creep and silent loss of gates.
 mutations = (
+    ("fast classification missing", short.replace("id: docs-classify", "id: absent"), full),
+    ("fast base not exact", short.replace("BASE_SHA: ${{ github.event.pull_request.base.sha }}", "BASE_SHA: ${{ github.sha }}"), full),
+    ("fast head not exact", short.replace("HEAD_SHA: ${{ github.event.pull_request.head.sha }}", "HEAD_SHA: ${{ github.sha }}"), full),
+    ("fast decision omitted from evidence", short.replace('docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success"', ""), full),
     ("inflated summary hard timeout", short.replace("hardTimeoutSeconds:1320", "hardTimeoutSeconds:13200"), full),
     ("inflated workload budget", short.replace("started_at_epoch + 1080", "started_at_epoch + 10800"), full),
     ("inflated hard timeout", short.replace("timeout-minutes: 22", "timeout-minutes: 220"), full),
@@ -568,7 +588,7 @@ mutations = (
     ("coverage settings lost", short.replace('--settings "$DEV_V1_EVIDENCE_ROOT/coverage.runsettings"', ""), full),
     ("coverage gate removed", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit"', 'true "$DEV_V1_EVIDENCE_ROOT/unit"'), full),
     ("coverage failure masked", short.replace('./scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage"', './scripts/coverage:development-v1 "$DEV_V1_EVIDENCE_ROOT/unit" "$DEV_V1_EVIDENCE_ROOT/coverage" || true'), full),
-    ("coverage step conditional", short.replace('- name: Enforce canonical per-file coverage floors', '- name: Enforce canonical per-file coverage floors\n        if: false'), full),
+    ("coverage step conditional", short.replace("if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.docs_fast_path != 'true' }}", "if: false"), full),
     ("coverage errors tolerated", short.replace('        id: coverage', '        continue-on-error: true\n        id: coverage'), full),
     ("coverage regression tests lost", short.replace('./scripts/test:coverage-development-v1', 'true'), full),
     ("coverage timing lost", short.replace('stages:[$restore,$build,$unit,$coverage]', 'stages:[$restore,$build,$unit]'), full),

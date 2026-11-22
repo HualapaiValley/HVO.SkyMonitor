@@ -151,6 +151,92 @@ verify_component_plan() {
     pull_request "$component_base" "$component_head"
 }
 
+# Exercise the actual exact-tree fast decision in an isolated fixture.
+fast_root="$(mktemp -d)"
+trap 'rm -rf "$work_root" "$fast_root"' EXIT
+git init -q "$fast_root"
+git -C "$fast_root" config user.email fixture@example.invalid
+git -C "$fast_root" config user.name fixture
+mkdir -p "$fast_root/tests/Example" "$fast_root/docs/contracts"
+printf '<None Include="../../docs/contracts/linked.md" />\n' > "$fast_root/tests/Example/Example.csproj"
+printf 'old\n' > "$fast_root/docs/contracts/linked.md"
+git -C "$fast_root" add .
+git -C "$fast_root" commit -qm base
+fast_base="$(git -C "$fast_root" rev-parse HEAD)"
+fast_cases=0
+fast_expect() {
+  local expected="$1" event="$2" base="$3" head="$4" output
+  output="$(cd "$fast_root" && "$classifier" "$event" "$base" "$head")"
+  grep -Fxq "docs_fast_path=$expected" <<< "$output" || { printf 'Fast path expected %s: %s\n' "$expected" "$output" >&2; exit 1; }
+  grep -q '^docs_fast_path_reason=.' <<< "$output"
+  ((fast_cases += 1))
+}
+for fast_path in docs/runbooks/example.md docs/example.markdown docs/example.txt README.md AGENTS.md CLAUDE.md \
+  docs/catalog/hyg-v44-license.md docs/validation/evidence/result.md docs/calibration/asi676/evidence/result.txt docs/images/asset.svg \
+  CHANGELOG.md THIRD-PARTY-NOTICES.md .devcontainer/example.md .vscode/example.md \
+  .github/prompts/example.md scripts/example.md src/Example/README.md docs/data.json; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$fast_path")"
+  printf 'text\n' > "$fast_root/$fast_path"
+  git -C "$fast_root" add -- "$fast_path"
+  git -C "$fast_root" commit -qm fixture
+  fast_head="$(git -C "$fast_root" rev-parse HEAD)"
+  case "$fast_path" in docs/runbooks/example.md | docs/example.markdown | docs/example.txt | README.md | AGENTS.md | CLAUDE.md) fast_expected=true ;; *) fast_expected=false ;; esac
+  fast_expect "$fast_expected" pull_request "$fast_base" "$fast_head"
+done
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'original\n' > "$fast_root/docs/modified.md"
+git -C "$fast_root" add docs/modified.md
+git -C "$fast_root" commit -qm modified-base
+modified_base="$(git -C "$fast_root" rev-parse HEAD)"
+printf 'change\n' >> "$fast_root/docs/modified.md"
+git -C "$fast_root" commit -qam modified
+modified_head="$(git -C "$fast_root" rev-parse HEAD)"
+fast_expect true pull_request "$modified_base" "$modified_head"
+mkdir -p "$fast_root/.git/fast-bin"
+cat > "$fast_root/.git/fast-bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == grep ]]; then exit 2; fi
+exec "$FAST_REAL_GIT" "$@"
+EOF
+chmod +x "$fast_root/.git/fast-bin/git"
+fast_real_git="$(command -v git)"
+PATH="$fast_root/.git/fast-bin:$PATH" FAST_REAL_GIT="$fast_real_git" fast_expect false pull_request "$modified_base" "$modified_head"
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'changed\n' >> "$fast_root/docs/contracts/linked.md"
+git -C "$fast_root" commit -qam linked
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'binary\0content\n' > "$fast_root/docs/binary.md"
+git -C "$fast_root" add docs/binary.md
+git -C "$fast_root" commit -qm binary
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+ln -s contracts/linked.md "$fast_root/docs/link.md"
+git -C "$fast_root" add docs/link.md
+git -C "$fast_root" commit -qm symlink
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+git -C "$fast_root" rm -q docs/contracts/linked.md
+git -C "$fast_root" commit -qm deletion
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks" "$fast_root/src"
+printf 'text\n' > "$fast_root/docs/runbooks/safe.md"
+printf 'code\n' > "$fast_root/src/code.cs"
+git -C "$fast_root" add .
+git -C "$fast_root" commit -qm mixed
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+git -C "$fast_root" mv docs/contracts/linked.md docs/contracts/renamed.md
+git -C "$fast_root" commit -qm rename
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+fast_expect false pull_request "$fast_base" "$fast_base"
+fast_expect false pull_request missing "$fast_base"
+fast_expect false push "$fast_base" "$fast_base"
+fast_expect false merge_group "$fast_base" "$fast_base"
+printf 'Documentation fast path classification passed: %d cases.\n' "$fast_cases"
+
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 allowlisted_paths=(
   "docs/runbooks/example.md"
@@ -970,7 +1056,7 @@ for fake_case in malformed unterminated empty-path failure; do
     expect_catalog_recipe true pull_request fake-base fake-head
   output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     "$classifier" pull_request fake-base fake-head)"
-  if [[ "$output" != "$expected_fail_closed" ]]; then
+  if [[ "$output" != "$expected_fail_closed"$'\n'docs_fast_path=false$'\n'docs_fast_path_reason=* ]]; then
     printf 'Expected fail-closed malformed/diff-failure plan, received %s\n' "$output" >&2
     exit 1
   fi

@@ -24,6 +24,8 @@ secret_scan_contract="true"
 release_scripts="true"
 catalog_recipe="true"
 path_count=0
+docs_fast_path="false"
+docs_fast_path_reason="non-pull-request events require full validation"
 
 write_summary_header() {
   [[ -n "$summary_file" ]] || return 0
@@ -44,6 +46,8 @@ finish() {
       "$catalog_recipe" "$path_count" >> "$summary_file"
   fi
 
+  printf 'Docs fast path: %s; reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >&2
+  [[ -z "$summary_file" ]] || printf '\nDocs fast path: **%s**  \nDocs fast path reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >> "$summary_file"
   printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s release_scripts=%s catalog_recipe=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
     "$delivery" "$secret_scan_contract" "$release_scripts" "$catalog_recipe" "$reason" "$deployment_reason" \
@@ -52,6 +56,7 @@ finish() {
     "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
     "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" \
     "$release_scripts" "$catalog_recipe"
+  printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
 }
 
 is_secret_scan_contract_path() {
@@ -140,6 +145,28 @@ is_reduced_path() {
   esac
 
   [[ "$path" =~ ^(src|tests)/[^/]+/README\.md$ ]]
+}
+
+is_fast_doc_path() {
+  case "$1" in
+    docs/catalog/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/*/generated/* | docs/images/*) return 1 ;;
+    docs/*.md | docs/*.markdown | docs/*.txt | README.md | AGENTS.md | CLAUDE.md) return 0 ;;
+  esac
+  return 1
+}
+
+# Query committed project files directly; an unavailable tree or failed search is
+# uncertainty, not evidence that the document has no consumers.
+fast_doc_link_state() {
+  local path="$1" status
+  if git grep -q -F -e "Include=\"../../${path}\"" \
+    -e "Include=\"..\\..\\${path//\//\\}\"" "$head_sha" -- ':(glob)**/*.csproj'; then
+    return 0
+  else
+    status=$?
+    [[ "$status" -eq 1 ]] && return 1
+    return 2
+  fi
 }
 
 is_deployment_path() {
@@ -516,6 +543,7 @@ if [[ "$event_name" != "pull_request" ]]; then
   exit 0
 fi
 
+docs_fast_path_reason="base or head commit is unavailable"
 reason="pull request contains only allowlisted documentation and developer-environment changes"
 deployment="false"
 deployment_reason="pull request does not change deployment-contract inputs"
@@ -542,10 +570,63 @@ if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
   exit 0
 fi
 
+# This decision uses the exact two endpoint trees, not the merge-base range used
+# by the component classifier. Every entry must be a regular, unlinked text doc.
+fast_diff="$(mktemp)"
+trap 'rm -f "$fast_diff" "${diff_file:-}"' EXIT
+docs_fast_path_reason="exact diff failed or is empty"
+if git diff --name-status --no-renames -z "$base_sha" "$head_sha" -- > "$fast_diff"; then
+  fast_ok=true
+  fast_count=0
+  [[ -z "$summary_file" ]] || printf '\nExact base/head paths for docs fast path:\n' >> "$summary_file"
+  while IFS= read -r -d '' fast_status || [[ -n "$fast_status" ]]; do
+    if ! IFS= read -r -d '' fast_path || [[ -z "$fast_path" ]]; then
+      fast_ok=false
+      docs_fast_path_reason="malformed exact diff"
+      break
+    fi
+    ((fast_count += 1))
+    [[ -z "$summary_file" ]] || printf -- '- %q %q\n' "$fast_status" "$fast_path" >> "$summary_file"
+    if [[ "$fast_status" != A && "$fast_status" != M ]]; then
+      fast_ok=false; docs_fast_path_reason="deleted or type-changed path in exact diff"
+    elif ! fast_entry="$(git ls-tree "$head_sha" -- ":(literal)$fast_path")" \
+      || [[ "${fast_entry%% *}" != 100644 && "${fast_entry%% *}" != 100755 ]]; then
+      fast_ok=false; docs_fast_path_reason="non-regular or missing path in exact diff"
+    elif ! is_fast_doc_path "$fast_path"; then
+      fast_ok=false; docs_fast_path_reason="path outside documentation allowlist"
+    elif ! git cat-file blob "$head_sha:$fast_path" | python3 -c 'import codecs, sys
+text = codecs.getincrementaldecoder("utf-8")("strict")
+try:
+    while chunk := sys.stdin.buffer.read(65536):
+        decoded = text.decode(chunk)
+        if any(ord(c) < 32 and c not in "\t\r\n" for c in decoded): sys.exit(1)
+    text.decode(b"", final=True)
+except UnicodeError:
+    sys.exit(1)' ; then
+      fast_ok=false; docs_fast_path_reason="documentation is binary or unreadable"
+    else
+      if fast_doc_link_state "$fast_path"; then
+        fast_ok=false; docs_fast_path_reason="documentation is linked to a project"
+      else
+        fast_link_status=$?
+        if [[ "$fast_link_status" -ne 1 ]]; then
+          fast_ok=false; docs_fast_path_reason="project link search failed"
+        fi
+      fi
+    fi
+  done < "$fast_diff"
+  if [[ "$fast_ok" == true && "$fast_count" -gt 0 ]]; then
+    docs_fast_path=true
+    docs_fast_path_reason="all exact base/head paths are safe documentation"
+  fi
+fi
+
 diff_file="$(mktemp)"
-trap 'rm -f "$diff_file"' EXIT
+trap 'rm -f "$diff_file" "$fast_diff"' EXIT
 
 if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
+  docs_fast_path=false
+  docs_fast_path_reason="component diff failed"
   deployment="true"
   select_all_deployment_suites
   select_complete_matrix
@@ -573,6 +654,8 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
     deployment="true"
     select_all_deployment_suites
     select_complete_matrix
+    docs_fast_path=false
+    docs_fast_path_reason="malformed component diff"
     reason="git diff returned malformed name-status data"
     deployment_reason="git diff returned malformed name-status data"
     complete_reason="git diff returned malformed name-status data"
@@ -631,6 +714,8 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
 done < "$diff_file"
 
 if [[ "$path_count" -eq 0 ]]; then
+  docs_fast_path=false
+  docs_fast_path_reason="empty component diff"
   secret_scan_contract="true"
   release_scripts="true"
   catalog_recipe="true"
