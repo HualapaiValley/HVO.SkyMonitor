@@ -132,8 +132,13 @@ Publication moves through these states, recorded in `publication-state.db` (5.3)
    the group moves to `recorded` at that position. P3 recovery checks that the committed manifest locator is the key
    its UTC anchor, revision and digest fix.
 5. `visible` (P4): the writer's own first P4 runs P3 recovery for that revision, reading every required member again
-   after the commit. Only when it verifies does the group become visible and release its spooled bytes. An
-   interrupted release is finished on resume.
+   after the commit. It also proves every required reopen dependency: an authenticated publication of that exact
+   artifact revision, whose bytes it reads now through an eligible locator. A dependency not yet published leaves the
+   revision `unverified` with its spool kept, and the dependency's publication, or a copy of it arriving, evaluates
+   the revision again. An absent or damaged dependency closes it `missing`, a timeout `temporarily-unavailable`, and
+   an optional dependency never blocks. A first P4 replayed after a crash checks the same. Only when all of it
+   verifies does the group become visible and release its spooled bytes. An interrupted release is finished on
+   resume.
 
 `abandoned` is reachable only before P3. It hands every version the group created, or may have created, to retention
 as an orphan candidate. Each recorded version is handed over exactly. A write that may have landed a version not yet
@@ -151,15 +156,26 @@ not persistence-qualified is never named by a committed record.
   attempt of the pending segment is recorded as in flight before it is sent, and its outcome after. A generation
   opening advances the writer generation in the same transaction that makes it pending, so a crash leaves nothing or an
   opening that the same call completes.
-- **Authentication.** A segment is applied only when the next segment names its exact SHA-256. With the writer's
-  evidence it must instead match the writer's committed head, past which nothing is read as authority. A writer that
-  committed nothing proves the journal empty, so even a genesis that landed but never committed is not adopted.
-  Without the writer's evidence, as after total loss, the last segment that chains back is accepted as the tail. An
-  altered segment that still parses therefore ends the prefix rather than entering the catalog.
+- **Authentication.** A segment is applied only when something already established certifies its exact SHA-256:
+  the writer's committed head, the writer's own record of committing that position, or the witness of a generation
+  opening. A trusted anchor certifies where the walk starts. A certified segment certifies the run before it through
+  its predecessor links, back to the last certified point, but bytes that merely parse and link backward certify
+  nothing. Segments awaiting a certifier are held as exact versions and applied only once one certifies them. Nothing
+  past the writer's committed head is read as authority, and a writer that committed nothing proves the journal
+  empty, so even a genesis that landed but never committed is not adopted. A segment whose bytes differ from the
+  writer's record ends the prefix before it. Segments that chain correctly but that no certifier reaches end it as
+  `uncertified`, with an authority-unknown interval and their publications authority-unproven. So after the head
+  segment is lost, an altered last predecessor with a valid backward link is not adopted: the prefix stops at the
+  last segment the writer's records prove. After total loss, with no writer records, the prefix ends at the trusted
+  anchor or the last witnessed opening, or is empty with neither, and every publication named past it is
+  authority-unproven.
 - **Writer evidence.** Startup catch-up and a rebuild with surviving State both take `SiloWriterEvidence`: the
-  committed head, and the P3s still awaiting their first P4. The authority-unknown interval clears only when the
-  committed head is read again with its SHA-256. A P3 awaiting its first P4 is recovered under P3 rules, never as
-  settled history.
+  committed head, the P3s still awaiting their first P4, and the writer's records of each committed segment's
+  SHA-256 and of each first P4 it completed. The authority-unknown interval clears only when the committed head is
+  read again with its SHA-256. A rebuild treats a publication as settled history, its member bytes verified lazily,
+  only when the writer's records prove it reached its first P4. Every other publication, whether awaiting its first
+  P4 or without proof either way, is verified as its first P4 would be, and becomes visible only on that proof. A
+  read that cannot complete becomes the publication's reported state, so the rebuild never stalls on it.
 - **Generations.** The first segment of every generation opens it. A later generation must name the end of the prefix
   it continues. `ISiloGenerationWitness`, supplied by #1972, must prove that exact opening by the SHA-256 of the
   segment that carries it. A witness of another opening of the same generation and prefix, differing in any field,
@@ -245,7 +261,10 @@ Proof counts only at or after a copy's latest entry, compared by generation, seg
 that proved a copy absent before the copy returned holds stale proof, whether the copy was an original target or a
 later arrival. It must prove that copy absent again.
 
-Copy-scoped eviction never makes a role `policy-expired`.
+Copy-scoped eviction uses the same proof. An `evicted` copy record must name its intent, and that intent must hold
+`deleted` or `already-absent` for the exact copy at or after its latest entry. An eviction that names no intent,
+another intent, or only stale proof is refused and the copy stays eligible. A later `not-deleted` outcome contradicts
+only fresh absence; after stale absence it is recorded. Copy-scoped eviction never makes a role `policy-expired`.
 
 Reopen (`ReopenAsync`, or `ReopenViewAsync` for an exact link that must also name the stream and reference capture)
 only reads. It never changes a revision's publication state. Within that operation it verifies the manifest, every

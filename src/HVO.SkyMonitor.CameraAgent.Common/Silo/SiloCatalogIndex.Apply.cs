@@ -281,6 +281,8 @@ internal sealed partial class SiloCatalogIndex
         foreach (var (role, _) in consistent)
         {
             await RecomputeRoleAsync(connection, transaction, role, unknown, cancellationToken).ConfigureAwait(false);
+            // A revision waiting on this exact artifact revision as a required reopen dependency can now be proven.
+            await RequeueAsync(connection, transaction, role, cancellationToken).ConfigureAwait(false);
         }
         return conflict ? "identity-conflict" : null;
     }
@@ -350,8 +352,9 @@ internal sealed partial class SiloCatalogIndex
     }
 
     /// <summary>
-    /// A newly eligible or restored copy can change a closed revision's outcome, so every revision that P3 recovery or
-    /// a rebuild closed for want of that role is evaluated again, exactly as a rebuild would.
+    /// A newly published, newly eligible or restored role can change a closed revision's outcome, so every revision that
+    /// P3 recovery or a rebuild closed for want of that role, as its manifest, a required member or a required reopen
+    /// dependency, is evaluated again, exactly as a rebuild would.
     /// </summary>
     private static async ValueTask RequeueAsync(
         SqliteConnection connection, SqliteTransaction transaction, SiloRoleKey role, CancellationToken cancellationToken)
@@ -364,7 +367,10 @@ internal sealed partial class SiloCatalogIndex
                 AND (($kind = 'manifest' AND group_id = $id AND revision_id = $revision)
                     OR ($kind = 'member' AND EXISTS (SELECT 1 FROM publication_members m
                         WHERE m.group_id = publications.group_id AND m.revision_id = publications.revision_id
-                            AND m.artifact_id = $id AND m.artifact_revision = $revision AND m.required = 1)));
+                            AND m.artifact_id = $id AND m.artifact_revision = $revision AND m.required = 1))
+                    OR ($kind = 'member' AND EXISTS (SELECT 1 FROM dependencies d
+                        WHERE d.group_id = publications.group_id AND d.revision_id = publications.revision_id AND d.kind = 'reopen'
+                            AND d.artifact_id = $id AND d.artifact_revision = $revision AND d.required = 1)));
             """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision)).ConfigureAwait(false);
     }
 
@@ -420,6 +426,21 @@ internal sealed partial class SiloCatalogIndex
             ("$g", at.Generation), ("$s", at.Sequence), ("$i", at.Index)).ConfigureAwait(false);
         return null;
     }
+
+    /// <summary>
+    /// The one proof that removes an exact copy from the authority set (#1965 7.3), shared by copy eviction and role
+    /// expiry: an absent outcome (<c>deleted</c> or <c>already-absent</c>) under the same intent, recorded at or after the
+    /// copy's latest entry into the set, compared by generation, segment and record position. Proof from before a
+    /// restoration, under another intent or under none is stale and removes nothing. Binds <c>$intent</c> to locator
+    /// row <c>l</c>.
+    /// </summary>
+    private const string FreshAbsenceUnderIntent = """
+        EXISTS (SELECT 1 FROM expiry_targets t WHERE t.intent_id = $intent AND t.store_id = l.store_id
+            AND t.bucket = l.bucket AND t.key = l.key AND t.version_id = l.version_id
+            AND t.outcome IN ('deleted', 'already-absent')
+            AND (t.outcome_generation, t.outcome_sequence, t.outcome_index)
+                >= (l.entered_generation, l.entered_sequence, l.entered_index))
+        """;
 
     /// <summary>
     /// The role's current authoritative copies: every eligible exact version whose absence was not proven under an
@@ -496,7 +517,14 @@ internal sealed partial class SiloCatalogIndex
             return "unlinked";
         }
         var absent = disposition.Outcome is SiloExpiryOutcome.Deleted or SiloExpiryOutcome.AlreadyAbsent;
-        if (current is "deleted" or "already-absent" && !absent)
+        // Presence contradicts only absence that is still fresh: absence proven before the copy re-entered the authority
+        // set is stale, so a later presence outcome under the same intent stands and removes nothing.
+        if (current is "deleted" or "already-absent" && !absent && await ScalarLongAsync(connection, transaction, $"""
+                SELECT COUNT(*) FROM locators l WHERE l.store_id = $store AND l.bucket = $bucket AND l.key = $key AND l.version_id = $version
+                    AND {FreshAbsenceUnderIntent};
+                """, cancellationToken, ("$intent", disposition.IntentId), ("$store", disposition.Locator.StoreId),
+                ("$bucket", disposition.Locator.Bucket), ("$key", disposition.Locator.Key), ("$version", disposition.Locator.VersionId))
+                .ConfigureAwait(false) != 0)
         {
             return "contradicts-proven-absence";
         }
@@ -581,14 +609,20 @@ internal sealed partial class SiloCatalogIndex
             }
             if (availability.State == SiloAvailabilityState.Evicted)
             {
-                var proven = await ScalarLongAsync(connection, transaction, """
-                    SELECT COUNT(*) FROM expiry_targets WHERE store_id = $store AND bucket = $bucket AND key = $key AND version_id = $version
-                        AND outcome IN ('deleted', 'already-absent') AND ($intent IS NULL OR intent_id = $intent);
-                    """, cancellationToken, ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key),
+                if (availability.IntentId is null)
+                {
+                    return "eviction-without-intent";
+                }
+                var proven = await ScalarLongAsync(connection, transaction, $"""
+                    SELECT COUNT(*) FROM locators l WHERE l.kind = $kind AND l.id = $id AND l.revision = $revision
+                        AND l.store_id = $store AND l.bucket = $bucket AND l.key = $key AND l.version_id = $version
+                        AND {FreshAbsenceUnderIntent};
+                    """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
+                    ("$store", locator.StoreId), ("$bucket", locator.Bucket), ("$key", locator.Key),
                     ("$version", locator.VersionId), ("$intent", availability.IntentId)).ConfigureAwait(false);
                 if (proven == 0)
                 {
-                    return "eviction-without-proven-absence";
+                    return "eviction-without-fresh-proven-absence";
                 }
             }
             var state = availability.State switch
@@ -656,15 +690,11 @@ internal sealed partial class SiloCatalogIndex
             }
             (intentGeneration, intentSequence, intentIndex) = (reader.GetInt64(6), reader.GetInt64(7), reader.GetInt64(8));
         }
-        if (await ScalarLongAsync(connection, transaction, """
+        if (await ScalarLongAsync(connection, transaction, $"""
                 SELECT COUNT(*) FROM locators l
                 WHERE l.kind = $kind AND l.id = $id AND l.revision = $revision AND l.eligible = 1
                     AND (l.entered_generation, l.entered_sequence, l.entered_index) > ($g, $s, $i)
-                    AND NOT EXISTS (SELECT 1 FROM expiry_targets t WHERE t.intent_id = $intent AND t.store_id = l.store_id
-                        AND t.bucket = l.bucket AND t.key = l.key AND t.version_id = l.version_id
-                        AND t.outcome IN ('deleted', 'already-absent')
-                        AND (t.outcome_generation, t.outcome_sequence, t.outcome_index)
-                            >= (l.entered_generation, l.entered_sequence, l.entered_index));
+                    AND NOT {FreshAbsenceUnderIntent};
                 """, cancellationToken, ("$kind", KindName(role.Kind)), ("$id", role.Id), ("$revision", role.Revision),
                 ("$g", intentGeneration), ("$s", intentSequence), ("$i", intentIndex), ("$intent", intentId)).ConfigureAwait(false) != 0)
         {

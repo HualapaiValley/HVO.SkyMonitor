@@ -80,9 +80,22 @@ internal sealed record SiloCommittedOperation(
 /// as settled history.
 /// </summary>
 internal sealed record SiloWriterEvidence(
-    SiloJournalPosition? Head, string? HeadSha256, IReadOnlySet<(string GroupId, string RevisionId)> AwaitingFirstP4)
+    SiloJournalPosition? Head, string? HeadSha256, IReadOnlySet<(string GroupId, string RevisionId)> AwaitingFirstP4,
+    ISiloWriterRecords? Records = null)
 {
     public static SiloWriterEvidence Empty { get; } = new(null, null, new HashSet<(string, string)>());
+}
+
+/// <summary>
+/// What the writer's surviving State durably recorded, read on demand so evidence never grows with history (#1965 4.5,
+/// 5.3): the exact SHA-256 of every segment it committed, which certifies that segment independently of any other, and
+/// whether a publication reached its first P4. Absence of a record proves nothing either way.
+/// </summary>
+internal interface ISiloWriterRecords
+{
+    ValueTask<string?> CommittedSha256Async(SiloJournalPosition position, CancellationToken cancellationToken);
+
+    ValueTask<bool> ReachedFirstP4Async(string groupId, string revisionId, CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -113,7 +126,7 @@ internal sealed record SiloOrphanCandidate(SiloExactLocator Locator, string Sha2
 /// Non-rebuildable publication state (<c>hvo.cameraagent.silo.publication-state/1</c>). Staged work and orphan
 /// cleanup live here, apart from published revisions, and the instance backup covers it.
 /// </summary>
-internal sealed class SiloPublicationState(string path, SiloStorageBinding binding, TimeProvider clock)
+internal sealed class SiloPublicationState(string path, SiloStorageBinding binding, TimeProvider clock) : ISiloWriterRecords
 {
     internal const int ApplicationId = 0x48535053; // "HSPS"
 
@@ -354,7 +367,25 @@ internal sealed class SiloPublicationState(string path, SiloStorageBinding bindi
         {
             awaiting.Add((reader.GetString(0), reader.GetString(1)));
         }
-        return new(head.Position, head.Sha256, awaiting);
+        return new(head.Position, head.Sha256, awaiting, this);
+    }
+
+    /// <summary>The exact SHA-256 the writer committed at this position, from its own operation record.</summary>
+    public async ValueTask<string?> CommittedSha256Async(SiloJournalPosition position, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ScalarStringAsync(connection, null,
+            "SELECT sha256 FROM journal_operations WHERE generation = $g AND sequence = $s;",
+            cancellationToken, ("$g", position.Generation), ("$s", position.Sequence)).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether this writer made the publication visible: its own proof that the first P4 happened.</summary>
+    public async ValueTask<bool> ReachedFirstP4Async(string groupId, string revisionId, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        return await ScalarLongAsync(connection, null,
+            "SELECT COUNT(*) FROM staged_groups WHERE group_id = $group AND revision_id = $revision AND state = 'visible';",
+            cancellationToken, ("$group", groupId), ("$revision", revisionId)).ConfigureAwait(false) == 1;
     }
 
     public async ValueTask<SiloPendingSegment?> ReadPendingAsync(CancellationToken cancellationToken)

@@ -169,9 +169,14 @@ public sealed class SiloFormatTests
         return (silo.Local.Fingerprint(), silo.IndexFileSha256());
     }
 
-    private static Task<SiloRebuildResult> RebuildInPlaceAsync(SiloHarness silo) =>
-        SiloCatalog.RebuildAsync(silo.StateRoot, silo.Binding, silo.Stores, silo.Authority, silo.Authority, silo.Clock, new(silo.Local),
-            CancellationToken.None).AsTask();
+    /// <summary>
+    /// Rebuild over the live catalog. With the surviving writer's evidence its records certify what it committed; without
+    /// it, as after total loss, every segment is still read, so an unsupported object anywhere in the chain is refused.
+    /// </summary>
+    private static async Task<SiloRebuildResult> RebuildInPlaceAsync(SiloHarness silo, bool withWriterEvidence) =>
+        await SiloCatalog.RebuildAsync(silo.StateRoot, silo.Binding, silo.Stores, silo.Authority, silo.Authority, silo.Clock,
+            new(silo.Local, Writer: withWriterEvidence ? await silo.WriterEvidenceAsync().ConfigureAwait(false) : null), CancellationToken.None)
+            .ConfigureAwait(false);
 
     [TestMethod]
     public async Task AnUnsupportedManifestRefusesTheRebuildAndChangesNeitherTheBucketNorTheCatalog()
@@ -188,7 +193,7 @@ public sealed class SiloFormatTests
             "publish-unsupported", CancellationToken.None).ConfigureAwait(false);
         var before = await FingerprintAsync(silo).ConfigureAwait(false);
 
-        var rebuild = () => RebuildInPlaceAsync(silo);
+        var rebuild = () => RebuildInPlaceAsync(silo, withWriterEvidence: true);
 
         (await rebuild.Should().ThrowAsync<SiloFormatRefusedException>().ConfigureAwait(false)).Which.Found
             .Should().Be("hvo.cameraagent.silo.group-manifest/2");
@@ -223,7 +228,7 @@ public sealed class SiloFormatTests
         silo.Local.Plant(SiloObjectNamespace.SegmentKey(new(1, head.Sequence + 1)), Encoding.UTF8.GetBytes(node.ToJsonString()));
         var before = await FingerprintAsync(silo).ConfigureAwait(false);
 
-        var rebuild = () => RebuildInPlaceAsync(silo);
+        var rebuild = () => RebuildInPlaceAsync(silo, withWriterEvidence: false);
 
         if (fault == "foreign-binding")
         {

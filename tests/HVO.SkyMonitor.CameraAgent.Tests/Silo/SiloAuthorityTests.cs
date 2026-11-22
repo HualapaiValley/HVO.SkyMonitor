@@ -281,21 +281,29 @@ public sealed class SiloAuthorityTests
         var head = await silo.State.ReadHeadAsync(CancellationToken.None).ConfigureAwait(false);
         var raw1 = new SiloRoleKey(SiloIdentityKind.Member, SiloDrafts.Raw(1), "1");
 
+        // No writer State and no trusted anchor: nothing independent certifies the replica's segments, so nothing in them is
+        // adopted and nothing is concluded lost. Their publications are reported as authority-unproven.
         var lagging = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, SourceMayBeIncomplete: true)).ConfigureAwait(false);
-        await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
 
-        lagging.Authority.EndReason.Should().Be(SiloPrefixEnd.PossiblyIncompleteTail);
+        lagging.Authority.EndReason.Should().Be(SiloPrefixEnd.Uncertified);
         lagging.Authority.UnknownInterval.Should().BeTrue();
-        lagging.Authority.PrefixEnd.Should().Be(new SiloJournalPosition(1, 2));
-        (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(1), "r1", CancellationToken.None).ConfigureAwait(false))!
-            .State.Should().Be("visible");
-        (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(2), "r1", CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
-        (await silo.Index.ReadRoleAsync(raw1, CancellationToken.None).ConfigureAwait(false))!.Disposition.Should().Be(SiloDisposition.Unverified);
+        lagging.Authority.PrefixEnd.Should().BeNull();
+        lagging.Authority.UnprovenPublications.Select(static publication => publication.GroupId).Should().Equal([SiloDrafts.CaptureGroup(1)]);
+        (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(1), "r1", CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
+        (await silo.Index.ReadRoleAsync(raw1, CancellationToken.None).ConfigureAwait(false)).Should().BeNull("an unproven publication claims nothing");
 
+        // The surviving writer's own records certify the replica's segments; its head proves the replica lost the tail.
         var writer = await silo.WriterEvidenceAsync().ConfigureAwait(false);
         var behindHead = await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, Writer: writer))
             .ConfigureAwait(false);
+        await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
         behindHead.Authority.UnknownInterval.Should().BeTrue("the surviving writer head proves the replica lost its tail");
+        behindHead.Authority.PrefixEnd.Should().Be(new SiloJournalPosition(1, 2));
+        (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(1), "r1", CancellationToken.None).ConfigureAwait(false))!
+            .State.Should().Be("visible");
+        (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(2), "r1", CancellationToken.None).ConfigureAwait(false)).Should().BeNull();
+        (await silo.Index.ReadRoleAsync(raw1, CancellationToken.None).ConfigureAwait(false))!.Disposition
+            .Should().Be(SiloDisposition.Unverified, "a later copy may exist in the authority-unknown interval");
 
         var authoritative = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local, Writer: writer))
             .ConfigureAwait(false);

@@ -106,11 +106,16 @@ internal sealed partial class SiloCatalogIndex
     }
 
     /// <summary>
-    /// After a rebuild applies the journal, mark which pending publications are settled history. Only those the writer
-    /// does not list as awaiting their first P4 are evaluated as history; the others keep P3 recovery semantics.
+    /// After a rebuild applies the journal, decide each pending publication's footing (#1965 5.3, 7.5). Only one the
+    /// writer's records prove reached its first P4 is settled history: rebuilt from its manifest, its member bytes read
+    /// lazily. Any other, whether the writer lists it as awaiting its first P4 or has no proof either way, is verified
+    /// exactly as a first P4 would be: its manifest, required members and required reopen dependencies by exact read, and
+    /// it becomes visible only on that proof. Absence of proof is not evidence of settlement. A read that cannot complete
+    /// becomes a reported state, never a stalled rebuild.
     /// </summary>
-    internal async ValueTask MarkHistoryAsync(IReadOnlySet<(string GroupId, string RevisionId)> awaitingFirstP4, CancellationToken cancellationToken)
+    internal async ValueTask MarkHistoryAsync(SiloWriterEvidence? writer, CancellationToken cancellationToken)
     {
+        var awaitingFirstP4 = writer?.AwaitingFirstP4 ?? SiloWriterEvidence.Empty.AwaitingFirstP4;
         await _writer.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -124,8 +129,16 @@ internal sealed partial class SiloCatalogIndex
                     pending.Add((reader.GetString(0), reader.GetString(1)));
                 }
             }
+            var settled = new List<(string, string)>();
+            foreach (var pair in pending.Where(pair => !awaitingFirstP4.Contains(pair)))
+            {
+                if (writer?.Records is { } records && await records.ReachedFirstP4Async(pair.Item1, pair.Item2, cancellationToken).ConfigureAwait(false))
+                {
+                    settled.Add(pair);
+                }
+            }
             using var transaction = BeginImmediate(connection);
-            foreach (var (group, revision) in pending.Where(pair => !awaitingFirstP4.Contains(pair)))
+            foreach (var (group, revision) in settled)
             {
                 await ExecuteAsync(connection, transaction,
                     "UPDATE publications SET requires_members = 0 WHERE group_id = $group AND revision_id = $revision;",
@@ -245,6 +258,31 @@ internal sealed partial class SiloCatalogIndex
                 outcomes.Add(current);
             }
         }
+        // First visibility also proves every required reopen dependency (#1965 6.1): an authenticated publication of that
+        // exact artifact revision, and its bytes read now through an eligible locator. Without a proven publication the
+        // revision is not concluded; it is evaluated again when that publication or a copy of it arrives. An optional
+        // dependency never blocks.
+        foreach (var dependency in await ReadRequiredReopenDependenciesAsync(connection, groupId, revisionId, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            var role = new SiloRoleKey(SiloIdentityKind.Member, dependency.ArtifactId, dependency.ArtifactRevision);
+            if (await ReadRoleIdentityAsync(connection, null, role, cancellationToken).ConfigureAwait(false) is not { } published)
+            {
+                outcomes.Add(SiloDisposition.Unverified);
+                continue;
+            }
+            if (!string.Equals(published.Sha256, dependency.Sha256, StringComparison.Ordinal))
+            {
+                outcomes.Add(SiloDisposition.Conflict);
+                continue;
+            }
+            var (current, _, _) = await ProbeRoleAsync(connection, stores, role, dependency.Sha256, published.Length, captureBytes: false,
+                fresh, cancellationToken).ConfigureAwait(false);
+            if (current != SiloDisposition.Available)
+            {
+                outcomes.Add(current);
+            }
+        }
         if (outcomes.Count == 0)
         {
             await SetVisibleAsync(connection, groupId, revisionId, cancellationToken).ConfigureAwait(false);
@@ -252,7 +290,24 @@ internal sealed partial class SiloCatalogIndex
         }
         var worst = outcomes.MaxBy(static outcome => Array.IndexOf(OutcomeSeverity, outcome))!;
         await CloseAsync(connection, groupId, revisionId, SiloDisposition.Verified, worst,
-            "a required member did not verify through any eligible locator", cancellationToken).ConfigureAwait(false);
+            "a required member or reopen dependency did not verify through an authenticated publication and eligible locator",
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<IReadOnlyList<(string ArtifactId, string ArtifactRevision, string Sha256)>> ReadRequiredReopenDependenciesAsync(
+        SqliteConnection connection, string groupId, string revisionId, CancellationToken cancellationToken)
+    {
+        using var command = CreateCommand(connection, null, """
+            SELECT artifact_id, artifact_revision, sha256 FROM dependencies
+            WHERE group_id = $group AND revision_id = $revision AND kind = 'reopen' AND required = 1 ORDER BY ordinal;
+            """, ("$group", groupId), ("$revision", revisionId));
+        using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        var result = new List<(string, string, string)>();
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            result.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        }
+        return result;
     }
 
     private sealed record RecordedMember(

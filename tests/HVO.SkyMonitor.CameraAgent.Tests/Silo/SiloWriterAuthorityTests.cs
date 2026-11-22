@@ -100,7 +100,8 @@ public sealed class SiloWriterAuthorityTests
         {
             silo.Archive.Plant(key, silo.Local.Read(key, silo.Local.Current(key)!));
         }
-        await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, SourceMayBeIncomplete: true)).ConfigureAwait(false);
+        await silo.DeleteCatalogAndRebuildAsync(new(silo.Archive, SourceMayBeIncomplete: true, Writer: await silo.WriterEvidenceAsync().ConfigureAwait(false)))
+            .ConfigureAwait(false);
         await silo.Catalog.VerifyRolesAsync(100, CancellationToken.None).ConfigureAwait(false);
         (await silo.Index.ReadRoleAsync(role, CancellationToken.None).ConfigureAwait(false))!.Disposition
             .Should().Be(SiloDisposition.Unverified, "a later copy may exist in the authority-unknown interval");

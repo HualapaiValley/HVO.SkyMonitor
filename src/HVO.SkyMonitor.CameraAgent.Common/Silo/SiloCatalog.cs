@@ -14,6 +14,9 @@ internal static class SiloPrefixEnd
     public const string UnprovenGeneration = "unproven-generation";
     public const string SourceUnavailable = "source-unavailable";
     public const string PossiblyIncompleteTail = "possibly-incomplete-tail";
+
+    /// <summary>Segments follow the prefix, chained correctly, but nothing independent certifies their exact bytes.</summary>
+    public const string Uncertified = "uncertified";
 }
 
 internal sealed record SiloWalkedSegment(
@@ -34,16 +37,27 @@ internal sealed record SiloUnprovenScan(
 }
 
 /// <summary>
-/// What bounds a walk of the journal (#1965 4.5). Without the writer's evidence, as after total loss, the last segment
-/// that chains back is the tail of the evidence. With it, the committed head bounds every walk and its bytes must match;
-/// a writer that committed nothing proves the journal empty, so nothing at all is authority, even a segment that landed.
+/// What bounds and certifies a walk of the journal (#1965 4.5). With the writer's evidence, the committed head bounds
+/// every walk, and the head and the writer's own commit records certify exact segment bytes; a writer that committed
+/// nothing proves the journal empty, so nothing at all is authority, even a segment that landed. Without it, as after
+/// total loss, nothing here certifies a segment: only a trusted anchor or a witnessed opening does.
 /// </summary>
-internal readonly record struct SiloJournalBound(bool Known, SiloJournalPosition? Head, string? HeadSha256)
+internal readonly record struct SiloJournalBound(bool Known, SiloJournalPosition? Head, string? HeadSha256, ISiloWriterRecords? Records = null)
 {
     public static SiloJournalBound Unavailable => default;
 
     public static SiloJournalBound Of(SiloWriterEvidence? writer) =>
-        writer is null ? Unavailable : new(true, writer.Head, writer.HeadSha256);
+        writer is null ? Unavailable : new(true, writer.Head, writer.HeadSha256, writer.Records);
+
+    /// <summary>
+    /// The exact SHA-256 the writer's surviving State records for this position: its committed head, or its own record of
+    /// that commit. Null when nothing the writer kept speaks for the position.
+    /// </summary>
+    public async ValueTask<string?> RecordedSha256Async(SiloJournalPosition position, CancellationToken cancellationToken) =>
+        !Known ? null
+        : Head == position ? HeadSha256
+        : Records is { } records ? await records.CommittedSha256Async(position, cancellationToken).ConfigureAwait(false)
+        : null;
 
     /// <summary>Whether a segment at this position may be read as authority.</summary>
     public bool Admits(SiloJournalPosition position) => !Known || Head is { } head && position <= head;
@@ -54,18 +68,190 @@ internal readonly record struct SiloJournalBound(bool Known, SiloJournalPosition
 }
 
 /// <summary>
-/// Reads the authenticated journal prefix forward from a known point: every segment in (g, seq) order, gapless within a
-/// generation, naming its predecessor's SHA-256, and every generation boundary an opening witnessed by its exact bytes.
-/// A segment is delivered only once the next segment names its exact SHA-256, or, at the writer's known committed head,
-/// once its SHA-256 equals that head's. Nothing past a known head, and nothing at all in a journal the writer proves
-/// empty, is read as authority. Without the writer's evidence, the last segment that chains back is the tail of the
-/// evidence. The walk stops at the first missing, altered or unauthenticated record or unproven boundary.
+/// Reads the journal forward from a known point: every segment in (g, seq) order, gapless within a generation, naming
+/// its predecessor's SHA-256, and every generation boundary an opening witnessed by its exact bytes.
+/// <see cref="WalkAsync"/> applies only the positively proven prefix: a segment is authority only once something
+/// established certifies its exact bytes, namely the writer's committed head or its own record of that commit, or the
+/// witness of a generation opening. Certifying a segment certifies the backward-linked run before it, back to the last
+/// certified point. Bytes that merely parse and link backward certify nothing, so segments no certifier reaches stay
+/// outside the prefix, reported as authority-unproven. <see cref="DiscoverAsync"/> reads the chain only to find records
+/// whose trust comes from elsewhere, such as anchors trusted through their seal evidence; it never establishes authority.
 /// </summary>
 internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBinding binding, ISiloGenerationWitness witness)
 {
     public ISiloObjectStore Source => source;
 
+    /// <summary>
+    /// Apply the positively proven prefix after a certified point (#1965 4.5, 5.4). A segment the writer's records
+    /// contradict ends the prefix before it. Chained segments awaiting a certifier are held as exact versions, not
+    /// parsed records, and applied by exact re-read once one certifies them.
+    /// </summary>
     public async ValueTask<SiloWalkEnd> WalkAsync(
+        SiloJournalPosition? after, string? afterSha256, Func<SiloWalkedSegment, ValueTask<bool>> onSegment, CancellationToken cancellationToken,
+        SiloJournalBound bound = default)
+    {
+        var (deliveredPosition, deliveredSha) = (after, afterSha256);
+        var (readPosition, readSha) = (after, afterSha256);
+        var held = new List<(SiloJournalPosition Position, string Sha256, string VersionId, long Length, bool Witnessed)>();
+        SiloWalkEnd End(string reason) =>
+            new(deliveredPosition, deliveredSha, held.Count > 0 && reason == SiloPrefixEnd.Tail ? SiloPrefixEnd.Uncertified : reason);
+        while (true)
+        {
+            if (bound.Known && (bound.Head is not { } head || readPosition is { } last && last >= head))
+            {
+                return End(SiloPrefixEnd.Tail);
+            }
+            string? nextKey;
+            try
+            {
+                nextKey = await NextSegmentKeyAsync(readPosition, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SiloStoreUnavailableException)
+            {
+                return End(SiloPrefixEnd.SourceUnavailable);
+            }
+            if (nextKey is null || !SiloObjectNamespace.TryParseSegmentKey(nextKey, out var position))
+            {
+                return End(SiloPrefixEnd.Tail);
+            }
+            var continues = readPosition is not { } previous
+                ? position == new SiloJournalPosition(1, 1)
+                : position == new SiloJournalPosition(previous.Generation, previous.Sequence + 1) ||
+                  position.Generation > previous.Generation && position.Sequence == 1;
+            if (!continues || !bound.Admits(position))
+            {
+                return End(SiloPrefixEnd.Gap);
+            }
+            (string VersionId, byte[] Bytes)? found;
+            try
+            {
+                found = await SiloVerifier.ReadCurrentAsync(source, nextKey, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SiloStoreUnavailableException)
+            {
+                return End(SiloPrefixEnd.SourceUnavailable);
+            }
+            catch (SiloInvalidObjectException)
+            {
+                return End(SiloPrefixEnd.Invalid);
+            }
+            if (found is not { } current)
+            {
+                return End(SiloPrefixEnd.Gap);
+            }
+            SiloJournalSegment segment;
+            IReadOnlyList<SiloPositionedRecord> records;
+            try
+            {
+                (segment, records) = Parse(current.Bytes, position);
+            }
+            catch (SiloInvalidObjectException)
+            {
+                return End(SiloPrefixEnd.Invalid);
+            }
+            RequireBinding(segment, position);
+            if (segment.Position != position)
+            {
+                return End(SiloPrefixEnd.Invalid);
+            }
+            if (segment.Previous != readPosition || !string.Equals(segment.PreviousSha256, readSha, StringComparison.Ordinal))
+            {
+                return End(SiloPrefixEnd.ChainMismatch);
+            }
+            var sha = SiloHash.Sha256(current.Bytes);
+            var witnessed = false;
+            if (position.Sequence == 1 && position.Generation > 1)
+            {
+                var open = (SiloGenerationOpenRecord)segment.Records[0];
+                if (open.PrefixEnd != readPosition || !string.Equals(open.PrefixEndSha256, readSha, StringComparison.Ordinal))
+                {
+                    return End(SiloPrefixEnd.Invalid);
+                }
+                witnessed = witness.IsWitnessed(open, position, sha);
+                if (!witnessed)
+                {
+                    return End(SiloPrefixEnd.UnprovenGeneration);
+                }
+            }
+            var recorded = await bound.RecordedSha256Async(position, cancellationToken).ConfigureAwait(false);
+            if (recorded is not null && !string.Equals(recorded, sha, StringComparison.Ordinal))
+            {
+                // The writer committed other bytes here: these are not authority, and nothing after them is either.
+                return End(SiloPrefixEnd.ChainMismatch);
+            }
+            (readPosition, readSha) = (position, sha);
+            if (recorded is null && !witnessed)
+            {
+                held.Add((position, sha, current.VersionId, current.Bytes.Length, false));
+                continue;
+            }
+            // This segment's exact bytes are certified, and through the backward links so is every segment held before it.
+            foreach (var pending in held)
+            {
+                var replayed = await ReadHeldAsync(pending.Position, pending.Sha256, pending.VersionId, pending.Length, cancellationToken)
+                    .ConfigureAwait(false);
+                if (replayed is null)
+                {
+                    held.Clear();
+                    return End(SiloPrefixEnd.SourceUnavailable);
+                }
+                if (!await onSegment(replayed).ConfigureAwait(false))
+                {
+                    return new(pending.Position, pending.Sha256, SiloPrefixEnd.Tail);
+                }
+                (deliveredPosition, deliveredSha) = (pending.Position, pending.Sha256);
+            }
+            held.Clear();
+            // An unwitnessed later-generation opening ended the walk above, so every delivered segment's boundary is proven.
+            if (!await onSegment(new(position, sha, current.VersionId, segment, records, Witnessed: true)).ConfigureAwait(false))
+            {
+                return new(position, sha, SiloPrefixEnd.Tail);
+            }
+            (deliveredPosition, deliveredSha) = (position, sha);
+        }
+    }
+
+    /// <summary>A held segment again, by its exact version, only if it still has the bytes it was held with.</summary>
+    private async ValueTask<SiloWalkedSegment?> ReadHeldAsync(
+        SiloJournalPosition position, string sha256, string versionId, long length, CancellationToken cancellationToken)
+    {
+        var locator = new SiloExactLocator(source.Descriptor.StoreId, source.Descriptor.Bucket, SiloObjectNamespace.SegmentKey(position), versionId);
+        try
+        {
+            var probe = await SiloVerifier.ProbeAsync(source, locator, length, sha256, TimeProvider.System, captureBytes: true, cancellationToken)
+                .ConfigureAwait(false);
+            if (probe is not { Status: SiloProbeStatus.Verified, Bytes: { } bytes })
+            {
+                return null;
+            }
+            var (segment, records) = Parse(bytes, position);
+            return new(position, sha256, versionId, segment, records, Witnessed: true);
+        }
+        catch (SiloStoreUnavailableException)
+        {
+            return null;
+        }
+        catch (SiloInvalidObjectException)
+        {
+            return null;
+        }
+    }
+
+    private void RequireBinding(SiloJournalSegment segment, SiloJournalPosition position)
+    {
+        if (!string.Equals(segment.InstanceId, binding.InstanceId, StringComparison.Ordinal) ||
+            !string.Equals(segment.StorageBindingId, binding.BindingId, StringComparison.Ordinal))
+        {
+            throw new SiloConflictException("silo.binding-mismatch",
+                $"Journal segment {position} belongs to another instance or storage binding; nothing was read from this bucket.");
+        }
+    }
+
+    /// <summary>
+    /// Read the chain only to find records whose trust is established elsewhere (an anchor's seal evidence). A segment is
+    /// handed over once the next names its SHA-256, or as the last that chains back. Nothing found here is authority.
+    /// </summary>
+    public async ValueTask<SiloWalkEnd> DiscoverAsync(
         SiloJournalPosition? after, string? afterSha256, Func<SiloWalkedSegment, ValueTask<bool>> onSegment, CancellationToken cancellationToken,
         SiloJournalBound bound = default)
     {
@@ -124,12 +310,7 @@ internal sealed class SiloJournalWalker(ISiloObjectStore source, SiloStorageBind
             {
                 return await FinishAsync(walk, SiloPrefixEnd.Invalid, onSegment, bound).ConfigureAwait(false);
             }
-            if (!string.Equals(segment.InstanceId, binding.InstanceId, StringComparison.Ordinal) ||
-                !string.Equals(segment.StorageBindingId, binding.BindingId, StringComparison.Ordinal))
-            {
-                throw new SiloConflictException("silo.binding-mismatch",
-                    $"Journal segment {position} belongs to another instance or storage binding; nothing was read from this bucket.");
-            }
+            RequireBinding(segment, position);
             if (segment.Position != position)
             {
                 return await FinishAsync(walk, SiloPrefixEnd.Invalid, onSegment, bound).ConfigureAwait(false);
@@ -441,8 +622,7 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
                     ? await walker.ReadUnprovenPublicationsAsync(end.Last, cancellationToken).ConfigureAwait(false)
                     : SiloUnprovenScan.Healed;
                 await index.RecordAuthorityEndAsync(startKind, anchor, reason, unknown, unproven, cancellationToken).ConfigureAwait(false);
-                await index.MarkHistoryAsync(writer?.AwaitingFirstP4 ?? SiloWriterEvidence.Empty.AwaitingFirstP4, cancellationToken)
-                    .ConfigureAwait(false);
+                await index.MarkHistoryAsync(writer, cancellationToken).ConfigureAwait(false);
                 await index.EvaluatePublicationsAsync(stores, null, retryClosed: false, cancellationToken).ConfigureAwait(false);
                 await index.SealForReplacementAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -515,7 +695,7 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
                 continue;
             }
             SiloJournalCheckpoint? qualified = null;
-            await walker.WalkAsync(covers, coversSha, async segment =>
+            await walker.DiscoverAsync(covers, coversSha, async segment =>
             {
                 foreach (var anchor in segment.Records.Select(static record => record.Record).OfType<SiloAnchorRecord>())
                 {
