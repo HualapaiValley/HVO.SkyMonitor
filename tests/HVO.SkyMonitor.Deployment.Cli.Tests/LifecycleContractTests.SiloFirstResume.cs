@@ -71,7 +71,11 @@ public sealed partial class LifecycleContractTests
                 camera.Version = 2;
                 break;
         }
+        // An installed instance has its lock files; taking them once and releasing them leaves them as an install does.
         var instanceLock = Path.Combine(fixture.Paths.InstanceRoot, ".deployment.lock");
+        OperationLock.Acquire(Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock")).Dispose();
+        OperationLock.Acquire(instanceLock).Dispose();
+        Assert.IsTrue(LockFreeInChild(instanceLock), "Nothing holds the instance lock before the first resume.");
         var lockedDuringResume = false;
         // Another process cannot take the installer's instance lock while CameraAgent records the resume.
         camera.OnResume = () => lockedDuringResume = !LockFreeInChild(instanceLock);
@@ -129,15 +133,28 @@ public sealed partial class LifecycleContractTests
         }
     }
 
-    /// <summary>Whether another process can take the lock at <paramref name="path"/> now (the region the installer locks).</summary>
+    /// <summary>
+    /// Whether another process can take the lock at <paramref name="path"/> now (the region the installer locks): exit 0
+    /// when it can, 3 when the lock is held, and anything else (a missing file, say) fails the test rather than reading as
+    /// either answer.
+    /// </summary>
     private static bool LockFreeInChild(string path)
     {
         var start = new System.Diagnostics.ProcessStartInfo("python3") { UseShellExecute = false, RedirectStandardError = true };
         start.ArgumentList.Add("-c");
-        start.ArgumentList.Add("import fcntl, sys; f = open(sys.argv[1], 'r+'); fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB, 1)");
+        start.ArgumentList.Add(
+            "import errno, fcntl, sys\n" +
+            "f = open(sys.argv[1], 'r+')\n" +
+            "try:\n" +
+            "    fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB, 1)\n" +
+            "except OSError as e:\n" +
+            "    sys.exit(3 if e.errno in (errno.EACCES, errno.EAGAIN) else 1)\n");
         start.ArgumentList.Add(path);
         using var process = System.Diagnostics.Process.Start(start)!;
+        var error = process.StandardError.ReadToEnd();
         process.WaitForExit();
+        if (process.ExitCode is not (0 or 3))
+            Assert.Fail($"The lock probe could not read {path}: {error}");
         return process.ExitCode == 0;
     }
 
