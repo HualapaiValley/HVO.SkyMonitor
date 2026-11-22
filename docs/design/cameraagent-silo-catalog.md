@@ -51,6 +51,8 @@ every manifest readback check the manifest against them again:
 - Its reopen rows, meaning every member and every reopen dependency, must be exactly the view's reopen proof. That is
   one row per artifact revision, with its digest and requirement, and no reopen dependency outside the proof. A view
   that binds one artifact revision to two digests is refused.
+- Its required members are exactly what the proof derives. A required member outside the proof is refused. A member
+  outside the proof may still carry optional data: reopen reports it, and its loss never blocks reopen.
 
 The reopen proof is:
 
