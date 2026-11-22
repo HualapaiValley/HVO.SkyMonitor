@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Offline reproduction of restore-generated package imports. Run under the
+# shared heavy-gate lock; the package source and all runtime state are local.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/hvo-docs-restore.XXXXXXXX")"
+trap 'rm -rf "$fixture"' EXIT
+mkdir -p "$fixture/tests/Example" "$fixture/docs/runbooks" "$fixture/packages" "$fixture/scripts" "$fixture/home" "$fixture/xdg" "$fixture/tmp" "$fixture/nuget"
+chmod 700 "$fixture" "$fixture/home" "$fixture/xdg" "$fixture/tmp" "$fixture/nuget"
+export HOME="$fixture/home" XDG_CONFIG_HOME="$fixture/xdg" TMPDIR="$fixture/tmp" NUGET_PACKAGES="$fixture/nuget"
+export MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+cp "$repo_root/global.json" "$fixture/global.json"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /></Solution>\n' > "$fixture/HVO.SkyMonitor.v9.slnx"
+printf '<Project />\n' > "$fixture/tests/Example/Example.csproj"
+printf 'restore import fixture\n' > "$fixture/docs/runbooks/releases.md"
+cat > "$fixture/NuGet.Config" <<'CONFIG'
+<configuration><packageSources><clear /><add key="fixture" value="./packages" /></packageSources><auditSources><clear /></auditSources></configuration>
+CONFIG
+python3 - "$fixture/packages/Hvo.RestoreFixture.1.0.0.nupkg" <<'PY_PACKAGE'
+import sys, zipfile
+nuspec = '''<?xml version="1.0"?><package><metadata><id>Hvo.RestoreFixture</id><version>1.0.0</version><authors>fixture</authors><description>Offline fixture</description></metadata></package>'''
+targets = '''<Project><ItemGroup><None Include="$(MSBuildProjectDirectory)/../../docs/runbooks/releases.md" Link="fixture-runbook.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>'''
+with zipfile.ZipFile(sys.argv[1], 'w') as archive:
+    archive.writestr('Hvo.RestoreFixture.nuspec', nuspec)
+    archive.writestr('build/Hvo.RestoreFixture.targets', targets)
+PY_PACKAGE
+git -C "$fixture" init -q
+git -C "$fixture" config user.name 'CI fixture'
+git -C "$fixture" config user.email fixture@example.invalid
+git -C "$fixture" add global.json NuGet.Config HVO.SkyMonitor.v9.slnx tests/Example/Example.csproj docs/runbooks/releases.md
+git -C "$fixture" commit -qm base
+(cd "$fixture" && "$repo_root/scripts/ci:classify" --print-docs-inventory HEAD) > "$fixture/scripts/ci:docs-inventory"
+git -C "$fixture" add scripts/ci:docs-inventory && git -C "$fixture" commit -qm certificate
+printf '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><PackageReference Include="Hvo.RestoreFixture" Version="1.0.0" /></ItemGroup></Project>\n' > "$fixture/tests/Example/Example.csproj"
+git -C "$fixture" add tests/Example/Example.csproj && git -C "$fixture" commit -qm package
+base="$(git -C "$fixture" rev-parse HEAD)"
+if (cd "$fixture" && "$repo_root/scripts/ci:classify" --print-docs-inventory "$base") > "$fixture/unsafe" 2> "$fixture/audit-error"; then
+  printf 'Restore-generated package import was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: restore generated package imports are uncertified' "$fixture/audit-error"
+printf 'changed by documentation PR\n' >> "$fixture/docs/runbooks/releases.md"
+git -C "$fixture" add docs/runbooks/releases.md && git -C "$fixture" commit -qm doc
+head="$(git -C "$fixture" rev-parse HEAD)"
+output="$(cd "$fixture" && "$repo_root/scripts/ci:classify" pull_request "$base" "$head" docs-fast-only)"
+grep -Fxq 'docs_fast_path=false' <<< "$output"
+grep -Fxq 'docs_fast_path_reason=project inventory unavailable' <<< "$output"
+(cd "$fixture" && dotnet restore HVO.SkyMonitor.v9.slnx > "$fixture/restore.log" 2>&1)
+grep -Fq 'Hvo.RestoreFixture.targets' "$fixture/tests/Example/obj/Example.csproj.nuget.g.targets"
+(cd "$fixture" && dotnet build tests/Example/Example.csproj --no-restore --configuration Release > "$fixture/build.log" 2>&1)
+cmp "$fixture/docs/runbooks/releases.md" "$fixture/tests/Example/bin/Release/net10.0/fixture-runbook.md"
+printf 'Offline restore-import regression passed: local package imported and copied the runbook; classifier selected full validation.\n'

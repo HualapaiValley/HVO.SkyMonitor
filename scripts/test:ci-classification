@@ -320,11 +320,77 @@ for audit_case in direct_partial direct_padded direct_semicolon imported_partial
   git -C "$fast_root" commit -qm doc-change
   fast_reason 'project inventory unavailable' "$audit_base" "$(git -C "$fast_root" rev-parse HEAD)"
 done
+# Without a source-bound restore-import certificate, package identities,
+# versions and transitive build imports are unknown even if assets are excluded.
+for package_item in '<PackageReference Include="Fixture" Version="1.0.0" />' '<PackageReference Include="Fixture" Version="1.0.0" ExcludeAssets="build;buildTransitive" />' '<GlobalPackageReference Include="Fixture" Version="1.0.0" />' '<PackageDownload Include="Fixture" Version="[1.0.0]" />'; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  printf '<Project><ItemGroup>%s</ItemGroup></Project>\n' "$package_item" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm package-reference
+  package_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$package_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/package-error"; then
+    printf 'Uncertified package input was accepted.\n' >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: restore generated package imports are uncertified' "$fast_root/.git/package-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$package_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# An SDK can introduce restore-time imports even without an explicit package.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm sdk-reference
+sdk_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$sdk_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/sdk-error"; then
+  printf 'Uncertified SDK imports were accepted.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: SDK generated restore imports are uncertified' "$fast_root/.git/sdk-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$sdk_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# UTF-8 and UTF-16 encodings of the same escaped link must both fail closed.
+for encoding in utf-8 utf-16; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  ENCODING_FIXTURE="$encoding" python3 - "$fast_root/tests/Example/Example.csproj" <<'PY_ENCODING'
+import os, pathlib, sys
+text = '<Project><ItemGroup><None Include="../../%64ocs/runbooks/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>'
+pathlib.Path(sys.argv[1]).write_bytes(text.encode(os.environ["ENCODING_FIXTURE"]))
+PY_ENCODING
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm encoded-link
+  encoding_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$encoding_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/encoding-error"; then
+    printf 'Unsafe %s input was certified.\n' "$encoding" >&2; exit 1
+  fi
+  if [[ "$encoding" == utf-8 ]]; then encoding_reason='escaped build input requires manual review'; else encoding_reason='build input is not UTF-8'; fi
+  grep -Fxq "docs inventory audit: $encoding_reason" "$fast_root/.git/encoding-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$encoding_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Reject traversal following the first wildcard even if current MSBuild does not match it.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<Project><ItemGroup><None Include="../fixtures/**/../../../d*/runbooks/releases.md" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm wildcard-traversal
+wildcard_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$wildcard_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/wildcard-error"; then
+  printf 'Post-wildcard traversal was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: item path traverses after a wildcard' "$fast_root/.git/wildcard-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$wildcard_base" "$(git -C "$fast_root" rev-parse HEAD)"
 # A project listed only by the solution is audited regardless of its suffix.
 git -C "$fast_root" reset -q --hard "$fast_base"
 mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/Extra"
 printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
-printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Extra/Extra.fsproj"
+printf '<Project />\n' > "$fast_root/tests/Extra/Extra.fsproj"
 printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="tests/Extra/Extra.fsproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
 git -C "$fast_root" add . && git -C "$fast_root" commit -qm safe-solution-project
 (cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/.git/solution-inventory"
@@ -392,7 +458,7 @@ git -C "$fast_root" add -f tests/Example/Example.csproj.user
 git -C "$fast_root" add docs/runbooks/example.md && git -C "$fast_root" commit -qm user-input
 user_base="$(git -C "$fast_root" rev-parse HEAD)"
 warning_output="$(cd "$fast_root" && "$classifier" --warn-docs-inventory "$user_base")"
-grep -Fq '::warning::Documentation CI build inventory is stale or unsafe' <<< "$warning_output"
+grep -Fxq '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: tracked automatic MSBuild input requires manual review' <<< "$warning_output"
 printf 'Stale inventory warning passed.\n'
 printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
 git -C "$fast_root" commit -qam docs-change

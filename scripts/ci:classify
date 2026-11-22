@@ -177,6 +177,23 @@ def git(*args):
     except (OSError, subprocess.CalledProcessError):
         fail("Git could not read the committed input tree")
 
+def read_xml(name):
+    raw = git("cat-file", "blob", commit + ":" + name)
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail("build input is not UTF-8")
+    if "\0" in text:
+        fail("build input is not UTF-8")
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        fail("document type declarations require manual review")
+    if re.search(r"&#|%[0-9a-fA-F]{2}", text):
+        fail("escaped build input requires manual review")
+    try:
+        return ET.fromstring(text)
+    except (ET.ParseError, ValueError):
+        fail("unparseable build input")
+
 entries = {}
 try:
     for entry in git("ls-tree", "-rz", commit).split(b"\0"):
@@ -201,13 +218,7 @@ for name, (metadata, _) in entries.items():
 solution = "HVO.SkyMonitor.v9.slnx"
 if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
     fail("solution is unavailable or non-regular")
-solution_raw = git("cat-file", "blob", commit + ":" + solution)
-if b"<!DOCTYPE" in solution_raw.upper() or b"<!ENTITY" in solution_raw.upper() or re.search(rb"&#|%[0-9a-fA-F]{2}", solution_raw):
-    fail("unsafe solution syntax")
-try:
-    solution_root = ET.fromstring(solution_raw)
-except ET.ParseError:
-    fail("unparseable solution")
+solution_root = read_xml(solution)
 if solution_root.tag != "Solution": fail("unknown solution format")
 projects = set()
 for node in solution_root.iter():
@@ -239,17 +250,18 @@ while pending:
     meta, _ = entries[name]
     if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
         fail("non-regular build input")
-    raw = git("cat-file", "blob", commit + ":" + name)
-    if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
-        fail("document type declarations require manual review")
-    if re.search(rb"&#|%[0-9a-fA-F]{2}", raw):
-        fail("escaped build input requires manual review")
-    try:
-        root = ET.fromstring(raw)
-    except ET.ParseError:
-        fail("unparseable build input")
+    root = read_xml(name)
+    # SDK resolution can itself add restore-time imports, even with no explicit
+    # PackageReference. No source-bound SDK/package import certificate exists.
+    sdk_uncertified = is_project and ("Sdk" in root.attrib or any(
+        isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1] == "Sdk"
+        for node in root.iter()))
     for node in root.iter():
         tag = node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
+        # Restore can import code from packages and their transitive dependencies.
+        # No source-bound package/import certificate exists in this repository.
+        if tag.lower() in ("packagereference", "globalpackagereference", "packagedownload"):
+            fail("restore generated package imports are uncertified")
         for text in list(node.attrib.values()) + ([node.text] if node.text else []):
             norm = text.replace("\\", "/")
             if re.search(r"(?i)(^|[^a-z0-9_])(README|AGENTS|CLAUDE)\.md([^a-z0-9_]|$)", norm):
@@ -286,6 +298,9 @@ while pending:
                     lower_part.startswith("docs/") and not lower_part.startswith(("docs/catalog/", "docs/contracts/", "docs/validation/", "docs/images/", "docs/upgrade-notes/", "docs/evidence/", "docs/generated/"))):
                     fail("item references eligible documentation")
                 if "*" in part or "?" in part:
+                    wildcard_tail = re.split(r"[?*]", part, 1)[1]
+                    if ".." in wildcard_tail.split("/"):
+                        fail("item path traverses after a wildcard")
                     prefix = re.split(r"[?*]", part, 1)[0]
                     # A partial component is not a directory boundary: d* can
                     # match docs. Confine only the complete preceding directory.
@@ -316,6 +331,8 @@ while pending:
             if target not in entries:
                 fail("MSBuild import outside committed inventory")
             pending.append((target, False))
+    if sdk_uncertified:
+        fail("SDK generated restore imports are uncertified")
 for name in sorted(seen, key=lambda n: entries[n][1]):
     meta, path = entries[name]
     print(meta.decode("ascii") + " " + repr(path))
@@ -721,12 +738,20 @@ fi
 if [[ "$event_name" == "--warn-docs-inventory" ]]; then
   warn_expected="$(mktemp)" || { printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
   warn_actual="$(mktemp)" || { rm -f "$warn_expected"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
-  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null ||
-     ! fast_inventory_for_tree "$base_sha" > "$warn_actual" ||
-     ! cmp -s "$warn_expected" "$warn_actual"; then
-    printf '::warning::Documentation CI build inventory is stale or unsafe; full validation will run.\n'
+  warn_error="$(mktemp)" || { rm -f "$warn_expected" "$warn_actual"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
+  warn_reason=""
+  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null; then
+    warn_reason="certificate unavailable"
+  elif ! fast_inventory_for_tree "$base_sha" > "$warn_actual" 2> "$warn_error"; then
+    warn_reason="$(sed -n 's/^docs inventory audit: //p' "$warn_error" | tail -n 1)"
+    [[ "$warn_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || warn_reason="audit could not complete"
+  elif ! cmp -s "$warn_expected" "$warn_actual"; then
+    warn_reason="certificate differs from the audited inputs"
   fi
-  rm -f "$warn_expected" "$warn_actual"
+  if [[ -n "$warn_reason" ]]; then
+    printf '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: %s\n' "$warn_reason"
+  fi
+  rm -f "$warn_expected" "$warn_actual" "$warn_error"
   exit 0
 fi
 
