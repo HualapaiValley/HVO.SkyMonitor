@@ -436,8 +436,14 @@ assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Capture
   'boundary:calibration:' '[]'
 assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Capture.Distribution.CaptureLaneFaultPoint \
   'boundary:capture-lane:' '["BeforeHandler","AfterHandler"]'
+# BeforeDatabaseValidation (#1914) is a reasoned exclusion, not a manifest row. It marks each whole-database
+# integrity_check/foreign_key_check during processing-store initialization, inside a single process before the
+# store serves anything, so a split-host campaign cannot fault it independently of the startup it belongs to.
+# The inventory is frozen at an earlier product pin where it does not exist. Development v1 unit coverage owns it:
+# SqliteCaptureProcessingSchemaTests startup-validation tests count every scan, pin each write-transaction scan
+# between begin and commit, and commit damage at it to prove restart rejection.
 assert_enum_coverage "$fault_assembly" HVO.SkyMonitor.CameraAgent.Common.Capture.Processing.CaptureProcessingFaultPoint \
-  'boundary:capture-processing:' '["AfterSchemaTransactionBegan","BeforeNodeExecution","BeforeSchemaCommit"]'
+  'boundary:capture-processing:' '["AfterSchemaTransactionBegan","BeforeNodeExecution","BeforeSchemaCommit","BeforeDatabaseValidation"]'
 jq -e --argjson required "$required_ids" '
   .schemaVersion == 2 and ([.scenarios[].id] | sort) == ($required | sort) and
   ([.scenarios[] | select(.source | startswith("project-plan:phase-14-fault-row-"))] | length) == 12 and

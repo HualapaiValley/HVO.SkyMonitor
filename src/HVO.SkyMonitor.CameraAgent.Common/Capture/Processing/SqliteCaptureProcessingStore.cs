@@ -529,11 +529,12 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             }
             else
             {
+                // A current-schema restart checks the whole database once (#1914), here on the writable connection
+                // that initialization publishes and before EnsureCurrentCenteredSchemaAsync can write. Inspection
+                // checked structure only, so damage committed after inspection's snapshot is still rejected.
+                // An adoption below repeats the checks inside its own write transaction.
+                await ValidateDatabaseAsync(connection, "writable", cancellationToken).ConfigureAwait(false);
                 await EnsureCurrentCenteredSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
-                // Inspection already ran integrity_check and foreign_key_check over the whole shared database
-                // for this initialization, and an adoption above repeats both inside its own write transaction.
-                // Another full scan here re-reads every page of a long retained history before the store can
-                // serve its first read (#1914). Recheck the exact canonical layout only.
                 await ValidateSchemaAsync(connection, cancellationToken, verifyDatabase: false).ConfigureAwait(false);
             }
             await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
@@ -3266,20 +3267,23 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             }
             var rawVersion = await ExecuteScalarLongAsync(
                 connection, "PRAGMA user_version;", cancellationToken).ConfigureAwait(false);
-            if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
-            {
-                _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, "inspection");
-                await SqliteRawCaptureJournal.ValidateSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
-            }
             var processingObjectCount = await CountProcessingSchemaObjectsAsync(
                 connection, cancellationToken).ConfigureAwait(false);
             var processingVersion = processingObjectCount == 0
                 ? null
                 : await ReadProcessingVersionAsync(connection, cancellationToken).ConfigureAwait(false);
-            if (processingVersion == CurrentSchemaVersion)
+            // Creation and migration write next, so inspection checks the whole database before them. A
+            // current-schema restart checks it once on the writable connection instead (see InitializeAsync).
+            var current = processingVersion == CurrentSchemaVersion;
+            if (rawVersion == SqliteRawCaptureJournal.CurrentSchemaVersion)
             {
-                // The raw validation above ran both whole-database checks inside this same read transaction,
-                // and ValidateSchemaAsync rejects a non-current raw version before it would reach them.
+                if (!current)
+                    _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, "inspection");
+                await SqliteRawCaptureJournal.ValidateSchemaAsync(connection, cancellationToken, verifyDatabase: !current)
+                    .ConfigureAwait(false);
+            }
+            if (current)
+            {
                 await ValidateSchemaAsync(connection, cancellationToken, allowEarlierCenteredSchema: true, verifyDatabase: false)
                     .ConfigureAwait(false);
             }
@@ -3292,9 +3296,9 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>
-    /// Validates the shared journal for capture processing. <paramref name="verifyDatabase"/> runs
-    /// <c>integrity_check</c> and <c>foreign_key_check</c>, which each read every page of the whole shared
-    /// database. A caller may omit them only when this initialization already ran both over the same state.
+    /// Validates the shared journal for capture processing. <paramref name="verifyDatabase"/> also runs the
+    /// whole-database checks (<see cref="ValidateDatabaseAsync"/>); a caller may omit them only when this
+    /// initialization checks the same view itself.
     /// </summary>
     private async ValueTask ValidateSchemaAsync(
         SqliteConnection connection,
@@ -3311,20 +3315,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 $"Capture processing SQLite does not share canonical raw ingress schema {SqliteRawCaptureJournal.CurrentSchemaVersion}.");
         }
         if (verifyDatabase)
-        {
-            _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, "schema");
-            var integrity = await ExecuteScalarStringAsync(
-                connection, "PRAGMA integrity_check;", cancellationToken, transaction).ConfigureAwait(false);
-            if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
-            {
-                throw new InvalidDataException("Capture processing SQLite integrity check failed.");
-            }
-            if (await ExecuteScalarLongAsync(
-                    connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken, transaction).ConfigureAwait(false) != 0)
-            {
-                throw new InvalidDataException("Capture processing SQLite foreign-key validation failed.");
-            }
-        }
+            await CheckDatabaseAsync(connection, "schema", transaction, cancellationToken).ConfigureAwait(false);
         if (await ExecuteScalarLongAsync(
                 connection,
                 $"SELECT COUNT(*) FROM capture_processing_schema WHERE schema_key = 1 AND version = {CurrentSchemaVersion};",
@@ -3341,6 +3332,38 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         if (!MatchesSchemaDefinitions(actual, CanonicalSchemaDefinitions.Value))
         {
             throw new InvalidDataException($"Capture processing SQLite schema is not the canonical schema {CurrentSchemaVersion} definition.");
+        }
+    }
+
+    /// <summary>Runs the whole-database checks in one read transaction, so both see the same committed view.</summary>
+    private async ValueTask ValidateDatabaseAsync(SqliteConnection connection, string scope, CancellationToken cancellationToken)
+    {
+#pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes deferred transactions only through the synchronous overload.
+        using var transaction = connection.BeginTransaction(deferred: true);
+#pragma warning restore CA1849
+        await CheckDatabaseAsync(connection, scope, transaction, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <c>integrity_check</c> reads and verifies every page of the shared database, so its cost grows with the
+    /// retained history and dominates startup (#1914). <c>foreign_key_check</c> looks up the parent of every
+    /// child row and costs far less.
+    /// </summary>
+    private async ValueTask CheckDatabaseAsync(
+        SqliteConnection connection, string scope, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
+        _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, scope);
+        var integrity = await ExecuteScalarStringAsync(
+            connection, "PRAGMA integrity_check;", cancellationToken, transaction).ConfigureAwait(false);
+        if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("Capture processing SQLite integrity check failed.");
+        }
+        if (await ExecuteScalarLongAsync(
+                connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken, transaction).ConfigureAwait(false) != 0)
+        {
+            throw new InvalidDataException("Capture processing SQLite foreign-key validation failed.");
         }
     }
 
