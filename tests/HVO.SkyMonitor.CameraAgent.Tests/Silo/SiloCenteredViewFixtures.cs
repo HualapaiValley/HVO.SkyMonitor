@@ -112,29 +112,35 @@ internal static class SiloTypedViews
         binding.Reason,
         null);
 
-    /// <summary>A revision exactly as the store writes it: base ID, revision ID and presentation manifest derived.</summary>
+    /// <summary>
+    /// A revision exactly as the store writes it: the layers in the store's own normalized order, and the base ID, revision
+    /// ID and presentation manifest derived from them.
+    /// </summary>
     public static CenteredView View(CenteredViewBaseDefinition definition, string? previousRevisionId, long order, IReadOnlyList<CenteredViewLayer> layers)
     {
         var baseId = SqliteCenteredViews.BaseIdentity(definition);
+        var normalized = SqliteCenteredViews.NormalizedLayers(definition, layers);
         var manifest = LayeredPresentationJson.CreateManifest(definition.Preview.Product, sceneIdentitySha256: null,
-            layers.Where(static layer => layer.Drawable is not null).Select(static layer => layer.Drawable!));
+            normalized.Where(static layer => layer.Drawable is not null).Select(static layer => layer.Drawable!));
         return new(new(baseId, definition, Registered),
-            new(SqliteCenteredViews.RevisionIdentity(baseId, previousRevisionId, layers), baseId, order, Registered.AddSeconds(order), manifest, layers));
+            new(SqliteCenteredViews.RevisionIdentity(baseId, previousRevisionId, normalized), baseId, order, Registered.AddSeconds(order), manifest,
+                normalized));
     }
 
     /// <summary>
-    /// A view group revision built as a producer builds one: the section and reopen dependencies come from the typed view,
-    /// and any member published in the group is listed there instead of as a dependency.
+    /// A view group revision built as a producer builds one: published under the store-issued base and revision IDs, with
+    /// the section and reopen dependencies from the typed view, and any member published in the group listed there instead
+    /// of as a dependency.
     /// </summary>
     public static SiloGroupDraft Draft(
-        string groupId, string revisionId, string? previousRevisionId, CenteredView view, IReadOnlyList<SiloDraftMember> members,
+        CenteredView view, string? previousRevisionId, IReadOnlyList<SiloDraftMember> members,
         IReadOnlyList<SiloManifestDependency> computeDependencies, long order)
     {
         var anchor = SiloHarness.Start.AddMinutes(30);
         var published = members.Select(static member => (member.ArtifactId, member.ArtifactRevision)).ToHashSet();
         var reopen = SiloCenteredViews.ReopenDependencies(view, scienceDisplayed: true, published);
-        return new SiloGroupDraft(SiloJson.CenteredViewGroupKind, groupId, revisionId, anchor.AddSeconds(order), anchor, anchor.AddSeconds(100),
-            members, [.. reopen, .. computeDependencies], new SiloManifestProvenance([]), previousRevisionId, "camera-1",
+        return new SiloGroupDraft(SiloJson.CenteredViewGroupKind, view.Base.BaseId, view.Revision.RevisionId, anchor.AddSeconds(order), anchor,
+            anchor.AddSeconds(100), members, [.. reopen, .. computeDependencies], new SiloManifestProvenance([]), previousRevisionId, "camera-1",
             SiloCenteredViews.Section(view, previousRevisionId));
     }
 

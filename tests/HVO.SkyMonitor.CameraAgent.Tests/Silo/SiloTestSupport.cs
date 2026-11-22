@@ -594,24 +594,26 @@ internal static class SiloDrafts
             CameraId: "camera-1", Capture: new("agent-0001", number));
     }
 
-    public static string ReferenceCapture(string baseId) => SiloTypedViews.ReferenceCapture(baseId).ToString("D");
+    public static string ReferenceCapture(string seed) => SiloTypedViews.ReferenceCapture(seed).ToString("D");
 
-    public static SiloViewEvidence PreviewBinding(string baseId) => SiloTypedViews.Stack(baseId).Preview.Binding;
+    public static SiloViewEvidence PreviewBinding(string seed) => SiloTypedViews.Stack(seed).Preview.Binding;
 
     /// <summary>
-    /// A centered view revision of a true typed stack base, seeded by <paramref name="baseId"/>. Its revision ID is
-    /// derived from that base, the predecessor and the layers. The base's preview, science and closed window are members of
-    /// the first revision and dependencies afterwards. Its section and reopen dependencies come from the typed view, exactly
-    /// as manifest validation derives them again; callers add only compute dependencies.
+    /// A centered view revision of the true typed stack base <paramref name="seed"/> names, published under the IDs the
+    /// store issues for it: the draft's group ID is the base ID and its revision ID is derived from that base,
+    /// <paramref name="previousRevisionId"/> (a predecessor draft's revision ID) and the layers in the store's order. The
+    /// base's preview, science and closed window are members of the first revision and dependencies afterwards. Its section
+    /// and reopen dependencies come from the typed view, exactly as manifest validation derives them again; callers add
+    /// only compute dependencies.
     /// </summary>
     public static SiloGroupDraft View(
-        SiloTestPayloads payloads, string baseId, string revisionId, string? previousRevisionId, long order,
+        SiloTestPayloads payloads, string seed, string? previousRevisionId, long order,
         IReadOnlyList<SiloViewLayerBinding> layers, IReadOnlyList<SiloManifestDependency> computeDependencies, bool publishPreview)
     {
-        var stack = SiloTypedViews.Stack(baseId);
+        var stack = SiloTypedViews.Stack(seed);
         var view = SiloTypedViews.View(stack.Definition, previousRevisionId, order, [.. layers.Select(SiloTypedViews.Layer)]);
         var members = publishPreview ? stack.Products.Select(product => product.Member(payloads)).ToArray() : [];
-        return SiloTypedViews.Draft(baseId, revisionId, previousRevisionId, view, members, computeDependencies, order);
+        return SiloTypedViews.Draft(view, previousRevisionId, members, computeDependencies, order);
     }
 
     /// <summary>An evidence product published as its own group; layers bind to it by identity and digest.</summary>

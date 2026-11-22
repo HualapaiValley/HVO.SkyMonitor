@@ -144,26 +144,27 @@ public sealed class SiloRecoveryTests
         await silo.RestartAsync().ConfigureAwait(false);
         await silo.Publisher.ResumeAsync(10, CancellationToken.None).ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Evidence(silo.Payloads, "stars")).ConfigureAwait(false);
-        await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-a", "rev-1", null, 1,
+        var a1 = SiloDrafts.View(silo.Payloads, "base-a", null, 1,
             [SiloDrafts.Layer("stars", "Ready", "stars", 4), SiloDrafts.Layer("clouds", "Waiting", null, 0)],
-            [], publishPreview: true)).ConfigureAwait(false);
-        await silo.AppendAsync(new SiloLiveIssueRecord("camera-1", "camera-1/run-1/generation-1", "base-a", "rev-1", 7,
+            [], publishPreview: true);
+        await silo.PublishAsync(a1).ConfigureAwait(false);
+        await silo.AppendAsync(new SiloLiveIssueRecord("camera-1", "camera-1/run-1/generation-1", a1.GroupId, a1.RevisionId, 7,
             SiloHarness.Start.AddMinutes(31))).ConfigureAwait(false);
         // A late layer revision on the base is archive-only: published, never live-issued.
-        await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-a", "rev-2", "rev-1", 2,
+        var a2 = SiloDrafts.View(silo.Payloads, "base-a", a1.RevisionId, 2,
             [SiloDrafts.Layer("stars", "Ready", "stars", 4), SiloDrafts.Layer("clouds", "Incompatible", null, 5)],
-            [], publishPreview: false))
-            .ConfigureAwait(false);
+            [], publishPreview: false);
+        await silo.PublishAsync(a2).ConfigureAwait(false);
         var capture1 = silo.PublishRecord(SiloDrafts.CaptureGroup(1));
         await silo.AppendAsync(
-            new SiloPinRecord("pin-a", "group", "base-a", "rev-1", true, "operator keeps the first revision"),
+            new SiloPinRecord("pin-a", "group", a1.GroupId, a1.RevisionId, true, "operator keeps the first revision"),
             new SiloPolicyRecord("display", SiloJson.SerializeToElement(new { keepDays = 30 })),
             silo.ReplicateToArchive(SiloHarness.Identity(capture1, SiloDrafts.Raw(1)), silo.MemberLocator(capture1.GroupId, SiloDrafts.Raw(1))))
             .ConfigureAwait(false);
         await silo.RestartAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 4)).ConfigureAwait(false);
         var before = await silo.Index.DescribeAsync(CancellationToken.None).ConfigureAwait(false);
-        var layersBefore = await silo.Index.ReadLayersAsync("base-a", "rev-2", CancellationToken.None).ConfigureAwait(false);
+        var layersBefore = await silo.Index.ReadLayersAsync(a2.GroupId, a2.RevisionId, CancellationToken.None).ConfigureAwait(false);
 
         var rebuilt = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
         await silo.Catalog.VerifyRolesAsync(10_000, CancellationToken.None).ConfigureAwait(false);
@@ -173,13 +174,13 @@ public sealed class SiloRecoveryTests
         rebuilt.Authority.UnknownInterval.Should().BeFalse();
         rebuilt.Authority.CompleteThroughPrefixEnd.Should().BeTrue();
         (await silo.Index.DescribeAsync(CancellationToken.None).ConfigureAwait(false)).Should().Be(before);
-        (await silo.Index.ReadLayersAsync("base-a", "rev-2", CancellationToken.None).ConfigureAwait(false)).Should().Equal(layersBefore);
-        var pointers = await silo.Index.ReadPointersAsync("base-a", CancellationToken.None).ConfigureAwait(false);
-        pointers.Should().Be(new SiloRevisionPointers("base-a", "rev-1", "rev-2", "rev-1"));
-        pointers.DefaultRevisionId.Should().Be("rev-1");
-        (await silo.Catalog.ReopenAsync("base-a", "rev-1", CancellationToken.None).ConfigureAwait(false)).Reopenable.Should().BeTrue();
-        (await silo.Catalog.ReopenAsync("base-a", "rev-2", CancellationToken.None).ConfigureAwait(false)).Reopenable.Should().BeTrue();
-        (await silo.Index.ReadCurrentLiveAsync("camera-1", CancellationToken.None).ConfigureAwait(false))!.RevisionId.Should().Be("rev-1");
+        (await silo.Index.ReadLayersAsync(a2.GroupId, a2.RevisionId, CancellationToken.None).ConfigureAwait(false)).Should().Equal(layersBefore);
+        var pointers = await silo.Index.ReadPointersAsync(a1.GroupId, CancellationToken.None).ConfigureAwait(false);
+        pointers.Should().Be(new SiloRevisionPointers(a1.GroupId, a1.RevisionId, a2.RevisionId, a1.RevisionId));
+        pointers.DefaultRevisionId.Should().Be(a1.RevisionId);
+        (await silo.Catalog.ReopenAsync(a1.GroupId, a1.RevisionId, CancellationToken.None).ConfigureAwait(false)).Reopenable.Should().BeTrue();
+        (await silo.Catalog.ReopenAsync(a2.GroupId, a2.RevisionId, CancellationToken.None).ConfigureAwait(false)).Reopenable.Should().BeTrue();
+        (await silo.Index.ReadCurrentLiveAsync("camera-1", CancellationToken.None).ConfigureAwait(false))!.RevisionId.Should().Be(a1.RevisionId);
         (await silo.Index.ReadIdentityFloorsAsync(CancellationToken.None).ConfigureAwait(false))
             .Should().ContainKey("capture-sequence");
     }
@@ -194,8 +195,9 @@ public sealed class SiloRecoveryTests
         var raw1 = SiloHarness.Identity(capture1, SiloDrafts.Raw(1));
         // The view's typed reopen set is its own base's preview, closed window and displayed science, all published here as
         // members; the expired raw is only a compute input, so the view still reopens.
-        await silo.PublishAsync(SiloDrafts.View(silo.Payloads, "base-b", "rev-1", null, 1, [SiloDrafts.Layer("clouds", "Waiting", null, 0)],
-            [new(raw1.Id, raw1.Revision, raw1.Sha256, SiloDependencyKind.Compute, true)], publishPreview: true)).ConfigureAwait(false);
+        var b1 = SiloDrafts.View(silo.Payloads, "base-b", null, 1, [SiloDrafts.Layer("clouds", "Waiting", null, 0)],
+            [new(raw1.Id, raw1.Revision, raw1.Sha256, SiloDependencyKind.Compute, true)], publishPreview: true);
+        await silo.PublishAsync(b1).ConfigureAwait(false);
         var local = silo.MemberLocator(capture1.GroupId, raw1.Id);
         await silo.AppendAsync(new SiloExpiryIntentRecord("expire-raw-1", SiloExpiryScope.Role, raw1, "last-copy-policy:operator",
             [new(local, "local", "allocation-raw-1", raw1.Length)], "full-fidelity retention elapsed", LastCopy: true)).ConfigureAwait(false);
@@ -214,7 +216,7 @@ public sealed class SiloRecoveryTests
         expired.Locators.Single(locator => locator.Source == "named").CopyState.Should().Be("evicted");
         (await RoleAsync(silo, SiloDrafts.Raw(2)).ConfigureAwait(false)).Disposition.Should().Be(SiloDisposition.Missing);
         (await RoleAsync(silo, SiloDrafts.Preview(1)).ConfigureAwait(false)).Disposition.Should().Be(SiloDisposition.Available);
-        (await silo.Catalog.ReopenAsync("base-b", "rev-1", CancellationToken.None).ConfigureAwait(false)).Reopenable.Should().BeTrue();
+        (await silo.Catalog.ReopenAsync(b1.GroupId, b1.RevisionId, CancellationToken.None).ConfigureAwait(false)).Reopenable.Should().BeTrue();
         var capture = await silo.Catalog.ReopenAsync(capture1.GroupId, "r1", CancellationToken.None).ConfigureAwait(false);
         capture.Reopenable.Should().BeFalse();
         capture.Blocking.Should().ContainSingle().Which.Disposition.Should().Be(SiloDisposition.PolicyExpired);
