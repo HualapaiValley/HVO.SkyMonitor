@@ -442,12 +442,22 @@ uses the same storage drain:
    it to report healthy.
 4. Read back the marker and earlier object versions by exact version and SHA-256.
 
-On an installed instance, as the user that installed it, with `jq` on the host. Before the stop it records every
-object version in the bucket with the SHA-256 of its bytes, read through the store. After the replacement it reads them
-again and requires the same versions with the same bytes (step 4), then runs `silo-verify`, which also reads the marker
-back from CameraAgent's network. The first-boot pause and capture state are unchanged by the replacement. Any failed
-step stops the procedure and says which command failed; if Silo was already stopped, the message says how to start it
-again. Reading every version takes time in proportion to the data stored.
+On an installed instance, as the user that installed it, with `jq` on the host:
+
+- **No other writer.** Before the stop it records every object version in the bucket with the SHA-256 of its bytes,
+  read through the store. After the replacement it reads them again and requires the same versions with the same bytes
+  (step 4). That assumes nothing writes to the store meanwhile, which holds in this release: CameraAgent does not write
+  to Silo until #1968. Reading every version takes time in proportion to the data stored.
+- **Exclusivity as the installer proves it.** Step 2 refuses when any other container, running or not, mounts the data
+  root, a path inside it, an ancestor of it, or the same directory or an ancestor under another name (the same device
+  and inode, links followed). Only Docker's own answer that a listed container is gone counts as its absence.
+- **What a stop leaves.** Any failed step stops the procedure once, names what failed, and says what the step it reached
+  leaves and how to recover. Nothing has changed before the stop. After it, Silo stays stopped, its original container
+  kept, whenever its data root is not proved its own; start it only once nothing else references the data root. After
+  the original container is removed, the message gives the command that starts the replacement. The inventory taken
+  before the stop is kept in the reported folder; remove it when done.
+- **Result.** It ends with `silo-verify`. `ready` and `degraded` both complete the local replacement; `degraded` reports
+  the archive store's state, which the replacement does not change (above).
 
 ```bash
 ID='<instance-id>'; P='<product-root>'; HVO=hvo-sky-install
@@ -455,8 +465,28 @@ N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; DATA=$I/silo; B
 ROOT_ENV='export MC_HOST_root="http://$(cat /run/hvo-silo/root-user):$(cat /run/hvo-silo/root-password)@127.0.0.1:9000"'
 COMPOSE=(docker compose --project-name "hvo-skymonitor-$N" --env-file "$I/config/compose/instance.env"
   --file "$I/config/compose/compose.yml")
-W=$(mktemp -d)
-trap 'echo "Stopped: \"$BASH_COMMAND\" failed. If Silo is stopped, start it again with: docker start $SILO" >&2' ERR
+W=$(mktemp -d); phase=unchanged
+fail() {   # prints, once, what failed and what the phase reached leaves, then stops
+  trap - ERR
+  {
+    echo "Stopped: $1"
+    case $phase in
+      unchanged) echo "Nothing was changed; Silo is still running." ;;
+      stopping) echo "Silo was stopped but did not prove its process exited; check it with: docker inspect $SILO" ;;
+      stopped) echo "Silo stays stopped and its original container is kept: its data root is not proved its own."
+               echo "Start it only once no other container references $DATA: docker start $SILO" ;;
+      removed) echo "The original Silo container is removed and no replacement runs. Start the replacement with:"
+               echo "  ${COMPOSE[*]} up --detach --no-deps silo" ;;
+      started) echo "The replacement Silo started but is not healthy; read its log with: docker logs $SILO" ;;
+      replaced) echo "The replacement Silo runs but did not verify as the original. Stop it (docker stop $SILO) and keep it"
+                echo "stopped until this is resolved." ;;
+    esac
+    if [[ -s $W/before ]]; then echo "The version inventory taken before the stop is in $W; remove it when done."; fi
+  } >&2
+  if [[ ! -s $W/before ]]; then rm -rf -- "$W"; fi
+  exit 1
+}
+trap 'if [[ $BASHPID == "$$" ]]; then fail "\"$BASH_COMMAND\" failed."; fi' ERR
 versions() {   # every object version in the bucket and the SHA-256 of its bytes, into $W/$1
   docker exec "$SILO" bash -c "set -euo pipefail; $ROOT_ENV; mcli ls --versions --recursive --json 'root/$BUCKET'" |
     jq -er 'select(.status == "success" and .type == "file" and (.isDeleteMarker // false | not)) | [.key, .versionId] | @tsv' |
@@ -467,34 +497,57 @@ versions() {   # every object version in the bucket and the SHA-256 of its bytes
     printf '%s\t%s\t%s\n' "$key" "$version" "${sha%% *}"
   done < "$W/$1.list" > "$W/$1"
 }
-"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -e '.readiness != "not-ready"' >/dev/null
+opening=$("$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -er .readiness)
+if [[ $opening == not-ready ]]; then fail "silo-verify reports this instance not-ready."; fi
 versions before
-[[ -s $W/before ]]                                                                   # the marker and fence at least
+if [[ ! -s $W/before ]]; then fail "the store listed no object version (the marker and fence at least)."; fi
 PID=$(docker inspect --format '{{.State.Pid}}' "$SILO")
-docker stop --timeout 30 "$SILO"                                                     # step 1
-[[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$SILO")" == "false 0" ]]
-if [[ -r /proc/$PID/cmdline ]] && tr '\0' ' ' < "/proc/$PID/cmdline" | grep -q silo; then echo "Silo $PID still runs" >&2; exit 1; fi
-ids=$(docker ps -aq --no-trunc)                                                      # step 2: an unanswered inventory stops here
+phase=stopping; docker stop --timeout 30 "$SILO" > /dev/null                         # step 1
+if [[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$SILO")" != "false 0" ]]; then fail "Silo still runs."; fi
+if [[ -r /proc/$PID/cmdline ]] && tr '\0' ' ' < "/proc/$PID/cmdline" | grep -q silo; then fail "Silo process $PID still runs."; fi
+phase=stopped                                                                        # step 2
+roots=(); path=$DATA   # the data root and its existing ancestors below /, by device and inode
+while [[ $path != / ]]; do
+  if [[ -e $path ]]; then roots+=("$(stat -L -c '%d:%i' "$path")"); fi
+  path=$(dirname "$path")
+done
+ids=$(docker ps -aq --no-trunc)
 for c in $ids; do
-  if [[ "$(docker inspect --format '{{.Name}}' "$c")" == "/$SILO" ]]; then continue; fi
+  if ! name=$(docker inspect --format '{{.Name}}' "$c" 2> "$W/inspect.err"); then
+    if grep -qiE 'No such (container|object)' "$W/inspect.err"; then continue; fi    # removed since the listing
+    fail "Docker could not inspect container $c, so its mounts are unknown: $(head -c 300 "$W/inspect.err")"
+  fi
+  if [[ $name == "/$SILO" ]]; then continue; fi
   mounts=$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$c")
   while IFS= read -r s; do
-    if [[ -n $s && ( $s == "$DATA" || $DATA == "${s%/}/"* || $s == "$DATA/"* ) ]]; then
-      echo "$c mounts $s; Silo is stopped. Start it again with: docker start $SILO" >&2; exit 1
+    if [[ -z $s ]]; then continue; fi
+    if [[ $s == "$DATA" || $s == "$DATA/"* || $DATA == "${s%/}/"* ]]; then fail "container $c mounts $s."; fi
+    if [[ -e $s ]]; then
+      node=$(stat -L -c '%d:%i' "$s")
+      for r in "${roots[@]}"; do
+        if [[ $node == "$r" ]]; then fail "container $c mounts $s, the same directory as $DATA or an ancestor of it."; fi
+      done
     fi
   done <<< "$mounts"
 done
-docker rm "$SILO"
-"${COMPOSE[@]}" up --detach --no-deps silo                                           # step 3
+docker rm "$SILO" > /dev/null; phase=removed
+"${COMPOSE[@]}" up --detach --no-deps silo; phase=started                            # step 3
 for _ in $(seq 90); do
   if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" == healthy ]]; then break; fi
   sleep 2
 done
-[[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" == healthy ]]
+if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" != healthy ]]; then fail "Silo did not report healthy."; fi
+phase=replaced
 versions after                                                                       # step 4
-diff "$W/before" "$W/after"
-"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -e '.readiness == "ready"' >/dev/null
-echo "Replaced: $(wc -l < "$W/after") object versions read back by version and SHA-256; silo-verify ready."
+if ! diff "$W/before" "$W/after" >&2; then fail "the object versions read back differ from those before the stop."; fi
+"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json > "$W/verify.json"
+case "$(jq -er .readiness "$W/verify.json")" in
+  ready) result="silo-verify ready" ;;
+  degraded) result="silo-verify degraded: archive $(jq -r '.archive.state + " (" + .archive.reason + ")"' "$W/verify.json"), unchanged by the replacement" ;;
+  *) fail "silo-verify reports the replacement not ready." ;;
+esac
+trap - ERR
+echo "Replaced: $(wc -l < "$W/after") object versions read back by version and SHA-256; $result."
 rm -rf -- "$W"
 ```
 
