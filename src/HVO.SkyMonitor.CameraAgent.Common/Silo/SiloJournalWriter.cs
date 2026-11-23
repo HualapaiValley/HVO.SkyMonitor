@@ -58,7 +58,8 @@ internal static class SiloCreateOnly
 
     public static async ValueTask<SiloCreated> PutVerifiedAsync(
         ISiloObjectStore store, string key, long length, string sha256, Func<CancellationToken, ValueTask<Stream>> open,
-        string? format, string bindingId, TimeProvider clock, Action? afterPut, CancellationToken cancellationToken)
+        string? format, string bindingId, TimeProvider clock, Action? afterPut, CancellationToken cancellationToken,
+        Func<SiloExactLocator, CancellationToken, ValueTask<SiloProbe>>? probeOccupant = null)
     {
         if (!store.Descriptor.PersistenceQualified)
         {
@@ -99,8 +100,10 @@ internal static class SiloCreateOnly
                     continue;
                 }
                 var locator = new SiloExactLocator(store.Descriptor.StoreId, store.Descriptor.Bucket, key, version);
-                var probe = await SiloVerifier.ProbeAsync(store, locator, length, sha256, clock, captureBytes: false, cancellationToken)
-                    .ConfigureAwait(false);
+                var probe = !result.Created && probeOccupant is not null
+                    ? await probeOccupant(locator, cancellationToken).ConfigureAwait(false)
+                    : await SiloVerifier.ProbeAsync(store, locator, length, sha256, clock, captureBytes: false, cancellationToken)
+                        .ConfigureAwait(false);
                 switch (probe.Status)
                 {
                     case SiloProbeStatus.Verified:

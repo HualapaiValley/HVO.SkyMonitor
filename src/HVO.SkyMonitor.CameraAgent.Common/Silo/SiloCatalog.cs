@@ -585,6 +585,7 @@ internal sealed class SiloCatalog(SiloCatalogIndex index, SiloStoreSet stores, I
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(options);
+        SiloVerifier.ValidateMetadataReadLimit(options.MaximumCheckpointBytes, nameof(options.MaximumCheckpointBytes));
         var target = root.IndexDatabasePath;
         var metadata = SiloPublicationState.BindingMetadata(binding);
         await SiloCatalogFiles.RecoverAsync(target, SiloCatalogIndex.Format, metadata, cancellationToken).ConfigureAwait(false);
@@ -800,6 +801,7 @@ internal sealed class SiloCheckpointWriter(
     /// </summary>
     public async ValueTask<SiloAnchorRecord> WriteAsync(CancellationToken cancellationToken)
     {
+        SiloVerifier.ValidateMetadataReadLimit(maximumBytes, nameof(maximumBytes));
         if (!local.Descriptor.PersistenceQualified)
         {
             throw new SiloStoreNotQualifiedException(local.Descriptor.StoreId);
@@ -826,16 +828,25 @@ internal sealed class SiloCheckpointWriter(
         }
         var sha = SiloHash.Sha256(bytes);
         var name = await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
+        SiloProbe? occupied = null;
+        async ValueTask<SiloProbe> ProbeOccupantAsync(SiloExactLocator locator, CancellationToken token) =>
+            occupied = await SiloVerifier.ProbeMetadataOccupantAsync(local, locator, bytes.Length, sha, clock, maximumBytes, token)
+                .ConfigureAwait(false);
         try
         {
             var created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
-                SiloFormats.JournalCheckpoint, binding.BindingId, clock, null, cancellationToken).ConfigureAwait(false);
+                SiloFormats.JournalCheckpoint, binding.BindingId, clock, null, cancellationToken, ProbeOccupantAsync).ConfigureAwait(false);
             return Anchor(created.VersionId, bytes.Length, sha);
         }
         catch (SiloConflictException conflict) when (conflict.Code == "silo.create-only-conflict")
         {
             // An earlier attempt landed, its response perhaps lost, and proof of P4 grew since at the same cursor.
-            var occupant = await InspectLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false);
+            // Use the same version and bytes already read to resolve the conflict within the configured bound.
+            if (occupied is not { Bytes: { } landedBytes })
+            {
+                throw;
+            }
+            var occupant = InspectLanded(checkpoint, occupied.Locator.VersionId, landedBytes);
             if (occupant.Kind != LandedKind.Reusable)
             {
                 throw;
@@ -868,10 +879,7 @@ internal sealed class SiloCheckpointWriter(
         new("silo.create-only-conflict", $"Key {key} already holds different bytes at {versionId}; it is never replaced.");
 
     /// <summary>
-    /// What is already at this cursor's key, read only up to the bound. It is reusable when it is this binding's checkpoint
-    /// of exactly these records and every P4 claim it makes is one the catalog proves now. Its list may be shorter, from
-    /// before proof grew at the same cursor, and then it only settles less. A claim the catalog cannot prove, or anything
-    /// else at the key, is different, so a retry never anchors a P4 that did not happen.
+    /// What is already at this cursor's key, read up to one byte past the bound.
     /// </summary>
     private async ValueTask<(LandedKind Kind, string? VersionId, long Length, string? Sha256)> InspectLandedAsync(
         string key, SiloJournalCheckpoint wanted, CancellationToken cancellationToken)
@@ -889,21 +897,31 @@ internal sealed class SiloCheckpointWriter(
         {
             return (LandedKind.OverBound, null, 0, null);
         }
+        return InspectLanded(wanted, found.VersionId, found.Bytes);
+    }
+
+    /// <summary>
+    /// An occupant is reusable when it is this binding's checkpoint of exactly these records and every P4 claim it
+    /// makes is one the catalog proves now. Its list may be shorter, from before proof grew at the same cursor.
+    /// </summary>
+    private static (LandedKind Kind, string? VersionId, long Length, string? Sha256) InspectLanded(
+        SiloJournalCheckpoint wanted, string versionId, byte[] bytes)
+    {
         SiloJournalCheckpoint landed;
         try
         {
-            landed = SiloJson.ReadCheckpoint(found.Bytes, "journal checkpoint " + wanted.Covers);
+            landed = SiloJson.ReadCheckpoint(bytes, "journal checkpoint " + wanted.Covers);
         }
         catch (SiloDataException)
         {
-            return (LandedKind.Different, found.VersionId, found.Bytes.Length, null);
+            return (LandedKind.Different, versionId, bytes.Length, null);
         }
         var same = SiloJson.Serialize(landed with { ReachedP4 = [] }).AsSpan().SequenceEqual(SiloJson.Serialize(wanted with { ReachedP4 = [] }));
         var provable = wanted.ReachedP4.ToHashSet();
         var proven = landed.ReachedP4.All(provable.Contains);
         return same && proven
-            ? (LandedKind.Reusable, found.VersionId, found.Bytes.Length, SiloHash.Sha256(found.Bytes))
-            : (LandedKind.Different, found.VersionId, found.Bytes.Length, null);
+            ? (LandedKind.Reusable, versionId, bytes.Length, SiloHash.Sha256(bytes))
+            : (LandedKind.Different, versionId, bytes.Length, null);
     }
 }
 

@@ -40,6 +40,12 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
+
+- CameraAgent Silo rebuild falls back to an earlier trusted checkpoint when the newest checkpoint omits required journal positions. #2002
+
+- CameraAgent Silo rejects invalid metadata read limits before accessing storage. #2003
+
 - New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920
 
 - CameraAgent opens retained file-only archive products through the local archive API and rejects incompatible centered profiles before activation. #1919
