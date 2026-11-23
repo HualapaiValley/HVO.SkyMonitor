@@ -167,6 +167,9 @@ public sealed class ExposureMeasurementTests
         var retry = await Produce(request);
         Assert.AreEqual(product.OutputIdentitySha256, retry.OutputIdentitySha256);
         CollectionAssert.AreEqual(product.Payload.ToArray(), retry.Payload.ToArray());
+
+        await AssertFocusBudgetPrefersEligibleDetections(bayer, eligibleCount: 36);
+        await AssertFocusBudgetPrefersEligibleDetections(bayer, eligibleCount: 4);
     }
 
     [TestMethod]
@@ -295,12 +298,7 @@ public sealed class ExposureMeasurementTests
         }
     }
 
-    [TestMethod]
-    [DataRow(false, 36)]
-    [DataRow(true, 36)]
-    [DataRow(false, 4)]
-    [DataRow(true, 4)]
-    public async Task FocusBudgetPrefersEligibleDetectionsAndRetainsRejectionAccounting(bool bayer, int eligibleCount)
+    private static async Task AssertFocusBudgetPrefersEligibleDetections(bool bayer, int eligibleCount)
     {
         const int pitch = 56;
         const int columns = 8;
@@ -309,11 +307,12 @@ public sealed class ExposureMeasurementTests
         var raw = CreateRaw(layout, Generate(layout, (x, y) =>
         {
             var index = y / pitch * columns + x / pitch;
+            var truncated = index == sourceCount - 1;
             var saturated = index >= eligibleCount && index % 2 == 0;
-            var trailed = index >= eligibleCount && !saturated;
+            var trailed = index >= eligibleCount && !saturated && !truncated;
             var dx = (x % pitch - pitch / 2) / (trailed ? 3.7 : 1.5);
-            var dy = (y % pitch - pitch / 2) / 1.5;
-            var amplitude = saturated ? 4800 : trailed ? 2300 : 1250;
+            var dy = (y % pitch - (truncated ? pitch - 12 : pitch / 2)) / 1.5;
+            var amplitude = saturated ? 4800 : trailed ? 2300 : truncated ? 3300 : 1250;
             return (ushort)Math.Min(4095, Math.Round(180 + amplitude * Math.Exp(-(dx * dx + dy * dy) / 2)));
         }));
         var linear = await Normalize(raw);
@@ -332,6 +331,11 @@ public sealed class ExposureMeasurementTests
             {
                 Assert.AreEqual(StellarSourceConditions.None, detection.Conditions);
                 eligible.Add(detection.Index);
+            }
+            else if (position == sourceCount - 1)
+            {
+                Assert.AreEqual(StellarSourceConditions.None, detection.Conditions);
+                rejected.Add(detection.Index, FocusStarReasonCodes.ApertureTruncated);
             }
             else
             {
@@ -446,9 +450,13 @@ public sealed class ExposureMeasurementTests
     }
 
     [TestMethod]
-    [DataRow(false)]
-    [DataRow(true)]
-    public async Task CommittedReaderVerifiesIndependentAdmissionAndExactProductSlot(bool bayer)
+    public async Task CommittedReaderVerifiesIndependentAdmissionAndExactProductSlot()
+    {
+        await AssertCommittedReaderAndReplay(bayer: false);
+        await AssertCommittedReaderAndReplay(bayer: true);
+    }
+
+    private static async Task AssertCommittedReaderAndReplay(bool bayer)
     {
         var layout = Layout(96, 96, bayer);
         var light = CreateRaw(layout, Generate(layout, static (_, _) => 91));
