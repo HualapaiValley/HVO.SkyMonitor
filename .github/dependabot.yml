@@ -6,6 +6,14 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    # Reserve .NET 11 and later for a coordinated target-framework upgrade.
+    ignore:
+      - dependency-name: "Microsoft.*"
+        versions:
+          - ">= 11.0.0"
+      - dependency-name: "System.*"
+        versions:
+          - ">= 11.0.0"
     groups:
       dotnet-servicing:
         patterns:
@@ -66,6 +74,10 @@ updates:
         patterns:
           - "*"
     ignore:
+      # Dependabot compares the numeric part of tags such as 11.0-noble.
+      - dependency-name: "dotnet/*"
+        versions:
+          - ">= 11"
       # global.json pins the SDK exactly (rollForward: disable), so a new SDK tag is a coordinated manual
       # bump; Dependabot only refreshes the digest of the pinned SDK tag.
       - dependency-name: "dotnet/sdk"
