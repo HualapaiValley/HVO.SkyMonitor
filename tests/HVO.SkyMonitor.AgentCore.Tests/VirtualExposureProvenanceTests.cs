@@ -144,5 +144,34 @@ public sealed class VirtualExposureProvenanceTests
         Assert.IsTrue((manifest with { Scene = scene with { VirtualExposure = null } }).Validate().IsValid,
             "Existing scene provenance also remains readable without a virtual clock.");
         Assert.IsTrue(original.Validate().IsValid, "Existing manifests have no virtual interval requirement.");
+
+        var timing = original.Descriptor.Timing;
+        var invalidClock = CaptureContractValidationResult.Failure(CaptureContractReasonCodes.InvalidIdentity, "scene.virtualExposure");
+        foreach (var mapping in new[] { VirtualExposureTimeMapping.ShutterUtc, VirtualExposureTimeMapping.FixedCelestialAndShutterUtc })
+        {
+            var celestialStart = mapping == VirtualExposureTimeMapping.ShutterUtc ? timing.ExposureStartedUtc : request.AddDays(-1);
+            var shutter = VirtualExposureProvenance.Create(request, timing.ExposureStartedUtc, celestialStart,
+                original.Descriptor.Controls.EffectiveExposure, mapping);
+            var shutterScene = scene with { SceneUtc = shutter.CelestialMidpointUtc, VirtualExposure = shutter };
+            var shutterManifest = original with { Scene = shutterScene };
+            var roundTrip = CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(shutterManifest));
+            Assert.IsTrue(roundTrip.IsValid);
+            Assert.AreEqual(shutter, roundTrip.Document!.Manifest.Scene!.VirtualExposure);
+
+            var oldSchema = shutter with { SchemaVersion = VirtualExposureProvenance.CurrentSchemaVersion };
+            var wrongSchema = shutterManifest with { Scene = shutterScene with { VirtualExposure = oldSchema } };
+            Assert.AreEqual(invalidClock, CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(wrongSchema)).Validation);
+            foreach (var alteredTiming in new[]
+            {
+                timing with { ExposureStartedUtc = timing.ExposureStartedUtc.AddMilliseconds(1) },
+                timing with { ExposureEndedUtc = timing.ExposureEndedUtc.AddMilliseconds(1) }
+            })
+            {
+                var alteredDescriptor = original.Descriptor with { Timing = alteredTiming };
+                Assert.IsTrue(alteredDescriptor.Validate().IsValid, "The observed descriptor is valid on its own.");
+                var mismatch = shutterManifest with { Descriptor = alteredDescriptor };
+                Assert.AreEqual(invalidClock, CaptureContractJson.ParseManifest(CaptureContractJson.Serialize(mismatch)).Validation);
+            }
+        }
     }
 }
