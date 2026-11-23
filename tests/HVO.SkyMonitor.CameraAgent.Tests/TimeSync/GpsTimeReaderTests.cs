@@ -180,10 +180,11 @@ public sealed class GpsTimeReaderTests
         using var cancellation = new CancellationTokenSource();
         var second = reader.ReadAsync(queued, cancellation.Token);
         await cancellation.CancelAsync().ConfigureAwait(false);
-        await Assert.ThrowsAsync<OperationCanceledException>(() => second).ConfigureAwait(false);
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => second).ConfigureAwait(false);
         Assert.AreEqual(0L, queued.Position);
         time.Advance(GpsTimeReader.ReadTimeout);
         await first.ConfigureAwait(false);
+        Assert.AreEqual(cancellation.Token, exception.CancellationToken);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
         await reader.ReadAsync(queued, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
@@ -427,25 +428,35 @@ public sealed class GpsTimeReaderTests
     }
 
     [TestMethod]
-    [DataRow("io")]
-    [DataRow("timeout")]
-    [DataRow("access")]
-    [DataRow("disposed")]
-    [DataRow("canceled")]
-    public async Task ExpectedTransportFailure_ClearsEveryEvidenceFieldAndReadGateRecovers(string failure)
+    [DataRow("io", false)]
+    [DataRow("timeout", false)]
+    [DataRow("access", false)]
+    [DataRow("disposed", false)]
+    [DataRow("canceled", false)]
+    [DataRow("io", true)]
+    [DataRow("disposed", true)]
+    public async Task ExpectedTransportFailure_ClearsEveryEvidenceFieldAndReadGateRecovers(string failure, bool deadlineAlsoExpires)
     {
-        using var reader = CreateReader(new FakeTimeProvider(Now));
+        var time = new FakeTimeProvider(Now);
+        using var reader = CreateReader(time);
         await reader.ReadAsync(Source(Rmc(), Gga()), CancellationToken.None).ConfigureAwait(false);
         reader.ObserveSimulatedPps();
-        using var broken = new FaultingStream(TransportFailure(failure));
+        using var broken = new FaultingStream(TransportFailure(failure), () =>
+        {
+            if (deadlineAlsoExpires)
+            {
+                time.Advance(GpsTimeReader.ReadTimeout);
+            }
+        });
         await reader.ReadAsync(broken, CancellationToken.None).ConfigureAwait(false);
         AssertUnavailable(reader.GetStatus());
         Assert.IsTrue(broken.CanRead, "The caller still owns the stream.");
         await reader.ReadAsync(Source(Gga()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
         await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
-        Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
-        Assert.AreEqual(TimeSpan.Zero, reader.GetStatus().ArrivalOffset);
+        var recovered = reader.GetStatus();
+        Assert.AreEqual(GpsSignalState.Available, recovered.State);
+        Assert.AreEqual(Now - time.GetUtcNow(), recovered.ArrivalOffset);
     }
 
     [TestMethod]
@@ -460,7 +471,7 @@ public sealed class GpsTimeReaderTests
         reader.ObserveSimulatedPps();
         var before = reader.GetStatus();
         using var cancellation = new CancellationTokenSource();
-        using var canceled = new FaultingStream(TransportFailure("canceled"), () =>
+        using var canceled = new WaitingStream(() =>
         {
             cancellation.Cancel();
             if (deadlineAlsoExpires)
@@ -469,7 +480,8 @@ public sealed class GpsTimeReaderTests
             }
         });
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(canceled, cancellation.Token)).ConfigureAwait(false);
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(canceled, cancellation.Token)).ConfigureAwait(false);
+        Assert.AreEqual(cancellation.Token, exception.CancellationToken);
         Assert.AreEqual(before, reader.GetStatus());
         Assert.IsTrue(canceled.CanRead);
 
@@ -478,6 +490,24 @@ public sealed class GpsTimeReaderTests
         Assert.IsTrue(followUpRead.IsCompleted, "Caller cancellation should release the read gate.");
         await followUpRead.ConfigureAwait(false);
         Assert.AreEqual(followUp.Length, followUp.Position);
+    }
+
+    [TestMethod]
+    public async Task CallerCancellation_BetweenReadsStopsBeforeReadingAgain()
+    {
+        using var reader = CreateReader(new FakeTimeProvider(Now));
+        using var seed = Source(Rmc(), Gga());
+        await reader.ReadAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        reader.ObserveSimulatedPps();
+        var before = reader.GetStatus();
+        using var cancellation = new CancellationTokenSource();
+        using var source = new CancelAfterReadStream(cancellation.Cancel);
+
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(source, cancellation.Token)).ConfigureAwait(false);
+
+        Assert.AreEqual(cancellation.Token, exception.CancellationToken);
+        Assert.AreEqual(1L, source.Position);
+        Assert.AreEqual(before, reader.GetStatus());
     }
 
     [TestMethod]
@@ -651,12 +681,23 @@ public sealed class GpsTimeReaderTests
         internal void AdjustTime(DateTimeOffset utc) => _wallOffset = utc - _inner.GetUtcNow();
     }
 
-    private sealed class WaitingStream : MemoryStream
+    private sealed class WaitingStream(Action? beforeWait = null) : MemoryStream
     {
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
+            beforeWait?.Invoke();
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
             return 0;
+        }
+    }
+
+    private sealed class CancelAfterReadStream(Action cancel) : MemoryStream("xx"u8.ToArray())
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var count = Read(buffer.Span);
+            cancel();
+            return ValueTask.FromResult(count);
         }
     }
 
