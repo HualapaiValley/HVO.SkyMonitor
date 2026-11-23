@@ -122,6 +122,86 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    /// <summary>
+    /// #1966 round 2 (Sol F1): an install interrupted after CameraAgent started, and run again with the same inputs, keeps
+    /// the setting files the running process loaded. Docker keeps a container whose Compose model is unchanged, so a
+    /// rewritten bucket or binding file would leave verification refusing a CameraAgent that was never restarted.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    public async Task SiloInstall_ResumedAfterCameraAgentStarted_KeepsTheSettingsTheRunningProcessLoaded()
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-silo-{Guid.NewGuid():N}");
+        RequireSiloDataRootHost(root);
+        var instanceId = Guid.NewGuid();
+        var request = SiloRequest(root, bundle, instanceId);
+        using var runner = new SiloInstallerRunner(SiloCameraAgentImage, root, instanceId);
+        runner.CameraAgent.FailReads = 1;
+        var originalClient = SiloCommands.ClientFactory;
+        SiloCommands.ClientFactory = uri => new SiloFirstBootClient(uri, runner.CameraAgent);
+        try
+        {
+            Task<InstallationResult> Install() => CameraAgentInstaller.InstallAsync(
+                request, runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid, CancellationToken.None,
+                portAvailabilityProbe: new RecordingPortProbe().Probe);
+            _ = await Assert.ThrowsAsync<InstallerException>(Install);
+            Assert.IsTrue(runner.CameraAgentStarts > 0, "The interruption came after CameraAgent started.");
+            var secrets = Path.Combine(runner.Paths.ConfigRoot, "secrets");
+            string[] loaded = [.. SiloRuntimeProfile.BindingSettings(
+                    (await CameraAgentLifecycleManager.ReadManifestAsync(runner.Paths.ManifestPath, CancellationToken.None, allowSiloLayout: true)).Silo!)
+                .Keys.Append(SiloRuntimeProfile.EndpointSetting)];
+            var changed = loaded.ToDictionary(setting => setting, setting => NativeLinux.GetChangeTimeUtc(Path.Combine(secrets, setting)));
+            var starts = runner.CameraAgentStarts;
+
+            var resumed = await Install();
+
+            Assert.AreEqual(InstallationOutcome.Installed, resumed.Outcome);
+            Assert.AreEqual(starts, runner.CameraAgentStarts, "The same inputs render the same model, so Docker kept CameraAgent running.");
+            foreach (var setting in loaded)
+                Assert.AreEqual(changed[setting], NativeLinux.GetChangeTimeUtc(Path.Combine(secrets, setting)), $"{setting} was rewritten.");
+        }
+        finally
+        {
+            SiloCommands.ClientFactory = originalClient;
+            DeleteRoot(root);
+        }
+    }
+
+    /// <summary>
+    /// #1966 round 2 (Fable new finding 2): a CameraAgent image that does not declare the first-boot pause contract would
+    /// ignore the seeded pause and admit captures, so a Silo-layout install refuses it before anything is created.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(null)]
+    [DataRow("cameraagent-first-boot-pause-v0")]
+    public async Task SiloInstall_RefusesACameraAgentImageWithoutTheFirstBootContract(string? contract)
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-silo-{Guid.NewGuid():N}");
+        RequireSiloDataRootHost(root);
+        var instanceId = Guid.NewGuid();
+        using var runner = new SiloInstallerRunner(SiloCameraAgentImage, root, instanceId, contract);
+        try
+        {
+            foreach (var dryRun in new[] { true, false })
+            {
+                var refused = await Assert.ThrowsAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                    SiloRequest(root, bundle, instanceId) with { DryRun = dryRun }, runner, _ => new InstallerOwnerClient(), RuntimeUid,
+                    RuntimeGid, CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+                Assert.IsTrue(refused.IsRefusal, refused.Message);
+                StringAssert.Contains(refused.Message, "does not declare the first-boot pause contract", StringComparison.Ordinal);
+            }
+            Assert.IsEmpty(runner.Mutations, "Nothing changed on the daemon: " + string.Join("; ", runner.Mutations));
+            Assert.IsFalse(Directory.Exists(runner.Paths.InstanceRoot), "Nothing was created on disk.");
+        }
+        finally
+        {
+            DeleteRoot(root);
+        }
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     public async Task AnInstalledFilesystemInstance_IsNeverConvertedToTheSiloLayoutInPlace()
@@ -201,17 +281,16 @@ public sealed partial class InstallerFlowTests
         private readonly InstallerProcessRunner inner;
         private readonly SiloHarness silo;
 
-        public SiloInstallerRunner(string imageId, string root, Guid instanceId)
+        /// <param name="firstBootContract">The CameraAgent image's first-boot contract label, or none.</param>
+        public SiloInstallerRunner(string imageId, string root, Guid instanceId, string? firstBootContract = SiloInstallation.FirstBootContract)
         {
             Paths = InstallationPaths.Create(root, instanceId, ProductionCatalog.DefaultCatalogId);
-            inner = new InstallerProcessRunner(imageId, root, instanceId)
+            var labels = new Dictionary<string, string>(ReleaseFixture.ContractLabels)
             {
-                Labels = new Dictionary<string, string>(ReleaseFixture.ContractLabels)
-                {
-                    ["org.opencontainers.image.revision"] = new string('a', 40),
-                    [SiloInstallation.FirstBootContractLabel] = SiloInstallation.FirstBootContract
-                }
+                ["org.opencontainers.image.revision"] = new string('a', 40)
             };
+            if (firstBootContract is not null) labels[SiloInstallation.FirstBootContractLabel] = firstBootContract;
+            inner = new InstallerProcessRunner(imageId, root, instanceId) { Labels = labels };
             silo = new SiloHarness(Paths, instanceId, seed: false).Defaults();
             silo.SiloImage = SiloImagePin.ForArchitecture("amd64")!.ConfigDigest;
             silo.SiloManifest = null;
@@ -230,6 +309,11 @@ public sealed partial class InstallerFlowTests
         public string Seed { get; init; } = "persisted";
 
         public bool CameraAgentAbsentAtSeed { get; private set; }
+
+        /// <summary>How many times CameraAgent's container started: Docker restarts it only when its Compose model changes.</summary>
+        public int CameraAgentStarts { get; private set; }
+
+        private string? runningModel;
         public bool PauseInForceAtFirstStart { get; private set; }
         public Guid FirstBootPauseId => Guid.Parse(File.ReadAllText(Path.Combine(Paths.ConfigRoot, "secrets", "CameraAgent__FirstBootPause__Id")));
 
@@ -295,7 +379,15 @@ public sealed partial class InstallerFlowTests
                 Events.Add("cameraagent-up");
                 silo.CameraAgentExists = true;
                 if (!silo.NetworkMembers.Contains(silo.CameraAgentId)) silo.NetworkMembers.Add(silo.CameraAgentId);
-                silo.CameraAgentStarted = DateTimeOffset.UtcNow.AddSeconds(1);
+                // Docker keeps a running container whose Compose model (the file and its environment) is unchanged.
+                var model = await File.ReadAllTextAsync(args[Array.IndexOf(args, "--file") + 1], cancellationToken) +
+                            await File.ReadAllTextAsync(args[Array.IndexOf(args, "--env-file") + 1], cancellationToken);
+                if (model != runningModel)
+                {
+                    runningModel = model;
+                    CameraAgentStarts++;
+                    silo.CameraAgentStarted = DateTimeOffset.UtcNow.AddSeconds(1);
+                }
                 return await inner.RunAsync("docker", args, cancellationToken);
             }
             Mutations.Add(string.Join(' ', args));
@@ -365,6 +457,8 @@ public sealed partial class InstallerFlowTests
         private static string Sha(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
         /// <summary>What CameraAgent's initialize-only run writes in its raw-ingress schema transaction.</summary>
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
+            Justification = "PRAGMA user_version takes no parameter; the value is an integer parsed from the image's label.")]
         private void SeedPause(bool inForce)
         {
             var database = CameraAgentStateLayout.RawIngressDatabasePath(Paths.StateRoot);
@@ -376,7 +470,10 @@ public sealed partial class InstallerFlowTests
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Pooling = false }.ToString());
             connection.Open();
             using var command = connection.CreateCommand();
-            command.CommandText = """
+            // The journal CameraAgent creates is at the raw-ingress schema its image declares, which the state preflight of a
+            // resumed install checks; the installer reads only the two capture-control tables.
+            var schema = int.Parse(ReleaseFixture.ContractLabels["io.hvo.skymonitor.raw-ingress-schema"], System.Globalization.CultureInfo.InvariantCulture);
+            command.CommandText = $"PRAGMA user_version = {schema};" + """
                 CREATE TABLE capture_control_state (state_key INTEGER PRIMARY KEY, state TEXT NOT NULL, version INTEGER NOT NULL);
                 CREATE TABLE capture_control_commands (idempotency_key TEXT NOT NULL, actor TEXT NOT NULL, target_state TEXT NOT NULL,
                     expected_version INTEGER, status TEXT NOT NULL, result_state TEXT, result_version INTEGER, changed INTEGER NOT NULL);
@@ -420,10 +517,18 @@ public sealed partial class InstallerFlowTests
     /// <summary>CameraAgent's first-boot status route, answering as the app does for the pause the installer persisted.</summary>
     private sealed class FirstBootStatus(SiloInstallerRunner runner) : HttpMessageHandler
     {
+        /// <summary>How many status reads fail (HTTP 500) before the route answers, to interrupt an install after CameraAgent started.</summary>
+        public int FailReads { get; set; }
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (request.Method != HttpMethod.Get || request.RequestUri!.AbsolutePath != "/api/internal/deployment/lifecycle/first-boot")
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            if (FailReads > 0)
+            {
+                FailReads--;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+            }
             var body = new JsonObject
             {
                 ["id"] = runner.FirstBootPauseId.ToString("D"),

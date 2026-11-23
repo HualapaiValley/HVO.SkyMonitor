@@ -329,7 +329,7 @@ case "${1-} ${2-}" in
   port\ *) [[ $# == 2 ]] || unexpected; find_in containers "$2" >/dev/null || exit 1 ;;
   'kill --signal') [[ $# == 4 && $3 == KILL ]] || unexpected; set_running "$4" false ;;
   start\ *) [[ $# == 2 ]] || unexpected; set_running "$2" true; printf '%s\n' "$2" ;;
-  'stop --time') [[ $# == 4 ]] || unexpected; set_running "$4" false ;;
+  'stop --timeout') [[ $# == 4 ]] || unexpected; set_running "$4" false ;;
   *) unexpected ;;
 esac
 EOF
@@ -801,7 +801,7 @@ expect_refused "containers or networks with this run's name, label or reserved n
 [[ -d $case_dir/state/networks/$T ]] || fail 'the sibling network was removed'
 ok
 
-intruder="stop --time 30 *|add-container|$(id_of intruder)|intruder|bridge|PATH|io.hvo.qualification=$other"
+intruder="stop --timeout 30 *|add-container|$(id_of intruder)|intruder|bridge|PATH|io.hvo.qualification=$other"
 new_case 'an unanswered container list before the replacement fails the run before the replacement'
 printf '%s\n' "${intruder/PATH/$case_dir/parent/run/a-data}" > "$case_dir/state/hooks"
 printf '2 2 fail ps -aq --no-trunc\n' > "$case_dir/state/faults"

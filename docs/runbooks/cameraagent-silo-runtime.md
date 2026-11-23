@@ -76,6 +76,9 @@ hvo-sky-install cameraagent install --storage-layout silo --friendly-name "North
   --catalog-bundle /path/to/catalog.bundle --release /path/to/release   # or --image-ref for an image-only install
 ```
 
+The interactive install wizard does not ask for the Silo layout. It refuses `--storage-layout silo` and every
+`--silo-*` option before it opens, so give every answer on the command line as above.
+
 Before anything is created, the installer refuses an install when any of the following holds:
 - the instance already exists in the other layout, or is an installed Silo-layout instance given any other input (an
   install re-run with the same inputs verifies it, and an interrupted install resumes; see below);
@@ -227,7 +230,7 @@ generation and names the new key; a new writer generation is a takeover (#1972).
 through files and standard input; none is ever an argument.
 
 ```bash
-ID=<instance-id>; P=<product-root>; HVO=hvo-sky-install
+ID='<instance-id>'; P='<product-root>'; HVO=hvo-sky-install
 N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; CA=hvo-skymonitor-$N; BUCKET=hvo-$N
 SECRETS=$I/config/secrets; set -euo pipefail; umask 077
 ROOT_ENV='export MC_HOST_root="http://$(cat /run/hvo-silo/root-user):$(cat /run/hvo-silo/root-password)@127.0.0.1:9000"'
@@ -286,7 +289,7 @@ W=$(mktemp -d)   # owner-only working directory; the new secret is in it until s
    done
    mv -f "$SECRETS/.CameraAgent__Silo__AccessKey.new" "$SECRETS/CameraAgent__Silo__AccessKey"
    mv -f "$SECRETS/.CameraAgent__Silo__SecretKey.new" "$SECRETS/CameraAgent__Silo__SecretKey"
-   docker restart --time 30 "$CA" >/dev/null
+   docker restart --timeout 30 "$CA" >/dev/null
    for _ in $(seq 1 90); do [[ "$(docker inspect --format '{{.State.Health.Status}}' "$CA")" == healthy ]] && break; sleep 2; done
    ```
 
@@ -338,6 +341,10 @@ Never disable the old key before step 6 shows the new key ready.
 - **Device allocation.** The installer maps no camera device. Map the real camera into the candidate only after the
   former owner's container is removed and no process holds the device (`fuser`/`lsof` on the device node). Keep that
   mapping the only one until the handoff ends. Run the first resume only after that.
+- `first-resume` refuses, and capture stays paused, until the installation is recorded complete: its journal says
+  completed and names the same installation as the instance's manifest and result. It takes the installer's locks
+  first and holds them until CameraAgent has recorded the resume, so it never runs beside an install of the instance.
+  An interrupted install is finished by running the same install again.
 - `first-resume` verifies the store, binding, listeners and data root first. It then resumes only if the pause is still
   in force, and reports the resulting capture state and version.
 
@@ -356,6 +363,10 @@ Never disable the old key before step 6 shows the new key ready.
     overriding a Silo setting;
   - that CameraAgent started after its active writer credential pair was published. Publication is the later change
     (rename into place) of the two key files, not a staged file's write time, so the running process read this pair;
+  - that the bucket, store, binding, writer-generation and state-contract settings CameraAgent is configured with hold
+    exactly the values the manifest records, and that none of them, nor the endpoint, changed after CameraAgent
+    started. CameraAgent reads its setting files once, when it starts, so a setting corrected afterwards is refused
+    until CameraAgent is restarted;
   - the filesystem and device recorded at install;
   - bucket versioning;
   - that the marker's latest version is the recorded one and binds this instance;
@@ -424,36 +435,67 @@ Never disable the old key before step 6 shows the new key ready.
 `scripts/qualify:silo-runtime` qualifies this procedure (`exit-exclusive` and `replacement`). Contract 7.2 takeover
 uses the same storage drain:
 
-1. Stop the Silo container (`docker stop --time 30`) and verify its process has exited: the daemon reports it not
+1. Stop the Silo container (`docker stop --timeout 30`) and verify its process has exited: the daemon reports it not
    running with PID 0, and the former PID no longer runs `silo`.
 2. Verify that no other container mounts the data root.
 3. Start the replacement stock container on the same data root, with the pinned image and the same profile. Wait for
    it to report healthy.
 4. Read back the marker and earlier object versions by exact version and SHA-256.
 
-On an installed instance, as the user that installed it. `silo-verify` reads the marker back from CameraAgent's network
-(step 4), and its first-boot pause and capture state are unchanged by the replacement:
+On an installed instance, as the user that installed it, with `jq` on the host. Before the stop it records every
+object version in the bucket with the SHA-256 of its bytes, read through the store. After the replacement it reads them
+again and requires the same versions with the same bytes (step 4), then runs `silo-verify`, which also reads the marker
+back from CameraAgent's network. The first-boot pause and capture state are unchanged by the replacement. Any failed
+step stops the procedure and says which command failed; if Silo was already stopped, the message says how to start it
+again. Reading every version takes time in proportion to the data stored.
 
 ```bash
-ID=<instance-id>; P=<product-root>; HVO=hvo-sky-install
-N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; DATA=$I/silo; set -euo pipefail
+ID='<instance-id>'; P='<product-root>'; HVO=hvo-sky-install
+N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; DATA=$I/silo; BUCKET=hvo-$N; set -Eeuo pipefail; umask 077
+ROOT_ENV='export MC_HOST_root="http://$(cat /run/hvo-silo/root-user):$(cat /run/hvo-silo/root-password)@127.0.0.1:9000"'
 COMPOSE=(docker compose --project-name "hvo-skymonitor-$N" --env-file "$I/config/compose/instance.env"
   --file "$I/config/compose/compose.yml")
-"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -e '.readiness != "not-ready"'
+W=$(mktemp -d)
+trap 'echo "Stopped: \"$BASH_COMMAND\" failed. If Silo is stopped, start it again with: docker start $SILO" >&2' ERR
+versions() {   # every object version in the bucket and the SHA-256 of its bytes, into $W/$1
+  docker exec "$SILO" bash -c "set -euo pipefail; $ROOT_ENV; mcli ls --versions --recursive --json 'root/$BUCKET'" |
+    jq -er 'select(.status == "success" and .type == "file" and (.isDeleteMarker // false | not)) | [.key, .versionId] | @tsv' |
+    sort > "$W/$1.list"
+  while IFS=$'\t' read -r key version; do
+    sha=$(printf '%s\t%s\n' "$key" "$version" | docker exec -i "$SILO" bash -c "set -euo pipefail; $ROOT_ENV
+      IFS=\$'\t' read -r key version; mcli cat --version-id \"\$version\" \"root/$BUCKET/\$key\"" | sha256sum)
+    printf '%s\t%s\t%s\n' "$key" "$version" "${sha%% *}"
+  done < "$W/$1.list" > "$W/$1"
+}
+"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -e '.readiness != "not-ready"' >/dev/null
+versions before
+[[ -s $W/before ]]                                                                   # the marker and fence at least
 PID=$(docker inspect --format '{{.State.Pid}}' "$SILO")
-docker stop --time 30 "$SILO"                                                        # step 1
+docker stop --timeout 30 "$SILO"                                                     # step 1
 [[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$SILO")" == "false 0" ]]
 if [[ -r /proc/$PID/cmdline ]] && tr '\0' ' ' < "/proc/$PID/cmdline" | grep -q silo; then echo "Silo $PID still runs" >&2; exit 1; fi
-for c in $(docker ps -aq --no-trunc); do                                             # step 2
-  [[ "$(docker inspect --format '{{.Name}}' "$c")" == "/$SILO" ]] && continue
-  docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$c" | while IFS= read -r s; do
-    [[ -n $s && ( $s == "$DATA" || $DATA == "${s%/}/"* || $s == "$DATA/"* ) ]] && { echo "$c mounts $s" >&2; exit 1; }
-  done
+ids=$(docker ps -aq --no-trunc)                                                      # step 2: an unanswered inventory stops here
+for c in $ids; do
+  if [[ "$(docker inspect --format '{{.Name}}' "$c")" == "/$SILO" ]]; then continue; fi
+  mounts=$(docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' "$c")
+  while IFS= read -r s; do
+    if [[ -n $s && ( $s == "$DATA" || $DATA == "${s%/}/"* || $s == "$DATA/"* ) ]]; then
+      echo "$c mounts $s; Silo is stopped. Start it again with: docker start $SILO" >&2; exit 1
+    fi
+  done <<< "$mounts"
 done
 docker rm "$SILO"
 "${COMPOSE[@]}" up --detach --no-deps silo                                           # step 3
-until [[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" == healthy ]]; do sleep 2; done
-"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json         # step 4
+for _ in $(seq 90); do
+  if [[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" == healthy ]]; then break; fi
+  sleep 2
+done
+[[ "$(docker inspect --format '{{.State.Health.Status}}' "$SILO")" == healthy ]]
+versions after                                                                       # step 4
+diff "$W/before" "$W/after"
+"$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -e '.readiness == "ready"' >/dev/null
+echo "Replaced: $(wc -l < "$W/after") object versions read back by version and SHA-256; silo-verify ready."
+rm -rf -- "$W"
 ```
 
 **Replica pairing.** The optional archive (#1969) runs a separately qualified Silo on another host over authenticated

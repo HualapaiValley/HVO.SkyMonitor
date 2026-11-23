@@ -145,6 +145,16 @@ internal static class SiloCommands
         }
         var result = await CameraAgentLifecycleManager.ReadResultAsync(paths.ResultPath, cancellationToken, allowSiloLayout: true)
             .ConfigureAwait(false);
+        if (request.Kind == SiloCommandKind.FirstResume)
+        {
+            // The completed journal must be this installation's own, the one the manifest and result record, before anything
+            // is read or sent (#1966 review): another installation's journal proves nothing about this one.
+            var installation = await CameraAgentInstaller.ReadStateAsync(paths.StatePath, cancellationToken).ConfigureAwait(false);
+            if (installation is not null && (installation.InstallationId != manifest.InstallationId || result.InstallationId != manifest.InstallationId))
+                throw InstallerException.Refused(
+                    "The first resume was refused and capture stays paused: this instance's installation record is not the installation " +
+                    "its manifest and result record. Nothing was sent.");
+        }
         // The result names the endpoint the lifecycle token is sent to, so it must be this instance's own, correlated with
         // its manifest, before the token is read or Docker or CameraAgent is called.
         try

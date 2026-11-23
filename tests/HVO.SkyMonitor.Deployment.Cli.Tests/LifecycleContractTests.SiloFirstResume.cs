@@ -26,6 +26,9 @@ public sealed partial class LifecycleContractTests
     [DataRow("wrong-bucket")]
     [DataRow("wrong-binding")]
     [DataRow("installation-interrupted-after-its-result")]
+    [DataRow("journal-of-another-installation")]
+    [DataRow("bucket-corrected-after-start")]
+    [DataRow("endpoint-corrected-after-start")]
     public async Task FirstResume_OpensAdmissionOnlyOnACompletedReadyInstanceWhosePauseIsStillInForce(string state)
     {
         using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Installed);
@@ -50,8 +53,23 @@ public sealed partial class LifecycleContractTests
         }
         await WriteSiloManifestAsync(fixture, harness.Identity);
         await WriteInstallationStateAsync(fixture,
-            state == "installation-interrupted-after-its-result" ? InstallationStatus.Running : InstallationStatus.Completed);
+            state == "installation-interrupted-after-its-result" ? InstallationStatus.Running : InstallationStatus.Completed,
+            state == "journal-of-another-installation" ? Guid.NewGuid() : null);
         var secrets = Path.Combine(fixture.Paths.ConfigRoot, "secrets");
+        if (state is "bucket-corrected-after-start" or "endpoint-corrected-after-start")
+        {
+            // CameraAgent started holding a wrong value, read once at its start; the file was corrected afterwards.
+            var (setting, right) = state == "bucket-corrected-after-start"
+                ? (SiloRuntimeProfile.BucketSetting, harness.Bucket)
+                : (SiloRuntimeProfile.EndpointSetting, SiloRuntimeProfile.Endpoint);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, setting), setting == SiloRuntimeProfile.BucketSetting
+                ? "hvo-" + new string('f', 32)
+                : "http://other-silo:9000");
+            await Task.Delay(30);
+            harness.CameraAgentStarted = DateTimeOffset.UtcNow;
+            await Task.Delay(30);
+            SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, setting), right);
+        }
         if (state == "wrong-bucket")
             SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, SiloRuntimeProfile.BucketSetting), "hvo-" + new string('f', 32));
         if (state == "wrong-binding")
@@ -73,12 +91,13 @@ public sealed partial class LifecycleContractTests
         }
         // An installed instance has its lock files; taking them once and releasing them leaves them as an install does.
         var instanceLock = Path.Combine(fixture.Paths.InstanceRoot, ".deployment.lock");
-        OperationLock.Acquire(Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock")).Dispose();
+        var productLock = Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock");
+        OperationLock.Acquire(productLock).Dispose();
         OperationLock.Acquire(instanceLock).Dispose();
-        Assert.IsTrue(LockFreeInChild(instanceLock), "Nothing holds the instance lock before the first resume.");
+        Assert.IsTrue(LockFreeInChild(instanceLock) && LockFreeInChild(productLock), "Nothing holds the locks before the first resume.");
         var lockedDuringResume = false;
-        // Another process cannot take the installer's instance lock while CameraAgent records the resume.
-        camera.OnResume = () => lockedDuringResume = !LockFreeInChild(instanceLock);
+        // Another process can take neither of the installer's locks while CameraAgent records the resume.
+        camera.OnResume = () => lockedDuringResume = !LockFreeInChild(instanceLock) && !LockFreeInChild(productLock);
 
         var (outcome, failure, runner, dockerCreated) = await FirstResumeAsync(fixture, harness, camera);
 
@@ -90,7 +109,7 @@ public sealed partial class LifecycleContractTests
                 Assert.AreEqual("resumed", outcome!["outcome"]!.GetValue<string>());
                 Assert.AreEqual(1, resumes);
                 Assert.AreEqual(1L, camera.ResumedFromVersion);
-                Assert.IsTrue(lockedDuringResume, "CameraAgent records the resume while the installer's instance lock is held.");
+                Assert.IsTrue(lockedDuringResume, "CameraAgent records the resume while the installer's product and instance locks are held.");
                 break;
             case "already-resumed":
                 Assert.IsNull(failure, failure?.Message);
@@ -127,6 +146,18 @@ public sealed partial class LifecycleContractTests
                     Assert.AreEqual(1, camera.Requests.Count(static request => request.Method == HttpMethod.Post));
                     break;
                 }
+            case "journal-of-another-installation":
+                AssertRefused(failure, "this instance's installation record is not the installation its manifest and result record");
+                Assert.IsFalse(dockerCreated, "Nothing is asked of Docker for another installation's journal.");
+                Assert.IsEmpty(camera.Requests, "Nothing is asked of CameraAgent, and no resume is sent.");
+                break;
+            case "bucket-corrected-after-start":
+            case "endpoint-corrected-after-start":
+                AssertRefused(failure, "CameraAgent has not restarted since its Silo bucket, binding or endpoint settings changed");
+                Assert.IsEmpty(camera.Requests, "Nothing is asked of CameraAgent, and no resume is sent.");
+                Assert.IsFalse(runner!.Calls.Any(static call => call.Arguments is ["run", ..]),
+                    "No probe runs against settings the running process did not load.");
+                break;
             default:
                 Assert.Fail($"Unknown case {state}.");
                 break;
@@ -212,14 +243,18 @@ public sealed partial class LifecycleContractTests
     /// The installation state as the installer records it: completed, or still running in its verification phase, where an
     /// interrupted install leaves it after writing its result and before settling its records.
     /// </summary>
-    private static Task WriteInstallationStateAsync(LifecycleFixture fixture, InstallationStatus status)
-        => SafeFileSystem.WriteJsonAtomicAsync(
+    private static async Task WriteInstallationStateAsync(LifecycleFixture fixture, InstallationStatus status, Guid? installationId = null)
+    {
+        // The installer's journal names the installation its manifest and result record, unless a case says otherwise.
+        var manifest = await CameraAgentLifecycleManager.ReadManifestAsync(fixture.Paths.ManifestPath, CancellationToken.None, allowSiloLayout: true);
+        await SafeFileSystem.WriteJsonAtomicAsync(
             fixture.Paths.StatePath,
-            new InstallationState(1, Guid.NewGuid(), fixture.InstanceId, new string('0', 64),
+            new InstallationState(1, installationId ?? manifest.InstallationId, fixture.InstanceId, new string('0', 64),
                 status == InstallationStatus.Completed ? InstallationPhase.Completed : InstallationPhase.Verification, status,
                 DateTimeOffset.UtcNow),
             DeploymentJsonContext.Default.InstallationState,
             CancellationToken.None);
+    }
 
     /// <summary>CameraAgent's first-boot routes as it answers them: the pause status, and the atomic first resume.</summary>
     private sealed class FirstBootCamera(Guid pauseId) : HttpMessageHandler

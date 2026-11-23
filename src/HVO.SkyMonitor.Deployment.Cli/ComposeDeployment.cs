@@ -241,7 +241,11 @@ services:
 
         foreach (var setting in rendering.Settings)
         {
-            SafeFileSystem.WriteTextAtomic(Path.Combine(secretsRoot, setting.Key), setting.Value);
+            // A setting that already holds exactly this value keeps its file, so a running CameraAgent that loaded it is not
+            // taken for one holding an earlier value (#1966 review): Silo verification requires a restart after any change.
+            var path = Path.Combine(secretsRoot, setting.Key);
+            if (!SafeFileSystem.HoldsOwnerText(path, setting.Value))
+                SafeFileSystem.WriteTextAtomic(path, setting.Value);
         }
         var replayKeyPath = Path.Combine(secretsRoot, ReplayRunnerKeyName);
         if (request.ReplayProfile == CameraAgentReplayProfile.LocalRunner)

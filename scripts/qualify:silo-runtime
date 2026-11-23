@@ -556,7 +556,7 @@ record "{\"check\":\"kill-recovery\",\"result\":\"pass\",\"acknowledgedVersions\
 # --- exit verification and exclusivity ----------------------------------------------------------------------------
 pid="$(d inspect --format '{{.State.Pid}}' "${cid[$name-a]}")"
 stopped=$(now_ns)
-d stop --time 30 "${cid[$name-a]}" >/dev/null
+d stop --timeout 30 "${cid[$name-a]}" >/dev/null
 stop_ms=$(( ($(now_ns) - stopped) / 1000000 ))
 [[ "$(d inspect --format '{{.State.Running}}/{{.State.Pid}}' "${cid[$name-a]}")" == false/0 ]] || fail exit-exclusive "container still running"
 if [[ -e "/proc/$pid" ]] && [[ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" == *silo* ]]; then

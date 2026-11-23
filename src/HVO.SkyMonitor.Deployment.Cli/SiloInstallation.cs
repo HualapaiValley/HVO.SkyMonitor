@@ -240,7 +240,7 @@ internal static class SiloInstallation
             .ConfigureAwait(false);
         await docker.EnsureSiloDataRootExclusiveAsync(expectedRoot, container, cancellationToken).ConfigureAwait(false);
         var (access, secret) = ReadWriterCredential(paths);
-        var cameraAgent = await VerifyApplicationAsync(docker, paths, instanceId, application, cancellationToken).ConfigureAwait(false);
+        var cameraAgent = await VerifyApplicationAsync(docker, paths, instanceId, silo, application, cancellationToken).ConfigureAwait(false);
         var verified = SiloRuntimeProfile.ParseScriptResult(
             await docker.RunInApplicationNetworkAsync(cameraAgent.Id, observed.ImageId!, platform.Platform, observed.User!, instanceId,
                 SiloRuntimeProfile.VerifyBindingScript(silo.Bucket, silo.MarkerVersionId,
@@ -647,7 +647,8 @@ internal static class SiloInstallation
     /// credential the files hold. Read-only.
     /// </summary>
     private static async Task<ApplicationContainerObservation> VerifyApplicationAsync(
-        DockerClient docker, InstallationPaths paths, Guid instanceId, ImageInstallationIdentity application, CancellationToken cancellationToken)
+        DockerClient docker, InstallationPaths paths, Guid instanceId, SiloInstallationIdentity silo, ImageInstallationIdentity application,
+        CancellationToken cancellationToken)
     {
         var project = ComposeDeployment.ContainerNameFor(instanceId);
         var observed = await docker.ObserveApplicationContainerAsync(project, cancellationToken).ConfigureAwait(false)
@@ -684,6 +685,15 @@ internal static class SiloInstallation
         if (observed.StartedUtc is not { } started || started <= published)
             throw InstallerException.Refused(
                 "CameraAgent has not restarted since its Silo writer credential was written, so it may not hold that credential. Restart it.");
+        // CameraAgent reads its setting files once, when it starts (#1966 review). The bucket and binding just verified are
+        // the ones it runs with only if none of those files, nor the endpoint, changed after it started.
+        var configured = SiloRuntimeProfile.BindingSettings(silo).Keys.Append(SiloRuntimeProfile.EndpointSetting)
+            .Select(setting => NativeLinux.GetChangeTimeUtc(Path.Combine(secrets, setting)))
+            .Max();
+        if (started <= configured)
+            throw InstallerException.Refused(
+                "CameraAgent has not restarted since its Silo bucket, binding or endpoint settings changed, so it may still use the " +
+                "earlier ones. Restart it, then verify again.");
         return observed;
     }
 
