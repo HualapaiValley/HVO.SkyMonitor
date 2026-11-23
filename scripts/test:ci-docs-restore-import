@@ -107,7 +107,7 @@ pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(step.split("        run: |\
 PY
 mkdir -p "$fixture/evidence"
 fixture_cache_suffix=/ DEV_V1_EVIDENCE_ROOT="$fixture/evidence" GITHUB_OUTPUT="$fixture/decision" EVENT_NAME=pull_request \
-  GITHUB_ENV="$fixture/workload-env" DEV_V1_DEADLINE_EPOCH=2000 \
+  GITHUB_ENV="$fixture/workload-env" DEV_V1_DEADLINE_EPOCH=2000 RUNNER_TEMP="$probe_tmp_dir" \
   GITHUB_SHA="$merge" PR_HEAD_SHA="$doc" run_fresh bash -euo pipefail "$fixture/workflow" > "$fixture/workflow.log"
 grep -Fxq 'run_full=false' "$fixture/decision"
 grep -Fxq 'restore_imports_verified=true' "$fixture/evidence/restore-import-proof.txt"

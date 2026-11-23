@@ -950,7 +950,11 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     trusted.write_text('''#!/usr/bin/env bash
 if [[ "$1" == --verify-docs-restore ]]; then
     printf '%s' "$FAKE_PROOF"
-    if [[ -n "${FAKE_PROOF_DELAY:-}" ]]; then sleep "$FAKE_PROOF_DELAY"; fi
+    if [[ -n "${FAKE_PROOF_DELAY:-}" ]]; then
+        printf '%s\\n' "$TMPDIR" > "$FAKE_PROOF_SCRATCH_RECORD"
+        touch "$TMPDIR/partial-restore-output"
+        sleep "$FAKE_PROOF_DELAY"
+    fi
     exit "$FAKE_PROOF_EXIT"
 fi
 if [[ "$3" == "$GITHUB_SHA" && -n "${FAKE_MERGE_CONTENT:-}" ]]; then
@@ -993,7 +997,9 @@ exit "$FAKE_EXIT"
         if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
             raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
     workload_env = fixture / "workload-env"
-    env.update(GITHUB_ENV=str(workload_env), DEV_V1_DEADLINE_EPOCH="2000")
+    runner_temp = fixture / "runner-temp"
+    runner_temp.mkdir()
+    env.update(GITHUB_ENV=str(workload_env), DEV_V1_DEADLINE_EPOCH="2000", RUNNER_TEMP=str(runner_temp))
     for proof, exit_code, expected in (
         ("restore_imports_verified=true\n", "0", "false"),
         ("restore_imports_verified=true\n", "1", "true"),
@@ -1024,13 +1030,18 @@ exit "$FAKE_EXIT"
         raise SystemExit("Expected one bounded restore proof in the workflow")
     output.write_text("")
     workload_env.write_text("")
-    timed_env = dict(env, FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0", FAKE_PROOF_DELAY="10")
+    scratch_record = fixture / "proof-scratch"
+    timed_env = dict(env, FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0", FAKE_PROOF_DELAY="10",
+                     FAKE_PROOF_SCRATCH_RECORD=str(scratch_record))
     result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script.replace(" 30s bash ", " 1s bash ")],
                             cwd=fixture, env=timed_env, capture_output=True, text=True, timeout=8)
     elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", (evidence / "classification.md").read_text(), re.M)
     if (result.returncode or "run_full=true" not in output.read_text().splitlines() or not elapsed or
             int(elapsed[1]) < 1 or workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
         raise SystemExit(f"Timed-out proof failed to preserve full workload: {output.read_text()} {result.stderr}")
+    scratch = pathlib.Path(scratch_record.read_text().strip())
+    if scratch.parent != runner_temp or scratch.exists():
+        raise SystemExit("Timed-out proof scratch was not removed")
     output.write_text("")
     env.update(FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
                FAKE_MERGE_CONTENT="docs_fast_path=true\ndocs_fast_path_reason=safe\n")
