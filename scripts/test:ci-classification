@@ -151,6 +151,507 @@ verify_component_plan() {
     pull_request "$component_base" "$component_head"
 }
 
+# Exercise the actual exact-tree fast decision in an isolated fixture.
+fast_root="$(mktemp -d)"
+trap 'rm -rf "$work_root" "$fast_root"' EXIT
+git init -q "$fast_root"
+git -C "$fast_root" config user.email fixture@example.invalid
+git -C "$fast_root" config user.name fixture
+mkdir -p "$fast_root/tests/Example" "$fast_root/docs/contracts"
+printf '<None Include="../../docs/contracts/linked.md" />\n' > "$fast_root/tests/Example/Example.csproj"
+printf 'old\n' > "$fast_root/docs/contracts/linked.md"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" add .
+git -C "$fast_root" commit -qm base
+mkdir -p "$fast_root/scripts"
+(cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
+git -C "$fast_root" add scripts/ci:docs-inventory
+git -C "$fast_root" commit -qm inventory
+fast_base="$(git -C "$fast_root" rev-parse HEAD)"
+fast_cases=0
+fast_expect() {
+  local expected="$1" event="$2" base="$3" head="$4" output
+  output="$(cd "$fast_root" && "$classifier" "$event" "$base" "$head")"
+  grep -Fxq "docs_fast_path=$expected" <<< "$output" || { printf 'Fast path expected %s: %s\n' "$expected" "$output" >&2; exit 1; }
+  grep -q '^docs_fast_path_reason=.' <<< "$output"
+  ((fast_cases += 1))
+}
+for fast_path in docs/runbooks/example.md docs/example.markdown docs/example.txt README.md AGENTS.md CLAUDE.md \
+  docs/catalog/hyg-v44-license.md docs/validation/evidence/result.md docs/calibration/asi676/evidence/result.txt docs/images/asset.svg \
+  CHANGELOG.md THIRD-PARTY-NOTICES.md .devcontainer/example.md .vscode/example.md \
+  .github/prompts/example.md scripts/example.md src/Example/README.md docs/data.json; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$fast_path")"
+  printf 'text\n' > "$fast_root/$fast_path"
+  git -C "$fast_root" add -- "$fast_path"
+  git -C "$fast_root" commit -qm fixture
+  fast_head="$(git -C "$fast_root" rev-parse HEAD)"
+  case "$fast_path" in docs/runbooks/example.md | docs/example.markdown | docs/example.txt | README.md | AGENTS.md | CLAUDE.md) fast_expected=true ;; *) fast_expected=false ;; esac
+  fast_expect "$fast_expected" pull_request "$fast_base" "$fast_head"
+done
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'original\n' > "$fast_root/docs/modified.md"
+git -C "$fast_root" add docs/modified.md
+git -C "$fast_root" commit -qm modified-base
+modified_base="$(git -C "$fast_root" rev-parse HEAD)"
+printf 'change\n' >> "$fast_root/docs/modified.md"
+git -C "$fast_root" commit -qam modified
+modified_head="$(git -C "$fast_root" rev-parse HEAD)"
+fast_expect true pull_request "$modified_base" "$modified_head"
+mkdir -p "$fast_root/.git/fast-bin"
+cat > "$fast_root/.git/fast-bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == show ]]; then exit 2; fi
+exec "$FAST_REAL_GIT" "$@"
+EOF
+chmod +x "$fast_root/.git/fast-bin/git"
+fast_real_git="$(command -v git)"
+PATH="$fast_root/.git/fast-bin:$PATH" FAST_REAL_GIT="$fast_real_git" fast_expect false pull_request "$modified_base" "$modified_head"
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'changed\n' >> "$fast_root/docs/contracts/linked.md"
+git -C "$fast_root" commit -qam linked
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'binary\0content\n' > "$fast_root/docs/binary.md"
+git -C "$fast_root" add docs/binary.md
+git -C "$fast_root" commit -qm binary
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+ln -s contracts/linked.md "$fast_root/docs/link.md"
+git -C "$fast_root" add docs/link.md
+git -C "$fast_root" commit -qm symlink
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+git -C "$fast_root" rm -q docs/contracts/linked.md
+git -C "$fast_root" commit -qm deletion
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks" "$fast_root/src"
+printf 'text\n' > "$fast_root/docs/runbooks/safe.md"
+printf 'code\n' > "$fast_root/src/code.cs"
+git -C "$fast_root" add .
+git -C "$fast_root" commit -qm mixed
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" reset -q --hard "$fast_base"
+git -C "$fast_root" mv docs/contracts/linked.md docs/contracts/renamed.md
+git -C "$fast_root" commit -qm rename
+fast_expect false pull_request "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+fast_expect false pull_request "$fast_base" "$fast_base"
+fast_expect false pull_request missing "$fast_base"
+fast_expect false push "$fast_base" "$fast_base"
+fast_expect false merge_group "$fast_base" "$fast_base"
+# Reason-specific controls for exclusions and unsafe tree modes.
+fast_reason() {
+  local reason="$1" base="$2" head="$3" result
+  result="$(cd "$fast_root" && "$classifier" pull_request "$base" "$head" docs-fast-only)"
+  grep -Fxq "docs_fast_path=false" <<< "$result"
+  grep -Fxq "docs_fast_path_reason=$reason" <<< "$result" || { printf 'Expected reason %s: %s\n' "$reason" "$result" >&2; exit 1; }
+  ((fast_cases += 1))
+}
+for excluded in docs/upgrade-notes/0.9.1.md docs/generated/report.txt docs/evidence/report.txt docs/other/generated/report.txt docs/runbooks/development-v1-merge-queue-drill/verification.txt docs/UPPER.MD; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/$(dirname "$excluded")"
+  printf 'text\n' > "$fast_root/$excluded"
+  git -C "$fast_root" add "$excluded" && git -C "$fast_root" commit -qm excluded
+  fast_reason 'path outside documentation allowlist' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+for body in 'bad\377' 'bad\001' 'bad\177' 'bad\302\200'; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  printf '%b' "$body" > "$fast_root/docs/invalid.md"
+  git -C "$fast_root" add docs/invalid.md && git -C "$fast_root" commit -qm invalid
+  fast_reason 'documentation is binary or unreadable' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+for initial in 644 755; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  printf 'text\n' > "$fast_root/docs/mode.md"
+  chmod "$initial" "$fast_root/docs/mode.md"
+  git -C "$fast_root" add docs/mode.md && git -C "$fast_root" commit -qm mode-base
+  mode_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if [[ "$initial" == 644 ]]; then chmod 755 "$fast_root/docs/mode.md"; else chmod 644 "$fast_root/docs/mode.md"; fi
+  git -C "$fast_root" add docs/mode.md && git -C "$fast_root" commit -qm mode-change
+  if [[ "$initial" == 644 ]]; then mode_reason='non-regular or missing path in exact diff'; else mode_reason='non-regular or executable base path'; fi
+  fast_reason "$mode_reason" "$mode_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'text\n' > "$fast_root/docs/executable.md"; chmod 755 "$fast_root/docs/executable.md"
+git -C "$fast_root" add docs/executable.md && git -C "$fast_root" commit -qm executable
+fast_reason 'non-regular or missing path in exact diff' "$fast_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Link forms may appear in project files or imported targets, on the base tree.
+for link in "<None Include='../../../docs/runbooks/example.md' />" "<None Include = '../../docs/runbooks/example.md' />" '<None Include="../../docs/runbooks/*.md" />' '<None Include="../../**/*" />' '<Import Project="missing.items" />' '<None Include="@(UnknownItems)" />' '<ProjectReference Include="missing.proj" />' '<None Include="../../docs/runbooks/?.md" />' '<None Include="../../&#100;ocs/runbooks/example.md" />' '<None Include="../../%64ocs/runbooks/example.md" />' '<None Include="../../THIRD-PARTY-NOTICES.md;../../README.md" />' '<None Include="$(MSBuildThisFileDirectory)docs/runbooks/example.md" />' '<None Include="..\\..\\docs\\runbooks\\example.md" />'; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+  printf '%s\n' "$link" > "$fast_root/Directory.Build.targets"
+  printf '%s\n' "$link" > "$fast_root/items.xml"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm link-base
+  link_base="$(git -C "$fast_root" rev-parse HEAD)"
+  printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+  git -C "$fast_root" commit -qam link-change
+  fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Relative imported items use the consuming project directory in MSBuild. The
+# audit refuses uncertainty, including partial directory globs.
+for audit_case in direct_partial direct_padded direct_semicolon imported_partial imported_glob imported_root; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/fixtures/shared"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  case "$audit_case" in
+    direct_partial)
+      printf '<Project><ItemGroup><None Include="../../d*/runbooks/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
+    direct_padded)
+      printf '<Project><ItemGroup><None Include="  ../../d*/runbooks/releases.md  " CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
+    direct_semicolon)
+      printf '<Project><ItemGroup><None Include=" harmless.txt ;  ../../d*/runbooks/releases.md  " CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj" ;;
+    *)
+      printf '<Project><Import Project="../fixtures/shared/markdown.props" /></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      case "$audit_case" in
+        imported_partial) item='../../d*/runbooks/releases.md' ;;
+        imported_glob) item='../../**/*.md' ;;
+        imported_root) item='../../README.md' ;;
+      esac
+      printf '<Project><ItemGroup><None Include="%s" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' "$item" > "$fast_root/tests/fixtures/shared/markdown.props" ;;
+  esac
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm audit-case
+  audit_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$audit_base") > "$fast_root/.git/unsafe-inventory" 2>/dev/null; then
+    printf 'Unsafe %s was certified.\n' "$audit_case" >&2; exit 1
+  fi
+  if [[ "$audit_case" == imported_root ]]; then printf 'changed\n' > "$fast_root/README.md"; git -C "$fast_root" add README.md; else printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"; git -C "$fast_root" add docs/runbooks/releases.md; fi
+  git -C "$fast_root" commit -qm doc-change
+  fast_reason 'project inventory unavailable' "$audit_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Without a source-bound restore-import certificate, package identities,
+# versions and transitive build imports are unknown even if assets are excluded.
+for package_item in '<PackageReference Include="Fixture" Version="1.0.0" />' '<PackageReference Include="Fixture" Version="1.0.0" ExcludeAssets="build;buildTransitive" />' '<GlobalPackageReference Include="Fixture" Version="1.0.0" />' '<PackageDownload Include="Fixture" Version="[1.0.0]" />'; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  printf '<Project><ItemGroup>%s</ItemGroup></Project>\n' "$package_item" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm package-reference
+  package_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$package_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/package-error"; then
+    printf 'Uncertified package input was accepted.\n' >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: restore generated package imports are uncertified' "$fast_root/.git/package-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$package_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# An SDK can introduce restore-time imports even without an explicit package.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm sdk-reference
+sdk_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$sdk_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/sdk-error"; then
+  printf 'Uncertified SDK imports were accepted.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: SDK generated restore imports are uncertified' "$fast_root/.git/sdk-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$sdk_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# SDK declarations in an imported file can introduce restore-generated imports.
+for sdk_form in attribute element; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  printf '<Project><Import Project="shared.props" /></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+  if [[ "$sdk_form" == attribute ]]; then
+    printf '<Project Sdk="Microsoft.NET.Sdk" />\n' > "$fast_root/tests/Example/shared.props"
+  else
+    printf '<Project><Sdk Name="Microsoft.NET.Sdk" /></Project>\n' > "$fast_root/tests/Example/shared.props"
+  fi
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm imported-sdk
+  imported_sdk_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$imported_sdk_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/imported-sdk-error"; then
+    printf 'Imported SDK %s was certified.\n' "$sdk_form" >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: SDK generated restore imports are uncertified' "$fast_root/.git/imported-sdk-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$imported_sdk_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Ordinary UTF-8 declarations, including case variants, remain eligible.
+for declared in utf-8 UTF-8; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  printf '<?xml version="1.0" encoding="%s"?><Project />\n' "$declared" > "$fast_root/tests/Example/Example.csproj"
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm utf8-declaration
+  (cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
+  git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certificate
+  utf8_base="$(git -C "$fast_root" rev-parse HEAD)"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_expect true pull_request "$utf8_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# ASCII bytes do not make a non-UTF-8 XML declaration acceptable.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<?xml version="1.0" encoding="iso-8859-1"?><Project />\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm ascii-latin-declaration
+encoding_decl_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$encoding_decl_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/decl-error"; then
+  printf 'Non-UTF-8 XML declaration was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: XML declares a non-UTF-8 encoding' "$fast_root/.git/decl-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$encoding_decl_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# UTF-8 and UTF-16 encodings of the same escaped link must both fail closed.
+for encoding in utf-8 utf-16; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  ENCODING_FIXTURE="$encoding" python3 - "$fast_root/tests/Example/Example.csproj" <<'PY_ENCODING'
+import os, pathlib, sys
+text = '<Project><ItemGroup><None Include="../../%64ocs/runbooks/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>'
+pathlib.Path(sys.argv[1]).write_bytes(text.encode(os.environ["ENCODING_FIXTURE"]))
+PY_ENCODING
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm encoded-link
+  encoding_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$encoding_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/encoding-error"; then
+    printf 'Unsafe %s input was certified.\n' "$encoding" >&2; exit 1
+  fi
+  if [[ "$encoding" == utf-8 ]]; then encoding_reason='escaped build input requires manual review'; else encoding_reason='build input is not UTF-8'; fi
+  grep -Fxq "docs inventory audit: $encoding_reason" "$fast_root/.git/encoding-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$encoding_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Reject traversal following the first wildcard even if current MSBuild does not match it.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<Project><ItemGroup><None Include="../fixtures/**/../../../d*/runbooks/releases.md" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm wildcard-traversal
+wildcard_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$wildcard_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/wildcard-error"; then
+  printf 'Post-wildcard traversal was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: item path traverses after a wildcard' "$fast_root/.git/wildcard-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$wildcard_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# A project listed only by the solution is audited regardless of its suffix.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/Extra"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+printf '<Project />\n' > "$fast_root/tests/Extra/Extra.fsproj"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="tests/Extra/Extra.fsproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm safe-solution-project
+(cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/.git/solution-inventory"
+grep -Fq "b'tests/Extra/Extra.fsproj'" "$fast_root/.git/solution-inventory"
+grep -Fq "b'HVO.SkyMonitor.v9.slnx'" "$fast_root/.git/solution-inventory"
+printf '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><None Include="../../docs/runbooks/releases.md" /></ItemGroup></Project>\n' > "$fast_root/tests/Extra/Extra.fsproj"
+git -C "$fast_root" commit -qam unsafe-solution-project
+solution_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$solution_base") > "$fast_root/.git/unsafe-inventory" 2>/dev/null; then
+  printf 'Unsafe solution-only project was certified.\n' >&2; exit 1
+fi
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$solution_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Missing solution entries are uncertainty, not an empty project selection.
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="missing.fsproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" commit -qam missing-solution-project
+missing_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$missing_base") > "$fast_root/.git/unsafe-inventory" 2>/dev/null; then
+  printf 'Missing solution project was certified.\n' >&2; exit 1
+fi
+mkdir -p "$fast_root/docs/runbooks"
+printf 'changed\n' > "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" add docs/runbooks/releases.md && git -C "$fast_root" commit -qm doc-change
+fast_reason 'project inventory unavailable' "$missing_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# An existing importer can consume a changed XML item file without any
+# accompanying project-file change. Certify the harmless baseline, then change
+# only the imported XML on the base before the documentation edit.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+printf '<Import Project="items.xml" />\n' > "$fast_root/Directory.Build.targets"
+printf '<Project />\n' > "$fast_root/items.xml"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm import-base
+(cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
+git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certify-import
+printf '<None Include="docs/runbooks/example.md" />\n' > "$fast_root/items.xml"
+git -C "$fast_root" commit -qam change-imported-xml
+xml_base="$(git -C "$fast_root" rev-parse HEAD)"
+printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$xml_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# A forged refresh must not certify a build input that links eligible docs.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+printf '<None Include="../../docs/runbooks/example.md" />\n' > "$fast_root/tests/Example/Example.csproj"
+git -C "$fast_root" add docs/runbooks/example.md tests/Example/Example.csproj
+git -C "$fast_root" commit -qm unsafe-certified-input
+read -r item_mode item_type item_sha item_path < <(git -C "$fast_root" ls-tree HEAD -- tests/Example/Example.csproj)
+sed -i "/tests\/Example\/Example.csproj/d" "$fast_root/scripts/ci:docs-inventory"
+printf "%s %s %s b'%s'\n" "$item_mode" "$item_type" "$item_sha" "$item_path" >> "$fast_root/scripts/ci:docs-inventory"
+git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm forged-certificate
+forged_base="$(git -C "$fast_root" rev-parse HEAD)"
+printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+git -C "$fast_root" commit -qam docs-change
+fast_reason 'project inventory unavailable' "$forged_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Force-added .user files are auto-imported; they must disable the exemption.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'text\n' > "$fast_root/docs/runbooks/example.md"
+printf '<None Include="../../docs/runbooks/example.md" />\n' > "$fast_root/tests/Example/Example.csproj.user"
+git -C "$fast_root" add -f tests/Example/Example.csproj.user
+git -C "$fast_root" add docs/runbooks/example.md && git -C "$fast_root" commit -qm user-input
+user_base="$(git -C "$fast_root" rev-parse HEAD)"
+warning_output="$(cd "$fast_root" && "$classifier" --warn-docs-inventory "$user_base")"
+grep -Fxq '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: tracked automatic MSBuild input requires manual review' <<< "$warning_output"
+printf 'Stale inventory warning passed.\n'
+printf 'change\n' >> "$fast_root/docs/runbooks/example.md"
+git -C "$fast_root" commit -qam docs-change
+fast_reason 'project inventory unavailable' "$user_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Tracked aliases cannot redirect any certified glob or explicit item into docs.
+for alias_case in glob_file directory file_update; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  mkdir -p "$fast_root/docs/runbooks" "$fast_root/tests/fixtures/space-weather/swpc-v1"
+  printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+  case "$alias_case" in
+    glob_file)
+      printf '<Project><ItemGroup><None Include="../fixtures/space-weather/swpc-v1/**/*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      printf 'fixture\n' > "$fast_root/tests/fixtures/space-weather/swpc-v1/source.json"
+      git -C "$fast_root" add . && git -C "$fast_root" commit -qm safe-glob
+      (cd "$fast_root" && "$classifier" --print-docs-inventory HEAD) > "$fast_root/scripts/ci:docs-inventory"
+      git -C "$fast_root" add scripts/ci:docs-inventory && git -C "$fast_root" commit -qm certified-glob
+      ln -s ../../../../docs/runbooks/releases.md "$fast_root/tests/fixtures/space-weather/swpc-v1/alias.md" ;;
+    directory)
+      printf '<Project><ItemGroup><None Include="../fixtures/shared-docs/releases.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      ln -s ../../docs "$fast_root/tests/fixtures/shared-docs" ;;
+    file_update)
+      printf '<Project><ItemGroup><None Update="alias.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>\n' > "$fast_root/tests/Example/Example.csproj"
+      ln -s ../../docs/runbooks/releases.md "$fast_root/tests/Example/alias.md" ;;
+  esac
+  git -C "$fast_root" add . && git -C "$fast_root" commit -qm tracked-alias
+  alias_base="$(git -C "$fast_root" rev-parse HEAD)"
+  if (cd "$fast_root" && "$classifier" --print-docs-inventory "$alias_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/alias-error"; then
+    printf 'Tracked alias %s was certified.\n' "$alias_case" >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: tracked symlink requires manual review' "$fast_root/.git/alias-error"
+  printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+  git -C "$fast_root" commit -qam doc-change
+  fast_reason 'project inventory unavailable' "$alias_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# A repository-root SDK project can copy implicit None items in Release.
+git -C "$fast_root" reset -q --hard "$fast_base"
+mkdir -p "$fast_root/docs/runbooks"
+printf 'safe\n' > "$fast_root/docs/runbooks/releases.md"
+cat > "$fast_root/Root.csproj" <<'EOF'
+<Project Sdk="Microsoft.NET.Sdk"><ItemDefinitionGroup Condition="'$(Configuration)' == 'Release'"><None><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></None></ItemDefinitionGroup></Project>
+EOF
+printf '<Solution><Project Path="tests/Example/Example.csproj" /><Project Path="Root.csproj" /></Solution>\n' > "$fast_root/HVO.SkyMonitor.v9.slnx"
+git -C "$fast_root" add . && git -C "$fast_root" commit -qm implicit-root-project
+implicit_base="$(git -C "$fast_root" rev-parse HEAD)"
+if (cd "$fast_root" && "$classifier" --print-docs-inventory "$implicit_base") > "$fast_root/.git/unsafe-inventory" 2> "$fast_root/.git/implicit-error"; then
+  printf 'Root implicit-item project was certified.\n' >&2; exit 1
+fi
+grep -Fxq 'docs inventory audit: project location permits implicit documentation items' "$fast_root/.git/implicit-error"
+printf 'changed\n' >> "$fast_root/docs/runbooks/releases.md"
+git -C "$fast_root" commit -qam doc-change
+fast_reason 'project inventory unavailable' "$implicit_base" "$(git -C "$fast_root" rev-parse HEAD)"
+# Ignore settings must not hide a gitlink update accompanying a safe doc.
+git -C "$fast_root" reset -q --hard "$fast_base"
+git -C "$fast_root" update-index --add --cacheinfo "160000,$fast_base,submodule"
+git -C "$fast_root" commit -qm gitlink-base
+link_base="$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" update-index --cacheinfo "160000,$link_base,submodule"
+printf 'text\n' > "$fast_root/docs/gitlink.md"
+git -C "$fast_root" add docs/gitlink.md && git -C "$fast_root" commit -qm gitlink-change
+git -C "$fast_root" config diff.ignoreSubmodules all
+fast_reason 'project inventory unavailable' "$link_base" "$(git -C "$fast_root" rev-parse HEAD)"
+git -C "$fast_root" config --unset diff.ignoreSubmodules
+# Failure controls exercise distinct fail-closed reasons.
+mkdir -p "$fast_root/.git/fault-bin"
+cat > "$fast_root/.git/fault-bin/git" <<'EOF'
+#!/usr/bin/env bash
+case "$FAIL_KIND:$1:${2:-}" in
+  ls-tree:ls-tree:* | blob:cat-file:blob | diff:diff:* | inventory:show:*) exit 2 ;;
+esac
+exec "$FAST_REAL_GIT" "$@"
+EOF
+chmod +x "$fast_root/.git/fault-bin/git"
+for fault in ls-tree blob diff inventory; do
+  case "$fault" in
+    ls-tree) fault_reason='non-regular or missing path in exact diff' ;;
+    blob) fault_reason='documentation is binary or unreadable' ;;
+    diff) fault_reason='exact diff failed or is empty' ;;
+    inventory) fault_reason='project inventory unavailable' ;;
+  esac
+  PATH="$fast_root/.git/fault-bin:$PATH" FAST_REAL_GIT="$fast_real_git" FAIL_KIND="$fault" fast_reason "$fault_reason" "$modified_base" "$modified_head"
+done
+printf '#!/usr/bin/env bash\nexit 2\n' > "$fast_root/.git/fault-bin/python3"
+chmod +x "$fast_root/.git/fault-bin/python3"
+PATH="$fast_root/.git/fault-bin:$PATH" FAST_REAL_GIT="$fast_real_git" FAIL_KIND=none fast_reason 'documentation is binary or unreadable' "$modified_base" "$modified_head"
+rm "$fast_root/.git/fault-bin/python3"
+# Existing regular file changed to symlink and the inverse are type changes.
+for type_mode in regular symlink; do
+  git -C "$fast_root" reset -q --hard "$fast_base"
+  if [[ "$type_mode" == regular ]]; then printf 'text\n' > "$fast_root/docs/type.md"; else ln -s contracts/linked.md "$fast_root/docs/type.md"; fi
+  git -C "$fast_root" add docs/type.md && git -C "$fast_root" commit -qm type-base
+  type_base="$(git -C "$fast_root" rev-parse HEAD)"
+  rm "$fast_root/docs/type.md"
+  if [[ "$type_mode" == regular ]]; then ln -s contracts/linked.md "$fast_root/docs/type.md"; else printf 'text\n' > "$fast_root/docs/type.md"; fi
+  git -C "$fast_root" add docs/type.md && git -C "$fast_root" commit -qm type-change
+  fast_reason 'deleted or type-changed path in exact diff' "$type_base" "$(git -C "$fast_root" rev-parse HEAD)"
+done
+# Rejection evidence lists the complete exact diff and only the docs decision.
+git -C "$fast_root" reset -q --hard "$fast_base"
+printf 'unsafe\n' > "$fast_root/CHANGELOG.md"
+printf 'safe\n' > "$fast_root/docs/second.md"
+git -C "$fast_root" add CHANGELOG.md docs/second.md && git -C "$fast_root" commit -qm evidence
+evidence_file="$fast_root/.git/fast-summary"
+(cd "$fast_root" && GITHUB_STEP_SUMMARY="$evidence_file" "$classifier" pull_request "$fast_base" HEAD docs-fast-only >/dev/null)
+grep -Fq 'docs/second.md' "$evidence_file"
+grep -Fq 'Fast path paths examined: 2' "$evidence_file"
+! grep -Fq 'Mode: **' "$evidence_file"
+((fast_cases += 1))
+# Canary the real committed inventory without changing any ref. A changed or
+# absent certificate must select full validation, never fail the PR by itself.
+(
+real_base="$(git -C "$repo_root" rev-parse HEAD)"
+(cd "$repo_root" && "$classifier" --warn-docs-inventory "$real_base")
+mkdir -p "$fast_root/.git/canary-objects"
+canary_source_objects="$(git -C "$repo_root" rev-parse --path-format=absolute --git-path objects)"
+export GIT_OBJECT_DIRECTORY="$fast_root/.git/canary-objects"
+export GIT_ALTERNATE_OBJECT_DIRECTORIES="$canary_source_objects"
+canary_index="$fast_root/.git/canary-index"
+GIT_INDEX_FILE="$canary_index" git -C "$repo_root" read-tree "$real_base"
+canary_blob="$(printf 'canary documentation\n' | git -C "$repo_root" hash-object -w --stdin)"
+GIT_INDEX_FILE="$canary_index" git -C "$repo_root" update-index --add --cacheinfo "100644,$canary_blob,docs/runbooks/ci-fast-path-canary-1989.md"
+canary_tree="$(GIT_INDEX_FILE="$canary_index" git -C "$repo_root" write-tree)"
+canary_head="$(printf 'CI inventory canary\n' | git -C "$repo_root" -c user.name='CI fixture' -c user.email=fixture@example.invalid commit-tree "$canary_tree" -p "$real_base")"
+printf '%s\n' "$canary_head" > "$fast_root/.git/canary-commit"
+if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified" 2>/dev/null; then
+  if (cd "$repo_root" && "$classifier" --print-docs-inventory "$real_base") > "$fast_root/.git/actual" && cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then
+    canary_expected=true
+  else
+    canary_expected=false
+  fi
+  canary_output="$(cd "$repo_root" && "$classifier" pull_request "$real_base" "$canary_head" docs-fast-only)"
+  grep -Fxq "docs_fast_path=$canary_expected" <<< "$canary_output" || { printf 'Real inventory canary failed: %s\n' "$canary_output" >&2; exit 1; }
+  printf 'Real inventory canary passed: expected %s.\n' "$canary_expected"
+else
+  printf 'Real inventory canary skipped: certificate not in committed HEAD.\n'
+fi
+)
+canary_commit="$(cat "$fast_root/.git/canary-commit")"
+if git -C "$repo_root" cat-file -e "$canary_commit^{commit}" 2>/dev/null; then
+  printf 'Canary wrote an object into the developer repository.\n' >&2
+  exit 1
+fi
+printf 'Canary object isolation passed.\n'
+printf 'Documentation fast path classification passed: %d cases.\n' "$fast_cases"
+
 base_sha="$(git -C "$work_root" rev-parse HEAD)"
 allowlisted_paths=(
   "docs/runbooks/example.md"
@@ -974,7 +1475,7 @@ for fake_case in malformed unterminated empty-path failure; do
     expect_catalog_recipe true pull_request fake-base fake-head
   output="$(cd "$work_root" && PATH="$work_root/fake-bin:$PATH" REAL_GIT="$real_git" FAKE_GIT_DIFF_FAILURE="$fake_failure" FAKE_GIT_DIFF_SHAPE="$fake_case" \
     "$classifier" pull_request fake-base fake-head)"
-  if [[ "$output" != "$expected_fail_closed" ]]; then
+  if [[ "$output" != "$expected_fail_closed"$'\n'docs_fast_path=false$'\n'docs_fast_path_reason=* ]]; then
     printf 'Expected fail-closed malformed/diff-failure plan, received %s\n' "$output" >&2
     exit 1
   fi
