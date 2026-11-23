@@ -50,6 +50,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
 - CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
+- CameraAgent logs a failing local automation cancellation callback and finishes disposing its services when disposal starts before shutdown. #1985
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
