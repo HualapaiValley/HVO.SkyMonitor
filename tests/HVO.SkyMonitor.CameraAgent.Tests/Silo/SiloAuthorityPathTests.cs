@@ -491,6 +491,35 @@ public sealed class SiloAuthorityPathTests
     }
 
     [TestMethod]
+    public async Task ACheckpointWrittenAfterOpeningAHigherGenerationStartsARebuild()
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1);
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        var head = await silo.State.ReadHeadAsync(CancellationToken.None).ConfigureAwait(false);
+        const long floor = 3L << 40;
+        var open = new SiloGenerationOpenRecord(3, "restore", 2, new Dictionary<string, long> { ["capture-sequence"] = floor },
+            head.Position, head.Sha256);
+        var opening = await silo.Journal.OpenGenerationAsync(open, CancellationToken.None).ConfigureAwait(false);
+        silo.Authority.WitnessedOpenings.Add((open.Generation, opening.Sha256));
+        await silo.CatchUpAsync().ConfigureAwait(false);
+        var anchor = await AnchorAsync(silo, "sealed-generation-3").ConfigureAwait(false);
+        anchor.Covers.Should().Be(new SiloJournalPosition(3, 1));
+        var bytes = silo.Local.Read(anchor.Checkpoint.Key, anchor.Checkpoint.VersionId);
+
+        var checkpoint = SiloJson.ReadCheckpoint(bytes, "checkpoint after opening generation 3");
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
+
+        checkpoint.Entries.Select(static entry => entry.Generation).Distinct().Should().Equal(1L, 3L);
+        rebuilt.StartKind.Should().Be("anchor");
+        rebuilt.Anchor.Should().Be(anchor.Covers);
+        rebuilt.Authority.EndReason.Should().Be(SiloPrefixEnd.Tail);
+        (await silo.Index.ReadIdentityFloorsAsync(CancellationToken.None).ConfigureAwait(false))["capture-sequence"].Should().Be(floor);
+        (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+            .Should().Be("visible");
+    }
+
+    [TestMethod]
     public async Task ProofOfP4OutlivesAManifestOutageAcrossSuccessiveAnchors()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
@@ -524,10 +553,12 @@ public sealed class SiloAuthorityPathTests
     [DataRow("no group identity", DisplayName = "a newest checkpoint whose publish entry has no group identity is passed over for the older trusted anchor")]
     [DataRow("null member", DisplayName = "a newest checkpoint whose publish entry holds a null member is passed over for the older trusted anchor")]
     [DataRow("null entry", DisplayName = "a newest checkpoint holding a null entry is passed over for the older trusted anchor")]
+    [DataRow("short entries", DisplayName = "a newest checkpoint whose records stop before its covered position is passed over")]
     [DataRow("well-formed", DisplayName = "a well-formed newest checkpoint starts the rebuild")]
     public async Task AMalformedNewestCheckpointFallsBackToTheOlderTrustedAnchor(string fault)
     {
         var malformed = fault != "well-formed";
+        var shortEntries = fault == "short entries";
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
         var first = await AnchorAsync(silo, "sealed-1").ConfigureAwait(false);
@@ -549,6 +580,13 @@ public sealed class SiloAuthorityPathTests
                 case "null member":
                     publish["members"]![0] = null;
                     break;
+                case "short entries":
+                    while ((long)array[^1]!["sequence"]! == covers.Sequence)
+                    {
+                        array.RemoveAt(array.Count - 1);
+                    }
+                    node["reachedP4"]!.AsArray().RemoveAt(reachedP4.Count - 1);
+                    break;
                 default:
                     array[array.Count - 1] = null;
                     break;
@@ -563,12 +601,18 @@ public sealed class SiloAuthorityPathTests
             second = await AnchorAsync(silo, "sealed-2").ConfigureAwait(false);
         }
 
-        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local)).ConfigureAwait(false);
+        var writer = shortEntries ? await silo.WriterEvidenceAsync().ConfigureAwait(false) : null;
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync(new(silo.Local, Writer: writer)).ConfigureAwait(false);
 
         rebuilt.StartKind.Should().Be("anchor");
         rebuilt.Anchor.Should().Be(malformed ? first.Covers : second.Covers);
         (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(1), "r1", CancellationToken.None).ConfigureAwait(false))!.State
             .Should().Be("visible");
+        if (shortEntries)
+        {
+            (await silo.Index.ReadPublicationAsync(SiloDrafts.CaptureGroup(2), "r1", CancellationToken.None).ConfigureAwait(false))!.State
+                .Should().Be("visible", "the journal replays the publication omitted by the rejected checkpoint");
+        }
     }
 
     [TestMethod]
@@ -675,7 +719,9 @@ public sealed class SiloAuthorityPathTests
     }
 
     [TestMethod]
-    public async Task AnOversizedObjectAtTheCheckpointKeyIsReadOnlyToItsBound()
+    [DataRow(false, DisplayName = "an oversized occupant is bounded when the snapshot also exceeds the limit")]
+    [DataRow(true, DisplayName = "an oversized occupant is bounded when the snapshot fits the limit")]
+    public async Task AnOversizedObjectAtTheCheckpointKeyIsReadOnlyToItsBound(bool snapshotFits)
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
         await silo.PublishAsync(SiloDrafts.Capture(silo.Payloads, 1)).ConfigureAwait(false);
@@ -686,14 +732,44 @@ public sealed class SiloAuthorityPathTests
         var oversized = new byte[1024 * 1024];
         Array.Fill(oversized, (byte)' ');
         silo.Local.Plant(key, oversized);
-        // The regenerated snapshot is over the bound, so only an object already at the key could be anchored.
-        long bound = snapshot - 1;
+        long bound = snapshotFits ? snapshot : snapshot - 1;
 
         var write = () => new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock, bound)
             .WriteAsync(CancellationToken.None).AsTask();
 
-        await write.Should().ThrowAsync<SiloCheckpointTooLargeException>("nothing within the bound is at the key").ConfigureAwait(false);
-        silo.Local.BytesServed(key).Should().BeLessThanOrEqualTo(bound + 1, "the read stops at the first byte past the bound");
+        if (snapshotFits)
+        {
+            (await write.Should().ThrowAsync<SiloConflictException>().ConfigureAwait(false)).Which.Code.Should().Be("silo.create-only-conflict");
+        }
+        else
+        {
+            await write.Should().ThrowAsync<SiloCheckpointTooLargeException>("nothing within the bound is at the key").ConfigureAwait(false);
+        }
+        silo.Local.BytesServed(key).Should().Be(bound + 1, "the entire attempt stops at the first byte past the bound");
+    }
+
+    [TestMethod]
+    [DataRow(long.MaxValue)]
+    [DataRow(0L)]
+    public async Task CheckpointWriteLimitsAreValidatedBeforeAccessingStorage(long bound)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        silo.Local.Unreachable = true;
+        var write = () => new SiloCheckpointWriter(silo.Index, silo.StateRoot.Spool, silo.Local, silo.Binding, silo.Clock, bound)
+            .WriteAsync(CancellationToken.None).AsTask();
+        (await write.Should().ThrowAsync<ArgumentOutOfRangeException>().ConfigureAwait(false)).Which.ParamName.Should().Be("maximumBytes");
+    }
+
+    [TestMethod]
+    [DataRow(long.MaxValue)]
+    [DataRow(0L)]
+    public async Task CheckpointRebuildLimitsAreValidatedBeforeAccessingStorage(long bound)
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        silo.Local.Unreachable = true;
+        var rebuild = () => silo.RebuildAsync(new(silo.Local, MaximumCheckpointBytes: bound));
+
+        (await rebuild.Should().ThrowAsync<ArgumentOutOfRangeException>().ConfigureAwait(false)).Which.ParamName.Should().Be("MaximumCheckpointBytes");
     }
 
     [TestMethod]

@@ -199,6 +199,8 @@ internal sealed record SiloProbe(SiloProbeStatus Status, SiloExactLocator Locato
 
 internal static class SiloVerifier
 {
+    private const int ReadBufferSize = 81920;
+
     /// <summary>
     /// Physical proof (#1965 6.2): GET the exact version and compute its length and SHA-256 over the returned bytes.
     /// HEAD and stored checksums are never accepted. An unknown store or an unreachable one cannot be checked.
@@ -215,9 +217,25 @@ internal static class SiloVerifier
             .ConfigureAwait(false);
     }
 
-    public static async ValueTask<SiloProbe> ProbeAsync(
+    public static ValueTask<SiloProbe> ProbeAsync(
         ISiloObjectStore store, SiloExactLocator locator, long expectedLength, string expectedSha256,
-        TimeProvider clock, bool captureBytes, CancellationToken cancellationToken)
+        TimeProvider clock, bool captureBytes, CancellationToken cancellationToken) =>
+        ProbeBoundedAsync(store, locator, expectedLength, expectedSha256, clock, Math.Max(0, expectedLength),
+            captureBytes, captureMismatch: false, cancellationToken);
+
+    /// <summary>Read a checkpoint occupant once, keeping its complete bytes for retry comparison if its identity differs.</summary>
+    public static ValueTask<SiloProbe> ProbeMetadataOccupantAsync(
+        ISiloObjectStore store, SiloExactLocator locator, long expectedLength, string expectedSha256,
+        TimeProvider clock, long maximumBytes, CancellationToken cancellationToken)
+    {
+        ValidateMetadataReadLimit(maximumBytes, nameof(maximumBytes));
+        return ProbeBoundedAsync(store, locator, expectedLength, expectedSha256, clock, maximumBytes,
+            captureBytes: false, captureMismatch: true, cancellationToken);
+    }
+
+    private static async ValueTask<SiloProbe> ProbeBoundedAsync(
+        ISiloObjectStore store, SiloExactLocator locator, long expectedLength, string expectedSha256,
+        TimeProvider clock, long maximumBytes, bool captureBytes, bool captureMismatch, CancellationToken cancellationToken)
     {
         try
         {
@@ -229,19 +247,20 @@ internal static class SiloVerifier
                     opened.Status == SiloOpenStatus.NoSuchKey ? "no-such-key" : "no-such-version");
             }
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-            using var captured = captureBytes ? new MemoryStream() : null;
-            var buffer = new byte[81920];
+            using var captured = captureBytes || captureMismatch ? new MemoryStream() : null;
+            var buffer = new byte[ReadSize(maximumBytes, ReadBufferSize)];
             long length = 0;
             try
             {
                 int read;
-                while ((read = await opened.Content.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+                while ((read = await opened.Content.ReadAsync(buffer.AsMemory(0, ReadSize(maximumBytes - length, buffer.Length)),
+                    cancellationToken).ConfigureAwait(false)) > 0)
                 {
-                    length += read;
-                    if (length > expectedLength)
+                    if (read > maximumBytes - length)
                     {
                         return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "length-exceeds-identity");
                     }
+                    length += read;
                     hash.AppendData(buffer, 0, read);
                     if (captured is not null)
                     {
@@ -253,18 +272,13 @@ internal static class SiloVerifier
             {
                 return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "read-error");
             }
-            if (length != expectedLength)
+            var mismatch = length != expectedLength ? "length-mismatch" :
+                string.Equals(Convert.ToHexStringLower(hash.GetHashAndReset()), expectedSha256, StringComparison.Ordinal)
+                    ? null : "sha256-mismatch";
+            return new(mismatch is null ? SiloProbeStatus.Verified : SiloProbeStatus.Damaged,
+                locator, clock.GetUtcNow(), mismatch ?? SiloFormats.ExactGetSha256)
             {
-                return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "length-mismatch");
-            }
-            var sha = Convert.ToHexStringLower(hash.GetHashAndReset());
-            if (!string.Equals(sha, expectedSha256, StringComparison.Ordinal))
-            {
-                return new(SiloProbeStatus.Damaged, locator, clock.GetUtcNow(), "sha256-mismatch");
-            }
-            return new(SiloProbeStatus.Verified, locator, clock.GetUtcNow(), SiloFormats.ExactGetSha256)
-            {
-                Bytes = captured?.ToArray()
+                Bytes = (mismatch is null ? captureBytes : captureMismatch) ? captured?.ToArray() : null
             };
         }
         catch (SiloStoreUnavailableException)
@@ -285,6 +299,7 @@ internal static class SiloVerifier
     public static async ValueTask<(string VersionId, byte[] Bytes)?> ReadCurrentAsync(
         ISiloObjectStore store, string key, long maximumBytes, CancellationToken cancellationToken)
     {
+        ValidateMetadataReadLimit(maximumBytes, nameof(maximumBytes));
         var versionId = await store.LocateCurrentVersionAsync(key, cancellationToken).ConfigureAwait(false);
         if (versionId is null)
         {
@@ -296,17 +311,26 @@ internal static class SiloVerifier
             return null;
         }
         using var buffer = new MemoryStream();
-        var chunk = new byte[(int)Math.Min(81920, maximumBytes + 1)];
+        var chunk = new byte[ReadSize(maximumBytes, ReadBufferSize)];
         int read;
-        while ((read = await opened.Content.ReadAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, maximumBytes + 1 - buffer.Length)),
+        while ((read = await opened.Content.ReadAsync(chunk.AsMemory(0, ReadSize(maximumBytes - buffer.Length, chunk.Length)),
             cancellationToken).ConfigureAwait(false)) > 0)
         {
-            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-            if (buffer.Length > maximumBytes)
+            if (read > maximumBytes - buffer.Length)
             {
                 throw new SiloInvalidObjectException(key, "the metadata object exceeds its bound");
             }
+            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
         return (versionId, buffer.ToArray());
     }
+
+    internal static void ValidateMetadataReadLimit(long maximumBytes, string parameterName)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(maximumBytes, 1, parameterName);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(maximumBytes, SiloJson.MaximumMetadataObjectBytes, parameterName);
+    }
+
+    // Reserve one extra byte to detect oversize. Cap before adding so even long.MaxValue is safe for payload probes.
+    private static int ReadSize(long remaining, int bufferSize) => (int)Math.Min(remaining, bufferSize - 1) + 1;
 }
