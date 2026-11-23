@@ -167,7 +167,13 @@ public sealed partial class DurableCaptureProcessingTests
                 if (invalidNewerCapture is { } invalid) Assert.AreEqual(invalid, candidates[0].CaptureId);
                 Assert.AreEqual(view.CaptureId, candidates[^1].CaptureId);
                 if (scenario == "accepted")
+                {
                     await CheckLatestReadCapacityAsync(restartedStore, artifactReader, view.CaptureId, identity).ConfigureAwait(false);
+                    var output = await restartedStore.ReadOutputByArtifactIdAsync(view.ArtifactId!.Value, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    Assert.IsNotNull(output);
+                    await AssertPinnedAssessmentWithAmbiguousHistoryAsync(root, astrometryReader, output, identity).ConfigureAwait(false);
+                }
             }
             else Assert.IsNull(latest);
 
@@ -428,6 +434,47 @@ public sealed partial class DurableCaptureProcessingTests
         Assert.AreSame(warm, await store.ReadAstrometryCandidatesAsync(CancellationToken.None).ConfigureAwait(false));
         command.CommandText = "DELETE FROM processing_execution_outputs WHERE execution_id = $execution AND output_identity_sha256 = $output;";
         Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+    }
+
+    private static async Task AssertPinnedAssessmentWithAmbiguousHistoryAsync(string root,
+        CameraAgentRetainedAstrometryService reader, DurableProcessingOutput output, string identity)
+    {
+        var captureId = output.Capture.CaptureId;
+        var pin = new CenteredViewArtifact(output.ArtifactId, output.OutputIdentitySha256, output.Artifact.ChecksumSha256);
+        using var connection = new SqliteConnection($"Data Source={Path.Combine(root, "journal", "raw-ingress.db")}");
+        await connection.OpenAsync().ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO processing_outputs(output_identity_sha256,capture_id,agent_id,node_id,artifact_id,role,variant,
+                payload_relative_path,sidecar_relative_path,descriptor_json,recipe_identity_sha256,algorithms_json,
+                compatibility_json,total_integration_ticks,capture_sequence,committed_unix_ms,product_kind,
+                product_schema_version,content_identity_sha256)
+            SELECT $duplicate,capture_id,agent_id,node_id,$artifact,role,variant,'absent-product','absent-manifest',
+                descriptor_json,recipe_identity_sha256,algorithms_json,compatibility_json,total_integration_ticks,
+                capture_sequence,committed_unix_ms,product_kind,product_schema_version,content_identity_sha256
+            FROM processing_outputs WHERE output_identity_sha256 = $output;
+            """;
+        command.Parameters.AddWithValue("$duplicate", new string('C', 64));
+        command.Parameters.AddWithValue("$artifact", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("$output", output.OutputIdentitySha256);
+        Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        try
+        {
+            var ambiguous = await reader.GetAsync(captureId, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual("assessment-ambiguous", ambiguous.Reason);
+            var exact = await reader.GetExactAsync(captureId, pin, CancellationToken.None).ConfigureAwait(false);
+            Assert.AreEqual(identity, exact.SolutionIdentitySha256);
+            Assert.AreEqual(pin.ArtifactId, exact.ArtifactId);
+            Assert.IsNotNull(exact.Diagnostics);
+            var wrongPin = await reader.GetExactAsync(captureId, pin with { PayloadSha256 = new string('D', 64) },
+                CancellationToken.None).ConfigureAwait(false);
+            Assert.IsNull(wrongPin.Solution);
+        }
+        finally
+        {
+            command.CommandText = "DELETE FROM processing_outputs WHERE output_identity_sha256 = $duplicate;";
+            Assert.AreEqual(1, await command.ExecuteNonQueryAsync().ConfigureAwait(false));
+        }
     }
 
     private static async Task CheckLatestReadCapacityAsync(SqliteCaptureProcessingStore store,

@@ -16,7 +16,7 @@ namespace HVO.SkyMonitor.CameraAgent.Tests;
 [TestClass]
 [TestCategory("Manual")]
 [DoNotParallelize]
-public sealed class CenteredRegistrationVirtualPixelsTests
+public sealed partial class CenteredRegistrationVirtualPixelsTests
 {
     private static readonly DateTimeOffset Epoch = new(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
     private static readonly Guid Run = new("e473de98-45b7-4198-9aae-f22c918424ed");
@@ -30,17 +30,23 @@ public sealed class CenteredRegistrationVirtualPixelsTests
     [DataRow("mono-native", 20, 120, 3)]
     [DataRow("cfa-native", 1, 30, 5)]
     [DataRow("cfa-native", 20, 60, 3)]
-    [DataRow("mono-roi-bin2", 1, 120, 3)]
+    [DataRow("mono-roi-bin2", 1, 120, 3, DisplayName = "CenteredOverlayReopensGenuinePlateMaps")]
     [DataRow("mono-mirror", 1, 60, 3)]
     [DataRow("mono-roll", 1, 60, 3)]
-    public async Task SensorPixelsCompareRegisteredAndOrdinaryMean(string profileName, int seconds, int cadenceSeconds, int slotCount)
+    [DataRow("mono-native", 1, 30, 3, true, DisplayName = "CenteredOverlayReopensGenuineMixedPlateAndCentroidMaps")]
+    public async Task SensorPixelsCompareRegisteredAndOrdinaryMean(string profileName, int seconds, int cadenceSeconds, int slotCount,
+        bool mixedPresentation = false)
     {
         var token = TestContext.CancellationToken;
         var cadence = TimeSpan.FromSeconds(cadenceSeconds);
         var firstSlot = -(slotCount / 2);
         var catalog = VirtualAstrometryQualificationTests.Snapshot().Catalog;
         var solverCatalog = await catalog.ReadAsync(5, AstrometricCatalogData.MaximumEntries, token).ConfigureAwait(false);
-        var profile = VirtualAstrometryFixture.Profiles(110201, VirtualAstrometryFixture.Families[0])
+        // The existing rectilinear lens provides a naturally sparser field for the direct-fit ambiguity check.
+        var family = mixedPresentation
+            ? VirtualAstrometryFixture.Families.Single(item => item.Name == "rectilinear-8mm")
+            : VirtualAstrometryFixture.Families[0];
+        var profile = VirtualAstrometryFixture.Profiles(110201, family)
             .Single(item => item.Name == profileName);
         var rig = profile.Config.Rig;
         var bayer = rig.Sensor.PixelFormat == CameraPixelFormat.BayerRggb16;
@@ -79,6 +85,21 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         var reader = new CenteredStackRetainedInputReader(new Settlements(rows),
             (_, _) => ValueTask.FromResult<CenteredStackMeasurementGeometry?>(new(rig.Sensor.PixelSizeMicrons, aperture)));
         var executor = new ProcessingRecipeExecutor([new CenteredRegisteredStackRecipe(reader)]);
+        if (mixedPresentation)
+        {
+            TestContext.WriteLine($"Independent plate assessments: {string.Join(", ", rows.Select(row => row.HasVerifiedPlate))}");
+            Assert.IsTrue(rows[0].HasVerifiedPlate && center.HasVerifiedPlate, "Both planned plate contributors require original accepted solves.");
+            var relativeStart = Epoch.AddSeconds(2);
+            var relativeClock = new ExposureTestTimeProvider(relativeStart, autoAdvance: true);
+            var relativeCamera = new VirtualSkyCameraModule(relativeClock, catalog, new ProjectedSceneStore());
+            await using var relativeLifetime = relativeCamera.ConfigureAwait(false);
+            await relativeCamera.InitializeAsync(profile.Config, token).ConfigureAwait(false);
+            var request = VirtualAstrometryFixture.Request(relativeStart, exposure);
+            var captured = await relativeCamera.CaptureAsync(request, token).ConfigureAwait(false);
+            rows[2] = await PrepareAsync(profile.Config, camera, 104, request, captured, token).ConfigureAwait(false);
+            await VerifyRetainedPublicationAsync(rows, plan, rig, executor, mixedPresentation, token).ConfigureAwait(false);
+            return;
+        }
         var stackRequest = CenteredRegisteredStackRecipe.CreateRequest(plan, LinearVariant, "registered", artifacts);
         using var process = Process.GetCurrentProcess();
         var stack = await MeasureAsync(process, "registered", () => executor.ExecuteAsync(stackRequest, token)).ConfigureAwait(false);
@@ -143,6 +164,8 @@ public sealed class CenteredRegistrationVirtualPixelsTests
             Score(catalog.Query(new(5, 2000)), rig, contributing, evidence, displayPlanes, support, ordinary, exposure, byId,
                 requireSharpness: !rejectionControl);
         }
+        if (profileName == "mono-roi-bin2")
+            await VerifyRetainedPublicationAsync(rows, plan, rig, executor, mixedPresentation, token).ConfigureAwait(false);
     }
 
     // Binning this crop leaves too few isolated stellar apertures for the fixed photometry sample.
@@ -473,17 +496,19 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         var scene = ProjectedSceneJson.Create(ProjectedSceneKind.Predicted, predicted,
             ProjectedSceneImageTransformV1.Identity(raw.Layout!.Width, raw.Layout.Height),
             new(row.Pin.Key.CaptureId, raw.ArtifactId, raw.DescriptorIdentitySha256!), rig.Optics.CalibrationVersion, predicted.Request.ProjectionVersion);
-        var sceneArtifact = FromProduct(raw, await ProduceAsync(
-            ExposureCatalogPredictionProducts.Request(raw, scene), token).ConfigureAwait(false));
+        var sceneOutput = await ProduceAsync(ExposureCatalogPredictionProducts.Request(raw, scene), token).ConfigureAwait(false);
+        var sceneArtifact = FromProduct(raw, sceneOutput);
         var expected = ExposureMeasurementBindings.FromAdmitted(row.Settlement, projection, rig.Sensor.PixelSizeMicrons);
         var associated = ExposureAssociationProducts.Associate(raw, row.Measurement, expected, sceneArtifact,
             ExposureAssociationProducts.Variant, cancellationToken: token);
         Assert.AreEqual(ProcessingOutcomeStatus.Produced, associated.Status, associated.ReasonCode);
-        var association = FromProduct(raw, Assert.ContainsSingle(associated.Products));
+        var associationOutput = Assert.ContainsSingle(associated.Products);
+        var association = FromProduct(raw, associationOutput);
         var snapshot = new AstrometryCatalogSnapshotV1(solverCatalog.Metadata, solverCatalog.Stars, solverCatalog.Provenance!,
             solverCatalog.IsCompleteForRequestedMagnitude, solverCatalog.CompletenessMagnitudeLimit, solverCatalog.CoordinateModel);
         var context = RetainedAstrometryProducts.CreateContext(raw, association, sceneArtifact, snapshot, AstrometricClockFacts.NotSupplied);
-        var contextArtifact = FromProduct(raw, RetainedAstrometryProducts.CreateContextProduct(context, raw, association, sceneArtifact, "context"));
+        var contextOutput = RetainedAstrometryProducts.CreateContextProduct(context, raw, association, sceneArtifact, "context");
+        var contextArtifact = FromProduct(raw, contextOutput);
         var solution = await ProduceAsync(RetainedAstrometryProducts.Request(raw, association, sceneArtifact, contextArtifact,
             new(VirtualAstrometryFixture.SolverOptions), "solve"), token).ConfigureAwait(false);
         var assessment = MeasuredAstrometryJson.Parse(solution.Payload).Assessment;
@@ -491,6 +516,7 @@ public sealed class CenteredRegistrationVirtualPixelsTests
         return row with
         {
             Plate = [association, sceneArtifact, contextArtifact, solved],
+            PlateProducts = [associationOutput, sceneOutput, contextOutput, solution],
             HasVerifiedPlate = assessment.HasMeasuredMapping,
             Pin = row.Pin with
             {
@@ -512,6 +538,7 @@ public sealed class CenteredRegistrationVirtualPixelsTests
     {
         internal DateTimeOffset Midpoint => Pin.ExposureStartedUtc.AddTicks((Pin.ExposureEndedUtc - Pin.ExposureStartedUtc).Ticks / 2);
         internal ProcessingArtifact[] Plate { get; init; } = [];
+        internal ProcessingProduct[] PlateProducts { get; init; } = [];
         internal bool HasVerifiedPlate { get; init; }
     }
 

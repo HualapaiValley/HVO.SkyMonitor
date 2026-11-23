@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Offline reproduction of an SDK declared in an imported MSBuild file.
+# Run under the shared heavy-gate lock; the package source is local only.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/hvo-docs-sdk.XXXXXXXX")"
+trap 'rm -rf "$fixture"' EXIT
+mkdir -p "$fixture/tests/Example" "$fixture/docs/runbooks" "$fixture/packages" "$fixture/scripts" "$fixture/home" "$fixture/xdg" "$fixture/tmp" "$fixture/nuget"
+chmod 700 "$fixture" "$fixture/home" "$fixture/xdg" "$fixture/tmp" "$fixture/nuget"
+export HOME="$fixture/home" XDG_CONFIG_HOME="$fixture/xdg" TMPDIR="$fixture/tmp" NUGET_PACKAGES="$fixture/nuget"
+export MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0 DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+cp "$repo_root/global.json" "$fixture/global.json"
+printf '<Solution><Project Path="tests/Example/Example.csproj" /></Solution>\n' > "$fixture/HVO.SkyMonitor.v9.slnx"
+printf '<Project><Import Project="shared.props" /></Project>\n' > "$fixture/tests/Example/Example.csproj"
+printf '<Project />\n' > "$fixture/tests/Example/shared.props"
+printf 'imported SDK fixture\n' > "$fixture/docs/runbooks/releases.md"
+cat > "$fixture/NuGet.Config" <<'CONFIG'
+<configuration><packageSources><clear /><add key="fixture" value="./packages" /></packageSources><auditSources><clear /></auditSources></configuration>
+CONFIG
+python3 - "$fixture/packages/Microsoft.NET.ILLink.Tasks.10.0.13.nupkg" <<'PY_PACKAGE'
+import sys, zipfile
+nuspec = '''<?xml version="1.0"?><package><metadata><id>Microsoft.NET.ILLink.Tasks</id><version>10.0.13</version><authors>fixture</authors><description>Offline fixture</description></metadata></package>'''
+props = '''<Project><ItemGroup><None Include="$(MSBuildProjectDirectory)/../../docs/runbooks/releases.md" Link="implicit-runbook.md" CopyToOutputDirectory="PreserveNewest" /></ItemGroup></Project>'''
+with zipfile.ZipFile(sys.argv[1], 'w') as archive:
+    archive.writestr('Microsoft.NET.ILLink.Tasks.nuspec', nuspec)
+    archive.writestr('build/Microsoft.NET.ILLink.Tasks.props', props)
+PY_PACKAGE
+git -C "$fixture" init -q
+git -C "$fixture" config user.name 'CI fixture'
+git -C "$fixture" config user.email fixture@example.invalid
+git -C "$fixture" add global.json NuGet.Config HVO.SkyMonitor.v9.slnx tests/Example/Example.csproj tests/Example/shared.props docs/runbooks/releases.md
+git -C "$fixture" commit -qm base
+(cd "$fixture" && "$repo_root/scripts/ci:classify" --print-docs-inventory HEAD) > "$fixture/scripts/ci:docs-inventory"
+git -C "$fixture" add scripts/ci:docs-inventory && git -C "$fixture" commit -qm certificate
+certificate_base="$(git -C "$fixture" rev-parse HEAD)"
+for sdk_form in attribute element; do
+  git -C "$fixture" reset -q --hard "$certificate_base"
+  rm -rf "$fixture/tests/Example/obj" "$fixture/tests/Example/bin"
+  if [[ "$sdk_form" == attribute ]]; then
+    printf '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTrimmable>true</IsTrimmable></PropertyGroup></Project>\n' > "$fixture/tests/Example/shared.props"
+  else
+    printf '<Project><Sdk Name="Microsoft.NET.Sdk" /><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTrimmable>true</IsTrimmable></PropertyGroup></Project>\n' > "$fixture/tests/Example/shared.props"
+  fi
+  git -C "$fixture" add tests/Example/shared.props && git -C "$fixture" commit -qm imported-sdk
+  base="$(git -C "$fixture" rev-parse HEAD)"
+  if (cd "$fixture" && "$repo_root/scripts/ci:classify" --print-docs-inventory "$base") > "$fixture/unsafe" 2> "$fixture/audit-error"; then
+    printf 'Imported SDK %s was certified.\n' "$sdk_form" >&2; exit 1
+  fi
+  grep -Fxq 'docs inventory audit: SDK generated restore imports are uncertified' "$fixture/audit-error"
+  printf 'changed by documentation PR\n' >> "$fixture/docs/runbooks/releases.md"
+  git -C "$fixture" add docs/runbooks/releases.md && git -C "$fixture" commit -qm doc
+  head="$(git -C "$fixture" rev-parse HEAD)"
+  output="$(cd "$fixture" && "$repo_root/scripts/ci:classify" pull_request "$base" "$head" docs-fast-only)"
+  grep -Fxq 'docs_fast_path=false' <<< "$output"
+  grep -Fxq 'docs_fast_path_reason=project inventory unavailable' <<< "$output"
+  (cd "$fixture" && dotnet restore HVO.SkyMonitor.v9.slnx > "$fixture/restore.log" 2>&1)
+  grep -Fq 'Microsoft.NET.ILLink.Tasks.props' "$fixture/tests/Example/obj/Example.csproj.nuget.g.props"
+  (cd "$fixture" && dotnet build tests/Example/Example.csproj --no-restore --configuration Release > "$fixture/build.log" 2>&1)
+  cmp "$fixture/docs/runbooks/releases.md" "$fixture/tests/Example/bin/Release/net10.0/implicit-runbook.md"
+  printf 'Offline imported-SDK %s regression passed: implicit package copied the runbook; classifier selected full validation.\n' "$sdk_form"
+done

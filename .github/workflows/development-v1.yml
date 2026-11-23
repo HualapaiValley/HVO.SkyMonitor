@@ -144,14 +144,65 @@ jobs:
       - name: Checkout exact commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
           persist-credentials: false
 
+      - name: Classify exact documentation diff
+        id: docs-classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          evidence="$DEV_V1_EVIDENCE_ROOT/classification.md"
+          classifier="$DEV_V1_EVIDENCE_ROOT/base-classifier"
+          output="$DEV_V1_EVIDENCE_ROOT/classifier-output.txt"
+          run_full=true
+          reason='non-pull-request event requires full validation'
+          base=''
+          merge="$GITHUB_SHA"
+          printf 'Preflight dependency: success\n' > "$evidence"
+          : > "$output"
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            reason='merge binding unavailable or mismatched'
+            parents="$(git rev-list --parents -n 1 HEAD)" || parents=''
+            read -r merge_commit base second extra <<< "$parents"
+            if [[ "$merge_commit" == "$GITHUB_SHA" && -n "$base" && -n "$PR_HEAD_SHA" && -n "$second" && "$second" == "$PR_HEAD_SHA" && -z "$extra" ]]; then
+              reason='base classifier unavailable or failed'
+              if git show "$base:scripts/ci:classify" > "$classifier"; then
+                eligible=true
+                for endpoint in "$PR_HEAD_SHA" "$merge_commit"; do
+                  reason='base classifier unavailable or failed'
+                  printf '\nClassification endpoint: %s\n' "$endpoint" >> "$evidence"
+                  if GITHUB_STEP_SUMMARY="$evidence" bash "$classifier" pull_request "$base" "$endpoint" docs-fast-only > "$output"; then
+                    reason='classifier output missing or invalid'
+                    mapfile -t decisions < <(grep '^docs_fast_path=' "$output" || true)
+                    mapfile -t reasons < <(grep '^docs_fast_path_reason=' "$output" || true)
+                    if [[ ${#decisions[@]} -eq 1 && ${#reasons[@]} -eq 1 && "${reasons[0]}" =~ ^docs_fast_path_reason=[a-zA-Z0-9\ .,/-]+$ ]]; then
+                      case "${decisions[0]}" in
+                        docs_fast_path=true) reason="${reasons[0]#*=}"; continue ;;
+                        docs_fast_path=false) reason="${reasons[0]#*=}" ;;
+                      esac
+                    fi
+                  fi
+                  eligible=false
+                  break
+                done
+                if [[ "$eligible" == true ]]; then run_full=false; fi
+              fi
+            fi
+          fi
+          printf 'mergeSha=%s\nbaseSha=%s\nprHeadSha=%s\nrunFull=%s\nreason=%s\n' "$merge" "$base" "$PR_HEAD_SHA" "$run_full" "$reason" >> "$evidence"
+          printf 'run_full=%s\nreason=%s\nbase_sha=%s\n' "$run_full" "$reason" "$base" >> "$GITHUB_OUTPUT"
+          cat "$evidence"
+
       - name: Setup .NET from global.json
+        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
 
       - name: Restore solution
+        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
         id: restore
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -161,6 +212,7 @@ jobs:
             dotnet restore HVO.SkyMonitor.v9.slnx
 
       - name: Build warning-clean Release solution
+        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
         id: build
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -176,6 +228,7 @@ jobs:
       # ci.yml's Quality and Build jobs on the main/release qualification path (#1142).
       # The terminal programs' render tests save each screen to HVO_TERMINAL_RENDERS_DIR (#1317), inside the evidence.
       - name: Run Docker-disabled Unit selection
+        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
         id: unit
         env:
           DOCKER_HOST: unix:///tmp/hvo-no-docker.sock
@@ -196,6 +249,7 @@ jobs:
               --logger trx
 
       - name: Enforce canonical per-file coverage floors
+        if: ${{ steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false' }}
         id: coverage
         run: |
           remaining="$((DEV_V1_DEADLINE_EPOCH - $(date +%s)))"
@@ -212,7 +266,7 @@ jobs:
 
       # Those screens drawn as SVG, as docs/images/terminal has them, and kept with the evidence below (#1317).
       - name: Draw terminal screenshots
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && (steps.docs-classify.outcome != 'success' || steps.docs-classify.outputs.run_full != 'false') }}
         run: |
           mkdir -p "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
           ./scripts/docs:terminal-screenshots --draw "$DEV_V1_EVIDENCE_ROOT/terminal-renders"
@@ -220,6 +274,11 @@ jobs:
       - name: Write evidence summary
         if: always()
         env:
+          CLASSIFY_OUTCOME: ${{ steps.docs-classify.outcome }}
+          RUN_FULL: ${{ steps.docs-classify.outputs.run_full }}
+          DOCS_FAST_PATH_REASON: ${{ steps.docs-classify.outputs.reason }}
+          CLASSIFIED_BASE: ${{ steps.docs-classify.outputs.base_sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           RESTORE_OUTCOME: ${{ steps.restore.outcome }}
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           UNIT_OUTCOME: ${{ steps.unit.outcome }}
@@ -239,20 +298,29 @@ jobs:
               --arg rss "$(read_metric "$file" 'Maximum resident set size (kbytes)')" \
               '{name:$name,outcome:$outcome,elapsed:$elapsed,largestProcessRssKilobytes:($rss|if length==0 then null else tonumber end)}'
           }
+          docs_fast_path=false
+          [[ "$CLASSIFY_OUTCOME" == success && "$RUN_FULL" == false ]] && docs_fast_path=true
+          reason="${DOCS_FAST_PATH_REASON:-classification unavailable; full validation required}"
+          sdk_version=""
+          [[ "$docs_fast_path" == true ]] || sdk_version="$(dotnet --version 2>/dev/null || true)"
           completed_at="$(date +%s)"
           trx_count="$(find "$DEV_V1_EVIDENCE_ROOT/unit" -name '*.trx' -type f | wc -l)"
           jq -n \
-            --arg schema hvo-development-v1-ci-v5 \
+            --arg schema hvo-development-v1-ci-v6 \
             --arg headSha "$GITHUB_SHA" \
             --arg event "$GITHUB_EVENT_NAME" \
-            --arg sdkVersion "$(dotnet --version 2>/dev/null || true)" \
+            --argjson docsFastPath "$docs_fast_path" \
+            --arg docsFastPathReason "$reason" \
+            --arg baseSha "$CLASSIFIED_BASE" \
+            --arg prHeadSha "$PR_HEAD_SHA" \
+            --arg sdkVersion "$sdk_version" \
             --argjson elapsed "$((completed_at - DEV_V1_STARTED_AT_EPOCH))" \
             --argjson trxCount "$trx_count" \
             --argjson restore "$(stage_json restore "$RESTORE_OUTCOME")" \
             --argjson build "$(stage_json build "$BUILD_OUTCOME")" \
             --argjson unit "$(stage_json unit "$UNIT_OUTCOME")" \
             --argjson coverage "$(stage_json coverage "$COVERAGE_OUTCOME")" \
-            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,sdkVersion:$sdkVersion,runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
+            '{schema:$schema,profile:"development-v1",headSha:$headSha,event:$event,baseSha:$baseSha,prHeadSha:$prHeadSha,mergeSha:$headSha,docsFastPath:$docsFastPath,docsFastPathReason:$docsFastPathReason,preflight:"success",sdkVersion:($sdkVersion|if length==0 then null else . end),runnerElapsedThroughSummaryStartSeconds:$elapsed,targetSeconds:600,workloadBudgetSeconds:1080,hardTimeoutSeconds:1320,unitTrxCount:$trxCount,memoryMetric:"GNU time ru_maxrss: largest single process",stages:[$restore,$build,$unit,$coverage],qualificationWorkflow:"ci.yml",qualificationOnlyChecks:["whole-repository-shellcheck","exhaustive-test-category-discovery"]}' \
             > "$DEV_V1_EVIDENCE_ROOT/manifest.json"
           jq . "$DEV_V1_EVIDENCE_ROOT/manifest.json"
 

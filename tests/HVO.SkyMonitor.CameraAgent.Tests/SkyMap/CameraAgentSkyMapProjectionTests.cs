@@ -463,15 +463,17 @@ public sealed class CameraAgentSkyMapProjectionTests
     {
         private readonly InMemoryCelestialCatalog _catalog;
 
-        internal FixtureCatalog(IEnumerable<CelestialCatalogObject> objects, CatalogMetadata metadata)
+        internal FixtureCatalog(IEnumerable<CelestialCatalogObject> objects, CatalogMetadata metadata,
+            string preprocessingVersion = "3")
         {
             _catalog = new InMemoryCelestialCatalog(objects);
             Metadata = metadata;
+            PreprocessingVersion = preprocessingVersion;
         }
 
         public CatalogMetadata Metadata { get; }
 
-        public string PreprocessingVersion => "3";
+        public string PreprocessingVersion { get; }
 
         public IReadOnlyList<CelestialCatalogObject> Query(CatalogQuery query) => _catalog.Query(query);
 

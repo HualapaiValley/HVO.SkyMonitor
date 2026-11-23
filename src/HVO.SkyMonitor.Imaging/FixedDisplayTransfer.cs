@@ -85,6 +85,60 @@ public static class FixedDisplayTransfer
         return rgb;
     }
 
+    /// <summary>Converts the exact delivered CFA phase before any spatial resampling.</summary>
+    public static byte[] ApplyWithDeliveredPhase(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> pixels,
+        FixedDisplayTransferOptions options, BayerPattern? deliveredPhase, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentNullException.ThrowIfNull(options);
+        if (!layout.Validate().IsValid || pixels.Length != layout.ByteLength ||
+            (layout.PixelFormat == CameraPixelFormat.BayerRggb16) != deliveredPhase.HasValue ||
+            deliveredPhase is { } phase && !Enum.IsDefined(phase))
+            throw new ArgumentException("A valid retained layout and explicit delivered CFA phase are required.", nameof(layout));
+        if (layout.ByteOrder != FrameByteOrder.BigEndian && deliveredPhase is null or BayerPattern.Rggb)
+            return Apply(layout, pixels, options, cancellationToken);
+
+        options.Validate();
+        var area = checked(layout.Width * layout.Height);
+        var values = new double[area];
+        for (var y = 0; y < layout.Height; y++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = pixels.Span[(y * layout.StrideBytes)..];
+            for (var x = 0; x < layout.Width; x++)
+            {
+                var sample = row[(2 * x)..];
+                var code = layout.ByteOrder == FrameByteOrder.BigEndian
+                    ? BinaryPrimitives.ReadUInt16BigEndian(sample)
+                    : BinaryPrimitives.ReadUInt16LittleEndian(sample);
+                values[y * layout.Width + x] = code - options.BlackLevel;
+            }
+        }
+        if (deliveredPhase is not { } pattern)
+        {
+            var mono = new byte[area];
+            for (var i = 0; i < area; i++)
+            {
+                if ((i & 1023) == 0) cancellationToken.ThrowIfCancellationRequested();
+                mono[i] = Transfer(values[i], options);
+            }
+            return mono;
+        }
+
+        var valid = new bool[area];
+        Array.Fill(valid, true);
+        var linear = LinearBayerReconstruction.Reconstruct(values, valid, layout.Width, layout.Height, pattern, cancellationToken);
+        var rgb = new byte[checked(area * 3)];
+        for (var i = 0; i < area; i++)
+        {
+            if ((i & 1023) == 0) cancellationToken.ThrowIfCancellationRequested();
+            rgb[i * 3] = Transfer(linear.Red.Span[i], options);
+            rgb[i * 3 + 1] = Transfer(linear.Green.Span[i], options);
+            rgb[i * 3 + 2] = Transfer(linear.Blue.Span[i], options);
+        }
+        return rgb;
+    }
+
     private static byte[] ApplyIntegerBlackLevel(FrameLayoutDescriptor layout, ReadOnlyMemory<byte> pixels,
         FixedDisplayTransferOptions options, CancellationToken token)
     {
