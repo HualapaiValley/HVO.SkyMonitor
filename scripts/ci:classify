@@ -5,6 +5,7 @@ event_name="${1:-}"
 base_sha="${2:-}"
 head_sha="${3:-}"
 summary_file="${GITHUB_STEP_SUMMARY:-}"
+classification_scope="${4:-}"
 
 mode="full"
 reason="non-pull-request events always run the full matrix"
@@ -24,6 +25,8 @@ secret_scan_contract="true"
 release_scripts="true"
 catalog_recipe="true"
 path_count=0
+docs_fast_path="false"
+docs_fast_path_reason="non-pull-request events require full validation"
 
 write_summary_header() {
   [[ -n "$summary_file" ]] || return 0
@@ -36,7 +39,7 @@ write_summary_path() {
 }
 
 finish() {
-  if [[ -n "$summary_file" ]]; then
+  if [[ -n "$summary_file" && "${classification_scope:-}" != "docs-fast-only" ]]; then
     printf '\nMode: **%s**  \nMode reason: %s  \nDeployment contracts: **%s**  \nDeployment reason: %s  \nExhaustive catalog: **%s**  \nExhaustive shards: **%s**  \nExhaustive installer: **%s**  \nComplete matrix: **%s**  \nComplete reason: %s  \nShared libraries: **%s**  \nCameraAgent: **%s**  \nLogicHost: **%s**  \nCombined: **%s**  \nDelivery: **%s**  \nSecret scan contract: **%s**  \nRelease scripts: **%s**  \nCatalog recipe: **%s**  \nPath count: %s\n' \
       "$mode" "$reason" "$deployment" "$deployment_reason" "$deployment_catalog" \
       "$deployment_shards" "$deployment_installer" "$complete" "$complete_reason" \
@@ -44,6 +47,12 @@ finish() {
       "$catalog_recipe" "$path_count" >> "$summary_file"
   fi
 
+  printf 'Docs fast path: %s; reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >&2
+  [[ -z "$summary_file" ]] || printf '\nDocs fast path: **%s**  \nDocs fast path reason: %s\n' "$docs_fast_path" "$docs_fast_path_reason" >> "$summary_file"
+  if [[ "$classification_scope" == docs-fast-only ]]; then
+    printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
+    return
+  fi
   printf 'CI classification: mode=%s deployment=%s complete=%s shared=%s cameraagent=%s logichost=%s combined=%s delivery=%s secret_scan_contract=%s release_scripts=%s catalog_recipe=%s reason=%s deployment-reason=%s complete-reason=%s paths=%s\n' \
     "$mode" "$deployment" "$complete" "$shared" "$cameraagent" "$logichost" "$combined" \
     "$delivery" "$secret_scan_contract" "$release_scripts" "$catalog_recipe" "$reason" "$deployment_reason" \
@@ -52,6 +61,7 @@ finish() {
     "$mode" "$deployment" "$deployment_catalog" "$deployment_shards" "$deployment_installer" \
     "$complete" "$shared" "$cameraagent" "$logichost" "$combined" "$delivery" "$secret_scan_contract" \
     "$release_scripts" "$catalog_recipe"
+  printf 'docs_fast_path=%s\ndocs_fast_path_reason=%s\n' "$docs_fast_path" "$docs_fast_path_reason"
 }
 
 is_secret_scan_contract_path() {
@@ -140,6 +150,221 @@ is_reduced_path() {
   esac
 
   [[ "$path" =~ ^(src|tests)/[^/]+/README\.md$ ]]
+}
+
+is_fast_doc_path() {
+  case "$1" in
+    docs/catalog/* | docs/contracts/* | docs/validation/* | docs/evidence/* | docs/*/evidence/* | docs/generated/* | docs/*/generated/* | docs/images/* | docs/upgrade-notes/* | docs/runbooks/development-v1-merge-queue-drill/*) return 1 ;;
+    docs/*.md | docs/*.markdown | docs/*.txt | README.md | AGENTS.md | CLAUDE.md) return 0 ;;
+  esac
+  return 1
+}
+
+# Certified inventory: the base-controlled manifest records every tracked
+# MSBuild definition, XML input and resolved explicit import, including modes
+# and blob identities. Changes disable the exemption until reviewed.
+fast_inventory_for_tree() {
+  python3 -I - "$1" <<'PY_AUDIT'
+import os, posixpath, re, subprocess, sys, xml.etree.ElementTree as ET
+
+commit = sys.argv[1]
+def fail(message):
+    print("docs inventory audit: " + message, file=sys.stderr)
+    sys.exit(1)
+def git(*args):
+    try:
+        return subprocess.run(["git", *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        fail("Git could not read the committed input tree")
+
+def read_xml(name):
+    raw = git("cat-file", "blob", commit + ":" + name)
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fail("build input is not UTF-8")
+    if "\0" in text:
+        fail("build input is not UTF-8")
+    declaration = re.match(r"^<\?xml\s+([^?]*?)\?>", text)
+    if declaration:
+        declared_encoding = re.search(r"(?:^|\s)encoding\s*=\s*([\"'])([^\"']+)\1", declaration.group(1))
+        if declared_encoding and declared_encoding.group(2).lower() != "utf-8":
+            fail("XML declares a non-UTF-8 encoding")
+    if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
+        fail("document type declarations require manual review")
+    if re.search(r"&#|%[0-9a-fA-F]{2}", text):
+        fail("escaped build input requires manual review")
+    try:
+        return ET.fromstring(text)
+    except (ET.ParseError, ValueError):
+        fail("unparseable build input")
+
+entries = {}
+try:
+    for entry in git("ls-tree", "-rz", commit).split(b"\0"):
+        if not entry: continue
+        meta, path = entry.split(b"\t", 1)
+        name = path.decode("utf-8")
+        entries[name] = (meta, path)
+except (ValueError, UnicodeError):
+    fail("unreadable tree entry")
+
+for name, (metadata, _) in entries.items():
+    if metadata.startswith(b"120000 "):
+        fail("tracked symlink requires manual review")
+    if metadata.startswith(b"160000 "):
+        fail("tracked submodule requires manual review")
+    lower = name.lower()
+    if lower.endswith((".user", ".rsp")) or posixpath.basename(lower).startswith("directory.solution."):
+        fail("tracked automatic MSBuild input requires manual review")
+
+# Certify the exact solution the workflow restores and builds. Unknown solution
+# syntax or project paths cannot establish the exemption.
+solution = "HVO.SkyMonitor.v9.slnx"
+if solution not in entries or not entries[solution][0].startswith(b"100644 blob "):
+    fail("solution is unavailable or non-regular")
+solution_root = read_xml(solution)
+if solution_root.tag != "Solution": fail("unknown solution format")
+projects = set()
+for node in solution_root.iter():
+    if node.tag not in ("Solution", "Folder", "Project"):
+        fail("unknown solution entry")
+    if node.tag == "Project":
+        value = node.attrib.get("Path", "").replace("\\", "/")
+        if set(node.attrib) != {"Path"} or not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+            fail("unresolved solution project")
+        target = posixpath.normpath(value)
+        if target == ".." or target.startswith("../") or target not in entries or target in projects:
+            fail("solution project outside committed inventory")
+        projects.add(target)
+if not projects: fail("solution has no projects")
+pending = [(n, True) for n in projects]
+pending += [(n, n.lower().endswith(".csproj")) for n in entries if n.lower().endswith((".csproj", ".props", ".targets", ".xml"))]
+seen = {solution}
+visited = set()
+while pending:
+    name, is_project = pending.pop()
+    if (name, is_project) in visited: continue
+    visited.add((name, is_project))
+    seen.add(name)
+    # SDK default items include the project subtree. A project rooted at the
+    # repository or under docs can implicitly consume eligible documentation.
+    project_dir = posixpath.dirname(name).lower()
+    if is_project and (not project_dir or project_dir == "docs" or project_dir.startswith("docs/")):
+        fail("project location permits implicit documentation items")
+    meta, _ = entries[name]
+    if not meta.startswith(b"100644 blob ") and not meta.startswith(b"100755 blob "):
+        fail("non-regular build input")
+    root = read_xml(name)
+    # SDK resolution can itself add restore-time imports, even with no explicit
+    # PackageReference. No source-bound SDK/package import certificate exists.
+    sdk_uncertified = any(
+        (isinstance(node.tag, str) and node.tag.rsplit("}", 1)[-1].lower() == "sdk")
+        or any(key.rsplit("}", 1)[-1].lower() == "sdk" for key in node.attrib)
+        for node in root.iter())
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1] if isinstance(node.tag, str) else ""
+        # Restore can import code from packages and their transitive dependencies.
+        # No source-bound package/import certificate exists in this repository.
+        if tag.lower() in ("packagereference", "globalpackagereference", "packagedownload"):
+            fail("restore generated package imports are uncertified")
+        for text in list(node.attrib.values()) + ([node.text] if node.text else []):
+            norm = text.replace("\\", "/")
+            if re.search(r"(?i)(^|[^a-z0-9_])(README|AGENTS|CLAUDE)\.md([^a-z0-9_]|$)", norm):
+                fail("build input references a root documentation name")
+            for match in re.finditer(r"(?i)(?:^|/)docs/([^\s\"'<>;]+)", norm):
+                part = match.group(1).lower()
+                if ".." in part.split("/") or not part.startswith(("catalog/", "contracts/", "validation/", "images/", "upgrade-notes/", "evidence/", "generated/")):
+                    fail("build input references eligible documentation")
+        for attr in ("Include", "Update", "Remove"):
+            value = node.attrib.get(attr)
+            if not value or tag in ("PackageReference", "PackageVersion", "Reference", "Using", "InternalsVisibleTo"): continue
+            for part in value.split(";"):
+                part = part.strip().replace("\\", "/")
+                if not part: fail("empty item specification")
+                if "@(" in part or "%(" in part:
+                    if name == "scripts/cameraagent-release.targets" and tag == "StaticWebAssetEndpoint" and part == "@(_HvoReleaseAssetEndpoints)":
+                        continue
+                    fail("unresolved item expression")
+                token = "$(MSBuildThisFileDirectory)"
+                if not is_project and not part.startswith(token):
+                    if name == "scripts/cameraagent-release.targets" and tag == "_HvoReleaseAssetHeader" and part == "Replace":
+                        continue
+                    fail("relative item in imported build input")
+                if "$(" in part:
+                    token = "$(MSBuildThisFileDirectory)"
+                    if not part.startswith(token): fail("unresolved item property")
+                    part = part[len(token):]
+                    if "$(" in part: fail("unresolved item property")
+                resolved_part = posixpath.normpath(posixpath.join(posixpath.dirname(name), part))
+                lower_part = resolved_part.lower()
+                if resolved_part.startswith("/") or resolved_part == ".." or resolved_part.startswith("../"):
+                    fail("item path escapes the committed tree")
+                if lower_part in ("readme.md", "agents.md", "claude.md") or (
+                    lower_part.startswith("docs/") and not lower_part.startswith(("docs/catalog/", "docs/contracts/", "docs/validation/", "docs/images/", "docs/upgrade-notes/", "docs/evidence/", "docs/generated/"))):
+                    fail("item references eligible documentation")
+                if "*" in part or "?" in part:
+                    wildcard_tail = re.split(r"[?*]", part, 1)[1]
+                    if ".." in wildcard_tail.split("/"):
+                        fail("item path traverses after a wildcard")
+                    prefix = re.split(r"[?*]", part, 1)[0]
+                    # A partial component is not a directory boundary: d* can
+                    # match docs. Confine only the complete preceding directory.
+                    if not prefix.endswith("/"):
+                        prefix = posixpath.dirname(prefix)
+                    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), prefix))
+                    if resolved in ("", ".", "..") or resolved.startswith("../") or resolved == "docs" or resolved.startswith("docs/"):
+                        fail("item glob may reach documentation")
+        if tag == "ProjectReference":
+            value = node.attrib.get("Include", "").replace("\\", "/")
+            if not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+                fail("unresolved project reference")
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
+            if target not in entries:
+                fail("project reference outside committed inventory")
+            pending.append((target, True))
+        if tag == "Import":
+            if "Sdk" in node.attrib: fail("SDK import requires manual review")
+            value = node.attrib.get("Project", "").replace("\\", "/")
+            if name == "tests/Directory.Build.props" and value == "$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))":
+                target = "Directory.Build.props"
+            else:
+                token = "$(MSBuildThisFileDirectory)"
+                if value.startswith(token): value = value[len(token):]
+                if not value or any(c in value for c in ("$", "*", "?", ";")) or value.startswith("/"):
+                    fail("unresolved MSBuild import")
+                target = posixpath.normpath(posixpath.join(posixpath.dirname(name), value))
+            if target not in entries:
+                fail("MSBuild import outside committed inventory")
+            pending.append((target, False))
+    if sdk_uncertified:
+        fail("SDK generated restore imports are uncertified")
+for name in sorted(seen, key=lambda n: entries[n][1]):
+    meta, path = entries[name]
+    print(meta.decode("ascii") + " " + repr(path))
+PY_AUDIT
+}
+
+fast_doc_link_state() {
+  local expected actual
+  expected="$(mktemp)" || return 2
+  actual="$(mktemp)" || { rm -f "$expected"; return 2; }
+  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$expected" ||
+     ! fast_inventory_for_tree "$head_sha" > "$actual"; then
+    rm -f "$expected" "$actual"
+    return 2
+  fi
+  if ! cmp -s "$expected" "$actual"; then
+    if [[ -n "$summary_file" ]]; then
+      printf '\nBuild inventory differs from the certified base inventory:\n```diff\n' >> "$summary_file"
+      diff -u "$expected" "$actual" >> "$summary_file" || true
+      printf '\n```\n' >> "$summary_file"
+    fi
+    rm -f "$expected" "$actual"
+    return 0
+  fi
+  rm -f "$expected" "$actual"
+  return 1
 }
 
 is_deployment_path() {
@@ -511,11 +736,37 @@ select_components() {
   fi
 }
 
+if [[ "$event_name" == "--print-docs-inventory" ]]; then
+  fast_inventory_for_tree "$base_sha"
+  exit $?
+fi
+
+if [[ "$event_name" == "--warn-docs-inventory" ]]; then
+  warn_expected="$(mktemp)" || { printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
+  warn_actual="$(mktemp)" || { rm -f "$warn_expected"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
+  warn_error="$(mktemp)" || { rm -f "$warn_expected" "$warn_actual"; printf '::warning::Documentation CI inventory check could not run.\n'; exit 0; }
+  warn_reason=""
+  if ! git show "$base_sha:scripts/ci:docs-inventory" > "$warn_expected" 2>/dev/null; then
+    warn_reason="certificate unavailable"
+  elif ! fast_inventory_for_tree "$base_sha" > "$warn_actual" 2> "$warn_error"; then
+    warn_reason="$(sed -n 's/^docs inventory audit: //p' "$warn_error" | tail -n 1)"
+    [[ "$warn_reason" =~ ^[a-zA-Z0-9\ .,/\-]+$ ]] || warn_reason="audit could not complete"
+  elif ! cmp -s "$warn_expected" "$warn_actual"; then
+    warn_reason="certificate differs from the audited inputs"
+  fi
+  if [[ -n "$warn_reason" ]]; then
+    printf '::warning::Documentation CI build inventory is stale or unsafe; full validation will run: %s\n' "$warn_reason"
+  fi
+  rm -f "$warn_expected" "$warn_actual" "$warn_error"
+  exit 0
+fi
+
 if [[ "$event_name" != "pull_request" ]]; then
   finish
   exit 0
 fi
 
+docs_fast_path_reason="base or head commit is unavailable"
 reason="pull request contains only allowlisted documentation and developer-environment changes"
 deployment="false"
 deployment_reason="pull request does not change deployment-contract inputs"
@@ -542,10 +793,76 @@ if ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null \
   exit 0
 fi
 
+# This decision uses the exact two endpoint trees, not the merge-base range used
+# by the component classifier. Every entry must be a regular, unlinked text doc.
+fast_diff="$(mktemp)"
+trap 'rm -f "$fast_diff" "${diff_file:-}"' EXIT
+docs_fast_path_reason="exact diff failed or is empty"
+if git diff --name-status --no-renames --ignore-submodules=none -z "$base_sha" "$head_sha" -- > "$fast_diff"; then
+  fast_ok=true
+  fast_count=0
+  [[ -z "$summary_file" ]] || printf '\nExact base/head paths for docs fast path:\n' >> "$summary_file"
+  while IFS= read -r -d '' fast_status || [[ -n "$fast_status" ]]; do
+    if ! IFS= read -r -d '' fast_path || [[ -z "$fast_path" ]]; then
+      fast_ok=false
+      docs_fast_path_reason="malformed exact diff"
+      break
+    fi
+    ((fast_count += 1))
+    [[ -z "$summary_file" ]] || printf -- '- %q %q\n' "$fast_status" "$fast_path" >> "$summary_file"
+    [[ "$fast_ok" == true ]] || continue
+    if [[ "$fast_status" != A && "$fast_status" != M ]]; then
+      fast_ok=false; docs_fast_path_reason="deleted or type-changed path in exact diff"
+    elif ! fast_entry="$(git ls-tree "$head_sha" -- ":(literal)$fast_path")" \
+      || [[ "${fast_entry%% *}" != 100644 ]]; then
+      fast_ok=false; docs_fast_path_reason="non-regular or missing path in exact diff"
+    elif [[ "$fast_status" == M ]] && { ! fast_base_entry="$(git ls-tree "$base_sha" -- ":(literal)$fast_path")" || [[ "${fast_base_entry%% *}" != 100644 ]]; }; then
+      fast_ok=false; docs_fast_path_reason="non-regular or executable base path"
+    elif ! is_fast_doc_path "$fast_path"; then
+      fast_ok=false; docs_fast_path_reason="path outside documentation allowlist"
+    elif ! git cat-file blob "$head_sha:$fast_path" | python3 -c 'import codecs, sys
+text = codecs.getincrementaldecoder("utf-8")("strict")
+try:
+    while chunk := sys.stdin.buffer.read(65536):
+        decoded = text.decode(chunk)
+        if any((ord(c) < 32 and c not in "\t\r\n") or 127 <= ord(c) <= 159 for c in decoded): sys.exit(1)
+    text.decode(b"", final=True)
+except UnicodeError:
+    sys.exit(1)' ; then
+      fast_ok=false; docs_fast_path_reason="documentation is binary or unreadable"
+    else
+      if [[ -z "${fast_inventory_status:-}" ]]; then
+        if fast_doc_link_state; then fast_inventory_status=changed; else
+          fast_link_status=$?
+          if [[ "$fast_link_status" -eq 1 ]]; then fast_inventory_status=clean; else fast_inventory_status=failed; fi
+        fi
+      fi
+      case "$fast_inventory_status" in
+        changed) fast_ok=false; docs_fast_path_reason="project inventory differs from certified baseline" ;;
+        failed) fast_ok=false; docs_fast_path_reason="project inventory unavailable" ;;
+      esac
+    fi
+    # Continue listing every path, even after a rejection.
+    [[ "$fast_ok" == true ]] || continue
+  done < "$fast_diff"
+  [[ -z "$summary_file" ]] || printf '\nFast path paths examined: %s\n' "$fast_count" >> "$summary_file"
+  if [[ "$fast_ok" == true && "$fast_count" -gt 0 ]]; then
+    docs_fast_path=true
+    docs_fast_path_reason="all exact base/head paths are safe documentation"
+  fi
+fi
+
+if [[ "${4:-}" == "docs-fast-only" ]]; then
+  finish
+  exit 0
+fi
+
 diff_file="$(mktemp)"
-trap 'rm -f "$diff_file"' EXIT
+trap 'rm -f "$diff_file" "$fast_diff"' EXIT
 
 if ! git diff --name-status --no-renames -z "${base_sha}...${head_sha}" -- > "$diff_file"; then
+  docs_fast_path=false
+  docs_fast_path_reason="component diff failed"
   deployment="true"
   select_all_deployment_suites
   select_complete_matrix
@@ -573,6 +890,8 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
     deployment="true"
     select_all_deployment_suites
     select_complete_matrix
+    docs_fast_path=false
+    docs_fast_path_reason="malformed component diff"
     reason="git diff returned malformed name-status data"
     deployment_reason="git diff returned malformed name-status data"
     complete_reason="git diff returned malformed name-status data"
@@ -631,6 +950,8 @@ while IFS= read -r -d '' status || [[ -n "$status" ]]; do
 done < "$diff_file"
 
 if [[ "$path_count" -eq 0 ]]; then
+  docs_fast_path=false
+  docs_fast_path_reason="empty component diff"
   secret_scan_contract="true"
   release_scripts="true"
   catalog_recipe="true"

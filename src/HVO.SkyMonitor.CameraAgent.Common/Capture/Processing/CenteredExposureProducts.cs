@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using HVO.SkyMonitor.AgentCore;
 using HVO.SkyMonitor.Astronomy;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.Processing;
 
@@ -128,13 +129,49 @@ internal sealed class CenteredExposureProductReader(
         if (node.Step is CalibrationCaptureProcessingStep)
             return [CreateLinearSettlement(key, raw, node, status, reason, outputs.SingleOrDefault(), inputs)];
 
-        return outputs.Select(output => new CenteredProductSettlement(key, node.Id,
+        var settlements = outputs.Select(output => new CenteredProductSettlement(key, node.Id,
             output.ProductSchemaVersion ?? ArtifactManifestV2.CurrentSchemaVersion, output.Artifact.Variant,
             output.OutputIdentitySha256, output.Artifact.ChecksumSha256, ExposureProductAvailability.Available, null, null)
         {
             ArtifactId = output.ArtifactId,
             ContentIdentitySha256 = output.ContentIdentitySha256
-        }).ToArray();
+        }).ToList();
+        AddUnproducedViewProducts(key, node, status, reason, settlements);
+        return settlements;
+    }
+
+    internal static IReadOnlyList<CenteredProductSettlement> CreateOutputlessViewSettlements(ArtifactManifestV2 manifest,
+        CaptureProcessingGraphNode node, DurableProcessingNodeStatus status, string? reason)
+    {
+        if (manifest.CenteredExposure is not { } admission || status is not
+            (DurableProcessingNodeStatus.Completed or DurableProcessingNodeStatus.Skipped or DurableProcessingNodeStatus.TerminalFailure))
+            return [];
+        var settlements = new List<CenteredProductSettlement>();
+        AddUnproducedViewProducts(new(admission.Source.Camera, admission.Source.RunId,
+            manifest.Descriptor.Capture.CaptureId), node, status, reason, settlements);
+        return settlements;
+    }
+
+    private static void AddUnproducedViewProducts(ExposureKey key, CaptureProcessingGraphNode node,
+        DurableProcessingNodeStatus status, string? reason, List<CenteredProductSettlement> settlements)
+    {
+        var ports = CenteredViewLayerBindings.Ports(node.Alias);
+        if (ports.Count == 0 || node.Step is not ICaptureProcessingGraphStep step)
+            return;
+
+        var declared = step is IMultiOutputCaptureProcessingGraphStep multi ? multi.Outputs :
+            [new(step.OutputRole, step.OutputVariant, step.RecipeName, step.OutputSchemaVersion)];
+        for (var index = 0; index < Math.Min(ports.Count, declared.Count); index++)
+        {
+            var output = declared[index];
+            if (ports[index] is null || output.SchemaVersion is not { } schema ||
+                !CenteredViewLayerBindings.SupportsSchema(schema) || settlements.Any(product => product.Variant == output.Variant))
+                continue;
+
+            settlements.Add(new(key, node.Id, CenteredViewLayerBindings.DispositionPrefix + schema, output.Variant, null, null,
+                status == DurableProcessingNodeStatus.TerminalFailure ? ExposureProductAvailability.Failed : ExposureProductAvailability.Unavailable,
+                reason ?? "product.configured-output-not-retained", null));
+        }
     }
 
     private static CenteredProductSettlement CreateLinearSettlement(
