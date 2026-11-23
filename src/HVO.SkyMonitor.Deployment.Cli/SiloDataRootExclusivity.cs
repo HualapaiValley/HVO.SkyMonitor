@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace HVO.SkyMonitor.Deployment;
 
 /// <summary>Where the mount table places a path: the device of the mount holding it, and its path within that filesystem.</summary>
@@ -18,6 +20,12 @@ internal sealed record SiloMountLocation(string Device, string Path)
 /// </summary>
 internal sealed class SiloDataRootExclusivity
 {
+    /// <summary>
+    /// Reads the mount table <c>/proc/&lt;process&gt;/mountinfo</c> of <c>self</c> or of a process ID; throws when it cannot
+    /// be read. A seam for tests, which script the host's and each container process's table as they script Docker.
+    /// </summary>
+    internal static Func<string, string> ReadMountTable { get; set; } = static process => File.ReadAllText($"/proc/{process}/mountinfo");
+
     private readonly string dataRoot;
     private readonly string resolvedDataRoot;
     private readonly UnixNodeIdentity dataNode;
@@ -80,6 +88,44 @@ internal sealed class SiloDataRootExclusivity
                                 new SiloMountLocation(mount.Device, mount.Root).Overlaps(dataLocation)))
             return "which holds a mount of the data root, of a path inside it or of one holding it";
         return null;
+    }
+
+    /// <summary>
+    /// <see langword="null"/> when no mount in a running container process's own mount table overlaps the data root;
+    /// otherwise why. This is what the container holds now, whatever its configured source names today: a link retargeted
+    /// or a folder replaced after it started leaves the mount it started with (#1966 R6-01).
+    /// </summary>
+    public string? LiveOverlap(string processMountInfo)
+        => Parse(processMountInfo).Any(mount => new SiloMountLocation(mount.Device, mount.Root).Overlaps(dataLocation))
+            ? "which holds in its own mount table now the data root, a path inside it or one holding it"
+            : null;
+
+    /// <summary>
+    /// <see langword="null"/> when no mount this host's table lists at or below <paramref name="mountPoint"/> overlaps the
+    /// data root; otherwise why. The mount point is compared as Docker names it, without resolving it, so a folder only root
+    /// may enter, such as Docker's own volume folders, is judged from the table alone.
+    /// </summary>
+    public string? MountedAtOrBelow(string mountPoint)
+    {
+        ArgumentNullException.ThrowIfNull(mountPoint);
+        var below = mountPoint.TrimEnd('/') + "/";
+        return mounts.Any(mount => (mount.MountPoint == mountPoint || mount.MountPoint.StartsWith(below, StringComparison.Ordinal)) &&
+                                   new SiloMountLocation(mount.Device, mount.Root).Overlaps(dataLocation))
+            ? "whose mount point holds a mount of the data root, of a path inside it or of one holding it now"
+            : null;
+    }
+
+    /// <summary>The mount table of process <paramref name="pid"/>, or <see langword="null"/> when it cannot be read.</summary>
+    public static string? TryReadProcessMountTable(int pid)
+    {
+        try
+        {
+            return ReadMountTable(pid.ToString(CultureInfo.InvariantCulture));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

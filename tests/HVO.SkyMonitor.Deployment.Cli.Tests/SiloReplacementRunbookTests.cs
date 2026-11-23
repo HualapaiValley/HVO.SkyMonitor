@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json.Nodes;
 
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
@@ -32,6 +33,9 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("tmpfs-mount")]
     [DataRow("tmpfs-volume")]
     [DataRow("another-path-of-its-filesystem-bound-elsewhere")]
+    [DataRow("running-container-holding-only-unrelated-mounts-now")]
+    [DataRow("running-container-that-stopped-before-its-table-was-read")]
+    [DataRow("unrelated-running-bind-volume-in-a-root-only-docker-folder")]
     public async Task TheBlock_ReplacesSiloWhenItsDataRootIsItsOwn(string change)
     {
         RequireTools();
@@ -42,8 +46,23 @@ public sealed class SiloReplacementRunbookTests
             case "archive-degraded": run.Verify("degraded"); break;
             case "volume-docker-manages-elsewhere": run.IntruderFromTheStart(run.ManagedVolume("cache")); break;
             case "bind-volume-elsewhere": run.IntruderFromTheStart(run.BindVolume("shared", Path.Combine(run.Root, "elsewhere"))); break;
-            case "tmpfs-mount": run.IntruderFromTheStart("tmpfs - "); break;
-            case "tmpfs-volume": run.IntruderFromTheStart(run.Volume("memory", $"local|2|tmpfs|size=64m|{run.DockerRootDirectory}/volumes/memory/_data|")); break;
+            case "tmpfs-mount": run.IntruderFromTheStart(Run.Mount("tmpfs", string.Empty)); break;
+            case "tmpfs-volume": run.IntruderFromTheStart(run.Volume("memory", "local", ("type", "tmpfs"), ("o", "size=64m"))); break;
+            case "running-container-holding-only-unrelated-mounts-now":
+                run.IntruderFromTheStart(Run.Bind(Path.Combine(run.Root, "elsewhere")));
+                run.Live("intruder", ("0:99", "/", "/"), (run.ElsewhereLocation.Device, run.ElsewhereLocation.Path, "/probe"));
+                break;
+            case "running-container-that-stopped-before-its-table-was-read":
+                // Docker answers it stopped once its own table could not be read: it holds nothing now.
+                run.IntruderFromTheStart(Run.Bind(Path.Combine(run.Root, "elsewhere")));
+                run.LiveExitsWhenRead("intruder");
+                break;
+            case "unrelated-running-bind-volume-in-a-root-only-docker-folder":
+                // Docker's folders are root-only: the mount point is judged from the mount table alone.
+                run.IntruderFromTheStart(run.BindVolume("shared", Path.Combine(run.Root, "elsewhere")));
+                run.HostMount($"{run.DockerRootDirectory}/volumes/shared/_data", run.ElsewhereLocation.Path, run.ElsewhereLocation.Device);
+                run.DockerRootUnsearchable();
+                break;
             case "another-path-of-its-filesystem-bound-elsewhere":
                 // A bind mount of a sibling of the instance root, on the data root's own filesystem: apart from it.
                 run.IntruderFromTheStart(Run.Bind(run.BoundElsewhere("sibling-alias", run.DataLocation.Path[..run.DataLocation.Path.LastIndexOf('/')] + "-sibling")));
@@ -79,17 +98,30 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("volume-docker-manages-around-the-data-root", "container intruder mounts volume cache, kept in Docker's data root")]
     [DataRow("volume-tmpfs-typed-bound-to-the-data-root", "container intruder mounts volume bound, a bind of")]
     [DataRow("volume-rbind-of-another-type", "container intruder mounts volume bound, a bind of")]
-    [DataRow("volume-bind-naming-no-device", "container intruder mounts volume bound, a bind that names no device.")]
-    [DataRow("volume-tmpfs-moved", "container intruder mounts volume moved (type tmpfs, options move), so where its data lies is not proved.")]
-    [DataRow("volume-of-another-driver", "container intruder mounts volume remote (nfs-plugin driver), so where its data lies is not proved.")]
-    [DataRow("volume-of-another-type", "container intruder mounts volume disk (type ext4, options none), so where its data lies is not proved.")]
+    [DataRow("volume-bind-naming-no-device", "container intruder mounts volume bound, a bind that names no device, so where its data lies is not proved.")]
+    [DataRow("volume-tmpfs-moved", "container intruder mounts volume moved, a local volume of type tmpfs that is not a bind, a volume Docker manages or a tmpfs, so where its data lies is not proved.")]
+    [DataRow("volume-of-another-driver", "container intruder mounts volume remote, whose driver nfs-plugin is not the local driver, so where its data lies is not proved.")]
+    [DataRow("volume-of-another-type", "container intruder mounts volume disk, a local volume of type ext4 that is not a bind, a volume Docker manages or a tmpfs, so where its data lies is not proved.")]
+    // R6-01: what a running container holds now, and what a volume's mount point holds now.
+    [DataRow("running-container-holding-a-path-inside-now", "container intruder holds in its own mount table now")]
+    [DataRow("running-container-whose-link-was-retargeted", "container intruder holds in its own mount table now")]
+    [DataRow("running-container-whose-folder-was-replaced", "container intruder holds in its own mount table now")]
+    [DataRow("running-container-whose-mount-table-cannot-be-read", "container intruder runs, but its own mount table cannot be read, so what it holds now is not proved.")]
+    [DataRow("bind-volume-whose-mount-point-holds-the-data-root-now", "whose mount point holds a mount of")]
+    // R6-02: values judged exactly as Docker reports them.
+    [DataRow("bind-source-with-a-trailing-space", "container intruder mounts")]
+    [DataRow("bind-source-ending-in-a-newline", "container intruder mounts")]
+    [DataRow("volume-type-with-a-pipe", "container intruder mounts volume bound, a bind of")]
+    // R6-03: a volume's mount options are never shown, and a type only when it is a plain name.
+    [DataRow("cifs-volume-with-credentials", "container intruder mounts volume share, a local volume of type cifs that is not a bind")]
+    [DataRow("volume-type-that-is-not-a-plain-name", "container intruder mounts volume odd, a local volume of type (not shown) that is not a bind")]
     [DataRow("path-inside-the-data-root-bound-elsewhere", "which the mount table places on")]
     [DataRow("path-inside-a-bind-of-a-path-inside-the-data-root", "which the mount table places on")]
     [DataRow("data-root-bound-elsewhere", "which the mount table places on")]
     [DataRow("its-filesystem-root-bound-elsewhere", "which the mount table places on")]
     [DataRow("folder-holding-a-bind-of-the-data-root", "which holds a mount of")]
     [DataRow("folder-holding-a-bind-of-a-path-inside", "which holds a mount of")]
-    [DataRow("volume-docker-cannot-inspect", "\"v=$(docker volume inspect --format \"$VOLUME\" \"$volume\")\" failed.")]
+    [DataRow("volume-docker-cannot-inspect", "\"v=$(docker volume inspect \"$volume\")\" failed.")]
     [DataRow("mount-of-another-type", "container intruder has a mount of type image, so where its data lies is not proved.")]
     [DataRow("unanswered-inventory", "\"ids=$(docker ps -aq --no-trunc)\" failed.")]
     [DataRow("uninspectable-container", "Docker could not inspect container intruder, so its mounts are unknown")]
@@ -124,14 +156,56 @@ public sealed class SiloReplacementRunbookTests
                 run.Intruder(run.ManagedVolume("cache"));
                 break;
             case "volume-tmpfs-typed-bound-to-the-data-root":
-                run.Intruder(run.Volume("bound", $"local|3|tmpfs|bind|{run.DockerRootDirectory}/volumes/bound/_data|{run.DataRoot}"));
+                run.Intruder(run.Volume("bound", "local", ("type", "tmpfs"), ("o", "bind"), ("device", run.DataRoot)));
                 break;
             case "volume-rbind-of-another-type":
-                run.Intruder(run.Volume("bound", $"local|3|ext4|rbind,ro|{run.DockerRootDirectory}/volumes/bound/_data|{run.Link("data-alias", run.DataRoot)}"));
+                run.Intruder(run.Volume("bound", "local", ("type", "ext4"), ("o", "rbind,ro"), ("device", run.Link("data-alias", run.DataRoot))));
                 break;
-            case "volume-bind-naming-no-device": run.Intruder(run.Volume("bound", $"local|2|none|bind|{run.DockerRootDirectory}/volumes/bound/_data|")); break;
+            case "volume-bind-naming-no-device": run.Intruder(run.Volume("bound", "local", ("type", "none"), ("o", "bind"))); break;
             case "volume-tmpfs-moved":
-                run.Intruder(run.Volume("moved", $"local|3|tmpfs|move|{run.DockerRootDirectory}/volumes/moved/_data|{Path.Combine(run.Root, "elsewhere")}"));
+                run.Intruder(run.Volume("moved", "local", ("type", "tmpfs"), ("o", "move"), ("device", Path.Combine(run.Root, "elsewhere"))));
+                break;
+            case "running-container-holding-a-path-inside-now":
+                run.Intruder(Run.Bind(Path.Combine(run.Root, "elsewhere")));
+                run.Live("intruder", (run.DataLocation.Device, run.DataLocation.Path + "/.minio.sys", "/probe"));
+                break;
+            case "running-container-whose-link-was-retargeted":
+                // The link named a path inside the data root when the container started; it names another folder now.
+                run.Intruder(Run.Bind(run.Link("alias", Path.Combine(run.Root, "elsewhere"))));
+                run.Live("intruder", (run.DataLocation.Device, run.DataLocation.Path + "/.minio.sys", "/probe"));
+                break;
+            case "running-container-whose-folder-was-replaced":
+                Directory.CreateDirectory(Path.Combine(run.Root, "replaced"));
+                run.Intruder(Run.Bind(Path.Combine(run.Root, "replaced")));
+                run.Live("intruder", (run.DataLocation.Device, run.DataLocation.Path, "/probe"));
+                break;
+            case "running-container-whose-mount-table-cannot-be-read":
+                run.Intruder(Run.Bind(Path.Combine(run.Root, "elsewhere")));
+                run.LiveUnreadable("intruder");
+                break;
+            case "bind-volume-whose-mount-point-holds-the-data-root-now":
+                // Its device names an unrelated folder now; the mount Docker made when it named the data root remains.
+                run.Intruder(run.BindVolume("bound", Path.Combine(run.Root, "elsewhere")));
+                run.HostMount($"{run.DockerRootDirectory}/volumes/bound/_data", run.DataLocation.Path);
+                break;
+            case "bind-source-with-a-trailing-space":
+                // The name with a trailing space links into the data root; the same name without it is an unrelated folder.
+                Directory.CreateDirectory(Path.Combine(run.Root, "mount-alias"));
+                run.Intruder(Run.Bind(run.Link("mount-alias ", inside)));
+                break;
+            case "bind-source-ending-in-a-newline":
+                Directory.CreateDirectory(Path.Combine(run.Root, "newline-alias"));
+                run.Intruder(Run.Bind(run.Link("newline-alias\n", inside)));
+                break;
+            case "volume-type-with-a-pipe":
+                run.Intruder(run.Volume("bound", "local", ("type", "tmpfs|safe"), ("o", "bind"), ("device", run.DataRoot)));
+                break;
+            case "cifs-volume-with-credentials":
+                run.Intruder(run.Volume("share", "local", ("type", "cifs"),
+                    ("o", "username=alice,password=TEST_CIFS_SECRET_VALUE,pass=TEST_SHORT_PASS_VALUE"), ("device", "//archive.example/share")));
+                break;
+            case "volume-type-that-is-not-a-plain-name":
+                run.Intruder(run.Volume("odd", "local", ("type", "cifs,password=TEST_IN_TYPE"), ("o", "TEST_OPTION")));
                 break;
             case "path-inside-the-data-root-bound-elsewhere":
                 // Sol R5-01: a folder elsewhere that is a bind mount of a path inside the data root.
@@ -155,10 +229,10 @@ public sealed class SiloReplacementRunbookTests
                 run.BoundElsewhere(Path.Combine("holder", "deep", "below"), run.DataLocation.Path + "/.minio.sys");
                 run.Intruder(Run.Bind(Path.Combine(run.Root, "holder")));
                 break;
-            case "volume-of-another-driver": run.Intruder(run.Volume("remote", "nfs-plugin|0|||/mnt/remote|")); break;
-            case "volume-of-another-type": run.Intruder(run.Volume("disk", "local|2|ext4||/var/lib/docker/volumes/disk/_data|/dev/sdz1")); break;
-            case "volume-docker-cannot-inspect": run.Intruder("volume vanished /var/lib/docker/volumes/vanished/_data"); break;
-            case "mount-of-another-type": run.Intruder("image - sha256:0123"); break;
+            case "volume-of-another-driver": run.Intruder(run.Volume("remote", "nfs-plugin")); break;
+            case "volume-of-another-type": run.Intruder(run.Volume("disk", "local", ("type", "ext4"), ("device", "/dev/sdz1"))); break;
+            case "volume-docker-cannot-inspect": run.Intruder(Run.VolumeMount("vanished", "/var/lib/docker/volumes/vanished/_data")); break;
+            case "mount-of-another-type": run.Intruder(Run.Mount("image", "sha256:0123")); break;
             case "unanswered-inventory": run.Flag("ps-fails-once-stopped"); break;
             case "uninspectable-container": run.Intruder(Run.Bind(Path.Combine(run.Root, "elsewhere"))); run.Flag("inspect-fails-intruder"); break;
         }
@@ -174,6 +248,7 @@ public sealed class SiloReplacementRunbookTests
             "Nothing is removed or started: " + string.Join("; ", run.DockerCalls));
         Assert.IsFalse(run.SiloRunning, "Silo stays stopped.");
         Assert.IsTrue(run.OriginalSiloExists, "The original container is kept.");
+        Assert.IsFalse(error.Contains("TEST_", StringComparison.Ordinal), "No mount option is shown: " + error);
         AssertInventoryKept(error);
     }
 
@@ -183,6 +258,7 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("volume-tmpfs-typed-bound-to-the-data-root", "container intruder mounts volume bound, a bind of")]
     [DataRow("path-inside-the-data-root-bound-elsewhere", "which the mount table places on")]
     [DataRow("unanswered-inventory", "\"ids=$(docker ps -aq --no-trunc)\" failed.")]
+    [DataRow("running-container-holding-the-data-root-now", "container intruder holds in its own mount table now")]
     public async Task TheBlock_RefusesBeforeTheStopWhatIsThereBeforeIt(string change, string reason)
     {
         // Fable r5 note 3: the same proof runs before the stop, so a refusal then leaves Silo running and changes nothing.
@@ -192,7 +268,11 @@ public sealed class SiloReplacementRunbookTests
         {
             case "data-root-itself": run.IntruderFromTheStart(Run.Bind(run.DataRoot)); break;
             case "volume-tmpfs-typed-bound-to-the-data-root":
-                run.IntruderFromTheStart(run.Volume("bound", $"local|3|tmpfs|bind|{run.DockerRootDirectory}/volumes/bound/_data|{run.DataRoot}"));
+                run.IntruderFromTheStart(run.Volume("bound", "local", ("type", "tmpfs"), ("o", "bind"), ("device", run.DataRoot)));
+                break;
+            case "running-container-holding-the-data-root-now":
+                run.IntruderFromTheStart(Run.Bind(Path.Combine(run.Root, "elsewhere")));
+                run.Live("intruder", (run.DataLocation.Device, run.DataLocation.Path, "/probe"));
                 break;
             case "path-inside-the-data-root-bound-elsewhere":
                 run.IntruderFromTheStart(Run.Bind(run.BoundElsewhere("minio-elsewhere", run.DataLocation.Path + "/.minio.sys")));
@@ -303,6 +383,7 @@ public sealed class SiloReplacementRunbookTests
     private sealed class Run : IDisposable
     {
         private readonly DirectoryInfo root = Directory.CreateTempSubdirectory("hvo-silo-replace-");
+        private readonly Dictionary<string, int> pids = [];
 
         public Run()
         {
@@ -314,9 +395,10 @@ public sealed class SiloReplacementRunbookTests
             Directory.CreateDirectory(Path.Combine(State, "containers"));
             Directory.CreateDirectory(Path.Combine(State, "volumes"));
             Directory.CreateDirectory(Path.Combine(State, "after-stop"));
+            Directory.CreateDirectory(Path.Combine(State, "live"));
             DockerRoot(Path.Combine(Root, "docker"));
             Container("silo-original", "/" + Silo, Bind(DataRoot));
-            Container("cameraagent", $"/hvo-skymonitor-{Compact}", Bind(Path.Combine(InstanceRoot, "config", "secrets")), "tmpfs - ");
+            Container("cameraagent", $"/hvo-skymonitor-{Compact}", Bind(Path.Combine(InstanceRoot, "config", "secrets")), Mount("tmpfs", string.Empty));
             Container("unrelated", "/unrelated", Bind(Path.Combine(Root, "elsewhere")));
             File.WriteAllText(Path.Combine(State, "listing"), "meta/instance.v1.json\tv1\nmeta/fence.json\tv2\n");
             Object("meta/instance.v1.json", "v1", "{\"format\":\"marker\"}");
@@ -340,6 +422,39 @@ public sealed class SiloReplacementRunbookTests
         public SiloMountLocation DataLocation => SiloDataRootExclusivity.Locate(
             NativeLinux.TryResolvePath(DataRoot)!, File.ReadAllText(HostProductRootPolicy.MountInfoPath));
 
+        /// <summary>Where this host's mount table places the run's unrelated folder.</summary>
+        public SiloMountLocation ElsewhereLocation => SiloDataRootExclusivity.Locate(
+            NativeLinux.TryResolvePath(Path.Combine(Root, "elsewhere"))!, File.ReadAllText(HostProductRootPolicy.MountInfoPath));
+
+        /// <summary>A mount the scripted host mount table lists at <paramref name="target"/>, without creating that folder.</summary>
+        public void HostMount(string target, string root, string? device = null)
+        {
+            var table = Path.Combine(State, "mounts.json");
+            var mounts = File.Exists(table) ? JsonNode.Parse(File.ReadAllText(table))!.AsArray() : new JsonArray();
+            mounts.Add(new JsonObject { ["maj:min"] = device ?? DataLocation.Device, ["fsroot"] = root, ["target"] = target });
+            File.WriteAllText(table, mounts.ToJsonString());
+        }
+
+        /// <summary>A running container process's own mount table, as findmnt reads <c>/proc/&lt;pid&gt;/mountinfo</c>.</summary>
+        public void Live(string container, params (string Device, string Root, string Target)[] mounts)
+            => File.WriteAllText(Path.Combine(State, "live", $"{pids[container]}.json"), new JsonObject
+            {
+                ["filesystems"] = new JsonArray([.. mounts.Select(static mount => (JsonNode)new JsonObject
+                {
+                    ["maj:min"] = mount.Device, ["fsroot"] = mount.Root, ["target"] = mount.Target
+                })])
+            }.ToJsonString());
+
+        /// <summary>The container process's own mount table cannot be read, as under <c>hidepid</c>.</summary>
+        public void LiveUnreadable(string container) => File.WriteAllText(Path.Combine(State, "live", $"{pids[container]}.unreadable"), string.Empty);
+
+        /// <summary>The container stops as its own mount table is read, so that read fails and Docker then answers it stopped.</summary>
+        public void LiveExitsWhenRead(string container)
+            => File.WriteAllText(Path.Combine(State, "live", $"{pids[container]}.exits"), Path.Combine(State, "containers", container));
+
+        /// <summary>Docker's data root becomes a folder no one but root may enter, as <c>/var/lib/docker</c> is.</summary>
+        public void DockerRootUnsearchable() => File.SetUnixFileMode(Path.Combine(Root, "docker"), UnixFileMode.None);
+
         /// <summary>
         /// A folder under the run's root that the scripted mount table lists as a bind mount of <paramref name="root"/> on
         /// the data root's filesystem: what no path resolution or device and inode comparison sees.
@@ -349,8 +464,8 @@ public sealed class SiloReplacementRunbookTests
             var target = Path.Combine(Root, name);
             Directory.CreateDirectory(target);
             var table = Path.Combine(State, "mounts.json");
-            var mounts = File.Exists(table) ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(table))!.AsArray() : new System.Text.Json.Nodes.JsonArray();
-            mounts.Add(new System.Text.Json.Nodes.JsonObject { ["maj:min"] = DataLocation.Device, ["fsroot"] = root, ["target"] = target });
+            var mounts = File.Exists(table) ? JsonNode.Parse(File.ReadAllText(table))!.AsArray() : new JsonArray();
+            mounts.Add(new JsonObject { ["maj:min"] = DataLocation.Device, ["fsroot"] = root, ["target"] = target });
             File.WriteAllText(table, mounts.ToJsonString());
             return target;
         }
@@ -361,8 +476,13 @@ public sealed class SiloReplacementRunbookTests
             .Any(container => File.ReadAllText(Path.Combine(container, "name")).Trim() == "/" + Silo &&
                               File.ReadAllText(Path.Combine(container, "running")).Trim() == "true");
 
-        /// <summary>A mount line as the block's inspect format prints it: type, volume name or <c>-</c>, source.</summary>
-        public static string Bind(string source) => $"bind - {source}";
+        /// <summary>A mount as <c>docker inspect</c> reports it.</summary>
+        public static JsonObject Mount(string type, string source) => new() { ["Type"] = type, ["Source"] = source, ["Destination"] = "/other" };
+
+        public static JsonObject Bind(string source) => Mount("bind", source);
+
+        public static JsonObject VolumeMount(string name, string source)
+            => new() { ["Type"] = "volume", ["Name"] = name, ["Source"] = source, ["Destination"] = "/other" };
 
         public void Flag(string name) => File.WriteAllText(Path.Combine(State, name), string.Empty);
 
@@ -385,24 +505,34 @@ public sealed class SiloReplacementRunbookTests
             return link;
         }
 
-        /// <summary>A volume as <c>docker volume inspect</c> answers the block's format, and its mount line.</summary>
-        public string Volume(string name, string answer)
+        /// <summary>
+        /// A volume as <c>docker volume inspect</c> answers it (no options for one Docker manages), at Docker's own mount
+        /// point, and the mount that uses it.
+        /// </summary>
+        public JsonObject Volume(string name, string driver, params (string Key, string Value)[] options)
         {
-            File.WriteAllText(Path.Combine(State, "volumes", name), answer + "\n");
-            return $"volume {name} {answer.Split('|')[4]}";
+            var mountpoint = driver == "local" ? $"{DockerRootDirectory}/volumes/{name}/_data" : $"/mnt/{name}";
+            JsonNode? values = null;
+            if (options.Length > 0)
+            {
+                var given = new JsonObject();
+                foreach (var (key, value) in options) given[key] = value;
+                values = given;
+            }
+            File.WriteAllText(Path.Combine(State, "volumes", name + ".json"),
+                new JsonArray(new JsonObject { ["Name"] = name, ["Driver"] = driver, ["Mountpoint"] = mountpoint, ["Options"] = values }).ToJsonString());
+            return VolumeMount(name, mountpoint);
         }
 
-        public string ManagedVolume(string name)
-            => Volume(name, $"local|0|||{DockerRootDirectory}/volumes/{name}/_data|");
+        public JsonObject ManagedVolume(string name) => Volume(name, "local");
 
-        public string BindVolume(string name, string device)
-            => Volume(name, $"local|3|none|bind|{DockerRootDirectory}/volumes/{name}/_data|{device}");
+        public JsonObject BindVolume(string name, string device) => Volume(name, "local", ("type", "none"), ("o", "bind"), ("device", device));
 
-        /// <summary>Another container that Docker creates once Silo has stopped, with the given mount lines.</summary>
-        public void Intruder(params string[] mounts) => Container("intruder", "/intruder", mounts, "after-stop");
+        /// <summary>Another container that Docker creates once Silo has stopped, with the given mounts.</summary>
+        public void Intruder(params JsonObject[] mounts) => Container("intruder", "/intruder", mounts, "after-stop");
 
         /// <summary>Another container that is there before the procedure starts.</summary>
-        public void IntruderFromTheStart(params string[] mounts) => Container("intruder", "/intruder", mounts);
+        public void IntruderFromTheStart(params JsonObject[] mounts) => Container("intruder", "/intruder", mounts);
 
         public async Task<(int Exit, string Output, string Error)> ExecuteAsync(CancellationToken cancellationToken)
         {
@@ -451,16 +581,19 @@ public sealed class SiloReplacementRunbookTests
             return directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found.");
         }
 
-        private void Container(string id, string name, params string[] mounts) => Container(id, name, mounts, "containers");
+        private void Container(string id, string name, params JsonObject[] mounts) => Container(id, name, mounts, "containers");
 
-        private void Container(string id, string name, string[] mounts, string folder)
+        /// <summary>A container's state; each gets a process ID no real process can have (above the kernel's limit).</summary>
+        private void Container(string id, string name, JsonObject[] mounts, string folder)
         {
             var directory = Path.Combine(State, folder, id);
             Directory.CreateDirectory(directory);
+            pids[id] = id == "silo-original" ? 2147483646 : 2147480000 + pids.Count;
             File.WriteAllText(Path.Combine(directory, "name"), name + "\n");
             File.WriteAllText(Path.Combine(directory, "running"), "true\n");
             File.WriteAllText(Path.Combine(directory, "health"), "healthy\n");
-            File.WriteAllLines(Path.Combine(directory, "mounts"), mounts);
+            File.WriteAllText(Path.Combine(directory, "pid"), pids[id].ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n");
+            File.WriteAllText(Path.Combine(directory, "mounts.json"), new JsonArray([.. mounts]).ToJsonString());
         }
 
         private void Object(string key, string version, string content)
@@ -478,7 +611,11 @@ public sealed class SiloReplacementRunbookTests
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        public void Dispose() => root.Delete(recursive: true);
+        public void Dispose()
+        {
+            File.SetUnixFileMode(Path.Combine(Root, "docker"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            root.Delete(recursive: true);
+        }
 
         /// <summary>The Docker CLI the block calls, answered from the state folder; every call is logged.</summary>
         private const string FakeDocker = """
@@ -505,11 +642,28 @@ public sealed class SiloReplacementRunbookTests
                 if [[ $* != 'info --format {{.DockerRootDir}}' ]]; then echo "unscripted info call" >&2; exit 2; fi
                 cat "$S/docker-root"; echo; exit 0 ;;
               volume)
-                format='{{.Driver}}|{{len .Options}}|{{index .Options "type"}}|{{index .Options "o"}}|{{.Mountpoint}}|{{index .Options "device"}}'
-                if [[ $2 != inspect || $3 != --format || $4 != "$format" ]]; then echo "unscripted volume call" >&2; exit 2; fi
-                if [[ ! -f $S/volumes/$5 ]]; then echo "[]"; echo "Error response from daemon: get $5: no such volume" >&2; exit 1; fi
-                cat "$S/volumes/$5"; exit 0 ;;
+                if [[ $2 != inspect ]]; then echo "unscripted volume call" >&2; exit 2; fi
+                name=${@: -1}
+                if [[ ! -f $S/volumes/$name.json ]]; then echo "[]"; echo "Error response from daemon: get $name: no such volume" >&2; exit 1; fi
+                if [[ $# == 3 ]]; then cat "$S/volumes/$name.json"; exit 0; fi
+                # Docker's own rendering of a Go template, for the one an earlier block used.
+                if [[ $# == 5 && $3 == --format && $4 == '{{.Driver}}|{{len .Options}}|{{index .Options "type"}}|{{index .Options "o"}}|{{.Mountpoint}}|{{index .Options "device"}}' ]]; then
+                  jq -r '.[0] | "\(.Driver)|\(.Options // {} | length)|\(.Options.type // "")|\(.Options.o // "")|\(.Mountpoint)|\(.Options.device // "")"' "$S/volumes/$name.json"
+                  exit 0
+                fi
+                echo "unscripted volume call" >&2; exit 2 ;;
               inspect)
+                if [[ $2 != --format ]]; then
+                  # The whole inspection, as JSON: name, state with its process ID, and mounts.
+                  target=$2
+                  if [[ -e $S/inspect-fails-$target ]]; then echo "Error response from daemon: scripted failure" >&2; exit 1; fi
+                  d=$(find_container "$target") || { echo "Error response from daemon: No such container: $target" >&2; exit 1; }
+                  running=$(cat "$d/running"); pid=0
+                  if [[ $running == true ]]; then pid=$(cat "$d/pid"); fi
+                  jq -n --arg name "$(cat "$d/name")" --argjson running "$running" --argjson pid "$pid" --slurpfile mounts "$d/mounts.json" \
+                    '[{Name: $name, State: {Running: $running, Pid: $pid}, Mounts: $mounts[0]}]'
+                  exit 0
+                fi
                 format=$3; target=$4
                 if [[ -e $S/inspect-fails-$target ]]; then echo "Error response from daemon: scripted failure" >&2; exit 1; fi
                 d=$(find_container "$target") || { echo "Error response from daemon: No such container: $target" >&2; exit 1; }
@@ -517,8 +671,10 @@ public sealed class SiloReplacementRunbookTests
                 case "$format" in
                   '{{.State.Pid}}') if [[ $running == true ]]; then echo 2147483646; else echo 0; fi ;;
                   '{{.State.Running}} {{.State.Pid}}') if [[ $running == true ]]; then echo "true 2147483646"; else echo "false 0"; fi ;;
+                  '{{.State.Running}}') cat "$d/running" ;;
                   '{{.Name}}') cat "$d/name" ;;
-                  '{{range .Mounts}}{{println .Type (or .Name "-") .Source}}{{end}}') cat "$d/mounts" ;;
+                  '{{range .Mounts}}{{println .Type (or .Name "-") .Source}}{{end}}')
+                    jq -r '.[] | "\(.Type) \(.Name // "-") \(.Source)"' "$d/mounts.json" ;;
                   '{{.State.Health.Status}}') cat "$d/health" ;;
                   *) echo "unscripted format $format" >&2; exit 2 ;;
                 esac
@@ -538,7 +694,8 @@ public sealed class SiloReplacementRunbookTests
                 if [[ " $* " != *" up --detach --no-deps silo "* ]]; then echo "unscripted compose call" >&2; exit 2; fi
                 if [[ -e $S/up-fails ]]; then echo "compose up failed (scripted)" >&2; exit 1; fi
                 new=$S/containers/silo-replacement; mkdir -p "$new"
-                echo "/$FAKE_SILO" > "$new/name"; echo true > "$new/running"; echo healthy > "$new/health"; echo "bind - $FAKE_DATA" > "$new/mounts"
+                echo "/$FAKE_SILO" > "$new/name"; echo true > "$new/running"; echo healthy > "$new/health"; echo 2147483645 > "$new/pid"
+                jq -n --arg source "$FAKE_DATA" '[{Type: "bind", Source: $source, Destination: "/data"}]' > "$new/mounts.json"
                 if [[ -e $S/differ-after ]]; then echo '{"format":"changed"}' > "$S/objects/meta/fence.json@v2"; fi
                 exit 0 ;;
               exec)
@@ -565,13 +722,27 @@ public sealed class SiloReplacementRunbookTests
         private const string FakeFindmnt = """
             #!/usr/bin/env bash
             set -u
-            if [[ $* != '-J -l -o MAJ:MIN,FSROOT,TARGET' ]]; then echo "unscripted findmnt call: $*" >&2; exit 2; fi
-            real=$(/usr/bin/findmnt -J -l -o MAJ:MIN,FSROOT,TARGET) || exit 1
-            if [[ -f $FAKE_STATE/mounts.json ]]; then
-              jq --slurpfile extra "$FAKE_STATE/mounts.json" '.filesystems += $extra[0]' <<< "$real"
-            else
-              printf '%s\n' "$real"
+            S=${FAKE_STATE:?}
+            base='-J -l -o MAJ:MIN,FSROOT,TARGET'
+            if [[ $* == "$base" ]]; then
+              real=$(/usr/bin/findmnt -J -l -o MAJ:MIN,FSROOT,TARGET) || exit 1
+              if [[ -f $S/mounts.json ]]; then
+                jq --slurpfile extra "$S/mounts.json" '.filesystems += $extra[0]' <<< "$real"
+              else
+                printf '%s\n' "$real"
+              fi
+              exit 0
             fi
+            # A container process's own table, which a test scripts by process ID: none overlapping unless given.
+            if [[ $# == 6 && "$1 $2 $3 $4" == "$base" && $5 == --tab-file && $6 =~ ^/proc/([0-9]+)/mountinfo$ ]]; then
+              pid=${BASH_REMATCH[1]}
+              if [[ -f $S/live/$pid.exits ]]; then echo false > "$(cat "$S/live/$pid.exits")/running"; fi
+              if [[ -e $S/live/$pid.unreadable || -f $S/live/$pid.exits ]]; then echo "findmnt: cannot open $6: Permission denied (scripted)" >&2; exit 1; fi
+              if [[ -f $S/live/$pid.json ]]; then cat "$S/live/$pid.json"; else echo '{"filesystems": []}'; fi
+              exit 0
+            fi
+            echo "unscripted findmnt call: $*" >&2
+            exit 2
             """;
 
         /// <summary><c>hvo-sky-install cameraagent silo-verify</c>: the readiness the state names; not-ready exits 3.</summary>

@@ -20,6 +20,7 @@ internal sealed class SiloHarness : IDisposable
     public static readonly SiloImagePin.PlatformImage Arm64 = SiloImagePin.ForArchitecture("arm64")!;
 
     private readonly DirectoryInfo? root;
+    private readonly Func<string, string> realMountTable = SiloDataRootExclusivity.ReadMountTable;
 
     /// <summary>A harness on its own temporary product root.</summary>
     public SiloHarness()
@@ -71,6 +72,13 @@ internal sealed class SiloHarness : IDisposable
                 SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, name), value);
         }
         CameraAgentStarted = DateTimeOffset.UtcNow.AddMinutes(1);
+        // Mount tables as the host and each container process hold them: the host's real table with any bind mounts a test
+        // adds, and a running container's own table as the test scripts it (none overlapping by default).
+        SiloDataRootExclusivity.ReadMountTable = process => process == "self"
+            ? realMountTable("self").TrimEnd('\n') + "\n" + string.Concat(HostMounts.Select(static line => line + "\n"))
+            : LiveMountTables.TryGetValue(int.Parse(process, System.Globalization.CultureInfo.InvariantCulture), out var table)
+                ? table ?? throw new IOException($"/proc/{process}/mountinfo cannot be read (scripted).")
+                : string.Empty;
     }
 
     public Guid InstanceId { get; }
@@ -128,6 +136,29 @@ internal sealed class SiloHarness : IDisposable
     /// <summary>The daemon's data root, which holds the volumes it manages.</summary>
     public string DockerRootDirectory { get; set; } = "/var/lib/docker";
 
+    /// <summary>Mounts this host's table lists besides its real ones, as mountinfo lines (see <see cref="MountLine"/>).</summary>
+    public List<string> HostMounts { get; } = [];
+
+    /// <summary>Running container processes' own mount tables by process ID; <see langword="null"/> when one cannot be read.</summary>
+    public Dictionary<int, string?> LiveMountTables { get; } = [];
+
+    /// <summary>Containers Docker answers have stopped when inspected again (after their own table could not be read).</summary>
+    public HashSet<string> StoppedWhenInspectedAgain { get; } = [];
+
+    /// <summary>A mountinfo line: a mount of <paramref name="root"/> on filesystem <paramref name="device"/> at <paramref name="target"/>.</summary>
+    public static string MountLine(string device, string root, string target)
+    {
+        static string Escaped(string path) => path.Replace("\\", "\\134", StringComparison.Ordinal).Replace(" ", "\\040", StringComparison.Ordinal)
+            .Replace("\t", "\\011", StringComparison.Ordinal).Replace("\n", "\\012", StringComparison.Ordinal);
+        return $"4095 1 {device} {Escaped(root)} {Escaped(target)} rw,relatime shared:1 - ext4 /dev/hvo-test rw";
+    }
+
+    /// <summary>Where this host's mount table places the data root.</summary>
+    public SiloMountLocation DataLocation => SiloDataRootExclusivity.Locate(NativeLinux.TryResolvePath(DataRoot)!, realMountTable("self"));
+
+    /// <summary>The process ID Docker reports for a running other container.</summary>
+    public static int ProcessIdOf(JsonObject container) => container["State"]!["Pid"]!.GetValue<int>();
+
     /// <summary>Another container, running, with the given mounts (each a Docker <c>Mounts</c> entry).</summary>
     public JsonObject AddOtherContainer(params JsonObject[] mounts)
     {
@@ -135,7 +166,7 @@ internal sealed class SiloHarness : IDisposable
         {
             ["Id"] = Hex((char)('1' + OtherContainers.Count)),
             ["Name"] = "/other-" + OtherContainers.Count,
-            ["State"] = new JsonObject { ["Running"] = true },
+            ["State"] = new JsonObject { ["Running"] = true, ["Pid"] = 5000 + OtherContainers.Count },
             ["Mounts"] = new JsonArray([.. mounts])
         };
         OtherContainers.Add(container);
@@ -211,6 +242,10 @@ internal sealed class SiloHarness : IDisposable
                                          string.Concat(OtherContainers.Select(static other => other["Id"]!.GetValue<string>() + "\n")));
             case ["container", "inspect", var name] when OtherContainers.Find(other => other["Id"]!.GetValue<string>() == name) is { } other:
                 return ScriptedDocker.Ok(new JsonArray(other.DeepClone()));
+            case ["container", "inspect", "--format", "{{.State.Running}}", var name]:
+                return name == CameraAgentId || OtherContainers.Exists(other => other["Id"]!.GetValue<string>() == name)
+                    ? ScriptedDocker.Ok(StoppedWhenInspectedAgain.Contains(name) ? "false\n" : "true\n")
+                    : ScriptedDocker.NoSuch("container", name);
             case ["volume", "inspect", var name]:
                 return Volumes.TryGetValue(name, out var volume) ? ScriptedDocker.Ok(new JsonArray(volume.DeepClone())) : ScriptedDocker.NoSuch("volume", name);
             case ["info", "--format", "{{.DockerRootDir}}"]:
@@ -288,6 +323,7 @@ internal sealed class SiloHarness : IDisposable
         ["State"] = new JsonObject
         {
             ["Running"] = CameraAgentRunning,
+            ["Pid"] = CameraAgentRunning ? 4243 : 0,
             ["StartedAt"] = CameraAgentStarted.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", System.Globalization.CultureInfo.InvariantCulture),
             ["Health"] = new JsonObject { ["Status"] = CameraAgentHealth }
         },
@@ -345,5 +381,9 @@ internal sealed class SiloHarness : IDisposable
 
     public static string Text(byte[] bytes) => Encoding.UTF8.GetString(bytes);
 
-    public void Dispose() => root?.Delete(recursive: true);
+    public void Dispose()
+    {
+        SiloDataRootExclusivity.ReadMountTable = realMountTable;
+        root?.Delete(recursive: true);
+    }
 }

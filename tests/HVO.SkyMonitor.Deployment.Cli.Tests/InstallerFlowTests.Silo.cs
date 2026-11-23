@@ -169,10 +169,6 @@ public sealed partial class InstallerFlowTests
     }
 
     /// <summary>
-    /// #1966 round 2 (Fable new finding 2): a CameraAgent image that does not declare the first-boot pause contract would
-    /// ignore the seeded pause and admit captures, so a Silo-layout install refuses it before anything is created.
-    /// </summary>
-    /// <summary>
     /// #1966 round 5 (Sol R5-03): the bootstrap proves its data root this Silo's alone by the replacement's rules before it
     /// starts Silo. Another container that reaches the data root through a link, or through a named volume whose options
     /// bind it there (whatever type it declares), stops the install before Silo or CameraAgent starts.
@@ -229,6 +225,10 @@ public sealed partial class InstallerFlowTests
         }
     }
 
+    /// <summary>
+    /// #1966 round 2 (Fable new finding 2): a CameraAgent image that does not declare the first-boot pause contract would
+    /// ignore the seeded pause and admit captures, so a Silo-layout install refuses it before anything is created.
+    /// </summary>
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(null)]
@@ -480,6 +480,8 @@ public sealed partial class InstallerFlowTests
             container["Id"] = expected["Id"]!.DeepClone();
             container["Name"] = expected["Name"]!.DeepClone();
             container["State"]!["StartedAt"] = expected["State"]!["StartedAt"]!.DeepClone();
+            container["State"]!["Running"] = expected["State"]!["Running"]!.DeepClone();
+            container["State"]!["Pid"] = expected["State"]!["Pid"]!.DeepClone();
             container["Config"]!["Env"] = expected["Config"]!["Env"]!.DeepClone();
             container["NetworkSettings"] = expected["NetworkSettings"]!.DeepClone();
             foreach (var mount in expected["Mounts"]!.AsArray()) container["Mounts"]!.AsArray().Add(mount!.DeepClone());

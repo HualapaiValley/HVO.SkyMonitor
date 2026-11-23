@@ -147,10 +147,22 @@ public sealed class SiloRuntimeVerificationTests
     [DataRow("bind-volume-of-the-data-root", "a bind of")]
     [DataRow("tmpfs-typed-bind-volume-of-the-data-root", "a bind of")]
     [DataRow("rbind-volume-of-another-type", "a bind of")]
-    [DataRow("bind-volume-naming-no-device", "is a bind that names no device, so where its data lies is not proved")]
-    [DataRow("tmpfs-volume-moved", "is of type tmpfs with options move, so where its data lies is not proved")]
-    [DataRow("volume-of-another-driver", "uses the nfs-plugin driver, so where its data lies is not proved")]
-    [DataRow("volume-of-another-type", "is of type ext4 with options none, so where its data lies is not proved")]
+    [DataRow("bind-volume-naming-no-device", "a bind that names no device, so where its data lies is not proved")]
+    [DataRow("tmpfs-volume-moved", "a local volume of type tmpfs that is not a bind, a volume Docker manages or a tmpfs, so where its data lies is not proved")]
+    [DataRow("volume-of-another-driver", "whose driver nfs-plugin is not the local driver, so where its data lies is not proved")]
+    [DataRow("volume-of-another-type", "a local volume of type ext4 that is not a bind, a volume Docker manages or a tmpfs, so where its data lies is not proved")]
+    // R6-01: what a running container holds now, and what a volume's mount point holds now.
+    [DataRow("running-container-holding-a-path-inside-now", "which holds in its own mount table now the data root, a path inside it or one holding it")]
+    [DataRow("running-container-whose-link-was-retargeted", "which holds in its own mount table now the data root, a path inside it or one holding it")]
+    [DataRow("running-container-whose-mount-table-cannot-be-read", "runs, but its own mount table cannot be read, so what it holds now is not proved")]
+    [DataRow("running-container-that-stopped-before-its-table-was-read", null)]
+    [DataRow("bind-volume-whose-mount-point-holds-the-data-root-now", "whose mount point holds a mount of the data root, of a path inside it or of one holding it now")]
+    [DataRow("unrelated-running-bind-volume", null)]
+    // R6-02: values judged exactly as Docker reports them.
+    [DataRow("bind-source-with-a-trailing-space", "which is the data root, lies inside it or holds it")]
+    [DataRow("volume-type-with-a-pipe", "a bind of")]
+    // R6-03: a volume's mount options are never shown.
+    [DataRow("cifs-volume-with-credentials", "a local volume of type cifs that is not a bind, a volume Docker manages or a tmpfs, so where its data lies is not proved")]
     [DataRow("volume-docker-cannot-inspect", "Docker could not inspect volume vanished")]
     [DataRow("volume-docker-manages-around-the-data-root", "kept in Docker's data root")]
     [DataRow("mount-of-another-type", "has a mount of type image, so where its data lies is not proved")]
@@ -193,10 +205,44 @@ public sealed class SiloRuntimeVerificationTests
                 "volume-docker-cannot-inspect" => SiloHarness.VolumeMount("vanished", "/var/lib/docker/volumes/vanished/_data"),
                 "volume-docker-manages-around-the-data-root" => ManagedAround(harness),
                 "mount-of-another-type" => new JsonObject { ["Type"] = "image", ["Source"] = "sha256:0123", ["Destination"] = "/image" },
+                "running-container-holding-a-path-inside-now" or "running-container-whose-mount-table-cannot-be-read" or
+                    "running-container-that-stopped-before-its-table-was-read" => SiloHarness.BindMount(Path.Combine(scratch.FullName, "elsewhere")),
+                // The link named the data root when the container started; it names another folder now.
+                "running-container-whose-link-was-retargeted" => SiloHarness.BindMount(Link("alias", Path.Combine(scratch.FullName, "elsewhere"))),
+                "bind-volume-whose-mount-point-holds-the-data-root-now" or "unrelated-running-bind-volume" =>
+                    harness.LocalVolume("bound", ("type", "none"), ("o", "bind"), ("device", Path.Combine(scratch.FullName, "elsewhere"))),
+                "bind-source-with-a-trailing-space" => TrailingSpace(),
+                "volume-type-with-a-pipe" => harness.LocalVolume("bound", ("type", "tmpfs|safe"), ("o", "bind"), ("device", harness.DataRoot)),
+                "cifs-volume-with-credentials" => harness.LocalVolume("share", ("type", "cifs"),
+                    ("o", "username=alice,password=TEST_CIFS_SECRET_VALUE,pass=TEST_SHORT_PASS_VALUE"), ("device", "//archive.example/share")),
                 _ => throw new ArgumentOutOfRangeException(nameof(shape))
             };
             harness.AddOtherContainer(SiloHarness.BindMount(Path.Combine(scratch.FullName, "elsewhere")));
-            harness.AddOtherContainer(mount);
+            var other = harness.AddOtherContainer(mount);
+            var data = harness.DataLocation;
+            var pid = SiloHarness.ProcessIdOf(other);
+            switch (shape)
+            {
+                case "running-container-holding-a-path-inside-now" or "running-container-whose-link-was-retargeted":
+                    harness.LiveMountTables[pid] = SiloHarness.MountLine(data.Device, data.Path + "/.minio.sys", "/probe") + "\n";
+                    break;
+                case "running-container-whose-mount-table-cannot-be-read":
+                    harness.LiveMountTables[pid] = null;
+                    break;
+                case "running-container-that-stopped-before-its-table-was-read":
+                    harness.LiveMountTables[pid] = null;
+                    harness.StoppedWhenInspectedAgain.Add(other["Id"]!.GetValue<string>());
+                    break;
+                case "bind-volume-whose-mount-point-holds-the-data-root-now":
+                    // Mounted when the device named the data root; Docker's folder is root-only, so only the table shows it.
+                    harness.HostMounts.Add(SiloHarness.MountLine(data.Device, data.Path, $"{harness.DockerRootDirectory}/volumes/bound/_data"));
+                    break;
+                case "unrelated-running-bind-volume":
+                    var elsewhere = SiloDataRootExclusivity.Locate(NativeLinux.TryResolvePath(Path.Combine(scratch.FullName, "elsewhere"))!,
+                        await File.ReadAllTextAsync(HostProductRootPolicy.MountInfoPath, TestContext.CancellationToken));
+                    harness.HostMounts.Add(SiloHarness.MountLine(elsewhere.Device, elsewhere.Path, $"{harness.DockerRootDirectory}/volumes/bound/_data"));
+                    break;
+            }
             var docker = harness.Docker(out _);
 
             var check = docker.EnsureSiloDataRootExclusiveAsync(harness.DataRoot, harness.SiloName, TestContext.CancellationToken);
@@ -212,11 +258,22 @@ public sealed class SiloRuntimeVerificationTests
                 if (!refusal.StartsWith("Docker could not", StringComparison.Ordinal))
                     StringAssert.Contains(refused.Message, "Another container references the Silo data root", StringComparison.Ordinal);
                 StringAssert.Contains(refused.Message, refusal, StringComparison.Ordinal);
+                Assert.IsFalse(refused.Message.Contains("TEST_", StringComparison.Ordinal), "No mount option is shown: " + refused.Message);
+                Assert.IsFalse(CameraAgentStateDiagnostics.Message(refused.Message).Contains("TEST_", StringComparison.Ordinal));
             }
         }
         finally
         {
             scratch.Delete(recursive: true);
+        }
+
+        JsonObject TrailingSpace()
+        {
+            // The name with a trailing space links into the data root; the same name without it is an unrelated folder.
+            Directory.CreateDirectory(Path.Combine(scratch.FullName, "mount-alias"));
+            var spaced = Path.Combine(scratch.FullName, "mount-alias ");
+            File.CreateSymbolicLink(spaced, Path.Combine(harness.DataRoot, ".minio.sys"));
+            return SiloHarness.BindMount(spaced);
         }
 
         static JsonObject RemoteVolume(SiloHarness harness)

@@ -468,7 +468,16 @@ On an installed instance, as the user that installed it, with `jq` on the host:
   - A volume of Docker's local driver is judged by where its data lies. A volume whose options make it a bind (`bind`
     or `rbind`) is judged by its `device` path, as a bind mount, whatever type it declares. A volume Docker manages
     lies in Docker's data root, which must be apart from the data root in the same way. A tmpfs mount or volume holds
-    no host path. Any other volume driver, type or options, and any other mount type, is refused.
+    no host path. Any other volume driver, type or options, and any other mount type, is refused. Every volume is
+    judged as well by what the mount table holds at its mount point now, read from the table alone, so Docker's own
+    root-only folders need not be entered.
+  - A running container is judged as well by its own mount table (`/proc/<pid>/mountinfo`), which shows what it holds
+    now whatever its configuration names today: a link retargeted, or a folder replaced, after it started leaves the
+    mount it started with. A running container whose table cannot be read is refused, unless Docker answers that it has
+    stopped or gone meanwhile; on a host whose `/proc` hides other users' processes, that refuses every such container.
+  - Docker's answers are read as JSON with `jq`, so every path, type and option is judged exactly as Docker reports it.
+    No message repeats a volume's mount options, which may hold credentials, and a driver or type is shown only when it
+    is a plain name.
   - A file hard-linked from inside the data root is another name for that one file, not a mount of the data root, and
     is not detected.
 - **What a stop leaves.** Any failed step stops the procedure once, names what failed, and says what the step it reached
@@ -486,7 +495,6 @@ N=${ID//-/}; I=$P/cameraagents/$ID; SILO=hvo-skymonitor-$N-silo; DATA=$I/silo; B
 ROOT_ENV='export MC_HOST_root="http://$(cat /run/hvo-silo/root-user):$(cat /run/hvo-silo/root-password)@127.0.0.1:9000"'
 COMPOSE=(docker compose --project-name "hvo-skymonitor-$N" --env-file "$I/config/compose/instance.env"
   --file "$I/config/compose/compose.yml")
-VOLUME='{{.Driver}}|{{len .Options}}|{{index .Options "type"}}|{{index .Options "o"}}|{{.Mountpoint}}|{{index .Options "device"}}'
 W=$(mktemp -d); phase=unchanged
 fail() {   # prints, once, what failed and what the phase reached leaves, then stops
   trap - ERR
@@ -533,19 +541,27 @@ for path in "$DATA" "$D"; do
   done
 done
 node=$(stat -L -c '%d:%i' /); roots+=("$node")
-locate() {   # "<device> <path within it>" of resolved path $1, from the mount that holds it in the mount table
-  jq -er --arg p "$1" '.filesystems | to_entries
+# The mount-table rules, in jq so the shell splits no path: where the table places a resolved path (the device of the
+# mount that holds it and its path within that filesystem), whether two places overlap, and the mounts at or below a path.
+TABLE='def placed($p): .filesystems | to_entries
     | map(select(.value.target as $t | $t == "/" or $t == $p or ($p | startswith($t + "/"))))
     | sort_by((.value.target | length), .key) | last | .value | .target as $t
-    | "\(.["maj:min"]) \((.fsroot | rtrimstr("/")) + (if $t == "/" then $p else $p[($t | length):] end) | if . == "" then "/" else . end)"' \
-    <<< "$MOUNTS"
+    | {dev: .["maj:min"], path: ((.fsroot | rtrimstr("/")) + (if $t == "/" then $p else $p[($t | length):] end) | if . == "" then "/" else . end)};
+  def overlaps($a; $b): $a.dev == $b.dev and ($a.path == $b.path or $a.path == "/" or $b.path == "/"
+    or ($a.path | startswith($b.path + "/")) or ($b.path | startswith($a.path + "/")));
+  def below($p): .filesystems[] | select(.target == $p or (.target | startswith(($p | rtrimstr("/")) + "/")))
+    | {dev: .["maj:min"], path: .fsroot};'
+get() {   # REPLY: exactly what jq filter $1 prints from JSON $2, every character and trailing newline kept
+  REPLY=$(jq -j "$1" <<< "$2" && printf .); REPLY=${REPLY%.}
 }
-within() {   # whether locations $1 and $2 share a device and one path is, or lies inside, the other
-  local a=${1#* } b=${2#* }
-  [[ ${1%% *} == "${2%% *}" && ( $a == "$b" || $a == / || $b == / || $a == "$b/"* || $b == "$a/"* ) ]]
+ask() {   # yes or no: jq condition $1 about path $2 ($p) and the data root's place ($d), in mount table $3
+  jq -r --arg p "$2" --argjson d "$DWHERE" "$TABLE"' if '"$1"' then "yes" else "no" end' <<< "$3"
+}
+shown() {   # a driver or type for a message, only when it is a plain name: mount options may hold credentials
+  if [[ $1 =~ ^[A-Za-z0-9._/:-]{1,64}$ ]]; then printf '%s' "$1"; else printf '(not shown)'; fi
 }
 apart() {   # fails unless host path $2, which $1 describes, is proved apart from the data root
-  local r p b node where held m
+  local r p b node answer
   if ! r=$(realpath -e -- "$2" 2> /dev/null); then fail "$1, which does not resolve here, so it is not proved apart from $DATA."; fi
   for p in "$2" "$r"; do
     for b in "$DATA" "$D"; do
@@ -562,44 +578,71 @@ apart() {   # fails unless host path $2, which $1 describes, is proved apart fro
     if [[ $node == "$DID" ]]; then fail "$1, inside $DATA under another name."; fi
     p=$(dirname "$p")
   done
-  where=$(locate "$r")
-  if within "$where" "$DWHERE"; then fail "$1, which the mount table places on $DATA, inside it or holding it."; fi
-  held=$(jq -r --arg p "$r" '.filesystems[] | select(.target == $p or (.target | startswith($p + "/"))) | "\(.["maj:min"]) \(.fsroot)"' <<< "$MOUNTS")
-  while IFS= read -r m; do
-    if [[ -n $m ]] && within "$m" "$DWHERE"; then fail "$1, which holds a mount of $DATA, of a path inside it or of one holding it."; fi
-  done <<< "$held"
+  answer=$(ask 'overlaps(placed($p); $d)' "$r" "$MOUNTS")
+  if [[ $answer == yes ]]; then fail "$1, which the mount table places on $DATA, inside it or holding it."; fi
+  answer=$(ask 'any(below($p); overlaps(.; $d))' "$r" "$MOUNTS")
+  if [[ $answer == yes ]]; then fail "$1, which holds a mount of $DATA, of a path inside it or of one holding it."; fi
 }
 exclusive() {   # fails unless every mount of every other container, running or not, is proved apart from the data root
-  local ids c name mounts type volume source v driver options vtype vo mountpoint device
-  MOUNTS=$(findmnt -J -l -o MAJ:MIN,FSROOT,TARGET); DWHERE=$(locate "$D")
+  local ids c json count i type volume source v driver options vtype vo mountpoint device p running pid live now answer
+  MOUNTS=$(findmnt -J -l -o MAJ:MIN,FSROOT,TARGET)
+  DWHERE=$(jq -c --arg p "$D" "$TABLE"' placed($p)' <<< "$MOUNTS")
   ids=$(docker ps -aq --no-trunc)
   for c in $ids; do
-    if ! name=$(docker inspect --format '{{.Name}}' "$c" 2> "$W/inspect.err"); then
+    if ! json=$(docker inspect "$c" 2> "$W/inspect.err"); then
       if grep -qiE 'No such (container|object)' "$W/inspect.err"; then continue; fi    # removed since the listing
       fail "Docker could not inspect container $c, so its mounts are unknown: $(head -c 300 "$W/inspect.err")"
     fi
-    if [[ $name == "/$SILO" ]]; then continue; fi
-    mounts=$(docker inspect --format '{{range .Mounts}}{{println .Type (or .Name "-") .Source}}{{end}}' "$c")
-    while read -r type volume source; do
+    get '.[0].Name' "$json"; if [[ $REPLY == "/$SILO" ]]; then continue; fi
+    get '.[0].Mounts | length' "$json"; count=$REPLY
+    for ((i = 0; i < count; i++)); do
+      get ".[0].Mounts[$i].Type // \"\"" "$json"; type=$REPLY
+      get ".[0].Mounts[$i].Name // \"\"" "$json"; volume=$REPLY
+      get ".[0].Mounts[$i].Source // \"\"" "$json"; source=$REPLY
       case $type in
-        '' | tmpfs) ;;                                                                # no host path
+        tmpfs) ;;                                                                     # no host path
         bind) apart "container $c mounts $source" "$source" ;;
         volume)
-          v=$(docker volume inspect --format "$VOLUME" "$volume")
-          IFS='|' read -r driver options vtype vo mountpoint device <<< "$v"
+          v=$(docker volume inspect "$volume")
+          get '.[0].Driver // ""' "$v"; driver=$REPLY
+          get '.[0].Options // {} | length' "$v"; options=$REPLY
+          get '.[0].Options.type // ""' "$v"; vtype=$REPLY
+          get '.[0].Options.o // ""' "$v"; vo=$REPLY
+          get '.[0].Options.device // ""' "$v"; device=$REPLY
+          get '.[0].Mountpoint // ""' "$v"; mountpoint=$REPLY
           if [[ $driver != local ]]; then
-            fail "container $c mounts volume $volume ($driver driver), so where its data lies is not proved."
+            fail "container $c mounts volume $volume, whose driver $(shown "$driver") is not the local driver, so where its data lies is not proved."
           elif [[ ,$vo, =~ ,r?bind, ]]; then                                          # a bind, whatever its type
-            if [[ -z $device ]]; then fail "container $c mounts volume $volume, a bind that names no device."; fi
+            if [[ -z $device ]]; then fail "container $c mounts volume $volume, a bind that names no device, so where its data lies is not proved."; fi
             apart "container $c mounts volume $volume, a bind of $device" "$device"
           elif [[ $options == 0 && $mountpoint == "$DROOT/volumes/$volume/_data" ]]; then
             apart "container $c mounts volume $volume, kept in Docker's data root $DROOT" "$DROOT"
-          elif [[ $vtype != tmpfs || ,$vo, =~ ,(move|remount), ]]; then
-            fail "container $c mounts volume $volume (type ${vtype:-unset}, options ${vo:-none}), so where its data lies is not proved."
-          fi ;;
-        *) fail "container $c has a mount of type $type, so where its data lies is not proved." ;;
+          elif [[ $vtype != tmpfs || ,$vo, =~ ,(move|remount), ]]; then            # its options are never shown
+            answer="container $c mounts volume $volume, a local volume of type $(shown "${vtype:-unset}") that is not a bind,"
+            fail "$answer a volume Docker manages or a tmpfs, so where its data lies is not proved."
+          fi
+          for p in "$mountpoint" "$source"; do                                       # what its mount point holds now
+            if [[ -n $p ]]; then
+              answer=$(ask 'any(below($p); overlaps(.; $d))' "$p" "$MOUNTS")
+              if [[ $answer == yes ]]; then
+                fail "container $c mounts volume $volume at $p, whose mount point holds a mount of $DATA, of a path inside it or of one holding it now."
+              fi
+            fi
+          done ;;
+        *) fail "container $c has a mount of type $(shown "$type"), so where its data lies is not proved." ;;
       esac
-    done <<< "$mounts"
+    done
+    get '.[0].State.Running' "$json"; running=$REPLY
+    if [[ $running == true ]]; then                                                 # what it holds now
+      get '.[0].State.Pid' "$json"; pid=$REPLY
+      if [[ ! $pid =~ ^[1-9][0-9]*$ ]] || ! live=$(findmnt -J -l -o MAJ:MIN,FSROOT,TARGET --tab-file "/proc/$pid/mountinfo" 2> /dev/null); then
+        if now=$(docker inspect --format '{{.State.Running}}' "$c" 2> "$W/inspect.err") && [[ $now == false ]]; then continue; fi
+        if grep -qiE 'No such (container|object)' "$W/inspect.err"; then continue; fi  # stopped or gone meanwhile
+        fail "container $c runs, but its own mount table cannot be read, so what it holds now is not proved."
+      fi
+      answer=$(ask 'any(.filesystems[]; overlaps({dev: .["maj:min"], path: .fsroot}; $d))' "" "$live")
+      if [[ $answer == yes ]]; then fail "container $c holds in its own mount table now $DATA, a path inside it or one holding it."; fi
+    fi
   done
 }
 opening=$("$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -er .readiness)

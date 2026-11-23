@@ -426,12 +426,14 @@ internal sealed partial class DockerClient
     /// running or not, is proved apart from the Silo data root by <see cref="SiloDataRootExclusivity"/>, the rules the
     /// runbook's stock-image replacement applies. A bind mount is judged by its source. A volume is judged by where its data
     /// lies: a local volume whose options make it a bind by its device, whatever its type, and a volume Docker manages by
-    /// Docker's data root. A tmpfs mount or volume holds no host path. Anything else is refused.
+    /// Docker's data root; and every volume by what this host's mount table holds at its mount point now. A tmpfs mount or
+    /// volume holds no host path. Anything else is refused. A running container is judged as well by its own mount table,
+    /// which shows what it holds now whatever its configuration names; one that cannot be read is refused unless Docker
+    /// answers that the container has stopped or gone meanwhile. No diagnostic repeats a volume's mount options.
     /// </summary>
     public async Task EnsureSiloDataRootExclusiveAsync(string dataRoot, string? ownerContainer, CancellationToken cancellationToken)
     {
-        var exclusivity = new SiloDataRootExclusivity(
-            dataRoot, await File.ReadAllTextAsync(HostProductRootPolicy.MountInfoPath, cancellationToken).ConfigureAwait(false));
+        var exclusivity = new SiloDataRootExclusivity(dataRoot, SiloDataRootExclusivity.ReadMountTable("self"));
         var listed = await RunDockerAsync(["container", "ls", "--all", "--quiet", "--no-trunc"], cancellationToken).ConfigureAwait(false);
         foreach (var id in listed.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -440,8 +442,7 @@ internal sealed partial class DockerClient
             {
                 // Only Docker's own answer that the container is gone (removed since the listing) concludes it; any other
                 // failure leaves its mounts unknown, so exclusivity is not proved.
-                if (inspected.StandardError.Contains("No such container", StringComparison.OrdinalIgnoreCase) ||
-                    inspected.StandardError.Contains("No such object", StringComparison.OrdinalIgnoreCase))
+                if (IsGone(inspected))
                     continue;
                 throw InstallerException.Refused(
                     $"Docker could not inspect a container beside the Silo data root, so its exclusivity is not proved: {Redaction.SafeDiagnostic(inspected.StandardError)}");
@@ -451,41 +452,72 @@ internal sealed partial class DockerClient
             var name = container.GetProperty("Name").GetString()?.TrimStart('/');
             if (ownerContainer is not null && string.Equals(name, ownerContainer, StringComparison.Ordinal)) continue;
             var shortId = id.Length > 12 ? id[..12] : id;
+            string Refusal(string detail) =>
+                $"Another container references the Silo data root; it must belong to this instance's Silo alone: container {shortId} {detail}.";
             foreach (var mount in container.GetProperty("Mounts").EnumerateArray())
             {
                 var type = JsonText(mount, "Type");
-                string described;
-                string path;
                 switch (type)
                 {
                     case "tmpfs":
                         continue;
                     case "bind":
-                        path = JsonText(mount, "Source") ?? string.Empty;
-                        described = $"mounts {Shown(path)}";
+                        var source = JsonText(mount, "Source") ?? string.Empty;
+                        if (exclusivity.Overlap(source) is { } reason)
+                            throw InstallerException.Refused(Refusal($"mounts {Shown(source)}, {reason}"));
                         break;
                     case "volume":
                         var volume = JsonText(mount, "Name") ?? string.Empty;
-                        var lies = await VolumeHostPathAsync(volume, cancellationToken).ConfigureAwait(false);
-                        if (lies is not { } where) continue;
-                        (path, described) = (where.Path, $"mounts volume {Shown(volume)}, {where.Described}");
+                        var judged = await JudgeVolumeAsync(volume, cancellationToken).ConfigureAwait(false);
+                        if (judged.Unproved is { } unproved)
+                            throw InstallerException.Refused(Refusal($"mounts volume {Shown(volume)}, {unproved}, so where its data lies is not proved"));
+                        if (judged.HostPath is { } hostPath && exclusivity.Overlap(hostPath) is { } lies)
+                            throw InstallerException.Refused(Refusal($"mounts volume {Shown(volume)}, {judged.Described}, {lies}"));
+                        foreach (var mountPoint in new[] { judged.MountPoint, JsonText(mount, "Source") }.OfType<string>().Where(static path => path.Length > 0).Distinct())
+                        {
+                            if (exclusivity.MountedAtOrBelow(mountPoint) is { } held)
+                                throw InstallerException.Refused(Refusal($"mounts volume {Shown(volume)} at {Shown(mountPoint)}, {held}"));
+                        }
                         break;
                     default:
-                        throw InstallerException.Refused(
-                            $"Another container references the Silo data root; it must belong to this instance's Silo alone: container {shortId} has a mount of type {Shown(type ?? "unknown")}, so where its data lies is not proved.");
+                        throw InstallerException.Refused(Refusal($"has a mount of type {ShownName(type)}, so where its data lies is not proved"));
                 }
-                if (exclusivity.Overlap(path) is { } reason)
-                    throw InstallerException.Refused(
-                        $"Another container references the Silo data root; it must belong to this instance's Silo alone: container {shortId} {described}, {reason}.");
+            }
+            if (container.TryGetProperty("State", out var state) && state.ValueKind == JsonValueKind.Object &&
+                state.TryGetProperty("Running", out var running) && running.ValueKind == JsonValueKind.True)
+            {
+                var pid = state.TryGetProperty("Pid", out var value) && value.TryGetInt32(out var number) ? number : 0;
+                var table = pid > 0 ? SiloDataRootExclusivity.TryReadProcessMountTable(pid) : null;
+                if (table is null)
+                {
+                    // A container that stopped or went since it was inspected holds nothing now; its configured mounts were
+                    // judged above. Anything else leaves what it holds now unknown.
+                    var again = await RunDockerRawAsync(["container", "inspect", "--format", "{{.State.Running}}", id], cancellationToken)
+                        .ConfigureAwait(false);
+                    if (IsGone(again) || (again.ExitCode == 0 && string.Equals(again.StandardOutput.Trim(), "false", StringComparison.Ordinal)))
+                        continue;
+                    throw InstallerException.Refused(Refusal("runs, but its own mount table cannot be read, so what it holds now is not proved"));
+                }
+                if (exclusivity.LiveOverlap(table) is { } live)
+                    throw InstallerException.Refused(Refusal(live));
             }
         }
     }
 
+    private static bool IsGone(ProcessResult result)
+        => result.ExitCode != 0 &&
+           (result.StandardError.Contains("No such container", StringComparison.OrdinalIgnoreCase) ||
+            result.StandardError.Contains("No such object", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>How a mounted volume was judged: why its data cannot be placed, or the host path that holds it, if any.</summary>
+    private sealed record VolumeJudgement(string? Unproved, string? HostPath, string Described, string? MountPoint);
+
     /// <summary>
-    /// The host path that holds a mounted volume's data, and how it was found; <see langword="null"/> for a tmpfs volume,
-    /// which holds none. Refuses a volume whose data cannot be placed.
+    /// Where a mounted volume's data lies: a local bind by its device, a volume Docker manages by Docker's data root, a tmpfs
+    /// volume nowhere on the host; anything else is unproved. Its mount options are never repeated: they may hold
+    /// credentials, as a CIFS volume's do.
     /// </summary>
-    private async Task<(string Path, string Described)?> VolumeHostPathAsync(string volume, CancellationToken cancellationToken)
+    private async Task<VolumeJudgement> JudgeVolumeAsync(string volume, CancellationToken cancellationToken)
     {
         var inspected = await RunDockerRawAsync(["volume", "inspect", volume], cancellationToken).ConfigureAwait(false);
         if (inspected.ExitCode != 0)
@@ -494,6 +526,7 @@ internal sealed partial class DockerClient
         using var document = JsonDocument.Parse(inspected.StandardOutput);
         var answer = document.RootElement[0];
         var driver = JsonText(answer, "Driver") ?? string.Empty;
+        var mountPoint = JsonText(answer, "Mountpoint");
         var options = new Dictionary<string, string>(StringComparer.Ordinal);
         if (answer.TryGetProperty("Options", out var value) && value.ValueKind == JsonValueKind.Object)
         {
@@ -502,25 +535,32 @@ internal sealed partial class DockerClient
         var type = options.GetValueOrDefault("type", string.Empty);
         var flags = options.GetValueOrDefault("o", string.Empty).Split(',', StringSplitOptions.TrimEntries);
         var device = options.GetValueOrDefault("device", string.Empty);
-        string Unproved(string why) => $"Another container references the Silo data root; it must belong to this instance's Silo alone: volume {Shown(volume)} {why}, so where its data lies is not proved.";
         if (!string.Equals(driver, "local", StringComparison.Ordinal))
-            throw InstallerException.Refused(Unproved($"uses the {Shown(driver)} driver"));
+            return new VolumeJudgement($"whose driver {ShownName(driver)} is not the local driver", null, string.Empty, mountPoint);
         if (flags.Any(static flag => flag is "bind" or "rbind"))
             return device.Length == 0
-                ? throw InstallerException.Refused(Unproved("is a bind that names no device"))
-                : (device, $"a bind of {Shown(device)}");
+                ? new VolumeJudgement("a bind that names no device", null, string.Empty, mountPoint)
+                : new VolumeJudgement(null, device, $"a bind of {Shown(device)}", mountPoint);
         if (options.Count == 0)
         {
             var dockerRoot = (await RunDockerAsync(["info", "--format", "{{.DockerRootDir}}"], cancellationToken).ConfigureAwait(false)).StandardOutput.Trim();
-            if (string.Equals(JsonText(answer, "Mountpoint"), $"{dockerRoot}/volumes/{volume}/_data", StringComparison.Ordinal))
-                return (dockerRoot, $"kept in Docker's data root {Shown(dockerRoot)}");
+            if (string.Equals(mountPoint, $"{dockerRoot}/volumes/{volume}/_data", StringComparison.Ordinal))
+                return new VolumeJudgement(null, dockerRoot, $"kept in Docker's data root {Shown(dockerRoot)}", mountPoint);
         }
         else if (string.Equals(type, "tmpfs", StringComparison.Ordinal) && !flags.Any(static flag => flag is "move" or "remount"))
         {
-            return null;
+            return new VolumeJudgement(null, null, "a tmpfs volume", mountPoint);
         }
-        throw InstallerException.Refused(Unproved($"is of type {Shown(type.Length == 0 ? "unset" : type)} with options {Shown(options.GetValueOrDefault("o", "none"))}"));
+        return new VolumeJudgement(
+            $"a local volume of type {ShownName(type.Length == 0 ? "unset" : type)} that is not a bind, a volume Docker manages or a tmpfs",
+            null, string.Empty, mountPoint);
     }
+
+    /// <summary>A driver or filesystem type as a diagnostic: shown only when it is a plain name, never arbitrary text.</summary>
+    private static string ShownName(string? value)
+        => value is { Length: > 0 and <= 64 } && value.All(static character => char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-' or '/' or ':')
+            ? value
+            : "(not shown)";
 
     private static string? JsonText(JsonElement element, string property)
         => element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String

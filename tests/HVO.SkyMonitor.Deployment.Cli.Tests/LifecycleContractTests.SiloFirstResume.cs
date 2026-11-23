@@ -32,6 +32,9 @@ public sealed partial class LifecycleContractTests
     [DataRow("another-container-mounts-a-link-to-a-path-inside-the-data-root")]
     [DataRow("another-container-mounts-a-bind-volume-of-the-data-root")]
     [DataRow("another-container-mounts-a-tmpfs-typed-bind-volume-of-the-data-root")]
+    [DataRow("another-container-holds-the-data-root-in-its-own-mount-table-now")]
+    [DataRow("another-container-mounts-a-bind-volume-whose-mount-point-holds-the-data-root-now")]
+    [DataRow("another-container-mounts-a-cifs-volume-with-credentials")]
     public async Task FirstResume_OpensAdmissionOnlyOnACompletedReadyInstanceWhosePauseIsStillInForce(string state)
     {
         using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Installed);
@@ -89,6 +92,31 @@ public sealed partial class LifecycleContractTests
             case "another-container-mounts-a-tmpfs-typed-bind-volume-of-the-data-root":
                 // Sol R5-02: the bind option makes it a bind of its device, whatever type it declares.
                 harness.AddOtherContainer(harness.LocalVolume("bound", ("type", "tmpfs"), ("o", "bind"), ("device", harness.DataRoot)));
+                break;
+            case "another-container-holds-the-data-root-in-its-own-mount-table-now":
+                {
+                    // R6-01: configured with an unrelated folder (a link retargeted since it started), holding the data root now.
+                    var elsewhere = Path.Combine(fixture.Root, "elsewhere");
+                    Directory.CreateDirectory(elsewhere);
+                    var other = harness.AddOtherContainer(SiloHarness.BindMount(elsewhere));
+                    harness.LiveMountTables[SiloHarness.ProcessIdOf(other)] =
+                        SiloHarness.MountLine(harness.DataLocation.Device, harness.DataLocation.Path, "/probe") + "\n";
+                    break;
+                }
+            case "another-container-mounts-a-bind-volume-whose-mount-point-holds-the-data-root-now":
+                {
+                    // R6-01: a bind volume whose device names an unrelated folder now, still mounted on the data root.
+                    var elsewhere = Path.Combine(fixture.Root, "elsewhere");
+                    Directory.CreateDirectory(elsewhere);
+                    harness.AddOtherContainer(harness.LocalVolume("bound", ("type", "none"), ("o", "bind"), ("device", elsewhere)));
+                    harness.HostMounts.Add(SiloHarness.MountLine(harness.DataLocation.Device, harness.DataLocation.Path,
+                        $"{harness.DockerRootDirectory}/volumes/bound/_data"));
+                    break;
+                }
+            case "another-container-mounts-a-cifs-volume-with-credentials":
+                // R6-03: refused without showing its mount options.
+                harness.AddOtherContainer(harness.LocalVolume("share", ("type", "cifs"),
+                    ("o", "username=alice,password=TEST_CIFS_SECRET_VALUE,pass=TEST_SHORT_PASS_VALUE"), ("device", "//archive.example/share")));
                 break;
         }
         if (state == "wrong-bucket")
@@ -189,10 +217,84 @@ public sealed partial class LifecycleContractTests
                 Assert.AreEqual(0, resumes, "No resume is sent.");
                 Assert.IsFalse(camera.Requests.Any(static request => request.Method == HttpMethod.Post));
                 break;
+            case "another-container-holds-the-data-root-in-its-own-mount-table-now":
+            case "another-container-mounts-a-bind-volume-whose-mount-point-holds-the-data-root-now":
+            case "another-container-mounts-a-cifs-volume-with-credentials":
+                AssertRefused(failure, "Another container references the Silo data root; it must belong to this instance's Silo alone");
+                StringAssert.Contains(failure!.Message, state switch
+                {
+                    "another-container-holds-the-data-root-in-its-own-mount-table-now" => "which holds in its own mount table now the data root",
+                    "another-container-mounts-a-cifs-volume-with-credentials" => "a local volume of type cifs that is not a bind",
+                    _ => "whose mount point holds a mount of the data root"
+                }, StringComparison.Ordinal);
+                Assert.IsFalse(failure.Message.Contains("TEST_", StringComparison.Ordinal), "No mount option is shown: " + failure.Message);
+                Assert.AreEqual(0, resumes, "No resume is sent.");
+                break;
             default:
                 Assert.Fail($"Unknown case {state}.");
                 break;
         }
+    }
+
+    /// <summary>
+    /// #1966 R6-03 through the operator-visible path: the CLI's own error output, as JSON and as text, refuses a first
+    /// resume beside another container's CIFS volume without showing its mount options, which hold credentials.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task FirstResume_NeverShowsAnotherVolumesMountOptionsToTheOperator(bool json)
+    {
+        using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Installed);
+        using var harness = new SiloHarness(fixture.Paths, fixture.InstanceId).Defaults();
+        harness.SiloImage = harness.Identity.ImageId;
+        harness.CameraAgentImageId = fixture.Manifest.Image.ImageId;
+        SafeFileSystem.CreateOwnerDirectory(fixture.Paths.OperationsRoot);
+        await WriteSiloManifestAsync(fixture, harness.Identity);
+        await WriteInstallationStateAsync(fixture, InstallationStatus.Completed);
+        OperationLock.Acquire(Path.Combine(fixture.Paths.OperationsRoot, "deployment.lock")).Dispose();
+        OperationLock.Acquire(Path.Combine(fixture.Paths.InstanceRoot, ".deployment.lock")).Dispose();
+        harness.AddOtherContainer(harness.LocalVolume("share", ("type", "cifs"),
+            ("o", "username=alice,password=TEST_CIFS_SECRET_VALUE,pass=TEST_SHORT_PASS_VALUE"), ("device", "//archive.example/share")));
+        using var camera = new FirstBootCamera(harness.Identity.FirstBootPauseId);
+        var originalDocker = SiloCommands.DockerFactory;
+        var originalClient = SiloCommands.ClientFactory;
+        var originalTestRoot = Environment.GetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT");
+        var originalOutput = Console.Out;
+        var originalError = Console.Error;
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        SiloCommands.DockerFactory = () => new DockerClient(new ScriptedDocker((arguments, input) =>
+            arguments is ["info", ..] and not ["info", "--format", "{{.DockerRootDir}}"] or ["compose", "version", ..]
+                ? fixture.Runner.RunAsync("docker", arguments, CancellationToken.None).GetAwaiter().GetResult()
+                : harness.Answer(arguments, input)));
+        SiloCommands.ClientFactory = uri => new SiloFirstBootClient(uri, camera);
+        Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", "1");
+        Console.SetOut(output);
+        Console.SetError(error);
+        int exitCode;
+        try
+        {
+            string[] arguments = ["cameraagent", "first-resume", "--instance-id", fixture.InstanceId.ToString("D"), "--product-root", fixture.Paths.ProductRoot];
+            exitCode = await Program.RunAsync(json ? [.. arguments, "--json"] : arguments, ProgramServices.Production, CancellationToken.None);
+        }
+        finally
+        {
+            Console.SetOut(originalOutput);
+            Console.SetError(originalError);
+            Environment.SetEnvironmentVariable("HVO_INSTALLER_ALLOW_TEST_ROOT", originalTestRoot);
+            SiloCommands.DockerFactory = originalDocker;
+            SiloCommands.ClientFactory = originalClient;
+        }
+
+        var shown = output.ToString() + error.ToString();
+        Assert.AreEqual((int)InstallerExitCode.Refused, exitCode, shown);
+        StringAssert.Contains(shown, "Another container references the Silo data root", StringComparison.Ordinal);
+        StringAssert.Contains(shown, "a local volume of type cifs that is not a bind", StringComparison.Ordinal);
+        Assert.IsFalse(shown.Contains("TEST_", StringComparison.Ordinal), "No mount option reaches the operator: " + shown);
+        Assert.IsFalse(shown.Contains("username=", StringComparison.Ordinal), shown);
+        Assert.AreEqual(0, camera.Requests.Count(static request => request.Method == HttpMethod.Post), "No resume is sent.");
     }
 
     /// <summary>
