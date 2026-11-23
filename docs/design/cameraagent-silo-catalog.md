@@ -206,14 +206,15 @@ not persistence-qualified is never named by a committed record.
   back to the previous trusted anchor. The writer refuses to write checkpoints larger than the readers' bound.
   A checkpoint that landed within the bound is still anchored when proof of P4 has since grown
   the snapshot past it, and one there that the retry may not anchor is still a conflict; only with nothing usable at
-  the key is the snapshot refused as too large. The writer reads an occupant once, up to the bound plus one byte
-  to detect oversize. Metadata read limits, including the writer and rebuild limits, must be between 1 byte and
-  64 MiB inclusive. Other exact version probes stop after the expected length plus at most one byte. Every path, writing
-  or anchoring a checkpoint that landed, requires a persistence-qualified store. Selection starts from the
-  predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
-  `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
-  length, which a newer version at the same key cannot hide. A replica is read only through the exact version a verified
-  receipt names there (`ISiloAnchorTrust.ReceiptedCopy`), never through whatever its key holds now. The same checkpoint
+  the key is the snapshot refused as too large. When a checkpoint key is occupied, the writer reads that exact
+  version once per attempt, up to the configured checkpoint limit plus one byte to detect oversize. It reuses
+  those bytes to compare a landed checkpoint. Readback of a newly written object stops after the expected length
+  plus at most one byte. Metadata read limits, including the writer and rebuild limits, must be between 1 byte and
+  64 MiB inclusive. Writing or anchoring a checkpoint requires a persistence-qualified store. Selection starts from
+  the predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
+  `ISiloAnchorTrust` (#1972), in the authenticated chain. If the recorded length fits the rebuild limit, it reads
+  the anchor's exact version up to that length plus one byte to detect oversize. For a replica, it reads the exact
+  version named by a verified receipt (`ISiloAnchorTrust.ReceiptedCopy`). The same checkpoint
   may be anchored more than once, each anchor with its own exact version or receipt. Every trusted anchor of it is
   tried in chain order before selection falls back. A receipt that names other bytes, another key or another store
   never qualifies its anchor. Only when no anchor of a checkpoint qualifies is an older one tried, then generation 1.
