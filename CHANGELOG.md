@@ -38,6 +38,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- CameraAgent clears expired centered-view journal history after the reference capture's raw files and view preview expire. Open live intervals and saved selections keep their journal records. Exact archive links to pruned revisions return HTTP 404. #2000
+
 - CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
 
 - CameraAgent Silo rebuild falls back to an earlier trusted checkpoint when the newest checkpoint omits required journal positions. #2002

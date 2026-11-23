@@ -88,6 +88,21 @@ root. `/health` reports pressure as degraded and capacity-probe failure as
 unhealthy; transition logs record entry and recovery. This policy does not pause
 capture or discard accepted frames.
 
+## Centered-view journal
+
+The raw-root retention sweep prunes a centered view after the reference capture
+is eligible under the effective UTC-day cutoff, its raw payload and sidecar are
+absent, and its preview has left the processing store. The cutoff day is
+included. A retained raw file, raw hold, or preview keeps the view in the journal.
+
+Open live intervals and saved selections keep their view records. Saved
+selections do not extend the retention policy for artifact bytes. The sweep also
+keeps the exact closing change or original base needed by surviving history.
+An expired view kept only for a closing change can lose its own expired
+intervals, so one retained view cannot pin a chain of expired ones. The sweep
+keeps completed window-publication checkpoints and commits the journal
+deletions together. Once pruned, exact archive links return HTTP 404.
+
 ## Outage Recovery
 
 1. Restore LogicHost, bearer-token issuance, or network connectivity.

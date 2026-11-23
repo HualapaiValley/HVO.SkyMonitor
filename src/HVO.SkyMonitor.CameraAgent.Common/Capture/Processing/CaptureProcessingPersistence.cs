@@ -482,6 +482,8 @@ internal sealed partial class CaptureProcessingPersistence(
             diagnosticId = diagnostics.NextDiagnosticId;
         }
         while (diagnosticTimestamp is not null);
+        await PruneCenteredViewJournalAsync(committedBeforeUtc, heldAbsolutePaths, cancellationToken, interruptionToken)
+            .ConfigureAwait(false);
         return deletedFiles;
     }
 
