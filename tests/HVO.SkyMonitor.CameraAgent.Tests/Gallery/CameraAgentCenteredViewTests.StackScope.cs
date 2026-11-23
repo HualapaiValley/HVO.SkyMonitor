@@ -63,14 +63,28 @@ public sealed partial class CameraAgentArtifactServiceTests
         // Sharing the reference and contributor list does not make a recomputation's science interchangeable.
         await AssertRejectedAsync(recomputed, matching).ConfigureAwait(false);
         var foreign = await RetainLayerAsync(neighbor, originalScience, "foreign-owner-layer").ConfigureAwait(false);
-        await AssertRejectedAsync(original, foreign with { Revision = 2 }).ConfigureAwait(false);
+        // Give the foreign evidence a newer order so it could replace the accepted layer if the ownership check were bypassed.
+        await AssertRejectedAsync(reopened, foreign with { Revision = layer.EvidenceOrder + 1 }).ConfigureAwait(false);
         var singleEvidence = await RetainLayerAsync(reference, referenceLinear, "single-layer").ConfigureAwait(false);
         await AssertRejectedAsync(single, singleEvidence).ConfigureAwait(false);
 
         var archive = await views.ReadArchiveAsync(stream, reference.Capture.CaptureId, token).ConfigureAwait(false);
-        Assert.AreEqual(enriched.Revision.RevisionId, archive.Single(item => item.Base.BaseId == original.Base.BaseId).LatestRevisionId);
-        Assert.AreEqual(recomputed.Revision.RevisionId, archive.Single(item => item.Base.BaseId == recomputed.Base.BaseId).LatestRevisionId);
-        Assert.AreEqual(single.Revision.RevisionId, archive.Single(item => item.Base.BaseId == single.Base.BaseId).LatestRevisionId);
+        foreach (var target in new[] { reopened, recomputed, single })
+        {
+            var latest = archive.Single(item => item.Base.BaseId == target.Base.BaseId);
+            Assert.AreEqual(target.Revision.RevisionId, latest.LatestRevisionId);
+
+            var persisted = await views.ReadRevisionAsync(latest.Base.BaseId, latest.LatestRevisionId, token).ConfigureAwait(false);
+            Assert.IsNotNull(persisted);
+            CollectionAssert.AreEqual(
+                target.Revision.Layers.Select(static layer => (layer.Key, layer.Evidence, layer.Drawable?.LayerIdentitySha256)).ToArray(),
+                persisted.Revision.Layers.Select(static layer => (layer.Key, layer.Evidence, layer.Drawable?.LayerIdentitySha256)).ToArray(),
+                "A rejected publication must preserve the stored layers.");
+            CollectionAssert.AreEqual(
+                target.Revision.Manifest.Layers.Select(static layer => layer.LayerIdentitySha256).ToArray(),
+                persisted.Revision.Manifest.Layers.Select(static layer => layer.LayerIdentitySha256).ToArray(),
+                "A rejected publication must preserve the stored manifest layers.");
+        }
 
         ExposureInputV1 Input(ReconstructionDescriptor descriptor) => new(new(stream.Camera, stream.RunId, descriptor.Capture.CaptureId),
             descriptor, new(descriptor.Layout, new RigOrientation(0, 0, 0), new string('A', 64), "optics", null));
