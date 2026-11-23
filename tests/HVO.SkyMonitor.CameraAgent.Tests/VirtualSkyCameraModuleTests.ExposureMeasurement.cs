@@ -554,6 +554,7 @@ public sealed partial class VirtualSkyCameraModuleTests
                         Assert.AreEqual(associationOutput.ArtifactId, solution.MeasuredArtifactId);
                         if (publicationFailures == 0)
                         {
+                            await AssertCenteredRejectedFitAndMarkersAsync(provider, exposure, solutionOutput.ArtifactId).ConfigureAwait(false);
                             await AssertNamedPredictionDependenciesAsync(provider, active, operations, originalExecution.GraphRevisionId).ConfigureAwait(false);
                         }
                     }

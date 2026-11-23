@@ -17,6 +17,24 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
     private static readonly Meter CustodyMeter = new(CaptureProcessingTelemetry.MeterName);
     private static readonly Counter<long> HoldRefusals = CustodyMeter.CreateCounter<long>(HoldRefusalMetricName, "{hold}");
 
+    // Input aliases are the committed raw row and its frozen centered run.
+    internal const string MatchingProductObservationTicksSql = """
+        CASE WHEN raw.capture_id IS NOT NULL THEN (
+            SELECT MIN(clock.settled_ticks)
+            FROM centered_exposure_products product
+            JOIN processing_centered_product_clock clock ON clock.revision = product.revision
+            JOIN processing_executions execution ON execution.execution_id = product.execution_id
+            WHERE product.capture_id = raw.capture_id AND product.agent_id = run.agent_id AND product.camera_id = run.camera_id
+              AND execution.capture_id = raw.capture_id AND execution.primary_artifact_id = raw.raw_artifact_id
+              AND execution.graph_revision_id = CASE WHEN json_valid(CAST(run.snapshot_json AS TEXT))
+                  THEN json_extract(CAST(run.snapshot_json AS TEXT), '$.GraphRevisionId') END
+              AND execution.execution_class = 'Live' AND execution.trigger_kind = 'capture'
+              AND execution.allow_automatic_publication = 1
+        ) END
+        """;
+    internal const string EarliestAdmissionObservationTicksSql =
+        "MIN(COALESCE(admitted_ticks, product_ticks), COALESCE(product_ticks, admitted_ticks))";
+
     internal const string RefreshHoldsSql = """
         SELECT window.window_sha256, raw.capture_id, raw.raw_artifact_id, raw.payload_length,
             window.registration_deadline_utc_ticks
@@ -217,7 +235,7 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
     {
         using var command = transaction.Connection!.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = """
+        command.CommandText = $$"""
             WITH center AS MATERIALIZED (
                 SELECT run_id, slot FROM processing_centered_attempt_calendar WHERE attempt_id = $attempt
             ), relevant AS (
@@ -241,18 +259,7 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
                         '$.projectedTimes[1]') AS projected_predecessor,
                     json_extract(CASE WHEN json_valid(window.checkpoint_json) THEN window.checkpoint_json END,
                         '$.dispatchCalendar') AS dispatch_calendar,
-                    CASE WHEN raw.capture_id IS NOT NULL THEN (
-                        SELECT MIN(clock.settled_ticks)
-                        FROM centered_exposure_products product
-                        JOIN processing_centered_product_clock clock ON clock.revision = product.revision
-                        JOIN processing_executions execution ON execution.execution_id = product.execution_id
-                        WHERE product.capture_id = raw.capture_id AND product.agent_id = run.agent_id AND product.camera_id = run.camera_id
-                          AND execution.capture_id = raw.capture_id AND execution.primary_artifact_id = raw.raw_artifact_id
-                          AND execution.graph_revision_id = CASE WHEN json_valid(CAST(run.snapshot_json AS TEXT))
-                              THEN json_extract(CAST(run.snapshot_json AS TEXT), '$.GraphRevisionId') END
-                          AND execution.execution_class = 'Live' AND execution.trigger_kind = 'capture'
-                          AND execution.allow_automatic_publication = 1
-                    ) END AS product_ticks
+                    {{MatchingProductObservationTicksSql}} AS product_ticks
                 FROM relevant t
                 JOIN centered_exposure_attempts attempt ON attempt.attempt_id = t.attempt_id
                 JOIN centered_exposure_runs run ON run.run_id = attempt.run_id
@@ -262,7 +269,7 @@ internal sealed class CenteredWindowRuntimeJournal : ICenteredWindowJournal
                 WHERE run.agent_id = $agent AND run.camera_id = $camera
             ), observed AS (
                 SELECT *,
-                    MIN(COALESCE(admitted_ticks, product_ticks), COALESCE(product_ticks, admitted_ticks)) AS raw_ticks
+                    {{EarliestAdmissionObservationTicksSql}} AS raw_ticks
                 FROM slots
             )
             SELECT MIN(slot - center_slot, 3), start_ticks, interval_ticks, integration_ticks, cadence,

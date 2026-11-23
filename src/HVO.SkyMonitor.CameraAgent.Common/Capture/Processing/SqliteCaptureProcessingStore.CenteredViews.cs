@@ -1,13 +1,68 @@
+using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
+using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 
 namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 
 internal sealed partial class SqliteCaptureProcessingStore
 {
+    private volatile CenteredLayerGraph? _centeredLayerGraph;
+
+    private sealed record CenteredLayerGraph(string Revision,
+        IReadOnlyDictionary<(string Producer, string Schema, string Variant), CenteredViewLayerBinding> Bindings);
+
+    internal async ValueTask<IReadOnlyDictionary<(string Producer, string Schema, string Variant), CenteredViewLayerBinding>?>
+        ReadCenteredLayerBindingsAsync(string revision, CancellationToken token)
+    {
+        if (_centeredLayerGraph is { } cached && cached.Revision == revision)
+            return cached.Bindings;
+        if (revision.Length != 64 || revision.Any(character => !Uri.IsHexDigit(character)))
+            return null;
+
+        ProcessingGraphRevisionSnapshot snapshot;
+        try
+        {
+            snapshot = await ReadRevisionAsync(revision, token).ConfigureAwait(false);
+        }
+        catch (KeyNotFoundException)
+        {
+            // An older retained run may predate the graph registry.
+            return null;
+        }
+        var graph = ProcessingGraphJson.Parse(snapshot.DefinitionJson).Definition
+            ?? throw new InvalidDataException("The centered run's frozen graph is invalid.");
+        var bindings = CenteredViewLayerBindings.ReadConfigured(graph);
+        _centeredLayerGraph = new(revision, bindings);
+        return bindings;
+    }
+
     internal async ValueTask<SqliteConnection> OpenCenteredViewsAsync(CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         return await OpenAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<IReadOnlyList<ExposureProductLookup>> ReadCenteredViewSourcesAsync(
+        ExposureKey key, Guid executionId, long after, int limit, CancellationToken token)
+    {
+        using var connection = await OpenCenteredViewsAsync(token).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.CommandText = CenteredProductProjection + "\n" + """
+            WHERE product.capture_id = $capture AND run.run_id = $run AND run.agent_id = $agent AND run.camera_id = $camera
+                AND product.execution_id = $execution AND product.revision > $after
+            ORDER BY product.revision LIMIT $limit;
+            """;
+        SqliteRawCaptureJournal.AddExposureParameters(command, key);
+        command.Parameters.AddWithValue("$execution", executionId.ToString("N"));
+        command.Parameters.AddWithValue("$after", after);
+        command.Parameters.AddWithValue("$limit", limit);
+        using var reader = await command.ExecuteReaderAsync(token).ConfigureAwait(false);
+        var items = new List<ExposureProductLookup>(limit);
+        while (await reader.ReadAsync(token).ConfigureAwait(false))
+            items.Add(ReadCenteredLookup(reader, out _));
+        return items;
     }
 
     private static async ValueTask AddCenteredViewSchemaAsync(

@@ -80,12 +80,43 @@ architecture rules, component coverage policy, and CI classifier. It must not be
 left to the classifier's unknown-project/complete-plan fallback.
 
 LogicHost keeps `IObjectStore`, provider selection, logical buckets, generations,
-and remote-provider errors. CameraAgent keeps `IFrameStorageService`, raw ingress,
-canonical relative artifact paths, payload/sidecar commit order, SQLite journals,
-outbox, retention holds, gallery, replay, and local recovery authority. CameraAgent
-adoption of the shared primitives is isolated in post-`RM-017` issue
-[#587](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587); it is not part
-of active `RM-016` implementation.
+and remote-provider errors. That contract never becomes the CameraAgent storage
+contract.
+
+CameraAgent has two storage layouts. An instance uses exactly one of them, and
+nothing converts an instance from one to the other in place.
+
+- **Filesystem layout.** This is the layout of installed releases through
+  `development/v1` `87b238c`. CameraAgent keeps `IFrameStorageService`, raw
+  ingress, canonical relative artifact paths, payload/sidecar commit order,
+  SQLite journals, outbox, retention holds, gallery, replay, and local recovery
+  authority. It adopted the shared primitives under
+  [#587](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/587), which is
+  complete. Existing instances keep this layout and their roots.
+- **Silo layout.** This is the clean-install profile of epic
+  [#1964](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1964).
+  CameraAgent writes immutable payload versions, group manifests and its durable
+  metadata journal to a stock Silo bucket owned by one instance. It writes them
+  through a CameraAgent-owned S3 adapter in CameraAgent infrastructure.
+  CameraAgent keeps raw admission and its local spool, the SQLite catalog and
+  journals, holds, gallery, replay, and recovery authority. Capture and artifact
+  IDs stay application-issued, and Silo version IDs are remappable exact
+  locators. Payload storage leaves the path-based `IFrameStorageService` seam.
+  The shared filesystem project and AgentCore take no S3 or provider
+  dependency.
+
+The Silo layout is a CameraAgent edge store, not a LogicHost provider profile.
+The Silo row in the comparison above remains LogicHost's #589 disposition.
+[#1966](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1966) separately
+qualifies the exact Silo release, digest, license and distribution obligations
+for CameraAgent. Neither decision enables the other.
+
+Roy settled the first Silo release on the centered profile. Its launch is held
+until the accepted #1922 and #1923 contracts and the relevant #1928
+qualification are reachable at the exact integration source that #1968 consumes
+and #1974 verifies. The data model, flow map, boundaries, cutover ordering,
+release hold and budgets are in the
+[CameraAgent Silo storage and cutover contract](cameraagent-silo-cutover.md).
 
 ## Supported First-Release Envelope
 

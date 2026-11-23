@@ -179,7 +179,7 @@ missing branch counters, malformed reports, moved sources, missing/empty data,
 and the catalog-dependent path under both profiles. The workflow contract's mutation
 controls protect collection, enforcement, evidence, and existing PR/merge-group
 triggers. Coverage shares the existing 1080-second workload deadline and appears
-as a fourth timed stage in the `hvo-development-v1-ci-v5` evidence manifest;
+as a fourth timed stage in the `hvo-development-v1-ci-v6` evidence manifest;
 failed runs retain generated settings, raw/merged XML, report paths and timings.
 The existing Build and Unit check reports failure on non-draft PRs, v1 pushes and
 `merge_group/checks_requested`; drafts retain Preflight only. Required check names
@@ -219,6 +219,23 @@ reached exit 124 during Unit: restore 4 s, build 212 s and Unit 862 s by step
 timestamps; coverage never started. This demonstrates workload-budget pressure
 outside the coverage self-tests, so making those tests conditional cannot by
 itself prevent that timeout. Refs #1747.
+
+## Development v1 documentation fast path
+
+A ready PR still runs the required Build and Unit job after successful hosted Preflight. Its full-history checkout verifies the merge parents and runs the first parent’s `scripts/ci:classify` against both the PR head and checked-out merge tree, relative to that base. Only a successful, literal `docs_fast_path=true` normalized by the shell skips the workload; a missing output or classifier failure selects the full workload. The artifact retains the exact path list, decision, reason and Preflight dependency. The base-controlled `scripts/ci:docs-inventory` certifies the audited build-input tree; changes to it require review, and a mismatch selects full validation with the inventory differences in the artifact. The narrow allowlist and exclusions are documented in [Development v1](../development-v1.md). Push and merge-group runs remain full validation; no result is reused across events. Refs #1989.
+
+### Refresh the documentation CI inventory
+
+When a build input changes, generate a candidate from the committed tree and replace the certificate only after the generator succeeds:
+
+```bash
+inventory_tmp="$(mktemp "${TMPDIR:-/tmp}/hvo-docs-inventory.XXXXXXXX")" &&
+  ./scripts/ci:classify --print-docs-inventory HEAD > "$inventory_tmp" &&
+  cp "$inventory_tmp" scripts/ci:docs-inventory &&
+  rm "$inventory_tmp"
+```
+
+The generator follows committed explicit MSBuild imports regardless of suffix, checks the resulting inputs and rejects unknown imports, tracked symlinks and submodules, automatic user/response inputs, repository-root or docs-rooted projects, escaped paths, unsafe globs and references to eligible documentation. Review its output and the build-input diff together: verify each import resolves to the intended committed file, that no imported or implicit input is missing, and that no eligible documentation becomes a build or test input. Run the generator again and compare its output byte-for-byte with the certificate, then run the classifier and workflow contract suites. A failed audit or stale certificate keeps the workload on the full path; Preflight reports a non-failing warning with the audit reason. Restore can generate package build imports that are not represented by the committed inventory. Until reviewed package identities, sources and restore-time imports are bound to a certificate, the generator refuses trees containing SDK projects or package references. The current solution contains such references, so documentation PRs currently run full validation; refreshing the inventory cannot waive that condition. A mandatory certificate-maintenance gate remains a separate follow-up. Refs #1989.
 
 ## Development v1 Preflight Budget
 
@@ -273,8 +290,8 @@ A green sync PR is integration evidence and does not replace promotion qualifica
 | **Quality** | The full-history [secret scan](#secret-scan), workflow lint, syntax and documentation audits, the Unit-selection completeness control, lightweight environment/classification contracts, and Compose validation run in every selected Quality job. Full mode also enforces formatting, package vulnerability/deprecation policy, and pinned .NET tools; manual dispatch additionally validates the historical Phase 14 acceptance inventory. Reduced mode does not restore or audit application packages it cannot affect. A 45-minute qualification job budget covers formatting, the complete control-contract batch, package audit and the manual historical acceptance gate. |
 | **Deployment Contracts** | Deployment-relevant pull requests run the coordinator watchdog/failure contracts and current campaign-shape contracts, plus only the affected exhaustive catalog, split-host, or installer suite selected by the classifier. Main/release/manual runs execute every exhaustive suite. Otherwise its planned `skipped` result is required. |
 | **Build** | Warning-clean solution Debug and Release builds plus complete, disjoint behavioral category discovery. Never component-scoped, so no component plan can hide a warning or a category-count drift. Skipped only in classified reduced mode. |
-| **Unit Tests** | 17480 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
-| **Integration Tests** | 1526 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
+| **Unit Tests** | 17869 Unit cases with an intentionally invalid Docker endpoint and per-project TRX/Cobertura paths, plus four TRX-only supplemental runs (see [Supplemental Unit selections](#supplemental-unit-selections)) so every project that owns Unit cases is executed. Runs only for the complete solution plan; component plans run their own per-project commands inside their selected lanes including each lane’s owned supplemental Unit selection (#1261). A 45-minute full-qualification job budget covers restore/build, the serial test/coverage selections and evidence upload. |
+| **Integration Tests** | 1540 Integration-category cases across SQLite, filesystem object storage, SQL Server, Redis, Mailpit, forwarded-header, host integration, and the 7 repository graph/provider-boundary/publish cases in Architecture & Publish. LogicHost coverage includes clean/current-layout initialization, idempotency, schema, locking, and permission behavior. Runs only for the complete solution plan; component plans run the same per-project commands inside their selected lanes. The LogicHost assembly runs in its own lane beside the other five assemblies because it is the measured controlling path (#850); commands, results directories and TRX names are unchanged. |
 | **Architecture & Publish** | Both category selections of the architecture project, and membership is the project's own category discovery rather than any narrower reading of "boundary": the 34 Unit-category boundary cases, including the host `Dockerfile`, fault-matrix discovery, and CameraAgent event-ID uniqueness contracts, and the 7 Integration-category repository graph/provider-boundary/MSBuild/publish cases; plus retained host publish manifests and self-contained installer publishes with SHA-256 manifests for Linux x64 and ARM64. Never component-scoped, so no component plan can skip the architecture or host-publish boundary. |
 | **CameraAgent Migrations** | Exactly one canonical initial migration source for CameraAgent Identity plus zero pending CameraAgent EF model changes, built from the CameraAgent project root. Runs for every full-mode head. |
 | **LogicHost Migrations** | Exactly one canonical initial migration source for LogicHost plus zero pending LogicHost EF model changes, built from the LogicHost project root. Runs for every full-mode head. Unreleased legacy-schema convergence is not supported by either host. |
@@ -845,7 +862,7 @@ maintained in [`cameraagent-arm64-ci.md`](cameraagent-arm64-ci.md).
 
 ## Categories
 
-The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=17480`, `Integration=1526`, `Manual=337`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
+The category audit requires every discovered case to belong to exactly one primary behavioral category. Current declared inventory is `Unit=17869`, `Integration=1540`, `Manual=338`, `Soak=1`, `External=0`, and `Hardware=1`. Whole-solution discovery verifies those declarations.
 
 These totals and the Unit/Integration rows in [Required Checks](#required-checks) are not hand-maintained pins: `./scripts/docs:audit-operations` sums the per-project inventories and fails when this runbook disagrees with them, while the Build check's category audit proves those inventories match actual discovery. Each test project owns its expected counts in `tests/<project>/test-categories.json`, a flat object with exactly the six categories as non-negative integers; the engine in `scripts/test-categories/Program.cs` owns no counts. A count change is therefore a change inside the owning project directory and selects that project's component lane, while editing the engine still selects the complete solution matrix. A project without an inventory, an inventory without a project, or a malformed, duplicate, unknown, or stale category all fail the audit. Update the owning inventory and this runbook in the same change.
 

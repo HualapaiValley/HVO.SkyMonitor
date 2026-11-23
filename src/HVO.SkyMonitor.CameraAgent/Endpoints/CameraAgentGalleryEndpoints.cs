@@ -246,6 +246,12 @@ internal static class CameraAgentGalleryEndpoints
         CancellationToken cancellationToken)
     {
         var result = await presentations.GetAsync(captureId, cancellationToken).ConfigureAwait(false);
+        await WritePresentationResultAsync(context, result, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task WritePresentationResultAsync(
+        HttpContext context, CameraAgentLayeredPresentationResult result, CancellationToken cancellationToken)
+    {
         if (result.Status != CameraAgentLayeredPresentationStatus.Found || result.Presentation is null)
         {
             var (status, title) = result.Status switch

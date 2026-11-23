@@ -145,10 +145,41 @@ last Earth-orientation row and the leap-second expiry. Past that, the planner
 returns `TimeInputsUnavailable` with the coverage end, and the panel reports
 `coverage-expired`. Neither ever substitutes nominal zero Earth orientation.
 
-The snapshot retrieved on 2026-10-21 has final values to 2026-09-01, rapid values to
-2026-10-21, predictions from 2026-10-22 to 2027-10-28 and a leap-second list that
-expires on 2027-06-28. Rapid values are a gap, so planning with it is supported up
-to 2026-09-01 and from 2026-10-22 00:00 UTC until 2027-06-27 23:59:59 UTC.
+The usable intervals are narrower than the file's rows:
+
+- The parser skips rapid-only (`I`) rows. The weeks between the last Bulletin B
+  value and the file date are therefore a gap, not coverage.
+- Earth-orientation values are interpolated between daily rows, and never toward a
+  row at or after the leap-second list's exclusive expiry. When the expiry comes
+  before the last row, it bounds the predicted span, and the last usable instant is
+  the last daily row before the expiry.
+- A window may not contain a leap second. In the final span the UTC day before each
+  past leap second, most recently 2016-12-31, is not supported.
+
+The checked-in snapshot was retrieved on 2026-11-19 at 02:26:37 UTC (`retrievedUtc`
+in `provenance.json`). The product parser reports final values from 1973-01-02 to
+2026-10-01 and predicted values from 2026-11-19 to 2027-11-25. The rows from
+2026-10-02 to 2026-11-18 are rapid-only. The leap-second list expires at
+2027-06-28 00:00 UTC, about five months before the last predicted row. With only
+this pair, planning is supported up to 2026-10-01 00:00 UTC and from 2026-11-19
+00:00 UTC to 2027-06-27 00:00 UTC. A window that reaches into the gap between those
+spans returns `TimeInputsUnavailable`.
+
+The status reports the coverage end as the instant before the expiry,
+2027-06-27 23:59:59.9999999 UTC. After 2027-06-27 00:00 UTC and until the expiry,
+`expired` stays false while `coversNow` is false and planning returns
+`TimeInputsUnavailable`.
+
+These dates change with every refresh. Check them against `provenance.json`, the
+summary `scripts/time-data:update` prints and the spans the setup panel shows.
+
+Historical example: the snapshot it replaced was retrieved on 2026-10-21 at
+17:30:12 UTC. It had final values to 2026-09-01, rapid-only rows from 2026-09-02 to
+2026-10-21, predictions from 2026-10-22 to 2027-10-28 and the same leap-second
+list. Planning with it alone was supported up to 2026-09-01 00:00 UTC and from
+2026-10-22 00:00 UTC to 2027-06-27 00:00 UTC. Windows from 2026-10-22 up to
+2026-11-19 00:00 UTC that it covered are in the checked-in pair's rapid-only gap.
+Planning them needs a managed or override pair that covers them.
 
 ## Managed refresh
 

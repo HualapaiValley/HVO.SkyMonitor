@@ -12,16 +12,20 @@ receipt timestamps and monotonic freshness. The reader never opens a path.
 
 Each read has a 4096-byte budget and a two-second deadline, including waiting
 for another read. Streams must honor asynchronous read cancellation. Caller
-cancellation propagates; an internal deadline ends a round normally. Each line
-is limited to 82 characters including its optional CR, excluding LF. LF ends a
-physical line; one CR is allowed only immediately before that LF. Non-ASCII,
-DEL, other control characters, invalid checksums, unsupported sentences, and
-malformed supported data are ignored. Overlong or invalid lines are discarded
+cancellation throws `OperationCanceledException` with the caller's token. An
+internal deadline ends a round normally. Each line is limited to 82 characters
+including its optional CR, excluding LF. LF ends a physical line and one CR is
+allowed only immediately before it. Non-ASCII, DEL, other control characters,
+invalid checksums, unsupported sentences, and malformed supported data are
+ignored. Overlong or invalid lines are discarded
 through the next LF. Partial lines are not buffered across rounds: their tails
 remain discarded through LF when the same source continues, even after a byte
 budget, timeout, cancellation, EOF, or an intervening read from another source.
 Framing state uses weak stream identities, so it does not retain caller-owned
 streams. Continuations assume forward reads; use a fresh stream for a new script.
+
+Dispose the reader after pending reads and observations have completed. A read
+after reader disposal throws `ObjectDisposedException` before accessing the stream.
 
 RMC supplies dated UTC and A/V validity. When a mode field is present, only
 measured modes A (autonomous), D (differential), P (precise), R (fixed RTK),
@@ -33,14 +37,22 @@ suppresses an otherwise valid RMC offset until recovery or expiry; it cannot sup
 The fake workload explicitly interprets two-digit years as 2000..2099, accepts
 up to seven fractional-second digits, and rejects leap-second timestamps.
 Fresh evidence expires at five seconds. Invalid traffic, new GGA data, and PPS
-edges cannot refresh dated RMC evidence. Expected stream failures (IOException,
-TimeoutException, UnauthorizedAccessException, ObjectDisposedException, or an
-OperationCanceledException without a requested caller/deadline cancellation)
-clear all evidence and report Unavailable. Caller cancellation propagates,
-including when the internal deadline also expires; the reader's own deadline
-ends the round normally and retains completed evidence. Unexpected programming
-exceptions propagate. A subsequent valid sentence permits recovery. EOF simply ends a
-scripted round; it is not interpreted as a real-device unplug indication.
+edges cannot refresh dated RMC evidence. An `IOException`, `TimeoutException`,
+`UnauthorizedAccessException`, or `ObjectDisposedException` from the stream read
+clears all RMC, GGA, and simulated PPS evidence and reports Unavailable. If
+caller cancellation is also requested, the reader clears the evidence before
+propagating caller cancellation. An `OperationCanceledException` from the stream
+counts as a stream failure only when neither caller cancellation nor the
+internal deadline is requested. To honor read cancellation, production adapters
+must translate I/O aborted by their own cancellation or deadline handling into
+`OperationCanceledException`. Surfacing `IOException` or `ObjectDisposedException`
+clears evidence as it would for a transport fault. Caller cancellation and the
+internal deadline on their own retain completed evidence until normal expiry.
+Caller cancellation takes precedence when both cancellation sources are
+requested. Unexpected programming exceptions propagate. A subsequent valid
+sentence permits recovery.
+EOF simply ends a scripted round and is not interpreted as a real-device
+unplug indication.
 
 `ReportInto` returns an immutable `ClockSyncSnapshot` copy with `Gps` diagnostics.
 It preserves network selection and kernel evidence. `ArrivalOffset` is NMEA UTC

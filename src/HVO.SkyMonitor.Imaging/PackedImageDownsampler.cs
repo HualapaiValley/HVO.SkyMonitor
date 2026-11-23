@@ -5,11 +5,25 @@ namespace HVO.SkyMonitor.Imaging;
 public static class PackedImageDownsampler
 {
     public const string AlgorithmVersion = "nearest-neighbor-packed-v1";
+    public const string PixelCenterAlgorithmVersion = "nearest-neighbor-pixel-centers-v1";
 
     public static (int Width, int Height, ReadOnlyMemory<byte> Payload) Downsample(
         FrameLayoutDescriptor layout,
         ReadOnlyMemory<byte> payload,
         int maximumDimension)
+        => DownsampleCore(layout, payload, maximumDimension, pixelCenters: false);
+
+    public static (int Width, int Height, ReadOnlyMemory<byte> Payload) DownsampleAtPixelCenters(
+        FrameLayoutDescriptor layout, ReadOnlyMemory<byte> payload, int maximumDimension)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        if (layout.PixelFormat is not (CameraPixelFormat.Mono8 or CameraPixelFormat.Rgb24))
+            throw new ArgumentException("Pixel-center preview resizing requires decoded mono or RGB input.", nameof(layout));
+        return DownsampleCore(layout, payload, maximumDimension, pixelCenters: true);
+    }
+
+    private static (int Width, int Height, ReadOnlyMemory<byte> Payload) DownsampleCore(
+        FrameLayoutDescriptor layout, ReadOnlyMemory<byte> payload, int maximumDimension, bool pixelCenters)
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentOutOfRangeException.ThrowIfLessThan(maximumDimension, 1);
@@ -39,10 +53,10 @@ public static class PackedImageDownsampler
         var source = payload.Span;
         for (var y = 0; y < height; y++)
         {
-            var sourceY = SourceCoordinate(y, height, layout.Height, layout.PixelFormat);
+            var sourceY = SourceCoordinate(y, height, layout.Height, layout.PixelFormat, pixelCenters);
             for (var x = 0; x < width; x++)
             {
-                var sourceX = SourceCoordinate(x, width, layout.Width, layout.PixelFormat);
+                var sourceX = SourceCoordinate(x, width, layout.Width, layout.PixelFormat, pixelCenters);
                 source.Slice(
                     checked((sourceY * layout.Width + sourceX) * bytesPerPixel),
                     bytesPerPixel).CopyTo(resized.AsSpan(
@@ -57,8 +71,11 @@ public static class PackedImageDownsampler
         int destination,
         int destinationLength,
         int sourceLength,
-        CameraPixelFormat format)
+        CameraPixelFormat format,
+        bool pixelCenters)
     {
+        if (pixelCenters)
+            return (int)((2L * destination + 1) * sourceLength / (2L * destinationLength));
         var coordinate = Math.Min(sourceLength - 1, checked(destination * sourceLength / destinationLength));
         if (format != CameraPixelFormat.BayerRggb16 || (coordinate & 1) == (destination & 1))
         {

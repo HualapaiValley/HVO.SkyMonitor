@@ -62,7 +62,8 @@ have follow-up tracking.
   the risk-tier ladder. For `development/v1`, the merge checks are
   `Development v1 / Preflight` and `Development v1 / Build and Unit`: lightweight
   control checks, one Release build, and the complete Docker-disabled Unit
-  selection. Full qualification in `ci.yml` belongs to `main`/`release/**`
+  selection, except for the positively classified ready-PR documentation path
+  described in `docs/development-v1.md`. Push and merge-group workloads remain full. Full qualification in `ci.yml` belongs to `main`/`release/**`
   and explicitly requested qualification. Do not dispatch it for an ordinary
   v1 PR merely because `scripts/ci:classify` reports `complete=true`, including
   on a base-sync delta. See `docs/development-v1.md` for this branch-specific

@@ -26,13 +26,23 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Centered capture tracks actual shutter requests in five-slot windows that close on their original deadlines. The capture's window record preserves shutter refusals and remains available when the center arrives after closure. #1921
 
+- The opt-in centered CameraAgent profile retains single and stack previews with their original overlay revisions, so an archived view can be reopened after late evidence arrives. #1922
+
 - Release tooling can check local LogicHost identity candidates against their archive bytes, checksums and central compatibility declarations without loading or installing them. Refs #1242
 
 ### Changed
 
 - Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
+- CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
+
 ### Fixed
+
+- CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
+
+- CameraAgent Silo rebuild falls back to an earlier trusted checkpoint when the newest checkpoint omits required journal positions. #2002
+
+- CameraAgent Silo rejects invalid metadata read limits before accessing storage. #2003
 
 - CameraAgent image upgrades allow five minutes for application startup verification and give automatic recovery a separate verification window after restarting the predecessor. Signed restore-only can reopen the original capture admission after an interrupted offline release upgrade when the checkpoint is already restored and the predecessor supports authenticated, operation-owned resume. #1955
 
@@ -43,6 +53,7 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 - CameraAgent opens retained file-only archive products through the local archive API and rejects incompatible centered profiles before activation. #1919
 
 - CameraAgent can stop its local automation worker repeatedly, including after disposal, while waiting for any active adapter to finish draining. #1932
+- CameraAgent shutdown releases its remaining services after a local automation task fails during cancellation. The stop still reports the original failure. #1936
 - CameraAgent can upgrade the beta astrometry journal to centered processing while retaining captures and indexed astrometry history. #1922
 
 - CameraAgent refuses new legacy reference-astrometry presets while the active camera profile uses centered exposure (#1919).
