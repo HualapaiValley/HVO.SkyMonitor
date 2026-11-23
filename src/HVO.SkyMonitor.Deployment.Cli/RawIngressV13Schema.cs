@@ -53,6 +53,7 @@ internal static class RawIngressV13Schema
         "processing_centered_view_window_work", "ix_processing_centered_view_window_live_base",
         "processing_centered_view_trail_work", "ix_processing_centered_view_trail_due", "ix_processing_centered_view_trail_capture",
         "processing_centered_windows", "ix_processing_centered_windows_pending", "ix_processing_centered_windows_reference",
+        "ix_processing_centered_windows_publication_retention", "processing_centered_registration_input_failures",
         "processing_centered_attempt_calendar", "processing_centered_product_clock", "processing_centered_window_holds",
         "ix_processing_centered_product_clock_pending",
         "processing_centered_output_availability", "ix_processing_centered_output_availability_cutoff",

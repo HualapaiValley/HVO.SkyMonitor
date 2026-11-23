@@ -62,7 +62,8 @@ internal sealed record CenteredWindowPublication(
 internal sealed record CenteredWindowDisposition(
     CenteredWindowClosure Closure,
     CenteredWindowPublication? Publication,
-    string? FailureReason = null)
+    string? FailureReason = null,
+    CenteredRegistrationInputFailure? InputFailure = null)
 {
     internal bool IsTerminal => !Closure.CanRegister || Publication is not null || FailureReason is not null;
 }
@@ -92,6 +93,17 @@ internal sealed partial class SqliteCaptureProcessingStore
 {
     private const string InvalidCheckpoint = "invalid-window-checkpoint";
     private const string CapacityExhausted = "window-capacity-exhausted";
+    private const string RegistrationDeadlineExpired = "registration-deadline-expired";
+    private const string RetainedInputUnreadable = "registration.retained-input-unreadable";
+    private const string CenteredRegistrationStateSchemaSql = """
+        CREATE INDEX ix_processing_centered_windows_publication_retention
+            ON processing_centered_windows(registration_deadline_utc_ticks)
+            WHERE terminal = 1 AND publication_json IS NOT NULL;
+        CREATE TABLE processing_centered_registration_input_failures(
+            window_sha256 TEXT PRIMARY KEY REFERENCES processing_centered_windows(window_sha256),
+            input_failure_json BLOB NOT NULL
+        ) STRICT;
+        """;
 
     private const string CenteredWindowSchemaSql = """
         CREATE TABLE processing_centered_windows(
@@ -146,7 +158,15 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = CenteredWindowSchemaSql;
+        command.CommandText = CenteredWindowSchemaSql + "\n" + CenteredRegistrationStateSchemaSql;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task AddCenteredRegistrationStateSchemaAsync(SqliteTransaction transaction, CancellationToken cancellationToken)
+    {
+        using var command = transaction.Connection!.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = CenteredRegistrationStateSchemaSql;
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -251,7 +271,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (row.Disposition is { } previous)
         {
             return !previous.IsTerminal && now >= previous.Closure.Schedule.RegistrationDeadlineUtc
-                ? await SettleCenteredRegistrationFailureAsync(transaction, previous.Closure, "registration-deadline-expired",
+                ? await SettleCenteredRegistrationFailureAsync(transaction, previous, RegistrationDeadlineExpired,
                     journal, cancellationToken).ConfigureAwait(false)
                 : previous;
         }
@@ -276,7 +296,7 @@ internal sealed partial class SqliteCaptureProcessingStore
             return null;
 
         if (closure.CanRegister && now >= closure.Schedule.RegistrationDeadlineUtc)
-            failure = "registration-deadline-expired";
+            failure = RegistrationDeadlineExpired;
 
         if (closure.CanRegister && failure is null)
             await journal.PinClosedInputsAsync(transaction, closure, cancellationToken).ConfigureAwait(false);
@@ -305,6 +325,8 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = CreateCenteredCommand(transaction, identity);
         command.CommandText = """
+            DELETE FROM processing_centered_registration_input_failures WHERE window_sha256 = $window
+                AND EXISTS (SELECT 1 FROM processing_centered_windows WHERE window_sha256 = $window AND terminal = 0);
             UPDATE processing_centered_windows SET closure_json = NULL, failure_reason = $failure, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
             """;
@@ -329,23 +351,57 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (current.IsTerminal)
             return current;
 
-        return await SettleCenteredRegistrationFailureAsync(transaction, closure, reason, journal, cancellationToken).ConfigureAwait(false);
+        return await SettleCenteredRegistrationFailureAsync(transaction, current, reason, journal, cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async Task<bool> UpdateCenteredRegistrationInputFailureAsync(CenteredWindowClosure closure,
+        CenteredRegistrationInputFailure? failure, CancellationToken cancellationToken)
+    {
+        using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        using var command = connection.CreateCommand();
+        command.Parameters.AddWithValue("$window", closure.Schedule.Identity);
+        if (failure is null)
+        {
+            command.CommandText = """
+                DELETE FROM processing_centered_registration_input_failures WHERE window_sha256 = $window
+                    AND EXISTS (SELECT 1 FROM processing_centered_windows WHERE window_sha256 = $window AND terminal = 0);
+                """;
+        }
+        else
+        {
+            command.CommandText = """
+                INSERT INTO processing_centered_registration_input_failures(window_sha256, input_failure_json)
+                SELECT window_sha256, $failure FROM processing_centered_windows
+                WHERE window_sha256 = $window AND terminal = 0 AND closure_json IS NOT NULL
+                ON CONFLICT(window_sha256) DO UPDATE SET input_failure_json = excluded.input_failure_json
+                WHERE input_failure_json <> excluded.input_failure_json;
+                """;
+            command.Parameters.AddWithValue("$failure", JsonSerializer.SerializeToUtf8Bytes(failure, SerializerOptions));
+        }
+        return await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) > 0;
     }
 
     private static async ValueTask<CenteredWindowDisposition> SettleCenteredRegistrationFailureAsync(
-        SqliteTransaction transaction, CenteredWindowClosure closure, string reason, ICenteredWindowJournal journal,
+        SqliteTransaction transaction, CenteredWindowDisposition current, string reason, ICenteredWindowJournal journal,
         CancellationToken cancellationToken)
     {
+        var closure = current.Closure;
+        var inputFailure = reason == RegistrationDeadlineExpired ? current.InputFailure : null;
+        if (inputFailure is not null)
+            reason = RetainedInputUnreadable;
         using var command = CreateCenteredCommand(transaction, closure.Schedule.Identity);
         command.CommandText = """
             UPDATE processing_centered_windows SET failure_reason = $reason, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
+            DELETE FROM processing_centered_registration_input_failures
+            WHERE window_sha256 = $window AND $retain_input_failure = 0;
             """;
         command.Parameters.AddWithValue("$reason", reason);
+        command.Parameters.AddWithValue("$retain_input_failure", inputFailure is not null);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         await journal.ReleaseWindowInputsAsync(transaction, closure.Schedule.Identity, cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return new(closure, null, reason);
+        return new(closure, null, reason, inputFailure);
     }
 
     internal async ValueTask<CenteredWindowDisposition> PublishCenteredWindowAsync(
@@ -378,7 +434,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (row.Disposition.IsTerminal)
             return row.Disposition;
         if (_timeProvider.GetUtcNow() >= closure.Schedule.RegistrationDeadlineUtc)
-            return await SettleCenteredRegistrationFailureAsync(transaction, closure, "registration-deadline-expired",
+            return await SettleCenteredRegistrationFailureAsync(transaction, row.Disposition, RegistrationDeadlineExpired,
                 journal, cancellationToken).ConfigureAwait(false);
         if (closure.Identity != result.Closure.Identity ||
             !outputs.Select(output => output.ArtifactId).SequenceEqual(publication.RegistrationArtifactIds))
@@ -402,6 +458,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         command.CommandText = """
             UPDATE processing_centered_windows SET publication_json = $publication, terminal = 1
             WHERE window_sha256 = $window AND terminal = 0;
+            DELETE FROM processing_centered_registration_input_failures WHERE window_sha256 = $window;
             """;
         command.Parameters.AddWithValue("$publication", bytes);
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -483,8 +540,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT closure_json, publication_json, failure_reason
-            FROM processing_centered_windows WHERE reference_capture_id = $reference;
+            SELECT window.closure_json, window.publication_json, window.failure_reason, failure.input_failure_json
+            FROM processing_centered_windows window
+            LEFT JOIN processing_centered_registration_input_failures failure ON failure.window_sha256 = window.window_sha256
+            WHERE window.reference_capture_id = $reference;
             """;
         command.Parameters.AddWithValue("$reference", referenceCaptureId.ToString("N"));
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -497,7 +556,8 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (closure.Center.Input is { } admitted && admitted.Key.CaptureId != referenceCaptureId)
             throw new InvalidDataException("The retained centered window does not match its reference capture.");
 
-        return new(closure, ReadCenteredJson<CenteredWindowPublication>(reader, 1), ReadCenteredFailure(reader, 2));
+        return new(closure, ReadCenteredJson<CenteredWindowPublication>(reader, 1), ReadCenteredFailure(reader, 2),
+            ReadCenteredJson<CenteredRegistrationInputFailure>(reader, 3));
     }
 
     internal async ValueTask<CenteredWindowReadState?> ReadCenteredWindowStateAsync(
@@ -597,8 +657,10 @@ internal sealed partial class SqliteCaptureProcessingStore
     {
         using var command = CreateCenteredCommand(transaction, identity);
         command.CommandText = """
-            SELECT checkpoint_json, closure_json, publication_json, failure_reason
-            FROM processing_centered_windows WHERE window_sha256 = $window;
+            SELECT window.checkpoint_json, window.closure_json, window.publication_json, window.failure_reason, failure.input_failure_json
+            FROM processing_centered_windows window
+            LEFT JOIN processing_centered_registration_input_failures failure ON failure.window_sha256 = window.window_sha256
+            WHERE window.window_sha256 = $window;
             """;
         using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
         if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -614,7 +676,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             throw new InvalidDataException("The retained centered window does not match its scheduling identity.");
 
         return (checkpoint, closure is null ? null :
-            new(closure, ReadCenteredJson<CenteredWindowPublication>(reader, 2), ReadCenteredFailure(reader, 3)));
+            new(closure, ReadCenteredJson<CenteredWindowPublication>(reader, 2), ReadCenteredFailure(reader, 3),
+                ReadCenteredJson<CenteredRegistrationInputFailure>(reader, 4)));
     }
 
     private static string? ReadCenteredFailure(SqliteDataReader reader, int ordinal) =>

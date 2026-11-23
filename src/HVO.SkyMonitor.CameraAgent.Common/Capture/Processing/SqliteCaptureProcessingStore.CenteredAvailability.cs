@@ -44,6 +44,8 @@ internal sealed partial class SqliteCaptureProcessingStore
     private static readonly Lazy<Dictionary<string, string>> LegacySchema12WithAvailabilityDefinitions =
         new(() => CreateSchemaDefinitions(SchemaBeforeAstrometryIndexSql.Replace(CenteredAvailabilityCutoffIndex,
             LegacyCenteredAvailabilityCutoffIndex, StringComparison.Ordinal)));
+    private static readonly Lazy<Dictionary<string, string>> LegacySchema12BeforeRegistrationStateDefinitions =
+        new(() => CreateSchemaDefinitions(SchemaBeforeRegistrationStateSql));
 
     internal static string LegacySchema10BeforeAvailabilitySqlForTests => LegacySchema10BeforeAvailabilitySql;
     internal const string LegacyCenteredAvailabilityCutoffIndexForTests = LegacyCenteredAvailabilityCutoffIndex;
@@ -53,7 +55,8 @@ internal sealed partial class SqliteCaptureProcessingStore
             ? LegacySchema12WithAvailabilityDefinitions.Value : LegacySchema12BeforeAvailabilityDefinitions.Value);
 
     private static bool IsEarlierCenteredSchema(Dictionary<string, string> actual)
-        => MatchesSchemaDefinitions(actual, PreAstrometrySchema12Definitions.Value) ||
+        => MatchesSchemaDefinitions(actual, LegacySchema12BeforeRegistrationStateDefinitions.Value) ||
+           MatchesSchemaDefinitions(actual, PreAstrometrySchema12Definitions.Value) ||
            IsEarlierCenteredAvailabilitySchema(actual);
 
     private async ValueTask EnsureCurrentCenteredSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
@@ -61,7 +64,7 @@ internal sealed partial class SqliteCaptureProcessingStore
         // The read-only inspection already verified the full layout. Recheck under the write
         // transaction before adopting a predecessor, including if another initializer won the race.
         if (await ExecuteScalarLongAsync(connection,
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'ix_processing_outputs_astrometry_lookup';",
+                "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'processing_centered_registration_input_failures';",
                 cancellationToken).ConfigureAwait(false) == 1)
             return;
 
@@ -78,8 +81,10 @@ internal sealed partial class SqliteCaptureProcessingStore
         if (IsEarlierCenteredAvailabilitySchema(actual))
             await AdoptCenteredAvailabilityHistoryAsync(transaction, actual.ContainsKey(CenteredAvailabilityTable), cancellationToken)
                 .ConfigureAwait(false);
-        await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix)
-            .ConfigureAwait(false);
+        if (!actual.ContainsKey(LegacyAstrometryJournalSchema.LookupIndexName))
+            await ExecuteSchemaStatementsAsync(connection, transaction, cancellationToken, AstrometryLookupIndexPrefix)
+                .ConfigureAwait(false);
+        await AddCenteredRegistrationStateSchemaAsync(transaction, cancellationToken).ConfigureAwait(false);
         await ValidateSchemaAsync(connection, cancellationToken, transaction).ConfigureAwait(false);
         _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeSchemaCommit, "schema");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

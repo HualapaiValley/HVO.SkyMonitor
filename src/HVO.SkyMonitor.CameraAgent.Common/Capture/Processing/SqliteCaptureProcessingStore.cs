@@ -251,7 +251,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private const string AstrometryLookupIndexSql = LegacyAstrometryJournalSchema.LookupIndexDefinition + ";";
     private static string SchemaBeforeAstrometryIndexSql =>
-        SchemaSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
+        SchemaBeforeRegistrationStateSql.Replace(AstrometryLookupIndexSql, string.Empty, StringComparison.Ordinal);
     private static readonly string ViewsBeforeRuntimeSchemaSql = SchemaBeforeAstrometryIndexSql
         .Replace("version = 12", "version = 11", StringComparison.Ordinal)
         .Replace("VALUES (1, 12)", "VALUES (1, 11)", StringComparison.Ordinal)
@@ -525,6 +525,8 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                         .ConfigureAwait(false);
                 if (migrateSchema9 || migrateLegacyAstrometry)
                     await AddCenteredWindowSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
+                else if (migrateSchema10)
+                    await AddCenteredRegistrationStateSchemaAsync(transaction, cancellationToken).ConfigureAwait(false);
                 if (!migrateSchema11)
                     await AddCenteredViewSchemaAsync(connection, transaction, cancellationToken).ConfigureAwait(false);
                 else
@@ -2591,6 +2593,16 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
+    internal const string CenteredPublicationRetentionSql = """
+        SELECT lower(replace(artifact.value, '-', ''))
+        FROM processing_centered_windows window
+        LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
+        JOIN json_each(CAST(window.publication_json AS TEXT), '$.registrationArtifactIds') artifact
+        WHERE window.terminal = 1 AND window.publication_json IS NOT NULL
+            AND window.registration_deadline_utc_ticks > $centered_ticks
+            AND (work.window_sha256 IS NULL OR work.retry_utc IS NOT NULL AND work.live_base_id IS NULL)
+        """;
+
     internal async ValueTask<IReadOnlyList<ProcessingRetentionHold>> ReadRetentionHoldsAsync(
         CancellationToken cancellationToken)
     {
@@ -2622,7 +2634,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
         await PopulateLiveOutputWindowCandidateHoldsAsync(connection, cancellationToken).ConfigureAwait(false);
         using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $$"""
             WITH RECURSIVE ranked AS (
                 SELECT artifact_id, capture_id, availability_state,
                        ROW_NUMBER() OVER (PARTITION BY agent_id, node_id ORDER BY capture_sequence DESC, output_identity_sha256 DESC) AS rank
@@ -2669,13 +2681,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 JOIN json_each(revision.manifest, '$.layers') layer
                 WHERE live.ended_order IS NULL
                 UNION
-                SELECT lower(replace(artifact.value, '-', ''))
-                FROM processing_centered_windows window
-                LEFT JOIN processing_centered_view_window_work work ON work.window_sha256 = window.window_sha256
-                JOIN json_each(CAST(window.publication_json AS TEXT), '$.registrationArtifactIds') artifact
-                WHERE window.terminal = 1 AND window.publication_json IS NOT NULL
-                    AND window.registration_deadline_utc_ticks > $centered_ticks
-                    AND (work.window_sha256 IS NULL OR work.retry_utc IS NOT NULL AND work.live_base_id IS NULL)
+                {{CenteredPublicationRetentionSql}}
                 UNION
                 SELECT output.artifact_id
                 FROM processing_execution_output_input_pins pin
@@ -4096,7 +4102,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         }
     }
 
-    private const string SchemaSql = """
+    private const string SchemaBeforeRegistrationStateSql = """
         CREATE TABLE capture_processing_schema(
             schema_key INTEGER PRIMARY KEY CHECK(schema_key = 1),
             version INTEGER NOT NULL CHECK(version = 12)
@@ -4473,5 +4479,7 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             ON processing_graph_delivery_facts(proposal_id)
             WHERE fact_kind IN ('Accepted', 'Rejected', 'Expired');
         """ + "\n" + CenteredWindowSchemaSql + "\n" + CenteredViewSchemaSql + "\n" + CenteredViewRuntimeSchemaSql;
+
+    private const string SchemaSql = SchemaBeforeRegistrationStateSql + "\n" + CenteredRegistrationStateSchemaSql;
 
 }
