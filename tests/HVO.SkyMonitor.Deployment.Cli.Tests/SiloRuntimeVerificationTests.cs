@@ -236,6 +236,7 @@ public sealed class SiloRuntimeVerificationTests
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow("a-path-inside-bound-elsewhere", "which the mount table places on the data root, inside it or holding it")]
+    [DataRow("a-path-in-a-folder-bound-to-a-path-inside", "which the mount table places on the data root, inside it or holding it")]
     [DataRow("the-data-root-bound-elsewhere", "which the mount table places on the data root, inside it or holding it")]
     [DataRow("an-ancestor-bound-elsewhere", "which the mount table places on the data root, inside it or holding it")]
     [DataRow("its-filesystem-root-bound-elsewhere", "which the mount table places on the data root, inside it or holding it")]
@@ -258,6 +259,8 @@ public sealed class SiloRuntimeVerificationTests
             var (target, root) = shape switch
             {
                 "a-path-inside-bound-elsewhere" => (source, data.Path + "/.minio.sys"),
+                // The source lies inside the bound folder, not at it: only where the mount table places it shows the overlap.
+                "a-path-in-a-folder-bound-to-a-path-inside" => (Path.Combine(scratch.FullName, "bound"), data.Path + "/.minio.sys"),
                 "the-data-root-bound-elsewhere" => (source, data.Path),
                 "an-ancestor-bound-elsewhere" => (source, parent),
                 "its-filesystem-root-bound-elsewhere" => (source, "/"),
@@ -268,6 +271,11 @@ public sealed class SiloRuntimeVerificationTests
                 _ => throw new ArgumentOutOfRangeException(nameof(shape))
             };
             Directory.CreateDirectory(target);
+            if (shape == "a-path-in-a-folder-bound-to-a-path-inside")
+            {
+                source = Path.Combine(target, "buckets");
+                Directory.CreateDirectory(source);
+            }
             static string Escaped(string path) => path.Replace("\\", "\\134", StringComparison.Ordinal).Replace(" ", "\\040", StringComparison.Ordinal);
             var table = mountInfo.TrimEnd('\n') + $"\n4095 1 {data.Device} {Escaped(root)} {Escaped(target)} rw,relatime shared:1 - ext4 /dev/hvo-test rw\n";
 

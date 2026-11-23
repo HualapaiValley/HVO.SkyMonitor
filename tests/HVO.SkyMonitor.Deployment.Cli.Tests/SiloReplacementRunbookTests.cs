@@ -84,6 +84,7 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("volume-of-another-driver", "container intruder mounts volume remote (nfs-plugin driver), so where its data lies is not proved.")]
     [DataRow("volume-of-another-type", "container intruder mounts volume disk (type ext4, options none), so where its data lies is not proved.")]
     [DataRow("path-inside-the-data-root-bound-elsewhere", "which the mount table places on")]
+    [DataRow("path-inside-a-bind-of-a-path-inside-the-data-root", "which the mount table places on")]
     [DataRow("data-root-bound-elsewhere", "which the mount table places on")]
     [DataRow("its-filesystem-root-bound-elsewhere", "which the mount table places on")]
     [DataRow("folder-holding-a-bind-of-the-data-root", "which holds a mount of")]
@@ -135,6 +136,13 @@ public sealed class SiloReplacementRunbookTests
             case "path-inside-the-data-root-bound-elsewhere":
                 // Sol R5-01: a folder elsewhere that is a bind mount of a path inside the data root.
                 run.Intruder(Run.Bind(run.BoundElsewhere("minio-elsewhere", run.DataLocation.Path + "/.minio.sys")));
+                break;
+            case "path-inside-a-bind-of-a-path-inside-the-data-root":
+                // Only where the mount table places it shows this one: no mount lies at or below it, and no folder above it is
+                // the data root under another name.
+                var buckets = Path.Combine(run.BoundElsewhere("minio-elsewhere", run.DataLocation.Path + "/.minio.sys"), "buckets");
+                Directory.CreateDirectory(buckets);
+                run.Intruder(Run.Bind(buckets));
                 break;
             case "data-root-bound-elsewhere": run.Intruder(Run.Bind(run.BoundElsewhere("data-elsewhere", run.DataLocation.Path))); break;
             case "its-filesystem-root-bound-elsewhere": run.Intruder(Run.Bind(run.BoundElsewhere("filesystem-elsewhere", "/"))); break;
