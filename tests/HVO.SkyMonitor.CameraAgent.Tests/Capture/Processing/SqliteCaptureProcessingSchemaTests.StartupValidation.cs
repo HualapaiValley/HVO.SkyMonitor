@@ -9,9 +9,11 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
 {
     // integrity_check reads and verifies every page of the shared journal; on a 30-day retained history it
     // dominated the processing-store startup that delays the first headline (#1914). A current-schema restart
-    // runs the whole-database checks once, after inspection, on a read-only connection that never checkpoints,
-    // and before the store opens a writable connection.
+    // checks the whole database once without reusing inspection's snapshot: integrity_check on a read-only
+    // connection that never checkpoints, then foreign_key_check as the writable handle's first statement, with
+    // checkpoint-on-close disabled on that handle until initialization succeeds.
     private static readonly string[] RestartScanOnly = ["restart"];
+    private static readonly string[] RestartValidationOrder = ["restart", "restart/writable-open", "restart/foreign-keys"];
     private static readonly string[] InspectionAndWriteScans = ["inspection", "schema"];
     private static readonly string[] RestartAndAdoptionScans = ["restart", "schema"];
 
@@ -27,6 +29,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
 
         CollectionAssert.AreEqual(RestartScanOnly, recorder.Scopes.ToArray());
+        // One integrity_check and one foreign_key_check, the latter only after the writable handle opened.
+        CollectionAssert.AreEqual(RestartValidationOrder, recorder.ValidationHooks.ToArray());
     }
 
     [TestMethod]
@@ -182,6 +186,35 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     }
 
     [TestMethod]
+    public async Task DamageCommittedAsWritableHandleOpensBlocksRestart()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        // Close the fixture's pooled handles first: the last physical close checkpoints the journal.
+        SqliteConnection.ClearAllPools();
+        // Both read-only checks of inspection and integrity_check have finished; a second connection commits the
+        // orphan as the writable handle opens, before that handle's first read.
+        var injector = new CommitDamageAtScan(fixture.DatabasePath, "restart/writable-open", TestContext.CancellationToken, retainWal: true);
+
+        using (var restarted = new SqliteCaptureProcessingStore(fixture.Options, faultInjector: injector))
+        {
+            var failure = await Assert.ThrowsExactlyAsync<InvalidDataException>(async () =>
+                await restarted.InitializeAsync(TestContext.CancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.AreEqual("Capture processing SQLite foreign-key validation failed.", failure.Message);
+        }
+        Assert.AreEqual("restart/writable-open", injector.Scope);
+
+        // The rejected writable handle must not checkpoint the orphan out of the WAL when it finally closes.
+        SqliteConnection.ClearAllPools();
+        var filesAfter = ReadDatabaseFiles(fixture.DatabasePath);
+        Assert.IsNotNull(injector.FilesAfterCommit);
+        Assert.IsTrue(injector.FilesAfterCommit.TryGetValue("raw-ingress.db-wal", out var retained) && retained.Length > 0,
+            "The orphan must still be in the retained WAL when the writable handle reads.");
+        CollectionAssert.AreEqual(injector.FilesAfterCommit["raw-ingress.db"], filesAfter["raw-ingress.db"], "raw-ingress.db");
+        Assert.IsTrue(filesAfter.ContainsKey("raw-ingress.db-wal"), "The rejected restart removed the retained WAL.");
+        CollectionAssert.AreEqual(injector.FilesAfterCommit["raw-ingress.db-wal"], filesAfter["raw-ingress.db-wal"], "raw-ingress.db-wal");
+    }
+
+    [TestMethod]
     public async Task RejectedRestartKeepsRetainedWalAfterConnectionsClose()
     {
         using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
@@ -234,6 +267,23 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         await retried.InitializeAsync(TestContext.CancellationToken).ConfigureAwait(false);
     }
 
+    [TestMethod]
+    public async Task CancelledScanSqliteFailureSurfacesAsCancellation()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.CancellationToken);
+
+        using (var cancelled = new SqliteCaptureProcessingStore(fixture.Options, faultInjector: new ThrowSqliteAtScan("restart", cancellation)))
+        {
+            var failure = await Assert.ThrowsExactlyAsync<OperationCanceledException>(async () =>
+                await cancelled.InitializeAsync(cancellation.Token).ConfigureAwait(false)).ConfigureAwait(false);
+            Assert.IsInstanceOfType<SqliteException>(failure.InnerException);
+        }
+
+        using var retried = new SqliteCaptureProcessingStore(fixture.Options);
+        await retried.InitializeAsync(TestContext.CancellationToken).ConfigureAwait(false);
+    }
+
     private async Task AssertRestartRejectedWithoutMutationAsync(SchemaFixture fixture, string message)
     {
         // Close the fixture's own pooled handles first; their last physical close checkpoints the journal.
@@ -275,10 +325,11 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     {
         private readonly ConcurrentQueue<(CaptureProcessingFaultPoint Point, string Scope)> events = new();
 
-        // One scan per entry; the hook between its integrity and foreign-key checks is not a separate scan.
-        internal IEnumerable<string> Scopes => events
-            .Where(static item => item.Point == CaptureProcessingFaultPoint.BeforeDatabaseValidation &&
-                !item.Scope.EndsWith("/foreign-keys", StringComparison.Ordinal))
+        // One scan per entry; the hooks inside a scan (writable open, foreign-key check) are not separate scans.
+        internal IEnumerable<string> Scopes => ValidationHooks.Where(static scope => !scope.Contains('/', StringComparison.Ordinal));
+
+        internal IEnumerable<string> ValidationHooks => events
+            .Where(static item => item.Point == CaptureProcessingFaultPoint.BeforeDatabaseValidation)
             .Select(static item => item.Scope);
 
         public void Inject(CaptureProcessingFaultPoint point, string nodeId) => events.Enqueue((point, nodeId));
@@ -296,27 +347,44 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         }
     }
 
-    private sealed class CommitDamageAtScan(string databasePath, string scope, CancellationToken cancellationToken) : ICaptureProcessingFaultInjector
+    private sealed class CommitDamageAtScan(string databasePath, string scope, CancellationToken cancellationToken, bool retainWal = false)
+        : ICaptureProcessingFaultInjector
     {
         internal string? Scope { get; private set; }
+
+        internal Dictionary<string, byte[]>? FilesAfterCommit { get; private set; }
 
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
             if (point != CaptureProcessingFaultPoint.BeforeDatabaseValidation || nodeId != scope || Scope is not null)
                 return;
             Scope = nodeId;
-            using var writer = new SqliteConnection($"Data Source={databasePath};Pooling=False");
-            writer.Open();
-            CommitOrphanFactAsync(writer, cancellationToken).GetAwaiter().GetResult();
+            using (var writer = new SqliteConnection($"Data Source={databasePath};Pooling=False"))
+            {
+                writer.Open();
+                if (retainWal)
+                {
+                    // Keep the orphan in the WAL: the writable handle under test may not have attached to it yet.
+                    const int sqliteDbConfigNoCheckpointOnClose = 1006;
+                    Assert.AreEqual(SQLitePCL.raw.SQLITE_OK, SQLitePCL.raw.sqlite3_db_config(writer.Handle, sqliteDbConfigNoCheckpointOnClose, 1, out _));
+                    using var command = writer.CreateCommand();
+                    command.CommandText = "PRAGMA wal_autocheckpoint = 0;";
+                    command.ExecuteNonQuery();
+                }
+                CommitOrphanFactAsync(writer, cancellationToken).GetAwaiter().GetResult();
+            }
+            FilesAfterCommit = ReadDatabaseFiles(databasePath);
         }
     }
 
-    private sealed class ThrowSqliteAtScan(string scope) : ICaptureProcessingFaultInjector
+    private sealed class ThrowSqliteAtScan(string scope, CancellationTokenSource? cancelFirst = null) : ICaptureProcessingFaultInjector
     {
         public void Inject(CaptureProcessingFaultPoint point, string nodeId)
         {
-            if (point == CaptureProcessingFaultPoint.BeforeDatabaseValidation && nodeId == scope)
-                throw new SqliteException("Injected whole-database scan I/O failure.", 10);
+            if (point != CaptureProcessingFaultPoint.BeforeDatabaseValidation || nodeId != scope)
+                return;
+            cancelFirst?.Cancel();
+            throw new SqliteException("Injected whole-database scan I/O failure.", 10);
         }
     }
 }

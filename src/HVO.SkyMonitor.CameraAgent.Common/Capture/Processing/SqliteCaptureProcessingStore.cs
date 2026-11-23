@@ -388,14 +388,17 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
                 throw new InvalidOperationException(
                     $"Capture processing schema {version} is {relationship}; archive the database and complete an explicit state-disposition procedure before starting this CameraAgent.");
             }
-            if (!initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 && !migrateSchema8 && !migrateSchema9 &&
-                !migrateSchema10 && !migrateSchema11)
+            var currentSchemaRestart = !initializeSchema && !migrateSchema5 && !migrateSchema6 && !migrateSchema7 &&
+                !migrateSchema8 && !migrateSchema9 && !migrateSchema10 && !migrateSchema11;
+            if (currentSchemaRestart)
             {
-                // A current-schema restart checks the whole database once (#1914): after inspection, whose snapshot
-                // it does not reuse, and before this initializer opens a writable connection (see ValidateDatabaseAsync).
-                await ValidateDatabaseAsync(cancellationToken).ConfigureAwait(false);
+                // A current-schema restart checks the whole database once (#1914), without reusing inspection's
+                // snapshot: integrity_check here, foreign_key_check as the writable handle's first statement below.
+                await CheckRestartIntegrityAsync(cancellationToken).ConfigureAwait(false);
             }
             using var connection = await OpenUnconfiguredAsync(cancellationToken).ConfigureAwait(false);
+            if (currentSchemaRestart)
+                await CheckRestartForeignKeysAsync(connection, cancellationToken).ConfigureAwait(false);
             if (initializeSchema)
             {
 #pragma warning disable CA1849 // Microsoft.Data.Sqlite exposes immediate transactions only through the synchronous overload.
@@ -536,12 +539,14 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
             }
             else
             {
-                // The whole database was checked above, before this connection opened. An adoption repeats the checks
-                // inside its own write transaction; otherwise recheck the exact canonical layout only.
+                // The whole database was checked above. An adoption repeats the checks inside its own write
+                // transaction; otherwise recheck the exact canonical layout only.
                 await EnsureCurrentCenteredSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
                 await ValidateSchemaAsync(connection, cancellationToken, verifyDatabase: false).ConfigureAwait(false);
             }
             await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (currentSchemaRestart)
+                SetCheckpointOnClose(connection, enabled: true); // every startup check passed
             Volatile.Write(ref _initialized, true);
         }
         finally
@@ -3320,27 +3325,66 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     }
 
     /// <summary>
-    /// The current-schema restart's single whole-database check. It uses its own read-only, unpooled connection
-    /// without checkpoint-on-close, so a rejected restart never holds a writable handle that could checkpoint or
-    /// remove the retained WAL. The checks run as separate statements, so each sees every commit made before it
-    /// begins. A SQLite failure during the scan fails closed as <see cref="InvalidDataException"/>, as inspection does.
+    /// A current-schema restart's single whole-database check, first half: <c>integrity_check</c>, on its own
+    /// read-only, unpooled connection that never checkpoints, so a rejected restart cannot checkpoint or remove the
+    /// retained WAL.
     /// </summary>
-    private async ValueTask ValidateDatabaseAsync(CancellationToken cancellationToken)
+    private async ValueTask CheckRestartIntegrityAsync(CancellationToken cancellationToken)
     {
         try
         {
             using var connection = await OpenReadOnlyWithoutCheckpointAsync(cancellationToken).ConfigureAwait(false);
-            await CheckDatabaseAsync(connection, "restart", null, cancellationToken).ConfigureAwait(false);
+            await CheckIntegrityAsync(connection, "restart", null, cancellationToken).ConfigureAwait(false);
         }
-        catch (SqliteException exception) when (!cancellationToken.IsCancellationRequested)
+        catch (SqliteException exception)
         {
-            throw new InvalidDataException("Capture processing SQLite whole-database validation failed.", exception);
+            throw FailClosed(exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Second half: <c>foreign_key_check</c> as the writable handle's first statement, so it sees every commit made
+    /// before the handle that initialization continues with was opened. Checkpoint-on-close stays disabled on that
+    /// pooled handle until initialization succeeds, so a rejected restart still cannot checkpoint the retained WAL.
+    /// </summary>
+    private async ValueTask CheckRestartForeignKeysAsync(SqliteConnection writable, CancellationToken cancellationToken)
+    {
+        SetCheckpointOnClose(writable, enabled: false);
+        _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, "restart/writable-open");
+        try
+        {
+            await CheckForeignKeysAsync(writable, "restart", null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SqliteException exception)
+        {
+            throw FailClosed(exception, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A SQLite failure during a scan fails closed as invalid data, as inspection's does. Once the caller has requested
+    /// cancellation the failure is the interrupted scan, so it surfaces as cancellation rather than as damage.
+    /// </summary>
+    private static Exception FailClosed(SqliteException exception, CancellationToken cancellationToken) =>
+        cancellationToken.IsCancellationRequested
+            ? new OperationCanceledException("Capture processing SQLite whole-database validation was cancelled.", exception, cancellationToken)
+            : new InvalidDataException("Capture processing SQLite whole-database validation failed.", exception);
+
+    private static void SetCheckpointOnClose(SqliteConnection connection, bool enabled)
+    {
+        const int sqliteDbConfigNoCheckpointOnClose = 1006;
+        var requested = enabled ? 0 : 1;
+        var result = SQLitePCL.raw.sqlite3_db_config(connection.Handle, sqliteDbConfigNoCheckpointOnClose, requested, out var applied);
+        if (result != SQLitePCL.raw.SQLITE_OK || applied != requested)
+        {
+            throw new InvalidOperationException("Capture processing SQLite could not set checkpoint-on-close.");
         }
     }
 
     /// <summary>A read-only, unpooled connection that never checkpoints, for inspection and validation.</summary>
     private async ValueTask<SqliteConnection> OpenReadOnlyWithoutCheckpointAsync(CancellationToken cancellationToken)
     {
+        EnsureDatabaseFilesArePhysical();
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
@@ -3381,6 +3425,13 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
     private async ValueTask CheckDatabaseAsync(
         SqliteConnection connection, string scope, SqliteTransaction? transaction, CancellationToken cancellationToken)
     {
+        await CheckIntegrityAsync(connection, scope, transaction, cancellationToken).ConfigureAwait(false);
+        await CheckForeignKeysAsync(connection, scope, transaction, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask CheckIntegrityAsync(
+        SqliteConnection connection, string scope, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
         _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, scope);
         var integrity = await ExecuteScalarStringAsync(
             connection, "PRAGMA integrity_check;", cancellationToken, transaction).ConfigureAwait(false);
@@ -3388,6 +3439,11 @@ internal sealed partial class SqliteCaptureProcessingStore : IDisposable
         {
             throw new InvalidDataException("Capture processing SQLite integrity check failed.");
         }
+    }
+
+    private async ValueTask CheckForeignKeysAsync(
+        SqliteConnection connection, string scope, SqliteTransaction? transaction, CancellationToken cancellationToken)
+    {
         _faultInjector.Inject(CaptureProcessingFaultPoint.BeforeDatabaseValidation, scope + "/foreign-keys");
         if (await ExecuteScalarLongAsync(
                 connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken, transaction).ConfigureAwait(false) != 0)
