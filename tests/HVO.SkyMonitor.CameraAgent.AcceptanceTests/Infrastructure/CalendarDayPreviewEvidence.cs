@@ -466,6 +466,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
 
     private readonly IPage page;
     private readonly TestContext testContext;
+    private readonly Uri appBaseAddress;
     private readonly CalendarEvidenceStore store;
     private readonly TimeSpan budget;
     private readonly ServerLogEvidence? serverLog;
@@ -487,11 +488,12 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     private bool detached;
 
     private CalendarDayPreviewEvidence(
-        IPage page, TestContext testContext, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel,
+        IPage page, TestContext testContext, Uri appBaseAddress, ServerLogEvidence? serverLog, DateOnly selectedDay, string previewPath, string rowLabel,
         CalendarEvidenceStore store, TimeSpan budget)
     {
         this.page = page;
         this.testContext = testContext;
+        this.appBaseAddress = appBaseAddress;
         this.store = store;
         this.budget = budget;
         this.serverLog = serverLog;
@@ -518,13 +520,14 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     internal CalendarDayPreviewReport? LastReport { get; private set; }
 
     internal static CalendarDayPreviewEvidence Observe(
-        IPage page, TestContext testContext, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null,
+        IPage page, TestContext testContext, Uri appBaseAddress, DateOnly selectedDay, string previewPath, string rowLabel, ServerLogEvidence? serverLog = null,
         CalendarEvidenceStore? store = null, TimeSpan? budget = null)
     {
         ArgumentNullException.ThrowIfNull(page);
         ArgumentNullException.ThrowIfNull(testContext);
+        ArgumentNullException.ThrowIfNull(appBaseAddress);
         ArgumentException.ThrowIfNullOrWhiteSpace(previewPath);
-        return new CalendarDayPreviewEvidence(page, testContext, serverLog, selectedDay, previewPath, rowLabel,
+        return new CalendarDayPreviewEvidence(page, testContext, appBaseAddress, serverLog, selectedDay, previewPath, rowLabel,
             store ?? CalendarEvidenceStore.ForTestContext(testContext), budget ?? DefaultBudget);
     }
 
@@ -668,8 +671,9 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         var failureAt = clock.ElapsedMilliseconds;
         var step = Step;
-        var routeAtFailure = Route(page.Url);
-        var onDayAtFailure = IsSelectedDay(page.Url);
+        var urlAtFailure = page.Url;
+        var routeAtFailure = Route(urlAtFailure);
+        var onDayAtFailure = IsAppRoute(urlAtFailure, selectedDayPath);
         Record("failure", $"step={step} type={CalendarEvidenceVocabulary.TypeName(failure.GetType())}");
         var atFailure = await SnapshotAsync(token).ConfigureAwait(false);
         var probe = await ProbeAsync(token).ConfigureAwait(false);
@@ -689,20 +693,21 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         {
             Record("settle", "preview image not visible within " + ((long)settleWindow.TotalMilliseconds).ToString(CultureInfo.InvariantCulture) + " ms");
         }
-        var routeAfterSettle = Route(page.Url);
-        var onDayAfterSettle = IsSelectedDay(page.Url);
+        var urlAfterSettle = page.Url;
+        var routeAfterSettle = Route(urlAfterSettle);
+        var onDayAfterSettle = IsAppRoute(urlAfterSettle, selectedDayPath);
         var afterSettle = await SnapshotAsync(token).ConfigureAwait(false);
 
         var observation = new CalendarDayPreviewObservation(
             onDayAtFailure,
             onDayAfterSettle,
-            atFailure.PreviewFailedMarker || afterSettle.PreviewFailedMarker,
+            (onDayAtFailure && atFailure.PreviewFailedMarker) || (onDayAfterSettle && afterSettle.PreviewFailedMarker),
             previewRequests.ToArray(),
             probe,
             ComposePageErrorSignals(eventSignals, atFailure, afterSettle),
-            atFailure.Image.Visible,
-            visibleAfterSettle,
-            afterSettle.DayLoading,
+            onDayAtFailure && atFailure.Image.Visible,
+            onDayAfterSettle ? visibleAfterSettle : null,
+            onDayAfterSettle && afterSettle.DayLoading,
             failure is AssertFailedException);
         return new CalendarDayPreviewReport(
             testContext.FullyQualifiedTestClassName ?? "unknown",
@@ -780,7 +785,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         try
         {
             response = await Bounded(page.Context.APIRequest.GetAsync(
-                    new Uri(new Uri(page.Url), previewPath).AbsoluteUri,
+                    new Uri(appBaseAddress, previewPath).AbsoluteUri,
                     new() { MaxRedirects = 0, Timeout = (float)BrowserCallTimeout.TotalMilliseconds }),
                 BrowserCallTimeout + TimeSpan.FromSeconds(1), token).ConfigureAwait(false);
             var body = await Bounded(response.BodyAsync(), BrowserCallTimeout, token).ConfigureAwait(false);
@@ -806,13 +811,18 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     private static string FileName(CalendarDayPreviewReport report) => string.Create(CultureInfo.InvariantCulture,
         $"{PlaywrightDiagnosticContext.SafeName(report.TestClass)}.{PlaywrightDiagnosticContext.SafeName(report.TestName)}.{report.Row}.{Guid.NewGuid():N}.evidence.json");
 
-    private string Route(string? url) => CalendarEvidenceVocabulary.RouteShape(url, expectedProduct);
+    private string Route(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) &&
+        (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps) &&
+        !IsAppOrigin(uri)
+            ? "[other-origin]"
+            : CalendarEvidenceVocabulary.RouteShape(url, expectedProduct);
 
-    private bool IsSelectedDay(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri) && string.Equals(uri.AbsolutePath, selectedDayPath, StringComparison.Ordinal);
+    private bool IsAppRoute(string url, string path) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) && IsAppOrigin(uri) && string.Equals(uri.AbsolutePath, path, StringComparison.Ordinal);
 
-    private bool IsPreview(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri) && string.Equals(uri.AbsolutePath, previewPath, StringComparison.Ordinal);
+    private bool IsAppOrigin(Uri uri) =>
+        Uri.Compare(appBaseAddress, uri, UriComponents.SchemeAndServer, UriFormat.SafeUnescaped, StringComparison.OrdinalIgnoreCase) == 0;
 
     private void Record(string kind, string detail)
     {
@@ -838,7 +848,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         try
         {
-            if (IsPreview(request.Url))
+            if (IsAppRoute(request.Url, previewPath))
             {
                 Record("preview-request", "method=" + BoundedMethod(request.Method));
             }
@@ -848,6 +858,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
             }
             else if (request.ResourceType is "fetch" or "xhr" &&
                      Uri.TryCreate(request.Url, UriKind.Absolute, out var uri) &&
+                     IsAppOrigin(uri) &&
                      uri.AbsolutePath.StartsWith("/archive/", StringComparison.Ordinal))
             {
                 // Blazor enhanced navigation fetches the next page instead of navigating the document.
@@ -866,7 +877,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
     {
         try
         {
-            if (IsPreview(response.Url))
+            if (IsAppRoute(response.Url, previewPath))
             {
                 response.Headers.TryGetValue("content-type", out var contentType);
                 var bounded = BoundedContentType(contentType);
@@ -891,7 +902,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
         try
         {
             var failure = BoundedNetworkError(request.Failure);
-            if (IsPreview(request.Url))
+            if (IsAppRoute(request.Url, previewPath))
             {
                 previewRequests.Enqueue(new(Elapsed(), "failed", null, null, failure));
                 Record("preview-failed", failure);
