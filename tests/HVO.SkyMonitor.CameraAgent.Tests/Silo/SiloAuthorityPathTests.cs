@@ -491,6 +491,35 @@ public sealed class SiloAuthorityPathTests
     }
 
     [TestMethod]
+    public async Task ACheckpointWrittenAfterOpeningAHigherGenerationStartsARebuild()
+    {
+        using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);
+        var draft = SiloDrafts.Capture(silo.Payloads, 1);
+        await silo.PublishAsync(draft).ConfigureAwait(false);
+        var head = await silo.State.ReadHeadAsync(CancellationToken.None).ConfigureAwait(false);
+        const long floor = 3L << 40;
+        var open = new SiloGenerationOpenRecord(3, "restore", 2, new Dictionary<string, long> { ["capture-sequence"] = floor },
+            head.Position, head.Sha256);
+        var opening = await silo.Journal.OpenGenerationAsync(open, CancellationToken.None).ConfigureAwait(false);
+        silo.Authority.WitnessedOpenings.Add((open.Generation, opening.Sha256));
+        await silo.CatchUpAsync().ConfigureAwait(false);
+        var anchor = await AnchorAsync(silo, "sealed-generation-3").ConfigureAwait(false);
+        anchor.Covers.Should().Be(new SiloJournalPosition(3, 1));
+        var bytes = silo.Local.Read(anchor.Checkpoint.Key, anchor.Checkpoint.VersionId);
+
+        var checkpoint = SiloJson.ReadCheckpoint(bytes, "checkpoint after opening generation 3");
+        var rebuilt = await silo.DeleteCatalogAndRebuildAsync().ConfigureAwait(false);
+
+        checkpoint.Entries.Select(static entry => entry.Generation).Distinct().Should().Equal(1L, 3L);
+        rebuilt.StartKind.Should().Be("anchor");
+        rebuilt.Anchor.Should().Be(anchor.Covers);
+        rebuilt.Authority.EndReason.Should().Be(SiloPrefixEnd.Tail);
+        (await silo.Index.ReadIdentityFloorsAsync(CancellationToken.None).ConfigureAwait(false))["capture-sequence"].Should().Be(floor);
+        (await silo.Index.ReadPublicationAsync(draft.GroupId, draft.RevisionId, CancellationToken.None).ConfigureAwait(false))!.State
+            .Should().Be("visible");
+    }
+
+    [TestMethod]
     public async Task ProofOfP4OutlivesAManifestOutageAcrossSuccessiveAnchors()
     {
         using var silo = await SiloHarness.CreateAsync().ConfigureAwait(false);

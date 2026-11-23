@@ -235,6 +235,33 @@ public sealed class SiloFormatTests
     }
 
     [TestMethod]
+    [DataRow(4L, 2L, DisplayName = "a higher generation must start at sequence 1")]
+    [DataRow(2L, 1L, DisplayName = "a transition may not return to a lower generation")]
+    public void ACheckpointRejectsAnInvalidGenerationTransition(long generation, long sequence)
+    {
+        var genesis = new SiloJournalPosition(1, 1);
+        var last = new SiloJournalPosition(3, 1);
+        var invalid = new SiloJournalPosition(generation, sequence);
+        // End at a valid, higher position so the covered-position checks allow each entry.
+        var covers = new SiloJournalPosition(5, 1);
+        var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, Binding.InstanceId, Binding.BindingId, covers, Sha,
+            [
+                new(genesis.Generation, genesis.Sequence, 0, SiloJson.SerializeToElement(GoldenGenesis().Records[0])),
+                Opening(last, genesis),
+                Opening(invalid, last),
+                Opening(covers, invalid)
+            ], []);
+
+        var read = () => SiloJson.ReadCheckpoint(SiloJson.Serialize(checkpoint), "checkpoint with invalid generation transition");
+
+        read.Should().Throw<SiloInvalidObjectException>().WithMessage("*Checkpoint segment positions must continue*");
+
+        static SiloCheckpointEntry Opening(SiloJournalPosition position, SiloJournalPosition previous) =>
+            new(position.Generation, position.Sequence, 0, SiloJson.SerializeToElement<SiloJournalRecord>(
+                new SiloGenerationOpenRecord(position.Generation, "restore", position.Generation - 1, new Dictionary<string, long>(), previous, Sha)));
+    }
+
+    [TestMethod]
     public async Task ACheckpointOfTheEarlierIdentityIsRefusedReadOnlyAndTheRebuildChangesNothing()
     {
         const string Earlier = "hvo.cameraagent.silo.journal-checkpoint/1";
