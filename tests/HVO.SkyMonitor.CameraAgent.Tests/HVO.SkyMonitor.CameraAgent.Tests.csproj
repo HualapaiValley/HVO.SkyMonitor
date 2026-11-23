@@ -147,6 +147,9 @@
     <None Include="..\fixtures\locations\siding-spring-synthetic-deployment-v1.json" Link="Fixtures\siding-spring-synthetic-deployment-v1.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\fixtures\silo-catalog-v1\*.json" Link="Fixtures\silo-catalog-v1\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="..\fixtures\orbital-acquisition\*.json" Link="Fixtures\orbital-acquisition\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
