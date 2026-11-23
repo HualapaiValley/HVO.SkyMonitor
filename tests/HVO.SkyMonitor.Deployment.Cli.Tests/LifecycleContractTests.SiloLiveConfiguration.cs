@@ -30,7 +30,11 @@ public sealed partial class LifecycleContractTests
         switch (change)
         {
             case "settings-mount-missing": harness.SecretsMountPresent = false; break;
-            case "settings-mount-from-elsewhere": harness.SecretsMountSource = Path.Combine(fixture.Root, "elsewhere", "secrets"); break;
+            case "settings-mount-from-elsewhere":
+                // A real folder elsewhere, as Docker binds only one that exists: apart from the data root, but not the settings.
+                harness.SecretsMountSource = Path.Combine(fixture.Root, "elsewhere", "secrets");
+                Directory.CreateDirectory(harness.SecretsMountSource);
+                break;
             case "settings-mount-writable": harness.SecretsMountReadOnly = false; break;
             case "endpoint-overridden-by-environment": harness.CameraAgentEnvironment.Add("CameraAgent__Silo__Endpoint=http://other-silo:9000"); break;
             case "live-endpoint-elsewhere": harness.LiveEndpoint = "http://other-silo:9000"; break;

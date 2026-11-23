@@ -3,12 +3,13 @@ using System.Diagnostics;
 namespace HVO.SkyMonitor.Deployment.Cli.Tests;
 
 /// <summary>
-/// The runbook's stock-image replacement block for an installed instance (#1966 review rounds 2 to 4), extracted from
+/// The runbook's stock-image replacement block for an installed instance (#1966 review rounds 2 to 5), extracted from
 /// <c>docs/runbooks/cameraagent-silo-runtime.md</c> and run by bash as written, with only its two placeholders given. A
-/// scripted <c>docker</c> and <c>hvo-sky-install</c> stand in for the daemon and the installer; the data root, its ancestors
-/// and the other containers' mount sources are real directories and links, resolved and judged by device and inode on this
-/// host. Silo stays stopped whenever any other container's mount is not proved apart from its data root, and every stop
-/// says once what the phase it reached leaves.
+/// scripted <c>docker</c> and <c>hvo-sky-install</c> stand in for the daemon and the installer, and a scripted
+/// <c>findmnt</c> adds bind mounts to this host's real mount table; the data root, its ancestors and the other containers'
+/// mount sources are real directories and links, resolved and judged by device and inode on this host. The block refuses
+/// before the stop what is there before it, keeps Silo stopped whenever a mount that appears after the stop is not proved
+/// apart from its data root, and every stop says once what the phase it reached leaves.
 /// </summary>
 [TestClass]
 [TestCategory("Unit")]
@@ -29,17 +30,24 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("volume-docker-manages-elsewhere")]
     [DataRow("bind-volume-elsewhere")]
     [DataRow("tmpfs-mount")]
+    [DataRow("tmpfs-volume")]
+    [DataRow("another-path-of-its-filesystem-bound-elsewhere")]
     public async Task TheBlock_ReplacesSiloWhenItsDataRootIsItsOwn(string change)
     {
-        RequireJq();
+        RequireTools();
         using var run = new Run();
         switch (change)
         {
             case "listed-container-gone-since": run.Flag("listed-but-gone"); break;
             case "archive-degraded": run.Verify("degraded"); break;
-            case "volume-docker-manages-elsewhere": run.Intruder(run.ManagedVolume("cache")); break;
-            case "bind-volume-elsewhere": run.Intruder(run.BindVolume("shared", Path.Combine(run.Root, "elsewhere"))); break;
-            case "tmpfs-mount": run.Intruder("tmpfs - "); break;
+            case "volume-docker-manages-elsewhere": run.IntruderFromTheStart(run.ManagedVolume("cache")); break;
+            case "bind-volume-elsewhere": run.IntruderFromTheStart(run.BindVolume("shared", Path.Combine(run.Root, "elsewhere"))); break;
+            case "tmpfs-mount": run.IntruderFromTheStart("tmpfs - "); break;
+            case "tmpfs-volume": run.IntruderFromTheStart(run.Volume("memory", $"local|2|tmpfs|size=64m|{run.DockerRootDirectory}/volumes/memory/_data|")); break;
+            case "another-path-of-its-filesystem-bound-elsewhere":
+                // A bind mount of a sibling of the instance root, on the data root's own filesystem: apart from it.
+                run.IntruderFromTheStart(Run.Bind(run.BoundElsewhere("sibling-alias", run.DataLocation.Path[..run.DataLocation.Path.LastIndexOf('/')] + "-sibling")));
+                break;
         }
 
         var (exit, output, error) = await run.ExecuteAsync(TestContext.CancellationToken);
@@ -69,15 +77,25 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("volume-bound-to-the-data-root", "container intruder mounts volume bound, a bind of")]
     [DataRow("volume-bound-to-an-alias-of-the-data-root", "container intruder mounts volume bound, a bind of")]
     [DataRow("volume-docker-manages-around-the-data-root", "container intruder mounts volume cache, kept in Docker's data root")]
-    [DataRow("volume-of-another-driver", "container intruder mounts volume remote (nfs-plugin driver, type unset), so where its data lies is not proved.")]
-    [DataRow("volume-of-another-type", "container intruder mounts volume disk (local driver, type ext4), so where its data lies is not proved.")]
+    [DataRow("volume-tmpfs-typed-bound-to-the-data-root", "container intruder mounts volume bound, a bind of")]
+    [DataRow("volume-rbind-of-another-type", "container intruder mounts volume bound, a bind of")]
+    [DataRow("volume-bind-naming-no-device", "container intruder mounts volume bound, a bind that names no device.")]
+    [DataRow("volume-tmpfs-moved", "container intruder mounts volume moved (type tmpfs, options move), so where its data lies is not proved.")]
+    [DataRow("volume-of-another-driver", "container intruder mounts volume remote (nfs-plugin driver), so where its data lies is not proved.")]
+    [DataRow("volume-of-another-type", "container intruder mounts volume disk (type ext4, options none), so where its data lies is not proved.")]
+    [DataRow("path-inside-the-data-root-bound-elsewhere", "which the mount table places on")]
+    [DataRow("data-root-bound-elsewhere", "which the mount table places on")]
+    [DataRow("its-filesystem-root-bound-elsewhere", "which the mount table places on")]
+    [DataRow("folder-holding-a-bind-of-the-data-root", "which holds a mount of")]
+    [DataRow("folder-holding-a-bind-of-a-path-inside", "which holds a mount of")]
     [DataRow("volume-docker-cannot-inspect", "\"v=$(docker volume inspect --format \"$VOLUME\" \"$volume\")\" failed.")]
     [DataRow("mount-of-another-type", "container intruder has a mount of type image, so where its data lies is not proved.")]
     [DataRow("unanswered-inventory", "\"ids=$(docker ps -aq --no-trunc)\" failed.")]
     [DataRow("uninspectable-container", "Docker could not inspect container intruder, so its mounts are unknown")]
     public async Task TheBlock_KeepsSiloStoppedWhileItsDataRootIsNotProvedItsOwn(string change, string reason)
     {
-        RequireJq();
+        // Each other container appears only once Silo has stopped, after the proof before the stop passed.
+        RequireTools();
         using var run = new Run();
         var inside = Path.Combine(run.DataRoot, ".minio.sys");
         switch (change)
@@ -94,7 +112,7 @@ public sealed class SiloReplacementRunbookTests
             case "source-renamed-after-the-stop":
                 var moving = Path.Combine(run.Root, "moving");
                 Directory.CreateDirectory(moving);
-                run.Intruder(Run.Bind(moving));
+                run.IntruderFromTheStart(Run.Bind(moving));
                 run.RenameOnStop(moving, Path.Combine(run.Root, "moved"));
                 break;
             case "source-never-there": run.Intruder(Run.Bind(Path.Combine(run.Root, "absent"))); break;
@@ -104,11 +122,36 @@ public sealed class SiloReplacementRunbookTests
                 run.DockerRoot(run.ProductRoot);
                 run.Intruder(run.ManagedVolume("cache"));
                 break;
+            case "volume-tmpfs-typed-bound-to-the-data-root":
+                run.Intruder(run.Volume("bound", $"local|3|tmpfs|bind|{run.DockerRootDirectory}/volumes/bound/_data|{run.DataRoot}"));
+                break;
+            case "volume-rbind-of-another-type":
+                run.Intruder(run.Volume("bound", $"local|3|ext4|rbind,ro|{run.DockerRootDirectory}/volumes/bound/_data|{run.Link("data-alias", run.DataRoot)}"));
+                break;
+            case "volume-bind-naming-no-device": run.Intruder(run.Volume("bound", $"local|2|none|bind|{run.DockerRootDirectory}/volumes/bound/_data|")); break;
+            case "volume-tmpfs-moved":
+                run.Intruder(run.Volume("moved", $"local|3|tmpfs|move|{run.DockerRootDirectory}/volumes/moved/_data|{Path.Combine(run.Root, "elsewhere")}"));
+                break;
+            case "path-inside-the-data-root-bound-elsewhere":
+                // Sol R5-01: a folder elsewhere that is a bind mount of a path inside the data root.
+                run.Intruder(Run.Bind(run.BoundElsewhere("minio-elsewhere", run.DataLocation.Path + "/.minio.sys")));
+                break;
+            case "data-root-bound-elsewhere": run.Intruder(Run.Bind(run.BoundElsewhere("data-elsewhere", run.DataLocation.Path))); break;
+            case "its-filesystem-root-bound-elsewhere": run.Intruder(Run.Bind(run.BoundElsewhere("filesystem-elsewhere", "/"))); break;
+            case "folder-holding-a-bind-of-the-data-root":
+                // Fable r5 note 2: Docker binds a source with the mounts below it.
+                run.BoundElsewhere(Path.Combine("holder", "below"), run.DataLocation.Path);
+                run.Intruder(Run.Bind(Path.Combine(run.Root, "holder")));
+                break;
+            case "folder-holding-a-bind-of-a-path-inside":
+                run.BoundElsewhere(Path.Combine("holder", "deep", "below"), run.DataLocation.Path + "/.minio.sys");
+                run.Intruder(Run.Bind(Path.Combine(run.Root, "holder")));
+                break;
             case "volume-of-another-driver": run.Intruder(run.Volume("remote", "nfs-plugin|0|||/mnt/remote|")); break;
             case "volume-of-another-type": run.Intruder(run.Volume("disk", "local|2|ext4||/var/lib/docker/volumes/disk/_data|/dev/sdz1")); break;
             case "volume-docker-cannot-inspect": run.Intruder("volume vanished /var/lib/docker/volumes/vanished/_data"); break;
             case "mount-of-another-type": run.Intruder("image - sha256:0123"); break;
-            case "unanswered-inventory": run.Flag("ps-fails"); break;
+            case "unanswered-inventory": run.Flag("ps-fails-once-stopped"); break;
             case "uninspectable-container": run.Intruder(Run.Bind(Path.Combine(run.Root, "elsewhere"))); run.Flag("inspect-fails-intruder"); break;
         }
 
@@ -117,12 +160,49 @@ public sealed class SiloReplacementRunbookTests
         Assert.AreEqual(1, exit, error);
         StringAssert.Contains(error, reason, StringComparison.Ordinal);
         AssertStoppedOnce(error);
+        CollectionAssert.Contains(run.DockerCalls, $"stop --timeout 30 {Silo}", "The proof before the stop passed.");
         StringAssert.Contains(error, "Silo stays stopped and its original container is kept: its data root is not proved its own.", StringComparison.Ordinal);
         Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("rm ", StringComparison.Ordinal) || call.StartsWith("compose ", StringComparison.Ordinal)),
             "Nothing is removed or started: " + string.Join("; ", run.DockerCalls));
         Assert.IsFalse(run.SiloRunning, "Silo stays stopped.");
         Assert.IsTrue(run.OriginalSiloExists, "The original container is kept.");
         AssertInventoryKept(error);
+    }
+
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("data-root-itself", "container intruder mounts")]
+    [DataRow("volume-tmpfs-typed-bound-to-the-data-root", "container intruder mounts volume bound, a bind of")]
+    [DataRow("path-inside-the-data-root-bound-elsewhere", "which the mount table places on")]
+    [DataRow("unanswered-inventory", "\"ids=$(docker ps -aq --no-trunc)\" failed.")]
+    public async Task TheBlock_RefusesBeforeTheStopWhatIsThereBeforeIt(string change, string reason)
+    {
+        // Fable r5 note 3: the same proof runs before the stop, so a refusal then leaves Silo running and changes nothing.
+        RequireTools();
+        using var run = new Run();
+        switch (change)
+        {
+            case "data-root-itself": run.IntruderFromTheStart(Run.Bind(run.DataRoot)); break;
+            case "volume-tmpfs-typed-bound-to-the-data-root":
+                run.IntruderFromTheStart(run.Volume("bound", $"local|3|tmpfs|bind|{run.DockerRootDirectory}/volumes/bound/_data|{run.DataRoot}"));
+                break;
+            case "path-inside-the-data-root-bound-elsewhere":
+                run.IntruderFromTheStart(Run.Bind(run.BoundElsewhere("minio-elsewhere", run.DataLocation.Path + "/.minio.sys")));
+                break;
+            case "unanswered-inventory": run.Flag("ps-fails"); break;
+        }
+
+        var (exit, _, error) = await run.ExecuteAsync(TestContext.CancellationToken);
+
+        Assert.AreEqual(1, exit, error);
+        StringAssert.Contains(error, reason, StringComparison.Ordinal);
+        AssertStoppedOnce(error);
+        StringAssert.Contains(error, "Nothing was changed; Silo is still running.", StringComparison.Ordinal);
+        Assert.IsFalse(error.Contains("docker start", StringComparison.Ordinal), error);
+        Assert.IsFalse(run.DockerCalls.Any(static call => call.StartsWith("stop ", StringComparison.Ordinal) || call.StartsWith("exec ", StringComparison.Ordinal)),
+            "Nothing is stopped, and no inventory is taken: " + string.Join("; ", run.DockerCalls));
+        Assert.IsTrue(run.SiloRunning);
+        Assert.IsEmpty(Directory.GetFileSystemEntries(run.TemporaryRoot), "The working folder is removed.");
     }
 
     [TestMethod]
@@ -136,7 +216,7 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("read-back-incomplete", "The replacement Silo runs but did not verify as the original.")]
     public async Task TheBlock_SaysWhatThePhaseItReachedLeaves(string change, string guidance)
     {
-        RequireJq();
+        RequireTools();
         using var run = new Run();
         switch (change)
         {
@@ -186,11 +266,14 @@ public sealed class SiloReplacementRunbookTests
         AssertInventoryKept(error);
     }
 
-    private static void RequireJq()
+    private static void RequireTools()
     {
-        // The runbook asks for jq on the host, as the development/v1 runners provide it; without it the block cannot run.
+        // The runbook asks for jq on the host, as the development/v1 runners provide it, and the block reads the mount table
+        // with util-linux findmnt; without them it cannot run.
         if (!File.Exists("/usr/bin/jq") && !File.Exists("/bin/jq"))
             Assert.Inconclusive("The replacement block needs jq on the host, as the runbook states; install jq to run these cases.");
+        if (!File.Exists("/usr/bin/findmnt"))
+            Assert.Inconclusive("The replacement block reads the mount table with util-linux findmnt, which this host lacks.");
     }
 
     private static void AssertStoppedOnce(string error)
@@ -222,6 +305,7 @@ public sealed class SiloReplacementRunbookTests
             Directory.CreateDirectory(TemporaryRoot);
             Directory.CreateDirectory(Path.Combine(State, "containers"));
             Directory.CreateDirectory(Path.Combine(State, "volumes"));
+            Directory.CreateDirectory(Path.Combine(State, "after-stop"));
             DockerRoot(Path.Combine(Root, "docker"));
             Container("silo-original", "/" + Silo, Bind(DataRoot));
             Container("cameraagent", $"/hvo-skymonitor-{Compact}", Bind(Path.Combine(InstanceRoot, "config", "secrets")), "tmpfs - ");
@@ -232,6 +316,7 @@ public sealed class SiloReplacementRunbookTests
             Verify("ready");
             Script("docker", FakeDocker);
             Script("hvo-sky-install", FakeInstaller);
+            Script("findmnt", FakeFindmnt);
         }
 
         public string Root => root.FullName;
@@ -241,7 +326,26 @@ public sealed class SiloReplacementRunbookTests
         public string TemporaryRoot => Path.Combine(Root, "tmp");
         private string State => Path.Combine(Root, "state");
         private string Bin => Path.Combine(Root, "bin");
-        private string DockerRootDirectory => File.ReadAllText(Path.Combine(State, "docker-root")).Trim();
+        public string DockerRootDirectory => File.ReadAllText(Path.Combine(State, "docker-root")).Trim();
+
+        /// <summary>Where this host's mount table places the data root: the device of its mount and its path within it.</summary>
+        public SiloMountLocation DataLocation => SiloDataRootExclusivity.Locate(
+            NativeLinux.TryResolvePath(DataRoot)!, File.ReadAllText(HostProductRootPolicy.MountInfoPath));
+
+        /// <summary>
+        /// A folder under the run's root that the scripted mount table lists as a bind mount of <paramref name="root"/> on
+        /// the data root's filesystem: what no path resolution or device and inode comparison sees.
+        /// </summary>
+        public string BoundElsewhere(string name, string root)
+        {
+            var target = Path.Combine(Root, name);
+            Directory.CreateDirectory(target);
+            var table = Path.Combine(State, "mounts.json");
+            var mounts = File.Exists(table) ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(table))!.AsArray() : new System.Text.Json.Nodes.JsonArray();
+            mounts.Add(new System.Text.Json.Nodes.JsonObject { ["maj:min"] = DataLocation.Device, ["fsroot"] = root, ["target"] = target });
+            File.WriteAllText(table, mounts.ToJsonString());
+            return target;
+        }
 
         public string[] DockerCalls => File.Exists(Path.Combine(State, "calls")) ? File.ReadAllLines(Path.Combine(State, "calls")) : [];
         public bool OriginalSiloExists => Directory.Exists(Path.Combine(State, "containers", "silo-original"));
@@ -286,7 +390,11 @@ public sealed class SiloReplacementRunbookTests
         public string BindVolume(string name, string device)
             => Volume(name, $"local|3|none|bind|{DockerRootDirectory}/volumes/{name}/_data|{device}");
 
-        public void Intruder(params string[] mounts) => Container("intruder", "/intruder", mounts);
+        /// <summary>Another container that Docker creates once Silo has stopped, with the given mount lines.</summary>
+        public void Intruder(params string[] mounts) => Container("intruder", "/intruder", mounts, "after-stop");
+
+        /// <summary>Another container that is there before the procedure starts.</summary>
+        public void IntruderFromTheStart(params string[] mounts) => Container("intruder", "/intruder", mounts);
 
         public async Task<(int Exit, string Output, string Error)> ExecuteAsync(CancellationToken cancellationToken)
         {
@@ -335,9 +443,11 @@ public sealed class SiloReplacementRunbookTests
             return directory?.FullName ?? throw new DirectoryNotFoundException("Repository root was not found.");
         }
 
-        private void Container(string id, string name, params string[] mounts)
+        private void Container(string id, string name, params string[] mounts) => Container(id, name, mounts, "containers");
+
+        private void Container(string id, string name, string[] mounts, string folder)
         {
-            var directory = Path.Combine(State, "containers", id);
+            var directory = Path.Combine(State, folder, id);
             Directory.CreateDirectory(directory);
             File.WriteAllText(Path.Combine(directory, "name"), name + "\n");
             File.WriteAllText(Path.Combine(directory, "running"), "true\n");
@@ -377,7 +487,9 @@ public sealed class SiloReplacementRunbookTests
             }
             case "$1" in
               ps)
-                if [[ -e $S/ps-fails ]]; then echo "Cannot connect to the Docker daemon (scripted)" >&2; exit 1; fi
+                if [[ -e $S/ps-fails || ( -e $S/ps-fails-once-stopped && $(cat "$S/containers/silo-original/running" 2> /dev/null) == false ) ]]; then
+                  echo "Cannot connect to the Docker daemon (scripted)" >&2; exit 1
+                fi
                 for d in "$S"/containers/*; do if [[ -d $d ]]; then basename "$d"; fi; done
                 if [[ -e $S/listed-but-gone ]]; then echo gone0000; fi
                 exit 0 ;;
@@ -407,6 +519,7 @@ public sealed class SiloReplacementRunbookTests
                 if [[ -e $S/stop-fails ]]; then echo "Error response from daemon: cannot stop container (scripted)" >&2; exit 1; fi
                 d=$(find_container "${@: -1}") || exit 1
                 echo false > "$d/running"
+                for appears in "$S"/after-stop/*; do if [[ -d $appears ]]; then mv "$appears" "$S/containers/"; fi; done
                 if [[ -f $S/rename-on-stop ]]; then IFS=$'\t' read -r from to < "$S/rename-on-stop"; mv "$from" "$to"; fi
                 echo "${@: -1}"; exit 0 ;;
               rm)
@@ -438,6 +551,19 @@ public sealed class SiloReplacementRunbookTests
             esac
             echo "unscripted docker call: $*" >&2
             exit 2
+            """;
+
+        /// <summary>util-linux <c>findmnt</c>: this host's real mount table, with the bind mounts a test adds listed last.</summary>
+        private const string FakeFindmnt = """
+            #!/usr/bin/env bash
+            set -u
+            if [[ $* != '-J -l -o MAJ:MIN,FSROOT,TARGET' ]]; then echo "unscripted findmnt call: $*" >&2; exit 2; fi
+            real=$(/usr/bin/findmnt -J -l -o MAJ:MIN,FSROOT,TARGET) || exit 1
+            if [[ -f $FAKE_STATE/mounts.json ]]; then
+              jq --slurpfile extra "$FAKE_STATE/mounts.json" '.filesystems += $extra[0]' <<< "$real"
+            else
+              printf '%s\n' "$real"
+            fi
             """;
 
         /// <summary><c>hvo-sky-install cameraagent silo-verify</c>: the readiness the state names; not-ready exits 3.</summary>

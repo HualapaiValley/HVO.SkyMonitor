@@ -210,6 +210,44 @@ internal static partial class NativeLinux
         return ToNodeIdentity(status);
     }
 
+    /// <summary>
+    /// The identity of what <paramref name="path"/> names, links followed, or <see langword="null"/> when it does not exist
+    /// or cannot be examined.
+    /// </summary>
+    public static UnixNodeIdentity? TryGetTargetNodeIdentity(string path)
+    {
+        const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid | StatxInode | StatxMountId;
+        return StatX(AtFileDescriptorCurrentWorkingDirectory, path, 0, mask, out var status) == 0 && (status.Mask & mask) == mask
+            ? ToNodeIdentity(status)
+            : null;
+    }
+
+    [LibraryImport("libc", EntryPoint = "realpath", StringMarshalling = StringMarshalling.Utf8)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial IntPtr RealPath(string path, IntPtr resolved);
+
+    [LibraryImport("libc", EntryPoint = "free")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    private static partial void Free(IntPtr pointer);
+
+    /// <summary>
+    /// <paramref name="path"/> with every link in it resolved, as realpath(3) and <c>realpath -e</c> resolve it, or
+    /// <see langword="null"/> when any part of it does not exist or cannot be searched.
+    /// </summary>
+    public static string? TryResolvePath(string path)
+    {
+        var resolved = RealPath(path, IntPtr.Zero);
+        if (resolved == IntPtr.Zero) return null;
+        try
+        {
+            return Marshal.PtrToStringUTF8(resolved);
+        }
+        finally
+        {
+            Free(resolved);
+        }
+    }
+
     public static UnixNodeIdentity GetTargetNodeIdentity(string path)
     {
         const uint mask = StatxType | StatxMode | StatxLinkCount | StatxUid | StatxGid | StatxInode | StatxMountId;

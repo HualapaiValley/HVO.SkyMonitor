@@ -172,6 +172,63 @@ public sealed partial class InstallerFlowTests
     /// #1966 round 2 (Fable new finding 2): a CameraAgent image that does not declare the first-boot pause contract would
     /// ignore the seeded pause and admit captures, so a Silo-layout install refuses it before anything is created.
     /// </summary>
+    /// <summary>
+    /// #1966 round 5 (Sol R5-03): the bootstrap proves its data root this Silo's alone by the replacement's rules before it
+    /// starts Silo. Another container that reaches the data root through a link, or through a named volume whose options
+    /// bind it there (whatever type it declares), stops the install before Silo or CameraAgent starts.
+    /// </summary>
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
+    [DataRow("link-to-the-data-root", "which is the data root, lies inside it or holds it")]
+    [DataRow("bind-volume-of-the-data-root", "a bind of")]
+    [DataRow("tmpfs-typed-bind-volume-of-the-data-root", "a bind of")]
+    public async Task SiloInstall_NeverBootstrapsWhileAnotherContainerReachesItsDataRoot(string shape, string reason)
+    {
+        var bundle = RequireCatalogBundle();
+        var root = Path.Combine(Path.GetTempPath(), $"hvo-installer-silo-{Guid.NewGuid():N}");
+        RequireSiloDataRootHost(root);
+        var instanceId = Guid.NewGuid();
+        using var runner = new SiloInstallerRunner(SiloCameraAgentImage, root, instanceId);
+        var dataRoot = SiloRuntimeProfile.DataRoot(runner.Paths);
+        var originalClient = SiloCommands.ClientFactory;
+        SiloCommands.ClientFactory = uri => new SiloFirstBootClient(uri, runner.CameraAgent);
+        try
+        {
+            switch (shape)
+            {
+                case "link-to-the-data-root":
+                    // The link names the data root the install creates; it resolves once the install has created it.
+                    Directory.CreateDirectory(root);
+                    var link = Path.Combine(root, "data-alias");
+                    File.CreateSymbolicLink(link, dataRoot);
+                    runner.Silo.AddOtherContainer(SiloHarness.BindMount(link));
+                    break;
+                case "bind-volume-of-the-data-root":
+                    runner.Silo.AddOtherContainer(runner.Silo.LocalVolume("bound", ("type", "none"), ("o", "bind"), ("device", dataRoot)));
+                    break;
+                case "tmpfs-typed-bind-volume-of-the-data-root":
+                    runner.Silo.AddOtherContainer(runner.Silo.LocalVolume("bound", ("type", "tmpfs"), ("o", "bind"), ("device", dataRoot)));
+                    break;
+            }
+
+            var refused = await Assert.ThrowsAsync<InstallerException>(() => CameraAgentInstaller.InstallAsync(
+                SiloRequest(root, bundle, instanceId), runner, _ => new InstallerOwnerClient(), RuntimeUid, RuntimeGid,
+                CancellationToken.None, portAvailabilityProbe: new RecordingPortProbe().Probe));
+
+            StringAssert.Contains(refused.Message, "Another container references the Silo data root", StringComparison.Ordinal);
+            StringAssert.Contains(refused.Message, reason, StringComparison.Ordinal);
+            Assert.IsTrue(refused.InnerException is InstallerException { IsRefusal: true } || refused.IsRefusal, "The bootstrap refused: " + refused);
+            CollectionAssert.DoesNotContain(runner.Events, "silo-up", "Silo never starts on a data root another container reaches.");
+            CollectionAssert.DoesNotContain(runner.Events, "cameraagent-up", "CameraAgent never starts.");
+            Assert.IsFalse(runner.Mutations.Any(static mutation => mutation.StartsWith("store:", StringComparison.Ordinal)), "The store is never touched.");
+        }
+        finally
+        {
+            SiloCommands.ClientFactory = originalClient;
+            DeleteRoot(root);
+        }
+    }
+
     [TestMethod]
     [OSCondition(OperatingSystems.Linux, IgnoreMessage = LinuxOnly.Reason)]
     [DataRow(null)]
@@ -300,6 +357,10 @@ public sealed partial class InstallerFlowTests
         }
 
         public InstallationPaths Paths { get; }
+
+        /// <summary>The Docker state the Silo checks see, which a test may add other containers and volumes to.</summary>
+        public SiloHarness Silo => silo;
+
         public List<string[]> Calls { get; } = [];
         public List<string> Mutations { get; } = [];
         public List<string> Events { get; } = [];

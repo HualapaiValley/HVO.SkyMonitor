@@ -29,6 +29,9 @@ public sealed partial class LifecycleContractTests
     [DataRow("journal-of-another-installation")]
     [DataRow("bucket-corrected-after-start")]
     [DataRow("endpoint-corrected-after-start")]
+    [DataRow("another-container-mounts-a-link-to-a-path-inside-the-data-root")]
+    [DataRow("another-container-mounts-a-bind-volume-of-the-data-root")]
+    [DataRow("another-container-mounts-a-tmpfs-typed-bind-volume-of-the-data-root")]
     public async Task FirstResume_OpensAdmissionOnlyOnACompletedReadyInstanceWhosePauseIsStillInForce(string state)
     {
         using var fixture = await SiloFixtureAsync(InstanceLifecycleCondition.Installed);
@@ -69,6 +72,24 @@ public sealed partial class LifecycleContractTests
             harness.CameraAgentStarted = DateTimeOffset.UtcNow;
             await Task.Delay(30);
             SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, setting), right);
+        }
+        switch (state)
+        {
+            case "another-container-mounts-a-link-to-a-path-inside-the-data-root":
+                // Sol R5-03 (a): the path the other container names is a link; what it resolves to lies inside the data root.
+                Directory.CreateDirectory(Path.Combine(harness.DataRoot, ".minio.sys"));
+                var link = Path.Combine(fixture.Root, "minio-alias");
+                File.CreateSymbolicLink(link, Path.Combine(harness.DataRoot, ".minio.sys"));
+                harness.AddOtherContainer(SiloHarness.BindMount(link));
+                break;
+            case "another-container-mounts-a-bind-volume-of-the-data-root":
+                // Sol R5-03 (b): a named volume whose options bind it to the data root.
+                harness.AddOtherContainer(harness.LocalVolume("bound", ("type", "none"), ("o", "bind"), ("device", harness.DataRoot)));
+                break;
+            case "another-container-mounts-a-tmpfs-typed-bind-volume-of-the-data-root":
+                // Sol R5-02: the bind option makes it a bind of its device, whatever type it declares.
+                harness.AddOtherContainer(harness.LocalVolume("bound", ("type", "tmpfs"), ("o", "bind"), ("device", harness.DataRoot)));
+                break;
         }
         if (state == "wrong-bucket")
             SafeFileSystem.WriteTextAtomic(Path.Combine(secrets, SiloRuntimeProfile.BucketSetting), "hvo-" + new string('f', 32));
@@ -158,6 +179,16 @@ public sealed partial class LifecycleContractTests
                 Assert.IsFalse(runner!.Calls.Any(static call => call.Arguments is ["run", ..]),
                     "No probe runs against settings the running process did not load.");
                 break;
+            case "another-container-mounts-a-link-to-a-path-inside-the-data-root":
+            case "another-container-mounts-a-bind-volume-of-the-data-root":
+            case "another-container-mounts-a-tmpfs-typed-bind-volume-of-the-data-root":
+                AssertRefused(failure, "Another container references the Silo data root; it must belong to this instance's Silo alone");
+                StringAssert.Contains(failure!.Message, state.Contains("link", StringComparison.Ordinal)
+                    ? "which is the data root, lies inside it or holds it"
+                    : $"a bind of {harness.DataRoot}, which is the data root", StringComparison.Ordinal);
+                Assert.AreEqual(0, resumes, "No resume is sent.");
+                Assert.IsFalse(camera.Requests.Any(static request => request.Method == HttpMethod.Post));
+                break;
             default:
                 Assert.Fail($"Unknown case {state}.");
                 break;
@@ -205,7 +236,7 @@ public sealed partial class LifecycleContractTests
         SiloCommands.DockerFactory = () =>
         {
             // The daemon preflight is the fixture's; everything the Silo checks ask is the harness's.
-            var runner = new ScriptedDocker((arguments, input) => arguments is ["info", ..] or ["compose", "version", ..]
+            var runner = new ScriptedDocker((arguments, input) => arguments is ["info", ..] and not ["info", "--format", "{{.DockerRootDir}}"] or ["compose", "version", ..]
                 ? fixture.Runner.RunAsync("docker", arguments, CancellationToken.None).GetAwaiter().GetResult()
                 : harness.Answer(arguments, input));
             runners.Add(runner);

@@ -354,9 +354,9 @@ Never disable the old key before step 6 shows the new key ready.
 - `hvo-sky-install cameraagent silo-verify --instance-id <id> [--json]` changes nothing except a throwaway probe
   container (below). It first correlates the instance's manifest and result. A result of another instance or another
   endpoint is refused before the lifecycle token is read or anything is called. It then checks:
-  - the container shape, and that no other container mounts the data root, a path inside it or an ancestor of it,
-    compared by path and by the device and inode of each mount source itself. Every listed container must be
-    inspected, and only Docker's own answer that one is gone counts as its absence;
+  - the container shape, and that the data root is this Silo's alone: every mount of every other container, running
+    or not, must be proved apart from it, by the rules the stock-image replacement below states. Every listed
+    container must be inspected, and only Docker's own answer that one is gone counts as its absence;
   - that the container runs this daemon's own platform child of the pin;
   - that the private network is the instance's, internal, labelled, and holds only this Silo, under its alias
     `hvo-silo`, and this instance's running CameraAgent;
@@ -450,22 +450,27 @@ On an installed instance, as the user that installed it, with `jq` on the host:
   read through the store. After the replacement it reads them again and requires the same versions with the same bytes
   (step 4). That assumes nothing writes to the store meanwhile, which holds in this release: CameraAgent does not write
   to Silo until #1968. Reading every version takes time in proportion to the data stored.
-- **Exclusivity, proved after the stop.** Step 2 lists every other container, running or not, and refuses unless each of
-  its mounts is proved apart from the data root. Only Docker's own answer that a listed container is gone counts as its
-  absence.
-  - A bind mount's source must resolve on this host, links followed. It is refused when, as given or resolved, it is
-    the data root, lies inside it or is an ancestor of it; when it is the data root or an ancestor under another name
-    (the same device and inode); or when any directory above it is the data root under another name, as through a
-    bind mount. A source that does not resolve, such as one renamed after the stop, is refused.
-  - A volume of Docker's local driver is judged by where its data lies. A bind volume is judged by its `device` path,
-    as a bind mount. A volume Docker manages lies in Docker's data root, which must be apart from the data root in the
-    same way. A tmpfs mount or volume holds no host path. Any other volume driver or type, and any other mount type,
-    is refused.
+- **Exclusivity, proved before the stop and after it.** The installer's own check makes the same proof (above), so
+  `silo-verify` refuses what it refuses. Step 2 lists every other container, running or not, and refuses unless each
+  of its mounts is proved apart from the data root. It runs once before the stop, so a refusal then changes nothing,
+  and again after it, so nothing that appears meanwhile is missed. Only Docker's own answer that a listed container is
+  gone counts as its absence.
+  - A bind mount's source must resolve on this host, links followed. A source that does not resolve is refused as one
+    that "does not resolve here": one renamed after the stop, or one the installing user cannot reach, such as a folder
+    only root may enter.
+  - It is refused when, as given or resolved, it is the data root, lies inside it or is an ancestor of it. It is
+    refused when it is the data root, an ancestor of it or `/` under another name (the same device and inode), or when
+    any directory above it is the data root under another name.
+  - It is refused when the mount table places it on the data root, inside it or on a directory holding it: the device
+    of the mount that holds it and its path within that filesystem. That covers a bind mount of the data root, of a
+    path inside it or of an ancestor, under any name. Any mount below it is judged the same way, because Docker binds
+    a source with the mounts below it.
+  - A volume of Docker's local driver is judged by where its data lies. A volume whose options make it a bind (`bind`
+    or `rbind`) is judged by its `device` path, as a bind mount, whatever type it declares. A volume Docker manages
+    lies in Docker's data root, which must be apart from the data root in the same way. A tmpfs mount or volume holds
+    no host path. Any other volume driver, type or options, and any other mount type, is refused.
   - A file hard-linked from inside the data root is another name for that one file, not a mount of the data root, and
     is not detected.
-  - This is stricter than the installer's own check, which `silo-verify` and the opening check here make: it compares
-    each mount source itself, by path and by device and inode, passes a source it cannot reach, and does not resolve
-    volumes.
 - **What a stop leaves.** Any failed step stops the procedure once, names what failed, and says what the step it reached
   leaves and how to recover. Nothing has changed before the stop. After it, Silo stays stopped, its original container
   kept, whenever its data root is not proved its own; start it only once nothing else references the data root. When
@@ -519,25 +524,28 @@ versions() {   # every object version in the bucket and the SHA-256 of its bytes
   done < "$W/$1.list" > "$W/$1.partial"
   mv -- "$W/$1.partial" "$W/$1"
 }
-opening=$("$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -er .readiness)
-if [[ $opening == not-ready ]]; then fail "silo-verify reports this instance not-ready."; fi
-versions before
-if [[ ! -s $W/before ]]; then fail "the store listed no object version (the marker and fence at least)."; fi
-PID=$(docker inspect --format '{{.State.Pid}}' "$SILO")
-phase=stopping; docker stop --timeout 30 "$SILO" > /dev/null                         # step 1
-if [[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$SILO")" != "false 0" ]]; then fail "Silo still runs."; fi
-if [[ -r /proc/$PID/cmdline ]] && tr '\0' ' ' < "/proc/$PID/cmdline" | grep -q silo; then fail "Silo process $PID still runs."; fi
-phase=stopped                                                                        # step 2
 D=$(realpath -e -- "$DATA"); DID=$(stat -L -c '%d:%i' "$D"); DROOT=$(docker info --format '{{.DockerRootDir}}')
-roots=()   # the data root and its existing ancestors below /, as named and as resolved, by device and inode
+roots=()   # the data root, its existing ancestors as named and as resolved, and /, by device and inode
 for path in "$DATA" "$D"; do
   while [[ $path != / ]]; do
     if [[ -e $path ]]; then node=$(stat -L -c '%d:%i' "$path"); roots+=("$node"); fi
     path=$(dirname "$path")
   done
 done
+node=$(stat -L -c '%d:%i' /); roots+=("$node")
+locate() {   # "<device> <path within it>" of resolved path $1, from the mount that holds it in the mount table
+  jq -er --arg p "$1" '.filesystems | to_entries
+    | map(select(.value.target as $t | $t == "/" or $t == $p or ($p | startswith($t + "/"))))
+    | sort_by((.value.target | length), .key) | last | .value | .target as $t
+    | "\(.["maj:min"]) \((.fsroot | rtrimstr("/")) + (if $t == "/" then $p else $p[($t | length):] end) | if . == "" then "/" else . end)"' \
+    <<< "$MOUNTS"
+}
+within() {   # whether locations $1 and $2 share a device and one path is, or lies inside, the other
+  local a=${1#* } b=${2#* }
+  [[ ${1%% *} == "${2%% *}" && ( $a == "$b" || $a == / || $b == / || $a == "$b/"* || $b == "$a/"* ) ]]
+}
 apart() {   # fails unless host path $2, which $1 describes, is proved apart from the data root
-  local r p b node
+  local r p b node where held m
   if ! r=$(realpath -e -- "$2" 2> /dev/null); then fail "$1, which does not resolve here, so it is not proved apart from $DATA."; fi
   for p in "$2" "$r"; do
     for b in "$DATA" "$D"; do
@@ -546,7 +554,7 @@ apart() {   # fails unless host path $2, which $1 describes, is proved apart fro
   done
   node=$(stat -L -c '%d:%i' "$r")
   for b in "${roots[@]}"; do
-    if [[ $node == "$b" ]]; then fail "$1, the same directory as $DATA or an ancestor of it."; fi
+    if [[ $node == "$b" ]]; then fail "$1, the same directory as $DATA, an ancestor of it or /."; fi
   done
   p=$r
   while [[ $p != / ]]; do
@@ -554,33 +562,56 @@ apart() {   # fails unless host path $2, which $1 describes, is proved apart fro
     if [[ $node == "$DID" ]]; then fail "$1, inside $DATA under another name."; fi
     p=$(dirname "$p")
   done
+  where=$(locate "$r")
+  if within "$where" "$DWHERE"; then fail "$1, which the mount table places on $DATA, inside it or holding it."; fi
+  held=$(jq -r --arg p "$r" '.filesystems[] | select(.target == $p or (.target | startswith($p + "/"))) | "\(.["maj:min"]) \(.fsroot)"' <<< "$MOUNTS")
+  while IFS= read -r m; do
+    if [[ -n $m ]] && within "$m" "$DWHERE"; then fail "$1, which holds a mount of $DATA, of a path inside it or of one holding it."; fi
+  done <<< "$held"
 }
-ids=$(docker ps -aq --no-trunc)
-for c in $ids; do
-  if ! name=$(docker inspect --format '{{.Name}}' "$c" 2> "$W/inspect.err"); then
-    if grep -qiE 'No such (container|object)' "$W/inspect.err"; then continue; fi    # removed since the listing
-    fail "Docker could not inspect container $c, so its mounts are unknown: $(head -c 300 "$W/inspect.err")"
-  fi
-  if [[ $name == "/$SILO" ]]; then continue; fi
-  mounts=$(docker inspect --format '{{range .Mounts}}{{println .Type (or .Name "-") .Source}}{{end}}' "$c")
-  while read -r type volume source; do
-    case $type in
-      '' | tmpfs) ;;                                                                  # no host path
-      bind) apart "container $c mounts $source" "$source" ;;
-      volume)
-        v=$(docker volume inspect --format "$VOLUME" "$volume")
-        IFS='|' read -r driver options vtype vo mountpoint device <<< "$v"
-        if [[ $driver == local && $options == 0 && $mountpoint == "$DROOT/volumes/$volume/_data" ]]; then
-          apart "container $c mounts volume $volume, kept in Docker's data root $DROOT" "$DROOT"
-        elif [[ $driver == local && $vtype == none && ,$vo, =~ ,r?bind, && -n $device ]]; then
-          apart "container $c mounts volume $volume, a bind of $device" "$device"
-        elif [[ $driver != local || $vtype != tmpfs ]]; then
-          fail "container $c mounts volume $volume ($driver driver, type ${vtype:-unset}), so where its data lies is not proved."
-        fi ;;
-      *) fail "container $c has a mount of type $type, so where its data lies is not proved." ;;
-    esac
-  done <<< "$mounts"
-done
+exclusive() {   # fails unless every mount of every other container, running or not, is proved apart from the data root
+  local ids c name mounts type volume source v driver options vtype vo mountpoint device
+  MOUNTS=$(findmnt -J -l -o MAJ:MIN,FSROOT,TARGET); DWHERE=$(locate "$D")
+  ids=$(docker ps -aq --no-trunc)
+  for c in $ids; do
+    if ! name=$(docker inspect --format '{{.Name}}' "$c" 2> "$W/inspect.err"); then
+      if grep -qiE 'No such (container|object)' "$W/inspect.err"; then continue; fi    # removed since the listing
+      fail "Docker could not inspect container $c, so its mounts are unknown: $(head -c 300 "$W/inspect.err")"
+    fi
+    if [[ $name == "/$SILO" ]]; then continue; fi
+    mounts=$(docker inspect --format '{{range .Mounts}}{{println .Type (or .Name "-") .Source}}{{end}}' "$c")
+    while read -r type volume source; do
+      case $type in
+        '' | tmpfs) ;;                                                                # no host path
+        bind) apart "container $c mounts $source" "$source" ;;
+        volume)
+          v=$(docker volume inspect --format "$VOLUME" "$volume")
+          IFS='|' read -r driver options vtype vo mountpoint device <<< "$v"
+          if [[ $driver != local ]]; then
+            fail "container $c mounts volume $volume ($driver driver), so where its data lies is not proved."
+          elif [[ ,$vo, =~ ,r?bind, ]]; then                                          # a bind, whatever its type
+            if [[ -z $device ]]; then fail "container $c mounts volume $volume, a bind that names no device."; fi
+            apart "container $c mounts volume $volume, a bind of $device" "$device"
+          elif [[ $options == 0 && $mountpoint == "$DROOT/volumes/$volume/_data" ]]; then
+            apart "container $c mounts volume $volume, kept in Docker's data root $DROOT" "$DROOT"
+          elif [[ $vtype != tmpfs || ,$vo, =~ ,(move|remount), ]]; then
+            fail "container $c mounts volume $volume (type ${vtype:-unset}, options ${vo:-none}), so where its data lies is not proved."
+          fi ;;
+        *) fail "container $c has a mount of type $type, so where its data lies is not proved." ;;
+      esac
+    done <<< "$mounts"
+  done
+}
+opening=$("$HVO" cameraagent silo-verify --instance-id "$ID" --product-root "$P" --json | jq -er .readiness)
+if [[ $opening == not-ready ]]; then fail "silo-verify reports this instance not-ready."; fi
+exclusive                                                                            # step 2, before the stop
+versions before
+if [[ ! -s $W/before ]]; then fail "the store listed no object version (the marker and fence at least)."; fi
+PID=$(docker inspect --format '{{.State.Pid}}' "$SILO")
+phase=stopping; docker stop --timeout 30 "$SILO" > /dev/null                         # step 1
+if [[ "$(docker inspect --format '{{.State.Running}} {{.State.Pid}}' "$SILO")" != "false 0" ]]; then fail "Silo still runs."; fi
+if [[ -r /proc/$PID/cmdline ]] && tr '\0' ' ' < "/proc/$PID/cmdline" | grep -q silo; then fail "Silo process $PID still runs."; fi
+phase=stopped; exclusive                                                             # step 2, after the stop
 phase=proved; docker rm "$SILO" > /dev/null; phase=removed
 "${COMPOSE[@]}" up --detach --no-deps silo; phase=started                            # step 3
 for _ in $(seq 90); do

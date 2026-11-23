@@ -119,6 +119,53 @@ internal sealed class SiloHarness : IDisposable
     public string? ListedButUninspectable { get; set; }
     public bool ListedButGone { get; set; }
 
+    /// <summary>Other containers on the daemon, listed and inspected as Docker answers; each needs an <c>Id</c>.</summary>
+    public List<JsonObject> OtherContainers { get; } = [];
+
+    /// <summary>Volumes as <c>docker volume inspect</c> answers them, by name.</summary>
+    public Dictionary<string, JsonObject> Volumes { get; } = [];
+
+    /// <summary>The daemon's data root, which holds the volumes it manages.</summary>
+    public string DockerRootDirectory { get; set; } = "/var/lib/docker";
+
+    /// <summary>Another container, running, with the given mounts (each a Docker <c>Mounts</c> entry).</summary>
+    public JsonObject AddOtherContainer(params JsonObject[] mounts)
+    {
+        var container = new JsonObject
+        {
+            ["Id"] = Hex((char)('1' + OtherContainers.Count)),
+            ["Name"] = "/other-" + OtherContainers.Count,
+            ["State"] = new JsonObject { ["Running"] = true },
+            ["Mounts"] = new JsonArray([.. mounts])
+        };
+        OtherContainers.Add(container);
+        return container;
+    }
+
+    public static JsonObject BindMount(string source) => new() { ["Type"] = "bind", ["Source"] = source, ["Destination"] = "/other" };
+
+    public static JsonObject VolumeMount(string name, string source) =>
+        new() { ["Type"] = "volume", ["Name"] = name, ["Source"] = source, ["Destination"] = "/other" };
+
+    /// <summary>A local volume with the given options (none for one Docker manages), and the mount that uses it.</summary>
+    public JsonObject LocalVolume(string name, params (string Key, string Value)[] options)
+    {
+        var mountpoint = $"{DockerRootDirectory}/volumes/{name}/_data";
+        var answer = new JsonObject { ["Name"] = name, ["Driver"] = "local", ["Mountpoint"] = mountpoint };
+        if (options.Length > 0)
+        {
+            var values = new JsonObject();
+            foreach (var (key, value) in options) values[key] = value;
+            answer["Options"] = values;
+        }
+        else
+        {
+            answer["Options"] = null;
+        }
+        Volumes[name] = answer;
+        return VolumeMount(name, mountpoint);
+    }
+
     /// <summary>Answers the bootstrap's store scripts (bucket and writer creation, binding), when a test scripts the store.</summary>
     public Func<string, ProcessResult>? Store { get; set; }
 
@@ -160,7 +207,14 @@ internal sealed class SiloHarness : IDisposable
                 if (ContainerListFails) return ScriptedDocker.DaemonError();
                 return ScriptedDocker.Ok((CameraAgentExists ? $"{SiloId}\n{CameraAgentId}\n" : $"{SiloId}\n") +
                                          (ListedButUninspectable is { } listed ? listed + "\n" : string.Empty) +
-                                         (ListedButGone ? new string('d', 64) + "\n" : string.Empty));
+                                         (ListedButGone ? new string('d', 64) + "\n" : string.Empty) +
+                                         string.Concat(OtherContainers.Select(static other => other["Id"]!.GetValue<string>() + "\n")));
+            case ["container", "inspect", var name] when OtherContainers.Find(other => other["Id"]!.GetValue<string>() == name) is { } other:
+                return ScriptedDocker.Ok(new JsonArray(other.DeepClone()));
+            case ["volume", "inspect", var name]:
+                return Volumes.TryGetValue(name, out var volume) ? ScriptedDocker.Ok(new JsonArray(volume.DeepClone())) : ScriptedDocker.NoSuch("volume", name);
+            case ["info", "--format", "{{.DockerRootDir}}"]:
+                return ScriptedDocker.Ok(DockerRootDirectory + "\n");
             case ["container", "inspect", var name] when name == ListedButUninspectable:
                 return ScriptedDocker.DaemonError();
             case ["container", "inspect", var name] when ListedButGone && name == new string('d', 64):
