@@ -9,12 +9,13 @@ import re
 import sqlite3
 import subprocess
 import tempfile
-from time import perf_counter
+from time import perf_counter, sleep
 
 
 PROCESSING = "src/HVO.SkyMonitor.CameraAgent.Common/Capture/Processing"
 PRUNE_FILE = f"{PROCESSING}/CaptureProcessingPersistence.CenteredViewRetention.cs"
 BASELINE = "c241a2621b97811b2f9b0e15cf7f9eeb483cf2d0"
+PREVIOUS_DISCOVERY = "7950c0f12b26c889e8c9b86f154a6e76e605c91c"
 # Cumulative snapshot lengths from the layer-growth fixture, converted to individual row lengths.
 # Overlays are represented by equally sized text here. This probe exercises SQLite, not image publication.
 SNAPSHOT_BYTES = (593, 2624, 4657, 6690, 8723)
@@ -90,6 +91,29 @@ def view_bytes(connection):
         """).fetchone()[0]
 
 
+def read_pages(connection, query):
+    after = ""
+    while page := connection.execute(query, {"after": after, "cutoff": 0, "limit": 512}).fetchall():
+        after = page[-1][0]
+        yield page
+
+
+def process_read_bytes():
+    return int(Path("/proc/self/io").read_text().splitlines()[0].split()[1])
+
+
+def measure_discovery(connection, label, source, current):
+    connection.execute("PRAGMA shrink_memory")
+    before = process_read_bytes()
+    started = perf_counter()
+    count = sum(sum(row[3] is not None and row[4] is not None and len(row[4]) == 64 and not row[6]
+                    for row in page) if current else len(page)
+                for page in read_pages(connection, sql(source, "ReadCenteredViewPruneCandidatesSql")))
+    elapsed = perf_counter() - started
+    return dict(discovery=label, candidates=count, read_bytes=process_read_bytes() - before,
+                discovery_seconds=round(elapsed, 4))
+
+
 def measure(connection, baseline, previous, candidate):
     durations = []
 
@@ -108,15 +132,17 @@ def measure(connection, baseline, previous, candidate):
     else:
         execute(connection, sql(candidate, "CenteredViewPruneSetupSql"))
         read = sql(candidate, "ReadCenteredViewPruneCandidatesSql")
-        insert = "INSERT INTO temp.centered_view_expiration_candidates VALUES (?, ?, ?, ?)"
-    after = ""
-    while True:
-        page = connection.execute(read, {"after": after, "cutoff": 0, "limit": 512}).fetchall()
-        if not page:
-            break
-        after = page[-1][0]
-        rows = [(row[0],) if baseline else (row[0], *row[3:]) for row in page]
+        insert = "INSERT INTO temp.centered_view_expiration_candidates VALUES (?, ?, ?, ?, ?, ?)"
+        pause = int(re.search(r"CenteredViewPrunePause = TimeSpan.FromMilliseconds\((\d+)\)", candidate)[1]) / 1000
+    for page in read_pages(connection, read):
+        if baseline:
+            rows = [(row[0],) for row in page]
+        else:
+            rows = [(row[0], *row[3:6], *row[1:3]) for row in page
+                    if row[3] is not None and row[4] is not None and len(row[4]) == 64 and not row[6]]
         connection.executemany(insert, rows)
+        if not baseline and len(page) == 512:
+            sleep(pause)
     if baseline:
         transaction(sql(previous, "PruneCenteredViewJournalSql"))
     else:
@@ -129,6 +155,7 @@ def measure(connection, baseline, previous, candidate):
             while last := execute(connection, load, {"after": after, "limit": bound, "recomputed": recomputed}):
                 after = last
                 transaction(statement)
+                sleep(pause)
     return perf_counter() - started, durations
 
 
@@ -137,6 +164,8 @@ def main():
     parser.add_argument("--bases", type=int, required=True)
     parser.add_argument("--expired", type=int, required=True)
     parser.add_argument("--definition-bytes", type=int, default=7446)
+    parser.add_argument("--discovery-only", action="store_true",
+                        help="compare candidate query read bytes on Linux without pruning")
     parser.add_argument("--mode", choices=("before", "after", "both"), default="both")
     args = parser.parse_args()
     if not 0 <= args.expired < args.bases:
@@ -149,6 +178,16 @@ def main():
     indexes = sql((root / PROCESSING / "CenteredViewRetentionSchema.cs").read_text(), "IndexSql")
     candidate = (root / PRUNE_FILE).read_text()
     previous = subprocess.check_output(["git", "show", f"{BASELINE}:{PRUNE_FILE}"], cwd=root, text=True)
+    if args.discovery_only:
+        prior = subprocess.check_output(["git", "show", f"{PREVIOUS_DISCOVERY}:{PRUNE_FILE}"], cwd=root, text=True)
+        with tempfile.TemporaryDirectory(prefix="centered-retention-") as working:
+            with closing(sqlite3.connect(Path(working) / "journal.db", isolation_level=None)) as connection:
+                seed(connection, args.bases, args.expired, schema, indexes, args.definition_bytes)
+                for label, source, current in (("previous", prior, False), ("current", candidate, True)):
+                    result = measure_discovery(connection, label, source, current)
+                    assert result["candidates"] == args.expired
+                    print(json.dumps(result), flush=True)
+        return
     for mode in ("before", "after") if args.mode == "both" else (args.mode,):
         with tempfile.TemporaryDirectory(prefix="centered-retention-") as working:
             with closing(sqlite3.connect(Path(working) / "journal.db", isolation_level=None)) as connection:

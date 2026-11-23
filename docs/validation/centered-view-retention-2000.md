@@ -34,10 +34,10 @@ tables and their indexes with `dbstat`.
 
 | Scenario | Bases before | Bases expired | Longest write before | Longest write after | SQL sweep before | SQL sweep after | Active view pages after |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Configured 31-day steady state | 38,400 | 1,200 | 55.840 s | 0.0414 s | 55.899 s | 0.559 s | 1,312,051,200 bytes |
-| Backlog control | 8,000 | 6,800 | 15.980 s | 0.0520 s | 16.051 s | 1.860 s | 42,536,960 bytes |
-| Configured 31 days reduced to one day | 38,400 | 37,200 | Unmeasured | 0.0708 s | Unmeasured | 12.219 s | 42,549,248 bytes |
-| Default 30-day steady state, 7,446-byte definition | 37,200 | 1,200 | Unmeasured | 0.0311 s | Unmeasured | 0.548 s | 1,380,573,184 bytes |
+| Configured 31-day steady state | 38,400 | 1,200 | 55.840 s | 0.0271 s | 55.899 s | 1.272 s | 1,312,051,200 bytes |
+| Backlog control | 8,000 | 6,800 | 15.980 s | 0.0321 s | 16.051 s | 2.622 s | 42,536,960 bytes |
+| Configured 31 days reduced to one day | 38,400 | 37,200 | Unmeasured | 0.0347 s | Unmeasured | 14.094 s | 42,549,248 bytes |
+| Default 30-day steady state, 7,446-byte definition | 37,200 | 1,200 | Unmeasured | 0.0331 s | Unmeasured | 1.308 s | 1,380,573,184 bytes |
 
 The corrected 31-day steady-state model retained 37,200 bases and 1.22 GiB of
 active view pages. The default file-storage policy is 30 days. Its model
@@ -46,12 +46,25 @@ single-view definition size. Each steady-state run needed 20 write
 transactions. The one-day pressure model
 needed 582 transactions and freed 320,222 pages for reuse. The pressure
 baseline was measured on the smaller backlog control. The probe includes
-SQLite candidate discovery and temporary staging. Write timings run from
-acquisition through commit and include any synchronous commit work. The
-measurements exclude raw filesystem probes, raw and processing payloads, other
-journal tables, and contention from other writers. ARM and operational capture
-rates were unmeasured. The physical database file can stay larger than the
+SQLite candidate discovery, temporary staging, and the 10 ms pauses between
+full read pages and after each write. Write timings run from acquisition through
+commit and include synchronous commit work. The measurements exclude raw
+filesystem probes, raw and processing payloads, other journal tables, and
+contention from other writers. ARM and operational capture rates were unmeasured. The physical database file can stay larger than the
 active view pages because SQLite retains freed pages.
+
+On 12,000 bases with 400 expired, the previous discovery query read 199,401,604
+bytes in 73 ms. The current query read 56,004,741 bytes in 41 ms and found the
+same 400 candidates. These are Linux process read bytes with the SQLite page
+cache cleared before each run. They include cached filesystem reads. The query
+materializes the raw-age and hold check before loading any definition JSON.
+
+The in-process contention regression queues a raw writer after the first
+128-base deletion transaction. The competing writer acquires both lifecycle
+locks and commits with the default SQLite five-second timeout while the next
+eligible batch is still pending. The writer also restores a staged raw payload
+and verifies that the next batch preserves that view. The retention service
+releases its locks before the pause and takes them back in their usual order.
 
 Reproduce with the pinned SDK and a temporary directory on the test filesystem.
 Run the test under the shared heavy gate.
@@ -69,13 +82,23 @@ flock -o "$gate" python3 "$probe" --bases 38400 --expired 1200 --definition-byte
 flock -o "$gate" python3 "$probe" --bases 8000 --expired 6800 --definition-bytes 4800
 flock -o "$gate" python3 "$probe" --bases 38400 --expired 37200 --mode after --definition-bytes 4800
 flock -o "$gate" python3 "$probe" --bases 37200 --expired 1200 --mode after
+flock -o "$gate" python3 "$probe" --bases 12000 --expired 400 --discovery-only
 ```
 
 ## Scope
 
-The sweep still visits retained bases in read pages. An indexed capture-age
-projection would require a new persisted capture-time contract. Revision-only
-saved selections would need an explicit retention and reopen contract for the
-base, its lineage and live history. Both are separate design decisions.
-Trail-work retention is outside #2000. The existing window publication workers
-continue to own their retry and settlement policies.
+A capture-age index has no demonstrated need in this sweep. The 12,000-base
+discovery comparison above took 41 ms and the retention service releases the
+lifecycle locks every 512 bases. A persisted capture-time projection would need
+migration and rollback evidence of its own. Reassess if qualification identifies
+a bottleneck at the target retention and capture cadence. [#1928](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1928)
+
+Saved selections intentionally preserve their entire view and its last-live and
+lineage information. The retained-history regression exercises archive reads and
+a saved selection on a recomputed view whose expired parent must also survive.
+A revision-only pin would change that operator contract. #2000 has no separate
+expiry or byte budget for operator-saved views.
+
+Trail-work retention needs its own terminal-record lifetime and retry tests.
+Window publication retry and settlement remain with the existing workers.
+[#2037](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/2037)

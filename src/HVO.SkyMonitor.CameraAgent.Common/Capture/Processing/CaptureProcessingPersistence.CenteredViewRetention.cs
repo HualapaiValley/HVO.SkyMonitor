@@ -6,20 +6,24 @@ namespace HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 internal sealed partial class CaptureProcessingPersistence
 {
     internal const int CenteredViewPruneBatchSize = 128;
+    private const int CenteredViewPruneMaxPageSize = 512;
+    private static readonly TimeSpan CenteredViewPrunePause = TimeSpan.FromMilliseconds(10);
 
     private async ValueTask PruneCenteredViewJournalAsync(
         DateTimeOffset cutoffUtc, IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken, CancellationToken interruptionToken)
+        Func<TimeSpan, ValueTask>? yieldLifecycleLocks, CancellationToken cancellationToken, CancellationToken interruptionToken)
     {
+        using var interruption = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, interruptionToken);
+        var sweepToken = interruption.Token;
         var pruned = 0;
         try
         {
             // Raw retention includes the entire cutoff UTC day. Preview expiry has its own commit cutoff.
             var lastEligibleCaptureTime = new DateTimeOffset(cutoffUtc.UtcDateTime.Date.AddTicks(TimeSpan.TicksPerDay - 1))
                 .ToUnixTimeMilliseconds();
-            using var connection = await _store.OpenCenteredViewsAsync(cancellationToken).ConfigureAwait(false);
+            using var connection = await _store.OpenCenteredViewsAsync(sweepToken).ConfigureAwait(false);
             if (!await StageCenteredViewPruneCandidatesAsync(connection, lastEligibleCaptureTime, heldAbsolutePaths,
-                    cancellationToken, interruptionToken).ConfigureAwait(false))
+                    PauseAsync, sweepToken).ConfigureAwait(false))
                 return;
 
             // First detach the expired, unpinned links that would otherwise keep a chain of expired views.
@@ -41,24 +45,26 @@ internal sealed partial class CaptureProcessingPersistence
 #pragma warning restore CA2100
                 while (true)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    interruptionToken.ThrowIfCancellationRequested();
-                    if (await batch.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not string lastBase)
+                    sweepToken.ThrowIfCancellationRequested();
+                    if (await batch.ExecuteScalarAsync(sweepToken).ConfigureAwait(false) is not string lastBase)
                         break;
                     after.Value = lastBase;
+                    await ExcludeRestoredRawFilesAsync(connection, heldAbsolutePaths, sweepToken).ConfigureAwait(false);
 #pragma warning disable CA1849 // This SQLite overload acquires the main journal write lock up front.
                     using (var transaction = connection.BeginTransaction(deferred: false))
 #pragma warning restore CA1849
                     {
                         prune.Transaction = transaction;
-                        var removed = await prune.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-                        interruptionToken.ThrowIfCancellationRequested();
-                        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                        var removed = await prune.ExecuteScalarAsync(sweepToken).ConfigureAwait(false);
+                        sweepToken.ThrowIfCancellationRequested();
+                        await transaction.CommitAsync(sweepToken).ConfigureAwait(false);
                         pruned += removed is long count ? checked((int)count) : 0;
                         prune.Transaction = null;
                         if (removed is long and > 0)
                             _faultInjector.Inject(CaptureProcessingFaultPoint.AfterCenteredViewPruneBatchCommit, "centered-view-retention");
                     }
+                    // SQLite's asynchronous methods can complete synchronously. Give other journal writers a real gap.
+                    await PauseAsync().ConfigureAwait(false);
                 }
             }
         }
@@ -72,11 +78,19 @@ internal sealed partial class CaptureProcessingPersistence
             if (pruned > 0)
                 LogCenteredViewsPruned(_logger, pruned);
         }
+
+        ValueTask PauseAsync()
+        {
+            sweepToken.ThrowIfCancellationRequested();
+            return yieldLifecycleLocks is null
+                ? new ValueTask(Task.Delay(CenteredViewPrunePause, sweepToken))
+                : yieldLifecycleLocks(CenteredViewPrunePause);
+        }
     }
 
     private async ValueTask<bool> StageCenteredViewPruneCandidatesAsync(
         SqliteConnection connection, long lastEligibleCaptureTime, IReadOnlySet<string> heldAbsolutePaths,
-        CancellationToken cancellationToken, CancellationToken interruptionToken)
+        Func<ValueTask> pause, CancellationToken cancellationToken)
     {
         using (var setup = connection.CreateCommand())
         {
@@ -88,47 +102,108 @@ internal sealed partial class CaptureProcessingPersistence
         candidates.CommandText = ReadCenteredViewPruneCandidatesSql;
         var cursor = candidates.Parameters.AddWithValue("$after", "");
         candidates.Parameters.AddWithValue("$cutoff", lastEligibleCaptureTime);
-        var pageSize = _lifecycleOptions.ReconciliationBatchSize;
+        var pageSize = Math.Min(_lifecycleOptions.ReconciliationBatchSize, CenteredViewPruneMaxPageSize);
         candidates.Parameters.AddWithValue("$limit", pageSize);
         using var stage = connection.CreateCommand();
         stage.CommandText = """
-            INSERT INTO temp.centered_view_expiration_candidates (base_id, capture_id, preview_id, recomputed)
-            VALUES ($base, $capture, $preview, $recomputed);
+            INSERT INTO temp.centered_view_expiration_candidates
+                (base_id, capture_id, preview_id, recomputed, payload, sidecar)
+            VALUES ($base, $capture, $preview, $recomputed, $payload, $sidecar);
             """;
         var stageId = stage.Parameters.AddWithValue("$base", "");
         var captureId = stage.Parameters.AddWithValue("$capture", "");
         var previewId = stage.Parameters.AddWithValue("$preview", "");
         var recomputed = stage.Parameters.AddWithValue("$recomputed", 0);
+        var payload = stage.Parameters.AddWithValue("$payload", "");
+        var sidecar = stage.Parameters.AddWithValue("$sidecar", "");
         var page = new List<CenteredViewPruneCandidate>(pageSize);
         var staged = false;
-        do
+        var malformedCount = 0;
+        string? firstMalformedBase = null;
+        while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            interruptionToken.ThrowIfCancellationRequested();
             page.Clear();
+            var readCount = 0;
             using (var reader = await candidates.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
                 while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    readCount++;
+                    cursor.Value = reader.GetString(0);
+                    if (await reader.IsDBNullAsync(3, cancellationToken).ConfigureAwait(false) || reader.GetBoolean(6))
+                        continue;
                     page.Add(new(reader.GetString(0), reader.GetString(1), reader.GetString(2),
-                        reader.GetString(3), reader.GetString(4), reader.GetInt32(5)));
+                        reader.GetString(3), await reader.IsDBNullAsync(4, cancellationToken).ConfigureAwait(false) ? null : reader.GetString(4), reader.GetInt32(5)));
+                }
             }
             foreach (var row in page)
             {
-                interruptionToken.ThrowIfCancellationRequested();
-                cursor.Value = row.BaseId;
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!IsUnheldAndAbsent(row.Payload, heldAbsolutePaths) || !IsUnheldAndAbsent(row.Sidecar, heldAbsolutePaths))
                     continue;
+                if (row.PreviewId is not { Length: 64 })
+                {
+                    firstMalformedBase ??= row.BaseId;
+                    malformedCount++;
+                    continue;
+                }
                 stageId.Value = row.BaseId;
                 captureId.Value = row.CaptureId;
                 previewId.Value = row.PreviewId;
                 recomputed.Value = row.Recomputed;
+                payload.Value = row.Payload;
+                sidecar.Value = row.Sidecar;
                 await stage.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 staged = true;
             }
-        }
-        while (page.Count == pageSize);
 
+            if (readCount < pageSize)
+                break;
+            await pause().ConfigureAwait(false);
+        }
+
+        if (firstMalformedBase is not null)
+            LogCenteredViewPruneSkippedDefinitions(_logger, malformedCount, firstMalformedBase);
         return staged;
+    }
+
+    private async ValueTask ExcludeRestoredRawFilesAsync(SqliteConnection connection,
+        IReadOnlySet<string> heldAbsolutePaths, CancellationToken cancellationToken)
+    {
+        // Ingress may restore a raw file between the read page and this batch. The sweep owns
+        // both lifecycle locks here. SQLite rechecks the durable holds and preview in the transaction.
+        using var paths = connection.CreateCommand();
+        paths.CommandText = """
+            SELECT staged.base_id, staged.payload, staged.sidecar
+            FROM temp.centered_view_expiration_batch batch
+            JOIN temp.centered_view_expiration_candidates staged ON staged.base_id = batch.base_id;
+            """;
+        var retained = new List<string>();
+        using (var reader = await paths.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsUnheldAndAbsent(reader.GetString(1), heldAbsolutePaths) ||
+                    !IsUnheldAndAbsent(reader.GetString(2), heldAbsolutePaths))
+                    retained.Add(reader.GetString(0));
+            }
+        }
+        if (retained.Count == 0)
+            return;
+
+        using var exclude = connection.CreateCommand();
+        exclude.CommandText = """
+            DELETE FROM temp.centered_view_expiration_batch WHERE base_id = $base;
+            DELETE FROM temp.centered_view_expiration_candidates WHERE base_id = $base;
+            """;
+        var baseId = exclude.Parameters.AddWithValue("$base", "");
+        foreach (var id in retained)
+        {
+            baseId.Value = id;
+            await exclude.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private bool IsUnheldAndAbsent(string relativePath, IReadOnlySet<string> heldAbsolutePaths)
@@ -153,19 +228,23 @@ internal sealed partial class CaptureProcessingPersistence
     }
 
     private sealed record CenteredViewPruneCandidate(
-        string BaseId, string Payload, string Sidecar, string CaptureId, string PreviewId, int Recomputed);
+        string BaseId, string Payload, string Sidecar, string CaptureId, string? PreviewId, int Recomputed);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Centered-view journal pruning failed. Artifact retention completed and journal pruning will retry on the next sweep.")]
+    [LoggerMessage(EventId = 2546, Level = LogLevel.Warning, Message = "Centered-view journal pruning failed. Artifact retention completed and journal pruning will retry on the next sweep.")]
     private static partial void LogCenteredViewPruneFailed(ILogger logger, Exception exception);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Pruned {BaseCount} expired centered-view bases from the journal.")]
+    [LoggerMessage(EventId = 2547, Level = LogLevel.Information, Message = "Pruned {BaseCount} expired centered-view bases from the journal.")]
     private static partial void LogCenteredViewsPruned(ILogger logger, int baseCount);
+
+    [LoggerMessage(EventId = 2548, Level = LogLevel.Warning, Message = "Skipped {BaseCount} expired centered-view bases with an unreadable preview identity in their definition. First base: {BaseId}.")]
+    private static partial void LogCenteredViewPruneSkippedDefinitions(ILogger logger, int baseCount, string baseId);
 
     // Temporary structures are scoped to this connection and reset on pooled reuse. All main-journal writes
     // hold at most one batch, including detaching closed cross-base intervals.
     private const string CenteredViewPruneSetupSql = """
         CREATE TEMP TABLE IF NOT EXISTS centered_view_expiration_candidates (
-            base_id TEXT PRIMARY KEY, capture_id TEXT NOT NULL, preview_id TEXT NOT NULL, recomputed INTEGER NOT NULL
+            base_id TEXT PRIMARY KEY, capture_id TEXT NOT NULL, preview_id TEXT NOT NULL, recomputed INTEGER NOT NULL,
+            payload TEXT NOT NULL, sidecar TEXT NOT NULL
         ) STRICT;
         CREATE TEMP TABLE IF NOT EXISTS centered_view_expiration_batch (base_id TEXT PRIMARY KEY) STRICT;
         CREATE TEMP VIEW IF NOT EXISTS centered_view_expiration_eligible AS
@@ -188,19 +267,36 @@ internal sealed partial class CaptureProcessingPersistence
         DELETE FROM temp.centered_view_expiration_candidates;
         """;
 
+    // Page by base ID before applying the raw-capture filter, so a page of retained rows is
+    // bounded too. Materialize the raw join before loading any definition payloads.
     private const string ReadCenteredViewPruneCandidatesSql = """
-        SELECT b.base_id, raw.payload_relative_path, raw.sidecar_relative_path, raw.capture_id,
-            json_extract(CASE WHEN json_valid(b.definition) THEN b.definition ELSE '{}' END, '$.preview.product.productIdentitySha256') AS preview_id,
-            b.recomputed_from IS NOT NULL
-        FROM processing_centered_view_bases b
-        JOIN raw_captures raw ON raw.capture_id = lower(replace(b.reference_id, '-', ''))
-        WHERE b.base_id > $after AND raw.exposure_started_unix_ms <= $cutoff AND raw.retention_hold = 0
-            AND length(preview_id) = 64 AND NOT EXISTS (
+        WITH page AS MATERIALIZED (
+            SELECT base_id, reference_id, recomputed_from IS NOT NULL AS recomputed
+            FROM processing_centered_view_bases
+            WHERE base_id > $after
+            ORDER BY base_id
+            LIMIT $limit
+        ), raw_eligible AS MATERIALIZED (
+            SELECT page.base_id, raw.payload_relative_path, raw.sidecar_relative_path, raw.capture_id
+            FROM page
+            JOIN raw_captures raw ON raw.capture_id = lower(replace(page.reference_id, '-', ''))
+            WHERE raw.exposure_started_unix_ms <= $cutoff AND raw.retention_hold = 0
+        ), definitions AS MATERIALIZED (
+            SELECT raw_eligible.*,
+                CASE WHEN json_valid(b.definition)
+                    THEN json_extract(b.definition, '$.preview.product.productIdentitySha256') END AS preview_id
+            FROM raw_eligible
+            CROSS JOIN processing_centered_view_bases b ON b.base_id = raw_eligible.base_id
+        )
+        SELECT page.base_id, d.payload_relative_path, d.sidecar_relative_path, d.capture_id, d.preview_id, page.recomputed,
+            EXISTS (
                 SELECT 1 FROM processing_outputs preview
-                WHERE preview.output_identity_sha256 = preview_id AND preview.capture_id = raw.capture_id
+                WHERE length(d.preview_id) = 64 AND preview.output_identity_sha256 = d.preview_id
+                    AND preview.capture_id = d.capture_id
             )
-        ORDER BY b.base_id
-        LIMIT $limit;
+        FROM page
+        LEFT JOIN definitions d ON d.base_id = page.base_id
+        ORDER BY page.base_id;
         """;
 
     private const string LoadCenteredViewPruneBatchSql = """

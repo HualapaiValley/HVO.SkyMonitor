@@ -103,12 +103,16 @@ keeps its change and revision records. Its own expired cross-base intervals can
 be detached. The archive reads the last live revision from the ordered live
 changes, so detaching an interval preserves the last-live archive target.
 
-The sweep checks files in read pages and commits at most 128 bases per SQLite
-write transaction. A paused or interrupted pass resumes by rechecking what
-remains. Completed publication checkpoints stay settled. Pruning logs a count
-of deleted bases and reports journal failures separately from file expiration.
-Unparseable view definitions remain in the journal so other expired views can
-still be processed. Exact links to successfully pruned revisions return HTTP 404.
+The sweep reads at most 512 base IDs at a time and commits at most 128 bases
+per SQLite write transaction. Between full read pages and after each write
+batch, it releases both lifecycle locks and pauses briefly so capture and other
+journal writers can proceed. It rechecks raw files and durable holds before
+pruning each batch. A paused or interrupted pass resumes by rechecking what
+remains, and completed publication checkpoints stay settled. Event 2547 reports
+how many bases were deleted. Journal failures are reported separately from file
+expiration as event 2546. Event 2548 counts expired bases skipped because their
+definitions lack a readable preview identity and identifies the first such base.
+Exact links to successfully pruned revisions return HTTP 404.
 
 SQLite reuses free journal pages on later writes. This sweep does not vacuum
 the journal or return the free pages to the filesystem. The shared journal

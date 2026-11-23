@@ -1,13 +1,19 @@
 using System.Diagnostics.CodeAnalysis;
 using HVO.SkyMonitor.AgentCore;
+using HVO.SkyMonitor.CameraAgent.Common.Background;
+using HVO.SkyMonitor.CameraAgent.Common.Capture.Calibration;
+using HVO.SkyMonitor.CameraAgent.Common.Configuration;
 using HVO.SkyMonitor.CameraAgent.Common.Capture.Processing;
 using HVO.SkyMonitor.CameraAgent.Common.Gallery;
+using HVO.SkyMonitor.CameraAgent.Common.Options;
 using HVO.SkyMonitor.CameraAgent.Common.RawIngress;
 using HVO.SkyMonitor.CameraAgent.Common.Storage;
+using HVO.SkyMonitor.CameraAgent.Common.Upload;
 using HVO.SkyMonitor.Processing;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace HVO.SkyMonitor.CameraAgent.Tests.Capture.Processing;
 
@@ -176,6 +182,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             .ConfigureAwait(false));
         var error = Assert.IsInstanceOfType<SqliteException>(Assert.ContainsSingle(logger.Warnings));
         StringAssert.Contains(error.Message, "injected centered retention failure", StringComparison.Ordinal);
+        Assert.AreEqual(2546, Assert.ContainsSingle(logger.WarningEvents).Id);
         Assert.AreEqual(initial.Revision.RevisionId, (await index.ReadRevisionAsync(initial.Base.BaseId,
             initial.Revision.RevisionId, token).ConfigureAwait(false))?.Revision.RevisionId);
         Assert.HasCount(1, await index.ReadChangesAsync(scope, 0, 32, token).ConfigureAwait(false));
@@ -186,6 +193,7 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         await persistence.ExpireOutputsAsync(fixture.Options.Value.RawIngressRoot, cutoff, heldPaths, token).ConfigureAwait(false);
         Assert.IsNull(await index.ReadRevisionAsync(initial.Base.BaseId, initial.Revision.RevisionId, token).ConfigureAwait(false));
         StringAssert.Contains(Assert.ContainsSingle(logger.Reports), "Pruned 1 expired centered-view bases", StringComparison.Ordinal);
+        Assert.AreEqual(2547, Assert.ContainsSingle(logger.ReportIds));
         Assert.AreEqual(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
     }
 
@@ -196,8 +204,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         using var store = new SqliteCaptureProcessingStore(fixture.Options);
         using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
         using var telemetry = new CaptureProcessingTelemetry();
-        var persistence = new CaptureProcessingPersistence(fixture.Options, store, storage, telemetry,
-            NullLogger<CaptureProcessingPersistence>.Instance);
+        var logger = new CenteredRetentionLog();
+        var persistence = new CaptureProcessingPersistence(fixture.Options, store, storage, telemetry, logger);
         var index = new SqliteCenteredViews(store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
         using var connection = await fixture.OpenAsync().ConfigureAwait(false);
         var cutoff = new DateTimeOffset(2026, 11, 4, 0, 0, 0, TimeSpan.Zero);
@@ -234,6 +242,9 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             Assert.IsNull(await index.ReadRevisionAsync(view.Base.BaseId, view.Revision.RevisionId, token).ConfigureAwait(false));
         Assert.AreEqual(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM processing_centered_view_bases WHERE definition = '{';")
             .ConfigureAwait(false));
+        var warning = Assert.ContainsSingle(logger.WarningEvents);
+        Assert.AreEqual(2548, warning.Id);
+        StringAssert.Contains(warning.Message, malformed.Base.BaseId, StringComparison.Ordinal);
         Assert.AreEqual(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
 
         RawIngressPaths Paths(CenteredView view) => RawIngressFileStore.GetPaths(root, captured,
@@ -298,6 +309,124 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
         await persistence.ExpireOutputsAsync(root, captured, held, token).ConfigureAwait(false);
         Assert.AreEqual(0L, await ScalarAsync(connection, countBases).ConfigureAwait(false));
         Assert.AreEqual(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
+    }
+
+    [TestMethod]
+    public async Task CenteredViewRetentionLetsACompetingIngressWriterCommitBetweenBatches()
+    {
+        using var fixture = await SchemaFixture.CreateAsync(initializeProcessing: true).ConfigureAwait(false);
+        using var store = new SqliteCaptureProcessingStore(fixture.Options);
+        using var storage = new FileSystemFrameStorageService(NullLogger<FileSystemFrameStorageService>.Instance);
+        using var telemetry = new CaptureProcessingTelemetry();
+        using var outbox = new SqliteArtifactOutbox();
+        using var calibration = new SqliteCalibrationLibraryStore(Mock.Of<IRawCaptureIngress>(), fixture.Options, TimeProvider.System);
+        var log = new CenteredRetentionLog();
+        var index = new SqliteCenteredViews(store, TimeProvider.System, NullLogger<SqliteCenteredViews>.Instance);
+        using var connection = await fixture.OpenAsync().ConfigureAwait(false);
+        var root = fixture.Options.Value.RawIngressRoot;
+        var captured = DateTimeOffset.UtcNow.AddDays(-15);
+        var scope = ViewScope();
+        var token = TestContext.CancellationToken;
+        var ingressHolds = new Mock<IRawIngressRetentionHolds>();
+        ingressHolds.Setup(holds => holds.GetRetentionHoldsAsync(root, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<RawIngressRetentionHold>());
+        var capacity = Mock.Of<IStorageCapacityProvider>(provider =>
+            provider.GetCapacity(root) == new StorageCapacity(1000, 500));
+        var lastBaseId = "";
+        RawIngressPaths? lastPaths = null;
+
+        for (var order = 1; order <= CaptureProcessingPersistence.CenteredViewPruneBatchSize + 2; order++)
+        {
+            var definition = RetentionViewDefinition(scope, order, captured);
+            await SeedCenteredRetentionCaptureAsync(connection, root, definition, captured, false, token).ConfigureAwait(false);
+            var view = await index.RegisterBaseAsync(definition, [], token).ConfigureAwait(false);
+            if (string.CompareOrdinal(view.Base.BaseId, lastBaseId) > 0)
+            {
+                lastBaseId = view.Base.BaseId;
+                lastPaths = RawIngressFileStore.GetPaths(root, captured, definition.Reference.Input.Raw.Artifact.ArtifactId);
+            }
+        }
+        Assert.IsNotNull(lastPaths);
+
+        // The normal processing hold protects the newest 100 raw captures independently of age.
+        var recent = DateTimeOffset.UtcNow;
+        for (var order = 1001; order <= 1100; order++)
+        {
+            var definition = RetentionViewDefinition(scope, order, recent);
+            await SeedCenteredRetentionCaptureAsync(connection, root, definition, recent, true, token).ConfigureAwait(false);
+            var paths = RawIngressFileStore.GetPaths(root, recent, definition.Reference.Input.Raw.Artifact.ArtifactId);
+            await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, [1], token).ConfigureAwait(false);
+        }
+
+        var checkpoint = new StartWriterAfterCenteredPruneBatch(WriteCaptureAsync);
+        var persistence = new CaptureProcessingPersistence(fixture.Options, store, storage, telemetry, log, checkpoint);
+        var holds = new CompositeProcessingRetentionHolds(
+            persistence, new CameraAgentClearReferenceLoader(fixture.Options), calibration);
+        using var service = new RetentionBackgroundService(Mock.Of<ICameraAgentConfigurationAccessor>(), fixture.Options,
+            TimeProvider.System, outbox, capacity, new StoragePressureState(), NullLogger<RetentionBackgroundService>.Instance,
+            ingressHolds.Object, holds);
+        await service.ApplyRetentionAsync(RetentionBackgroundServiceTests.CreateConfig(root), token).ConfigureAwait(false);
+        var writer = checkpoint.Writer;
+        Assert.IsNotNull(writer);
+        Assert.AreEqual(2L, await writer.WaitAsync(TimeSpan.FromSeconds(5), token).ConfigureAwait(false),
+            "The competing ingress writer must commit while another delete batch is still pending.");
+        Assert.IsEmpty(log.Warnings);
+        Assert.AreEqual(1L, await ScalarAsync(connection, "SELECT COUNT(*) FROM processing_centered_view_bases;")
+            .ConfigureAwait(false), "A raw payload restored during the lock handoff must keep its view.");
+        Assert.AreEqual(0L, await ScalarAsync(connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;").ConfigureAwait(false));
+
+        async Task<long> WriteCaptureAsync()
+        {
+            var gate = RawIngressLifecycleLock.ForRoot(root);
+            await gate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                var storageGate = StorageLifecycleLock.ForRoot(root);
+                await storageGate.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    return await CommitCaptureAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    storageGate.Release();
+                }
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        async Task<long> CommitCaptureAsync()
+        {
+            var options = new SqliteConnectionStringBuilder
+            {
+                DataSource = fixture.DatabasePath,
+                DefaultTimeout = new CameraAgentHostOptions().RawIngressSqliteBusyTimeoutSeconds
+            };
+            using var writerConnection = new SqliteConnection(options.ConnectionString);
+            await writerConnection.OpenAsync(token).ConfigureAwait(false);
+            var accepted = RetentionViewDefinition(scope, 2000, recent);
+            await SeedCenteredRetentionCaptureAsync(writerConnection, root, accepted, recent, false, token)
+                .ConfigureAwait(false);
+
+            var payload = lastPaths!.PayloadAbsolutePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(payload)!);
+            await File.WriteAllBytesAsync(payload, [1], token).ConfigureAwait(false);
+            return await ScalarAsync(writerConnection, "SELECT COUNT(*) FROM processing_centered_view_bases;").ConfigureAwait(false);
+        }
+    }
+
+    private sealed class StartWriterAfterCenteredPruneBatch(Func<Task<long>> startWriter) : ICaptureProcessingFaultInjector
+    {
+        internal Task<long>? Writer { get; private set; }
+
+        public void Inject(CaptureProcessingFaultPoint point, string nodeId)
+        {
+            if (point == CaptureProcessingFaultPoint.AfterCenteredViewPruneBatchCommit)
+                Writer ??= startWriter();
+        }
     }
 
     [TestMethod]
@@ -419,6 +548,8 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
     {
         internal List<Exception?> Warnings { get; } = [];
         internal List<string> Reports { get; } = [];
+        internal List<(int Id, string Message)> WarningEvents { get; } = [];
+        internal List<int> ReportIds { get; } = [];
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -426,9 +557,15 @@ public sealed partial class SqliteCaptureProcessingSchemaTests
             Func<TState, Exception?, string> formatter)
         {
             if (logLevel == LogLevel.Warning)
+            {
                 Warnings.Add(exception);
+                WarningEvents.Add((eventId.Id, formatter(state, exception)));
+            }
             if (logLevel == LogLevel.Information)
+            {
                 Reports.Add(formatter(state, exception));
+                ReportIds.Add(eventId.Id);
+            }
         }
     }
 }

@@ -369,12 +369,21 @@ internal sealed partial class CaptureProcessingPersistence(
             ? _store.ReadNormalizationPlanMasterArtifactIdsAsync(cancellationToken)
             : ValueTask.FromResult<IReadOnlyList<Guid>>([]);
 
-    public async ValueTask<int> ExpireOutputsAsync(
+    public ValueTask<int> ExpireOutputsAsync(
         string storageRoot,
         DateTimeOffset committedBeforeUtc,
         IReadOnlySet<string> heldAbsolutePaths,
         CancellationToken cancellationToken,
         CancellationToken interruptionToken = default)
+        => ExpireOutputsAsync(storageRoot, committedBeforeUtc, heldAbsolutePaths, null, cancellationToken, interruptionToken);
+
+    public async ValueTask<int> ExpireOutputsAsync(
+        string storageRoot,
+        DateTimeOffset committedBeforeUtc,
+        IReadOnlySet<string> heldAbsolutePaths,
+        Func<TimeSpan, ValueTask>? yieldLifecycleLocks,
+        CancellationToken cancellationToken,
+        CancellationToken interruptionToken)
     {
         if (!PathsEqual(storageRoot, _storageRoot)) return 0;
         var reconciler = new DerivedProductReconciler(_storageRoot, _store, _lifecycleOptions, _timeProvider);
@@ -482,7 +491,7 @@ internal sealed partial class CaptureProcessingPersistence(
             diagnosticId = diagnostics.NextDiagnosticId;
         }
         while (diagnosticTimestamp is not null);
-        await PruneCenteredViewJournalAsync(committedBeforeUtc, heldAbsolutePaths, cancellationToken, interruptionToken)
+        await PruneCenteredViewJournalAsync(committedBeforeUtc, heldAbsolutePaths, yieldLifecycleLocks, cancellationToken, interruptionToken)
             .ConfigureAwait(false);
         return deletedFiles;
     }

@@ -125,16 +125,12 @@ public sealed class RetentionBackgroundService(
                     // Initialization takes this same lifecycle lock so it must complete before retention owns the lock.
                     await rawIngress.InitializeForMaintenanceAsync(cancellationToken, maintenance.InterruptionToken).ConfigureAwait(false);
                 }
-                if (rawIngressGate is not null)
-                {
-                    await rawIngressGate.WaitAsync(sweepToken).ConfigureAwait(false);
-                }
+                var rawIngressGateAcquired = false;
                 var lifecycleGate = StorageLifecycleLock.ForRoot(plan.StorageRoot);
                 var lifecycleGateAcquired = false;
                 try
                 {
-                    await StorageLifecycleLock.WaitAsync(lifecycleGate, "retention", _logger, sweepToken).ConfigureAwait(false);
-                    lifecycleGateAcquired = true;
+                    await AcquireLifecycleLocksAsync().ConfigureAwait(false);
                     StorageCapacity capacity;
                     try
                     {
@@ -204,7 +200,7 @@ public sealed class RetentionBackgroundService(
                     deletedFiles += _processingHolds is IProcessingOutputExpiration expiration
                         ? await expiration.ExpireOutputsAsync(
                             plan.StorageRoot, new DateTimeOffset(cutoffDate, TimeSpan.Zero),
-                            pending.AbsolutePaths, cancellationToken, sweepToken).ConfigureAwait(false)
+                            pending.AbsolutePaths, YieldLifecycleLocksAsync, cancellationToken, sweepToken).ConfigureAwait(false)
                         : PruneDerivedOutputs(plan.StorageRoot, cutoffDate, pending.AbsolutePaths, sweepToken);
                     _logger.RetentionSweepCompleted(plan.StorageRoot, deletedFiles, pending.ArtifactIds.Count);
                 }
@@ -214,11 +210,39 @@ public sealed class RetentionBackgroundService(
                 }
                 finally
                 {
+                    ReleaseLifecycleLocks();
+                }
+
+                async ValueTask AcquireLifecycleLocksAsync()
+                {
+                    if (rawIngressGate is not null)
+                    {
+                        await rawIngressGate.WaitAsync(sweepToken).ConfigureAwait(false);
+                        rawIngressGateAcquired = true;
+                    }
+                    await StorageLifecycleLock.WaitAsync(lifecycleGate, "retention", _logger, sweepToken).ConfigureAwait(false);
+                    lifecycleGateAcquired = true;
+                }
+
+                void ReleaseLifecycleLocks()
+                {
                     if (lifecycleGateAcquired)
                     {
                         lifecycleGate.Release();
+                        lifecycleGateAcquired = false;
                     }
-                    rawIngressGate?.Release();
+                    if (rawIngressGateAcquired)
+                    {
+                        rawIngressGate!.Release();
+                        rawIngressGateAcquired = false;
+                    }
+                }
+
+                async ValueTask YieldLifecycleLocksAsync(TimeSpan delay)
+                {
+                    ReleaseLifecycleLocks();
+                    await Task.Delay(delay, sweepToken).ConfigureAwait(false);
+                    await AcquireLifecycleLocksAsync().ConfigureAwait(false);
                 }
             }
         }

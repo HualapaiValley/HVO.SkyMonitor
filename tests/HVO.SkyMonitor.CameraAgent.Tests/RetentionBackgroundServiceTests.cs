@@ -1307,7 +1307,7 @@ public sealed class RetentionBackgroundServiceTests
         }
     }
 
-    private static CameraModuleConfig CreateConfig(params string[] roots)
+    internal static CameraModuleConfig CreateConfig(params string[] roots)
     {
         return new CameraModuleConfig(new ObservatoryLocation(0, 0, 0, "UTC"), new CameraModuleDescriptor("VirtualSky"),
             new CameraRigConfig(new SensorProfile("Virtual", 1, 1, 1, SensorColorMode.Mono, CameraPixelFormat.Mono16),
