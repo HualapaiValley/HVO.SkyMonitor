@@ -81,6 +81,14 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
     /// requests cancellation, it propagates after invalidation. Caller cancellation and an internal deadline on their
     /// own retain completed evidence, subject to normal expiry.
     /// </summary>
+    /// <remarks>
+    /// Streams honor cancellation by throwing <see cref="OperationCanceledException"/>. Production adapters must
+    /// translate I/O aborted by their own cancellation or deadline handling into that exception. An
+    /// <see cref="IOException"/> or <see cref="ObjectDisposedException"/> from the stream read invalidates evidence.
+    /// </remarks>
+    /// <exception cref="OperationCanceledException">
+    /// The caller canceled the read. The exception carries <paramref name="cancellationToken"/>.
+    /// </exception>
     /// <exception cref="ObjectDisposedException">The reader has been disposed.</exception>
     public async Task ReadAsync(Stream source, CancellationToken cancellationToken)
     {
@@ -148,6 +156,11 @@ public sealed class GpsTimeReader(TimeProvider timeProvider, GpsUtcWindow? utcWi
                     }
                 }
             }
+        }
+        catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested &&
+            exception.CancellationToken != cancellationToken)
+        {
+            throw new OperationCanceledException(exception.Message, exception, cancellationToken);
         }
         catch (OperationCanceledException) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
