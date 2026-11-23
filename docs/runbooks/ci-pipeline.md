@@ -675,6 +675,13 @@ advisory build passes resolved native references through the same arguments.
   requires that SDK exactly (`rollForward: disable`), so a new SDK is a manual
   change to `global.json`, every SDK-bearing Dockerfile, and the other SDK pins
   together.
+- The absolute ranges hold `Microsoft.*` and `System.*` NuGet packages on the
+  .NET 11 version line (`>= 11.0.0, < 12.0.0`) and `dotnet/*` images at .NET 11
+  and later (`>= 11`). Dependabot compares the numeric part of tags such as
+  `11.0-noble`. These ranges also block 11.0.x servicing. During the .NET 11
+  upgrade, raise the ranges to the next major or remove the holds and update
+  the regression test. `scripts/test:ci-base-images` requires the holds to start
+  one major above the SDK in `global.json` and the NuGet range to span one major.
 - `devcontainers/base` receives reviewed stable patch/minor tag updates within
   major `3` and digest refreshes, staying on Ubuntu `24.04`. Dependabot ignores
   major updates; `ci:base-images` also checks the complete `3.x.y-ubuntu24.04`

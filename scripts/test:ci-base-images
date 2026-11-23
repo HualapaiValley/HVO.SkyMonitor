@@ -319,6 +319,25 @@ FROM build AS final
         self.assertNotIn('"version-update:semver-minor"', rule[1])
         self.assertNotIn('"version-update:semver-patch"', rule[1])
 
+    def test_dependabot_dotnet_holds_track_the_sdk_major(self):
+        sdk_version = json.loads((ROOT / "global.json").read_text())["sdk"]["version"]
+        next_major = int(sdk_version.split(".")[0]) + 1
+        config = (ROOT / ".github/dependabot.yml").read_text()
+        entries = re.split(r'^  - package-ecosystem: ', config, flags=re.M)[1:]
+        holds = (
+            ("nuget", ("Microsoft.*", "System.*"), f">= {next_major}.0.0, < {next_major + 1}.0.0"),
+            ("docker", ("dotnet/*",), f">= {next_major}"),
+        )
+        for ecosystem, names, version_range in holds:
+            updates = [entry for entry in entries if entry.startswith(f'"{ecosystem}"\n')]
+            self.assertTrue(updates, f"Missing Dependabot {ecosystem} entry")
+            for entry in updates:
+                for name in names:
+                    rule = rf'^      - dependency-name: "{re.escape(name)}"\n((?:        [^\n]*\n)+)'
+                    self.assertEqual(re.findall(rule, entry, re.M),
+                                     [f'        versions:\n          - "{version_range}"\n'],
+                                     f"{ecosystem} hold for {name} must track SDK {sdk_version}")
+
     def test_real_repository_and_dependabot_coverage(self):
         result = subprocess.run([CHECK], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
