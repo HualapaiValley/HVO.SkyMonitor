@@ -38,6 +38,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 ### Fixed
 
+- Centered CameraAgent half-flux diameter measurements give eligible stars first use of the 32-sample limit. #1954
+
 - CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001
 
 - CameraAgent Silo rebuild falls back to an earlier trusted checkpoint when the newest checkpoint omits required journal positions. #2002
