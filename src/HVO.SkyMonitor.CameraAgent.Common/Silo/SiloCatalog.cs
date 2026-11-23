@@ -795,25 +795,34 @@ internal sealed class SiloCheckpointWriter(
     /// <summary>
     /// Returns the anchor record that names the verified checkpoint's exact version, ready for seal evidence. A retry at
     /// an unchanged cursor, after an earlier checkpoint landed but before its anchor was recorded, anchors the one that
-    /// landed: the key is create-only, and only the P4 list may have grown since (#1965 4.5).
+    /// landed: the key is create-only, and only the P4 list may have grown since (#1965 4.5). Every path, writing or
+    /// anchoring one that landed, requires a persistence-qualified store (5.2).
     /// </summary>
     public async ValueTask<SiloAnchorRecord> WriteAsync(CancellationToken cancellationToken)
     {
+        if (!local.Descriptor.PersistenceQualified)
+        {
+            throw new SiloStoreNotQualifiedException(local.Descriptor.StoreId);
+        }
         var (covers, coversSha, entries, reachedP4) = await index.ExportRecordsAsync(cancellationToken).ConfigureAwait(false);
         var checkpoint = new SiloJournalCheckpoint(SiloFormats.JournalCheckpoint, binding.InstanceId, binding.BindingId, covers, coversSha, entries,
             reachedP4);
         var bytes = SiloJson.Serialize(checkpoint);
         var key = SiloObjectNamespace.CheckpointKey(covers);
+        SiloAnchorRecord Anchor(string versionId, long length, string sha256) =>
+            new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, versionId), length, sha256, covers, coversSha);
         if (bytes.Length > maximumBytes)
         {
             // An earlier attempt may have landed within the bound before proof of P4 grew the list at this cursor. Only
-            // a new write is held to the bound here; a landed checkpoint is read only within it.
-            if (await ReadLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false) is { } inBound)
+            // a new write is held to the bound here. A landed checkpoint within it that this retry may not anchor is a
+            // conflict, as it would be at any size; with nothing usable at the key the snapshot is too large to write.
+            var occupant = await InspectLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false);
+            return occupant.Kind switch
             {
-                return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, inBound.VersionId), inBound.Length, inBound.Sha256, covers,
-                    coversSha);
-            }
-            throw new SiloCheckpointTooLargeException(bytes.Length, maximumBytes);
+                LandedKind.Reusable => Anchor(occupant.VersionId!, occupant.Length, occupant.Sha256!),
+                LandedKind.Different => throw Conflict(key, occupant.VersionId!),
+                _ => throw new SiloCheckpointTooLargeException(bytes.Length, maximumBytes),
+            };
         }
         var sha = SiloHash.Sha256(bytes);
         var name = await spool.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
@@ -821,17 +830,17 @@ internal sealed class SiloCheckpointWriter(
         {
             var created = await SiloCreateOnly.PutVerifiedAsync(local, key, bytes.Length, sha, SiloCreateOnly.FromBytes(bytes),
                 SiloFormats.JournalCheckpoint, binding.BindingId, clock, null, cancellationToken).ConfigureAwait(false);
-            return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, created.VersionId), bytes.Length, sha, covers, coversSha);
+            return Anchor(created.VersionId, bytes.Length, sha);
         }
         catch (SiloConflictException conflict) when (conflict.Code == "silo.create-only-conflict")
         {
             // An earlier attempt landed, its response perhaps lost, and proof of P4 grew since at the same cursor.
-            if (await ReadLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false) is not { } landed)
+            var occupant = await InspectLandedAsync(key, checkpoint, cancellationToken).ConfigureAwait(false);
+            if (occupant.Kind != LandedKind.Reusable)
             {
                 throw;
             }
-            return new(new(local.Descriptor.StoreId, local.Descriptor.Bucket, key, landed.VersionId), landed.Length, landed.Sha256, covers,
-                coversSha);
+            return Anchor(occupant.VersionId!, occupant.Length, occupant.Sha256!);
         }
         finally
         {
@@ -840,33 +849,61 @@ internal sealed class SiloCheckpointWriter(
         }
     }
 
+    private enum LandedKind
+    {
+        /// <summary>Nothing readable is at the key.</summary>
+        Absent,
+
+        /// <summary>The object at the key is larger than the bound, so no reader would accept it.</summary>
+        OverBound,
+
+        /// <summary>A checkpoint within the bound that this retry may not anchor, or any other object.</summary>
+        Different,
+
+        /// <summary>This cursor's checkpoint of exactly these records, every P4 claim proven now.</summary>
+        Reusable,
+    }
+
+    private static SiloConflictException Conflict(string key, string versionId) =>
+        new("silo.create-only-conflict", $"Key {key} already holds different bytes at {versionId}; it is never replaced.");
+
     /// <summary>
-    /// The checkpoint already at this cursor's key, when it is this binding's checkpoint of exactly these records and
-    /// every P4 claim it makes is one the catalog proves now. Its list may be shorter, from before proof grew at the same
-    /// cursor, and then it only settles less. A claim the catalog cannot prove, or anything else at the key, stays a
-    /// conflict, so a retry never anchors a P4 that did not happen.
+    /// What is already at this cursor's key, read only up to the bound. It is reusable when it is this binding's checkpoint
+    /// of exactly these records and every P4 claim it makes is one the catalog proves now. Its list may be shorter, from
+    /// before proof grew at the same cursor, and then it only settles less. A claim the catalog cannot prove, or anything
+    /// else at the key, is different, so a retry never anchors a P4 that did not happen.
     /// </summary>
-    private async ValueTask<(string VersionId, long Length, string Sha256)?> ReadLandedAsync(
+    private async ValueTask<(LandedKind Kind, string? VersionId, long Length, string? Sha256)> InspectLandedAsync(
         string key, SiloJournalCheckpoint wanted, CancellationToken cancellationToken)
     {
-        (string VersionId, byte[] Bytes)? current;
+        (string VersionId, byte[] Bytes) found;
+        try
+        {
+            if (await SiloVerifier.ReadCurrentAsync(local, key, maximumBytes, cancellationToken).ConfigureAwait(false) is not { } current)
+            {
+                return (LandedKind.Absent, null, 0, null);
+            }
+            found = current;
+        }
+        catch (SiloInvalidObjectException)
+        {
+            return (LandedKind.OverBound, null, 0, null);
+        }
         SiloJournalCheckpoint landed;
         try
         {
-            current = await SiloVerifier.ReadCurrentAsync(local, key, cancellationToken).ConfigureAwait(false);
-            if (current is not { } found || found.Bytes.Length > maximumBytes)
-            {
-                return null;
-            }
             landed = SiloJson.ReadCheckpoint(found.Bytes, "journal checkpoint " + wanted.Covers);
         }
         catch (SiloDataException)
         {
-            return null;
+            return (LandedKind.Different, found.VersionId, found.Bytes.Length, null);
         }
         var same = SiloJson.Serialize(landed with { ReachedP4 = [] }).AsSpan().SequenceEqual(SiloJson.Serialize(wanted with { ReachedP4 = [] }));
-        var proven = landed.ReachedP4.All(claim => wanted.ReachedP4.Contains(claim));
-        return same && proven ? (current.Value.VersionId, current.Value.Bytes.Length, SiloHash.Sha256(current.Value.Bytes)) : null;
+        var provable = wanted.ReachedP4.ToHashSet();
+        var proven = landed.ReachedP4.All(provable.Contains);
+        return same && proven
+            ? (LandedKind.Reusable, found.VersionId, found.Bytes.Length, SiloHash.Sha256(found.Bytes))
+            : (LandedKind.Different, found.VersionId, found.Bytes.Length, null);
     }
 }
 

@@ -17,11 +17,29 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
 {
     private readonly Lock _gate = new();
     private readonly SortedDictionary<string, List<StoredVersion>> _objects = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _served = new(StringComparer.Ordinal);
     private int _counter;
 
     private sealed record StoredVersion(string VersionId, byte[] Bytes, IReadOnlyDictionary<string, string> Metadata);
 
     public SiloStoreDescriptor Descriptor { get; } = new(storeId, bucket, storeClass, SiloRetrieval.Online, qualified);
+
+    /// <summary>How many bytes of the key's versions readers have consumed.</summary>
+    public long BytesServed(string key)
+    {
+        lock (_gate)
+        {
+            return _served.GetValueOrDefault(key);
+        }
+    }
+
+    private void Served(string key, int read)
+    {
+        lock (_gate)
+        {
+            _served[key] = _served.GetValueOrDefault(key) + read;
+        }
+    }
 
     public bool Unreachable { get; set; }
 
@@ -117,7 +135,7 @@ internal sealed class SiloTestStore(string storeId, string bucket, SiloStoreClas
             var found = versions.FirstOrDefault(stored => stored.VersionId == versionId);
             return ValueTask.FromResult(found is null
                 ? new SiloOpenResult(SiloOpenStatus.NoSuchVersion, null)
-                : new SiloOpenResult(SiloOpenStatus.Found, new MemoryStream(found.Bytes.ToArray(), writable: false)));
+                : new SiloOpenResult(SiloOpenStatus.Found, new ServedStream(found.Bytes.ToArray(), read => Served(key, read))));
         }
     }
 
@@ -312,6 +330,58 @@ internal sealed class SiloTestPayloads : ISiloPayloadSpool
     {
         Released.AddOrUpdate(sourceToken, 1, static (_, count) => count + 1);
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>A read-only stream over one stored version that reports every byte a reader consumes.</summary>
+internal sealed class ServedStream(byte[] bytes, Action<int> served) : Stream
+{
+    private readonly MemoryStream _inner = new(bytes, writable: false);
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => _inner.Length;
+
+    public override long Position
+    {
+        get => _inner.Position;
+        set => throw new NotSupportedException();
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) => Count(_inner.Read(buffer, offset, count));
+
+    public override int Read(Span<byte> buffer) => Count(_inner.Read(buffer));
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+        Task.FromResult(Count(_inner.Read(buffer, offset, count)));
+
+    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(Count(_inner.Read(buffer.Span)));
+
+    public override void Flush()
+    {
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+    public override void SetLength(long value) => throw new NotSupportedException();
+
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _inner.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private int Count(int read)
+    {
+        served(read);
+        return read;
     }
 }
 

@@ -10,10 +10,11 @@ contract.
 ## Format identities
 
 Every new-layout format has an explicit identity (4.7). Readers accept added fields within an identity. A null element
-in any list is malformed, so the object is invalid rather than a fault in a later check. Readers refuse any other
-identity read-only, with a `SiloFormatRefusedException` that names the object, the format found and the format
-supported. A refused object, bucket or database is left byte for byte unchanged. A rebuild that meets an unsupported
-object aborts before it replaces the catalog. The tests check each of these by digest.
+in any list, or a journal record that is not a JSON object, is malformed, so the object is invalid rather than a fault
+in a later check or an unsupported type. Readers refuse any other identity read-only, with a
+`SiloFormatRefusedException` that names the object, the format found and the format supported. A refused object,
+bucket or database is left byte for byte unchanged. A rebuild that meets an unsupported object aborts before it
+replaces the catalog. The tests check each of these by digest.
 
 | Object | Identity | Where |
 | --- | --- | --- |
@@ -201,7 +202,9 @@ not persistence-qualified is never named by a committed record.
   whose bytes match its anchor but whose content is malformed does not qualify, and selection falls back to the
   previous trusted anchor. It refuses to write any checkpoint larger than the readers' bound, so it never produces one
   a rebuild cannot read. A checkpoint that landed within the bound is still anchored when proof of P4 has since grown
-  the snapshot past it. Selection starts from the
+  the snapshot past it, and one there that the retry may not anchor is still a conflict; only with nothing usable at
+  the key is the snapshot refused as too large. What is at the key is read only up to the bound. Every path, writing
+  or anchoring a checkpoint that landed, requires a persistence-qualified store. Selection starts from the
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
   length, which a newer version at the same key cannot hide. A replica is read only through the exact version a verified

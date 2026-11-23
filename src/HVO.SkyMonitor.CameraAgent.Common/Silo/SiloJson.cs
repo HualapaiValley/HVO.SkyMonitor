@@ -89,10 +89,6 @@ internal static class SiloJson
         var published = new List<(string GroupId, string RevisionId)>();
         foreach (var entry in checkpoint.Entries)
         {
-            if (entry.Record.ValueKind != JsonValueKind.Object)
-            {
-                throw new SiloInvalidObjectException(subject, "a checkpoint entry holds no record");
-            }
             if (ReadRecord(entry.Record, $"{subject} entry g{entry.Generation}/{entry.Sequence}#{entry.Index}") is SiloPublishRecord publish)
             {
                 published.Add((publish.GroupId, publish.RevisionId));
@@ -156,8 +152,12 @@ internal static class SiloJson
 
     private static void RequireKnownRecordType(JsonElement record, string subject)
     {
-        var type = record.ValueKind == JsonValueKind.Object && record.TryGetProperty("type", out var element) &&
-                   element.ValueKind == JsonValueKind.String ? element.GetString() : null;
+        // A null or other non-object element is malformed, not a record of an unknown type.
+        if (record.ValueKind != JsonValueKind.Object)
+        {
+            throw new SiloInvalidObjectException(subject, "a record is not a JSON object");
+        }
+        var type = record.TryGetProperty("type", out var element) && element.ValueKind == JsonValueKind.String ? element.GetString() : null;
         if (type is null || !SiloRecordTypes.All.Contains(type))
         {
             throw new SiloFormatRefusedException(subject + " record", type, SiloFormats.JournalSegment + " record types");

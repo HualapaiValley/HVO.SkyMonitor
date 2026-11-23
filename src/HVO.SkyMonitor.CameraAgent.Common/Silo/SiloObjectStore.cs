@@ -274,8 +274,16 @@ internal static class SiloVerifier
     }
 
     /// <summary>Read the current version of a small metadata object, for create-only conflict resolution and journal reads.</summary>
+    public static ValueTask<(string VersionId, byte[] Bytes)?> ReadCurrentAsync(
+        ISiloObjectStore store, string key, CancellationToken cancellationToken) =>
+        ReadCurrentAsync(store, key, SiloJson.MaximumMetadataObjectBytes, cancellationToken);
+
+    /// <summary>
+    /// Read the current version of a metadata object no larger than <paramref name="maximumBytes"/>. The read stops at the
+    /// first byte past the bound, so an oversized object costs at most one byte more than the bound to refuse.
+    /// </summary>
     public static async ValueTask<(string VersionId, byte[] Bytes)?> ReadCurrentAsync(
-        ISiloObjectStore store, string key, CancellationToken cancellationToken)
+        ISiloObjectStore store, string key, long maximumBytes, CancellationToken cancellationToken)
     {
         var versionId = await store.LocateCurrentVersionAsync(key, cancellationToken).ConfigureAwait(false);
         if (versionId is null)
@@ -288,15 +296,16 @@ internal static class SiloVerifier
             return null;
         }
         using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
+        var chunk = new byte[(int)Math.Min(81920, maximumBytes + 1)];
         int read;
-        while ((read = await opened.Content.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+        while ((read = await opened.Content.ReadAsync(chunk.AsMemory(0, (int)Math.Min(chunk.Length, maximumBytes + 1 - buffer.Length)),
+            cancellationToken).ConfigureAwait(false)) > 0)
         {
-            if (buffer.Length + read > SiloJson.MaximumMetadataObjectBytes)
+            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+            if (buffer.Length > maximumBytes)
             {
                 throw new SiloInvalidObjectException(key, "the metadata object exceeds its bound");
             }
-            await buffer.WriteAsync(chunk.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
         return (versionId, buffer.ToArray());
     }
