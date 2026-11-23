@@ -344,4 +344,125 @@ public sealed partial class CurrentSkyPageTests
                 }
             };
     }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SustainedLayerMismatchShowsRetainedAssessmentWithoutMeasuredTools(bool assessmentWithLayers)
+    {
+        var evidence = await AstrometryEvidenceAsync().ConfigureAwait(false);
+        var summary = CameraAgentLatestAstrometry.FromVerified(evidence)!;
+        var measuredImage = AstrometryImage(evidence);
+        var firstImage = WithStructuredBase();
+        var firstCapture = firstImage.DisplayCapture! with
+        {
+            CaptureId = Guid.NewGuid(),
+            ExposureStartedUtc = measuredImage.DisplayCapture!.ExposureStartedUtc.AddSeconds(-20)
+        };
+        var first = View(firstImage with { DisplayCapture = firstCapture, LatestCapture = firstCapture });
+        var capture = measuredImage.DisplayCapture! with { CaptureSequence = firstCapture.CaptureSequence + 1 };
+        var raw = measuredImage.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Raw) with
+        {
+            PreviewUrl = new($"/api/v1/operations/artifacts/{evidence.Solution!.Assessment.Frame.SourceArtifactId:D}/preview", UriKind.Relative),
+            PreviewWidth = evidence.WidthPixels,
+            PreviewHeight = evidence.HeightPixels
+        };
+        var fallback = View(measuredImage with
+        {
+            DisplayCapture = capture,
+            LatestCapture = capture,
+            SelectedStage = CameraAgentPresentationStage.Annotated,
+            StructuredLayersAvailable = true,
+            Stages = [raw, measuredImage.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Annotated)]
+        });
+        var repairedBase = Guid.NewGuid();
+        var combined = first.Presentation.Stages.Single(slot => slot.Stage == CameraAgentPresentationStage.Combined) with
+        {
+            ArtifactId = Guid.NewGuid(),
+            DisplayArtifactId = repairedBase,
+            DisplayReferenceId = repairedBase,
+            PreviewUrl = new($"/api/v1/operations/artifacts/{repairedBase:D}/preview", UriKind.Relative),
+            PreviewWidth = raw.PreviewWidth,
+            PreviewHeight = raw.PreviewHeight
+        };
+        var repaired = View(fallback.Presentation with { Stages = [.. fallback.Presentation.Stages, combined] });
+        var layers = Layered(capture.CaptureId, new string('E', 64), repairedBase) with
+        {
+            WidthPixels = evidence.WidthPixels,
+            HeightPixels = evidence.HeightPixels,
+            Svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><g id="hvo-layer-0" /></svg>"""u8.ToArray()
+        };
+        var measured = layers with
+        {
+            Astrometry = evidence with { CompatibleBaseArtifactId = repairedBase },
+            Layers = [layers.Layers[0] with { Kind = AstrometricDiagnosticPresentation.AssociationsLayer }]
+        };
+
+        using var context = new BunitContext();
+        var (service, clock) = ConfigurePolling(context);
+        var current = first;
+        var offeredLayers = assessmentWithLayers ? measured : layers;
+        service.CurrentSkyHandler = _ => ValueTask.FromResult(OperatorUiResult<CameraAgentCurrentSkyView>.Success(current));
+        service.PresentationHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLayeredPresentation>.Success(
+            id == capture.CaptureId ? offeredLayers : Layered(id, new string('D', 64))));
+        service.AstrometryHandler = (id, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentRetainedAstrometry>.Success(
+            id == capture.CaptureId && !assessmentWithLayers ? evidence : new(id, "NotRetained", "assessment-not-retained")));
+        service.LatestAstrometryHandler = (_, _) => ValueTask.FromResult(OperatorUiResult<CameraAgentLatestAstrometryRead>.Success(new(true, summary)));
+
+        var page = context.Render<CurrentSkyPage>();
+        WaitForFirst(page, clock, first);
+        page.WaitForElement(".sky-layer-canvas--verified");
+        page.WaitForAssertion(() => AssertHeadline("For a different capture."));
+
+        current = fallback;
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        Assert.AreEqual(CaptureLink(first), page.Find(".layers-link").GetAttribute("href"));
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        page.WaitForAssertion(AssertFallback);
+
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        page.WaitForAssertion(AssertFallback);
+
+        offeredLayers = measured;
+        current = repaired;
+        await page.Find("button.refresh-link").ClickAsync().ConfigureAwait(false);
+        page.WaitForAssertion(() =>
+        {
+            AssertHeadline("For the selected capture.");
+            Assert.AreEqual("Accepted", page.Find(".astrometry-card .state-chip").TextContent);
+            Assert.AreEqual(CaptureLink(repaired), page.Find(".layers-link").GetAttribute("href"));
+            StringAssert.Contains(page.Find(".sky-layer-canvas--verified img").GetAttribute("src"), repairedBase.ToString("D"), StringComparison.Ordinal);
+            Assert.IsFalse(page.Find("[aria-label='Measured layers'] input[data-layer-target='hvo-layer-0']").HasAttribute("disabled"));
+            AssertCalculatorDisabled(false);
+        });
+
+        void AssertFallback()
+        {
+            Assert.AreEqual(CaptureLink(fallback), page.Find(".layers-link").GetAttribute("href"));
+            Assert.AreEqual(raw.PreviewUrl!.OriginalString, page.Find(".capture-image img").GetAttribute("src"));
+            StringAssert.Contains(page.Find(".sky-layer-unavailable").TextContent, "manifest base does not match", StringComparison.Ordinal);
+            AssertHeadline("For the selected capture.");
+            Assert.AreEqual("Accepted", page.Find(".astrometry-card .state-chip").TextContent);
+            StringAssert.Contains(page.Find(".astrometry-reason").TextContent, evidence.Solution!.Assessment.ReasonCode, StringComparison.Ordinal);
+            Assert.IsEmpty(page.FindAll(".sky-layer-workspace"));
+            Assert.IsEmpty(page.FindAll("[aria-label='Measured layers'] input:not([disabled])"));
+            AssertCalculatorDisabled(true);
+        }
+
+        void AssertCalculatorDisabled(bool disabled)
+        {
+            var controls = page.FindAll(".pixel-sky-calculator input, .pixel-sky-calculator select, .pixel-sky-calculator button");
+            Assert.IsNotEmpty(controls);
+            foreach (var control in controls)
+                Assert.AreEqual(disabled, control.HasAttribute("disabled"), control.OuterHtml);
+        }
+
+        void AssertHeadline(string captureLabel)
+        {
+            var headline = page.Find(".latest-measured-solution");
+            StringAssert.Contains(headline.TextContent, captureLabel, StringComparison.Ordinal);
+            Assert.AreEqual(CaptureLink(fallback), headline.QuerySelector("a")!.GetAttribute("href"));
+            Assert.AreEqual(summary.MidpointUtc.ToString("O"), headline.QuerySelector("time")!.GetAttribute("datetime"));
+        }
+    }
 }

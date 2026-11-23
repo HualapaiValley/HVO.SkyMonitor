@@ -376,7 +376,7 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
                         ResetLayers(displayCaptureId, cancellationToken);
                         _showingBaseOnlyForMismatch = baseOnly;
                         _lastCaptureChangeTimestamp = started;
-                        if (!baseOnly && layers is not null && displayCaptureId is { } shownCaptureId)
+                        if (layers is not null && displayCaptureId is { } shownCaptureId)
                             ApplyLayerResult(shownCaptureId, Volatile.Read(ref _layerGeneration), layers);
                     }
                     var combinedId = _facts?.CombinedLineage?.ArtifactId;
@@ -720,24 +720,28 @@ public sealed partial class CurrentSkyPage : SiteTimeComponent, IAsyncDisposable
             OperatorUiResult<CameraAgentLayeredPresentation>.Failure(OperatorUiResultKind.Unavailable,
                 "Selected measured evidence is temporarily unavailable.");
         _layerLoading = false;
-        if (_showingBaseOnlyForMismatch)
-        {
-            if (!result.IsSuccess || result.Value is not { } compatible || !LayersMatchDisplay(_presentation, compatible)) return;
-            _showingBaseOnlyForMismatch = false;
-            _gaveDisplayMismatchOneRefresh = false;
-        }
         if (result.IsSuccess && result.Value is { } value && value.CaptureId == captureId)
         {
-            _layers = value;
+            // The retained assessment describes the capture even when its layers cannot be drawn on the preview.
             if (value.Astrometry is { } astrometry) ApplyAstrometry(captureId, astrometry);
-            _layersNotRetained = false;
-            _layerMessage = null;
-            _selectedLayers = RememberedSelection(value);
-            _layerInteractive = false;
-            _bindGeneration++;
-            _bindLayers = true;
+
+            if (_showingBaseOnlyForMismatch && LayersMatchDisplay(_presentation, value))
+            {
+                _showingBaseOnlyForMismatch = false;
+                _gaveDisplayMismatchOneRefresh = false;
+            }
+            if (!_showingBaseOnlyForMismatch)
+            {
+                _layers = value;
+                _layersNotRetained = false;
+                _layerMessage = null;
+                _selectedLayers = RememberedSelection(value);
+                _layerInteractive = false;
+                _bindGeneration++;
+                _bindLayers = true;
+            }
         }
-        else
+        else if (!_showingBaseOnlyForMismatch)
         {
             _layersNotRetained = result.Kind == OperatorUiResultKind.NotFound;
             _layerMessage = result.Message ?? "Structured layers are unavailable for this capture.";

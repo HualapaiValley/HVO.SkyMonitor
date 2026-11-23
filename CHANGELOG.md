@@ -58,6 +58,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Current Sky uses the retained preview named by its layers when it matches. If a mismatch persists, new captures continue advancing with a standard image until the layers match. #1901
 
+- Current Sky shows the selected capture’s retained astrometry assessment during a standard preview fallback. Measured overlays and the pixel calculator stay disabled until compatible geometry is available. #1939
+
 - Current Sky briefly keeps the previous layered image and its tools while it checks the incoming capture’s layers against its rendered display base. #1901
 
 - Current Sky rechecks skipped astrometry evidence so repairs published by another store can restore the latest accepted fit. #1901
