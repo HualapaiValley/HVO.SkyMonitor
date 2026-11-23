@@ -448,6 +448,131 @@ public sealed class CenteredRegisteredStackTests
 
     [TestMethod]
     [TestCategory("Unit")]
+    [DataRow("missing-slot")]
+    [DataRow("invalid-enum")]
+    [DataRow("unknown-member")]
+    [DataRow("missing-auxiliary")]
+    public async Task ReaderRejectsMalformedChecksummedEvidence(string damage)
+    {
+        var outcome = await ShiftedMonoWindow();
+        var retained = outcome.Products.Single(product => product.MediaType == CenteredRegisteredStackEvidence.MediaType);
+        Assert.AreEqual(CenteredStackDisposition.Registered, CenteredRegisteredStackEvidence.Read(retained).Disposition);
+        if (damage == "missing-auxiliary")
+        {
+            var options = JsonNode.Parse(retained.Recipe.Descriptor.Options.GetRawText())!.AsObject();
+            Assert.IsTrue(options.Remove("auxiliaryInputs"));
+            var descriptor = retained.Recipe.Descriptor;
+            var recipe = ProcessingIdentity.CreateRecipeIdentity(RecipeIdentityDescriptor.Create(descriptor.Name,
+                descriptor.SemanticVersion, descriptor.ImplementationVersion, JsonSerializer.SerializeToElement(options)));
+            retained = retained with
+            {
+                Recipe = recipe,
+                OutputIdentitySha256 = ProcessingIdentity.CreateOutputIdentity(retained.Role, retained.Variant,
+                    recipe.IdentitySha256, retained.SourceArtifactIds)
+            };
+        }
+        else
+        {
+            retained = RewriteEvidence(retained, json =>
+            {
+                switch (damage)
+                {
+                    case "missing-slot":
+                        json["plan"]!["slots"]!.AsArray().RemoveAt(0);
+                        break;
+                    case "invalid-enum":
+                        json["disposition"] = "Bogus";
+                        break;
+                    case "unknown-member":
+                        json["unexpected"] = true;
+                        break;
+                }
+            });
+        }
+
+        Assert.ThrowsExactly<InvalidDataException>(() => CenteredRegisteredStackEvidence.Read(retained));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(20d, 1d)]
+    [DataRow(10d, 2d)]
+    public async Task RegistrationRefusesDifferentGainOrExposureDuration(double gain, double exposureSeconds)
+    {
+        var center = await BuildCapture(103, Generate((x, y) => StarField(x, y, 91)), false);
+        var neighbor = await BuildCapture(105, Generate((x, y) => StarField(x + 5, y, 81)), false,
+            gain: gain, exposure: TimeSpan.FromSeconds(exposureSeconds));
+        var evidence = AssertSingleExposure(await Execute([center, neighbor], 103));
+        Assert.AreEqual(CenteredRegistrationReason.IncompatibleExposure, evidence.Sources[4].Reason);
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task RegistrationRefusesInvalidPlateOrIncompatiblePlatePair(bool malformed)
+    {
+        var referenceFixture = await MeasuredAstrometryFixture.CreateAtAsync(0);
+        var sourceFixture = await MeasuredAstrometryFixture.CreateAtAsync(4);
+        if (!malformed)
+        {
+            var context = sourceFixture.Context;
+            sourceFixture = sourceFixture with { Context = context with { CatalogPackage = context.CatalogPackage with { PackageVersion = "2" } } };
+        }
+        var center = await FromPlateFixture(referenceFixture, 103, includePlate: true);
+        var neighbor = await FromPlateFixture(sourceFixture, 105, includePlate: true);
+        if (malformed)
+        {
+            var solution = neighbor.PlateArtifacts[^1] with { Payload = "{}"u8.ToArray() };
+            neighbor.PlateArtifacts[^1] = solution;
+            neighbor = neighbor with
+            {
+                Pin = neighbor.Pin with
+                {
+                    Plate = neighbor.Pin.Plate! with { Solution = CenteredStackArtifactPin.From(solution) }
+                }
+            };
+        }
+        var evidence = AssertSingleExposure(await Execute([center, neighbor], 103));
+        Assert.AreEqual(malformed ? CenteredRegistrationReason.InvalidRetainedPlate : CenteredRegistrationReason.IncompatiblePlatePair,
+            evidence.Sources[4].Reason, Describe(evidence));
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
+    public async Task RegistrationRefusesVerifiedNeighborWithDisjointValidSupport()
+    {
+        var center = await BuildCapture(103, Generate((x, y) => StarField(x, y, 91)), false);
+        var neighbor = await BuildCapture(105, Generate((x, y) => StarField(x + 5, y, 81)), false);
+        center = WithMask(center, static x => x < 64);
+        neighbor = WithMask(neighbor, static x => x > 96);
+
+        var evidence = AssertSingleExposure(await Execute([center, neighbor], 103));
+        Assert.AreEqual(CenteredRegistrationReason.NoSharedSupport, evidence.Sources[4].Reason, Describe(evidence));
+        Assert.AreEqual(DirectRegistrationStatus.Verified, evidence.Sources[4].PairCheck?.Status);
+        Assert.AreEqual(0, evidence.Sources[4].SupportedPixels);
+
+        static Capture WithMask(Capture capture, Func<int, bool> validColumn)
+        {
+            var mask = CenteredStackValidityMask.Create(capture.Raw, capture.Qualified.Linear.Linear,
+                Enumerable.Range(0, Width * Height).Select(i => validColumn(i % Width) ? (byte)1 : (byte)0).ToArray());
+            return capture with { Mask = mask, Pin = capture.Pin with { ValidityMask = CenteredStackArtifactPin.From(mask) } };
+        }
+    }
+
+    private static CenteredRegisteredStackEvidence AssertSingleExposure(ProcessingOutcome outcome)
+    {
+        var evidence = Read(outcome);
+        Assert.AreEqual(CenteredStackDisposition.SingleExposure, evidence.Disposition, Describe(evidence));
+        Assert.AreEqual(CenteredRegistrationReason.Contributed, evidence.Sources[2].Reason);
+        Assert.AreEqual(TimeSpan.TicksPerSecond, evidence.TotalIntegrationTicks);
+        Assert.IsNull(evidence.Sources[4].Method);
+        Assert.HasCount(1, outcome.Products, "A refused neighbor must not produce stack planes.");
+        return evidence;
+    }
+
+    [TestMethod]
+    [TestCategory("Unit")]
     public async Task ExcludedMeasurementCannotContributeAndMissingCenterNeverBorrowsNeighbor()
     {
         var goodPixels = Generate((x, y) => (ushort)(91 + 2500 * Math.Exp(-((x - 55) * (x - 55) + (y - 45) * (y - 45)) / 4d)));
@@ -826,7 +951,7 @@ public sealed class CenteredRegisteredStackTests
     private static async Task<Capture> BuildCapture(int sequence, byte[] pixels, bool bayer,
         int width = Width, int height = Height, DateTimeOffset? observation = null, string? measurementReason = null,
         bool calibrate = false, bool collapsedDescriptor = false, bool blankMask = false, bool clippingControls = false,
-        ProjectionContext? aperture = null)
+        ProjectionContext? aperture = null, double gain = 10, TimeSpan? exposure = null)
     {
         var sensorWhite = clippingControls ? 4000 : 4095;
         var layout = new FrameLayoutDescriptor(width, height, width * 2,
@@ -840,11 +965,11 @@ public sealed class CenteredRegisteredStackTests
                 : new(width, height, 0, 0, width, height, 1, 1, FrameBinningAlgorithm.IdentityV1, null, null)
         };
         var time = observation ?? Time(sequence);
-        var end = time.AddSeconds(1);
-        var integration = end - time;
+        var integration = exposure ?? TimeSpan.FromSeconds(1);
+        var end = time.Add(integration);
         var profile = new ProfileIdentityDescriptor("fixed", "1", new string('A', 64));
         var rawDescriptor = new ReconstructionDescriptor(new(Camera.AgentId, "rig-1", sequence, Guid.NewGuid()),
-            new(time, time, collapsedDescriptor ? time : end, end, end), new(integration, integration, 10, 10, 0, 0, null, -10),
+            new(time, time, collapsedDescriptor ? time : end, end, end), new(integration, integration, gain, gain, 0, 0, null, -10),
             new(profile, profile, profile, profile, profile), layout,
             new(Guid.NewGuid(), FrameArtifactRole.Raw, "camera-1", "raw", end, [], RawRecipe,
                 "application/x-hvo-frame", ProcessingIdentity.ComputePayloadSha256(pixels)));
@@ -852,7 +977,7 @@ public sealed class CenteredRegisteredStackTests
         Assert.IsTrue(rawDescriptor.Validate().IsValid, rawDescriptor.Validate().FieldPath);
         var raw = new ProcessingArtifact(rawSource.ArtifactId, FrameArtifactRole.Raw, "raw", rawSource.RecipeSha256,
             rawDescriptor.Artifact.MediaType, layout, pixels, end, integration, Compatible, sequence, [],
-            time, end, new(10, 0, -10))
+            time, end, new(gain, 0, -10))
         {
             CaptureId = rawSource.CaptureId,
             DescriptorIdentitySha256 = rawSource.DescriptorSha256,
