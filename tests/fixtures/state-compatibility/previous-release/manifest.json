@@ -118,15 +118,21 @@
         "index:ix_processing_centered_output_availability_pending",
         "index:ix_processing_centered_product_clock_pending",
         "index:ix_processing_centered_view_archive_reference",
+        "index:ix_processing_centered_view_bases_parent",
         "index:ix_processing_centered_view_capture",
         "index:ix_processing_centered_view_change_stream",
+        "index:ix_processing_centered_view_changes_base",
         "index:ix_processing_centered_view_current",
         "index:ix_processing_centered_view_current_stream",
         "index:ix_processing_centered_view_history",
+        "index:ix_processing_centered_view_intervals_end",
         "index:ix_processing_centered_view_live_bases",
+        "index:ix_processing_centered_view_members_base",
+        "index:ix_processing_centered_view_members_order",
         "index:ix_processing_centered_view_reference",
         "index:ix_processing_centered_view_retry_due",
         "index:ix_processing_centered_view_revision_order",
+        "index:ix_processing_centered_view_selections_revision",
         "index:ix_processing_centered_view_single",
         "index:ix_processing_centered_view_trail_capture",
         "index:ix_processing_centered_view_trail_due",
@@ -165,7 +171,7 @@
         "io.hvo.skymonitor.replay-runner-contract": "local-replay-runner-v1",
         "io.hvo.skymonitor.state-contracts": "{\"identity\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"rawIngress\":{\"writes\":15,\"reads\":{\"min\":13,\"max\":15}},\"artifactOutbox\":{\"writes\":2,\"reads\":{\"min\":2,\"max\":2}},\"fleetStatus\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"environmentalOutbox\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"executionEvidenceOutbox\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"timeLapses\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"nightlyProducts\":{\"writes\":3,\"reads\":{\"min\":2,\"max\":3}},\"localAutomations\":{\"writes\":3,\"reads\":{\"min\":3,\"max\":3}},\"orbitalElements\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"spaceWeather\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}},\"calibrationFamilies\":{\"writes\":1,\"reads\":{\"min\":1,\"max\":1}}}"
       },
-      "reason": "Processing schema 8 migrates atomically to schema 9 for bounded scalar manifest ledgers. The combined processing-9/automation-4 reader boundary bc5ca7489c4090c299c416309519ab72da4a8cdb retains the processing migration signal and also differs from the processing-only boundary 4293871b7c4cf38ce0e0e4ea969aa9a6de057eea. The minimum-compatible-revision boundary selects the paired checkpoint before candidate startup; older binaries use that checkpoint during rollback. Processing schema 12 adds the centered scheduler calendar, retained availability observations and versioned view publication. The combined reader boundary selects the paired checkpoint for earlier schema-9 and schema-10 readers. The checkpoint preserves the raw journal and processing evidence on rollback. Frozen SQL images remain unchanged. Refs #1766, #1921, #1922"
+      "reason": "Processing schema 8 migrates atomically to schema 9 for bounded scalar manifest ledgers. The combined processing-9/automation-4 reader boundary bc5ca7489c4090c299c416309519ab72da4a8cdb retains the processing migration signal and also differs from the processing-only boundary 4293871b7c4cf38ce0e0e4ea969aa9a6de057eea. The minimum-compatible-revision boundary selects the paired checkpoint before candidate startup; older binaries use that checkpoint during rollback. Processing schema 12 adds the centered scheduler calendar, retained availability observations and versioned view publication. The combined reader boundary selects the paired checkpoint for earlier schema-9 and schema-10 readers. The checkpoint preserves the raw journal and processing evidence on rollback. The additive centered-view retention indexes use that same paired checkpoint for the frozen previous release. Frozen SQL images remain unchanged. Refs #1766, #1921, #1922, #2000"
     },
     {
       "location": "raw/.automation/local-automations.db",

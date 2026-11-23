@@ -95,13 +95,27 @@ is eligible under the effective UTC-day cutoff, its raw payload and sidecar are
 absent, and its preview has left the processing store. The cutoff day is
 included. A retained raw file, raw hold, or preview keeps the view in the journal.
 
-Open live intervals and saved selections keep their view records. Saved
-selections do not extend the retention policy for artifact bytes. The sweep also
-keeps the exact closing change or original base needed by surviving history.
-An expired view kept only for a closing change can lose its own expired
-intervals, so one retained view cannot pin a chain of expired ones. The sweep
-keeps completed window-publication checkpoints and commits the journal
-deletions together. Once pruned, exact archive links return HTTP 404.
+An open live interval, retry-pending window, or saved selection keeps the whole
+base and all of its revisions. Saved selections have no automatic expiry and
+do not extend the retention policy for artifact bytes. Surviving recomputations
+keep their original base. An expired base needed to close a retained interval
+keeps its change and revision records. Its own expired cross-base intervals can
+be detached. The archive reads the last live revision from the ordered live
+changes, so detaching an interval preserves the last-live archive target.
+
+The sweep checks files in read pages and commits at most 128 bases per SQLite
+write transaction. A paused or interrupted pass resumes by rechecking what
+remains. Completed publication checkpoints stay settled. Pruning logs a count
+of deleted bases and reports journal failures separately from file expiration.
+Unparseable view definitions remain in the journal so other expired views can
+still be processed. Exact links to successfully pruned revisions return HTTP 404.
+
+SQLite reuses free journal pages on later writes. This sweep does not vacuum
+the journal or return the free pages to the filesystem. The shared journal
+adopts the retention indexes on startup. Use the paired pre-upgrade checkpoint
+when rolling back to a reader without those indexes in its schema allowlist.
+The [journal measurements](../validation/centered-view-retention-2000.md) record
+snapshot growth and steady-state and backlog sweep costs.
 
 ## Outage Recovery
 
