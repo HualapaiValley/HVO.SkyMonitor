@@ -381,16 +381,34 @@ internal static class SiloJson
         SiloHash.Require(checkpoint.CoversSha256, nameof(checkpoint.CoversSha256));
         ArgumentOutOfRangeException.ThrowIfLessThan(checkpoint.Covers.Generation, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(checkpoint.Covers.Sequence, 1);
-        (long, long, int)? previous = null;
+        SiloJournalPosition? previousPosition = null;
+        long expectedIndex = 0;
         foreach (var entry in checkpoint.Entries)
         {
-            var key = (entry.Generation, entry.Sequence, entry.Index);
-            if (previous is { } last && key.CompareTo(last) <= 0 ||
-                new SiloJournalPosition(entry.Generation, entry.Sequence) > checkpoint.Covers || entry.Index < 0)
+            var position = new SiloJournalPosition(entry.Generation, entry.Sequence);
+            if (position != previousPosition)
             {
-                throw new ArgumentException("Checkpoint entries are strictly ordered and covered.", nameof(checkpoint));
+                var continues = previousPosition is not { } last
+                    ? position == new SiloJournalPosition(1, 1)
+                    : position.Generation == last.Generation
+                        ? position.Sequence > last.Sequence && position.Sequence - last.Sequence == 1
+                        : position.Generation > last.Generation && position.Sequence == 1;
+                if (!continues)
+                {
+                    throw new ArgumentException("Checkpoint segment positions must continue from the journal's first position.", nameof(checkpoint));
+                }
+                expectedIndex = 0;
             }
-            previous = key;
+            if (position > checkpoint.Covers || entry.Index != expectedIndex)
+            {
+                throw new ArgumentException("Checkpoint entries must be covered and consecutively indexed within each segment.", nameof(checkpoint));
+            }
+            previousPosition = position;
+            expectedIndex++;
+        }
+        if (previousPosition != checkpoint.Covers)
+        {
+            throw new ArgumentException("Checkpoint entries must reach the covered position.", nameof(checkpoint));
         }
         // Each P4 publication names a covered revision, once, in the order its first publish record was committed.
         ArgumentNullException.ThrowIfNull(checkpoint.ReachedP4);
