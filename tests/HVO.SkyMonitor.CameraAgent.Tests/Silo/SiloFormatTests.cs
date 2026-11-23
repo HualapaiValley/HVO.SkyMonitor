@@ -196,6 +196,45 @@ public sealed class SiloFormatTests
     }
 
     [TestMethod]
+    [DataRow("short tail")]
+    [DataRow("missing genesis")]
+    [DataRow("skipped segment")]
+    [DataRow("skipped record")]
+    public void ACheckpointMustCoverAContinuousJournalPrefix(string fault)
+    {
+        var golden = GoldenObjects().Single(static item => item.Name == "journal-checkpoint.json").Bytes;
+        var node = JsonNode.Parse(golden)!;
+        var entries = node["entries"]!.AsArray();
+        switch (fault)
+        {
+            case "short tail":
+                while (entries.Count > 1)
+                {
+                    entries.RemoveAt(entries.Count - 1);
+                }
+                node["reachedP4"]!.AsArray().Clear();
+                break;
+            case "missing genesis":
+                entries.RemoveAt(0);
+                break;
+            case "skipped segment":
+                node["covers"]!["sequence"] = 3;
+                foreach (var entry in entries.Skip(1))
+                {
+                    entry!["sequence"] = 3;
+                }
+                break;
+            default:
+                entries.RemoveAt(entries.Count - 2);
+                break;
+        }
+
+        var read = () => SiloJson.ReadCheckpoint(Encoding.UTF8.GetBytes(node.ToJsonString()), "checkpoint");
+
+        read.Should().Throw<SiloInvalidObjectException>();
+    }
+
+    [TestMethod]
     public async Task ACheckpointOfTheEarlierIdentityIsRefusedReadOnlyAndTheRebuildChangesNothing()
     {
         const string Earlier = "hvo.cameraagent.silo.journal-checkpoint/1";

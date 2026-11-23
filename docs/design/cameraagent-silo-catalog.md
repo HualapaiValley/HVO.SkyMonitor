@@ -198,12 +198,17 @@ not persistence-qualified is never named by a committed record.
   anchor was recorded, anchors the checkpoint that landed when it holds exactly the same records and every P4 it
   claims is one the catalog proves now. Its list may be shorter, and then it only settles less. A claim the catalog
   cannot prove, or any other object at the key, is still a conflict, so a retry never anchors a P4 that did not happen.
-  Every entry of a checkpoint must read as a valid record, and no list in it may hold a null element, so a checkpoint
-  whose bytes match its anchor but whose content is malformed does not qualify, and selection falls back to the
-  previous trusted anchor. It refuses to write any checkpoint larger than the readers' bound, so it never produces one
-  a rebuild cannot read. A checkpoint that landed within the bound is still anchored when proof of P4 has since grown
+  Every entry of a checkpoint must read as a valid record, and no list in it may hold a null element. The entries
+  must start at generation 1, sequence 1, and end at `covers`. Sequences are gapless within each generation. A
+  higher generation starts at sequence 1, and record indexes are consecutive from zero within each segment.
+  These checks validate the positions represented in the checkpoint. The trusted anchor supplies evidence for the
+  checkpoint's contents. If the checkpoint is malformed, even when its bytes match its anchor, selection falls
+  back to the previous trusted anchor. The writer refuses to write checkpoints larger than the readers' bound.
+  A checkpoint that landed within the bound is still anchored when proof of P4 has since grown
   the snapshot past it, and one there that the retry may not anchor is still a conflict; only with nothing usable at
-  the key is the snapshot refused as too large. What is at the key is read only up to the bound. Every path, writing
+  the key is the snapshot refused as too large. The writer reads an occupant once, up to the bound plus one byte
+  to detect oversize. Metadata read limits, including the writer and rebuild limits, must be between 1 byte and
+  64 MiB inclusive. Other exact version probes stop after the expected length plus at most one byte. Every path, writing
   or anchoring a checkpoint that landed, requires a persistence-qualified store. Selection starts from the
   predecessor hash named by the first segment after a checkpoint. It then needs an `anchor` record, trusted through
   `ISiloAnchorTrust` (#1972), in the authenticated chain. Finally it reads the anchor's exact version, bounded by its
