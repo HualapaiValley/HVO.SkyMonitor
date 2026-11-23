@@ -190,6 +190,27 @@ public sealed class GpsTimeReaderTests
     }
 
     [TestMethod]
+    public async Task ReadAfterDispose_ThrowsWithoutConsumingOrDisposingCallerStream()
+    {
+        using var reader = CreateReader(new FakeTimeProvider(Now));
+        using var seed = Source(Rmc(), Gga());
+        await reader.ReadAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        reader.ObserveSimulatedPps();
+        var before = reader.GetStatus();
+        Assert.AreEqual(GpsSignalState.Available, before.State);
+        reader.Dispose();
+
+        foreach (var token in new[] { CancellationToken.None, new CancellationToken(canceled: true) })
+        {
+            using var source = Source(Rmc());
+            await Assert.ThrowsExactlyAsync<ObjectDisposedException>(() => reader.ReadAsync(source, token)).ConfigureAwait(false);
+            Assert.AreEqual(before, reader.GetStatus());
+            Assert.AreEqual(0L, source.Position);
+            Assert.IsTrue(source.CanRead);
+        }
+    }
+
+    [TestMethod]
     [DataRow("GPRMC,235959.1234567,A,,,,,,,311226,,,A", 2026, 12, 31)]
     [DataRow("GNRMC,000000,A,,,,,,,010127,,,A", 2027, 1, 1)]
     public async Task DatedUtc_IsParsedWithoutHostDateOrCultureAssumptions(string body, int year, int month, int day)
@@ -418,16 +439,7 @@ public sealed class GpsTimeReaderTests
         reader.ObserveSimulatedPps();
         using var broken = new FaultingStream(TransportFailure(failure));
         await reader.ReadAsync(broken, CancellationToken.None).ConfigureAwait(false);
-        var status = reader.GetStatus();
-        Assert.AreEqual(GpsSignalState.Unavailable, status.State);
-        Assert.IsNull(status.Utc);
-        Assert.IsNull(status.LastSentenceUtc);
-        Assert.IsNull(status.ArrivalOffset);
-        Assert.IsNull(status.FixQuality);
-        Assert.IsNull(status.Satellites);
-        Assert.IsNull(status.LastPpsUtc);
-        Assert.AreEqual(GpsSignalState.Missing, status.PpsState);
-        Assert.IsFalse(status.CanVerifyClock);
+        AssertUnavailable(reader.GetStatus());
         Assert.IsTrue(broken.CanRead, "The caller still owns the stream.");
         await reader.ReadAsync(Source(Gga()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Missing, reader.GetStatus().State);
@@ -437,17 +449,50 @@ public sealed class GpsTimeReaderTests
     }
 
     [TestMethod]
-    [DataRow("canceled", false)]
-    [DataRow("canceled", true)]
-    [DataRow("io", false)]
-    [DataRow("timeout", false)]
-    [DataRow("access", false)]
-    [DataRow("disposed", false)]
-    public async Task CallerCancellation_WinsOverTransportCancellationAndDeadline(string failure, bool deadlineAlsoExpires)
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task CallerCancellation_WithoutIndependentFaultRetainsEvidence(bool deadlineAlsoExpires)
     {
         var time = new FakeTimeProvider(Now);
         using var reader = CreateReader(time);
-        await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
+        using var seed = Source(Rmc(), Gga());
+        await reader.ReadAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        reader.ObserveSimulatedPps();
+        var before = reader.GetStatus();
+        using var cancellation = new CancellationTokenSource();
+        using var canceled = new FaultingStream(TransportFailure("canceled"), () =>
+        {
+            cancellation.Cancel();
+            if (deadlineAlsoExpires)
+            {
+                time.Advance(GpsTimeReader.ReadTimeout);
+            }
+        });
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(canceled, cancellation.Token)).ConfigureAwait(false);
+        Assert.AreEqual(before, reader.GetStatus());
+        Assert.IsTrue(canceled.CanRead);
+
+        using var followUp = Source(Gga());
+        var followUpRead = reader.ReadAsync(followUp, CancellationToken.None);
+        Assert.IsTrue(followUpRead.IsCompleted, "Caller cancellation should release the read gate.");
+        await followUpRead.ConfigureAwait(false);
+        Assert.AreEqual(followUp.Length, followUp.Position);
+    }
+
+    [TestMethod]
+    [DataRow("io", false)]
+    [DataRow("io", true)]
+    [DataRow("timeout", false)]
+    [DataRow("access", false)]
+    [DataRow("disposed", false)]
+    public async Task CallerCancellation_WithIndependentTransportFaultClearsEvidence(string failure, bool deadlineAlsoExpires)
+    {
+        var time = new FakeTimeProvider(Now);
+        using var reader = CreateReader(time);
+        using var seed = Source(Rmc(), Gga());
+        await reader.ReadAsync(seed, CancellationToken.None).ConfigureAwait(false);
+        reader.ObserveSimulatedPps();
         using var cancellation = new CancellationTokenSource();
         using var broken = new FaultingStream(TransportFailure(failure), () =>
         {
@@ -457,9 +502,12 @@ public sealed class GpsTimeReaderTests
                 time.Advance(GpsTimeReader.ReadTimeout);
             }
         });
-        await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(broken, cancellation.Token)).ConfigureAwait(false);
-        Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
-        await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(() => reader.ReadAsync(broken, cancellation.Token)).ConfigureAwait(false);
+        Assert.AreEqual(cancellation.Token, exception.CancellationToken);
+        AssertUnavailable(reader.GetStatus());
+        Assert.IsTrue(broken.CanRead, "The caller still owns the stream.");
+        using var recovery = Source(Rmc());
+        await reader.ReadAsync(recovery, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
     }
 
@@ -478,6 +526,19 @@ public sealed class GpsTimeReaderTests
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => reader.ReadAsync(unexpected, CancellationToken.None)).ConfigureAwait(false);
         await reader.ReadAsync(Source(Rmc()), CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(GpsSignalState.Available, reader.GetStatus().State);
+    }
+
+    private static void AssertUnavailable(GpsTimeStatus status)
+    {
+        Assert.AreEqual(GpsSignalState.Unavailable, status.State);
+        Assert.IsNull(status.Utc);
+        Assert.IsNull(status.LastSentenceUtc);
+        Assert.IsNull(status.ArrivalOffset);
+        Assert.IsNull(status.FixQuality);
+        Assert.IsNull(status.Satellites);
+        Assert.IsNull(status.LastPpsUtc);
+        Assert.AreEqual(GpsSignalState.Missing, status.PpsState);
+        Assert.IsFalse(status.CanVerifyClock);
     }
 
     private static Exception TransportFailure(string failure) => failure switch
