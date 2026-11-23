@@ -260,7 +260,11 @@ public sealed record LifecycleOperationState(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SignedReleaseChecksumsSha256 = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] LifecycleStateSnapshot? LeavePausedOriginalSnapshot = null,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? LeavePausedOriginalRestorePlanId = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? SignedRecoveryPauseCommandId = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] Guid? SignedRecoveryPauseCommandId = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? SignedRetryAdmissionOutcome { get; init; }
+}
 
 public sealed record LifecycleAdmissionObservation(
     string State, long Version, long CaptureSequence, DateTimeOffset ObservedUtc,

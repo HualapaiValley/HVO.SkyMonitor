@@ -18,6 +18,9 @@ internal interface ICameraAgentLifecycleClient
     Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
         long expectedVersion, string verificationToken, CancellationToken cancellationToken)
         => throw new InstallerException("The predecessor lacks atomic signed restore-only admission.");
+    Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleCommittedOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+        => throw new InstallerException("The candidate's atomic owned resume capability could not be verified.");
 }
 
 internal sealed record LifecycleContinuity(
@@ -141,18 +144,40 @@ internal sealed class CameraAgentLifecycleClient(
 
     public async Task VerifyOwnedUpgradeResumeAsync(string verificationToken, CancellationToken cancellationToken)
     {
+        if (await ReadOwnedUpgradeResumeCapabilityAsync(verificationToken, cancellationToken).ConfigureAwait(false) == HttpStatusCode.NoContent)
+            return;
+        throw new InstallerException("The predecessor does not provide authenticated atomic signed restore-only admission. Capture remains paused.");
+    }
+
+    private async Task<HttpStatusCode> ReadOwnedUpgradeResumeCapabilityAsync(string verificationToken, CancellationToken cancellationToken)
+    {
         using var client = CreateClient(verificationToken);
         try
         {
             using var response = await WithBudgetAsync(_budgets.ReadTimeout,
                 token => client.GetAsync(OwnedUpgradeResumeRoute, token), cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == HttpStatusCode.NoContent) return;
+            return response.StatusCode;
         }
         catch (Exception exception) when (exception is BudgetExceededException or HttpRequestException)
         {
             throw new InstallerException("The predecessor's atomic signed restore-only admission could not be verified.", exception);
         }
-        throw new InstallerException("The predecessor does not provide authenticated atomic signed restore-only admission. Capture remains paused.");
+    }
+
+    public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleCommittedOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+        long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+    {
+        var capability = await ReadOwnedUpgradeResumeCapabilityAsync(verificationToken, cancellationToken).ConfigureAwait(false);
+        // An absent route is a supported outcome. Authentication, server and transport failures leave the commit pending.
+        if (capability is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed)
+            return (false, null);
+        if (capability != HttpStatusCode.NoContent)
+            throw new InstallerException("The candidate's atomic owned resume capability could not be verified.");
+        using var client = CreateClient(verificationToken);
+        var receipt = await PostCommandAsync(client, "resume", operationId, DateTimeOffset.UtcNow + _budgets.DrainDeadline,
+                cancellationToken, commandId, expectedVersion, pauseCommandId: pauseCommandId, preserveOnConflict: true)
+            .ConfigureAwait(false);
+        return (true, receipt);
     }
 
     public async Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
@@ -172,7 +197,8 @@ internal sealed class CameraAgentLifecycleClient(
         Guid? retainedCommandId = null,
         long? expectedVersion = null,
         Guid? commandIdentity = null,
-        Guid? pauseCommandId = null)
+        Guid? pauseCommandId = null,
+        bool preserveOnConflict = false)
     {
         var commandId = commandIdentity ?? retainedCommandId ?? Guid.NewGuid();
         var payload = new Dictionary<string, object>
@@ -223,6 +249,7 @@ internal sealed class CameraAgentLifecycleClient(
                         throw new InstallerException("CameraAgent recovery receipt does not match the retained pause version.");
                     return receipt;
                 }
+                if (preserveOnConflict && response.StatusCode == HttpStatusCode.Conflict) return null;
                 if (!IsTransientCommandStatus(response.StatusCode))
                 {
                     throw new InstallerException(

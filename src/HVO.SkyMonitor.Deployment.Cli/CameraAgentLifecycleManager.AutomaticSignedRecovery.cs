@@ -193,4 +193,49 @@ internal sealed partial class CameraAgentLifecycleManager
             RestoreResumeReceipt = receipt
         }, cancellationToken).ConfigureAwait(false);
     }
+
+    private const string SignedRetryAdmissionPreserved = "completed-admission-preserved";
+    private const string SignedRetryAdmissionUnsupported = "completed-admission-preserved-unsupported-atomic-resume";
+
+    private static bool IsCommittedSignedRetry(LifecycleOperationState state)
+        => state is
+        {
+            Phase: LifecycleOperationPhase.Committed, Kind: LifecycleOperationKind.Upgrade, MutationStarted: true,
+            SignedReleaseChecksumsSha256: not null, SignedRecoveryPauseCommandId: not null,
+            PreMutationContinuity.CaptureState: "Paused", RestoreResumeCommandId: not null,
+            LeavePausedOriginalSnapshot: null
+        };
+
+    private static async Task<LifecycleResult> SettleCommittedSignedRetryAsync(
+        LifecycleRequest request, InstallationPaths paths, InstanceManifest manifest, LifecycleOperationState operation,
+        VerifiedRelease release, ICameraAgentLifecycleClient lifecycle, string lifecycleControlToken,
+        CancellationToken cancellationToken)
+    {
+        var boundary = operation.PreMutationContinuity!;
+        if (!IsValidRecoveryBoundary(boundary) || boundary.CaptureVersion == long.MaxValue)
+            throw InstallerException.Refused("The committed signed retry has no valid retained pause boundary.");
+        var outcome = operation.SignedRetryAdmissionOutcome;
+        if (outcome is null)
+        {
+            var disposition = await lifecycle.SettleCommittedOwnedUpgradeAsync(operation.OperationId, operation.SignedRecoveryPauseCommandId!.Value,
+                operation.RestoreResumeCommandId!.Value, boundary.CaptureVersion, lifecycleControlToken, cancellationToken)
+                .ConfigureAwait(false);
+            outcome = disposition.Supported ? SignedRetryAdmissionPreserved : SignedRetryAdmissionUnsupported;
+            if (disposition.Receipt is { } receipt)
+            {
+                var current = ToBoundary(await lifecycle.ReadContinuityAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false));
+                if (!IsValidRecoveryReceipt(boundary, receipt) || !IsRecoveryAdmissionAfterResume(boundary, current) ||
+                    receipt.CompletedUtc > current.RecordedUtc)
+                    throw new InstallerException("The committed signed retry did not prove the owned resume receipt.");
+                if (current.CaptureVersion == receipt.Version && current.CaptureState == receipt.State) outcome = "completed";
+            }
+            operation = await RecordAsync(paths, operation with { SignedRetryAdmissionOutcome = outcome }, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        await SettleInstallRecordAsync(request, paths, manifest, operation.Kind, cancellationToken, release).ConfigureAwait(false);
+        // Older installers reject a resume command ID in Committed. Keep it as a fence until the release programs
+        // have settled and the terminal, legacy-readable journal can no longer dispatch any resume.
+        await CompleteAsync(paths, operation with { RestoreResumeCommandId = null }, cancellationToken).ConfigureAwait(false);
+        return Result(operation.Kind, outcome, operation.OperationId, paths, manifest, manifest.DockerDaemon, true, true);
+    }
 }

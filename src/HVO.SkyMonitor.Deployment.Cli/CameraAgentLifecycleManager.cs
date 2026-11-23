@@ -707,7 +707,7 @@ internal sealed partial class CameraAgentLifecycleManager
     {
         var owner = ownerClientFactory?.Invoke(installationResult.Url) ?? new OwnerBootstrapClient(installationResult.Url);
         var automaticSignedRecovery = signedImage is not null && !request.LeavePaused;
-        var reuseSignedPause = automaticSignedRecovery && operation.MutationStarted && operation.PreMutationContinuity is not null;
+        var reuseSignedPause = automaticSignedRecovery && operation.MutationStarted;
         if (request.LeavePaused)
         {
             if (signedImage?.VerifiedRelease.ChecksumsSha256 != PublishedRc2ChecksumsSha256)
@@ -808,6 +808,12 @@ internal sealed partial class CameraAgentLifecycleManager
             {
                 throw new InstallerException("The committed image lifecycle records do not match the retained operation.");
             }
+            if (IsCommittedSignedRetry(operation))
+            {
+                if (!automaticSignedRecovery)
+                    throw InstallerException.Refused("The committed retry requires the original ordinary signed upgrade request.");
+                VerifyAutomaticRecoveryRelease(operation, signedImage!);
+            }
             var committedExpectedOwnerState = operation.ExpectedOwnerBootstrapState;
             var verifiedOwnerState = await VerifyCandidateAsync(owner, docker, compose, paths, manifest, installationResult, manifest.Image,
                 verificationToken, uid, gid, cancellationToken,
@@ -837,6 +843,9 @@ internal sealed partial class CameraAgentLifecycleManager
             if (request.LeavePaused)
                 return await SettlePausedUpgradeAsync(request, paths, manifest, operation, signedImage!.VerifiedRelease, committedLifecycle,
                     lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+            if (IsCommittedSignedRetry(operation))
+                return await SettleCommittedSignedRetryAsync(request, paths, manifest, operation, signedImage!.VerifiedRelease,
+                    committedLifecycle, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             await committedLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             await SettleInstallRecordAsync(request, paths, manifest, operation.Kind, cancellationToken).ConfigureAwait(false);
             operation = await CompleteAsync(paths, operation, cancellationToken).ConfigureAwait(false);
@@ -1160,6 +1169,17 @@ internal sealed partial class CameraAgentLifecycleManager
             if (reuseSignedPause)
             {
                 retriedDrain = await lifecycle.ConfirmDrainedAsync(lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+                if (operation.PreMutationContinuity is null)
+                {
+                    // The endpoint can durably complete Pause before the first drain journal write. Recover only
+                    // that operation's changed receipt, without a new pause or claiming a later owner's command.
+                    var observed = ToBoundary(retriedDrain);
+                    var accepted = await ReadAutomaticRecoveryPauseAsync(paths, operation.OperationId, observed, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (accepted is null)
+                        throw InstallerException.Refused("The interrupted signed upgrade has no provable accepted changed pause. Capture admission was preserved.");
+                    operation = operation with { PreMutationContinuity = observed, SignedRecoveryPauseCommandId = accepted };
+                }
                 await VerifyRetainedAutomaticPauseAsync(paths, operation, retriedDrain, cancellationToken).ConfigureAwait(false);
             }
             // The original stays paused through the retry. A signed retry retains its changed pause rather than
@@ -1352,7 +1372,11 @@ internal sealed partial class CameraAgentLifecycleManager
                 },
                 DeploymentJsonContext.Default.InstallationResult,
                 cancellationToken).ConfigureAwait(false);
-            operation = await RecordAsync(paths, operation with { Phase = LifecycleOperationPhase.Committed }, cancellationToken)
+            operation = await RecordAsync(paths, operation with
+            {
+                Phase = LifecycleOperationPhase.Committed,
+                RestoreResumeCommandId = retriedDrain is not null ? Guid.NewGuid() : operation.RestoreResumeCommandId
+            }, cancellationToken)
                 .ConfigureAwait(false);
             // The retained release record follows the image the instance actually runs. It is settled as soon as the
             // commit is durable and before the final resume, so a lost resume acknowledgement cannot separate the
@@ -1361,6 +1385,9 @@ internal sealed partial class CameraAgentLifecycleManager
             if (request.LeavePaused)
                 return await SettlePausedUpgradeAsync(request, paths, committed, operation, signedImage!.VerifiedRelease, candidateLifecycle,
                     lifecycleControlToken, cancellationToken).ConfigureAwait(false);
+            if (IsCommittedSignedRetry(operation))
+                return await SettleCommittedSignedRetryAsync(request, paths, committed, operation, signedImage!.VerifiedRelease,
+                    candidateLifecycle, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             await candidateLifecycle.ResumeAsync(operation.OperationId, lifecycleControlToken, cancellationToken).ConfigureAwait(false);
             // The install record follows the committed records; settled after capture resumes, so a record that cannot be
             // written never holds capture paused, and before completion, so --resume finishes it.
@@ -1372,6 +1399,8 @@ internal sealed partial class CameraAgentLifecycleManager
         {
             if (operation.Phase == LifecycleOperationPhase.Committed)
             {
+                if (IsCommittedSignedRetry(operation))
+                    throw new InstallerException("The signed retry committed and settlement remains pending. Rerun the same command with --resume.", exception);
                 throw new InstallerException(
                     request.LeavePaused
                         ? "The leave-paused image committed but settlement is incomplete; retry with the same --resume --leave-paused request and operation ID."
@@ -2190,7 +2219,8 @@ internal sealed partial class CameraAgentLifecycleManager
         // pre-mutation refusal journalled by an earlier release or an interrupted, cancelled, or crashed
         // preparation: a fresh operation of any kind may supersede it, while --resume of the matching request still
         // continues it. Only an operation that started mutating demands --resume.
-        if (existing?.RestoreResumeCommandId is not null && !IsRestored(existing) && !IsPendingSignedAutomaticRecovery(existing))
+        if (existing?.RestoreResumeCommandId is not null && !IsRestored(existing) &&
+            !IsPendingSignedAutomaticRecovery(existing) && !IsCommittedSignedRetry(existing))
             throw InstallerException.Refused("Restore-only recovery has started; resume it with --restore-only and the same --operation-id.");
         if (existing is { Status: not InstallationStatus.Completed } && !IsRefused(existing) && !IsRestored(existing) &&
             !IsAbandonedBackup(existing) &&
@@ -2365,7 +2395,15 @@ internal sealed partial class CameraAgentLifecycleManager
              value.PreMutationContinuity is not { CaptureState: "Paused" } || pause == value.RestoreResumeCommandId) ||
             value.RestoreResumeCommandId == Guid.Empty ||
             value.RestoreResumeCommandId is not null &&
+            !IsCommittedSignedRetry(value) &&
             (value.Kind != LifecycleOperationKind.Upgrade || value.Phase is not (LifecycleOperationPhase.Restoring or LifecycleOperationPhase.Restored)) ||
+            value.SignedRetryAdmissionOutcome is { } admission &&
+            (admission is not ("completed" or SignedRetryAdmissionPreserved or SignedRetryAdmissionUnsupported) ||
+             !IsCommittedSignedRetry(value) && value is not
+             {
+                 Kind: LifecycleOperationKind.Upgrade, Phase: LifecycleOperationPhase.Completed,
+                 SignedReleaseChecksumsSha256: not null, SignedRecoveryPauseCommandId: not null, LeavePausedOriginalSnapshot: null
+             }) ||
             value.Phase == LifecycleOperationPhase.Restored &&
             (!IsRestored(value) || value.RestoreResumeCommandId is null || value.PostMutationContinuity is null ||
              value.FailureCode is null || value.FailureMessage is null) ||

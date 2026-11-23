@@ -239,8 +239,11 @@ public sealed partial class LifecycleContractTests
         private readonly Dictionary<Guid, LifecycleResumeReceipt> _receipts = [];
         public Guid PauseCommandId { get; } = Guid.NewGuid();
         public List<Guid> OwnedRequests { get; } = [];
-        public bool SupportsOwnedResume { get; init; }
+        public bool SupportsOwnedResume { get; set; }
         public bool LoseAcknowledgement { get; init; }
+        public Action? AfterPauseAccepted { get; set; }
+        public Action? BeforeCommittedResume { get; set; }
+        public int CommittedCapabilityChecks { get; private set; }
         public int PauseRequests { get; private set; }
         public int GenericResumeCalls { get; private set; }
         private Guid _operationId;
@@ -254,6 +257,7 @@ public sealed partial class LifecycleContractTests
             var command = PauseRequests++ == 0 ? PauseCommandId : Guid.NewGuid();
             WriteCommand("paused", $"lifecycle:{command:D}:pause", $"installer-lifecycle:{command:D}",
                 $"transactional lifecycle operation {operationId:D} pause", changed: ReadBoundary().CaptureState != "Paused");
+            AfterPauseAccepted?.Invoke();
             return Task.FromResult(ReadBoundary());
         }
 
@@ -281,19 +285,35 @@ public sealed partial class LifecycleContractTests
 
         public async Task<LifecycleResumeReceipt> ResumeOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
             long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+            => await TryOwnedResumeAsync(operationId, pauseCommandId, commandId, expectedVersion, verificationToken, cancellationToken)
+                ?? throw new InstallerException("The atomic owned resume rejected a later accepted capture command.");
+
+        public async Task<(bool Supported, LifecycleResumeReceipt? Receipt)> SettleCommittedOwnedUpgradeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+            long expectedVersion, string verificationToken, CancellationToken cancellationToken)
+        {
+            Assert.AreEqual("lifecycle-token", verificationToken);
+            CommittedCapabilityChecks++;
+            BeforeCommittedResume?.Invoke();
+            if (!SupportsOwnedResume) return (false, null);
+            return (true, await TryOwnedResumeAsync(operationId, pauseCommandId, commandId,
+                expectedVersion, verificationToken, cancellationToken));
+        }
+
+        private async Task<LifecycleResumeReceipt?> TryOwnedResumeAsync(Guid operationId, Guid pauseCommandId, Guid commandId,
+            long expectedVersion, string verificationToken, CancellationToken cancellationToken)
         {
             Assert.AreEqual("lifecycle-token", verificationToken);
             Assert.AreEqual(_operationId, operationId);
             Assert.AreEqual(PauseCommandId, pauseCommandId);
             OwnedRequests.Add(commandId);
             if (_receipts.TryGetValue(commandId, out var previous)) return previous with { Replayed = true };
-            Assert.AreEqual(expectedVersion, ReadBoundary().CaptureVersion);
+            if (expectedVersion != ReadBoundary().CaptureVersion) return null;
             await using var connection = new SqliteConnection($"Data Source={RawIngressPath(paths)};Mode=ReadOnly;Pooling=False");
             await connection.OpenAsync(cancellationToken);
             using var latest = connection.CreateCommand();
             latest.CommandText = "SELECT idempotency_key FROM capture_control_commands ORDER BY rowid DESC LIMIT 1;";
             if (!Equals(await latest.ExecuteScalarAsync(cancellationToken), $"lifecycle:{pauseCommandId:D}:pause"))
-                throw new InstallerException("The atomic owned resume rejected a later accepted capture command.");
+                return null;
             WriteCommand("running", $"lifecycle:{commandId:D}:resume-owned-upgrade", $"installer-lifecycle:{commandId:D}",
                 "Automatic recovery", changed: true);
             var now = DateTimeOffset.UtcNow;

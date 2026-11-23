@@ -2522,8 +2522,17 @@ pause can be acknowledged before it ends. A later re-initialization takes a leas
 
 The sweep of every deletion path, with why each remaining one cannot touch data a restore depends on, is in the #1314 correction-round-2
 ledger. `--resume` keeps the pause from its recovery through its retry: the previous image restarts with capture
-still paused, and the retry's candidate starts under the same pause. Capture resumes only once the retry has decided
-the swap.
+still paused, and the retry's candidate starts under the same pause.
+
+An ordinary signed retry must prove the original operation's changed Pause, even if the interruption happened
+after CameraAgent recorded it and before the installer recorded the drain. An unprovable or superseded pause
+holds the retry. A successful signed retry commits the image under the retained pause and settles admission with
+one durable resume identity through the authenticated atomic ownership check. An ownership conflict preserves
+current admission and reports `completed-admission-preserved`. If the candidate confirms the route is absent,
+the installer completes file settlement and reports `completed-admission-preserved-unsupported-atomic-resume`.
+The owner can then use the ordinary authenticated capture controls. Other failures to prove settlement leave the
+commit pending for the same signed `--resume` request. Once the installer records an admission disposition, retry
+finishes file settlement without dispatching another command.
 
 **A restore loses later database changes.** Restoring a snapshot writes this warning to standard error before it
 changes anything (with `--json`, a one-line `state-snapshot-restore` event):
