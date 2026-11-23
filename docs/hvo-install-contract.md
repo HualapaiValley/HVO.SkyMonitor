@@ -521,7 +521,10 @@ its schema in today, and what `io.hvo.skymonitor.state-contracts` and `stateCont
 | `spaceWeather` | `raw/.space-weather/space-weather.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): per-product Retry-After floors, backoff and provider/product halts must never be rewound |
 | `calibrationFamilies` | `raw/.calibration-families/calibration-families.db` | `PRAGMA user_version` | Writes 1, reads 1 to 1. Not snapshotted by a migrating upgrade (#1340): no earlier release opens it, and the snapshots and backups an earlier installer took must still verify (#1475) |
 
-The centered scheduling and storage stage uses minimum-compatible revision `1c76d83224bacdcc129041c6d1779eb5f95716cb` to select the paired checkpoint even when the installed image declares the same raw and environmental schema floors.
+The centered scheduling and storage stage used minimum-compatible revision
+`1c76d83224bacdcc129041c6d1779eb5f95716cb`. The registration retention and diagnostic
+upgrade advances that boundary. The installer selects a paired checkpoint even
+when the installed image declares the same raw and environmental schema floors.
 
 The environmental v5 journal retains a settled held slot so reopening the same cadence does not acquire it again.
 The first released v5 reader validates the canonical shape before opening for writes. A private rehearsal v5

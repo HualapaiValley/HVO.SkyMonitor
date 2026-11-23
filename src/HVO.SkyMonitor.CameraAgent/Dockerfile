@@ -149,6 +149,7 @@ COPY --from=build /app/replay-runner /app/replay-runner
 # This revision reads raw schema 17, processing schema 12 and the settled environmental schema 5.
 # The paired checkpoint also applies when the installed image already writes raw schema 17.
 # It preserves the previous reader's processing and environmental stores. Refs #1901, #1919, #1922, #1938.
+# The current boundary adds the centered registration retention index and input diagnostics (Refs #1961).
 # The state-contracts label is the image's state contract (install contract section 6), which
 # release.json's stateContracts.cameraAgent repeats: for each SQLite store an instance keeps,
 # the schema this image writes and the schemas it reads. CameraAgentStateContractsLabelTests
@@ -163,7 +164,7 @@ ARG HVO_SOURCE_REVISION
 ARG HVO_CREATED
 LABEL io.hvo.skymonitor.component="CameraAgent" \
       io.hvo.skymonitor.state-compatibility="cameraagent-state-v2" \
-      io.hvo.skymonitor.minimum-compatible-revision="1c76d83224bacdcc129041c6d1779eb5f95716cb" \
+      io.hvo.skymonitor.minimum-compatible-revision="19694b969ae1968254988eb641a9044fa6010bbc" \
       io.hvo.skymonitor.identity-migration="20260827053715_InitialIdentity" \
       io.hvo.skymonitor.raw-ingress-schema="17" \
       io.hvo.skymonitor.raw-ingress-migration="canonical-v13-v14-v15-v16-to-v17" \
