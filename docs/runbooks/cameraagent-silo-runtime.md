@@ -464,7 +464,8 @@ On an installed instance, as the user that installed it, with `jq` on the host:
   - A file hard-linked from inside the data root is another name for that one file, not a mount of the data root, and
     is not detected.
   - This is stricter than the installer's own check, which `silo-verify` and the opening check here make: it compares
-    each mount source itself, by path and by device and inode, and does not resolve volumes.
+    each mount source itself, by path and by device and inode, passes a source it cannot reach, and does not resolve
+    volumes.
 - **What a stop leaves.** Any failed step stops the procedure once, names what failed, and says what the step it reached
   leaves and how to recover. Nothing has changed before the stop. After it, Silo stays stopped, its original container
   kept, whenever its data root is not proved its own; start it only once nothing else references the data root. When
