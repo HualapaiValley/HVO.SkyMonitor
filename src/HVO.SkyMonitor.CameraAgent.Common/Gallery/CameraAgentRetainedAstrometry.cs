@@ -259,13 +259,14 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var captures = await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false);
             if (!ReferenceEquals(latestSnapshot, captures)) RefreshLatestCandidates(captures, cancellationToken);
             await RecheckSkipsAsync(captures, cancellationToken).ConfigureAwait(false);
+            using var history = (artifacts as CameraAgentArtifactService)?.BeginRetainedHistoryRead();
             var node = latestCandidates.First;
             var newSkips = 0;
             while (node is not null && newSkips < LatestNewSkipLimit)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var candidate = node.Value;
-                var probe = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true).ConfigureAwait(false);
+                var probe = await ReadAsync(candidate.CaptureId, cancellationToken, acceptedOnly: true, history: history).ConfigureAwait(false);
                 if (probe.Retry)
                     return LatestRead(false, null, previous, selected);
                 if (CameraAgentLatestAstrometry.FromVerified(probe.Evidence) is { } summary)
@@ -388,7 +389,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     }
 
     private async ValueTask<CandidateProbe> ReadAsync(Guid captureId, CancellationToken cancellationToken,
-        bool acceptedOnly = false, CenteredViewArtifact? exact = null)
+        bool acceptedOnly = false, CenteredViewArtifact? exact = null, CameraAgentArtifactService.RetainedHistoryRead? history = null)
     {
         if (captureId == Guid.Empty) return new(new(captureId, "Unavailable", "invalid-capture"));
         var acquiredRawRead = false;
@@ -511,7 +512,9 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
 
             async ValueTask<CameraAgentArtifactContentResult> OpenArtifactAsync(Guid id)
             {
-                var result = await artifacts.OpenContentAsync(id, cancellationToken).ConfigureAwait(false);
+                var result = history is null
+                    ? await artifacts.OpenContentAsync(id, cancellationToken).ConfigureAwait(false)
+                    : await history.OpenContentAsync(id, cancellationToken).ConfigureAwait(false);
                 if (result.Status != CameraAgentArtifactReadStatus.Unavailable) return result;
                 if (result.Content is { } content) await content.DisposeAsync().ConfigureAwait(false);
                 throw new IOException("The retained artifact is temporarily unavailable.");

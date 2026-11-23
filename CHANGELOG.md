@@ -36,6 +36,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
 
+- Current Sky finds the latest accepted plate solution sooner in long retained histories by reusing a read-only journal connection during the search. #2004
+
 ### Fixed
 
 - CameraAgent Silo checkpoint retries read an occupied key only up to the configured limit plus one byte. #2001

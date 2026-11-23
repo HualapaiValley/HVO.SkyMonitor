@@ -101,6 +101,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private readonly string _root;
     private readonly LocalArchiveReader? _localArchive;
     private readonly string _databasePath;
+    private readonly string _walPath;
+    private readonly string _sharedMemoryPath;
     private readonly int _busyTimeoutSeconds;
     private readonly ArtifactReadOptions _options;
     private readonly SqliteCaptureProcessingStore _processingStore;
@@ -133,6 +135,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         var values = options.Value;
         _root = Path.GetFullPath(values.RawIngressRoot);
         _databasePath = Path.Combine(_root, "journal", "raw-ingress.db");
+        _walPath = string.Concat(_databasePath, "-wal");
+        _sharedMemoryPath = string.Concat(_databasePath, "-shm");
         _busyTimeoutSeconds = values.RawIngressSqliteBusyTimeoutSeconds;
         _options = values.ArtifactRead;
         _previewGate = new SemaphoreSlim(_options.MaximumConcurrentPreviews, _options.MaximumConcurrentPreviews);
@@ -142,6 +146,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         Guid artifactId,
         CancellationToken cancellationToken)
         => OpenContentCoreAsync(artifactId, replayExecutionId: null, forPreview: false, cancellationToken);
+
+    internal RetainedHistoryRead BeginRetainedHistoryRead() => new(this);
 
     public ValueTask<CameraAgentArtifactContentResult> OpenReplayOutputContentAsync(
         Guid executionId,
@@ -158,7 +164,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         Guid artifactId,
         Guid? replayExecutionId,
         bool forPreview,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RetainedHistoryRead? history = null)
     {
         if (artifactId == Guid.Empty)
         {
@@ -171,15 +178,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
         try
         {
             await _processingStore.InitializeAsync(cancellationToken).ConfigureAwait(false);
-            using var connection = await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
-            var evidence = replayExecutionId is { } executionId
-                ? await FindReplayOutputEvidenceAsync(connection, executionId, artifactId, cancellationToken)
-                    .ConfigureAwait(false)
-                : await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
-            var archive = evidence.Status == CameraAgentArtifactReadStatus.NotFound &&
-                replayExecutionId is null && !forPreview && _localArchive is not null
-                ? await _localArchive.FindAsync(connection, artifactId, cancellationToken).ConfigureAwait(false)
-                : null;
+            var (evidence, archive) = await ReadEvidenceAsync(artifactId, replayExecutionId, forPreview, history, cancellationToken)
+                .ConfigureAwait(false);
             if (evidence.Status != CameraAgentArtifactReadStatus.Found && archive is null)
             {
                 return new(evidence.Status);
@@ -1000,12 +1000,61 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
            string.Equals(schema, DurableEncodedProductManifestV2.CurrentSchemaVersion, StringComparison.Ordinal) ||
            string.Equals(schema, DurableTypedMetadataProductManifestV3.CurrentSchemaVersion, StringComparison.Ordinal);
 
+    private async ValueTask<(ArtifactEvidenceLookup Evidence, IndexedArchiveFrame? Archive)> ReadEvidenceAsync(
+        Guid artifactId,
+        Guid? replayExecutionId,
+        bool forPreview,
+        RetainedHistoryRead? history,
+        CancellationToken cancellationToken)
+    {
+        var (connection, openedIdentity) = history?.Take() ?? default;
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            EnsurePhysicalPath(_databasePath);
+            EnsurePhysicalPath(_walPath);
+            EnsurePhysicalPath(_sharedMemoryPath);
+
+            var identity = history is null ? null : ReadJournalIdentity();
+            if (connection is not null && (identity is null || openedIdentity != identity))
+            {
+                connection.Dispose();
+                connection = null;
+            }
+            connection ??= await OpenReadOnlyAsync(cancellationToken).ConfigureAwait(false);
+
+            var evidence = replayExecutionId is { } executionId
+                ? await FindReplayOutputEvidenceAsync(connection, executionId, artifactId, cancellationToken).ConfigureAwait(false)
+                : await FindEvidenceAsync(connection, artifactId, cancellationToken).ConfigureAwait(false);
+            var archive = evidence.Status == CameraAgentArtifactReadStatus.NotFound &&
+                replayExecutionId is null && !forPreview && _localArchive is not null
+                ? await _localArchive.FindAsync(connection, artifactId, cancellationToken).ConfigureAwait(false)
+                : null;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (identity is { } generation)
+            {
+                if (generation != ReadJournalIdentity())
+                    throw new IOException("The artifact journal was replaced during lookup.");
+
+                // All commands and readers have ended. File validation and returned streams own no database lease.
+                history!.Return(connection, generation);
+                connection = null;
+            }
+            return (evidence, archive);
+        }
+        finally
+        {
+            connection?.Dispose();
+        }
+    }
+
+    private ArtifactJournalIdentity? ReadJournalIdentity() =>
+        ArtifactJournalIdentity.Read(_databasePath, _walPath, _sharedMemoryPath);
+
     [SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities", Justification = "The interpolated value is a validated integer host option used only for SQLite PRAGMA configuration.")]
     private async ValueTask<SqliteConnection> OpenReadOnlyAsync(CancellationToken cancellationToken)
     {
-        EnsurePhysicalPath(_databasePath);
-        EnsurePhysicalPath(string.Concat(_databasePath, "-wal"));
-        EnsurePhysicalPath(string.Concat(_databasePath, "-shm"));
         var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = _databasePath,
@@ -1299,6 +1348,52 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
                 gate.Semaphore.Dispose();
             }
             _previewRequestGates.Clear();
+        }
+    }
+
+    // The root lifecycle gate serializes artifact lookups, so one private handle is sufficient.
+    // Only the scan owns this slot. A concurrent dispose closes the idle handle or lets the borrower close it.
+    internal sealed class RetainedHistoryRead(CameraAgentArtifactService owner) : IDisposable
+    {
+        private readonly object _gate = new();
+        private (SqliteConnection? Connection, ArtifactJournalIdentity Identity) _idle;
+        private bool _disposed;
+
+        internal ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
+            => owner.OpenContentCoreAsync(artifactId, replayExecutionId: null, forPreview: false, cancellationToken, this);
+
+        internal (SqliteConnection? Connection, ArtifactJournalIdentity Identity) Take()
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                var idle = _idle;
+                _idle = default;
+                return idle;
+            }
+        }
+
+        internal void Return(SqliteConnection connection, ArtifactJournalIdentity identity)
+        {
+            lock (_gate)
+            {
+                if (!_disposed)
+                {
+                    _idle = (connection, identity);
+                    return;
+                }
+            }
+            connection.Dispose();
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                _disposed = true;
+                _idle.Connection?.Dispose();
+                _idle = default;
+            }
         }
     }
 
