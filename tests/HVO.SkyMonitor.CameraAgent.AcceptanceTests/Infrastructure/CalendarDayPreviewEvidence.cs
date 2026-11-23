@@ -1081,7 +1081,7 @@ internal sealed partial class CalendarDayPreviewEvidence : IDisposable
           const resolveUrl = (value, element) => {
             if (!value?.trim()) return value;
             try { return new URL(value, element.baseURI).href; }
-            catch { return null; }
+            catch { return 'about:invalid'; }
           };
           const collect = element => {
             if (!element) return null;

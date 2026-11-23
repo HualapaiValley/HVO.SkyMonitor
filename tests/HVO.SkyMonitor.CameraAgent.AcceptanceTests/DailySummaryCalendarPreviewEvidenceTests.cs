@@ -49,7 +49,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     ];
 
     /// <summary>A product-shaped day page whose every free value is an opaque sentinel.</summary>
-    private static string OpaqueDayPage(string otherOrigin) => $$"""
+    private static string OpaqueDayPage(string appOrigin, string otherOrigin) => $$"""
         <!DOCTYPE html><html><body>
         <div class="app-frame" data-interactive="OPAQUE_INTERACTIVE_1916"><main><div class="content-container"><div class="day-page">
           <section class="page-state page-state--error OPAQUE_NOTICE_CLASS_1916" role="alert"><div><strong>OPAQUE_NOTICE_TITLE_1916</strong><p>OPAQUE_NOTICE_MESSAGE_1916</p></div></section>
@@ -63,6 +63,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
               <opaque-element-1916>OPAQUE_CUSTOM_1916</opaque-element-1916>
               <!-- OPAQUE_COMMENT_1916 -->
             </article>
+            <a href="{{appOrigin}}/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
+            <img src="{{appOrigin}}/api/v1/operations/still-products/OPAQUE_IMAGE_SEGMENT_1916/preview?OPAQUE_IMAGE_QUERYNAME_1916=1" loading="lazy" hidden>
           </section>
         </div></div></main></div>
         <dialog id="components-reconnect-modal" class="components-reconnect-show OPAQUE_RECONNECT_1916"></dialog>
@@ -263,9 +265,10 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
 
         // Use a second origin for the test page while keeping any request that bypasses browser routing on the fixture's loopback port.
         var appAddress = host!.BaseAddress;
+        var appOrigin = appAddress.GetLeftPart(UriPartial.Authority);
         var otherAddress = new UriBuilder(appAddress) { Host = "localhost" }.Uri;
         var otherOrigin = otherAddress.GetLeftPart(UriPartial.Authority);
-        await page.RouteAsync(otherOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage(otherOrigin) }));
+        await page.RouteAsync(otherOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage(appOrigin, otherOrigin) }));
         await page.RouteAsync(otherOrigin + run.PreviewPath, route => route.FulfillAsync(new() { Status = 503 }));
         await run.Evidence.BeforeDayLinkClickAsync();
         await page.GotoAsync(otherOrigin + run.DayPath + "?OPAQUE_QUERYNAME_1916=OPAQUE_VALUE_1916&month=OPAQUE_MONTH_1916");
@@ -279,9 +282,10 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
             """);
         Assert.AreEqual(503, await page.EvaluateAsync<int>("async path => (await fetch(path)).status", run.PreviewPath));
 
-        var report = await run.Evidence.RetainAsync(new TimeoutException(
-            "Timeout 30000ms exceeded.\nCall log:\n  - OPAQUE_FAILURE_LINE_1916 waiting for Locator(\"OPAQUE_SELECTOR_1916\")"),
-            TimeSpan.FromMilliseconds(300));
+        var failure = new TimeoutException(
+            "Timeout 30000ms exceeded.\nCall log:\n  - OPAQUE_FAILURE_LINE_1916 waiting for Locator(\"OPAQUE_SELECTOR_1916\")");
+        var settleWindow = TimeSpan.FromMilliseconds(300);
+        var report = await run.Evidence.RetainAsync(failure, settleWindow);
 
         Assert.IsNotNull(report);
         Assert.IsTrue(report.Observation.Probe!.Available, "the authenticated re-read must reach the CameraAgent fixture");
@@ -311,13 +315,34 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.IsFalse(report.Observation.PreviewFailedMarker);
         Assert.AreEqual("[other-origin]", report.AtFailure.Image.Source);
         Assert.AreEqual("[other-origin]", report.AtFailure.Image.CurrentSource);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "src=\"[other-origin]\"", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "href=\"[other-origin]\"", StringComparison.Ordinal);
+        var tileMarkup = report.AtFailure.Markup["dayTile"]!;
+        StringAssert.Contains(tileMarkup, "src=\"[other-origin]\"", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "href=\"[other-origin]\"", StringComparison.Ordinal);
+        var productsMarkup = report.AtFailure.Markup["dailyProducts"]!;
+        StringAssert.Contains(productsMarkup, "href=\"/archive/day/{invalid-date}?[other-query]\"", StringComparison.Ordinal);
+        StringAssert.Contains(productsMarkup, "src=\"/api/v1/operations/still-products/{invalid-product}/preview?[other-query]\"", StringComparison.Ordinal);
         StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "href=\"[other-origin]\"", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "product-slot__failed", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "Preview unavailable", StringComparison.Ordinal);
-        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "data-product-kind=\"daily summary\"", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "product-slot__failed", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "Preview unavailable", StringComparison.Ordinal);
+        StringAssert.Contains(tileMarkup, "data-product-kind=\"daily summary\"", StringComparison.Ordinal);
         StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "data-nightly-state=\"Partial\"", StringComparison.Ordinal);
+
+        const string malformedUrl = "http://[::1";
+        await page.Locator("[data-product-kind='daily summary']").EvaluateAsync("""
+            (tile, url) => {
+                tile.querySelector('img').setAttribute('src', url);
+                tile.querySelector('a').setAttribute('href', url);
+            }
+            """, malformedUrl);
+
+        var malformedReport = await run.Evidence.RetainAsync(failure, settleWindow);
+
+        Assert.IsNotNull(malformedReport);
+        Assert.AreEqual("[unparsed]", malformedReport.AtFailure.Image.Source);
+        var malformedMarkup = malformedReport.AtFailure.Markup["dayTile"]!;
+        StringAssert.Contains(malformedMarkup, "src=\"[unparsed]\"", StringComparison.Ordinal);
+        StringAssert.Contains(malformedMarkup, "href=\"[unparsed]\"", StringComparison.Ordinal);
+        await run.AssertRetainedEvidenceAsync(malformedReport, malformedUrl);
     }
 
     [TestMethod]
