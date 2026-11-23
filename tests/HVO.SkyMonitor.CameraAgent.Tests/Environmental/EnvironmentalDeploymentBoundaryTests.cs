@@ -276,7 +276,11 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     }
 
     [TestMethod]
-    public async Task ProtectedLocationStartup_QueuedTriggerFailureDoesNotRepeatACommittedHeldPoll()
+    [DataRow(false, false, DisplayName = "Unexpected queued trigger failure after held settlement")]
+    [DataRow(true, false, DisplayName = "Journal recovery after finding a settled slot")]
+    [DataRow(true, true, DisplayName = "Journal recovery after finding a removed slot")]
+    public async Task ProtectedLocationStartup_QueuedTriggerFailureDoesNotRepeatACommittedHeldPoll(
+        bool refuseQueuedAttempt, bool removeSettledSlot)
     {
         var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
         await using var fixtureLifetime = fixture.ConfigureAwait(false);
@@ -294,8 +298,11 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         await entered.Task.WaitAsync(HarnessDeadline).ConfigureAwait(false);
         try
         {
+            if (refuseQueuedAttempt) await fixture.RefuseProducedCaptureAttemptAsync().ConfigureAwait(false);
+            if (removeSettledSlot) await fixture.RemoveSlotOnSettlementAsync().ConfigureAwait(false);
+            var queuedAt = refuseQueuedAttempt ? Epoch.AddSeconds(1) : Epoch.AddDays(-2);
             var queued = await fixture.Coordinator.AcquireSourceAsync("source-0", EnvironmentalAcquisitionTrigger.AfterCapture,
-                Epoch.AddDays(-2), 1, Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
+                queuedAt, 1, Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(EnvironmentalAcquisitionDisposition.Coalesced, queued.Disposition);
         }
         finally
@@ -305,11 +312,24 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
         await fixture.Clock.WaitForTimerAsync(Epoch + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
         Assert.AreEqual(1, fixture.Publisher.HeldCommitAttempts);
-        Assert.AreEqual(1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(refuseQueuedAttempt ? 2L : 1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
         var periodic = (await fixture.ReadAttemptsAsync().ConfigureAwait(false))
             .Single(static attempt => attempt.Trigger == EnvironmentalAcquisitionTrigger.Periodic);
         Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, periodic.Disposition);
-        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+        Assert.AreEqual(removeSettledSlot ? null : new EnvironmentalLocationPollSlot(Epoch, true),
+            await fixture.ReadLocationPollSlotAsync().ConfigureAwait(false));
+        var error = fixture.Logger.Events.Single(static entry => entry.Level >= LogLevel.Warning);
+        if (refuseQueuedAttempt)
+        {
+            AssertHeldPollJournalEvents(fixture, 2526, 2527);
+            Assert.IsInstanceOfType<SqliteException>(error.Exception);
+        }
+        else
+        {
+            AssertHeldPollJournalEvents(fixture);
+            Assert.AreEqual(2522, error.Id);
+            StringAssert.Contains(error.Message, "held-poll-unexpected", StringComparison.Ordinal);
+        }
     }
 
     [TestMethod]
@@ -497,6 +517,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
             Assert.AreEqual(Epoch, (await fixture.ReadStatesAsync().ConfigureAwait(false)).Single().NextPollUtc);
             Assert.IsEmpty(await fixture.ReadAttemptsAsync().ConfigureAwait(false));
             Assert.AreEqual(0L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+            AssertHeldPollJournalEvents(fixture, 2526);
             var errors = fixture.Logger.Events.Where(static entry => entry.Level >= LogLevel.Warning).ToArray();
             Assert.HasCount(1, errors);
             Assert.IsInstanceOfType<SqliteException>(errors[0].Exception);
@@ -511,9 +532,69 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         Assert.HasCount(5, device.RequestedTimes);
         Assert.IsTrue(device.RequestedTimes.All(static time => time == Epoch));
         Assert.AreEqual(1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
-        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single().Disposition);
+        var attempt = (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single();
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, attempt.Disposition);
+        Assert.AreEqual(attempt.ObservationId, (await fixture.ReadLocalPageAsync().ConfigureAwait(false)).Items.Single().Fact.ObservationId);
         Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
         Assert.HasCount(1, fixture.Logger.Events.Where(static entry => entry.Level >= LogLevel.Warning));
+        AssertHeldPollJournalEvents(fixture, 2526, 2527);
+    }
+
+    [TestMethod]
+    public async Task ProtectedLocationStartup_HeldRetryReportsDistinctFailureCauses()
+    {
+        var fixture = new Fixture(Epoch.AddSeconds(-1), Location(Epoch.AddDays(-1)), protectedStartup: true);
+        await using var fixtureLifetime = fixture.ConfigureAwait(false);
+        fixture.Publisher.BeforeHeldCommit = _ => fixture.Publisher.HeldCommitAttempts is 3 or 4 or 7
+            ? Task.FromException(new InvalidOperationException($"Injected publisher failure on read {fixture.Publisher.HeldCommitAttempts}."))
+            : Task.CompletedTask;
+        await fixture.LoadProvisionalLocationAsync().ConfigureAwait(false);
+        await fixture.StartAndFireFirstPollAsync().ConfigureAwait(false);
+        await fixture.WaitForLocationHoldAsync().ConfigureAwait(false);
+        await fixture.RefuseAllAttemptsAsync().ConfigureAwait(false);
+        await fixture.ReconcileLocationAsync().ConfigureAwait(false);
+
+        var retryInterval = TimeSpan.FromSeconds(30);
+        int[] expectedErrorCounts = [1, 1, 2, 2, 3, 3, 3];
+        for (var index = 0; index < expectedErrorCounts.Length; index++)
+        {
+            var retryAt = Epoch + retryInterval * (index + 1);
+            await fixture.Clock.WaitForTimerAsync(retryAt).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+            Assert.HasCount(expectedErrorCounts[index], fixture.Logger.Events.Where(static entry => entry.Level >= LogLevel.Warning));
+            Assert.IsFalse(fixture.Logger.Events.Any(static entry => entry.Id == 2527));
+            Assert.AreEqual(Epoch, await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+            if (index == 3)
+                fixture.SetAttemptWriteFailure(new SqliteException("Injected journal I/O failure.", SQLitePCL.raw.SQLITE_IOERR));
+            if (index == expectedErrorCounts.Length - 1)
+            {
+                fixture.SetAttemptWriteFailure(null);
+                await fixture.AllowAttemptsAsync().ConfigureAwait(false);
+            }
+            fixture.Clock.AdvanceTo(retryAt);
+        }
+
+        await fixture.Clock.WaitForTimerAsync(Epoch + StartupSourcePeriod).WaitAsync(HarnessDeadline).ConfigureAwait(false);
+        var errors = fixture.Logger.Events.Where(static entry => entry.Level >= LogLevel.Warning).ToArray();
+        Assert.HasCount(3, errors);
+        Assert.AreEqual(2522, errors[1].Id);
+        Assert.IsInstanceOfType<InvalidOperationException>(errors[1].Exception);
+        StringAssert.Contains(errors[1].Message, "held-poll-unexpected", StringComparison.Ordinal);
+        Assert.AreEqual(2522, errors[2].Id);
+        Assert.IsInstanceOfType<SqliteException>(errors[2].Exception);
+        Assert.AreEqual(SQLitePCL.raw.SQLITE_IOERR, ((SqliteException)errors[2].Exception!).SqliteErrorCode);
+        StringAssert.Contains(errors[2].Message, "held-poll-settlement-failure-changed", StringComparison.Ordinal);
+        AssertHeldPollJournalEvents(fixture, 2526, 2527);
+        Assert.AreEqual(8, fixture.Publisher.HeldCommitAttempts);
+        Assert.AreEqual(1L, (await fixture.ReadSnapshotAsync().ConfigureAwait(false)).StoredCount);
+        Assert.AreEqual(EnvironmentalAcquisitionDisposition.Produced, (await fixture.ReadAttemptsAsync().ConfigureAwait(false)).Single().Disposition);
+        Assert.IsNull(await fixture.ReadLocationHeldPollAsync().ConfigureAwait(false));
+    }
+
+    private static void AssertHeldPollJournalEvents(Fixture fixture, params int[] expectedIds)
+    {
+        var journalEvents = fixture.Logger.Events.Where(static entry => entry.Id is 2526 or 2527).ToArray();
+        CollectionAssert.AreEqual(expectedIds, journalEvents.Select(static entry => entry.Id).ToArray());
+        Assert.IsTrue(journalEvents.All(static entry => entry.Message.Contains("held-poll-settlement", StringComparison.Ordinal)));
     }
 
     private static DateTimeOffset JournalTime(DateTimeOffset value)
@@ -785,6 +866,8 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         public RecordingLogger Logger { get; } = new();
         public EnvironmentalAcquisitionCoordinator Coordinator { get; }
 
+        public void SetAttemptWriteFailure(Exception? failure) => _scheduleWitness!.AttemptWriteFailure = failure;
+
         public EnvironmentalObservationPublisher CreateProductionPublisher(IEnvironmentalObservationOutbox outbox)
             => new(new NullEnvironmentalObservationTargetResolver(), outbox, new EnvironmentalObservationDeliveryWakeup(),
                 _deliveryState, _deliveryTelemetry, _options, Clock, _telemetry);
@@ -797,7 +880,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
         private EnvironmentalAcquisitionCoordinator CreateCoordinator(IEnvironmentalObservationPublisher publisher)
             => new(_factory, publisher, (IDeploymentLocationStore?)ProtectedLocation ?? new FixedLocationStore(Location),
-                _options, Clock, _store, _telemetry, Logger);
+                _options, Clock, (IEnvironmentalAcquisitionStateStore?)_scheduleWitness ?? _store, _telemetry, Logger);
 
         private EnvironmentalAcquisitionService CreateWorker(EnvironmentalAcquisitionCoordinator coordinator)
             => new(coordinator, (IEnvironmentalAcquisitionStateStore?)_scheduleWitness ?? _store,
@@ -910,6 +993,21 @@ public sealed class EnvironmentalDeploymentBoundaryTests
         public Task AllowAttemptsAsync()
             => ExecuteJournalStatementAsync("DROP TRIGGER test_refuse_all_attempts;");
 
+        public Task RefuseProducedCaptureAttemptAsync()
+            => ExecuteJournalStatementAsync("""
+                CREATE TRIGGER test_refuse_produced_capture_attempt
+                BEFORE INSERT ON environmental_acquisition_attempts
+                WHEN NEW.trigger = 'AfterCapture' AND NEW.outcome = 'Produced'
+                BEGIN SELECT RAISE(ABORT, 'test queued capture attempt persistence failure'); END;
+                """);
+
+        public Task RemoveSlotOnSettlementAsync()
+            => ExecuteJournalStatementAsync("""
+                CREATE TRIGGER test_remove_settled_slot
+                AFTER UPDATE OF settled ON environmental_location_held_polls WHEN NEW.settled = 1
+                BEGIN DELETE FROM environmental_location_held_polls WHERE source_id = NEW.source_id; END;
+                """);
+
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Security", "CA2100:Review SQL queries for security vulnerabilities",
             Justification = "Only fixed test fixture statements are passed to this helper.")]
         private async Task ExecuteJournalStatementAsync(string statement)
@@ -997,6 +1095,7 @@ public sealed class EnvironmentalDeploymentBoundaryTests
     {
         public TaskCompletionSource ScheduleWritten { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource HoldWritten { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Exception? AttemptWriteFailure { get; set; }
 
         public async ValueTask UpdateSourceScheduleAsync(string root, EnvironmentalSourceDescriptor source,
             DateTimeOffset nextPollUtc, CancellationToken cancellationToken)
@@ -1024,7 +1123,9 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
         public ValueTask RecordAttemptAsync(string root, EnvironmentalSourceDescriptor source, EnvironmentalAcquisitionReceipt receipt,
             long? captureSequence, Guid? captureId, CancellationToken cancellationToken)
-            => inner.RecordAttemptAsync(root, source, receipt, captureSequence, captureId, cancellationToken);
+            => AttemptWriteFailure is { } failure
+                ? ValueTask.FromException(failure)
+                : inner.RecordAttemptAsync(root, source, receipt, captureSequence, captureId, cancellationToken);
 
         public ValueTask<IReadOnlyList<EnvironmentalSourceRuntimeState>> ReadSourceStatesAsync(string root, CancellationToken cancellationToken)
             => inner.ReadSourceStatesAsync(root, cancellationToken);
@@ -1084,11 +1185,11 @@ public sealed class EnvironmentalDeploymentBoundaryTests
 
     private sealed class RecordingLogger : ILogger<EnvironmentalAcquisitionService>, ILogger<EnvironmentalAcquisitionCoordinator>
     {
-        public ConcurrentQueue<(int Id, LogLevel Level, Exception? Exception)> Events { get; } = new();
+        public ConcurrentQueue<(int Id, LogLevel Level, Exception? Exception, string Message)> Events { get; } = new();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
-            => Events.Enqueue((eventId.Id, logLevel, exception));
+            => Events.Enqueue((eventId.Id, logLevel, exception, formatter(state, exception)));
     }
 
     private sealed class ManualClock(DateTimeOffset startup) : TimeProvider

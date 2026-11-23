@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using HVO.SkyMonitor.CameraAgent.Common.Options;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,6 +17,7 @@ public sealed partial class EnvironmentalAcquisitionService(
     IOptions<CameraAgentHostOptions> options,
     ILogger<EnvironmentalAcquisitionService> logger) : BackgroundService
 {
+    private const string HeldPollSettlementOperation = "held-poll-settlement";
     private static readonly TimeSpan HeldPollRetryInterval = TimeSpan.FromSeconds(30);
     private readonly IEnvironmentalLocationHeldPollStore? _heldPollStore = coordinator.ConfigureHeldPollStore(stateStore);
     private long _queueDepth;
@@ -174,13 +176,13 @@ public sealed partial class EnvironmentalAcquisitionService(
         var initialPoll = true;
         var heldPollStore = _heldPollStore;
         DateTimeOffset? heldDue = null;
-        var retryingHeldSettlement = false;
+        HeldPollRetry? heldRetry = null;
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                if (retryingHeldSettlement)
+                if (heldRetry is not null)
                 {
                     var slot = await heldPollStore!.ReadLocationHeldPollAsync(
                         options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
@@ -189,7 +191,8 @@ public sealed partial class EnvironmentalAcquisitionService(
                         await Task.Delay(HeldPollRetryInterval, timeProvider, cancellationToken).ConfigureAwait(false);
                     else
                     {
-                        retryingHeldSettlement = false;
+                        heldRetry.ReportRecovery(logger);
+                        heldRetry = null;
                         due = NextDue(source, timeProvider.GetUtcNow());
                     }
                 }
@@ -230,18 +233,19 @@ public sealed partial class EnvironmentalAcquisitionService(
                 // Keep the due timestamp while the protected store reconciles startup authority.
                 // Wait before entering the coordinator so capture triggers retain their own budgets.
                 await coordinator.WaitForInitialDeploymentLocationAsync(cancellationToken).ConfigureAwait(false);
-                var settled = await AcquireAsync(source, due, heldDue.HasValue, logFailure: !retryingHeldSettlement,
-                    cancellationToken).ConfigureAwait(false);
-                if (!settled && heldDue.HasValue)
+                var failure = await TryAcquireAsync(source, due, heldDue.HasValue, cancellationToken).ConfigureAwait(false);
+                if (failure is not null)
                 {
-                    retryingHeldSettlement = true;
-                    continue;
+                    if (heldDue.HasValue)
+                    {
+                        heldRetry ??= new HeldPollRetry();
+                        heldRetry.ReportFailure(logger, source, failure);
+                        continue;
+                    }
+                    LogPeriodicFailure(logger, source, "unexpected", failure);
                 }
-                if (retryingHeldSettlement)
-                {
-                    JournalRecovered(logger, "held-poll-settlement");
-                    retryingHeldSettlement = false;
-                }
+                heldRetry?.ReportRecovery(logger);
+                heldRetry = null;
                 heldDue = null;
                 due = NextDue(source, timeProvider.GetUtcNow());
             }
@@ -314,18 +318,17 @@ public sealed partial class EnvironmentalAcquisitionService(
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types",
         Justification = "A single configured source failure must not stop independent periodic sources.")]
-    private async Task<bool> AcquireAsync(
+    private async Task<Exception?> TryAcquireAsync(
         EnvironmentalSourceDescriptor source,
         DateTimeOffset due,
         bool locationHeld,
-        bool logFailure,
         CancellationToken cancellationToken)
     {
         try
         {
             _ = await coordinator.AcquireScheduledSourceAsync(
                 source.Id, due, locationHeld, cancellationToken).ConfigureAwait(false);
-            return true;
+            return null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -333,17 +336,49 @@ public sealed partial class EnvironmentalAcquisitionService(
         }
         catch (Exception exception)
         {
-            if (logFailure)
+            return exception;
+        }
+    }
+
+    private static void LogPeriodicFailure(ILogger logger, EnvironmentalSourceDescriptor source, string reason, Exception failure)
+        => AcquisitionFailed(logger, source.Kind.ToString(), EnvironmentalAcquisitionTrigger.Periodic.ToString(),
+            EnvironmentalAcquisitionDisposition.Failed.ToString(), reason, failure);
+
+    private sealed class HeldPollRetry
+    {
+        private (Type ExceptionType, int ErrorCode)? _lastJournalFailure;
+        private (Type ExceptionType, int ErrorCode)? _lastUnexpectedFailure;
+
+        public void ReportFailure(ILogger logger, EnvironmentalSourceDescriptor source, Exception failure)
+        {
+            // Keep changing exception details from producing a new log for the same cause.
+            var cause = (failure.GetType(), failure is SqliteException sqlite ? sqlite.SqliteExtendedErrorCode : failure.HResult);
+            if (failure is SqliteException or IOException or UnauthorizedAccessException or
+                LocalEnvironmentalObservationCapacityException or EnvironmentalObservationOutboxCapacityException)
             {
-                AcquisitionFailed(
-                    logger,
-                    source.Kind.ToString(),
-                    EnvironmentalAcquisitionTrigger.Periodic.ToString(),
-                    EnvironmentalAcquisitionDisposition.Failed.ToString(),
-                    locationHeld ? "held-poll-settlement-unavailable" : "unexpected",
-                    exception);
+                if (!_lastJournalFailure.HasValue)
+                {
+                    JournalUnavailable(logger, HeldPollSettlementOperation, failure);
+                }
+                else if (_lastJournalFailure != cause)
+                {
+                    LogPeriodicFailure(logger, source, "held-poll-settlement-failure-changed", failure);
+                }
+                _lastJournalFailure = cause;
             }
-            return false;
+            else if (_lastUnexpectedFailure != cause)
+            {
+                LogPeriodicFailure(logger, source, "held-poll-unexpected", failure);
+                _lastUnexpectedFailure = cause;
+            }
+        }
+
+        public void ReportRecovery(ILogger logger)
+        {
+            if (_lastJournalFailure.HasValue)
+            {
+                JournalRecovered(logger, HeldPollSettlementOperation);
+            }
         }
     }
 
@@ -402,7 +437,7 @@ public sealed partial class EnvironmentalAcquisitionService(
 
     [LoggerMessage(2526, LogLevel.Error,
         "Environmental journal operation {Operation} is unavailable.")]
-    private static partial void JournalUnavailable(ILogger logger, string operation);
+    private static partial void JournalUnavailable(ILogger logger, string operation, Exception? exception = null);
 
     [LoggerMessage(2527, LogLevel.Information,
         "Environmental journal operation {Operation} recovered.")]
