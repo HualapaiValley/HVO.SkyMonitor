@@ -161,6 +161,9 @@ public sealed class SiloRuntimeVerificationTests
     // R6-02: values judged exactly as Docker reports them.
     [DataRow("bind-source-with-a-trailing-space", "which is the data root, lies inside it or holds it")]
     [DataRow("volume-type-with-a-pipe", "a bind of")]
+    // R7-01 parity: the installer judges a resolved path and its parents exactly as named, as the runbook does.
+    [DataRow("unrelated-source-under-a-folder-whose-name-ends-in-a-newline", null)]
+    [DataRow("source-whose-name-ends-in-a-newline-bound-to-the-data-root", "which the mount table places on the data root, inside it or holding it")]
     // R6-03: a volume's mount options are never shown.
     [DataRow("cifs-volume-with-credentials", "a local volume of type cifs that is not a bind, a volume Docker manages or a tmpfs, so where its data lies is not proved")]
     [DataRow("volume-docker-cannot-inspect", "Docker could not inspect volume vanished")]
@@ -212,6 +215,10 @@ public sealed class SiloRuntimeVerificationTests
                 "bind-volume-whose-mount-point-holds-the-data-root-now" or "unrelated-running-bind-volume" =>
                     harness.LocalVolume("bound", ("type", "none"), ("o", "bind"), ("device", Path.Combine(scratch.FullName, "elsewhere"))),
                 "bind-source-with-a-trailing-space" => TrailingSpace(),
+                "unrelated-source-under-a-folder-whose-name-ends-in-a-newline" =>
+                    SiloHarness.BindMount(Directory.CreateDirectory(Path.Combine(scratch.FullName, "mid\n", "leaf")).FullName),
+                "source-whose-name-ends-in-a-newline-bound-to-the-data-root" =>
+                    SiloHarness.BindMount(Directory.CreateDirectory(Path.Combine(scratch.FullName, "nl\n")).FullName),
                 "volume-type-with-a-pipe" => harness.LocalVolume("bound", ("type", "tmpfs|safe"), ("o", "bind"), ("device", harness.DataRoot)),
                 "cifs-volume-with-credentials" => harness.LocalVolume("share", ("type", "cifs"),
                     ("o", "username=alice,password=TEST_CIFS_SECRET_VALUE,pass=TEST_SHORT_PASS_VALUE"), ("device", "//archive.example/share")),
@@ -232,6 +239,11 @@ public sealed class SiloRuntimeVerificationTests
                 case "running-container-that-stopped-before-its-table-was-read":
                     harness.LiveMountTables[pid] = null;
                     harness.StoppedWhenInspectedAgain.Add(other["Id"]!.GetValue<string>());
+                    break;
+                case "source-whose-name-ends-in-a-newline-bound-to-the-data-root":
+                    // The same name without its newline is an unrelated folder; only the exact name is bound to the data root.
+                    Directory.CreateDirectory(Path.Combine(scratch.FullName, "nl"));
+                    harness.HostMounts.Add(SiloHarness.MountLine(data.Device, data.Path, Path.Combine(scratch.FullName, "nl\n")));
                     break;
                 case "bind-volume-whose-mount-point-holds-the-data-root-now":
                     // Mounted when the device named the data root; Docker's folder is root-only, so only the table shows it.

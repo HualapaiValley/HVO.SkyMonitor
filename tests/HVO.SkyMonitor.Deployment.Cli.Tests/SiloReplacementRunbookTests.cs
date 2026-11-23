@@ -36,6 +36,9 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("running-container-holding-only-unrelated-mounts-now")]
     [DataRow("running-container-that-stopped-before-its-table-was-read")]
     [DataRow("unrelated-running-bind-volume-in-a-root-only-docker-folder")]
+    // R7-01: a resolved path and its parents are judged exactly as named, trailing newlines included.
+    [DataRow("unrelated-source-whose-name-ends-in-a-newline")]
+    [DataRow("unrelated-source-under-a-folder-whose-name-ends-in-a-newline")]
     public async Task TheBlock_ReplacesSiloWhenItsDataRootIsItsOwn(string change)
     {
         RequireTools();
@@ -62,6 +65,16 @@ public sealed class SiloReplacementRunbookTests
                 run.IntruderFromTheStart(run.BindVolume("shared", Path.Combine(run.Root, "elsewhere")));
                 run.HostMount($"{run.DockerRootDirectory}/volumes/shared/_data", run.ElsewhereLocation.Path, run.ElsewhereLocation.Device);
                 run.DockerRootUnsearchable();
+                break;
+            case "unrelated-source-whose-name-ends-in-a-newline":
+                // Resolving it must keep its name: the same name without the newline does not exist.
+                Directory.CreateDirectory(Path.Combine(run.Root, "only-nl\n"));
+                run.IntruderFromTheStart(Run.Bind(Path.Combine(run.Root, "only-nl\n")));
+                break;
+            case "unrelated-source-under-a-folder-whose-name-ends-in-a-newline":
+                // Walking its parents must keep the folder's name: the same name without the newline does not exist.
+                Directory.CreateDirectory(Path.Combine(run.Root, "mid\n", "leaf"));
+                run.IntruderFromTheStart(Run.Bind(Path.Combine(run.Root, "mid\n", "leaf")));
                 break;
             case "another-path-of-its-filesystem-bound-elsewhere":
                 // A bind mount of a sibling of the instance root, on the data root's own filesystem: apart from it.
@@ -112,6 +125,9 @@ public sealed class SiloReplacementRunbookTests
     [DataRow("bind-source-with-a-trailing-space", "container intruder mounts")]
     [DataRow("bind-source-ending-in-a-newline", "container intruder mounts")]
     [DataRow("volume-type-with-a-pipe", "container intruder mounts volume bound, a bind of")]
+    // R7-01: the exact resolved path is the one bound to the data root; the same name without its newline is unrelated.
+    [DataRow("source-whose-name-ends-in-a-newline-bound-to-the-data-root", "which the mount table places on")]
+    [DataRow("link-to-a-folder-whose-name-ends-in-a-newline-bound-to-the-data-root", "which the mount table places on")]
     // R6-03: a volume's mount options are never shown, and a type only when it is a plain name.
     [DataRow("cifs-volume-with-credentials", "container intruder mounts volume share, a local volume of type cifs that is not a bind")]
     [DataRow("volume-type-that-is-not-a-plain-name", "container intruder mounts volume odd, a local volume of type (not shown) that is not a bind")]
@@ -199,6 +215,14 @@ public sealed class SiloReplacementRunbookTests
                 break;
             case "volume-type-with-a-pipe":
                 run.Intruder(run.Volume("bound", "local", ("type", "tmpfs|safe"), ("o", "bind"), ("device", run.DataRoot)));
+                break;
+            case "source-whose-name-ends-in-a-newline-bound-to-the-data-root":
+            case "link-to-a-folder-whose-name-ends-in-a-newline-bound-to-the-data-root":
+                var named = Path.Combine(run.Root, "nl\n");
+                Directory.CreateDirectory(named);
+                Directory.CreateDirectory(Path.Combine(run.Root, "nl"));
+                run.HostMount(named, run.DataLocation.Path);
+                run.Intruder(Run.Bind(change.StartsWith("link", StringComparison.Ordinal) ? run.Link("link-nl", named) : named));
                 break;
             case "cifs-volume-with-credentials":
                 run.Intruder(run.Volume("share", "local", ("type", "cifs"),

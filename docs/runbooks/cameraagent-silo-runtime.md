@@ -532,12 +532,14 @@ versions() {   # every object version in the bucket and the SHA-256 of its bytes
   done < "$W/$1.list" > "$W/$1.partial"
   mv -- "$W/$1.partial" "$W/$1"
 }
-D=$(realpath -e -- "$DATA"); DID=$(stat -L -c '%d:%i' "$D"); DROOT=$(docker info --format '{{.DockerRootDir}}')
+# A resolved path and its parents are kept exactly: the shell would drop a name's trailing newlines from command output.
+D=$(realpath -e -- "$DATA" && printf .); D=${D%.}; D=${D%$'\n'}
+DID=$(stat -L -c '%d:%i' "$D"); DROOT=$(docker info --format '{{.DockerRootDir}}')
 roots=()   # the data root, its existing ancestors as named and as resolved, and /, by device and inode
 for path in "$DATA" "$D"; do
-  while [[ $path != / ]]; do
+  while [[ $path == /* && $path != / ]]; do
     if [[ -e $path ]]; then node=$(stat -L -c '%d:%i' "$path"); roots+=("$node"); fi
-    path=$(dirname "$path")
+    path=${path%/*}; path=${path:-/}
   done
 done
 node=$(stat -L -c '%d:%i' /); roots+=("$node")
@@ -562,7 +564,8 @@ shown() {   # a driver or type for a message, only when it is a plain name: moun
 }
 apart() {   # fails unless host path $2, which $1 describes, is proved apart from the data root
   local r p b node answer
-  if ! r=$(realpath -e -- "$2" 2> /dev/null); then fail "$1, which does not resolve here, so it is not proved apart from $DATA."; fi
+  if ! r=$(realpath -e -- "$2" 2> /dev/null && printf .); then fail "$1, which does not resolve here, so it is not proved apart from $DATA."; fi
+  r=${r%.}; r=${r%$'\n'}                                            # realpath's own newline only
   for p in "$2" "$r"; do
     for b in "$DATA" "$D"; do
       if [[ $p == "$b" || $p == "$b/"* || $b == "${p%/}/"* ]]; then fail "$1."; fi
@@ -576,7 +579,7 @@ apart() {   # fails unless host path $2, which $1 describes, is proved apart fro
   while [[ $p != / ]]; do
     node=$(stat -L -c '%d:%i' "$p")
     if [[ $node == "$DID" ]]; then fail "$1, inside $DATA under another name."; fi
-    p=$(dirname "$p")
+    p=${p%/*}; p=${p:-/}
   done
   answer=$(ask 'overlaps(placed($p); $d)' "$r" "$MOUNTS")
   if [[ $answer == yes ]]; then fail "$1, which the mount table places on $DATA, inside it or holding it."; fi
