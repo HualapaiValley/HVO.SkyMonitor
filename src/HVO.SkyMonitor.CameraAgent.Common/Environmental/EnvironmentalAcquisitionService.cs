@@ -344,6 +344,10 @@ public sealed partial class EnvironmentalAcquisitionService(
         => AcquisitionFailed(logger, source.Kind.ToString(), EnvironmentalAcquisitionTrigger.Periodic.ToString(),
             EnvironmentalAcquisitionDisposition.Failed.ToString(), reason, failure);
 
+    private static bool IsJournalFailure(Exception failure)
+        => failure is SqliteException or IOException or UnauthorizedAccessException or
+            LocalEnvironmentalObservationCapacityException or EnvironmentalObservationOutboxCapacityException;
+
     private sealed class HeldPollRetry
     {
         private (Type ExceptionType, int ErrorCode)? _lastJournalFailure;
@@ -351,10 +355,18 @@ public sealed partial class EnvironmentalAcquisitionService(
 
         public void ReportFailure(ILogger logger, EnvironmentalSourceDescriptor source, Exception failure)
         {
+            if (failure is EnvironmentalAcquisitionCoordinator.QueuedTriggerAfterHeldPollException queued)
+            {
+                var queuedFailure = queued.InnerException!;
+                AcquisitionFailed(logger, source.Kind.ToString(), queued.Trigger.ToString(),
+                    EnvironmentalAcquisitionDisposition.Failed.ToString(),
+                    IsJournalFailure(queuedFailure) ? "queued-trigger-journal-unavailable" : "queued-trigger-unexpected", queuedFailure);
+                return;
+            }
+
             // Keep changing exception details from producing a new log for the same cause.
             var cause = (failure.GetType(), failure is SqliteException sqlite ? sqlite.SqliteExtendedErrorCode : failure.HResult);
-            if (failure is SqliteException or IOException or UnauthorizedAccessException or
-                LocalEnvironmentalObservationCapacityException or EnvironmentalObservationOutboxCapacityException)
+            if (IsJournalFailure(failure))
             {
                 if (!_lastJournalFailure.HasValue)
                 {

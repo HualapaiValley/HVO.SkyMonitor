@@ -267,22 +267,34 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 {
                     return first;
                 }
-                var pendingReceipt = await AcquireExclusiveAsync(
-                    source,
-                    pending.Trigger,
-                    pending.ObservedAtUtc,
-                    pending.CaptureSequence,
-                    pending.CaptureId,
-                    _timeProvider.GetUtcNow(),
-                    cancellationToken).ConfigureAwait(false);
-                LogReceipt(source.Descriptor, pendingReceipt);
-                await RecordAttemptAsync(
-                    source.Descriptor,
-                    pendingReceipt,
-                    pending.CaptureSequence,
-                    pending.CaptureId,
-                    cancellationToken).ConfigureAwait(false);
-                completedReceipt = pendingReceipt;
+                try
+                {
+                    var pendingReceipt = await AcquireExclusiveAsync(
+                        source,
+                        pending.Trigger,
+                        pending.ObservedAtUtc,
+                        pending.CaptureSequence,
+                        pending.CaptureId,
+                        _timeProvider.GetUtcNow(),
+                        cancellationToken).ConfigureAwait(false);
+                    LogReceipt(source.Descriptor, pendingReceipt);
+                    await RecordAttemptAsync(
+                        source.Descriptor,
+                        pendingReceipt,
+                        pending.CaptureSequence,
+                        pending.CaptureId,
+                        cancellationToken).ConfigureAwait(false);
+                    completedReceipt = pendingReceipt;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (heldLocationPollUtc.HasValue)
+                {
+                    // The scheduled slot settled before the coordinator began draining this trigger.
+                    throw new QueuedTriggerAfterHeldPollException(pending.Trigger, exception);
+                }
             }
         }
         finally
@@ -540,6 +552,16 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
 
     internal sealed record DeferredEnvironmentalSourceRequest(string SourceId, EnvironmentalAcquisitionTrigger Trigger,
         DateTimeOffset ObservedAtUtc, long? CaptureSequence, Guid? CaptureId);
+
+    [SuppressMessage("Design", "CA1032:Implement standard exception constructors",
+        Justification = "The worker needs the queued trigger and original failure together.")]
+    [SuppressMessage("Design", "CA1064:Exceptions should be public",
+        Justification = "The coordinator and scheduled worker share this context internally.")]
+    internal sealed class QueuedTriggerAfterHeldPollException(EnvironmentalAcquisitionTrigger trigger, Exception cause)
+        : Exception("A queued environmental trigger failed after the held poll was settled.", cause)
+    {
+        public EnvironmentalAcquisitionTrigger Trigger { get; } = trigger;
+    }
 
     private EnvironmentalAcquisitionReceipt Receipt(
         string sourceId,
