@@ -9,6 +9,47 @@ public sealed class LocalAutomationScriptStopWorkerTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
+    public async Task ScriptStopDrainsBeforeReportingCancellationCallbackFault(bool cancelCaller)
+    {
+        using var worker = new LocalAutomationOffSweepWorker();
+        using var caller = new CancellationTokenSource();
+        var occurrence = CustomScriptTaskAdapterTests.Occurrence(CustomScriptTaskAdapterTests.Script());
+        var registered = ScriptControlsFixture.Signal();
+        var cancellationObserved = ScriptControlsFixture.Signal();
+        var release = ScriptControlsFixture.Signal();
+        var failure = new InvalidOperationException("test script cancellation callback");
+        using var reservation = worker.TryReserve();
+        Assert.IsNotNull(reservation);
+        reservation.Dispatch(AutomationShutdownAssertions.ControlledAdapter(registered, cancellationObserved, release, failure),
+            occurrence, occurrence.RunKey, default);
+        await AutomationShutdownAssertions.PreserveFirstFailureAsync(async () =>
+        {
+            await registered.Task.WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+            var stop = worker.StopScriptRunAsync(occurrence.RunKey, caller.Token).AsTask();
+            await cancellationObserved.Task.WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+            if (cancelCaller)
+            {
+                await caller.CancelAsync().ConfigureAwait(false);
+            }
+            await Assert.ThrowsExactlyAsync<TimeoutException>(() => stop.WaitAsync(TimeSpan.FromMilliseconds(250)))
+                .ConfigureAwait(false);
+            using var prematureReservation = worker.TryReserve();
+            Assert.IsNull(prematureReservation, "The adapter still owns its reservation.");
+
+            release.SetResult();
+            await AutomationShutdownAssertions.StopReportsAsync(stop, failure).ConfigureAwait(false);
+            using var nextReservation = worker.TryReserve();
+            Assert.IsNotNull(nextReservation, "The callback failure is reported only after the reservation is released.");
+        }, async () =>
+        {
+            release.TrySetResult();
+            await worker.WhenIdleAsync().WaitAsync(AutomationShutdownAssertions.Deadline).ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
     public async Task RegistrationWaitEndsOnReleaseAndCallerCancellationDoesNotCancelFutureWork(bool cancelWaiter)
     {
         using var worker = new LocalAutomationOffSweepWorker();
