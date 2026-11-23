@@ -282,7 +282,7 @@ public sealed partial class DurableCaptureProcessingTests
                 });
             // Lower the aggregate budget to exercise accounting independently of individual limits.
             // At production limits the sum of the five individual caps is already below 44 MiB.
-            using var reader = new CameraAgentRetainedAstrometryService(store, decorated.Object,
+            using var reader = CreateUnpooledAstrometryReader(store, decorated.Object,
                 fault == "total-limit" ? MeasuredAstrometryJson.MaximumSolutionBytes : CameraAgentRetainedAstrometryService.MaximumReadBytes);
             if (fault == "cancel")
             {
@@ -495,7 +495,7 @@ public sealed partial class DurableCaptureProcessingTests
                 return await artifacts.OpenContentAsync(id, token).ConfigureAwait(false);
             });
 
-        using var reader = new CameraAgentRetainedAstrometryService(store, blocked.Object);
+        using var reader = CreateUnpooledAstrometryReader(store, blocked.Object);
         var held = reader.GetAsync(captureId, cancellation.Token).AsTask();
         await entering.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
         var busy = await reader.ReadLatestAcceptedAsync(deadline.Token).ConfigureAwait(false);
@@ -541,7 +541,8 @@ public sealed partial class DurableCaptureProcessingTests
     private static async Task<AstrometryDurabilityFixture> CreateAstrometryDurabilityFixtureAsync(string root,
         string scenario = "accepted", bool hostCompatible = false, long captureSequence = 1,
         MeasuredAstrometryFixture? reference = null, (long Sequence, int Count)? prior = null,
-        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null)
+        Func<SqliteRawCaptureJournal, RawIngressJournalEntry, CaptureLoopSubmission, Task<RawIngressOutcome>>? commit = null,
+        SqliteRawCaptureJournal? benchmarkJournal = null)
     {
         reference ??= await MeasuredAstrometryFixture.CreateAsync().ConfigureAwait(false);
         var bytes = reference.Raw.Payload.ToArray();
@@ -612,9 +613,10 @@ public sealed partial class DurableCaptureProcessingTests
             Directory.CreateDirectory(Path.GetDirectoryName(paths.PayloadAbsolutePath)!);
             await File.WriteAllBytesAsync(paths.PayloadAbsolutePath, bytes).ConfigureAwait(false);
             await File.WriteAllBytesAsync(paths.SidecarAbsolutePath, manifestBytes).ConfigureAwait(false);
-            await RawIngressFileStore.EnsureCompatibilityIndexAsync(root, manifestBytes, CancellationToken.None).ConfigureAwait(false);
+            if (benchmarkJournal is null)
+                await RawIngressFileStore.EnsureCompatibilityIndexAsync(root, manifestBytes, CancellationToken.None).ConfigureAwait(false);
         }
-        var journal = new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
+        var journal = benchmarkJournal ?? new SqliteRawCaptureJournal(Path.Combine(root, "journal", "raw-ingress.db"), 1);
         await journal.InitializeAsync(CancellationToken.None).ConfigureAwait(false);
         for (var sequence = (prior?.Sequence ?? 0) + 1; sequence < captureSequence; sequence++)
             _ = await journal.ReserveIdentityAsync(descriptor.Capture.AgentId, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None).ConfigureAwait(false);
@@ -629,7 +631,7 @@ public sealed partial class DurableCaptureProcessingTests
             ? await journal.CommitAsync(entry, CancellationToken.None).ConfigureAwait(false)
             : await commit(journal, entry, submission).ConfigureAwait(false);
         Assert.AreEqual(RawIngressOutcome.Committed, outcome);
-        if (hostCompatible)
+        if (hostCompatible && benchmarkJournal is null)
         {
             var recovered = await new RawIngressReconciler(root, journal)
                 .RunAsync(_ => ValueTask.FromResult(default(CaptureMaintenanceEntry)), CancellationToken.None).ConfigureAwait(false);

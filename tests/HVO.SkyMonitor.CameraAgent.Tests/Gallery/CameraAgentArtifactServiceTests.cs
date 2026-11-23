@@ -53,7 +53,9 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
-    public async Task MissingAndCorruptEvidenceFailsClosedAsync()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task MissingAndCorruptEvidenceFailsClosedAsync(bool useHistory)
     {
         await AssertStatusAfterMutationAsync(
             static fixture =>
@@ -61,22 +63,16 @@ public sealed partial class CameraAgentArtifactServiceTests
                 File.Delete(fixture.Raw!.SidecarPath);
                 return Task.CompletedTask;
             },
-            CameraAgentArtifactReadStatus.Gone).ConfigureAwait(false);
+            CameraAgentArtifactReadStatus.Gone, useHistory).ConfigureAwait(false);
         await AssertStatusAfterMutationAsync(
             static fixture => fixture.ExecuteAsync("UPDATE raw_captures SET payload_length = payload_length + 1;"),
-            CameraAgentArtifactReadStatus.Conflict).ConfigureAwait(false);
+            CameraAgentArtifactReadStatus.Conflict, useHistory).ConfigureAwait(false);
         await AssertStatusAfterMutationAsync(
             static fixture => fixture.ExecuteAsync($"UPDATE raw_captures SET payload_sha256 = '{new string('0', 64)}';"),
-            CameraAgentArtifactReadStatus.Conflict).ConfigureAwait(false);
+            CameraAgentArtifactReadStatus.Conflict, useHistory).ConfigureAwait(false);
         await AssertStatusAfterMutationAsync(
             static fixture => File.WriteAllTextAsync(fixture.Raw!.SidecarPath, "{}"),
-            CameraAgentArtifactReadStatus.Conflict).ConfigureAwait(false);
-
-        if (OperatingSystem.IsLinux())
-        {
-            await AssertHistoryRecoversFromQueryFailureAsync().ConfigureAwait(false);
-            await AssertHistoryFollowsReplacementJournalAsync().ConfigureAwait(false);
-        }
+            CameraAgentArtifactReadStatus.Conflict, useHistory).ConfigureAwait(false);
     }
 
     [TestMethod]
@@ -110,17 +106,19 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
-    public async Task SlowContentLeaseDoesNotHoldRootLifecycleLockAndPinnedHandleRemainsReadableAsync()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task SlowContentLeaseDoesNotHoldRootLifecycleLockAndPinnedHandleRemainsReadableAsync(bool useHistory)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
         var preview = await fixture.AddOutputAsync(raw.Manifest, FrameArtifactRole.Preview).ConfigureAwait(false);
-        using var history = fixture.Service.BeginRetainedHistoryRead();
-        var result = await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        using var history = useHistory ? fixture.Service.BeginRetainedHistoryRead() : null;
+        var result = await OpenAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
         var content = result.Content!;
         await using var contentLease = content.ConfigureAwait(false);
-        var handle = OperatingSystem.IsLinux() ? GetIdleHistoryHandle(history) : null;
+        var handle = history is not null && OperatingSystem.IsLinux() ? GetIdleHistoryHandle(history) : null;
 
         var lifecycleGate = StorageLifecycleLock.ForRoot(fixture.Root);
         using var cancellation = new CancellationTokenSource();
@@ -128,13 +126,13 @@ public sealed partial class CameraAgentArtifactServiceTests
         await lifecycleGate.WaitAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         try
         {
-            var pending = history.OpenContentAsync(raw.ArtifactId, cancellation.Token).AsTask();
+            var pending = OpenAsync(raw.ArtifactId, cancellation.Token).AsTask();
             Assert.IsFalse(pending.IsCompleted);
             selected = fixture.Service.OpenContentAsync(preview.ArtifactId, CancellationToken.None).AsTask();
             await cancellation.CancelAsync().ConfigureAwait(false);
             await Assert.ThrowsAsync<OperationCanceledException>(() => pending).ConfigureAwait(false);
             File.Delete(raw.PayloadPath);
-            history.Dispose();
+            history?.Dispose();
         }
         finally
         {
@@ -153,22 +151,30 @@ public sealed partial class CameraAgentArtifactServiceTests
         CollectionAssert.AreEqual(raw.Payload, await ReadAllAsync(content).ConfigureAwait(false));
         Assert.AreEqual(CameraAgentArtifactReadStatus.Gone,
             (await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false)).Status);
-        Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable,
-            (await history.OpenContentAsync(preview.ArtifactId, CancellationToken.None).ConfigureAwait(false)).Status);
+        if (history is not null)
+            Assert.AreEqual(CameraAgentArtifactReadStatus.Unavailable,
+                (await history.OpenContentAsync(preview.ArtifactId, CancellationToken.None).ConfigureAwait(false)).Status);
+
+        ValueTask<CameraAgentArtifactContentResult> OpenAsync(Guid artifactId, CancellationToken token) =>
+            history?.OpenContentAsync(artifactId, token) ?? fixture.Service.OpenContentAsync(artifactId, token);
     }
 
     [TestMethod]
-    public async Task ValidatedMetadataCacheAvoidsConditionalHeadAndRangeRescansAsync()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ValidatedMetadataCacheAvoidsConditionalHeadAndRangeRescansAsync(bool useHistory)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-        using var history = fixture.Service.BeginRetainedHistoryRead();
+        using var history = useHistory ? fixture.Service.BeginRetainedHistoryRead() : null;
 
         for (var request = 0; request < 4; request++)
         {
-            var result = request == 0 || !OperatingSystem.IsLinux()
-                ? await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false)
-                : await ReadWithoutOpeningConnectionAsync(history, raw.ArtifactId).ConfigureAwait(false);
+            var result = history is null
+                ? await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false)
+                : request > 0 && OperatingSystem.IsLinux()
+                    ? await ReadWithoutOpeningConnectionAsync(history, raw.ArtifactId).ConfigureAwait(false)
+                    : await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
             Assert.AreEqual(CameraAgentArtifactReadStatus.Found, result.Status);
             var content = result.Content!;
             await using (content.ConfigureAwait(false))
@@ -212,7 +218,9 @@ public sealed partial class CameraAgentArtifactServiceTests
         return connection;
     }
 
-    private static async Task AssertHistoryRecoversFromQueryFailureAsync()
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    public async Task RetainedHistoryDiscardsFailedConnectionAndRecoversAsync()
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
@@ -236,7 +244,9 @@ public sealed partial class CameraAgentArtifactServiceTests
         Assert.AreEqual(ConnectionState.Closed, borrowed.State);
     }
 
-    private static async Task AssertHistoryFollowsReplacementJournalAsync()
+    [TestMethod]
+    [OSCondition(OperatingSystems.Linux)]
+    public async Task RetainedHistoryRejectsLinkedJournalAndFollowsReplacementAsync()
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
@@ -311,23 +321,49 @@ public sealed partial class CameraAgentArtifactServiceTests
     }
 
     [TestMethod]
-    public async Task ValidationCacheRehashesWhenPayloadChangesWithoutMetadataIdentityChangeAsync()
+    public async Task RetainedHistoryClosesDisplacedIdleConnectionAsync()
+    {
+        using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
+        using var history = fixture.Service.BeginRetainedHistoryRead();
+        using var first = new SqliteConnection("Data Source=:memory:;Pooling=False");
+        using var second = new SqliteConnection("Data Source=:memory:;Pooling=False");
+        await first.OpenAsync().ConfigureAwait(false);
+        await second.OpenAsync().ConfigureAwait(false);
+
+        history.Return(first, default);
+        history.Return(first, default);
+        Assert.AreEqual(ConnectionState.Open, first.State);
+        history.Return(second, default);
+        Assert.AreEqual(ConnectionState.Closed, first.State);
+        Assert.AreEqual(ConnectionState.Open, second.State);
+        history.Dispose();
+        Assert.AreEqual(ConnectionState.Closed, second.State);
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task ValidationCacheRehashesWhenPayloadChangesWithoutMetadataIdentityChangeAsync(bool useHistory)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-        using var history = fixture.Service.BeginRetainedHistoryRead();
-        var first = await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        using var history = useHistory ? fixture.Service.BeginRetainedHistoryRead() : null;
+        var first = await OpenAsync().ConfigureAwait(false);
         await first.Content!.DisposeAsync().ConfigureAwait(false);
         var lastWriteUtc = File.GetLastWriteTimeUtc(raw.PayloadPath);
         await File.WriteAllBytesAsync(raw.PayloadPath, raw.Payload.Select(static value => (byte)(value ^ 0xFF)).ToArray())
             .ConfigureAwait(false);
         File.SetLastWriteTimeUtc(raw.PayloadPath, lastWriteUtc);
 
-        var corrupt = await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        var corrupt = await OpenAsync().ConfigureAwait(false);
 
         Assert.AreEqual(CameraAgentArtifactReadStatus.Conflict, corrupt.Status);
         Assert.AreEqual(1L, fixture.Service.EvidenceValidationReads);
         Assert.AreEqual(2L, fixture.Service.PayloadValidationReads);
+
+        ValueTask<CameraAgentArtifactContentResult> OpenAsync() =>
+            history?.OpenContentAsync(raw.ArtifactId, CancellationToken.None) ??
+            fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None);
     }
 
     [TestMethod]
@@ -787,14 +823,18 @@ public sealed partial class CameraAgentArtifactServiceTests
 
     private static async Task AssertStatusAfterMutationAsync(
         Func<ArtifactFixture, Task> mutate,
-        CameraAgentArtifactReadStatus expected)
+        CameraAgentArtifactReadStatus expected,
+        bool useHistory)
     {
         using var fixture = await ArtifactFixture.CreateAsync().ConfigureAwait(false);
         var raw = await fixture.AddRawAsync().ConfigureAwait(false);
-        using var history = fixture.Service.BeginRetainedHistoryRead();
-        await AssertHistoryContentAsync(history, raw).ConfigureAwait(false);
+        using var history = useHistory ? fixture.Service.BeginRetainedHistoryRead() : null;
+        if (history is not null)
+            await AssertHistoryContentAsync(history, raw).ConfigureAwait(false);
         await mutate(fixture).ConfigureAwait(false);
-        var result = await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
+        var result = history is null
+            ? await fixture.Service.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false)
+            : await history.OpenContentAsync(raw.ArtifactId, CancellationToken.None).ConfigureAwait(false);
         Assert.AreEqual(expected, result.Status);
     }
 

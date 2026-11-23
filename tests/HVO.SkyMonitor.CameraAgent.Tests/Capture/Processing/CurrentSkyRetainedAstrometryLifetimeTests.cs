@@ -54,7 +54,7 @@ public sealed partial class DurableCaptureProcessingTests
             var releaseHistory = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var preEvictionResponse = new TaskCompletionSource<OperatorUiResult<CameraAgentLatestAstrometryRead>>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            ICameraAgentArtifactService historyArtifacts = artifacts;
+            ICameraAgentArtifactService? historyOverride = null;
             if (scenario == "unrelated")
             {
                 var checkpoint = new Mock<ICameraAgentArtifactService>(MockBehavior.Strict);
@@ -69,9 +69,11 @@ public sealed partial class DurableCaptureProcessingTests
                         }
                         return await artifacts.OpenContentAsync(id, cancellation).ConfigureAwait(false);
                     });
-                historyArtifacts = checkpoint.Object;
+                historyOverride = checkpoint.Object;
             }
-            using var latestReader = new CameraAgentRetainedAstrometryService(store, historyArtifacts);
+            using var latestReader = historyOverride is null
+                ? new CameraAgentRetainedAstrometryService(store, artifacts)
+                : CreateUnpooledAstrometryReader(store, historyOverride);
             var layers = new CameraAgentLayeredPresentationService(store, artifacts, persistence: persistence, astrometry: layerReader);
             var service = CameraAgentOperatorUiServiceTests.CreateAuthorizedRetainedAstrometryService(latestReader, layers);
             // Keep the deliberately interleaved selected and headline reads from competing for

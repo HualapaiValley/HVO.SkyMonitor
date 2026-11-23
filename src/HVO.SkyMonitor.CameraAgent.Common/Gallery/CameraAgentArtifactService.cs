@@ -119,6 +119,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
     private long _payloadValidationReads;
     private long _evidenceValidationReads;
     private long _jpegValidationReads;
+    private long _journalConnectionOpens;
+    private int _disposed;
 
     public CameraAgentArtifactService(
         IOptions<CameraAgentHostOptions> options,
@@ -1072,6 +1074,7 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             command.CommandText = $"PRAGMA busy_timeout={checked(_busyTimeoutSeconds * 1000)};";
             await command.ExecuteNonQueryAsync(token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _journalConnectionOpens);
         return connection;
     }
 
@@ -1322,6 +1325,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     internal long JpegValidationReads => Interlocked.Read(ref _jpegValidationReads);
 
+    // The provider uses Pooling=false, so each configured connection was physically opened.
+    internal long JournalConnectionOpens => Interlocked.Read(ref _journalConnectionOpens);
+
     internal int PreviewRequestWaiters
     {
         get
@@ -1335,6 +1341,9 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     public void Dispose()
     {
+        // The concrete and public service registrations share this singleton.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
         _previewGate.Dispose();
         lock (_cacheGate)
         {
@@ -1353,13 +1362,13 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
 
     // The root lifecycle gate serializes artifact lookups, so one private handle is sufficient.
     // Only the scan owns this slot. A concurrent dispose closes the idle handle or lets the borrower close it.
-    internal sealed class RetainedHistoryRead(CameraAgentArtifactService owner) : IDisposable
+    internal sealed class RetainedHistoryRead(CameraAgentArtifactService owner) : IRetainedHistoryArtifactRead
     {
         private readonly object _gate = new();
         private (SqliteConnection? Connection, ArtifactJournalIdentity Identity) _idle;
         private bool _disposed;
 
-        internal ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
+        public ValueTask<CameraAgentArtifactContentResult> OpenContentAsync(Guid artifactId, CancellationToken cancellationToken)
             => owner.OpenContentCoreAsync(artifactId, replayExecutionId: null, forPreview: false, cancellationToken, this);
 
         internal (SqliteConnection? Connection, ArtifactJournalIdentity Identity) Take()
@@ -1379,6 +1388,8 @@ internal sealed class CameraAgentArtifactService : ICameraAgentArtifactService, 
             {
                 if (!_disposed)
                 {
+                    if (_idle.Connection is { } displaced && !ReferenceEquals(displaced, connection))
+                        displaced.Dispose();
                     _idle = (connection, identity);
                     return;
                 }

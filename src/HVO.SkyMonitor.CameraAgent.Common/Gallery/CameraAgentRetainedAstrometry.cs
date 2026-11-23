@@ -113,8 +113,14 @@ public interface ICameraAgentRetainedAstrometryService
 }
 
 internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessingStore store,
-    ICameraAgentArtifactService artifacts, int maximumReadBytes = CameraAgentRetainedAstrometryService.MaximumReadBytes) : ICameraAgentRetainedAstrometryService, IDisposable
+    ICameraAgentArtifactService artifacts, Func<IRetainedHistoryArtifactRead> beginHistoryRead,
+    int maximumReadBytes = CameraAgentRetainedAstrometryService.MaximumReadBytes) : ICameraAgentRetainedAstrometryService, IDisposable
 {
+    internal CameraAgentRetainedAstrometryService(SqliteCaptureProcessingStore store, CameraAgentArtifactService artifacts)
+        : this(store, artifacts, artifacts.BeginRetainedHistoryRead)
+    {
+    }
+
     internal const int MaximumRawBytes = 32 * 1024 * 1024;
     internal const int MaximumReadBytes = 44 * 1024 * 1024;
     private const int LatestNewSkipLimit = 4096;
@@ -259,7 +265,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
             var captures = await store.ReadAstrometryCandidatesAsync(cancellationToken).ConfigureAwait(false);
             if (!ReferenceEquals(latestSnapshot, captures)) RefreshLatestCandidates(captures, cancellationToken);
             await RecheckSkipsAsync(captures, cancellationToken).ConfigureAwait(false);
-            using var history = (artifacts as CameraAgentArtifactService)?.BeginRetainedHistoryRead();
+            using var history = beginHistoryRead();
             var node = latestCandidates.First;
             var newSkips = 0;
             while (node is not null && newSkips < LatestNewSkipLimit)
@@ -389,7 +395,7 @@ internal sealed class CameraAgentRetainedAstrometryService(SqliteCaptureProcessi
     }
 
     private async ValueTask<CandidateProbe> ReadAsync(Guid captureId, CancellationToken cancellationToken,
-        bool acceptedOnly = false, CenteredViewArtifact? exact = null, CameraAgentArtifactService.RetainedHistoryRead? history = null)
+        bool acceptedOnly = false, CenteredViewArtifact? exact = null, IRetainedHistoryArtifactRead? history = null)
     {
         if (captureId == Guid.Empty) return new(new(captureId, "Unavailable", "invalid-capture"));
         var acquiredRawRead = false;

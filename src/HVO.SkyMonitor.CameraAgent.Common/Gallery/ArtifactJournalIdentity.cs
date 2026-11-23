@@ -20,7 +20,7 @@ internal readonly record struct ArtifactJournalIdentity(
                     ? new(databaseIdentity, walIdentity, sharedMemoryIdentity)
                     : null;
         }
-        catch (EntryPointNotFoundException)
+        catch (Exception exception) when (exception is EntryPointNotFoundException or DllNotFoundException)
         {
             return null;
         }
@@ -41,6 +41,8 @@ internal readonly record struct ArtifactJournalIdentity(
     internal readonly record struct FileIdentity(uint DeviceMajor, uint DeviceMinor, ulong Inode);
 
 #pragma warning disable SYSLIB1054 // A narrow libc call avoids enabling unsafe code.
+    // Keep this binding at the retrieval boundary. The staging, catalog and recovery bindings
+    // belong to their own path or handle validation contracts.
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("libc", EntryPoint = "statx", CharSet = CharSet.Ansi, BestFitMapping = false, ThrowOnUnmappableChar = true)]
     private static extern int StatX(int directoryFileDescriptor, string path, int flags, uint mask, out LinuxFileStatus status);
