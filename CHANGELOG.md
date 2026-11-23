@@ -34,6 +34,8 @@ with the work merged from 2026-10-16 onward; earlier development is recorded in 
 
 - Ordinary VirtualSky rendering defaults to 2,000 stellar candidates when the host and camera profile supply no explicit limit. The sky map keeps its own limit. #1901
 
+- CameraAgent capture processing checks the shared journal's integrity and foreign keys once per startup instead of three times, so processing and the Current Sky plate solution become available sooner after a restart with a long retained history. #1914
+
 ### Fixed
 
 - New centered CameraAgent graphs retain faint stars in reference-calibrated VirtualSky exposures by subtracting the synthetic bias pedestal once. #1920

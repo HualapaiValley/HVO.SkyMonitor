@@ -244,20 +244,29 @@ internal sealed partial class SqliteRawCaptureJournal(
         await SynchronizeLaneDefinitionsAsync(connection, laneDefinitions, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Validates the raw ingress schema. <paramref name="verifyDatabase"/> also runs the whole-database
+    /// <c>integrity_check</c> and <c>foreign_key_check</c>; a caller that runs them itself on the view it will
+    /// use may pass <see langword="false"/> to keep only the structural checks.
+    /// </summary>
     internal static async Task ValidateSchemaAsync(
         SqliteConnection connection,
         CancellationToken cancellationToken,
-        int? expectedBusyTimeoutSeconds = null)
+        int? expectedBusyTimeoutSeconds = null,
+        bool verifyDatabase = true)
     {
-        var integrity = await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false);
-        if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
+        if (verifyDatabase)
         {
-            throw new InvalidDataException("Raw ingress SQLite integrity check failed.");
-        }
-        if (await ExecuteScalarLongAsync(
-                connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
-        {
-            throw new InvalidDataException("Raw ingress SQLite foreign-key validation failed.");
+            var integrity = await ExecuteScalarStringAsync(connection, "PRAGMA integrity_check;", cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException("Raw ingress SQLite integrity check failed.");
+            }
+            if (await ExecuteScalarLongAsync(
+                    connection, "SELECT COUNT(*) FROM pragma_foreign_key_check;", cancellationToken).ConfigureAwait(false) != 0)
+            {
+                throw new InvalidDataException("Raw ingress SQLite foreign-key validation failed.");
+            }
         }
         await ValidateCanonicalSchemaDefinitionsAsync(connection, null, cancellationToken).ConfigureAwait(false);
         var schemaObjectCount = await ExecuteScalarLongAsync(connection, """
