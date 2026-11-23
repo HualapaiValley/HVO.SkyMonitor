@@ -437,7 +437,10 @@ def violations(short, full, queue=None, extra=None):
                      'git show "$base:scripts/ci:classify"', '"$second" == "$PR_HEAD_SHA"',
                      '"$merge_commit" == "$GITHUB_SHA"', 'docs-fast-only',
                      '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
-                     'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"', 'if [[ "$eligible" == true ]]; then run_full=false; fi', 'classifier output missing or invalid'):
+                     'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"',
+                     'if [[ "$eligible" == true ]]; then', 'classifier output missing or invalid',
+                     'bash "$classifier" --verify-docs-restore "$base"',
+                     'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in step(build, "Checkout exact commit") and
             build.find("Classify exact documentation diff") < build.find("Setup .NET from global.json"),
@@ -945,7 +948,18 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     git("config", "user.name", "fixture")
     (fixture / "scripts").mkdir()
     trusted = fixture / "scripts/ci:classify"
-    trusted.write_text('#!/usr/bin/env bash\nprintf "%s" "$FAKE_CONTENT"\nexit "$FAKE_EXIT"\n')
+    trusted.write_text('''#!/usr/bin/env bash
+if [[ "$1" == --verify-docs-restore ]]; then
+    printf '%s' "$FAKE_PROOF"
+    exit "$FAKE_PROOF_EXIT"
+fi
+if [[ "$3" == "$GITHUB_SHA" && -n "${FAKE_MERGE_CONTENT:-}" ]]; then
+    printf '%s' "$FAKE_MERGE_CONTENT"
+    exit 0
+fi
+printf '%s' "$FAKE_CONTENT"
+exit "$FAKE_EXIT"
+''')
     git("add", ".")
     git("commit", "-qm", "trusted base")
     base = git("rev-parse", "HEAD")
@@ -978,6 +992,31 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
         lines = output.read_text().splitlines()
         if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
             raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
+    for proof, exit_code, expected in (
+        ("restore_imports_verified=true\n", "0", "false"),
+        ("restore_imports_verified=true\n", "1", "true"),
+        ("restore_imports_verified=True\n", "0", "true"),
+        ("", "0", "true"),
+        ("restore_imports_verified=true\n\n", "0", "true"),
+        ("restore_imports_verified=true\nrestore_imports_verified=true\n", "0", "true"),
+    ):
+        output.write_text("")
+        env.update(EVENT_NAME="pull_request", PR_HEAD_SHA=candidate, FAKE_EXIT="0",
+                   FAKE_CONTENT="docs_fast_path=verify-restore\ndocs_fast_path_reason=restore import proof required\n",
+                   FAKE_PROOF=proof, FAKE_PROOF_EXIT=exit_code)
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                                capture_output=True, text=True)
+        if result.returncode or f"run_full={expected}" not in output.read_text().splitlines():
+            raise SystemExit(f"Restore certificate workflow case {proof!r}, {exit_code}: {output.read_text()} {result.stderr}")
+    output.write_text("")
+    env.update(FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
+               FAKE_MERGE_CONTENT="docs_fast_path=true\ndocs_fast_path_reason=safe\n")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script], cwd=fixture, env=env,
+                            capture_output=True, text=True)
+    if result.returncode or "reason=classification endpoints disagree" not in output.read_text().splitlines() or \
+            "run_full=true" not in output.read_text().splitlines():
+        raise SystemExit(f"Disagreeing restore modes qualified: {output.read_text()} {result.stderr}")
+    env.pop("FAKE_MERGE_CONTENT")
     # A one-parent checkout with no head must never qualify.
     git("checkout", "-q", "--detach", candidate)
     output.write_text("")
@@ -1175,7 +1214,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 19 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 26 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

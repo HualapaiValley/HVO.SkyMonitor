@@ -170,6 +170,7 @@ jobs:
               reason='base classifier unavailable or failed'
               if git show "$base:scripts/ci:classify" > "$classifier"; then
                 eligible=true
+                decision=''
                 for endpoint in "$PR_HEAD_SHA" "$merge_commit"; do
                   reason='base classifier unavailable or failed'
                   printf '\nClassification endpoint: %s\n' "$endpoint" >> "$evidence"
@@ -179,7 +180,14 @@ jobs:
                     mapfile -t reasons < <(grep '^docs_fast_path_reason=' "$output" || true)
                     if [[ ${#decisions[@]} -eq 1 && ${#reasons[@]} -eq 1 && "${reasons[0]}" =~ ^docs_fast_path_reason=[a-zA-Z0-9\ .,/-]+$ ]]; then
                       case "${decisions[0]}" in
-                        docs_fast_path=true) reason="${reasons[0]#*=}"; continue ;;
+                        docs_fast_path=true|docs_fast_path=verify-restore)
+                          if [[ -z "$decision" || "$decision" == "${decisions[0]}" ]]; then
+                            decision="${decisions[0]}"
+                            reason="${reasons[0]#*=}"
+                            continue
+                          fi
+                          reason='classification endpoints disagree'
+                          ;;
                         docs_fast_path=false) reason="${reasons[0]#*=}" ;;
                       esac
                     fi
@@ -187,7 +195,19 @@ jobs:
                   eligible=false
                   break
                 done
-                if [[ "$eligible" == true ]]; then run_full=false; fi
+                if [[ "$eligible" == true ]]; then
+                  if [[ "$decision" == docs_fast_path=true ]]; then
+                    run_full=false
+                  elif [[ "$decision" == docs_fast_path=verify-restore ]]; then
+                    reason='reviewed restore import proof failed or was unavailable'
+                    proof="$DEV_V1_EVIDENCE_ROOT/restore-import-proof.txt"
+                    if bash "$classifier" --verify-docs-restore "$base" > "$proof" 2>> "$evidence" &&
+                       printf 'restore_imports_verified=true\n' | cmp -s - "$proof"; then
+                      run_full=false
+                      reason='safe documentation and reviewed restore imports verified'
+                    fi
+                  fi
+                fi
               fi
             fi
           fi

@@ -634,6 +634,9 @@ printf '%s\n' "$canary_head" > "$fast_root/.git/canary-commit"
 if git -C "$repo_root" show "$real_base:scripts/ci:docs-inventory" > "$fast_root/.git/certified" 2>/dev/null; then
   if (cd "$repo_root" && "$classifier" --print-docs-inventory "$real_base") > "$fast_root/.git/actual" && cmp -s "$fast_root/.git/certified" "$fast_root/.git/actual"; then
     canary_expected=true
+    if git -C "$repo_root" cat-file -e "$real_base:scripts/ci:restore-import-certificate.json"; then
+      canary_expected=verify-restore
+    fi
   else
     canary_expected=false
   fi

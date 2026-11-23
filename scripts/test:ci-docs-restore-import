@@ -4,7 +4,8 @@ set -euo pipefail
 # Offline reproduction of restore-generated package imports. Run under the
 # shared heavy-gate lock; the package source and all runtime state are local.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fixture="$(mktemp -d "${TMPDIR:-/tmp}/hvo-docs-restore.XXXXXXXX")"
+probe_tmp_dir="${TMPDIR:-/tmp}"
+fixture="$(mktemp -d "$probe_tmp_dir/hvo-docs-restore.XXXXXXXX")"
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/tests/Example" "$fixture/docs/runbooks" "$fixture/packages" "$fixture/scripts" "$fixture/home" "$fixture/xdg" "$fixture/tmp" "$fixture/nuget"
 chmod 700 "$fixture" "$fixture/home" "$fixture/xdg" "$fixture/tmp" "$fixture/nuget"
@@ -47,6 +48,127 @@ grep -Fxq 'docs_fast_path=false' <<< "$output"
 grep -Fxq 'docs_fast_path_reason=project inventory unavailable' <<< "$output"
 (cd "$fixture" && dotnet restore HVO.SkyMonitor.v9.slnx > "$fixture/restore.log" 2>&1)
 grep -Fq 'Hvo.RestoreFixture.targets' "$fixture/tests/Example/obj/Example.csproj.nuget.g.targets"
-(cd "$fixture" && dotnet build tests/Example/Example.csproj --no-restore --configuration Release > "$fixture/build.log" 2>&1)
+(cd "$fixture" && dotnet build tests/Example/Example.csproj --disable-build-servers --no-restore --configuration Release > "$fixture/build.log" 2>&1)
 cmp "$fixture/docs/runbooks/releases.md" "$fixture/tests/Example/bin/Release/net10.0/fixture-runbook.md"
 printf 'Offline restore-import regression passed: local package imported and copied the runbook; classifier selected full validation.\n'
+
+# Replace the unsafe package with a benign import under the same identity. A
+# fresh cache per replay makes the repository-local source the only package feed.
+package=packages/Hvo.RestoreFixture.1.0.0.nupkg
+python3 - "$fixture/$package" <<'PY'
+import sys
+from zipfile import ZipFile
+
+path = sys.argv[1]
+with ZipFile(path) as archive:
+    nuspec = archive.read("Hvo.RestoreFixture.nuspec")
+with ZipFile(path, "w") as archive:
+    archive.writestr("Hvo.RestoreFixture.nuspec", nuspec)
+    archive.writestr("build/Hvo.RestoreFixture.targets", '<Project><PropertyGroup><FixtureImported>true</FixtureImported></PropertyGroup></Project>')
+PY
+mkdir -p "$fixture/scripts/ci"
+cp "$repo_root/scripts/ci/restore-imports.py" "$fixture/scripts/ci/restore-imports.py"
+cp "$repo_root/scripts/ci:classify" "$fixture/scripts/ci:classify"
+git -C "$fixture" add -- "$package" scripts/ci/restore-imports.py scripts/ci:classify
+git -C "$fixture" commit -qm 'benign package and trusted proof code'
+
+certificate=scripts/ci:restore-import-certificate.json
+run_fresh() {
+  local cache
+  cache="$(mktemp -d "$fixture/cache.XXXXXXXX")"
+  (cd "$fixture" && TMPDIR="$probe_tmp_dir" NUGET_PACKAGES="$cache${fixture_cache_suffix:-}" "$@")
+}
+classify() {
+  (cd "$fixture" && bash scripts/ci:classify "$@")
+}
+classify --print-docs-restore-source HEAD > "$fixture/scripts/ci:docs-inventory"
+source_hash="$(sha256sum < "$fixture/scripts/ci:docs-inventory")"
+run_fresh python3 -I scripts/ci/restore-imports.py capture HEAD "${source_hash%% *}" > "$fixture/$certificate"
+git -C "$fixture" add -- "$certificate" scripts/ci:docs-inventory
+git -C "$fixture" commit -qm 'certify the benign restore graph'
+reviewed="$(git -C "$fixture" rev-parse HEAD)"
+[[ -z "$(classify --warn-docs-inventory "$reviewed")" ]]
+printf 'safe edit\n' >> "$fixture/docs/runbooks/releases.md"
+git -C "$fixture" commit -qam 'safe certified documentation edit'
+doc="$(git -C "$fixture" rev-parse HEAD)"
+grep -Fxq 'docs_fast_path=verify-restore' <<< "$(classify pull_request "$reviewed" "$doc" docs-fast-only)"
+grep -Fxq 'docs_fast_path=false' <<< "$(classify pull_request "$reviewed" "$doc")"
+tree="$(git -C "$fixture" rev-parse "$doc^{tree}")"
+merge="$(git -C "$fixture" commit-tree "$tree" -p "$reviewed" -p "$doc" -m 'fixture merge')"
+git -C "$fixture" checkout -q --detach "$merge"
+python3 - "$repo_root/.github/workflows/development-v1.yml" "$fixture/workflow" <<'PY'
+import pathlib
+import sys
+import textwrap
+
+workflow = pathlib.Path(sys.argv[1]).read_text()
+step = workflow.split("      - name: Classify exact documentation diff\n", 1)[1].split("\n      - name:", 1)[0]
+pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(step.split("        run: |\n", 1)[1]))
+PY
+mkdir -p "$fixture/evidence"
+fixture_cache_suffix=/ DEV_V1_EVIDENCE_ROOT="$fixture/evidence" GITHUB_OUTPUT="$fixture/decision" EVENT_NAME=pull_request \
+  GITHUB_SHA="$merge" PR_HEAD_SHA="$doc" run_fresh bash -euo pipefail "$fixture/workflow" > "$fixture/workflow.log"
+grep -Fxq 'run_full=false' "$fixture/decision"
+grep -Fxq 'restore_imports_verified=true' "$fixture/evidence/restore-import-proof.txt"
+
+# Break the certificate without changing the project's committed declarations.
+# Admission may start the restore proof, but no failed proof can report success.
+for drift in archive source imports missing-package unexpected-package sdk; do
+  git -C "$fixture" reset -q --hard "$reviewed"
+  python3 - "$fixture/$certificate" "$drift" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+package = manifest["packages"]["hvo.restorefixture/1.0.0"]
+match sys.argv[2]:
+    case "archive": package["archiveSha256"] = "0" * 64
+    case "source": package["source"] = "https://unexpected.example/index.json"
+    case "imports": manifest["projects"]["tests/Example/Example.csproj"]["targets"]["imports"] = []
+    case "missing-package": manifest["packages"].clear()
+    case "unexpected-package": manifest["packages"]["extra/1.0.0"] = package
+    case "sdk": manifest["sdk"]["sha256"] = "0" * 64
+path.write_text(json.dumps(manifest))
+PY
+  git -C "$fixture" commit -qam "drift $drift"
+  if run_fresh bash scripts/ci:classify --verify-docs-restore HEAD > "$fixture/proof" 2> "$fixture/drift-error"; then
+    printf 'Unreviewed restore %s qualified.\n' "$drift" >&2
+    exit 1
+  fi
+  [[ ! -s "$fixture/proof" ]]
+  grep -Fq 'docs inventory audit:' "$fixture/drift-error"
+done
+
+git -C "$fixture" reset -q --hard "$reviewed"
+python3 - "$fixture/$package" <<'PY'
+import sys
+from zipfile import ZipFile
+
+with ZipFile(sys.argv[1], "a") as archive:
+    archive.writestr("new-package-file.txt", "Different bytes under the same package identity")
+PY
+git -C "$fixture" commit -qam 'same-version feed content drift'
+if run_fresh bash scripts/ci:classify --verify-docs-restore HEAD > "$fixture/proof" 2> "$fixture/drift-error"; then
+  printf 'Changed archive bytes under the reviewed package identity qualified.\n' >&2
+  exit 1
+fi
+[[ ! -s "$fixture/proof" ]]
+grep -Fq 'resolved package content or source differs' "$fixture/drift-error"
+
+for drift in missing malformed config; do
+  git -C "$fixture" reset -q --hard "$reviewed"
+  case "$drift" in
+    missing) git -C "$fixture" rm -q -- "$certificate" ;;
+    malformed) printf '{"version":1}\n' > "$fixture/$certificate" ;;
+    config) printf '\n<!-- changed NuGet configuration -->\n' >> "$fixture/NuGet.Config" ;;
+  esac
+  git -C "$fixture" commit -qam "invalidate $drift"
+  stale="$(git -C "$fixture" rev-parse HEAD)"
+  printf 'safe edit\n' >> "$fixture/docs/runbooks/releases.md"
+  git -C "$fixture" commit -qam 'doc edit against stale base'
+  grep -Fxq 'docs_fast_path=false' <<< "$(classify pull_request "$stale" HEAD docs-fast-only)"
+  grep -Fq 'full validation will run' <<< "$(classify --warn-docs-inventory "$stale")"
+done
+printf 'Offline restore certificate passed: valid base, seven replay drift cases and three static fallback cases.\n'
