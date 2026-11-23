@@ -49,7 +49,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
     ];
 
     /// <summary>A product-shaped day page whose every free value is an opaque sentinel.</summary>
-    private const string OpaqueDayPage = """
+    private static string OpaqueDayPage(string otherOrigin) => $$"""
         <!DOCTYPE html><html><body>
         <div class="app-frame" data-interactive="OPAQUE_INTERACTIVE_1916"><main><div class="content-container"><div class="day-page">
           <section class="page-state page-state--error OPAQUE_NOTICE_CLASS_1916" role="alert"><div><strong>OPAQUE_NOTICE_TITLE_1916</strong><p>OPAQUE_NOTICE_MESSAGE_1916</p></div></section>
@@ -58,7 +58,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
             <article class="product-slot OPAQUE_CLASS_1916" data-product-kind="daily summary" data-nightly-state="OPAQUE_STATE_ATTR_1916" aria-label="OPAQUE_LABEL_1916" title="OPAQUE_TITLE_1916" id="OPAQUE_ID_1916">
               <button type="button" class="product-slot__media"><span class="product-slot__failed"><i class="bi bi-image"></i>Preview unavailable</span></button>
               <h3>Daily summary</h3><p>OPAQUE_TEXT_1916</p>
-              <a href="/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
+              <a href="{{otherOrigin}}/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1">open</a>
               <img src="/api/v1/operations/still-products/OPAQUE_IMAGE_SEGMENT_1916/preview?OPAQUE_IMAGE_QUERYNAME_1916=1" alt="OPAQUE_ALT_1916" style="width:10px;height:10px">
               <opaque-element-1916>OPAQUE_CUSTOM_1916</opaque-element-1916>
               <!-- OPAQUE_COMMENT_1916 -->
@@ -146,6 +146,7 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.AreEqual("/archive/calendar", report.UrlAfterSettle.Split('?')[0]);
         Assert.IsNotNull(report.AtFailure.Markup["calendarCell"], "the selected Calendar cell is retained");
         StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "datetime=\"2026-10-01\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "href=\"/archive/day/2026-10-01", StringComparison.Ordinal);
         Assert.IsNull(report.AtFailure.Markup["dayTile"]);
         Assert.IsEmpty(report.Observation.PreviewRequests, "the preview was never requested");
         Assert.IsTrue(report.Observation.Probe!.Available, "the product image itself is available");
@@ -261,8 +262,10 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         await page.Locator(".app-frame[data-interactive='true']").WaitForAsync();
 
         // Use a second origin for the test page while keeping any request that bypasses browser routing on the fixture's loopback port.
-        var otherOrigin = new UriBuilder(host!.BaseAddress) { Host = "localhost" }.Uri.GetLeftPart(UriPartial.Authority);
-        await page.RouteAsync(otherOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage }));
+        var appAddress = host!.BaseAddress;
+        var otherAddress = new UriBuilder(appAddress) { Host = "localhost" }.Uri;
+        var otherOrigin = otherAddress.GetLeftPart(UriPartial.Authority);
+        await page.RouteAsync(otherOrigin + "/**", route => route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = OpaqueDayPage(otherOrigin) }));
         await page.RouteAsync(otherOrigin + run.PreviewPath, route => route.FulfillAsync(new() { Status = 503 }));
         await run.Evidence.BeforeDayLinkClickAsync();
         await page.GotoAsync(otherOrigin + run.DayPath + "?OPAQUE_QUERYNAME_1916=OPAQUE_VALUE_1916&month=OPAQUE_MONTH_1916");
@@ -291,7 +294,8 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.AreEqual(report.EvidencePath, attached[0]);
         await run.AssertRetainedEvidenceAsync(report);
         var retained = await File.ReadAllTextAsync(report.EvidencePath!) + "\n" + string.Join('\n', lines);
-        Assert.DoesNotContain(otherOrigin, retained, StringComparison.Ordinal);
+        Assert.DoesNotContain(otherAddress.Host, retained, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(appAddress.Host, retained, StringComparison.OrdinalIgnoreCase);
         foreach (var opaque in OpaqueSentinels)
         {
             Assert.DoesNotContain(opaque, retained, StringComparison.Ordinal, "an opaque value reached retained evidence");
@@ -305,6 +309,11 @@ public sealed class DailySummaryCalendarPreviewEvidenceTests
         Assert.IsTrue(report.ServerLog.Any(static entry => entry.EventId == 7 && entry.Category == "other"));
         Assert.IsTrue(report.AtFailure.PreviewFailedMarker);
         Assert.IsFalse(report.Observation.PreviewFailedMarker);
+        Assert.AreEqual("[other-origin]", report.AtFailure.Image.Source);
+        Assert.AreEqual("[other-origin]", report.AtFailure.Image.CurrentSource);
+        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "src=\"[other-origin]\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "href=\"[other-origin]\"", StringComparison.Ordinal);
+        StringAssert.Contains(report.AtFailure.Markup["calendarCell"]!, "href=\"[other-origin]\"", StringComparison.Ordinal);
         StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "product-slot__failed", StringComparison.Ordinal);
         StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "Preview unavailable", StringComparison.Ordinal);
         StringAssert.Contains(report.AtFailure.Markup["dayTile"]!, "data-product-kind=\"daily summary\"", StringComparison.Ordinal);

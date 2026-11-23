@@ -14,6 +14,7 @@ public sealed class CalendarDayPreviewEvidenceTests
 {
     private static readonly CalendarDayPreviewProbe AvailableProbe = new(200, "image/png", 1024, true, null);
     private static readonly Guid ExpectedProduct = Guid.Parse("00000000-0000-0000-0000-000000001916");
+    private static readonly Uri AppBaseAddress = new("http://127.0.0.1:5130/");
     private static readonly string[] ExpectedReconnectStates = ["components-reconnect-show"];
     private static readonly string[] ExpectedSnapshotSignals = ["dom:reconnect-dialog", "dom:error-notice"];
     private static readonly string[] ExpectedComposedSignals = ["console:connection-lost", "script-error:TypeError"];
@@ -98,13 +99,13 @@ public sealed class CalendarDayPreviewEvidenceTests
     [DataRow("/api/v1/operations/gallery/OPAQUE_1916/thumbnail", "/api/v1/operations/gallery/{capture}/thumbnail")]
     [DataRow("/archive/products?view=retained", "/archive/products?view=retained")]
     [DataRow("http://127.0.0.1:5130/_blazor?id=opaque-circuit-token", "/_blazor?[other-query]")]
-    [DataRow("https://owner:password@opaque-host-1916.example/Account/Login?ReturnUrl=%2Fsecret", "/Account/Login?[other-query]")]
+    [DataRow("https://owner:password@opaque-host-1916.example/Account/Login?ReturnUrl=%2Fsecret", "[other-origin]")]
     [DataRow("http://127.0.0.1:5130/OPAQUE_1916/route", "[other-route]")]
     [DataRow("about:blank", "about:blank")]
     [DataRow("data:text/html,OPAQUE_1916", "[unparsed]")]
     [DataRow("", "[empty]")]
     public void RoutesKeepOnlyKnownShapesWithPublicComponents(string address, string expected) =>
-        Assert.AreEqual(expected, CalendarEvidenceVocabulary.RouteShape(address, ExpectedProduct));
+        Assert.AreEqual(expected, CalendarEvidenceVocabulary.RouteShape(address, ExpectedProduct, AppBaseAddress));
 
     [TestMethod]
     [DataRow("error", "[2026-11-22T13:45:16.123Z] Error: There was an unhandled exception on the current circuit, so this circuit will be terminated.", "console:circuit-terminated")]
@@ -187,21 +188,23 @@ public sealed class CalendarDayPreviewEvidenceTests
                 {"t":"h3","a":[],"c":["Daily summary"]},
                 {"t":"p","a":[],"c":["OPAQUE_TEXT_1916"]},
                 {"t":"span","a":[["class","hvo-chip hvo-chip--warning"],["title","OPAQUE_CHIP_TITLE_1916"]],"c":["Partial"]},
-                {"t":"a","a":[["href","/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1"]],"c":["open"]},
+                {"t":"a","a":[["href","http://OPAQUE_USER_1916:OPAQUE_PASSWORD_1916@127.0.0.1:5130/archive/day/OPAQUE_LINK_SEGMENT_1916?OPAQUE_LINK_QUERYNAME_1916=1"]],"c":["open"]},
+                {"t":"a","a":[["href","http://127.0.0.1:5131/archive/day/2026-10-01"]],"c":["Daily summary"]},
                 {"t":"img","a":[["src","/api/v1/operations/still-products/00000000-0000-0000-0000-000000001916/preview?OPAQUE_IMAGE_QUERYNAME_1916=1"],["alt","OPAQUE_ALT_1916"],["loading","lazy"]],"c":[]},
                 {"t":"time","a":[["datetime","OPAQUE_DATE_1916"]],"c":["1"]},
                 {"t":"opaque-element-1916","a":[["class","product-slot"]],"c":["OPAQUE_CUSTOM_1916"]},
                 {"t":"script","a":[],"c":["OPAQUE_SCRIPT_1916"]}]}]}
             """);
 
-        var markup = CalendarEvidenceVocabulary.RenderMarkup(tree.RootElement, ExpectedProduct, omitOtherProducts: true)!;
+        var markup = CalendarEvidenceVocabulary.RenderMarkup(tree.RootElement, ExpectedProduct, AppBaseAddress, omitOtherProducts: true)!;
 
         foreach (var opaque in new[]
         {
             "OPAQUE_CLASS_1916", "OPAQUE_ATTRIBUTE_1916", "OPAQUE_STYLE_1916", "OPAQUE_LABEL_1916", "OPAQUE_OTHER_TILE_1916",
             "OPAQUE_STATE_1916", "OPAQUE_ID_1916", "OPAQUE_TITLE_1916", "OPAQUE_HANDLER_1916", "OPAQUE_TEXT_1916",
             "OPAQUE_CHIP_TITLE_1916", "OPAQUE_LINK_SEGMENT_1916", "OPAQUE_LINK_QUERYNAME_1916", "OPAQUE_IMAGE_QUERYNAME_1916", "OPAQUE_ALT_1916",
-            "OPAQUE_DATE_1916", "opaque-element-1916", "OPAQUE_CUSTOM_1916", "OPAQUE_SCRIPT_1916", "00000000-0000-0000-0000-000000001916"
+            "OPAQUE_DATE_1916", "opaque-element-1916", "OPAQUE_CUSTOM_1916", "OPAQUE_SCRIPT_1916", "00000000-0000-0000-0000-000000001916",
+            "OPAQUE_USER_1916", "OPAQUE_PASSWORD_1916", "127.0.0.1"
         })
         {
             Assert.DoesNotContain(opaque, markup, StringComparison.Ordinal);
@@ -213,6 +216,7 @@ public sealed class CalendarDayPreviewEvidenceTests
         StringAssert.Contains(markup, "<h3>Daily summary</h3><p></p>", StringComparison.Ordinal);
         StringAssert.Contains(markup, ">Partial</span>", StringComparison.Ordinal);
         StringAssert.Contains(markup, "href=\"/archive/day/{invalid-date}?[other-query]\"", StringComparison.Ordinal);
+        StringAssert.Contains(markup, "<a href=\"[other-origin]\">Daily summary</a>", StringComparison.Ordinal);
         StringAssert.Contains(markup, "<img src=\"/api/v1/operations/still-products/{expected-product}/preview?[other-query]\" loading=\"lazy\">", StringComparison.Ordinal);
         StringAssert.Contains(markup, "<time>1</time>", StringComparison.Ordinal);
     }
@@ -224,7 +228,7 @@ public sealed class CalendarDayPreviewEvidenceTests
             {"interactive":"OPAQUE_INTERACTIVE_1916","readyState":"OPAQUE_READY_1916","dayPage":true,"dayLoading":false,
              "nightlyUnavailable":false,"previewFailedMarker":true,"tileState":"OPAQUE_TILE_STATE_1916",
              "image":{"present":true,"connected":true,"complete":true,"naturalWidth":0,"naturalHeight":0,
-                      "src":"/archive/OPAQUE_SRC_1916","currentSrc":"http://opaque-host-1916.example/x?OPAQUE_QUERYNAME_1916=1",
+                      "src":"/archive/OPAQUE_SRC_1916","currentSrc":"http://opaque-host-1916.example/api/v1/operations/still-products/00000000-0000-0000-0000-000000001916/preview?OPAQUE_QUERYNAME_1916=1",
                       "loading":"OPAQUE_LOADING_1916","width":10,"height":10,"visible":true},
              "blazorErrorUi":false,"errorBoundary":false,
              "reconnect":{"open":true,"classes":["components-reconnect-show","OPAQUE_RECONNECT_1916"]},
@@ -234,7 +238,7 @@ public sealed class CalendarDayPreviewEvidenceTests
                       "dailyProducts":null,"pageStates":[{"t":"section","a":[["class","page-state OPAQUE_PAGE_STATE_1916"]],"c":["OPAQUE_PAGE_STATE_TEXT_1916"]}]}}
             """);
 
-        var snapshot = PageSnapshot.From(raw.RootElement, ExpectedProduct);
+        var snapshot = PageSnapshot.From(raw.RootElement, ExpectedProduct, AppBaseAddress);
         var retained = JsonSerializer.Serialize(snapshot);
 
         Assert.DoesNotContain("OPAQUE", retained, StringComparison.Ordinal);
@@ -243,7 +247,7 @@ public sealed class CalendarDayPreviewEvidenceTests
         Assert.AreEqual("other", snapshot.ReadyState);
         Assert.AreEqual("other", snapshot.TileState);
         Assert.AreEqual("[other-route]", snapshot.Image.Source);
-        Assert.AreEqual("[other-route]", snapshot.Image.CurrentSource);
+        Assert.AreEqual("[other-origin]", snapshot.Image.CurrentSource);
         CollectionAssert.AreEqual(ExpectedReconnectStates, snapshot.ReconnectStates.ToArray());
         Assert.AreEqual(new PageNotice("page-state--error", "other"), snapshot.Notices[0]);
         Assert.AreEqual(new PageNotice("page-state", "Loading observing day"), snapshot.Notices[1]);
