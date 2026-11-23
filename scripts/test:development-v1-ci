@@ -439,7 +439,7 @@ def violations(short, full, queue=None, extra=None):
                      '[[ "$EVENT_NAME" == pull_request ]]', 'run_full=true',
                      'for endpoint in "$PR_HEAD_SHA" "$merge_commit"', '-n "$PR_HEAD_SHA"', '-n "$second"',
                      'if [[ "$eligible" == true ]]; then', 'classifier output missing or invalid',
-                     'bash "$classifier" --verify-docs-restore "$base"',
+                     'timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base"',
                      'printf \'restore_imports_verified=true\\n\' | cmp -s - "$proof"'):
         require(expected in fast, f"exact classification wiring: {expected}")
     require("fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}" in step(build, "Checkout exact commit") and
@@ -916,24 +916,23 @@ with tempfile.TemporaryDirectory(prefix="hvo-yaml-parser-") as directory:
 for name, candidate, qualification, *queue in mutations:
     if not violations(candidate, qualification, *queue):
         raise SystemExit(f"Mutation was not rejected: {name}")
-# The documented refresh must never replace the certificate when generation fails.
+# The documented reproduction check must compare the inventory without rewriting it.
 runbook = (root / "docs/runbooks/ci-pipeline.md").read_text()
-refresh = runbook.split("### Refresh the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]
-with tempfile.TemporaryDirectory(prefix="hvo-inventory-refresh-") as directory:
+reproduce = runbook.split("### Reproduce the documentation CI inventory", 1)[1].split("```bash\n", 1)[1].split("\n```", 1)[0]
+with tempfile.TemporaryDirectory(prefix="hvo-inventory-reproduce-") as directory:
     fixture = pathlib.Path(directory)
     (fixture / "scripts").mkdir()
     classifier_stub = fixture / "scripts/ci:classify"
-    certificate = fixture / "scripts/ci:docs-inventory"
-    for exit_code in (1, 0):
-        classifier_stub.write_text(f"#!/usr/bin/env bash\nprintf candidate\nexit {exit_code}\n")
+    inventory = fixture / "scripts/ci:docs-inventory"
+    inventory.write_text("original\n")
+    for content, exit_code, passes in (("original", 0, True), ("different", 0, False), ("original", 1, False)):
+        classifier_stub.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' {content}\nexit {exit_code}\n")
         classifier_stub.chmod(0o700)
-        certificate.write_text("original")
-        result = subprocess.run(["bash", "-c", refresh], cwd=fixture,
+        result = subprocess.run(["bash", "-c", reproduce], cwd=fixture,
                                 env=dict(os.environ, TMPDIR=directory), capture_output=True, text=True)
-        expected = "original" if exit_code else "candidate"
-        if (result.returncode == 0) != (exit_code == 0) or certificate.read_text() != expected:
-            raise SystemExit("Inventory refresh did not preserve failure or publish success")
-    print("Inventory refresh: failure preservation and successful publication passed.")
+        if (result.returncode == 0) != passes or inventory.read_text() != "original\n":
+            raise SystemExit("Inventory reproduction altered a file or accepted a failed comparison")
+    print("Inventory reproduction: match, mismatch and classifier failure passed.")
 
 # Run the actual decision shell with synthetic merge commits and a trusted-base
 # classifier. This verifies literal output parsing and merge-parent binding.
@@ -951,6 +950,7 @@ with tempfile.TemporaryDirectory(prefix="hvo-fast-workflow-") as directory:
     trusted.write_text('''#!/usr/bin/env bash
 if [[ "$1" == --verify-docs-restore ]]; then
     printf '%s' "$FAKE_PROOF"
+    if [[ -n "${FAKE_PROOF_DELAY:-}" ]]; then sleep "$FAKE_PROOF_DELAY"; fi
     exit "$FAKE_PROOF_EXIT"
 fi
 if [[ "$3" == "$GITHUB_SHA" && -n "${FAKE_MERGE_CONTENT:-}" ]]; then
@@ -992,6 +992,8 @@ exit "$FAKE_EXIT"
         lines = output.read_text().splitlines()
         if result.returncode or f"run_full={expected}" not in lines or f"reason={reason}" not in lines:
             raise SystemExit(f"Fast workflow case {label} failed: {lines} {result.stderr}")
+    workload_env = fixture / "workload-env"
+    env.update(GITHUB_ENV=str(workload_env), DEV_V1_DEADLINE_EPOCH="2000")
     for proof, exit_code, expected in (
         ("restore_imports_verified=true\n", "0", "false"),
         ("restore_imports_verified=true\n", "1", "true"),
@@ -1001,6 +1003,7 @@ exit "$FAKE_EXIT"
         ("restore_imports_verified=true\nrestore_imports_verified=true\n", "0", "true"),
     ):
         output.write_text("")
+        workload_env.write_text("")
         env.update(EVENT_NAME="pull_request", PR_HEAD_SHA=candidate, FAKE_EXIT="0",
                    FAKE_CONTENT="docs_fast_path=verify-restore\ndocs_fast_path_reason=restore import proof required\n",
                    FAKE_PROOF=proof, FAKE_PROOF_EXIT=exit_code)
@@ -1008,6 +1011,26 @@ exit "$FAKE_EXIT"
                                 capture_output=True, text=True)
         if result.returncode or f"run_full={expected}" not in output.read_text().splitlines():
             raise SystemExit(f"Restore certificate workflow case {proof!r}, {exit_code}: {output.read_text()} {result.stderr}")
+        elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", (evidence / "classification.md").read_text(), re.M)
+        if not elapsed:
+            raise SystemExit("Restore proof duration is missing from evidence")
+        expected_deadline = f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n" if expected == "true" else ""
+        if workload_env.read_text() != expected_deadline:
+            raise SystemExit("Restore proof time changed the fallback workload budget")
+
+    # Shorten only the duration in the actual shell so this exercises GNU
+    # timeout without spending the production allowance on every contract run.
+    if fast_script.count(" 30s bash ") != 1:
+        raise SystemExit("Expected one bounded restore proof in the workflow")
+    output.write_text("")
+    workload_env.write_text("")
+    timed_env = dict(env, FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0", FAKE_PROOF_DELAY="10")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", fast_script.replace(" 30s bash ", " 1s bash ")],
+                            cwd=fixture, env=timed_env, capture_output=True, text=True, timeout=8)
+    elapsed = re.search(r"^restoreProofElapsedSeconds=(\d+)$", (evidence / "classification.md").read_text(), re.M)
+    if (result.returncode or "run_full=true" not in output.read_text().splitlines() or not elapsed or
+            int(elapsed[1]) < 1 or workload_env.read_text() != f"DEV_V1_DEADLINE_EPOCH={2000 + int(elapsed[1])}\n"):
+        raise SystemExit(f"Timed-out proof failed to preserve full workload: {output.read_text()} {result.stderr}")
     output.write_text("")
     env.update(FAKE_PROOF="restore_imports_verified=true\n", FAKE_PROOF_EXIT="0",
                FAKE_MERGE_CONTENT="docs_fast_path=true\ndocs_fast_path_reason=safe\n")
@@ -1214,7 +1237,7 @@ exit "$FAKE_EXIT"
                 manifest["mergeSha"] != changed_merge or manifest["schema"] != "hvo-development-v1-ci-v6" or
                 (expected and manifest["sdkVersion"] is not None)):
             raise SystemExit(f"Invalid manifest evidence: {manifest}")
-    print("Fast workflow shell: 26 decision, binding and trusted-base cases; 2 manifest cases passed.")
+    print("Fast workflow shell: 27 decision, binding and trusted-base cases; 2 manifest cases passed.")
 
 # Exercise the real final promotion step with an offline gh substitute. Creating
 # a PR must be draft; refreshing one must preserve its state; API errors must fail.

@@ -126,11 +126,11 @@ def sdk_command(checkout, env):
     version = version_pin["version"]
     require(re.fullmatch(r"10\.0\.[0-9]+", version) and version_pin.get("rollForward") == "disable" and
             version_pin.get("allowPrerelease") is False, "SDK pin unavailable or unsupported")
-    if env.get("DOTNET_INSTALL_DIR"):
-        executable = Path(env["DOTNET_INSTALL_DIR"]) / "dotnet"
-    else:
-        executable = Path(shutil.which("dotnet") or "")
-    dotnet = executable.resolve(strict=True)
+    install_dir = env.get("DOTNET_INSTALL_DIR")
+    candidate = str(Path(install_dir) / "dotnet") if install_dir else "dotnet"
+    executable = shutil.which(candidate)
+    require(executable, "dotnet executable unavailable")
+    dotnet = Path(executable).resolve(strict=True)
     sdk_path = dotnet.parent / "sdk" / version
     sdk_version = (sdk_path / ".version").read_text().splitlines()
     require(sdk_version[1:3] == [version, "linux-x64"], "SDK version or platform differs")

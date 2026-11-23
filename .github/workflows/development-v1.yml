@@ -201,10 +201,17 @@ jobs:
                   elif [[ "$decision" == docs_fast_path=verify-restore ]]; then
                     reason='reviewed restore import proof failed or was unavailable'
                     proof="$DEV_V1_EVIDENCE_ROOT/restore-import-proof.txt"
-                    if bash "$classifier" --verify-docs-restore "$base" > "$proof" 2>> "$evidence" &&
+                    proof_start="$SECONDS"
+                    if timeout --signal=TERM --kill-after=5s 30s bash "$classifier" --verify-docs-restore "$base" > "$proof" 2>> "$evidence" &&
                        printf 'restore_imports_verified=true\n' | cmp -s - "$proof"; then
                       run_full=false
                       reason='safe documentation and reviewed restore imports verified'
+                    fi
+                    proof_elapsed="$((SECONDS - proof_start))"
+                    printf 'restoreProofElapsedSeconds=%s\n' "$proof_elapsed" >> "$evidence"
+                    if [[ "$run_full" == true ]]; then
+                      # The optional proof shares the hard job timeout. Refund its elapsed time to the full workload.
+                      printf 'DEV_V1_DEADLINE_EPOCH=%s\n' "$((DEV_V1_DEADLINE_EPOCH + proof_elapsed))" >> "$GITHUB_ENV"
                     fi
                   fi
                 fi

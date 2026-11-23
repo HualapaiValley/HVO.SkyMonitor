@@ -17,15 +17,30 @@ source, archive and expanded payload. SDK declarations in imported files,
 explicit SDK imports, linked documents and ambiguous paths still fail the
 source audit.
 
+The SDK digest covers `sdk/<version>`. Workload manifests in `sdk-manifests/`,
+installed `packs/`, and workload installation state sit outside that digest.
+The replay detects their effects on the resolved graph or generated imports.
+
+## Runner prerequisites and evidence
+
+Before the regular SDK setup step runs, the Linux x64 runner needs Python 3.12
+or later and .NET SDK 10.0.402. Put `dotnet` on `PATH` or set
+`DOTNET_INSTALL_DIR` to its installation directory. The expanded SDK directory
+must match the reviewed digest.
+
 The proof runs one replay on a private snapshot of the committed base using
 the pinned SDK and the runner's normal NuGet sources and package cache. It
 compares the generated files, package sources and content with the reviewed
-certificate. It uses the installed SDK from `DOTNET_INSTALL_DIR` when set, or
-the SDK beside the `dotnet` executable on `PATH`. The private snapshot keeps
-working-tree files and preexisting restore output out of the proof. The check
-records the exact endpoints and the proof decision in its retained artifact.
-Full validation runs when a required SDK, package, import or proof is missing,
-unexpected or different. Build and Unit keeps the same required check name.
+certificate. The private snapshot keeps working-tree files and preexisting
+restore output out of the proof. Build and Unit gives the proof 30 seconds
+and up to five more seconds to terminate. On failure, it gives that elapsed
+time back to the full-validation workload budget within the 22-minute hard
+job timeout. Full validation also runs when a required SDK, package, import
+or proof is missing, unexpected or different.
+
+For the first ready docs-only PR after rollout, confirm `runFull=false` in
+the retained `classification.md` artifact. It records the exact endpoints,
+decision, and `restoreProofElapsedSeconds` when the proof runs.
 
 Hosted Preflight checks the committed certificate and source inventory and
 warns if that check fails. It can validate source binding without the SDK.
@@ -39,6 +54,13 @@ The certificate becomes trusted after HIGH-tier review and merge into
 `development/v1`. A certificate in a PR cannot approve that PR's workload
 exemption. Refresh the inventory and the certificate together when the SDK,
 projects, inputs, packages or generated imports change.
+
+Any merged change to an audited build input makes the certificate stale.
+Project files, props and targets, package pins, `global.json`, and
+`.gitattributes` are all covered. Hosted Preflight resumes the O7-02 warning
+and docs-only PRs run full validation until a HIGH-reviewed refresh lands.
+The [mandatory certificate-maintenance gate](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1996)
+tracks that refresh obligation.
 
 From a clean candidate commit on Linux x64, use the pinned stable SDK and the
 same NuGet sources as Build and Unit. The published Linux x64 SDK distribution
@@ -74,4 +96,7 @@ Run `scripts/test:ci-classification` and `scripts/test:development-v1-ci`. Run
 `scripts/test:ci-docs-restore-import` under the SDK and lock above for the
 offline positive and negative proof. If the certificate cannot be reproduced,
 the Build and Unit artifact records the reason while full validation remains
-in effect. The mandatory maintenance gate is tracked in #1996.
+in effect. [#1996](https://github.com/HualapaiValley/HVO.SkyMonitor/issues/1996)
+also tracks adding the offline proof to a .NET-capable CI lane. The fixture
+stays local for this change so hosted Preflight can stay SDK-free and the
+required Build and Unit workload can keep its existing scope.

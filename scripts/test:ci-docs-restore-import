@@ -107,9 +107,18 @@ pathlib.Path(sys.argv[2]).write_text(textwrap.dedent(step.split("        run: |\
 PY
 mkdir -p "$fixture/evidence"
 fixture_cache_suffix=/ DEV_V1_EVIDENCE_ROOT="$fixture/evidence" GITHUB_OUTPUT="$fixture/decision" EVENT_NAME=pull_request \
+  GITHUB_ENV="$fixture/workload-env" DEV_V1_DEADLINE_EPOCH=2000 \
   GITHUB_SHA="$merge" PR_HEAD_SHA="$doc" run_fresh bash -euo pipefail "$fixture/workflow" > "$fixture/workflow.log"
 grep -Fxq 'run_full=false' "$fixture/decision"
 grep -Fxq 'restore_imports_verified=true' "$fixture/evidence/restore-import-proof.txt"
+
+if DOTNET_INSTALL_DIR="$fixture/missing-dotnet" run_fresh bash scripts/ci:classify --verify-docs-restore "$reviewed" \
+    > "$fixture/proof" 2> "$fixture/drift-error"; then
+  printf 'The restore proof succeeded without a dotnet executable.\n' >&2
+  exit 1
+fi
+[[ ! -s "$fixture/proof" ]]
+grep -Fxq 'docs inventory audit: dotnet executable unavailable' "$fixture/drift-error"
 
 # Break the certificate without changing the project's committed declarations.
 # Admission may start the restore proof, but no failed proof can report success.
@@ -171,4 +180,4 @@ for drift in missing malformed config; do
   grep -Fxq 'docs_fast_path=false' <<< "$(classify pull_request "$stale" HEAD docs-fast-only)"
   grep -Fq 'full validation will run' <<< "$(classify --warn-docs-inventory "$stale")"
 done
-printf 'Offline restore certificate passed: valid base, seven replay drift cases and three static fallback cases.\n'
+printf 'Offline restore certificate passed: valid base, seven replay drift cases, missing dotnet and three static fallback cases.\n'
