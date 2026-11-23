@@ -77,8 +77,12 @@ public sealed partial class CameraAgentArtifactServiceTests
             var persisted = await views.ReadRevisionAsync(latest.Base.BaseId, latest.LatestRevisionId, token).ConfigureAwait(false);
             Assert.IsNotNull(persisted);
             CollectionAssert.AreEqual(
-                target.Revision.Layers.Select(static layer => (layer.Key, layer.Evidence, layer.Drawable?.LayerIdentitySha256)).ToArray(),
-                persisted.Revision.Layers.Select(static layer => (layer.Key, layer.Evidence, layer.Drawable?.LayerIdentitySha256)).ToArray(),
+                target.Revision.Layers.Select(static layer => (
+                    layer.Key, layer.EvidenceOrder, layer.Evidence, layer.ObservedUtc, layer.Readiness, layer.Reason,
+                    layer.Drawable?.LayerIdentitySha256)).ToArray(),
+                persisted.Revision.Layers.Select(static layer => (
+                    layer.Key, layer.EvidenceOrder, layer.Evidence, layer.ObservedUtc, layer.Readiness, layer.Reason,
+                    layer.Drawable?.LayerIdentitySha256)).ToArray(),
                 "A rejected publication must preserve the stored layers.");
             CollectionAssert.AreEqual(
                 target.Revision.Manifest.Layers.Select(static layer => layer.LayerIdentitySha256).ToArray(),
