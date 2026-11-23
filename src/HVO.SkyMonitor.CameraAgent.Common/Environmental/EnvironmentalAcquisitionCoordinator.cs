@@ -95,6 +95,18 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
     public IReadOnlyList<EnvironmentalSourceDescriptor> Sources
         => _sources.Values.Select(static source => source.Descriptor).OrderBy(static source => source.Id, StringComparer.Ordinal).ToArray();
 
+    internal IEnvironmentalLocationHeldPollStore? ConfigureHeldPollStore(IEnvironmentalAcquisitionStateStore scheduleStore)
+    {
+        if (scheduleStore is not IEnvironmentalLocationHeldPollStore heldPollStore ||
+            !_sources.Values.Any(static source => source.Descriptor.Triggers.Contains(EnvironmentalAcquisitionTrigger.Periodic)))
+        {
+            return null;
+        }
+
+        _ = RequireHeldPollPublisher();
+        return heldPollStore;
+    }
+
     internal IReadOnlyDictionary<string, Task<EnvironmentalAcquisitionReceipt>> CaptureDependencies()
     {
         lock (_pendingGate) return _active.ToDictionary(pair => pair.Key, pair => pair.Value.Task, StringComparer.Ordinal);
@@ -178,9 +190,10 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
                 acquisitionBudgetMilliseconds.HasValue ? "before-capture-source-busy" : "trigger-coalesced", null, started)
                 with
             { HeldLocationPollUtc = heldLocationPollUtc };
-            LogReceipt(source.Descriptor, receipt);
+            if (!heldLocationPollUtc.HasValue) LogReceipt(source.Descriptor, receipt);
             await RecordAttemptAsync(source.Descriptor, receipt, captureSequence, captureId, cancellationToken)
                 .ConfigureAwait(false);
+            if (heldLocationPollUtc.HasValue) LogReceipt(source.Descriptor, receipt);
             _telemetry?.AcquisitionCompleted(source.Descriptor, receipt, wasInFlight: false);
             return receipt;
         }
@@ -199,12 +212,14 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             }
             if (heldLocationPollUtc.HasValue && !first.HeldLocationPollCommitted)
                 first = first with { HeldLocationPollUtc = heldLocationPollUtc };
-            LogReceipt(source.Descriptor, first);
+            if (!heldLocationPollUtc.HasValue) LogReceipt(source.Descriptor, first);
             // Capture evidence must survive shutdown even if the diagnostic attempt write is interrupted.
             if (settleFirstReceipt is not null) await settleFirstReceipt(first).ConfigureAwait(false);
             if (!first.HeldLocationPollCommitted)
                 await RecordAttemptAsync(source.Descriptor, first, captureSequence, captureId, cancellationToken)
                     .ConfigureAwait(false);
+            // The scheduler reports a held settlement outage when the outcome cannot be written.
+            if (heldLocationPollUtc.HasValue) LogReceipt(source.Descriptor, first);
             if (acquisitionBudgetMilliseconds.HasValue || joinBusy)
             {
                 PendingAcquisition? deferred;
@@ -480,7 +495,7 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
         EnvironmentalObservationFactV1 fact, EnvironmentalHeldPoll poll,
         CancellationToken cancellationToken)
     {
-        var publisher = (IEnvironmentalHeldPollPublisher)_publisher;
+        var publisher = RequireHeldPollPublisher();
         for (var attempt = 1; ; attempt++)
         {
             try
@@ -493,6 +508,12 @@ public sealed partial class EnvironmentalAcquisitionCoordinator : IDisposable
             }
         }
     }
+
+    private IEnvironmentalHeldPollPublisher RequireHeldPollPublisher()
+        => _publisher is IEnvironmentalHeldPollPublisher { SupportsHeldPollSettlement: true } publisher
+            ? publisher
+            : throw new InvalidOperationException(
+                "The configured environmental observation publisher must support atomic settlement of held environmental polls.");
 
     public Task<IReadOnlyList<EnvironmentalAcquisitionReceipt>> AcquireTriggerAsync(
         EnvironmentalAcquisitionTrigger trigger, DateTimeOffset observedAtUtc, long? captureSequence = null,

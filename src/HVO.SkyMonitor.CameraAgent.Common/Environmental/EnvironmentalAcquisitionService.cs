@@ -16,6 +16,8 @@ public sealed partial class EnvironmentalAcquisitionService(
     IOptions<CameraAgentHostOptions> options,
     ILogger<EnvironmentalAcquisitionService> logger) : BackgroundService
 {
+    private static readonly TimeSpan HeldPollRetryInterval = TimeSpan.FromSeconds(30);
+    private readonly IEnvironmentalLocationHeldPollStore? _heldPollStore = coordinator.ConfigureHeldPollStore(stateStore);
     private long _queueDepth;
     private readonly Channel<(EnvironmentalCaptureAcquisition Acquisition, Func<CancellationToken, Task> Prepare)> _capturePreparations =
         Channel.CreateBounded<(EnvironmentalCaptureAcquisition, Func<CancellationToken, Task>)>(
@@ -170,24 +172,24 @@ public sealed partial class EnvironmentalAcquisitionService(
         var now = timeProvider.GetUtcNow();
         var due = CurrentDue(source, now);
         var initialPoll = true;
-        var heldPollStore = stateStore as IEnvironmentalLocationHeldPollStore;
+        var heldPollStore = _heldPollStore;
         DateTimeOffset? heldDue = null;
-        var confirmSettlement = false;
+        var retryingHeldSettlement = false;
         var journalUnavailable = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                if (confirmSettlement)
+                if (retryingHeldSettlement)
                 {
                     var slot = await heldPollStore!.ReadLocationHeldPollAsync(
                         options.Value.RawIngressRoot, source, cancellationToken).ConfigureAwait(false);
                     heldDue = slot is { Settled: false } ? slot.DueUtc : null;
-                    confirmSettlement = false;
                     if (heldDue.HasValue)
-                        await Task.Delay(TimeSpan.FromSeconds(1), timeProvider, cancellationToken).ConfigureAwait(false);
+                        await Task.Delay(HeldPollRetryInterval, timeProvider, cancellationToken).ConfigureAwait(false);
                     else
                     {
+                        retryingHeldSettlement = false;
                         due = NextDue(source, timeProvider.GetUtcNow());
                     }
                 }
@@ -228,11 +230,17 @@ public sealed partial class EnvironmentalAcquisitionService(
                 // Keep the due timestamp while the protected store reconciles startup authority.
                 // Wait before entering the coordinator so capture triggers retain their own budgets.
                 await coordinator.WaitForInitialDeploymentLocationAsync(cancellationToken).ConfigureAwait(false);
-                var settled = await AcquireAsync(source, due, heldDue.HasValue, cancellationToken).ConfigureAwait(false);
+                var settled = await AcquireAsync(source, due, heldDue.HasValue, logFailure: !retryingHeldSettlement,
+                    cancellationToken).ConfigureAwait(false);
                 if (!settled && heldDue.HasValue)
                 {
-                    confirmSettlement = true;
+                    retryingHeldSettlement = true;
                     continue;
+                }
+                if (retryingHeldSettlement)
+                {
+                    JournalRecovered(logger, "held-poll-settlement");
+                    retryingHeldSettlement = false;
                 }
                 heldDue = null;
                 due = NextDue(source, timeProvider.GetUtcNow());
@@ -310,6 +318,7 @@ public sealed partial class EnvironmentalAcquisitionService(
         EnvironmentalSourceDescriptor source,
         DateTimeOffset due,
         bool locationHeld,
+        bool logFailure,
         CancellationToken cancellationToken)
     {
         try
@@ -324,13 +333,16 @@ public sealed partial class EnvironmentalAcquisitionService(
         }
         catch (Exception exception)
         {
-            AcquisitionFailed(
-                logger,
-                source.Kind.ToString(),
-                EnvironmentalAcquisitionTrigger.Periodic.ToString(),
-                EnvironmentalAcquisitionDisposition.Failed.ToString(),
-                "unexpected",
-                exception);
+            if (logFailure)
+            {
+                AcquisitionFailed(
+                    logger,
+                    source.Kind.ToString(),
+                    EnvironmentalAcquisitionTrigger.Periodic.ToString(),
+                    EnvironmentalAcquisitionDisposition.Failed.ToString(),
+                    locationHeld ? "held-poll-settlement-unavailable" : "unexpected",
+                    exception);
+            }
             return false;
         }
     }
